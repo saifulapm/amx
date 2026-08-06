@@ -79,6 +79,12 @@ fn apply_csi(cells: &mut Screen, row: &mut u16, col: &mut u16, params: &str, ter
         }
         // SGR, cursor visibility, alt screen, kitty keyboard: no cell effect.
         'm' | 'h' | 'l' | 'u' => {}
+        // End of input inside a sequence: the stream is append-only and reads
+        // chunk at arbitrary boundaries (darwin ptys split mid-CSI where Linux
+        // happened not to), so a trailing partial sequence is normal — the
+        // next accumulation completes it. Dropping it here parses the same
+        // bytes the completed stream will re-parse in full.
+        '\0' => {}
         other => panic!("the rasterizer met an unknown CSI terminator {other:?} ({params:?})"),
     }
 }
@@ -102,4 +108,17 @@ pub fn render(screen: &Screen) -> String {
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod partial_tail {
+    use super::{rasterize, render};
+
+    /// Reads chunk at arbitrary boundaries; a buffer ending mid-CSI must
+    /// parse as far as the complete prefix and never panic.
+    #[test]
+    fn a_trailing_partial_sequence_is_tolerated_not_fatal() {
+        let cells = rasterize(b"\x1b[1;1Hok\x1b[3;");
+        assert!(render(&cells).contains("ok"));
+    }
 }
