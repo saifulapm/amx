@@ -1,0 +1,17 @@
+{
+  "reply": {
+    "chunks": 1,
+    "seq": 53
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "pane.history",
+    "params": {
+      "first": 40,
+      "last": 295,
+      "pane": "00000000-0000-0000-0000-0000000000a1",
+      "request": 7
+    }
+  }
+}

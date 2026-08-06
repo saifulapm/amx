@@ -1,0 +1,16 @@
+{
+  "reply": {
+    "channel": 1,
+    "max_frame": 1048576,
+    "stream": 1
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "stream.bind",
+    "params": {
+      "kind": "pane_grid",
+      "pane": "00000000-0000-0000-0000-0000000000a1"
+    }
+  }
+}

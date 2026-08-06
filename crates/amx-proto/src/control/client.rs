@@ -4,7 +4,7 @@
 //! These types are that split written down — a client *declares* its viewport
 //! and its keybinding authority; it does not ask the server to render for it.
 
-use amx_core::PaneId;
+use amx_core::{PaneId, Seq};
 use serde::{Deserialize, Serialize};
 
 /// The panes a client can currently see, and at what size.
@@ -22,6 +22,13 @@ pub struct Viewport {
     /// Panes visible in this client's projection.
     #[serde(default)]
     pub panes: Vec<PaneId>,
+}
+
+/// Reply to `client.viewport`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ViewportReply {
+    /// The bus sequence at which the declaration took effect.
+    pub seq: Seq,
 }
 
 /// Where a client's keybindings come from.

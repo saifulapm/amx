@@ -1,0 +1,17 @@
+{
+  "reply": {
+    "seq": 54
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "client.viewport",
+    "params": {
+      "cols": 120,
+      "panes": [
+        "00000000-0000-0000-0000-0000000000a1"
+      ],
+      "rows": 40
+    }
+  }
+}

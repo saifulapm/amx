@@ -12,17 +12,29 @@
 //!   parameters produce a JSON-RPC error and the connection continues; only a
 //!   framing or transport violation ends it.
 
+use std::sync::{Arc, Mutex, PoisonError};
+
 use amx_proto::error::FrameError;
 use amx_proto::frame::FRAME_HEADER_LEN;
 use amx_proto::rpc::{Notification, Request, RpcError};
+use amx_proto::stream::{FlowControl, RawDirection, RawPaneIo};
 use amx_proto::{FrameHeader, Response};
+use bytes::Bytes;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::sync::CancellationToken;
 
+use crate::actor::PaneCommand;
 use crate::conn::ConnError;
+use crate::conn::streams::ConnStreams;
 use crate::conn::writer::{OutFrame, Outbound, OutboundError};
 use crate::dispatch::Router;
+
+/// The notification a client signals stream flow control with.
+///
+/// A notification rather than a call because flow control wants no reply —
+/// pausing a stream must not itself queue more control traffic.
+pub const FLOW_METHOD: &str = "stream.flow";
 
 /// Channels are a single byte, so a connection can bind at most this many.
 const CHANNELS: usize = u8::MAX as usize + 1;
@@ -79,7 +91,9 @@ pub struct Reader<R> {
     source: R,
     header: [u8; FRAME_HEADER_LEN],
     payload: Vec<u8>,
-    caps: StreamCaps,
+    /// Shared with the connection's stream bindings: `stream.bind` writes a
+    /// channel's cap there and this reader starts admitting frames on it.
+    caps: Arc<Mutex<StreamCaps>>,
 }
 
 impl<R> Reader<R>
@@ -93,14 +107,14 @@ where
             source,
             header: [0; FRAME_HEADER_LEN],
             payload: Vec::new(),
-            caps: StreamCaps::default(),
+            caps: Arc::new(Mutex::new(StreamCaps::default())),
         }
     }
 
-    /// The inbound stream bindings, so a control call that binds a stream can
-    /// tell the reader what to expect on its channel.
-    pub fn caps_mut(&mut self) -> &mut StreamCaps {
-        &mut self.caps
+    /// Adopt the connection's shared cap table, so binds made through
+    /// dispatch reach this reader.
+    pub fn share_caps(&mut self, caps: Arc<Mutex<StreamCaps>>) {
+        self.caps = caps;
     }
 
     /// Read the next frame.
@@ -123,8 +137,11 @@ where
 
         let header = FrameHeader::decode(self.header)?;
         if !header.is_control() {
+            // A plain-array read; a panic cannot happen inside the lock.
             let cap = self
                 .caps
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
                 .cap(header.channel)
                 .ok_or(FrameError::UnboundChannel {
                     channel: header.channel,
@@ -154,6 +171,7 @@ where
 pub async fn run<R>(
     reader: &mut Reader<R>,
     router: &mut Router,
+    streams: &ConnStreams,
     out: &Outbound,
     cancel: &CancellationToken,
 ) -> Result<(), ConnError>
@@ -168,14 +186,34 @@ where
         let Some(frame) = frame else { return Ok(()) };
 
         if !frame.header.is_control() {
-            // Inbound binary streams — raw pane I/O in the control direction —
-            // are bound by a control call that does not exist yet (T16). Until
-            // one does, `StreamCaps` binds nothing and `read_frame` has already
-            // refused the channel, so reaching here would mean a binding was
-            // added without a consumer.
-            return Err(ConnError::Frame(FrameError::UnboundChannel {
-                channel: frame.header.channel,
-            }));
+            // `read_frame` admitted the frame, so its channel is bound: raw
+            // pane input is the one inbound stream kind, and its bytes go to
+            // the pane's own mailbox — never through the `Core` — so a
+            // keystroke pays one hand-off, not two (04 §4's latency budget).
+            let Some(route) = streams.raw_route(frame.header.channel) else {
+                return Err(ConnError::Frame(FrameError::UnboundChannel {
+                    channel: frame.header.channel,
+                }));
+            };
+            let message = RawPaneIo::decode(frame.payload)
+                .map_err(|_| ConnError::Malformed("raw i/o frame does not decode"))?;
+            if message.pane != route.pane {
+                return Err(ConnError::Malformed(
+                    "raw i/o frame names a pane its channel is not bound to",
+                ));
+            }
+            if message.direction != RawDirection::ToPane {
+                return Err(ConnError::Malformed(
+                    "only to-pane raw i/o may arrive from a client",
+                ));
+            }
+            let bytes = Bytes::copy_from_slice(message.bytes);
+            // Await: the pane's bounded mailbox is the backpressure that keeps
+            // a client flooding input from growing an unbounded queue.
+            if route.handle.send(PaneCommand::Write(bytes)).await.is_err() {
+                tracing::debug!(pane = %route.pane, "input for a pane that is gone");
+            }
+            continue;
         }
 
         let value: Value = serde_json::from_slice(frame.payload)
@@ -186,9 +224,17 @@ where
             let notification: Notification = serde_json::from_value(value).map_err(|_| {
                 ConnError::Malformed("control frame is neither call nor notification")
             })?;
-            // No client-to-server notification exists in M0's method table. An
-            // unknown one is dropped rather than refused: a newer peer must be
-            // able to say something this build ignores.
+            if notification.method == FLOW_METHOD {
+                if let Some(flow) = notification
+                    .params
+                    .and_then(|params| serde_json::from_value::<FlowControl>(params).ok())
+                {
+                    streams.control(flow).await;
+                }
+                continue;
+            }
+            // Any other notification is dropped rather than refused: a newer
+            // peer must be able to say something this build ignores.
             tracing::debug!(method = %notification.method, "ignoring unknown notification");
             continue;
         }

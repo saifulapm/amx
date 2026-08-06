@@ -11,10 +11,13 @@ use std::future::Future;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
-use amx_core::{PaneId, SessionId, ShortNumber, WorkspaceId};
-use amx_proto::control::{Call, Dispatch, Method, dispatch, pane, session, workspace};
+use amx_core::{Layout, PaneId, RowId, SessionId, ShortNumber, WorkspaceId};
+use amx_proto::control::{
+    Call, Dispatch, Method, client, dispatch, pane, session, stream, workspace,
+};
 use amx_proto::hello::ServerInfo;
 use amx_proto::rpc::RpcError;
+use amx_proto::stream::{StreamId, StreamKind};
 
 struct StubServer {
     seq: u64,
@@ -133,6 +136,64 @@ impl Dispatch for StubServer {
             resized: true,
             seq: self.seq,
         })
+    }
+
+    async fn session_state(
+        &mut self,
+        _params: session::StateParams,
+    ) -> Result<session::StateReply, RpcError> {
+        let workspace = WorkspaceId::new_v4();
+        let pane = PaneId::new_v4();
+        Ok(session::StateReply {
+            seq: self.seq,
+            focused_workspace: Some(workspace),
+            workspaces: vec![session::WorkspaceState {
+                workspace,
+                short: ShortNumber::FIRST,
+                label: Some("dev".into()),
+                layout: Layout::with_root(pane),
+                focus: Some(pane),
+            }],
+            panes: vec![session::PaneState {
+                pane,
+                short: ShortNumber::FIRST,
+                rows: 24,
+                cols: 80,
+                history_head: RowId::from_raw(3),
+                history_floor: RowId::from_raw(0),
+            }],
+        })
+    }
+
+    async fn stream_bind(
+        &mut self,
+        params: stream::BindParams,
+    ) -> Result<stream::BindReply, RpcError> {
+        let _ = params;
+        Ok(stream::BindReply {
+            stream: StreamId::new(1),
+            channel: 1,
+            max_frame: 1 << 20,
+        })
+    }
+
+    async fn pane_history(
+        &mut self,
+        params: stream::HistoryParams,
+    ) -> Result<stream::HistoryReply, RpcError> {
+        let _ = params;
+        Ok(stream::HistoryReply {
+            chunks: 1,
+            seq: self.seq,
+        })
+    }
+
+    async fn client_viewport(
+        &mut self,
+        params: client::Viewport,
+    ) -> Result<client::ViewportReply, RpcError> {
+        let _ = params;
+        Ok(client::ViewportReply { seq: self.seq })
     }
 }
 
@@ -255,6 +316,48 @@ fn dispatch_routes_the_rest_of_the_m0_verb_surface() {
     ))
     .unwrap();
     assert_eq!(resized["resized"], true);
+
+    let state = block_on(dispatch(
+        &mut server,
+        Call::SessionState(session::StateParams {}),
+    ))
+    .unwrap();
+    assert_eq!(state["seq"], 5);
+    assert_eq!(state["workspaces"].as_array().unwrap().len(), 1);
+
+    let bound = block_on(dispatch(
+        &mut server,
+        Call::StreamBind(stream::BindParams {
+            kind: StreamKind::PaneGrid {
+                pane: PaneId::new_v4(),
+            },
+        }),
+    ))
+    .unwrap();
+    assert_eq!(bound["channel"], 1);
+
+    let fetched = block_on(dispatch(
+        &mut server,
+        Call::PaneHistory(stream::HistoryParams {
+            pane: PaneId::new_v4(),
+            first: RowId::from_raw(0),
+            last: RowId::from_raw(3),
+            request: 7,
+        }),
+    ))
+    .unwrap();
+    assert_eq!(fetched["chunks"], 1);
+
+    let viewed = block_on(dispatch(
+        &mut server,
+        Call::ClientViewport(client::Viewport {
+            rows: 40,
+            cols: 120,
+            panes: vec![],
+        }),
+    ))
+    .unwrap();
+    assert_eq!(viewed["seq"], 5);
 }
 
 #[test]

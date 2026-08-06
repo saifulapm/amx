@@ -167,6 +167,8 @@ pub enum CoreCommand {
     Pane(PaneCall),
     /// A `client.*` call.
     Client(ClientCall),
+    /// A `stream.*` call's `Core` half.
+    Stream(StreamCall),
     /// A pane actor reported a transition.
     PaneReport {
         /// Which pane.
@@ -176,6 +178,32 @@ pub enum CoreCommand {
     },
     /// Shut the session down.
     Shutdown,
+}
+
+/// A live pane's plumbing, handed to the connection that binds a stream on it.
+///
+/// The connection talks to the pane directly from then on — input bytes go to
+/// [`PaneWiring::handle`], grid frames come off [`PaneWiring::frames`] —
+/// so a keystroke never queues behind the `Core`'s mailbox (04 §4's round-trip
+/// budget is the reason this is a hand-off rather than a relay).
+#[derive(Clone, Debug)]
+pub struct PaneWiring {
+    /// The pane's command mailbox.
+    pub handle: PaneHandle,
+    /// The pane's published frames.
+    pub frames: SnapshotFeed,
+}
+
+/// The `Core` half of stream binding: resolving a pane to its live plumbing.
+#[derive(Debug)]
+pub enum StreamCall {
+    /// Fetch the wiring of a live pane.
+    Wiring {
+        /// The pane a stream is being bound for.
+        pane: PaneId,
+        /// Where the wiring goes.
+        reply: Reply<PaneWiring>,
+    },
 }
 
 /// `session.*` calls.
@@ -200,6 +228,13 @@ pub enum SessionCall {
     Attached {
         /// Where the acknowledgement goes, once any seeding is done.
         reply: Reply<()>,
+    },
+    /// `session.state`.
+    State {
+        /// Parameters.
+        params: session::StateParams,
+        /// Where the snapshot goes.
+        reply: Reply<session::StateReply>,
     },
 }
 
@@ -293,12 +328,12 @@ pub enum PaneCall {
 /// `client.*` calls.
 #[derive(Debug)]
 pub enum ClientCall {
-    /// The client declared the panes its projection makes visible.
+    /// The client declared its terminal size and visible panes.
     Viewport {
         /// Parameters.
         params: client::Viewport,
         /// Where the acknowledgement goes.
-        reply: Reply<()>,
+        reply: Reply<client::ViewportReply>,
     },
 }
 

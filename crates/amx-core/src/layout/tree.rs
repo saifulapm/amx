@@ -17,7 +17,8 @@ const RATIO_MIN: f32 = 0.05;
 const RATIO_MAX: f32 = 0.95;
 
 /// One node of the BSP tree: a pane, or a two-way split of two subtrees.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum Node {
     /// A pane occupying the whole of its slot.
     Leaf(PaneId),
@@ -39,7 +40,10 @@ enum Node {
 /// records it in `zoomed` and [`rects`](Self::rects) special-cases it, so
 /// unzooming restores the prior geometry exactly because the tree underneath
 /// was never touched.
-#[derive(Clone, Debug, Default)]
+/// Serialized because `session.state` carries the tree to clients verbatim —
+/// the mirror the client renders is the same algebra, so the wire form is the
+/// tree itself rather than a projection of it.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Layout {
     root: Option<Node>,
     zoomed: Option<PaneId>,

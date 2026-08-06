@@ -17,10 +17,11 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use amx_core::{PaneId, SessionId, ShortNumber, WorkspaceId};
-use amx_proto::control::{Call, pane, session, workspace};
+use amx_core::{Layout, PaneId, RowId, SessionId, ShortNumber, WorkspaceId};
+use amx_proto::control::{Call, client, pane, session, stream, workspace};
 use amx_proto::hello::{ClientInfo, Feature, Hello, Resume, ServerInfo, Welcome};
 use amx_proto::rpc::{Notification, Request, RequestId, Response, RpcError};
+use amx_proto::stream::{StreamId, StreamKind};
 use serde::Serialize;
 
 fn goldens_dir() -> PathBuf {
@@ -255,5 +256,66 @@ fn control_goldens_match() {
             resized: true,
             seq: 51,
         },
+    );
+
+    let mut layout = Layout::with_root(pane_id());
+    layout
+        .split(pane_id(), amx_core::Direction::Right, other_pane_id(), 0.5)
+        .expect("split the fixture layout");
+    call_golden(
+        "method_session_state",
+        Call::SessionState(session::StateParams {}),
+        session::StateReply {
+            seq: 52,
+            focused_workspace: Some(workspace_id()),
+            workspaces: vec![session::WorkspaceState {
+                workspace: workspace_id(),
+                short: ShortNumber::new(1),
+                label: Some("dev".into()),
+                layout,
+                focus: Some(other_pane_id()),
+            }],
+            panes: vec![session::PaneState {
+                pane: pane_id(),
+                short: ShortNumber::new(1),
+                rows: 22,
+                cols: 39,
+                history_head: RowId::from_raw(120),
+                history_floor: RowId::from_raw(4),
+            }],
+        },
+    );
+
+    call_golden(
+        "method_stream_bind",
+        Call::StreamBind(stream::BindParams {
+            kind: StreamKind::PaneGrid { pane: pane_id() },
+        }),
+        stream::BindReply {
+            stream: StreamId::new(1),
+            channel: 1,
+            max_frame: 1 << 20,
+        },
+    );
+
+    call_golden(
+        "method_pane_history",
+        Call::PaneHistory(stream::HistoryParams {
+            pane: pane_id(),
+            first: RowId::from_raw(40),
+            last: RowId::from_raw(295),
+            request: 7,
+        }),
+        stream::HistoryReply { chunks: 1, seq: 53 },
+    );
+
+    call_golden(
+        "method_client_viewport",
+        Call::ClientViewport(client::Viewport {
+            rows: 40,
+            cols: 120,
+            panes: vec![pane_id()],
+        }),
+        client::ViewportReply { seq: 54 },
     );
 }

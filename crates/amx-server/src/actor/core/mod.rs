@@ -26,22 +26,23 @@
 //! [`workspace`] hold the `pane.*`/`workspace.*` handlers themselves.
 
 mod pane;
+mod view;
 mod workspace;
 
 use std::collections::HashMap;
 
 use amx_core::{
-    Ctx, Effect, EffectSet, Event, PaneId, Scheduled, SessionId, SessionState, ShortNumber,
-    WorkspaceId,
+    Ctx, Effect, EffectSet, Event, Level, PaneId, RowId, Scheduled, SessionId, SessionState,
+    ShortNumber, WorkspaceId,
 };
 use amx_proto::ServerInfo;
-use amx_proto::control::session;
+use amx_proto::control::{client, session};
 use amx_proto::rpc::RpcError;
 use tokio::sync::mpsc;
 
 use crate::actor::{
-    ClientCall, CoreCommand, CoreHandle, PaneCall, PaneHandle, PaneReport, SessionCall,
-    WorkspaceCall,
+    ClientCall, CoreCommand, CoreHandle, PaneCall, PaneHandle, PaneReport, PaneWiring, SessionCall,
+    StreamCall, WorkspaceCall,
 };
 
 /// Where a folded batch's output goes.
@@ -85,14 +86,29 @@ pub struct Core {
     next_workspace_short: u32,
     /// See [`Self::next_workspace_short`].
     next_pane_short: u32,
-    /// Mailboxes of the panes currently backed by a live process.
+    /// The short number each workspace was issued, for `session.state`.
+    workspace_shorts: HashMap<WorkspaceId, ShortNumber>,
+    /// The short number each pane was issued, for `session.state`.
+    pane_shorts: HashMap<PaneId, ShortNumber>,
+    /// Plumbing of the panes currently backed by a live process.
     ///
     /// Every pane minted through [`Core::run`] has an entry (splits and
     /// workspace roots alike); one minted through a direct
     /// [`Core::absorb`] does not, since `absorb` spawns nothing. Removed
     /// when the pane exits or is closed, so a later close/kill never sends to
     /// a mailbox nobody is reading.
-    panes: HashMap<PaneId, PaneHandle>,
+    panes: HashMap<PaneId, PaneWiring>,
+    /// Each pane's history window, folded from its reports so `session.state`
+    /// can answer synchronously: `head` is one past the newest committed row,
+    /// `floor` the oldest still fetchable.
+    history: HashMap<PaneId, (RowId, RowId)>,
+    /// The active client's declared terminal size (rows, cols), if any client
+    /// has declared one. Last writer wins — the pane grid follows the
+    /// most-recently-active client (04 §3).
+    viewport: Option<(u16, u16)>,
+    /// The size (rows, cols) each pane was last commanded to, so reconciling
+    /// after a layout change only disturbs panes whose cell rect moved.
+    pane_sizes: HashMap<PaneId, (u16, u16)>,
     /// This actor's own mailbox, handed to every pane `Core` spawns so its
     /// reports have somewhere to go, and used to answer this same mailbox
     /// asynchronously when a command (a split) needs to await something
@@ -117,7 +133,12 @@ impl Core {
             session_id: SessionId::new_v4(),
             next_workspace_short: ShortNumber::FIRST.get(),
             next_pane_short: ShortNumber::FIRST.get(),
+            workspace_shorts: HashMap::new(),
+            pane_shorts: HashMap::new(),
             panes: HashMap::new(),
+            history: HashMap::new(),
+            viewport: None,
+            pane_sizes: HashMap::new(),
             handle,
         }
     }
@@ -143,7 +164,7 @@ impl Core {
     /// it.
     #[must_use]
     pub fn pane_handle(&self, pane: PaneId) -> Option<&PaneHandle> {
-        self.panes.get(&pane)
+        self.panes.get(&pane).map(|wiring| &wiring.handle)
     }
 
     /// This server instance's identity, as carried in `Welcome`/`ping`.
@@ -159,16 +180,20 @@ impl Core {
         }
     }
 
-    fn next_workspace_short(&mut self) -> ShortNumber {
+    fn next_workspace_short(&mut self, workspace: WorkspaceId) -> ShortNumber {
         let n = self.next_workspace_short;
         self.next_workspace_short += 1;
-        ShortNumber::new(n)
+        let short = ShortNumber::new(n);
+        self.workspace_shorts.insert(workspace, short);
+        short
     }
 
-    fn next_pane_short(&mut self) -> ShortNumber {
+    fn next_pane_short(&mut self, pane: PaneId) -> ShortNumber {
         let n = self.next_pane_short;
         self.next_pane_short += 1;
-        ShortNumber::new(n)
+        let short = ShortNumber::new(n);
+        self.pane_shorts.insert(pane, short);
+        short
     }
 
     /// The workspace whose layout currently holds `pane`, if any.
@@ -181,6 +206,16 @@ impl Core {
 
     fn publish(&self, event: Event) -> amx_core::Seq {
         self.ctx.bus.publish(event)
+    }
+
+    /// The pane's folded history window (`head`, `floor`), created at zero the
+    /// first time a report mentions the pane.
+    fn history_window_mut(&mut self, pane: PaneId) -> (&mut RowId, &mut RowId) {
+        let entry = self
+            .history
+            .entry(pane)
+            .or_insert((RowId::from_raw(0), RowId::from_raw(0)));
+        (&mut entry.0, &mut entry.1)
     }
 
     fn no_such_pane(pane: PaneId) -> RpcError {
@@ -220,6 +255,9 @@ impl Core {
             CoreCommand::Session(SessionCall::Attached { reply }) => {
                 self.handle_attached_no_spawn(reply);
             }
+            CoreCommand::Session(SessionCall::State { params: _, reply }) => {
+                let _ = reply.send(Ok(self.session_state()));
+            }
             CoreCommand::Workspace(WorkspaceCall::Create { params, reply }) => {
                 self.handle_workspace_create_no_spawn(params, reply);
             }
@@ -253,8 +291,24 @@ impl Core {
             CoreCommand::Pane(PaneCall::Resize { params, reply }) => {
                 self.handle_pane_resize(params, reply);
             }
-            CoreCommand::Client(ClientCall::Viewport { params: _, reply }) => {
-                let _ = reply.send(Ok(()));
+            CoreCommand::Client(ClientCall::Viewport { params, reply }) => {
+                self.handle_viewport(&params);
+                let _ = reply.send(Ok(client::ViewportReply {
+                    seq: self.ctx.bus.head(),
+                }));
+            }
+            CoreCommand::Stream(StreamCall::Wiring { pane, reply }) => {
+                let wiring = self.panes.get(&pane).cloned();
+                let _ = reply.send(wiring.ok_or_else(|| {
+                    if self.state.pane(pane).is_some() {
+                        RpcError::new(
+                            RpcError::INVALID_PARAMS,
+                            format!("pane {pane} has no live process to stream"),
+                        )
+                    } else {
+                        Self::no_such_pane(pane)
+                    }
+                }));
             }
             CoreCommand::PaneReport { pane, report } => self.handle_pane_report(pane, report),
             CoreCommand::Shutdown => {}
@@ -271,9 +325,13 @@ impl Core {
             // them next to the rows they describe, and the bus event is the
             // session-state fact that ids `range` now exist.
             PaneReport::Committed { range, .. } => {
+                let (head, _) = self.history_window_mut(pane);
+                *head = (*head).max(RowId::from_raw(range.last.get().saturating_add(1)));
                 self.publish(Event::HistoryCommitted { pane, range });
             }
             PaneReport::Invalidated { from_row, cause } => {
+                let (head, _) = self.history_window_mut(pane);
+                *head = from_row;
                 self.publish(Event::HistoryInvalidated {
                     pane,
                     from_row,
@@ -281,6 +339,9 @@ impl Core {
                 });
             }
             PaneReport::Evicted { oldest_row } => {
+                let (head, floor) = self.history_window_mut(pane);
+                *floor = (*floor).max(oldest_row);
+                *head = (*head).max(*floor);
                 self.publish(Event::HistoryEvicted { pane, oldest_row });
             }
             PaneReport::Title(title) => {
@@ -342,6 +403,13 @@ impl Core {
             }
             if !self.effects.is_empty() {
                 self.drain_scheduled(&mut scheduled);
+                // A batch that moved the layout moved pane rects with it: the
+                // active client's declared size projects onto the new tree and
+                // every pane whose cell rect changed is resized (04 §3 — the
+                // pane grid follows the most-recently-active client).
+                if scheduled.level() >= Level::Layout {
+                    self.reconcile_pane_sizes();
+                }
                 sink.schedule(&scheduled);
             }
             if stop {

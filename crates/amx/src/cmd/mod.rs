@@ -26,7 +26,14 @@ pub async fn dispatch(env: &Env, matches: &ArgMatches) -> anyhow::Result<ExitCod
             attach::run(&ctx_of(env, matches, None)?, attach::Options::parse(sub)?).await
         }
         Some(("server", _)) => server::run(ctx_of(env, matches, None)?).await,
-        Some(("session", sub)) => session::run(env, matches, sub).await,
+        // The `session` group holds both the lifecycle verbs and the generated
+        // `session.state` call; the verb list decides which module answers.
+        Some(("session", sub)) => match sub.subcommand() {
+            Some(("list" | "attach" | "stop" | "delete", _)) => {
+                session::run(env, matches, sub).await
+            }
+            _ => call::run(env, matches, "session", sub).await,
+        },
         Some((name, sub)) => call::run(env, matches, name, sub).await,
     }
 }

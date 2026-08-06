@@ -25,6 +25,7 @@ pub mod cli;
 pub mod client;
 pub mod pane;
 pub mod session;
+pub mod stream;
 pub mod workspace;
 
 use serde::{Deserialize, Serialize};
@@ -306,5 +307,45 @@ method_table! {
         reply: pane::ResizeReply,
         cli: ["pane", "resize"],
         about: "Grow or shrink a pane's slot in a direction",
+    }
+
+    /// The full session snapshot a fresh client folds into its model.
+    SessionState {
+        wire: "session.state",
+        handler: session_state,
+        params: session::StateParams,
+        reply: session::StateReply,
+        cli: ["session", "state"],
+        about: "Report the session's workspaces, layouts, focus and panes",
+    }
+
+    /// Bind a binary stream to a frame channel on this connection.
+    StreamBind {
+        wire: "stream.bind",
+        handler: stream_bind,
+        params: stream::BindParams,
+        reply: stream::BindReply,
+        cli: ["stream", "bind"],
+        about: "Bind a binary stream (grid, history, raw i/o) to a channel",
+    }
+
+    /// Fetch a history range; chunks ride the bound history stream.
+    PaneHistory {
+        wire: "pane.history",
+        handler: pane_history,
+        params: stream::HistoryParams,
+        reply: stream::HistoryReply,
+        cli: ["pane", "history"],
+        about: "Fetch a range of a pane's scrollback over the bound stream",
+    }
+
+    /// Declare this client's terminal size and visible panes.
+    ClientViewport {
+        wire: "client.viewport",
+        handler: client_viewport,
+        params: client::Viewport,
+        reply: client::ViewportReply,
+        cli: ["client", "viewport"],
+        about: "Declare this client's terminal size and visible panes",
     }
 }
