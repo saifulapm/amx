@@ -6,6 +6,8 @@
 //! its own `oneshot` sender, so there is no correlation table to keep in sync
 //! and no reply that can arrive for a request nobody is waiting on.
 
+pub mod pane_host;
+
 use std::path::PathBuf;
 
 use amx_core::{GridGeneration, InvalidationCause, PaneId, RowId, RowRange};
@@ -15,6 +17,8 @@ use amx_vt::SnapshotRef;
 use bytes::Bytes;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
+
+pub use pane_host::{PaneHost, PaneHostConfig, PaneHostError, PaneProbe, SnapshotFeed};
 
 /// A reply channel for a command that answers.
 pub type Reply<T> = oneshot::Sender<Result<T, RpcError>>;
