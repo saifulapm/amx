@@ -268,6 +268,12 @@ impl ClientModel {
         self.workspaces.keys().copied()
     }
 
+    /// The label of a mirrored workspace, if it has one.
+    #[must_use]
+    pub fn workspace_label(&self, id: WorkspaceId) -> Option<String> {
+        self.workspaces.get(&id).and_then(|ws| ws.label.clone())
+    }
+
     /// Focus `id`. A no-op if it is not a known workspace.
     pub fn focus_workspace(&mut self, id: WorkspaceId) {
         if self.workspaces.contains_key(&id) {
@@ -292,6 +298,30 @@ impl ClientModel {
     /// Drop a pane's cached grid, e.g. after `pane.close`.
     pub fn remove_pane(&mut self, pane: PaneId) {
         self.panes.remove(&pane);
+    }
+
+    /// Drop a workspace the server no longer reports, moving focus off it.
+    pub fn remove_workspace(&mut self, id: WorkspaceId) {
+        self.workspaces.remove(&id);
+        if self.focus_workspace == Some(id) {
+            self.focus_workspace = self.workspaces.keys().copied().next();
+        }
+    }
+
+    /// Keep only the workspaces `keep` admits, with the same focus rule as
+    /// [`Self::remove_workspace`].
+    pub fn retain_workspaces(&mut self, keep: impl Fn(WorkspaceId) -> bool) {
+        self.workspaces.retain(|id, _| keep(*id));
+        if let Some(focus) = self.focus_workspace
+            && !self.workspaces.contains_key(&focus)
+        {
+            self.focus_workspace = self.workspaces.keys().copied().next();
+        }
+    }
+
+    /// Keep only the pane grids `keep` admits.
+    pub fn retain_panes(&mut self, keep: impl Fn(PaneId) -> bool) {
+        self.panes.retain(|id, _| keep(*id));
     }
 
     /// The content area chrome leaves for panes: the whole terminal minus one

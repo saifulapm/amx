@@ -258,7 +258,36 @@ async fn detach_restores_the_terminal_and_leaves_the_pane_running() {
 #[tokio::test]
 async fn attach_pane_renders_full_screen_with_no_chrome() {
     let env = Env::new("viewport");
-    let pane = amx_core::PaneId::new_v4().to_string();
+
+    // A nonexistent pane is a typed refusal before the terminal is touched,
+    // never a blank screen.
+    let bogus = amx_core::PaneId::new_v4().to_string();
+    let mut server = env.spawn(&["server"]);
+    wait_until("the server binds", || {
+        probe(&env.socket()).expect("probe").is_running()
+    });
+    let mut refused = env.spawn_on_tty(&["attach", "--pane", &bogus], ROWS, COLS);
+    assert_eq!(refused.wait(), Some(1), "a bogus pane is a failed attach");
+    assert!(
+        window(refused.output(), b"no such pane"),
+        "the refusal names the problem: {:?}",
+        String::from_utf8_lossy(refused.output())
+    );
+    assert!(
+        !window(refused.output(), ALT_ENTER),
+        "a refused attach never touches the terminal"
+    );
+
+    // A real pane: create a workspace and read its root pane's id back
+    // through `session state` — the same snapshot a client folds.
+    env.run(&["workspace", "create", "--params", r#"{"focus":true}"#])
+        .ok();
+    let state: serde_json::Value =
+        serde_json::from_str(env.run(&["session", "state"]).ok()).expect("state is JSON");
+    let pane = state["panes"][0]["pane"]
+        .as_str()
+        .expect("the workspace has a root pane")
+        .to_owned();
 
     let mut viewport = env.spawn_on_tty(&["attach", "--pane", &pane], ROWS, COLS);
     viewport.wait_for(ALT_ENTER);
@@ -267,6 +296,8 @@ async fn attach_pane_renders_full_screen_with_no_chrome() {
     viewport.wait_for(format!("\x1b[{ROWS};1H").as_bytes());
     viewport.chord(b'q');
     assert_eq!(viewport.wait(), Some(0), "prefix+q detaches a viewport");
+    let _ = server.kill();
+    let _ = server.wait();
 
     let painted = viewport.output().to_vec();
     for glyph in BORDER_GLYPHS {

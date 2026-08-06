@@ -1,34 +1,39 @@
-//! The session socket: connect, negotiate, make control calls (04 §4).
+//! The session socket: connect, negotiate, make control calls, carry streams.
 //!
 //! [`Session`] is the client's half of the same framing and handshake
 //! `amx-server`'s `conn` module implements: `[u32 len][u8 channel][payload]`
-//! over a `UnixStream`, a `Hello`/`Welcome` exchange, and JSON-RPC calls on
-//! the control channel. All three are real against the merged gateway (T10).
+//! over a `UnixStream`, a `Hello`/`Welcome` exchange, JSON-RPC calls on the
+//! control channel, and bound binary streams on the rest.
 //!
-//! **Binary streams are not read here.** `amx_proto::stream::grid::
-//! GridMessage::{encode,decode}` are still `todo!()` — no per-cell wire
-//! layout is defined anywhere in the tree, no golden pins one, and no task in
-//! `docs/06-m0-plan.md`'s DAG claims `amx-proto/src/stream/**` as scope (T04
-//! owns `frame`/`hello`/`rpc`/`version`/`control`, not `stream`). The control
-//! method that would bind a stream to a channel (`reader.rs`'s own comment:
-//! "bound by a control call that does not exist yet") is T16 scope and also
-//! unmerged. So a stream-channel frame reaching a client's reader is not a
-//! condition this build can act on yet: [`Session::call`] treats it as a
-//! protocol violation rather than pretending to decode it. Pane grids in this
-//! crate are populated by applying already-decoded updates
-//! (`amx_client::model::PaneGrid::apply_*`) directly — the seam a real
-//! decoder plugs into once the codec lands.
+//! The same header discipline as the server's reader applies in this
+//! direction too: **a declared length is never trusted with an allocation.**
+//! Control frames are capped by the protocol
+//! ([`MAX_CONTROL_FRAME`], enforced from the header by
+//! [`FrameHeader::decode`]); stream frames are checked against the cap
+//! [`Session::bind_channel`] recorded from the bind reply, and a frame on a
+//! channel nothing bound is a protocol violation rather than a buffer size.
+//! Outbound, the same caps apply before anything is written, so this client
+//! can never send a frame the server is obliged to reject.
+//!
+//! Replies interleave with stream frames on one socket, so every read path
+//! hands non-control frames to the caller ([`Session::call_with`]) instead of
+//! failing on them, and JSON-RPC notifications — id-less by definition — are
+//! skipped rather than treated as malformed, mirroring the server's reader.
 
 use std::io;
 use std::path::Path;
 
-use amx_proto::frame::{CONTROL_CHANNEL, FRAME_HEADER_LEN};
+use amx_proto::frame::{CONTROL_CHANNEL, FRAME_HEADER_LEN, MAX_CONTROL_FRAME};
 use amx_proto::rpc::{Request, RequestId, Response, RpcOutcome};
 use amx_proto::{ClientInfo, Feature, FrameError, FrameHeader, Hello, Resume, Welcome};
 use serde_json::Value;
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+
+/// Channels are one byte, so a session can hold at most this many bindings.
+const CHANNELS: usize = u8::MAX as usize + 1;
 
 /// A session-socket operation failed.
 #[derive(Debug, Error)]
@@ -42,12 +47,15 @@ pub enum NetError {
     /// The peer closed the connection on a frame boundary.
     #[error("the server closed the connection")]
     Closed,
-    /// A frame arrived on a channel this build does not read from yet.
-    #[error("frame on channel {0}, unbound in this build")]
+    /// A frame arrived on a channel nothing bound.
+    #[error("frame on unbound channel {0}")]
     UnboundChannel(u8),
     /// A frame's payload was not the shape its channel requires.
     #[error("malformed frame: {0}")]
     Malformed(&'static str),
+    /// The server negotiated a protocol version this build does not speak.
+    #[error("the server picked protocol {0}, outside this build's window")]
+    BadProto(u16),
     /// The call reached the server and it refused it.
     #[error("call failed: {message} ({code})", message = .0.message, code = .0.code)]
     Call(amx_proto::RpcError),
@@ -69,45 +77,15 @@ pub async fn connect(path: &Path) -> Result<UnixStream, NetError> {
     Ok(UnixStream::connect(path).await?)
 }
 
-/// Read one whole frame from `source`.
-pub async fn read_frame<R>(source: &mut R) -> Result<(FrameHeader, Vec<u8>), NetError>
-where
-    R: AsyncRead + Unpin,
-{
-    let mut header = [0_u8; FRAME_HEADER_LEN];
-    // A zero-length read of the first byte is the one place a disconnect is
-    // not an error — the same distinction `amx-server`'s reader draws between
-    // a clean disconnect and a torn frame.
-    let read = source.read(&mut header[..1]).await?;
-    if read == 0 {
-        return Err(NetError::Closed);
-    }
-    source.read_exact(&mut header[1..]).await?;
-    let header = FrameHeader::decode(header)?;
-    let mut payload = vec![0_u8; header.payload_len()];
-    source.read_exact(&mut payload).await?;
-    Ok((header, payload))
-}
-
-/// Write one frame to `sink` and flush it.
-pub async fn write_frame<W>(sink: &mut W, channel: u8, payload: &[u8]) -> Result<(), NetError>
-where
-    W: AsyncWrite + Unpin,
-{
-    let len = u32::try_from(payload.len()).map_err(|_| NetError::Malformed("payload too large"))?;
-    sink.write_all(&FrameHeader::new(len, channel).encode())
-        .await?;
-    sink.write_all(payload).await?;
-    sink.flush().await?;
-    Ok(())
-}
-
 /// A negotiated connection: `Hello`/`Welcome` is done, control calls can be
-/// made.
+/// made and bound streams read and written.
 #[derive(Debug)]
 pub struct Session {
-    stream: UnixStream,
+    read: OwnedReadHalf,
+    write: OwnedWriteHalf,
     next_id: u64,
+    /// The frame cap per bound inbound channel; `None` means unbound.
+    caps: Box<[Option<u32>; CHANNELS]>,
 }
 
 impl Session {
@@ -119,12 +97,24 @@ impl Session {
     /// session (the server seeds a first workspace for an empty session on
     /// such a connection), `false` for a one-shot verb, which must never
     /// mutate the session by connecting.
+    ///
+    /// The negotiated version is checked against this build's own window —
+    /// a welcome naming a version we never offered is a broken peer, and
+    /// continuing would mean speaking a protocol nobody agreed on.
     pub async fn attach(
-        mut stream: UnixStream,
+        stream: UnixStream,
         client: ClientInfo,
         attach: bool,
         resume: Option<Resume>,
     ) -> Result<(Self, Welcome), NetError> {
+        let (read, write) = stream.into_split();
+        let mut session = Self {
+            read,
+            write,
+            next_id: 1,
+            caps: Box::new([None; CHANNELS]),
+        };
+
         let hello = Hello {
             proto: amx_proto::version::window(),
             features: offered_features(),
@@ -134,39 +124,92 @@ impl Session {
         };
         let payload =
             serde_json::to_vec(&hello).map_err(|_| NetError::Malformed("encode hello"))?;
-        write_frame(&mut stream, CONTROL_CHANNEL, &payload).await?;
+        session.write_control(&payload).await?;
 
-        let (header, payload) = read_frame(&mut stream).await?;
+        let mut buf = Vec::new();
+        let header = session.read_frame_into(&mut buf).await?;
         if !header.is_control() {
             return Err(NetError::UnboundChannel(header.channel));
         }
         let welcome: Welcome =
-            serde_json::from_slice(&payload).map_err(|_| NetError::Malformed("decode welcome"))?;
-        Ok((Self { stream, next_id: 1 }, welcome))
+            serde_json::from_slice(&buf).map_err(|_| NetError::Malformed("decode welcome"))?;
+        if !amx_proto::version::supports(welcome.proto) {
+            return Err(NetError::BadProto(welcome.proto));
+        }
+        Ok((session, welcome))
     }
 
-    /// Make one JSON-RPC call and wait for its reply.
+    /// Record a bound channel's frame cap, from a `stream.bind` reply.
     ///
-    /// M0 has no server-to-client push (no bus subscription, no bound
-    /// streams), so replies arrive strictly in request order and this can
-    /// simply read until it sees its own id — a peer sending anything else on
-    /// the control channel first would be the skew case JSON-RPC ids exist to
-    /// survive, so a mismatched id is skipped rather than treated as an
-    /// error.
-    pub async fn call(&mut self, method: &str, params: Value) -> Result<Value, NetError> {
+    /// Binding is what admits frames on the channel at all — in both
+    /// directions.
+    pub fn bind_channel(&mut self, channel: u8, cap: u32) {
+        if channel != CONTROL_CHANNEL {
+            self.caps[usize::from(channel)] = Some(cap);
+        }
+    }
+
+    /// Read one frame into `buf`, validating its declared length first.
+    ///
+    /// The payload buffer is sized only after the length passes the cap for
+    /// its channel: a peer declaring 4 GiB costs a rejection, not 4 GiB.
+    pub async fn read_frame_into(&mut self, buf: &mut Vec<u8>) -> Result<FrameHeader, NetError> {
+        let mut header = [0_u8; FRAME_HEADER_LEN];
+        // A zero-length read of the first byte is the one place a disconnect
+        // is not an error — the same distinction the server's reader draws
+        // between a clean disconnect and a torn frame.
+        let read = self.read.read(&mut header[..1]).await?;
+        if read == 0 {
+            return Err(NetError::Closed);
+        }
+        self.read.read_exact(&mut header[1..]).await?;
+        let header = FrameHeader::decode(header)?;
+        if !header.is_control() {
+            let cap = self.caps[usize::from(header.channel)]
+                .ok_or(NetError::UnboundChannel(header.channel))?;
+            header.check_stream_len(cap)?;
+        }
+        buf.clear();
+        buf.resize(header.payload_len(), 0);
+        self.read.read_exact(buf).await?;
+        Ok(header)
+    }
+
+    /// Make one JSON-RPC call and wait for its reply, handing every stream
+    /// frame that arrives meanwhile to `on_frame`.
+    ///
+    /// Notifications (no `id`) are ignored, and a reply for some other id is
+    /// skipped rather than treated as an error — both mirror the server's own
+    /// reader, and both are what lets a newer peer say things this build does
+    /// not understand without costing it the session.
+    pub async fn call_with(
+        &mut self,
+        method: &str,
+        params: Value,
+        mut on_frame: impl FnMut(FrameHeader, &[u8]),
+    ) -> Result<Value, NetError> {
         let id = RequestId::Number(self.next_id);
         self.next_id += 1;
         let request = Request::new(id.clone(), method, Some(params));
         let payload =
             serde_json::to_vec(&request).map_err(|_| NetError::Malformed("encode request"))?;
-        write_frame(&mut self.stream, CONTROL_CHANNEL, &payload).await?;
+        self.write_control(&payload).await?;
 
+        let mut buf = Vec::new();
         loop {
-            let (header, payload) = read_frame(&mut self.stream).await?;
+            let header = self.read_frame_into(&mut buf).await?;
             if !header.is_control() {
-                return Err(NetError::UnboundChannel(header.channel));
+                on_frame(header, &buf);
+                continue;
             }
-            let response: Response = serde_json::from_slice(&payload)
+            let value: Value = serde_json::from_slice(&buf)
+                .map_err(|_| NetError::Malformed("control frame is not JSON"))?;
+            if value.get("id").is_none() {
+                // A notification. Nothing here consumes one yet; dropped, not
+                // fatal.
+                continue;
+            }
+            let response: Response = serde_json::from_value(value)
                 .map_err(|_| NetError::Malformed("decode response"))?;
             if response.id != id {
                 continue;
@@ -176,5 +219,53 @@ impl Session {
                 RpcOutcome::Error(error) => Err(NetError::Call(error)),
             };
         }
+    }
+
+    /// Make one JSON-RPC call on a connection with no bound streams.
+    ///
+    /// What a one-shot verb uses; a stream frame arriving here is already a
+    /// protocol violation (nothing was bound), and `read_frame_into` reports
+    /// it as such.
+    pub async fn call(&mut self, method: &str, params: Value) -> Result<Value, NetError> {
+        self.call_with(method, params, |_, _| {}).await
+    }
+
+    /// Write one frame on a bound stream channel.
+    pub async fn write_stream(&mut self, channel: u8, payload: &[u8]) -> Result<(), NetError> {
+        let cap = self.caps[usize::from(channel)].filter(|_| channel != CONTROL_CHANNEL);
+        let Some(cap) = cap else {
+            return Err(NetError::UnboundChannel(channel));
+        };
+        let len =
+            u32::try_from(payload.len()).map_err(|_| NetError::Malformed("payload too large"))?;
+        if len > cap {
+            return Err(NetError::Frame(FrameError::StreamFrameTooLarge {
+                stream: amx_proto::stream::StreamId::new(u16::from(channel)),
+                len: payload.len(),
+                cap,
+            }));
+        }
+        self.write_all(channel, len, payload).await
+    }
+
+    /// Write one control frame, enforcing the control cap outbound.
+    async fn write_control(&mut self, payload: &[u8]) -> Result<(), NetError> {
+        if payload.len() > MAX_CONTROL_FRAME {
+            return Err(NetError::Frame(FrameError::ControlFrameTooLarge {
+                len: payload.len(),
+            }));
+        }
+        let len =
+            u32::try_from(payload.len()).map_err(|_| NetError::Malformed("payload too large"))?;
+        self.write_all(CONTROL_CHANNEL, len, payload).await
+    }
+
+    async fn write_all(&mut self, channel: u8, len: u32, payload: &[u8]) -> Result<(), NetError> {
+        self.write
+            .write_all(&FrameHeader::new(len, channel).encode())
+            .await?;
+        self.write.write_all(payload).await?;
+        self.write.flush().await?;
+        Ok(())
     }
 }

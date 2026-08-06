@@ -88,9 +88,13 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     let mut runtime = Runtime::new(ctx.clone());
     let core = Core::new(ctx.clone(), CoreHandle::new(core_tx));
     runtime.spawn(async move {
-        // The output sink is where the damage stream will attach; there is no
-        // per-client encoder to hand a batch to yet, so a folded batch is
-        // dropped rather than queued for nobody.
+        // Output rides two paths out of a folded batch. Grid traffic flows
+        // from each pane's published frames through the per-client grid
+        // streams `stream.bind` spawns into each connection's priority
+        // writer; layout-level batches re-project the active client's
+        // viewport and resize the panes whose rects moved (both inside
+        // `Core::run`). The sink itself is the remaining seam — tests hang
+        // assertions on it, and per-batch consumers land through it.
         let _core = core.run(core_rx, |_: &Scheduled| {}).await;
     });
 

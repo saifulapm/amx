@@ -250,6 +250,23 @@ async fn copy_mode_is_entered_from_navigate_and_consumes_its_keys() {
         out
     };
 
+    // Copy mode opens over committed history; the seeded shell has none yet,
+    // so plant some in the focused pane's cache the way the history stream
+    // would.
+    let focused = app
+        .focused_pane()
+        .expect("the seeded workspace has a focused pane");
+    let cache = app.cache_mut(focused);
+    cache.commit(amx_core::RowRange::new(
+        amx_core::RowId::from_raw(0),
+        amx_core::RowId::from_raw(9),
+    ));
+    let rows: Vec<String> = (0..10).map(|id| format!("row {id}")).collect();
+    cache.fill(
+        amx_core::RowRange::new(amx_core::RowId::from_raw(0), amx_core::RowId::from_raw(9)),
+        rows.iter().map(String::as_str),
+    );
+
     app.handle_input(b"\x01wc", &mut |_| {});
     assert_eq!(app.mode(), Mode::Copy, "navigate `c` enters copy mode");
 

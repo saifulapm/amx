@@ -37,6 +37,7 @@ fn client_info() -> ClientInfo {
 enum Ev {
     Fwd(PaneId, Vec<u8>),
     Call(Call),
+    Detach,
 }
 
 fn drive(app: &mut TestApp, bytes: &[u8]) -> Vec<Ev> {
@@ -44,6 +45,7 @@ fn drive(app: &mut TestApp, bytes: &[u8]) -> Vec<Ev> {
     app.handle_input(bytes, &mut |event| match event {
         InputEvent::Forward { pane, bytes } => evs.push(Ev::Fwd(pane, bytes.to_vec())),
         InputEvent::Call(call) => evs.push(Ev::Call(call)),
+        InputEvent::Detach => evs.push(Ev::Detach),
     });
     evs
 }
@@ -85,6 +87,9 @@ async fn fixture(tag: &str) -> Fixture {
             layout,
         },
     );
+    // The attach already folded and focused the server's seeded workspace;
+    // these tests navigate their own mirror instead.
+    app.model().focus_workspace(ws);
 
     Fixture {
         server,
