@@ -104,7 +104,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         client: ClientInfo,
     ) -> Result<Self, AppError> {
         let stream = crate::net::connect(socket).await?;
-        let (session, _welcome) = Session::attach(stream, client, None).await?;
+        let (session, _welcome) = Session::attach(stream, client, true, None).await?;
         let term = TerminalGuard::enter(fd, out)?;
         let size = term.size()?;
         Ok(Self {

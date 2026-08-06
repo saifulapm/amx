@@ -7,16 +7,19 @@
 //! changed something publishes exactly one [`Event`] before its effect is
 //! folded into the batch.
 //!
-//! `Core` also owns the session's live panes: `workspace.create` mints state
-//! but starts no process (there is nothing to inherit a cwd from yet, and the
-//! two direct-`absorb` tests in `tests/runtime.rs` call it with no Tokio
-//! runtime in scope — spawning a pty there would panic). `pane.split` is the
-//! verb that actually runs something, and doing that right — inheriting the
-//! source pane's *foreground process* cwd (04 §7) — needs an `await` (the
-//! source pane's own actor answers over a mailbox) that `absorb` cannot make.
-//! [`Core::run`] special-cases it: everything else still folds through the
-//! synchronous [`Core::absorb`] a batch at a time, and only a split takes the
-//! slower, individually-awaited path.
+//! `Core` also owns the session's live panes. Through [`Core::run`], every
+//! verb that mints a pane also starts the process behind it: a split spawns
+//! the new pane's command, and `workspace.create` (and the first-attach
+//! seeding that reuses it) spawns a shell behind the fresh workspace's root
+//! pane. The synchronous [`Core::absorb`] cannot do either — spawning a
+//! `PaneHost` needs a Tokio runtime, and the two direct-`absorb` tests in
+//! `tests/runtime.rs` run with none in scope — so each of those commands has
+//! a `_no_spawn` fallback that mints state only, and [`Core::run`] routes the
+//! real traffic to the `_live` handlers. A split is additionally `await`ed
+//! individually: inheriting the source pane's *foreground process* cwd
+//! (04 §7) means asking that pane's own actor over a mailbox, which `absorb`
+//! cannot wait on. Everything else still folds through `absorb` a batch at a
+//! time.
 //!
 //! Split by responsibility: this file is the struct, the mailbox loop and the
 //! handlers with no dedicated domain (`ping`, pane reports); [`pane`] and
@@ -84,8 +87,9 @@ pub struct Core {
     next_pane_short: u32,
     /// Mailboxes of the panes currently backed by a live process.
     ///
-    /// A pane minted by `workspace.create` has no entry here (nothing was
-    /// spawned for it); a pane minted by `pane.split` always does. Removed
+    /// Every pane minted through [`Core::run`] has an entry (splits and
+    /// workspace roots alike); one minted through a direct
+    /// [`Core::absorb`] does not, since `absorb` spawns nothing. Removed
     /// when the pane exits or is closed, so a later close/kill never sends to
     /// a mailbox nobody is reading.
     panes: HashMap<PaneId, PaneHandle>,
@@ -128,6 +132,18 @@ impl Core {
     #[must_use]
     pub fn state(&self) -> &SessionState {
         &self.state
+    }
+
+    /// The mailbox of the live actor backing `pane`, if a process was ever
+    /// spawned for it and has not exited.
+    ///
+    /// Only reachable on an owned `Core` — before [`Core::run`] or after it
+    /// hands the actor back — which is how a test asks a pane something
+    /// (`PaneCommand::ForegroundCwd`, a snapshot) without a wire method for
+    /// it.
+    #[must_use]
+    pub fn pane_handle(&self, pane: PaneId) -> Option<&PaneHandle> {
+        self.panes.get(&pane)
     }
 
     /// This server instance's identity, as carried in `Welcome`/`ping`.
@@ -185,11 +201,12 @@ impl Core {
     /// Never blocks and never awaits — every reply channel is a `oneshot`
     /// whose `send` is synchronous, so a whole mailbox can be drained without
     /// yielding between commands, which is what makes batching possible.
-    /// [`CoreCommand::Pane`]`(`[`PaneCall::Split`]`)` is the one command this
-    /// cannot serve in full: reaching `absorb` directly (rather than through
-    /// [`Core::run`]) still mints the pane and folds `Effect::Layout`, but
-    /// starts no process, since resolving the foreground cwd to inherit needs
-    /// an `await` this function cannot make.
+    /// The commands that spawn a process when they reach the `Core` through
+    /// [`Core::run`] — a split, a create, an attach to an empty session —
+    /// cannot spawn here: reaching `absorb` directly still mints the state
+    /// and folds its effect, but starts nothing, since starting a `PaneHost`
+    /// needs a Tokio runtime (and a split's foreground-cwd inheritance an
+    /// `await`) this function cannot use.
     pub fn absorb(&mut self, cmd: CoreCommand) {
         match cmd {
             CoreCommand::Session(SessionCall::Ping { params: _, reply }) => {
@@ -200,8 +217,11 @@ impl Core {
                     seq,
                 }));
             }
+            CoreCommand::Session(SessionCall::Attached { reply }) => {
+                self.handle_attached_no_spawn(reply);
+            }
             CoreCommand::Workspace(WorkspaceCall::Create { params, reply }) => {
-                self.handle_workspace_create(params, reply);
+                self.handle_workspace_create_no_spawn(params, reply);
             }
             CoreCommand::Workspace(WorkspaceCall::Rename { params, reply }) => {
                 self.handle_workspace_rename(params, reply);
@@ -296,8 +316,8 @@ impl Core {
     /// One `recv().await` per batch, then a non-blocking drain via
     /// `try_recv` — everything already queued when the actor wakes is folded
     /// into a single [`Scheduled`] output, never one per command (04 §2) —
-    /// except a split, which is awaited individually in place: see the
-    /// type-level doc comment.
+    /// except the spawning commands, which [`Core::dispatch`] routes to their
+    /// live handlers in place: see the type-level doc comment.
     ///
     /// Returns `self` once stopped, so a caller that needs to inspect the
     /// final state (a test, mainly — production callers run this under
@@ -331,16 +351,29 @@ impl Core {
         self
     }
 
-    /// Route one command to [`Core::handle_split_live`] or [`Core::absorb`],
-    /// and report whether it was [`CoreCommand::Shutdown`].
+    /// Route one command to its live handler — the ones that spawn a process
+    /// exist only on this path — or to [`Core::absorb`], and report whether
+    /// it was [`CoreCommand::Shutdown`].
     async fn dispatch(&mut self, cmd: CoreCommand) -> bool {
-        if let CoreCommand::Pane(PaneCall::Split { params, reply }) = cmd {
-            self.handle_split_live(params, reply).await;
-            return false;
+        match cmd {
+            CoreCommand::Pane(PaneCall::Split { params, reply }) => {
+                self.handle_split_live(params, reply).await;
+                false
+            }
+            CoreCommand::Workspace(WorkspaceCall::Create { params, reply }) => {
+                self.handle_workspace_create_live(params, reply);
+                false
+            }
+            CoreCommand::Session(SessionCall::Attached { reply }) => {
+                self.handle_attached_live(reply);
+                false
+            }
+            cmd => {
+                let stop = matches!(cmd, CoreCommand::Shutdown);
+                self.absorb(cmd);
+                stop
+            }
         }
-        let stop = matches!(cmd, CoreCommand::Shutdown);
-        self.absorb(cmd);
-        stop
     }
 }
 

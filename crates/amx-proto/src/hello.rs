@@ -93,6 +93,16 @@ pub struct Hello {
     pub features: BTreeSet<Feature>,
     /// Who the client is.
     pub client: ClientInfo,
+    /// Whether this connection is an attached client rendering the session
+    /// (`amx` / `amx attach`), rather than a one-shot verb.
+    ///
+    /// The distinction 04 §1 draws between the two roles, carried on the
+    /// wire: an attach to a session with no workspaces seeds its first one —
+    /// a live shell to land in — while a verb connection must never mutate
+    /// the session as a side effect of connecting. Absent (the default) means
+    /// a verb, so an older client is a verb client, which mutates nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub attach: bool,
     /// Present when this is a reattach rather than a first attach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume: Option<Resume>,

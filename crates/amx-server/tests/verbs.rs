@@ -99,10 +99,11 @@ impl Harness {
         let (tx, rx) = mpsc::channel(64);
         let mut core = Core::new(ctx.clone(), CoreHandle::new(tx.clone()));
 
-        // `workspace.create` never spawns a process (only a split does — see
-        // the module doc), so calling `absorb` directly needs no Tokio
-        // runtime interaction, and leaves `core.state()` readable to learn
-        // the root pane's id before `core` is handed to `run()`.
+        // Through `absorb`, `workspace.create` mints state and spawns no
+        // process (only the live path through `run()` does), so calling it
+        // directly needs no Tokio runtime interaction, and leaves
+        // `core.state()` readable to learn the root pane's id before `core`
+        // is handed to `run()`.
         let (reply, answer) = oneshot::channel();
         core.absorb(CoreCommand::Workspace(WorkspaceCall::Create {
             params: workspace::CreateParams::default(),

@@ -30,7 +30,7 @@ use amx_proto::rpc::RpcError;
 use thiserror::Error;
 use tokio::net::UnixStream;
 
-use crate::actor::CoreHandle;
+use crate::actor::{CoreCommand, CoreHandle, SessionCall};
 use crate::conn::reader::Reader;
 use crate::conn::writer::{OutboundError, WriteError};
 use crate::dispatch::Router;
@@ -97,6 +97,20 @@ pub async fn serve(stream: UnixStream, ctx: Ctx, core: CoreHandle) -> Result<(),
     let mut router = Router::new(core);
 
     let hello = negotiate::read_hello(&mut reader).await?;
+    // An attach to a session with no workspaces seeds its first one, and the
+    // reply is awaited *before* the welcome is written: by the time the
+    // client can render anything there is a workspace with a live shell for
+    // it to show, never an empty session. A failed seed (no spawnable shell)
+    // is logged and the attach proceeds — the client gets the same empty
+    // session it would have seen before, not a refused connection.
+    if hello.attach {
+        let seeded = router
+            .call(|reply| CoreCommand::Session(SessionCall::Attached { reply }))
+            .await;
+        if let Err(err) = seeded {
+            tracing::warn!(error = %err.message, "could not seed the first workspace");
+        }
+    }
     let identity = Dispatch::ping(&mut router, session::PingParams {})
         .await
         .map_err(ConnError::Core)?;

@@ -37,6 +37,10 @@ path = "adversarial.rs"
 name = "hygiene"
 path = "hygiene.rs"
 
+[[test]]
+name = "firstrun"
+path = "firstrun.rs"
+
 [dependencies]
 amx-core = { workspace = true }
 amx-proto = { workspace = true }

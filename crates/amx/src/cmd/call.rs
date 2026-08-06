@@ -56,7 +56,7 @@ pub async fn run(
     let stream = net::connect(&ctx.socket)
         .await
         .context("connect to the session")?;
-    let (mut session, _welcome) = Session::attach(stream, client_info(), None)
+    let (mut session, _welcome) = Session::attach(stream, client_info(), false, None)
         .await
         .context("negotiate with the session")?;
     let reply = session

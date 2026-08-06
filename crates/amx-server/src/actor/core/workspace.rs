@@ -1,6 +1,15 @@
-//! `workspace.*` handlers: create, rename, kill, switch.
+//! `workspace.*` handlers: create, rename, kill, switch — and the seeding a
+//! first attach triggers, which is a create by another name.
+//!
+//! Create comes in the same two shapes as a split (see [`super::pane`]): the
+//! live handler [`Core::handle_workspace_create_live`] spawns a real shell
+//! behind the fresh workspace's root pane, and the `_no_spawn` fallback is
+//! what [`super::Core::absorb`] uses when no Tokio runtime is in scope to
+//! start a `PaneHost` under.
 
-use amx_core::Event;
+use std::path::PathBuf;
+
+use amx_core::{Event, WorkspaceId};
 use amx_proto::control::workspace;
 use amx_proto::rpc::RpcError;
 
@@ -8,13 +17,44 @@ use super::Core;
 use crate::actor::{PaneCommand, Reply};
 
 impl Core {
-    pub(super) fn handle_workspace_create(
+    /// The synchronous fallback [`super::Core::absorb`] uses for a create:
+    /// mints the workspace and its root pane, but starts nothing behind the
+    /// pane. [`Core::handle_workspace_create_live`] is what
+    /// [`super::Core::run`] actually calls.
+    pub(super) fn handle_workspace_create_no_spawn(
         &mut self,
         params: workspace::CreateParams,
         reply: Reply<workspace::CreateReply>,
     ) {
         let (ws, _pane, effect) = self.state.open_workspace();
         self.effects.absorb(effect);
+        self.finish_workspace_create(ws, params, reply);
+    }
+
+    /// The real create handler: a workspace's root pane gets a live shell,
+    /// through the same spawn path a split uses, so every workspace made over
+    /// the API starts with a process to land in rather than a dead pane.
+    pub(super) fn handle_workspace_create_live(
+        &mut self,
+        params: workspace::CreateParams,
+        reply: Reply<workspace::CreateReply>,
+    ) {
+        match self.open_workspace_live() {
+            Ok(ws) => self.finish_workspace_create(ws, params, reply),
+            Err(err) => {
+                let _ = reply.send(Err(err));
+            }
+        }
+    }
+
+    /// The tail both create shapes share: the event, the optional label, the
+    /// reply.
+    fn finish_workspace_create(
+        &mut self,
+        ws: WorkspaceId,
+        params: workspace::CreateParams,
+        reply: Reply<workspace::CreateReply>,
+    ) {
         let mut seq = self.publish(Event::WorkspaceCreated { workspace: ws });
         if let Some(label) = params.label {
             // Freshly created: renaming it cannot fail.
@@ -32,6 +72,78 @@ impl Core {
             short,
             seq,
         }));
+    }
+
+    /// An attached client's handshake completed: seed a session that has no
+    /// workspaces, with a live shell (see
+    /// [`SessionCall::Attached`](crate::actor::SessionCall::Attached)).
+    pub(super) fn handle_attached_live(&mut self, reply: Reply<()>) {
+        let _ = reply.send(self.seed_first_workspace(true));
+    }
+
+    /// The synchronous fallback [`super::Core::absorb`] uses for an attach:
+    /// the same seeding, minus the process — `absorb` never spawns.
+    pub(super) fn handle_attached_no_spawn(&mut self, reply: Reply<()>) {
+        let _ = reply.send(self.seed_first_workspace(false));
+    }
+
+    /// Seed a session with no workspaces with its first one, switched to.
+    ///
+    /// A session that already has a workspace is left exactly as it is, which
+    /// is what makes two racing first attaches seed one workspace and not
+    /// two: the `Core` serializes its mailbox, so the second attach runs this
+    /// after the first one's workspace exists.
+    fn seed_first_workspace(&mut self, spawn: bool) -> Result<(), RpcError> {
+        if self.state.workspaces().next().is_some() {
+            return Ok(());
+        }
+        let ws = if spawn {
+            self.open_workspace_live()?
+        } else {
+            let (ws, _pane, effect) = self.state.open_workspace();
+            self.effects.absorb(effect);
+            ws
+        };
+        self.publish(Event::WorkspaceCreated { workspace: ws });
+        // Freshly created and present: switching to it cannot fail.
+        if let Ok(effect) = self.state.switch_workspace(ws) {
+            self.effects.absorb(effect);
+            let pane = self.state.workspace(ws).and_then(|w| w.focus());
+            self.publish(Event::FocusChanged {
+                workspace: ws,
+                pane,
+            });
+        }
+        Ok(())
+    }
+
+    /// Mint a workspace and spawn the shell behind its root pane, focused,
+    /// rolling the state back if the spawn fails.
+    ///
+    /// The shell is `$SHELL` (falling back to `/bin/sh`) via the same
+    /// [`Core::spawn_pane`] path a split takes; the root pane's cwd is this
+    /// process's own — a fresh workspace has no source pane to inherit a
+    /// foreground cwd from (04 §7) — and is recorded so later splits fall
+    /// back to it.
+    fn open_workspace_live(&mut self) -> Result<WorkspaceId, RpcError> {
+        let (ws, root, effect) = self.state.open_workspace();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        match self.spawn_pane(root, cwd.clone(), None) {
+            Ok(handle) => {
+                self.panes.insert(root, handle);
+                // The pane was just minted: recording its cwd cannot fail.
+                let _ = self.state.set_pane_cwd(root, cwd);
+                self.effects.absorb(effect);
+                Ok(ws)
+            }
+            Err(err) => {
+                // The state mutation succeeded but the shell it was for could
+                // not start: undo it rather than leave a workspace whose root
+                // pane has nothing behind it.
+                let _ = self.state.kill_workspace(ws);
+                Err(RpcError::new(RpcError::INTERNAL_ERROR, err.to_string()))
+            }
+        }
     }
 
     pub(super) fn handle_workspace_rename(

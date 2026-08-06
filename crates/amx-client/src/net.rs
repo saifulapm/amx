@@ -114,16 +114,22 @@ impl Session {
     /// Send `hello` and read the answering `Welcome`.
     ///
     /// `stream` must be freshly connected: this is the first exchange the
-    /// protocol allows (04 §4).
+    /// protocol allows (04 §4). `attach` declares which of 04 §1's two roles
+    /// this connection is: `true` for an attached client rendering the
+    /// session (the server seeds a first workspace for an empty session on
+    /// such a connection), `false` for a one-shot verb, which must never
+    /// mutate the session by connecting.
     pub async fn attach(
         mut stream: UnixStream,
         client: ClientInfo,
+        attach: bool,
         resume: Option<Resume>,
     ) -> Result<(Self, Welcome), NetError> {
         let hello = Hello {
             proto: amx_proto::version::window(),
             features: offered_features(),
             client,
+            attach,
             resume,
         };
         let payload =

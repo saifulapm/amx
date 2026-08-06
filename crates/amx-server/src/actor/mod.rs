@@ -188,6 +188,19 @@ pub enum SessionCall {
         /// Where the reply goes.
         reply: Reply<session::PingReply>,
     },
+    /// An attached client completed its handshake.
+    ///
+    /// Not a wire method: the gateway's connection task sends this on behalf
+    /// of a client whose hello declared an attach, and awaits the reply
+    /// before writing the welcome. The `Core` seeds a session with no
+    /// workspaces with its first one — a live shell to land in — so a bare
+    /// `amx` never renders an empty session. Seeding is idempotent by
+    /// construction: the `Core` serializes its mailbox, so the second of two
+    /// racing first attaches sees the first one's workspace and does nothing.
+    Attached {
+        /// Where the acknowledgement goes, once any seeding is done.
+        reply: Reply<()>,
+    },
 }
 
 /// `workspace.*` calls.
