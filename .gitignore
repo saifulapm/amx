@@ -1,0 +1,6 @@
+# reference checkout of herdr, not part of this repo
+/herdr/
+
+/target/
+**/*.rs.bk
+.claude/settings.local.json
