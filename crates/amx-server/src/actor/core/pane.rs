@@ -31,7 +31,7 @@ const DEFAULT_SIZE: WinSize = WinSize { rows: 24, cols: 80 };
 
 /// A pane's backing process could not be started.
 #[derive(Debug, Error)]
-enum SpawnError {
+pub(super) enum SpawnError {
     /// The pty itself could not be opened or the command could not run.
     #[error(transparent)]
     Pty(#[from] amx_core::platform::PlatformError),
@@ -163,7 +163,10 @@ impl Core {
     }
 
     /// Open a pty and start a `PaneHost` for a freshly minted pane.
-    fn spawn_pane(
+    ///
+    /// `pub(super)` because a live `workspace.create` spawns its root pane's
+    /// shell through the same path a split uses — one spawn path, not two.
+    pub(super) fn spawn_pane(
         &self,
         pane: PaneId,
         cwd: PathBuf,
