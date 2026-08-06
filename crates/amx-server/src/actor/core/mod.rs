@@ -41,8 +41,8 @@ use amx_proto::rpc::RpcError;
 use tokio::sync::mpsc;
 
 use crate::actor::{
-    ClientCall, CoreCommand, CoreHandle, PaneCall, PaneHandle, PaneReport, PaneWiring, SessionCall,
-    StreamCall, WorkspaceCall,
+    ClientCall, CoreCommand, CoreHandle, PaneCall, PaneHandle, PaneHost, PaneReport, PaneWiring,
+    SessionCall, StreamCall, WorkspaceCall,
 };
 
 /// Where a folded batch's output goes.
@@ -90,14 +90,19 @@ pub struct Core {
     workspace_shorts: HashMap<WorkspaceId, ShortNumber>,
     /// The short number each pane was issued, for `session.state`.
     pane_shorts: HashMap<PaneId, ShortNumber>,
-    /// Plumbing of the panes currently backed by a live process.
+    /// The panes currently backed by a live process, actor task included.
     ///
     /// Every pane minted through [`Core::run`] has an entry (splits and
     /// workspace roots alike); one minted through a direct
-    /// [`Core::absorb`] does not, since `absorb` spawns nothing. Removed
-    /// when the pane exits or is closed, so a later close/kill never sends to
-    /// a mailbox nobody is reading.
-    panes: HashMap<PaneId, PaneWiring>,
+    /// [`Core::absorb`] does not, since `absorb` spawns nothing. Moved to
+    /// [`Core::draining`] when the pane is closed or its child exits, so a
+    /// later close/kill never sends to a mailbox nobody is reading — but the
+    /// task handle itself is never dropped before it is joined (04 §2).
+    panes: HashMap<PaneId, PaneHost>,
+    /// Panes on their way down: hung up (or already exited) but not yet
+    /// joined. Drained when [`Core::run`] exits, which is what makes "nothing
+    /// detached, everything joined" hold for pane tasks.
+    draining: Vec<PaneHost>,
     /// Each pane's history window, folded from its reports so `session.state`
     /// can answer synchronously: `head` is one past the newest committed row,
     /// `floor` the oldest still fetchable.
@@ -136,6 +141,7 @@ impl Core {
             workspace_shorts: HashMap::new(),
             pane_shorts: HashMap::new(),
             panes: HashMap::new(),
+            draining: Vec::new(),
             history: HashMap::new(),
             viewport: None,
             pane_sizes: HashMap::new(),
@@ -164,7 +170,7 @@ impl Core {
     /// it.
     #[must_use]
     pub fn pane_handle(&self, pane: PaneId) -> Option<&PaneHandle> {
-        self.panes.get(&pane).map(|wiring| &wiring.handle)
+        self.panes.get(&pane).map(PaneHost::handle)
     }
 
     /// This server instance's identity, as carried in `Welcome`/`ping`.
@@ -298,7 +304,10 @@ impl Core {
                 }));
             }
             CoreCommand::Stream(StreamCall::Wiring { pane, reply }) => {
-                let wiring = self.panes.get(&pane).cloned();
+                let wiring = self.panes.get(&pane).map(|host| PaneWiring {
+                    handle: host.handle().clone(),
+                    frames: host.frames(),
+                });
                 let _ = reply.send(wiring.ok_or_else(|| {
                     if self.state.pane(pane).is_some() {
                         RpcError::new(
@@ -312,6 +321,20 @@ impl Core {
             }
             CoreCommand::PaneReport { pane, report } => self.handle_pane_report(pane, report),
             CoreCommand::Shutdown => {}
+        }
+    }
+
+    /// Hang up a closed or killed pane's terminal and park its host until the
+    /// exit is reported.
+    ///
+    /// [`PaneHost::kill`] bypasses the command mailbox, so a pane whose
+    /// mailbox is full cannot silently outlive its close — the old
+    /// `try_send(Kill)` could be dropped exactly then, orphaning the child
+    /// behind a success reply.
+    pub(super) fn hang_up_pane(&mut self, pane: PaneId) {
+        if let Some(host) = self.panes.remove(&pane) {
+            host.kill();
+            self.draining.push(host);
         }
     }
 
@@ -352,9 +375,12 @@ impl Core {
             // report rather than added here — extending `Event` is T01's file.
             PaneReport::Bell => {}
             PaneReport::Exited { status } => {
-                // The actor that reported this is on its way down (or already
-                // gone) either way: nothing left to send it.
-                self.panes.remove(&pane);
+                // The actor that reported this is on its way down: nothing
+                // left to send it, but its task is still ours to join, so the
+                // host moves to the draining list instead of being dropped.
+                if let Some(host) = self.panes.remove(&pane) {
+                    self.draining.push(host);
+                }
                 self.effects.absorb(Effect::PaneDamage(pane));
                 self.publish(Event::PaneExited { pane, status });
             }
@@ -416,7 +442,25 @@ impl Core {
                 break;
             }
         }
+        // The mailbox closes before the panes are joined: an actor mid-report
+        // must see its send fail rather than wait on a receiver nobody will
+        // drain again.
+        drop(mailbox);
+        self.join_panes().await;
         self
+    }
+
+    /// Take every pane down and join its task: nothing detached, everything
+    /// joined (04 §2). Hang-up goes first because it bypasses the mailbox and
+    /// unblocks an actor stuck on a stuffed pty, so the shutdown send that
+    /// follows always lands.
+    async fn join_panes(&mut self) {
+        let mut hosts: Vec<PaneHost> = self.panes.drain().map(|(_, host)| host).collect();
+        hosts.append(&mut self.draining);
+        for host in hosts {
+            host.kill();
+            let _ = host.shutdown().await;
+        }
     }
 
     /// Route one command to its live handler — the ones that spawn a process
