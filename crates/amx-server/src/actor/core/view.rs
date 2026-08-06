@@ -146,14 +146,14 @@ impl Core {
             }
         }
         for (pane, new_rows, new_cols) in wanted {
-            let Some(wiring) = self.panes.get(&pane) else {
+            let Some(host) = self.panes.get(&pane) else {
                 continue;
             };
             // `try_send` because this runs inside the fold: a pane whose
             // mailbox is full right now will be re-commanded by the next
             // layout batch, and its keyframe carries whatever size it has.
-            if wiring
-                .handle
+            if host
+                .handle()
                 .try_send(PaneCommand::Resize {
                     rows: new_rows,
                     cols: new_cols,

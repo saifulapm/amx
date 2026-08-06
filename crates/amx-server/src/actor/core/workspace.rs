@@ -14,7 +14,7 @@ use amx_proto::control::workspace;
 use amx_proto::rpc::RpcError;
 
 use super::Core;
-use crate::actor::{PaneCommand, Reply};
+use crate::actor::Reply;
 
 impl Core {
     /// The synchronous fallback [`super::Core::absorb`] uses for a create:
@@ -133,8 +133,8 @@ impl Core {
         let _ = self.next_pane_short(root);
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         match self.spawn_pane(root, cwd.clone(), None) {
-            Ok(wiring) => {
-                self.panes.insert(root, wiring);
+            Ok(host) => {
+                self.panes.insert(root, host);
                 // The pane was just minted: recording its cwd cannot fail.
                 let _ = self.state.set_pane_cwd(root, cwd);
                 self.effects.absorb(effect);
@@ -185,9 +185,7 @@ impl Core {
             Ok((panes, effect)) => {
                 self.effects.absorb(effect);
                 for pane in &panes {
-                    if let Some(wiring) = self.panes.remove(pane) {
-                        let _ = wiring.handle.try_send(PaneCommand::Kill);
-                    }
+                    self.hang_up_pane(*pane);
                 }
                 let seq = self.publish(Event::WorkspaceClosed {
                     workspace: params.workspace,

@@ -122,6 +122,30 @@ async fn bind_replaces_a_socket_no_server_answers_on() {
     assert_eq!(gateway.socket(), ctx.socket);
 }
 
+#[tokio::test]
+async fn bind_never_clobbers_a_path_it_cannot_prove_stale() {
+    // A dangling symlink probes `Absent` (connect follows it to nothing) yet
+    // still refuses the bind with `AddrInUse` — the same shape as losing the
+    // bind race to a server mid-`bind(2)`. The gateway must not have removed
+    // what it could not prove stale, and must re-probe before reporting, so a
+    // racer that finished listening in the window is answered
+    // `AlreadyRunning` rather than a bare bind failure.
+    let dir = TempDir::new("dangling");
+    let ctx = ctx_under(dir.path());
+    std::fs::create_dir_all(&ctx.runtime_dir).expect("create the runtime dir");
+    std::os::unix::fs::symlink(dir.path().join("nothing-here"), &ctx.socket)
+        .expect("plant the occupant");
+
+    let (tx, _rx) = mpsc::channel(1);
+    let err = Gateway::bind(ctx.clone(), CoreHandle::new(tx))
+        .expect_err("the occupied path must refuse the bind");
+    assert!(matches!(err, GatewayError::Bind { .. }), "{err}");
+    assert!(
+        std::fs::symlink_metadata(&ctx.socket).is_ok(),
+        "the occupant was not ours to remove"
+    );
+}
+
 // ------------------------------------------------------------ hostile peers
 
 #[tokio::test]

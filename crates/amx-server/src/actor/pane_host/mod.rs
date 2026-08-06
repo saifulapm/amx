@@ -58,7 +58,7 @@ use self::actor::{Actor, Mailboxes};
 use self::parser::{HostEvent, Parser, ParserCommand, ParserParts, Scratch};
 use crate::actor::{CoreHandle, PaneCommand, PaneHandle};
 use crate::platform::UnixProcessTree;
-use crate::pty::{PtyActor, PtyActorConfig, PtyActorError};
+use crate::pty::{PtyActor, PtyActorConfig, PtyActorError, PtyActorHandle};
 
 pub use self::probe::PaneProbe;
 
@@ -142,6 +142,9 @@ pub struct PaneHost {
     handle: PaneHandle,
     frames: SnapshotFeed,
     probe: PaneProbe,
+    /// The pty actor, kept for [`PaneHost::kill`]: hanging a pane up must not
+    /// depend on mailbox capacity, so it bypasses the command mailbox.
+    pty: PtyActorHandle,
     task: JoinHandle<()>,
 }
 
@@ -182,7 +185,8 @@ impl PaneHost {
         let render = RenderState::new()?;
         let snapshots = Snapshots::new(size.cols, size.rows);
 
-        let (published, frames) = watch::channel(snapshots.latest());
+        let generation = Arc::new(AtomicU64::new(GridGeneration::FIRST.get()));
+        let (published, frames) = watch::channel((snapshots.latest(), GridGeneration::FIRST));
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (commands_tx, commands_rx) = mpsc::channel(mailbox.max(1));
         let (parser_tx, parser_rx) = sync_mpsc::channel();
@@ -202,12 +206,12 @@ impl PaneHost {
             probe: probe.clone(),
             frame_interval,
             size,
+            generation: Arc::clone(&generation),
         });
         let parser_thread = std::thread::Builder::new()
             .name(format!("amx-vt-{}", short(pane)))
             .spawn(move || parser.run(&parser_rx))?;
 
-        let generation = Arc::new(AtomicU64::new(GridGeneration::FIRST.get()));
         let actor = Actor {
             pane,
             bus,
@@ -222,6 +226,7 @@ impl PaneHost {
             scheduled: amx_core::Scheduled::new(),
             stopping: false,
         };
+        let pty_handle = actor.pty.clone();
         let task = tokio::spawn(actor.run(Mailboxes {
             commands: commands_rx,
             events: events_rx,
@@ -233,6 +238,7 @@ impl PaneHost {
             handle: PaneHandle::new(commands_tx),
             frames: SnapshotFeed { frames, generation },
             probe,
+            pty: pty_handle,
             task,
         })
     }
@@ -261,6 +267,17 @@ impl PaneHost {
         &self.probe
     }
 
+    /// Hang the pane's terminal up, without going through the mailbox.
+    ///
+    /// This is the un-droppable half of a close or kill: it cannot be lost to
+    /// a full command mailbox, and it unblocks an actor stuck writing to a
+    /// stuffed pty. The pty actor stops, the master closes (`SIGHUP` to the
+    /// child), and the exit flows back through the ordinary
+    /// [`PaneReport::Exited`](crate::actor::PaneReport::Exited) path.
+    pub fn kill(&self) {
+        self.pty.shutdown();
+    }
+
     /// Ask the pane to stop and wait for it, threads included.
     ///
     /// # Errors
@@ -278,6 +295,11 @@ impl PaneHost {
     }
 }
 
+/// What one publication carries: the frame and the grid generation it was
+/// built at, stored in one `watch` slot so a reader can never pair a frame
+/// with another publication's generation.
+pub(crate) type PublishedFrame = (SnapshotRef, GridGeneration);
+
 /// A reader's handle on one pane's published frames.
 ///
 /// Cloning gives another reader. Reading is an `Arc` clone out of the published
@@ -285,7 +307,7 @@ impl PaneHost {
 /// that nothing will mutate under it, and the parser never waits for it.
 #[derive(Clone, Debug)]
 pub struct SnapshotFeed {
-    frames: watch::Receiver<SnapshotRef>,
+    frames: watch::Receiver<PublishedFrame>,
     generation: Arc<AtomicU64>,
 }
 
@@ -293,10 +315,25 @@ impl SnapshotFeed {
     /// The most recently published frame.
     #[must_use]
     pub fn latest(&self) -> SnapshotRef {
-        self.frames.borrow().clone()
+        self.frames.borrow().0.clone()
+    }
+
+    /// The most recently published frame with the grid generation it was
+    /// built at, read atomically.
+    ///
+    /// This is the pair a delta stream must use: [`SnapshotFeed::latest`] and
+    /// [`SnapshotFeed::generation`] are two reads, and a resize between them
+    /// would label one publication's cells with another's generation.
+    #[must_use]
+    pub fn frame(&self) -> (SnapshotRef, GridGeneration) {
+        let published = self.frames.borrow();
+        (published.0.clone(), published.1)
     }
 
     /// The pane's grid generation (04 §4), which the frame counter is not.
+    ///
+    /// This is the *live* generation: after a resize it can lead the one in
+    /// [`SnapshotFeed::frame`] until the reflowed frame is published.
     #[must_use]
     pub fn generation(&self) -> GridGeneration {
         GridGeneration::from_raw(self.generation.load(Ordering::Acquire))

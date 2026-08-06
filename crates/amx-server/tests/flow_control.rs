@@ -31,7 +31,9 @@ mod harness;
 use std::time::Duration;
 
 use amx_proto::stream::{FlowControl, Priority, StreamId};
-use amx_server::damage::{self, KeyframePolicy, KeyframeReason, SentKind};
+use amx_server::damage::{
+    self, GridStream, GridStreamConfig, KeyframePolicy, KeyframeReason, SentKind,
+};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -483,5 +485,128 @@ async fn pump_drives_a_stream_and_answers_flow_control() {
 
     let _ = wire.finish().await;
     frames.finish_into(&mut reference).await;
+    pane.stop().await;
+}
+
+/// A paused stream that is owed damage parks on its wake sources — a flow
+/// signal or a new frame — instead of arming the drain-retry timer: flushing
+/// is a no-op until the client resumes, so a timer wakeup is a spin at 250 Hz
+/// dressed as patience. The retry counter in the stats is the spin, counted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_paused_stream_with_pending_damage_sleeps_until_a_flow_signal() {
+    let pane = Pane::controlled().await;
+    let mut wire = Wire::new(ROOMY_PIPE);
+    let mut frames = wire.reader(Duration::ZERO);
+    let stream = grid_stream(&pane, KeyframePolicy::default());
+    let (flow, signals) = mpsc::channel(4);
+    let cancel = CancellationToken::new();
+    let driver = tokio::spawn(damage::pump(
+        stream,
+        pane.feed(),
+        wire.out.clone(),
+        signals,
+        cancel.clone(),
+    ));
+
+    let mut reference = ReferenceGrid::default();
+    await_client(
+        &mut frames,
+        &mut reference,
+        "the opening keyframe",
+        |grid| grid.keyframes == 1,
+    )
+    .await;
+
+    // Pause first and give the signal time to be applied, then damage the
+    // grid: from here the stream owes a delta it is not allowed to send.
+    // `snapshot_until` publishes until the echo round trip has landed, so a
+    // publication that carries the damage has definitely been absorbed.
+    flow.send(FlowControl::Pause { stream: STREAM })
+        .await
+        .expect("the pump is listening");
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    pane.write(paint(2, "held-back")).await;
+    pane.snapshot_until("held-back").await;
+
+    // Half a second paused: an armed retry timer would fire here 100+ times.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    frames.drain_into(&mut reference);
+    assert_eq!(reference.deltas, 0, "nothing may be sent while paused");
+
+    // The resume signal is the wake: the owed delta goes out on it.
+    flow.send(FlowControl::Resume { stream: STREAM })
+        .await
+        .expect("the pump is listening");
+    await_client(&mut frames, &mut reference, "the resumed delta", |grid| {
+        grid.deltas > 0
+    })
+    .await;
+
+    cancel.cancel();
+    let stats = driver.await.expect("the pump ended");
+    assert!(
+        stats.retries < 10,
+        "a paused stream must not spin on the retry timer: {stats:?}"
+    );
+
+    let _ = wire.finish().await;
+    frames.finish_into(&mut reference).await;
+    pane.stop().await;
+}
+
+/// `max_frame: 0` (or anything below the protocol floor) would make every
+/// keyframe unbuildable forever; the cap is clamped at `control()` time so a
+/// hostile or buggy client cannot wedge its own stream into a retry loop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stream_cap_below_the_floor_is_clamped_not_honored() {
+    let pane = Pane::controlled().await;
+    let wire = Wire::new(ROOMY_PIPE);
+    let mut stream = grid_stream(&pane, KeyframePolicy::default());
+    stream.control(FlowControl::StreamCap {
+        stream: STREAM,
+        max_frame: 0,
+    });
+
+    // The opening keyframe still fits: the floor is sized for the default
+    // grid, so a clamped cap keeps the stream deliverable.
+    let (sent, _) = emit(&pane, &pane.feed(), &mut stream, &wire.out).await;
+    assert!(
+        matches!(sent.kind, SentKind::Keyframe(KeyframeReason::First)),
+        "the clamped cap must still carry the opening keyframe: {sent:?}"
+    );
+
+    let _ = wire.finish().await;
+    pane.stop().await;
+}
+
+/// A keyframe that genuinely cannot fit the negotiated cap is a terminal
+/// stream error, not an infinite retry: the pump gives the client a bounded
+/// number of publications to raise the cap and then ends the stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unfittable_keyframe_ends_the_stream_instead_of_retrying_forever() {
+    let pane = Pane::start("yes unfittable");
+    let wire = Wire::new(ROOMY_PIPE);
+    // Below any keyframe, bypassing the control-time clamp: the pump has to
+    // survive a cap that was wrong from bind time too.
+    let mut config = GridStreamConfig::new(pane.host.pane(), STREAM);
+    config.max_frame = 64;
+    let stream = GridStream::new(config).expect("stream 1 has a channel byte");
+    let (_flow, signals) = mpsc::channel::<FlowControl>(4);
+    let cancel = CancellationToken::new();
+    let driver = tokio::spawn(damage::pump(
+        stream,
+        pane.feed(),
+        wire.out.clone(),
+        signals,
+        cancel.clone(),
+    ));
+
+    let stats = tokio::time::timeout(PATIENCE, driver)
+        .await
+        .expect("the pump must end on its own: an unfittable keyframe is terminal, not a loop")
+        .expect("the pump did not panic");
+    assert_eq!(stats.keyframes, 0, "nothing can have fit: {stats:?}");
+
+    let _ = wire.finish().await;
     pane.stop().await;
 }

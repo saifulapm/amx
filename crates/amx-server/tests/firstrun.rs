@@ -30,7 +30,9 @@ use amx_core::{
 use amx_proto::control::workspace;
 use amx_proto::version::window;
 use amx_server::actor::core::Core;
-use amx_server::actor::{CoreCommand, CoreHandle, PaneCommand, SessionCall, WorkspaceCall};
+use amx_server::actor::{
+    CoreCommand, CoreHandle, PaneCommand, PaneWiring, SessionCall, StreamCall, WorkspaceCall,
+};
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -83,8 +85,23 @@ impl Harness {
         wait_for_event(&mut self.events, want).await
     }
 
-    /// End the actor loop with `Shutdown` — not a cancel, so the panes stay
-    /// live — and hand the `Core` back for inspection.
+    /// The live plumbing of `pane`, fetched over the running actor loop —
+    /// `Core::run` joins every pane on its way out, so anything that needs a
+    /// live actor has to ask while the loop is still serving.
+    async fn wiring_of(&self, pane: PaneId) -> PaneWiring {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(CoreCommand::Stream(StreamCall::Wiring { pane, reply }))
+            .await
+            .expect("core mailbox is open");
+        answer
+            .await
+            .expect("core answered")
+            .expect("the pane is backed by a live actor")
+    }
+
+    /// End the actor loop with `Shutdown` and hand the `Core` back for state
+    /// inspection. The panes are hung up and joined on the way out.
     async fn into_core(self) -> (Core, Ctx) {
         self.tx
             .send(CoreCommand::Shutdown)
@@ -95,14 +112,11 @@ impl Harness {
     }
 }
 
-/// Ask `core` for `pane`'s foreground process cwd, through the pane's own
-/// live actor.
-async fn foreground_cwd_of(core: &Core, pane: PaneId) -> Option<PathBuf> {
-    let handle = core
-        .pane_handle(pane)
-        .expect("the pane is backed by a live actor");
+/// Ask a live pane for its foreground process cwd.
+async fn foreground_cwd_of(wiring: &PaneWiring) -> Option<PathBuf> {
     let (reply, answer) = oneshot::channel();
-    handle
+    wiring
+        .handle
         .send(PaneCommand::ForegroundCwd(reply))
         .await
         .expect("the pane actor is running");
@@ -146,6 +160,12 @@ async fn workspace_create_spawns_a_live_root_pane() {
         unreachable!("wait_for_event only accepts damage");
     };
 
+    let wiring = harness.wiring_of(pane).await;
+    assert!(
+        foreground_cwd_of(&wiring).await.is_some(),
+        "the root pane's foreground process group has a live pid in /proc"
+    );
+
     let (core, ctx) = harness.into_core().await;
     let root = core
         .state()
@@ -154,10 +174,6 @@ async fn workspace_create_spawns_a_live_root_pane() {
         .layout()
         .panes()[0];
     assert_eq!(pane, root, "the damage came from the workspace's root pane");
-    assert!(
-        foreground_cwd_of(&core, root).await.is_some(),
-        "the root pane's foreground process group has a live pid in /proc"
-    );
 
     ctx.cancel.cancel();
 }
@@ -193,9 +209,17 @@ async fn two_racing_first_attaches_seed_exactly_one_workspace() {
         .expect("core answered")
         .expect("the second attach is a no-op, not a failure");
 
-    harness
+    let damaged = harness
         .wait_for_event(|event| matches!(event, Event::PaneDamage { .. }))
         .await;
+    let Event::PaneDamage { pane, .. } = damaged else {
+        unreachable!("wait_for_event only accepts damage");
+    };
+    let wiring = harness.wiring_of(pane).await;
+    assert!(
+        foreground_cwd_of(&wiring).await.is_some(),
+        "the seeded root pane has a live shell behind it"
+    );
 
     let (core, ctx) = harness.into_core().await;
     let workspaces = workspaces_of(&core);
@@ -216,10 +240,7 @@ async fn two_racing_first_attaches_seed_exactly_one_workspace() {
         .expect("the seeded workspace")
         .layout()
         .panes()[0];
-    assert!(
-        foreground_cwd_of(&core, root).await.is_some(),
-        "the seeded root pane has a live shell behind it"
-    );
+    assert_eq!(pane, root, "the damage came from the seeded root pane");
 
     ctx.cancel.cancel();
 }

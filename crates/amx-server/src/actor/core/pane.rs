@@ -10,6 +10,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use amx_core::platform::{Pty, PtyCommand, WinSize};
 use amx_core::{Direction, Event, PaneId};
@@ -19,7 +20,7 @@ use thiserror::Error;
 use tokio::sync::oneshot;
 
 use super::Core;
-use crate::actor::{PaneCommand, PaneHost, PaneHostConfig, PaneHostError, PaneWiring, Reply};
+use crate::actor::{PaneCommand, PaneHost, PaneHostConfig, PaneHostError, Reply};
 use crate::platform::UnixPty;
 
 /// The grid every freshly spawned pane starts at.
@@ -28,6 +29,15 @@ use crate::platform::UnixPty;
 /// this is the traditional terminal default, matching
 /// [`amx_core::state::workspace::DEFAULT_AREA`].
 const DEFAULT_SIZE: WinSize = WinSize { rows: 24, cols: 80 };
+
+/// How long a split waits for the source pane to answer a foreground-cwd
+/// read before falling back to the recorded cwd.
+///
+/// The `Core` must never park on another actor indefinitely — a pane wedged
+/// behind a saturated mailbox would wedge the whole session with it — so the
+/// wait is bounded and the fallback (04 §7) is the same one an unreadable
+/// `/proc` takes.
+const FOREGROUND_CWD_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// A pane's backing process could not be started.
 #[derive(Debug, Error)]
@@ -113,8 +123,8 @@ impl Core {
                 }
             };
         match self.spawn_pane(new_pane, cwd.clone(), params.command.clone()) {
-            Ok(wiring) => {
-                self.panes.insert(new_pane, wiring);
+            Ok(host) => {
+                self.panes.insert(new_pane, host);
                 // The pane was just minted: recording its cwd cannot fail.
                 let _ = self.state.set_pane_cwd(new_pane, cwd);
                 self.effects.absorb(effect);
@@ -146,15 +156,19 @@ impl Core {
     /// pane's live foreground-process cwd if one can be read, falling back to
     /// the source pane's own recorded cwd, and finally to this process's own
     /// cwd if even that was never recorded (04 §7).
+    ///
+    /// The ask is `try_send` plus a bounded wait, never a blocking send: the
+    /// `Core` waiting for capacity on a pane's mailbox while that pane waits
+    /// for capacity on the `Core`'s is a deadlock with both mailboxes full,
+    /// and a cwd default is not worth wedging the session over.
     async fn resolve_split_cwd(&self, source: PaneId) -> PathBuf {
-        if let Some(wiring) = self.panes.get(&source) {
+        if let Some(host) = self.panes.get(&source) {
             let (tx, rx) = oneshot::channel();
-            if wiring
-                .handle
-                .send(PaneCommand::ForegroundCwd(tx))
-                .await
+            if host
+                .handle()
+                .try_send(PaneCommand::ForegroundCwd(tx))
                 .is_ok()
-                && let Ok(Some(cwd)) = rx.await
+                && let Ok(Ok(Some(cwd))) = tokio::time::timeout(FOREGROUND_CWD_TIMEOUT, rx).await
             {
                 return cwd;
             }
@@ -179,7 +193,7 @@ impl Core {
         pane: PaneId,
         cwd: PathBuf,
         command: Option<Vec<String>>,
-    ) -> Result<PaneWiring, SpawnError> {
+    ) -> Result<PaneHost, SpawnError> {
         let size = self
             .planned_size(pane)
             .map_or(DEFAULT_SIZE, |(rows, cols)| WinSize { rows, cols });
@@ -187,12 +201,7 @@ impl Core {
         let mut config = PaneHostConfig::new(pane, self.ctx.bus.clone(), size);
         config.core = Some(self.handle.clone());
         config.cancel = self.ctx.cancel.child_token();
-        let host = PaneHost::spawn(config, session)?;
-        let wiring = PaneWiring {
-            handle: host.handle().clone(),
-            frames: host.frames(),
-        };
-        Ok(wiring)
+        Ok(PaneHost::spawn(config, session)?)
     }
 
     pub(super) fn handle_pane_zoom(
@@ -393,9 +402,7 @@ impl Core {
         match self.state.close(ws, params.pane) {
             Ok(effect) => {
                 self.effects.absorb(effect);
-                if let Some(wiring) = self.panes.remove(&params.pane) {
-                    let _ = wiring.handle.try_send(PaneCommand::Kill);
-                }
+                self.hang_up_pane(params.pane);
                 let seq = self.publish(Event::LayoutChanged { workspace: ws });
                 let _ = reply.send(Ok(pane::CloseReply { seq }));
             }

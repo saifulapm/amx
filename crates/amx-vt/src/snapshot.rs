@@ -199,6 +199,10 @@ pub struct Snapshots {
     /// Rows written into the *other* buffer last frame, and therefore stale in
     /// the one about to be filled.
     carry: Vec<u16>,
+    /// Set when a publish failed partway. A failed pass may have cleared
+    /// library dirty flags and copied only some rows, so nothing incremental
+    /// can be trusted: the next publish is forced to a full frame.
+    poisoned: bool,
     generation: u64,
 }
 
@@ -210,6 +214,7 @@ impl Snapshots {
             front: Arc::new(Snapshot::empty(rows, cols)),
             back: Arc::new(Snapshot::empty(rows, cols)),
             carry: Vec::with_capacity(rows as usize),
+            poisoned: false,
             generation: 0,
         }
     }
@@ -232,8 +237,20 @@ impl Snapshots {
     ///
     /// # Errors
     ///
-    /// Propagates any library failure while reading the render state.
+    /// Propagates any library failure while reading the render state. A failed
+    /// publish leaves the published frame untouched and poisons the next one
+    /// to a full frame: the failed pass may already have cleared dirty flags
+    /// the library will never set again, so incremental damage can no longer
+    /// be trusted.
     pub fn publish(&mut self, render: &mut RenderState) -> Result<()> {
+        let result = self.publish_frame(render);
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    fn publish_frame(&mut self, render: &mut RenderState) -> Result<()> {
         let cols = render.cols()?;
         let rows = render.rows()?;
         let cursor = render.cursor()?;
@@ -241,7 +258,6 @@ impl Snapshots {
         let first = self.generation == 0;
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
-        let carry = std::mem::take(&mut self.carry);
 
         let (back, reused) = Self::back_mut(&mut self.back);
         let reshaped = back.cols != cols || back.rows.len() != rows as usize;
@@ -252,7 +268,10 @@ impl Snapshots {
         // frame invalidates everything the library had. The very first frame is
         // forced full rather than trusting the library to report it that way:
         // both buffers start empty, so anything less would publish blank rows.
-        let full = first || !reused || reshaped || frame_dirty == Dirty::Full;
+        // A poisoned pass is full for the same reason a fresh buffer is:
+        // whatever the failed publish left behind cannot be described by a
+        // damage list.
+        let full = self.poisoned || first || !reused || reshaped || frame_dirty == Dirty::Full;
 
         back.damage.clear();
         let mut index: u16 = 0;
@@ -265,7 +284,7 @@ impl Snapshots {
             if dirty || full {
                 back.damage.push(index);
             }
-            if (dirty || full || carry.contains(&index))
+            if (dirty || full || self.carry.contains(&index))
                 && let Some(target) = back.rows.get_mut(index as usize)
             {
                 copy_row(&mut row, target)?;
@@ -279,11 +298,14 @@ impl Snapshots {
 
         back.cursor = cursor;
         back.generation = generation;
-        self.carry = carry;
+        // Only a completed pass may rewrite the carry: an early error return
+        // above keeps the previous frame's rows in it, and the poison flag
+        // makes the next pass full regardless.
         self.carry.clear();
         self.carry.extend_from_slice(&back.damage);
 
         std::mem::swap(&mut self.front, &mut self.back);
+        self.poisoned = false;
         Ok(())
     }
 
@@ -333,4 +355,71 @@ fn copy_row(row: &mut crate::render::Row<'_>, target: &mut Row) -> Result<()> {
         });
     }
     Ok(())
+}
+
+// Inline rather than in `tests/`: the poison flag is exactly the state a
+// failed publish leaves behind, and only this module can produce that state
+// without an injectable library failure.
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, reason = "test")]
+
+    use super::*;
+    use crate::Effects;
+    use crate::terminal::{Terminal, TerminalOptions};
+
+    fn frame(cols: u16, rows: u16) -> (Terminal, RenderState, Snapshots) {
+        let terminal = Terminal::new(TerminalOptions {
+            cols,
+            rows,
+            max_scrollback: 0,
+        })
+        .expect("a terminal");
+        let render = RenderState::new().expect("a render state");
+        (terminal, render, Snapshots::new(cols, rows))
+    }
+
+    fn write_and_publish(
+        terminal: &mut Terminal,
+        render: &mut RenderState,
+        snapshots: &mut Snapshots,
+        bytes: &[u8],
+    ) {
+        let mut effects = Effects::new();
+        terminal.write(bytes, &mut effects);
+        render.update(terminal).expect("an update");
+        snapshots.publish(render).expect("a publish");
+    }
+
+    #[test]
+    fn a_poisoned_publish_recovers_with_a_full_frame() {
+        let (mut terminal, mut render, mut snapshots) = frame(10, 4);
+
+        // Park the cursor first (moving it dirties the rows it crosses), then
+        // establish the steady state: a single-row change publishes as a
+        // single-row damage list.
+        write_and_publish(&mut terminal, &mut render, &mut snapshots, b"\x1b[3;1H");
+        write_and_publish(&mut terminal, &mut render, &mut snapshots, b"xy");
+        assert_eq!(
+            snapshots.latest().damage(),
+            &[2],
+            "the baseline must be incremental for the poison assertion to mean anything"
+        );
+
+        // A publish that fails partway leaves this flag behind; the next pass
+        // must republish every row, because the failed one may already have
+        // consumed dirty flags the library will never set again.
+        snapshots.poisoned = true;
+        write_and_publish(&mut terminal, &mut render, &mut snapshots, b"z");
+        assert_eq!(
+            snapshots.latest().damage(),
+            &[0, 1, 2, 3],
+            "a poisoned publish must be a full frame"
+        );
+
+        // The poison does not stick: the frame after the recovery is
+        // incremental again.
+        write_and_publish(&mut terminal, &mut render, &mut snapshots, b"w");
+        assert_eq!(snapshots.latest().damage(), &[2]);
+    }
 }

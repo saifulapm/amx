@@ -394,6 +394,17 @@ impl CoreHandle {
         self.tx.send(command).await.map_err(|_| MailboxError::Gone)
     }
 
+    /// Send a command without waiting for mailbox capacity.
+    ///
+    /// For the reports a pane produces at frame rate: a pane actor that
+    /// waited on a saturated `Core` here would stop serving its own mailbox,
+    /// which is one half of a `Core`↔`PaneHost` deadlock. Callers use this
+    /// only for facts that are safe to drop and re-derive (damage), never for
+    /// one-shot facts like an exit.
+    pub fn try_send(&self, command: CoreCommand) -> Result<(), MailboxError> {
+        self.tx.try_send(command).map_err(|_| MailboxError::Gone)
+    }
+
     /// Whether the actor is gone.
     #[must_use]
     pub fn is_closed(&self) -> bool {
