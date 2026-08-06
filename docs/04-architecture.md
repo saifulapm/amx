@@ -124,9 +124,12 @@ its own theme and may bring local keybindings at handshake (herdr's
 `ClientKeybindings::Local`, kept).
 
 **Terminal core**: **libghostty-vt**, now explicitly a public building block.
-FFI bindings are generated at build time with static assertions against the
-vendored headers (fixes W10's hand-copied enum drift). Vendoring follows
-herdr's patch-manifest discipline (K2).
+FFI bindings are generated at build time and mapped into Rust enums through
+exhaustive matches with round-trip tests. This fixes both of herdr's binding
+failure modes: its bindgen output is committed with no regeneration check
+against re-vendored headers, and a handful of enum values are hand-copied in
+`ghostty/mod.rs` on top (W10). Vendoring follows herdr's patch-manifest
+discipline (K2).
 
 **PTY hot path** (keeps K4, fixes W10's lock contention — precisely): the
 parser I/O thread **exclusively owns the libghostty-vt instance**; VT state is

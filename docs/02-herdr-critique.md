@@ -83,8 +83,11 @@ an AtomicBool read at many call sites (tests need an env mutex).
 **W10 — PTY hot path contention + FFI drift.** The full tracker+parser pipeline
 runs under one `GhosttyPaneCore` mutex that render, detection, snapshot, and
 input encoding all contend on. Resize embeds heuristic recovery (replay ANSI if
-the bottom went blank) encoding empirical libghostty reflow bugs. FFI enum
-values are hand-copied and kept aligned with vendored headers by eye.
+the bottom went blank) encoding empirical libghostty reflow bugs. The FFI
+surface drifts two ways: the bindgen-generated `bindings.rs` is committed with
+no regeneration check against re-vendored headers, and `ghostty/mod.rs`
+hand-copies a few enum values on top (`TERMINAL_DATA_COLOR_FOREGROUND = 18`,
+`KITTY_PLACEMENT_DATA_* = 3/10/11`), aligned by eye.
 
 **W11 — Windows is a parallel implementation, not a port.** cfg-forked accept
 paths, input models (2,499-line windows_vti.rs), PTY actors, inline named-pipe/
