@@ -1,0 +1,17 @@
+{
+  "bytes": [
+    "0a 00 00 00 6c 69 6e 65 30 20 20 20 20 20 00 0a",
+    "00 00 00 6c 69 6e 65 31 20 20 20 20 20 00"
+  ],
+  "message": {
+    "hashes": [
+      "a0ab41b4f811cd3f",
+      "df4a06240a5d5ee4"
+    ],
+    "kind": "packed history rows (chunk payload layout)",
+    "rows": [
+      "line0     ",
+      "line1     "
+    ]
+  }
+}
