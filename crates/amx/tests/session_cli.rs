@@ -290,6 +290,19 @@ async fn attach_pane_renders_full_screen_with_no_chrome() {
 }
 
 #[tokio::test]
+async fn attaching_a_pipe_is_refused_before_a_server_is_started() {
+    let env = Env::new("notty");
+    let refused = env.run(&[]);
+    assert_eq!(refused.code, Some(1));
+    assert!(refused.stderr.contains("terminal"), "{refused:?}");
+    assert_eq!(
+        probe(&env.socket()).expect("probe"),
+        Probe::Absent,
+        "a command that cannot succeed does not leave a server behind"
+    );
+}
+
+#[tokio::test]
 async fn attach_pane_wants_a_pane_id() {
     let env = Env::new("badpane");
     let refused = env.run(&["attach", "--pane", "not-a-pane"]);

@@ -70,7 +70,15 @@ pub enum Started {
 }
 
 /// Attach to the session `ctx` names, starting its server if need be.
+///
+/// The terminal is checked first, before anything is started: attaching a
+/// pipe to a session cannot work, and finding that out after daemonizing would
+/// leave a server running for a command that failed.
 pub async fn run(ctx: &Ctx, options: Options) -> anyhow::Result<ExitCode> {
+    anyhow::ensure!(
+        term::window_size(std::io::stdin()).is_ok(),
+        "amx attaches a terminal, and stdin is not one"
+    );
     ensure_running(ctx).await?;
     match options.pane {
         Some(pane) => crate::cmd::viewport::one_pane(ctx, pane, options.takeover).await,
