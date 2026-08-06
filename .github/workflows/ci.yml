@@ -26,8 +26,34 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # The pinned Zig toolchain that builds the vendored terminal core belongs
-      # here, next to the Rust install, once amx-vt has a build script.
+      # bindgen regenerates amx-vt's FFI surface from the vendored headers on
+      # every build and needs libclang plus its builtin headers to do it.
+      - name: Install libclang
+        run: sudo apt-get install -y --no-install-recommends libclang-dev
+
+      # The pinned Zig that builds the vendored terminal core. The vendoring
+      # script downloads and checksums exactly 0.15.2 — the same path a
+      # contributor takes — so CI cannot drift onto another version.
+      - name: Cache Zig toolchain
+        uses: actions/cache@v4
+        with:
+          path: vendor/toolchain
+          key: zig-toolchain-${{ runner.os }}-${{ runner.arch }}-0.15.2
+
+      - name: Install pinned Zig
+        run: scripts/vendor-libghostty-vt.sh toolchain
+
+      # `zig build` resolves the whole declared dependency graph before it
+      # compiles, which is a ~347 MB download on a cold cache; vendor/README.md
+      # records why that set is not committed. Caching it here is what keeps the
+      # cost to the first run after a dependency change.
+      - name: Cache Zig packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: zig-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/libghostty-vt/build.zig.zon') }}
+          restore-keys: |
+            zig-packages-${{ runner.os }}-${{ runner.arch }}-
 
       - name: ci
         run: scripts/ci.sh
