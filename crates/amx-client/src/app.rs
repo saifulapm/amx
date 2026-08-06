@@ -4,8 +4,8 @@
 //! render, resize, detach. Decoding lives in [`crate::input`]; here
 //! [`App::handle_input`] only turns the machine's actions into their
 //! consequences (bytes to the focused pane, control calls, local focus).
-//! [`Mode`] still reserves the arm T15's copy mode fills in, and the
-//! `Mode::Copy` match arm in `input` is the seam it claims.
+//! [`Mode::Copy`]'s keys are owned by `crate::copy`: the `Mode::Copy` arm in
+//! `input` dispatches through that module's key table.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -43,10 +43,9 @@ pub enum Mode {
     /// Sticky modal layer: `hjkl` focus, `HJKL` resize, split/swap/move/close,
     /// `Esc` back to `Terminal`.
     Navigate,
-    /// Copy mode over the client-side scrollback cache. T15 seam
-    /// (`crates/amx-client/src/copy.rs`): its `input::Input::feed` arm
-    /// swallows bytes today, and no navigate key enters it yet — T15 claims
-    /// both together.
+    /// Copy mode over the client-side scrollback cache: entered from
+    /// `Navigate` with `c`, keys decoded by `crate::copy`'s table (`y`,
+    /// `Esc` and `q` leave it), selection and view in stable-row coordinates.
     Copy,
 }
 

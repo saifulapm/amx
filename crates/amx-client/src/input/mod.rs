@@ -25,11 +25,13 @@
 //!   other key is swallowed and the mode falls back to terminal.
 //! - **navigate** (sticky): `hjkl` move focus, `HJKL` resize, `x`/`v` split,
 //!   `s`+direction swaps with the neighbour, `m` moves the pane to another
-//!   workspace, `d` closes, digits jump to the n-th pane, `Esc` returns to
-//!   terminal.
-//! - **copy**: T15's seam. No key enters it yet; its arm swallows bytes until
-//!   `copy.rs` lands and claims it, the same way T13 declared this module's
-//!   own hook.
+//!   workspace, `d` closes, digits jump to the n-th pane, `c` enters copy
+//!   mode, `Esc` returns to terminal.
+//! - **copy** (entered from navigate with `c`): every byte is consumed by the
+//!   copy-mode engine, never forwarded. The key table lives in `copy.rs` —
+//!   [`crate::copy::mode_after`] is the whole of this machine's dispatch for
+//!   the mode, so the byte that ends it (`y`, `Esc`, `q`) is decided in the
+//!   same table the engine reads and the two cannot drift.
 //!
 //! SGR mouse reports are recognised in every mode and never interpreted:
 //! in terminal mode they are forwarded verbatim iff the focused pane enabled
@@ -233,9 +235,7 @@ impl Input {
                 Mode::Terminal => Mode::Terminal,
                 Mode::Prefix => Self::prefix_key(b, i, out),
                 Mode::Navigate => self.navigate_key(b, out),
-                // T15's copy mode consumes its keys in `copy.rs`; until that
-                // lands the arm swallows bytes (and nothing enters the mode).
-                Mode::Copy => Mode::Copy,
+                Mode::Copy => crate::copy::mode_after(b),
             };
             i += 1;
             if consumed {
@@ -333,6 +333,7 @@ impl Input {
             match b {
                 b'x' => out.push(Action::Split(SplitDirection::Horizontal)),
                 b'v' => out.push(Action::Split(SplitDirection::Vertical)),
+                crate::copy::ENTER => return Mode::Copy,
                 b's' => self.pending_swap = true,
                 b'm' => out.push(Action::MovePane),
                 b'd' => out.push(Action::Close),
