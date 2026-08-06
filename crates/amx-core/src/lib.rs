@@ -16,6 +16,7 @@ pub mod id;
 pub mod layout;
 pub mod platform;
 pub mod scrollback;
+pub mod state;
 
 pub use ctx::{Ctx, Env, SessionName};
 pub use effect::{Effect, EffectSet, Level, Scheduled};
@@ -24,3 +25,4 @@ pub use event::{Bus, Delivery, Envelope, Event, Seq, Subscription};
 pub use id::{ClientId, GridGeneration, PaneId, SessionId, ShortNumber, ShortNumbers, WorkspaceId};
 pub use layout::{Axis, Direction, Layout, LayoutError, Rect};
 pub use scrollback::{EvictionFloor, InvalidationCause, RowHash, RowId, RowRange};
+pub use state::{Pane, SessionState, StateError, Workspace};
