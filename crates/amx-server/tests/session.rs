@@ -16,6 +16,7 @@
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
+use std::os::fd::AsFd as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -109,6 +110,67 @@ async fn a_socket_file_is_never_evidence_that_a_server_is_running() {
         Probe::Stale,
         "the file outlived its process, and only connecting can tell"
     );
+}
+
+#[tokio::test]
+async fn a_dead_listener_kept_connectable_by_an_inherited_descriptor_is_stale() {
+    let dir = TempDir::new("inherited");
+    let env = env_under(dir.path());
+    let ctx = ctx_for(&env, "inherited");
+    std::fs::create_dir_all(&ctx.runtime_dir).expect("create the runtime dir");
+
+    // The state a concurrent fork leaves behind: fork copies every open
+    // descriptor and close-on-exec closes the copies only at exec, so for a
+    // moment after its owner closes, a dead server's listener is still
+    // connectable — connects complete into a backlog nothing will ever
+    // accept. A duplicated descriptor closed shortly after is that exact
+    // kernel state, minus the fork.
+    let listener = std::os::unix::net::UnixListener::bind(&ctx.socket).expect("bind");
+    let inherited = listener
+        .as_fd()
+        .try_clone_to_owned()
+        .expect("duplicate the listening descriptor");
+    drop(listener);
+
+    // The window is the scenario, not a wait for a condition: the probe must
+    // be mid-connection when the descriptor goes. Expiring short only moves
+    // the close before the probe's connect, which reads refused — still
+    // `Stale`; expiring long is covered by the probe's one-second patience.
+    let exec = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(20)); // deliberate
+        drop(inherited);
+    });
+    assert_eq!(
+        probe::probe(&ctx.socket).expect("probe"),
+        Probe::Stale,
+        "a backlog nobody will ever accept from is not a running server"
+    );
+    exec.join().expect("the closing thread");
+}
+
+#[tokio::test]
+async fn a_listener_that_holds_on_without_answering_is_never_stale() {
+    let dir = TempDir::new("holdout");
+    let env = env_under(dir.path());
+    let ctx = ctx_for(&env, "holdout");
+    std::fs::create_dir_all(&ctx.runtime_dir).expect("create the runtime dir");
+
+    // Same inherited-descriptor state, but the holder never lets go. The
+    // probe cannot tell this from a wedged-but-alive server, and the safe
+    // reading of "alive" is the one that binds nothing over it.
+    let listener = std::os::unix::net::UnixListener::bind(&ctx.socket).expect("bind");
+    let inherited = listener
+        .as_fd()
+        .try_clone_to_owned()
+        .expect("duplicate the listening descriptor");
+    drop(listener);
+
+    assert_eq!(
+        probe::probe(&ctx.socket).expect("probe"),
+        Probe::Running,
+        "an unanswered connection that stays open is treated as a live holder"
+    );
+    drop(inherited);
 }
 
 #[tokio::test]
