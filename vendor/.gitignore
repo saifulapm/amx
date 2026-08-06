@@ -1,0 +1,6 @@
+# Downloaded Zig toolchains. `scripts/vendor-libghostty-vt.sh toolchain` puts
+# the pinned compiler here and `crates/amx-vt/build.rs` looks here first; the
+# tarballs are large and checksummed, so they are fetched rather than committed.
+/toolchain/
+
+# The vendored dist ignores its own build output (zig-out/, .zig-cache/).

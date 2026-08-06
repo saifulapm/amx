@@ -12,5 +12,6 @@
 //! the server's pane actor names in its command enum.
 
 pub mod snapshot;
+pub mod sys;
 
 pub use snapshot::{Snapshot, SnapshotRef};

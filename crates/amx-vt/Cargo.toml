@@ -14,3 +14,12 @@ workspace = true
 # about grids and cells, not about panes, sessions or the wire protocol.
 [dependencies]
 thiserror = { workspace = true }
+
+# bindgen regenerates `sys` from the vendored headers on every build (D-M0-2),
+# so the committed tree never carries stale FFI declarations.
+[build-dependencies]
+bindgen = "0.72"
+
+# The vendoring tests read vendor/libghostty-vt.vendor.json.
+[dev-dependencies]
+serde_json = { workspace = true }
