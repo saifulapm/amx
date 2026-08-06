@@ -412,6 +412,126 @@ async fn move_pane_between_workspaces_does_not_restart_the_process() {
 }
 
 #[tokio::test]
+async fn focus_moves_to_the_geometric_neighbour_and_reports_the_landing_pane() {
+    let (harness, ws, root) = Harness::start("focus").await;
+    let _split = split_from(
+        &harness.tx,
+        split_params(root, None, Some(&["sleep", "60"])),
+    )
+    .await;
+
+    // The split landed focus on the new pane, whose slot is on the right;
+    // moving left lands back on the root.
+    let landed = call(&harness.tx, |reply| {
+        CoreCommand::Pane(PaneCall::Focus {
+            params: pane::FocusParams {
+                workspace: ws,
+                direction: pane::MoveDirection::Left,
+            },
+            reply,
+        })
+    })
+    .await
+    .expect("focus succeeds");
+    assert_eq!(landed.pane, Some(root), "the reply names the landing pane");
+
+    // Already at the left edge: a legal no-op that stays put.
+    let stayed = call(&harness.tx, |reply| {
+        CoreCommand::Pane(PaneCall::Focus {
+            params: pane::FocusParams {
+                workspace: ws,
+                direction: pane::MoveDirection::Left,
+            },
+            reply,
+        })
+    })
+    .await
+    .expect("focus at the edge is a no-op, not an error");
+    assert_eq!(stayed.pane, Some(root));
+
+    let core = harness.stop().await;
+    assert_eq!(
+        core.state().workspace(ws).expect("workspace").focus(),
+        Some(root),
+        "the server's canonical focus actually moved"
+    );
+}
+
+#[tokio::test]
+async fn resize_nudges_the_containing_split_and_a_lone_pane_is_a_clean_noop() {
+    let (harness, ws, root) = Harness::start("resize").await;
+
+    // A lone pane has no split to nudge: reported as such, not an error.
+    let noop = call(&harness.tx, |reply| {
+        CoreCommand::Pane(PaneCall::Resize {
+            params: pane::ResizeParams {
+                pane: root,
+                direction: pane::MoveDirection::Right,
+                delta: 0.25,
+            },
+            reply,
+        })
+    })
+    .await
+    .expect("resizing a lone pane succeeds");
+    assert!(!noop.resized, "a lone pane reports resized: false");
+
+    let split = split_from(
+        &harness.tx,
+        split_params(root, None, Some(&["sleep", "60"])),
+    )
+    .await;
+
+    let grown = call(&harness.tx, |reply| {
+        CoreCommand::Pane(PaneCall::Resize {
+            params: pane::ResizeParams {
+                pane: root,
+                direction: pane::MoveDirection::Right,
+                delta: 0.25,
+            },
+            reply,
+        })
+    })
+    .await
+    .expect("resize succeeds");
+    assert!(grown.resized);
+
+    // A delta that is not a plain magnitude is refused before it reaches the
+    // layout.
+    let refused = call(&harness.tx, |reply| {
+        CoreCommand::Pane(PaneCall::Resize {
+            params: pane::ResizeParams {
+                pane: root,
+                direction: pane::MoveDirection::Right,
+                delta: -1.0,
+            },
+            reply,
+        })
+    })
+    .await
+    .expect_err("a negative delta is invalid params");
+    assert_eq!(refused.code, RpcError::INVALID_PARAMS);
+
+    let core = harness.stop().await;
+    let ws_state = core.state().workspace(ws).expect("workspace");
+    let rects = ws_state.layout().rects(ws_state.area());
+    let width = |pane: PaneId| {
+        rects
+            .iter()
+            .find(|(id, _)| *id == pane)
+            .expect("pane has a rect")
+            .1
+            .w
+    };
+    assert!(
+        width(root) > width(split.pane),
+        "growing right made the root's slot the wider one ({} vs {})",
+        width(root),
+        width(split.pane)
+    );
+}
+
+#[tokio::test]
 async fn foreground_cwd_is_part_of_pane_api_state() {
     let (harness, _ws, root) = Harness::start("pane-state").await;
     let dir = TempDir::new("pane-state-dir");

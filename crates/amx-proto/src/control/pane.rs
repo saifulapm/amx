@@ -105,6 +105,76 @@ pub struct MoveReply {
     pub seq: Seq,
 }
 
+/// A compass direction on the wire: which way focus moves (`hjkl`) or which
+/// way a pane's slot grows (`HJKL`).
+///
+/// Distinct from [`SplitDirection`], which names a cut; this maps one to one
+/// onto `amx_core::Direction`, the type both focus movement and resize take.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveDirection {
+    /// `h`.
+    Left,
+    /// `j`.
+    Down,
+    /// `k`.
+    Up,
+    /// `l`.
+    Right,
+}
+
+/// Parameters of `pane.focus`.
+///
+/// Mirrors `SessionState::move_focus`'s signature: the server moves its own
+/// canonical focus to the geometric neighbour of whatever it currently has
+/// focused. A client echoing local `hjkl` movement through this call keeps
+/// the two focus states from silently diverging — the reply names the pane
+/// the server actually landed on, which is the ground truth.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct FocusParams {
+    /// The workspace whose focus moves.
+    pub workspace: WorkspaceId,
+    /// Which way it moves.
+    pub direction: MoveDirection,
+}
+
+/// Reply to `pane.focus`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct FocusReply {
+    /// The pane focused after this call: the neighbour if one existed, the
+    /// unchanged focus if not (already at that edge — a legal no-op), or
+    /// `None` if the workspace holds no panes at all.
+    pub pane: Option<PaneId>,
+    /// The bus sequence at which this focus held.
+    pub seq: Seq,
+}
+
+/// Parameters of `pane.resize`.
+///
+/// Mirrors `SessionState::resize`: nudges the ratio of the split immediately
+/// containing `pane` — whatever its axis — clamped by the layout. `Right`/
+/// `Down` grow `pane`'s slot by `delta` of that ratio, `Left`/`Up` shrink it.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct ResizeParams {
+    /// The pane whose slot changes.
+    pub pane: PaneId,
+    /// Which way the slot grows (or, for `Left`/`Up`, shrinks).
+    pub direction: MoveDirection,
+    /// How much of the split's ratio to move. Must be finite and
+    /// non-negative; the sign comes from `direction`.
+    pub delta: f32,
+}
+
+/// Reply to `pane.resize`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ResizeReply {
+    /// Whether any rect actually changed — `false` for the legal no-op of
+    /// resizing a workspace's sole pane, which has no split to nudge.
+    pub resized: bool,
+    /// The bus sequence at which the new layout held.
+    pub seq: Seq,
+}
+
 /// Parameters of `pane.close`.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct CloseParams {

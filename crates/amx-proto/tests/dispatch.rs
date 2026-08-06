@@ -112,6 +112,28 @@ impl Dispatch for StubServer {
         let _ = params;
         Ok(pane::CloseReply { seq: self.seq })
     }
+
+    async fn pane_focus(
+        &mut self,
+        params: pane::FocusParams,
+    ) -> Result<pane::FocusReply, RpcError> {
+        let _ = params;
+        Ok(pane::FocusReply {
+            pane: Some(PaneId::new_v4()),
+            seq: self.seq,
+        })
+    }
+
+    async fn pane_resize(
+        &mut self,
+        params: pane::ResizeParams,
+    ) -> Result<pane::ResizeReply, RpcError> {
+        let _ = params;
+        Ok(pane::ResizeReply {
+            resized: true,
+            seq: self.seq,
+        })
+    }
 }
 
 #[test]
@@ -212,6 +234,27 @@ fn dispatch_routes_the_rest_of_the_m0_verb_surface() {
     ))
     .unwrap();
     assert_eq!(closed["seq"], 5);
+
+    let focused = block_on(dispatch(
+        &mut server,
+        Call::PaneFocus(pane::FocusParams {
+            workspace: WorkspaceId::new_v4(),
+            direction: pane::MoveDirection::Left,
+        }),
+    ))
+    .unwrap();
+    assert_ne!(focused["pane"], serde_json::Value::Null);
+
+    let resized = block_on(dispatch(
+        &mut server,
+        Call::PaneResize(pane::ResizeParams {
+            pane: PaneId::new_v4(),
+            direction: pane::MoveDirection::Right,
+            delta: 0.05,
+        }),
+    ))
+    .unwrap();
+    assert_eq!(resized["resized"], true);
 }
 
 #[test]

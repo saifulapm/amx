@@ -1,20 +1,23 @@
 //! The client's event loop: connect, negotiate, raw mode, render (04 §3).
 //!
 //! `App` owns process lifecycle end to end — attach, enter the terminal,
-//! render, resize, detach — which is the seam a future `crates/amx` binary
-//! calls into. It stops short of interpreting a single keystroke: decoding
-//! is T14's job. [`App::handle_input`] is the one place T14 attaches (see its
-//! doc comment); no other function in this file is meant to change when T14
-//! lands. [`Mode`] similarly reserves the arm T15's copy mode fills in.
+//! render, resize, detach. Decoding lives in [`crate::input`]; here
+//! [`App::handle_input`] only turns the machine's actions into their
+//! consequences (bytes to the focused pane, control calls, local focus).
+//! [`Mode`] still reserves the arm T15's copy mode fills in, and the
+//! `Mode::Copy` match arm in `input` is the seam it claims.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io::Write;
 use std::os::fd::AsFd;
 use std::path::Path;
 
-use amx_core::{PaneId, Rect, WorkspaceId};
+use amx_core::{Direction, PaneId, Rect, WorkspaceId};
 use amx_proto::ClientInfo;
+use amx_proto::control::{Call, pane as pane_proto};
 
+use crate::input::{self, Action, Input, InputEvent};
 use crate::model::{ClientModel, WorkspaceModel};
 use crate::net::{NetError, Session};
 use crate::render::{FrameWriter, chrome, grid};
@@ -35,14 +38,15 @@ pub enum Mode {
     #[default]
     Terminal,
     /// One-shot prefix key (`ctrl+a`) was just pressed; the next key selects
-    /// a verb or enters `Navigate`. T14 seam.
+    /// a verb or enters `Navigate`.
     Prefix,
     /// Sticky modal layer: `hjkl` focus, `HJKL` resize, split/swap/move/close,
-    /// `Esc` back to `Terminal`. T14 seam.
+    /// `Esc` back to `Terminal`.
     Navigate,
     /// Copy mode over the client-side scrollback cache. T15 seam
-    /// (`crates/amx-client/src/copy.rs`); unreachable until T14 wires the
-    /// `Navigate` key that enters it.
+    /// (`crates/amx-client/src/copy.rs`): its `input::Input::feed` arm
+    /// swallows bytes today, and no navigate key enters it yet — T15 claims
+    /// both together.
     Copy,
 }
 
@@ -78,6 +82,13 @@ pub struct App<Fd: AsFd, W: Write> {
     /// just re-reads this buffer.
     pane_rects: Vec<(PaneId, Rect)>,
     layout_dirty: bool,
+    /// The focused pane per workspace — client presentation state (04 §3),
+    /// used to address input at a pane and to seed navigate's `from`. The
+    /// server's own focus (T07's ops) stays canonical for session semantics:
+    /// every `hjkl` move is echoed to it through `pane.focus`.
+    focus: HashMap<WorkspaceId, PaneId>,
+    /// The modal byte machine behind [`Self::handle_input`].
+    input: Input,
     /// How many full repaints this app has done. Exposed for tests; production
     /// callers have no need of it.
     pub repaints: u64,
@@ -106,6 +117,8 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             pending_resize: None,
             pane_rects: Vec::new(),
             layout_dirty: true,
+            focus: HashMap::new(),
+            input: Input::new(),
             repaints: 0,
         })
     }
@@ -139,17 +152,176 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         self.layout_dirty = true;
     }
 
-    /// T14 hook seam.
+    /// Feed raw terminal bytes through the modal input layer (04 §7).
     ///
-    /// Terminal-mode bytes reach here byte-identical, unparsed; a real
-    /// implementation recognises the prefix key and `Navigate`'s keys and
-    /// forwards everything else to the focused pane. Left `todo!()`
-    /// deliberately: T13 owns everything upstream and downstream of this one
-    /// call, T14 owns only this function's body plus `input/**`, so no other
-    /// part of `app.rs` needs to change when it lands.
-    pub fn handle_input(&mut self, bytes: &[u8]) {
-        let _ = bytes;
-        todo!("T14: mode machine, prefix/navigate keys, kitty passthrough")
+    /// Bytes arrive byte-identical and unparsed; the machine in
+    /// [`crate::input`] recognises only the prefix key, mode keys and SGR
+    /// mouse report extents, and everything else forwards to the focused
+    /// pane untouched — kitty sequences included. What must leave the client
+    /// goes through `sink` (the same shape T13 gave `settle_resize`): bytes
+    /// for the focused pane's raw I/O stream, and control calls for the T04
+    /// method table. `pane.focus` is emitted fire-and-forget *after* local
+    /// focus has moved — the server's focus stays canonical and the echo
+    /// keeps the two from silently diverging.
+    pub fn handle_input(&mut self, bytes: &[u8], sink: &mut impl FnMut(InputEvent<'_>)) {
+        let mut actions = self.input.take_scratch();
+        self.mode = self.input.feed(self.mode, bytes, &mut actions);
+        for &action in &actions {
+            self.apply_action(action, bytes, sink);
+        }
+        self.input.put_scratch(actions);
+    }
+
+    /// The pane input currently addresses: this workspace's recorded focus,
+    /// self-healing to the layout's first pane when nothing was recorded yet
+    /// or the recorded pane has since left the mirror.
+    pub fn focused_pane(&mut self) -> Option<PaneId> {
+        let ws = self.model.focused_workspace_id()?;
+        let layout = &self.model.focused_workspace()?.layout;
+        if let Some(&pane) = self.focus.get(&ws)
+            && layout.contains(pane)
+        {
+            return Some(pane);
+        }
+        let first = layout.panes().first().copied()?;
+        self.focus.insert(ws, first);
+        Some(first)
+    }
+
+    /// The input machine's own state, for the pane-state path (and tests) to
+    /// record per-pane mouse reporting on.
+    pub fn input(&mut self) -> &mut Input {
+        &mut self.input
+    }
+
+    /// Turn one decoded [`Action`] into its consequence: bytes to the pane,
+    /// a control call, or a local focus change.
+    fn apply_action(
+        &mut self,
+        action: Action,
+        bytes: &[u8],
+        sink: &mut impl FnMut(InputEvent<'_>),
+    ) {
+        let Some(ws) = self.model.focused_workspace_id() else {
+            return;
+        };
+        let Some(pane) = self.focused_pane() else {
+            return;
+        };
+        match action {
+            Action::Forward { start, end } => sink(InputEvent::Forward {
+                pane,
+                bytes: &bytes[start..end],
+            }),
+            Action::Mouse { start, end } => {
+                if self.input.mouse_enabled(pane) {
+                    sink(InputEvent::Forward {
+                        pane,
+                        bytes: &bytes[start..end],
+                    });
+                }
+            }
+            Action::CarriedMouse => {
+                if self.input.mouse_enabled(pane) {
+                    sink(InputEvent::Forward {
+                        pane,
+                        bytes: self.input.carried(),
+                    });
+                }
+            }
+            Action::CarriedBytes => sink(InputEvent::Forward {
+                pane,
+                bytes: self.input.carried(),
+            }),
+            Action::Focus(dir) => {
+                if let Some(next) = self.neighbour_of(pane, dir) {
+                    self.focus.insert(ws, next);
+                    self.repaint();
+                }
+                sink(InputEvent::Call(Call::PaneFocus(pane_proto::FocusParams {
+                    workspace: ws,
+                    direction: input::wire_direction(dir),
+                })));
+            }
+            // Deliberately no local layout change: the mirror is server truth
+            // with no mutable accessor, so the resize round-trips and the
+            // repaint follows the updated layout state (04 §3).
+            Action::Resize(dir) => sink(InputEvent::Call(Call::PaneResize(
+                pane_proto::ResizeParams {
+                    pane,
+                    direction: input::wire_direction(dir),
+                    delta: input::RESIZE_STEP,
+                },
+            ))),
+            Action::Split(direction) => {
+                sink(InputEvent::Call(Call::PaneSplit(pane_proto::SplitParams {
+                    pane,
+                    direction,
+                    command: None,
+                    cwd: None,
+                })))
+            }
+            Action::Swap(dir) => {
+                if let Some(with) = self.neighbour_of(pane, dir) {
+                    sink(InputEvent::Call(Call::PaneSwap(pane_proto::SwapParams {
+                        pane,
+                        with,
+                    })));
+                }
+            }
+            // Interim target until T15's picker chooses one (04 §7): the
+            // next workspace in id order, wrapping. No other workspace means
+            // nowhere to move to.
+            Action::MovePane => {
+                if let Some(to) = self.next_workspace(ws) {
+                    sink(InputEvent::Call(Call::PaneMove(pane_proto::MoveParams {
+                        pane,
+                        to,
+                    })));
+                }
+            }
+            Action::Close => sink(InputEvent::Call(Call::PaneClose(pane_proto::CloseParams {
+                pane,
+            }))),
+            Action::Zoom => sink(InputEvent::Call(Call::PaneZoom(pane_proto::ZoomParams {
+                pane,
+            }))),
+            // Interim numbering until short numbers reach the client: n-th
+            // pane in layout order. Local-only — `pane.focus` speaks
+            // directions, and a direct set-focus core op does not exist yet.
+            Action::Jump(n) => {
+                let target = self
+                    .model
+                    .focused_workspace()
+                    .and_then(|w| w.layout.panes().get(usize::from(n) - 1).copied());
+                if let Some(target) = target
+                    && target != pane
+                {
+                    self.focus.insert(ws, target);
+                    self.repaint();
+                }
+            }
+        }
+    }
+
+    /// The focused workspace's geometric neighbour of `pane`, over the same
+    /// content area chrome tiles.
+    fn neighbour_of(&self, pane: PaneId, dir: Direction) -> Option<PaneId> {
+        let area = self.model.content_area();
+        self.model
+            .focused_workspace()?
+            .layout
+            .neighbour(area, pane, dir)
+    }
+
+    /// The workspace after `current` in id order, wrapping; `None` if it is
+    /// the only one.
+    fn next_workspace(&self, current: WorkspaceId) -> Option<WorkspaceId> {
+        self.model
+            .workspace_ids()
+            .filter(|&id| id > current)
+            .min()
+            .or_else(|| self.model.workspace_ids().filter(|&id| id != current).min())
     }
 
     /// Note that a resize happened; does not yet act on it.
@@ -225,8 +397,12 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     }
 
     /// Run until `sigwinch` and the connection both end, resizing on a
-    /// debounced `SIGWINCH` and otherwise idle — the loop T14 will extend
-    /// with a stdin arm calling [`Self::handle_input`].
+    /// debounced `SIGWINCH` and otherwise idle. A stdin arm calling
+    /// [`Self::handle_input`] belongs here, but its two outlets are not on
+    /// the wire yet — forwarded bytes need the raw pane I/O codec
+    /// (`amx_proto::stream::raw`, still `todo!()`), and fire-and-forget
+    /// calls need a session that can interleave them — so the loop stays
+    /// resize-only until those land.
     pub async fn run(mut self, mut sigwinch: Sigwinch) -> Result<(), AppError> {
         self.repaint();
         loop {

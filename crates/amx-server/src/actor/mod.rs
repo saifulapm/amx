@@ -261,6 +261,20 @@ pub enum PaneCall {
         /// Where the reply goes.
         reply: Reply<pane::CloseReply>,
     },
+    /// `pane.focus`.
+    Focus {
+        /// Parameters.
+        params: pane::FocusParams,
+        /// Where the reply goes.
+        reply: Reply<pane::FocusReply>,
+    },
+    /// `pane.resize`.
+    Resize {
+        /// Parameters.
+        params: pane::ResizeParams,
+        /// Where the reply goes.
+        reply: Reply<pane::ResizeReply>,
+    },
 }
 
 /// `client.*` calls.

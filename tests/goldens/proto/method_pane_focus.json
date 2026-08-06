@@ -1,0 +1,15 @@
+{
+  "reply": {
+    "pane": "00000000-0000-0000-0000-0000000000a1",
+    "seq": 50
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "pane.focus",
+    "params": {
+      "direction": "left",
+      "workspace": "00000000-0000-0000-0000-0000000000b1"
+    }
+  }
+}

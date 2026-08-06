@@ -242,8 +242,8 @@ fn method_table_generates_the_clap_tree() {
 #[test]
 fn method_table_generates_matching_serde_names_dispatch_and_clap_tree() {
     // The M0 verb surface: ping + workspace{create,rename,kill,switch} +
-    // pane{split,zoom,swap,move,close}.
-    assert_eq!(Method::ALL.len(), 10);
+    // pane{split,zoom,swap,move,close,focus,resize}.
+    assert_eq!(Method::ALL.len(), 12);
     assert_eq!(Method::ALL.len(), SPECS.len());
 
     for method in Method::ALL {

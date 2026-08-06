@@ -166,6 +166,20 @@ impl Dispatch for Router {
     ) -> Result<pane_proto::CloseReply, RpcError> {
         pane::close(self, params).await
     }
+
+    async fn pane_focus(
+        &mut self,
+        params: pane_proto::FocusParams,
+    ) -> Result<pane_proto::FocusReply, RpcError> {
+        pane::focus(self, params).await
+    }
+
+    async fn pane_resize(
+        &mut self,
+        params: pane_proto::ResizeParams,
+    ) -> Result<pane_proto::ResizeReply, RpcError> {
+        pane::resize(self, params).await
+    }
 }
 
 #[cfg(test)]

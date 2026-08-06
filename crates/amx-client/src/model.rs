@@ -257,6 +257,17 @@ impl ClientModel {
         self.focus_workspace.and_then(|id| self.workspaces.get(&id))
     }
 
+    /// The id of the workspace currently in focus, if any.
+    #[must_use]
+    pub const fn focused_workspace_id(&self) -> Option<WorkspaceId> {
+        self.focus_workspace
+    }
+
+    /// Every workspace id the client mirrors, in no particular order.
+    pub fn workspace_ids(&self) -> impl Iterator<Item = WorkspaceId> + '_ {
+        self.workspaces.keys().copied()
+    }
+
     /// Focus `id`. A no-op if it is not a known workspace.
     pub fn focus_workspace(&mut self, id: WorkspaceId) {
         if self.workspaces.contains_key(&id) {
