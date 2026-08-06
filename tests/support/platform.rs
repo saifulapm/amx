@@ -106,14 +106,23 @@ pub fn processes_with_arg(marker: &str) -> usize {
     #[cfg(target_os = "macos")]
     {
         // `pgrep` exits 1 for "no match", which is an answer, not a failure.
+        // `-l` carries the matched command lines so a failed wait can say who
+        // matched instead of just how many.
         let out = Command::new("pgrep")
-            .args(["-f", marker])
+            .args(["-fl", marker])
             .output()
             .expect("run pgrep");
-        String::from_utf8_lossy(&out.stdout)
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let matched: Vec<&str> = stdout
             .lines()
             .filter(|line| !line.trim().is_empty())
-            .count()
+            .collect();
+        eprintln!(
+            "processes_with_arg({marker:?}) -> {} [{}]",
+            matched.len(),
+            matched.join(" | ")
+        );
+        matched.len()
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
