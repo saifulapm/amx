@@ -6,5 +6,3 @@
 
 /target/
 **/*.rs.bk
-.claude/settings.local.json
-.claude/worktrees/

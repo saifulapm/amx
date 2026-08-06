@@ -219,7 +219,7 @@ fn shrinking_the_grid_reshapes_the_snapshot() {
 
 /// After warmup a frame is pure copying: the buffers, their row `Vec`s and
 /// their text arenas all keep their capacity, and publication swaps two `Arc`s
-/// rather than allocating a third. This is the CLAUDE.md performance rule for
+/// rather than allocating a third. This is the HACKING.md performance rule for
 /// the frame path, asserted rather than asserted-to.
 #[test]
 fn snapshot_does_not_allocate_after_the_first_frame() {

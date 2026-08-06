@@ -118,7 +118,7 @@ those 15 lines rather than take the dependency. The child is spawned with
 `std::process::Command` + `CommandExt::pre_exec` doing `setsid` →
 `ioctl_tiocsctty` → `dup2` of the slave onto fds 0/1/2 (this is `login_tty`);
 that is the one `unsafe` block in the PTY layer and it carries the invariant
-comment CLAUDE.md requires.
+comment HACKING.md requires.
 
 **Rejected — `nix`:** it covers the same syscalls but with a coarser feature
 model and `libc`-backed calls only; `rustix` has the exact APIs, I/O-safe
@@ -145,7 +145,7 @@ server-authoritative cells, chrome (borders + one status line), and the picker.
 **No `ratatui`:** the pane grid path is "take server cells with their exact SGR
 attributes and emit them". `ratatui` requires converting every cell into its own
 `Buffer`/`Style` model each frame before it will draw — a per-frame conversion
-of every visible cell on the hot path, which the CLAUDE.md performance rule
+of every visible cell on the hot path, which the HACKING.md performance rule
 forbids, in exchange for widgets we use for borders, a status line and a list.
 Direct ANSI into a reused `Vec<u8>` with an SGR-state differ is both leaner and
 the only way to pass through attributes we do not model.
@@ -167,7 +167,7 @@ since 1.85), workspace `resolver = "3"`. The dev machine currently has 1.95.0;
 `rustup` will fetch 1.97.1 on first `cargo` invocation.
 
 Versions verified against crates.io on 2026-08-06. One-line justification each,
-per CLAUDE.md.
+per HACKING.md.
 
 | Crate | Version | Where | Features | Why |
 |---|---|---|---|---|
@@ -175,8 +175,8 @@ per CLAUDE.md.
 | `tokio-util` | 0.7 | server/client | default | `CancellationToken`, named by 04 §2 for structured shutdown (`sync` module is not feature-gated) |
 | `serde` | 1.0 | proto/core | `derive` | wire types and state serialization |
 | `serde_json` | 1.0 | proto/server/client | default | the control channel is JSON-RPC 2.0 (04 §4) |
-| `thiserror` | 2.0 | every lib | default | CLAUDE.md mandates typed library errors |
-| `anyhow` | 1.0 | `amx` bin only | default | CLAUDE.md permits it only in the binary |
+| `thiserror` | 2.0 | every lib | default | HACKING.md mandates typed library errors |
+| `anyhow` | 1.0 | `amx` bin only | default | HACKING.md permits it only in the binary |
 | `rustix` | 1.1 | server/client | `pty`, `termios`, `event`, `pipe`, `process`, `fs`, `std` | see D-M0-3; replaces `libc` + `nix` + `portable-pty` |
 | `uuid` | 1.24 | core | `v4`, `serde` | 05 M0 requires stable UUIDs at creation; `v4` is the feature that enables generation |
 | `clap` | 4.6 | `amx` bin | `std`, `help`, `usage`, `error-context`, `suggestions` (no `derive`) | the CLI tree is generated from the method table (04 §4), so the builder API is the fit and `derive` would duplicate it |
@@ -549,7 +549,7 @@ Difficulty is `hard` when the task carries FFI, unsafe, syscall, concurrency or
 wire-compatibility risk, `normal` otherwise. Worker assignment per difficulty
 lives outside this repo — see `docs/m0-orchestration.local.md` (untracked).
 
-Every task lands with tests that fail without the change (CLAUDE.md), and
+Every task lands with tests that fail without the change (HACKING.md), and
 finishes with `cargo test && cargo clippy --all-targets -- -D warnings && cargo
 fmt --check` green.
 

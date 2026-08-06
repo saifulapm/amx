@@ -104,7 +104,7 @@ god files); timing-sensitive paths rely on wall-clock races.
   scrollbars, hover states — plus a parallel *mobile* layout codepath.
 - Sidebar with workspace cards and section splits (its widths are even
   persisted in the *server's* session snapshot — a boundary violation herdr's
-  own CLAUDE.md flags).
+  own contributor docs flag).
 - In-TUI settings editor with live theme preview/rollback; a theme preset
   gallery.
 - Embedded mp3 sounds played by spawning OS media players.

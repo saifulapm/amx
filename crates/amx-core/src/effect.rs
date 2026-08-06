@@ -62,7 +62,7 @@ impl Effect {
 ///
 /// The accumulator is reused across batches: [`drain_into`](Self::drain_into)
 /// clears its buffers but never frees them, so folding a batch does not
-/// allocate after warm-up (the CLAUDE.md hot-path rule — event dispatch is on
+/// allocate after warm-up (the HACKING.md hot-path rule — event dispatch is on
 /// that list).
 #[derive(Clone, Debug, Default)]
 pub struct EffectSet {
