@@ -545,7 +545,9 @@ generated-code path.
 
 ## 4. Task DAG
 
-Model column: **hard → opus**, **normal → sonnet**.
+Difficulty is `hard` when the task carries FFI, unsafe, syscall, concurrency or
+wire-compatibility risk, `normal` otherwise. Worker assignment per difficulty
+lives outside this repo — see `docs/m0-orchestration.local.md` (untracked).
 
 Every task lands with tests that fail without the change (CLAUDE.md), and
 finishes with `cargo test && cargo clippy --all-targets -- -D warnings && cargo
@@ -555,7 +557,7 @@ fmt --check` green.
 
 ### T01 — Workspace scaffold and shared contracts
 
-- **Model:** opus · **Wave:** 0 · **Depends on:** —
+- **Difficulty:** hard · **Wave:** 0 · **Depends on:** —
 - **Goal:** a compiling six-crate workspace whose public types are the frozen
   interfaces of §3, so later waves never collide.
 - **Scope (owns exclusively):** everything listed in §3 that is a type
@@ -591,7 +593,7 @@ fmt --check` green.
 
 ### T02 — Vendor libghostty-vt, build it, generate bindings
 
-- **Model:** opus · **Wave:** 1 · **Depends on:** T01
+- **Difficulty:** hard · **Wave:** 1 · **Depends on:** T01
 - **Goal:** `cargo build -p amx-vt` produces a linked static libghostty-vt and
   `amx_vt::sys` bindings generated from the vendored headers.
 - **Scope:** `vendor/**`, `scripts/vendor-libghostty-vt.sh`,
@@ -642,7 +644,7 @@ fmt --check` green.
 
 ### T03 — Event bus implementation
 
-- **Model:** sonnet · **Wave:** 1 · **Depends on:** T01
+- **Difficulty:** normal · **Wave:** 1 · **Depends on:** T01
 - **Goal:** the broadcast bus with per-subscriber cursors, a bounded replay
   buffer, explicit `Gap`, and the state-predicate wait helper.
 - **Scope:** `crates/amx-core/src/event/bus.rs`, `event/cursor.rs`,
@@ -672,7 +674,7 @@ fmt --check` green.
 
 ### T04 — Protocol framing, negotiation, control codec
 
-- **Model:** sonnet · **Wave:** 1 · **Depends on:** T01
+- **Difficulty:** normal · **Wave:** 1 · **Depends on:** T01
 - **Goal:** encode/decode of frames, Hello/Welcome negotiation, the JSON-RPC
   control envelope, and the method table macro.
 - **Scope:** `crates/amx-proto/src/{frame,hello,rpc,version}.rs`,
@@ -702,7 +704,7 @@ fmt --check` green.
 
 ### T05 — Unix PTY layer
 
-- **Model:** opus · **Wave:** 2 · **Depends on:** T01
+- **Difficulty:** hard · **Wave:** 2 · **Depends on:** T01
 - **Goal:** open a PTY, spawn a child on it, and run the single-threaded I/O
   actor with a wake pipe, ordered responses, partial writes and resize.
 - **Scope:** `crates/amx-server/src/pty/**`, `crates/amx-server/src/platform/**`,
@@ -744,7 +746,7 @@ fmt --check` green.
 
 ### T06 — libghostty-vt safe wrapper
 
-- **Model:** opus · **Wave:** 2 · **Depends on:** T02
+- **Difficulty:** hard · **Wave:** 2 · **Depends on:** T02
 - **Goal:** the safe Rust surface over `sys`: terminal lifecycle, VT writes,
   callbacks, render state, and the POD cell snapshot with damage rows.
 - **Scope:** `crates/amx-vt/src/{terminal,callbacks,render,snapshot,key,enums,error}.rs`,
@@ -789,7 +791,7 @@ fmt --check` green.
 
 ### T07 — Session state tree, BSP layout, Effect folding
 
-- **Model:** sonnet · **Wave:** 2 · **Depends on:** T01, T03
+- **Difficulty:** normal · **Wave:** 2 · **Depends on:** T01, T03
 - **Goal:** the pure state model: workspaces → panes (D13, no tabs), one BSP
   layout tree per workspace, focus, labels, UUIDs, and handlers that return
   `Effect`.
@@ -819,7 +821,7 @@ fmt --check` green.
 
 ### T08 — PaneHost actor
 
-- **Model:** opus · **Wave:** 3 · **Depends on:** T03, T05, T06
+- **Difficulty:** hard · **Wave:** 3 · **Depends on:** T03, T05, T06
 - **Goal:** the per-pane actor that owns the PTY actor thread and the VT
   instance, publishes snapshots, and reports pane events onto the bus.
 - **Scope:** `crates/amx-server/src/actor/pane_host.rs`,
@@ -855,7 +857,7 @@ fmt --check` green.
 
 ### T09 — Actor runtime and Core actor
 
-- **Model:** sonnet · **Wave:** 3 · **Depends on:** T03, T07
+- **Difficulty:** normal · **Wave:** 3 · **Depends on:** T03, T07
 - **Goal:** the root supervisor and the `Core` actor that owns `SessionState`,
   folds effects and schedules output.
 - **Scope:** `crates/amx-server/src/runtime.rs`,
@@ -880,7 +882,7 @@ fmt --check` green.
 
 ### T10 — Gateway, connections, dispatch
 
-- **Model:** opus · **Wave:** 4 · **Depends on:** T04, T09
+- **Difficulty:** hard · **Wave:** 4 · **Depends on:** T04, T09
 - **Goal:** the socket surface: accept, negotiate, decode, dispatch, and a
   writer with strict channel priority.
 - **Scope:** `crates/amx-server/src/actor/gateway.rs`,
@@ -913,7 +915,7 @@ fmt --check` green.
 
 ### T11 — Damage coalescing, keyframes, flow control
 
-- **Model:** opus · **Wave:** 5 · **Depends on:** T08, T10
+- **Difficulty:** hard · **Wave:** 5 · **Depends on:** T08, T10
 - **Goal:** per-client, per-visible-pane accumulated dirty sets; deltas built
   from the authoritative grid at send time; keyframes on threshold and resync.
 - **Scope:** `crates/amx-server/src/damage/**`,
@@ -952,7 +954,7 @@ fmt --check` green.
 
 ### T12 — Scrollback identity and history ranges
 
-- **Model:** opus · **Wave:** 4 · **Depends on:** T08
+- **Difficulty:** hard · **Wave:** 4 · **Depends on:** T08
 - **Goal:** monotonic per-pane row ids, the eviction floor, `history.invalidated`,
   and chunked range serving.
 - **Scope:** `crates/amx-server/src/history/**`, `crates/amx-vt/src/history.rs`,
@@ -995,7 +997,7 @@ fmt --check` green.
 
 ### T13 — Client core: attach, raw mode, chrome, grid blitting
 
-- **Model:** sonnet · **Wave:** 5 · **Depends on:** T10
+- **Difficulty:** normal · **Wave:** 5 · **Depends on:** T10
 - **Goal:** `amx attach` renders a live session: pane grids plus borders plus a
   status line, resizing correctly, restoring the terminal on every exit path.
 - **Scope:** `crates/amx-client/src/{app,term,net,model}.rs`,
@@ -1028,7 +1030,7 @@ fmt --check` green.
 
 ### T14 — Client input: modes, keys, kitty passthrough, mouse forwarding
 
-- **Model:** sonnet · **Wave:** 6 · **Depends on:** T13
+- **Difficulty:** normal · **Wave:** 6 · **Depends on:** T13
 - **Goal:** terminal/prefix/navigate modes and correct byte-level forwarding.
 - **Scope:** `crates/amx-client/src/input/**`, plus the input wiring block in
   `app.rs` (T13 leaves a single declared hook point for it).
@@ -1056,7 +1058,7 @@ fmt --check` green.
 
 ### T15 — Client scrollback cache, copy mode, picker
 
-- **Model:** sonnet · **Wave:** 7 · **Depends on:** T12, T13, T14
+- **Difficulty:** normal · **Wave:** 7 · **Depends on:** T12, T13, T14
 - **Goal:** local scrollback at memory speed, copy mode in stable-row
   coordinates, and the single picker primitive.
 - **Scope:** `crates/amx-client/src/{cache/**,copy.rs,picker.rs}`, plus the mode
@@ -1084,7 +1086,7 @@ fmt --check` green.
 
 ### T16 — Workspace and pane verbs over the protocol
 
-- **Model:** sonnet · **Wave:** 5 · **Depends on:** T05, T09, T10
+- **Difficulty:** normal · **Wave:** 5 · **Depends on:** T05, T09, T10
 - **Goal:** the M0 verb surface: workspace create/rename/kill/switch, pane
   split/zoom/swap/move/close, foreground-cwd inheritance.
 - **Scope:** `crates/amx-server/src/dispatch/{pane,workspace}.rs`,
@@ -1112,7 +1114,7 @@ fmt --check` green.
 
 ### T17 — Sessions, daemonization, CLI
 
-- **Model:** opus · **Wave:** 6 · **Depends on:** T10, T13
+- **Difficulty:** hard · **Wave:** 6 · **Depends on:** T10, T13
 - **Goal:** `amx` just works: probe, daemonize if absent, attach; named
   sessions; `amx session list|attach|stop|delete`; `amx attach --pane`; clean
   detach.
@@ -1149,7 +1151,7 @@ fmt --check` green.
 
 ### T18 — Test rig: goldens, skew harness, adversarial suite
 
-- **Model:** opus · **Wave:** 7 · **Depends on:** T11, T13, T17
+- **Difficulty:** hard · **Wave:** 7 · **Depends on:** T11, T13, T17
 - **Goal:** the M0 exit-criteria harness, living in workspace `tests/`.
 - **Scope:** `tests/**` (workspace level), `tests/goldens/**`,
   `tests/support/**`.
