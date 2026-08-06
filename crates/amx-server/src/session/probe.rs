@@ -1,12 +1,11 @@
 //! The connect probe: a socket that answers is a session that is running.
 //!
 //! 04 §1: "Stale-socket disambiguation by connect probe (herdr's lock-free
-//! single-instance trick, kept)." The whole rule is three outcomes of one
-//! `connect(2)`:
+//! single-instance trick, kept)." The whole rule is three outcomes:
 //!
-//! | connect | means | [`Probe`] |
+//! | the probe finds | means | [`Probe`] |
 //! |---|---|---|
-//! | succeeds | a server is listening | [`Probe::Running`] |
+//! | an answered hello | a server is serving | [`Probe::Running`] |
 //! | `ENOENT` | no server has ever bound here | [`Probe::Absent`] |
 //! | `ECONNREFUSED` | the file outlived its process | [`Probe::Stale`] |
 //!
@@ -14,14 +13,39 @@
 //! rule, a lock file would need its own recovery rule, and both would have to
 //! agree with the socket — which is the failure mode this trick removes rather
 //! than manages.
+//!
+//! A successful `connect(2)` alone is not the running answer, because it only
+//! proves a listening socket existed at that instant. A closed listener lives
+//! on in any process that inherited a copy of its descriptor — fork copies
+//! every open descriptor, and close-on-exec closes the copies only at exec —
+//! and a connect in that window completes into a backlog nothing will ever
+//! accept. So the probe says hello and waits: an answer is a server, and a
+//! connection that dies unanswered sends the probe back to `connect(2)`,
+//! where the settled path answers `ECONNREFUSED`. `Stale` is still declared
+//! on `ECONNREFUSED` and nothing else: a live server's bound-but-not-yet-
+//! listening socket refuses too, which is why refusal is answered downstream
+//! by `bind(2)` arbitration, never by anything looser here.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read as _, Write as _};
 use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use amx_proto::frame::CONTROL_CHANNEL;
+use amx_proto::{ClientInfo, FrameHeader, Hello};
 use thiserror::Error;
+
+/// How long an established connection may sit unanswered before the probe
+/// takes the safe reading. Whatever holds the socket open that long without
+/// hanging up is alive, and a live holder is never [`Probe::Stale`].
+const ANSWER_PATIENCE: Duration = Duration::from_secs(1);
+
+/// How many dead connections the probe chases before conceding the path is
+/// churning. One inherited copy of a dead listener resolves in one retry;
+/// anything still connectable after this many is being kept alive on purpose.
+const ATTEMPTS: usize = 3;
 
 /// What a connect probe found.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -76,22 +100,91 @@ pub enum ProbeError {
 
 /// Probe `socket`.
 ///
-/// Connects and immediately disconnects: the server sees a peer that closes
-/// before saying hello and drops it, which costs one accept and no state. The
-/// probe is deliberately synchronous — it is the first thing `amx` does, before
-/// there is a tokio runtime to speak of, and a `connect` to a Unix socket
-/// either completes or fails immediately.
+/// Connects, says hello, and hangs up on the first answering byte: the server
+/// sees a handshake whose peer leaves after the welcome, which costs one
+/// accept and no state. The probe is deliberately synchronous — it is the
+/// first thing `amx` does, before there is a tokio runtime to speak of.
 pub fn probe(socket: &Path) -> Result<Probe, ProbeError> {
-    match UnixStream::connect(socket) {
-        Ok(_answered) => Ok(Probe::Running),
-        Err(err) => match err.kind() {
-            io::ErrorKind::NotFound => Ok(Probe::Absent),
-            io::ErrorKind::ConnectionRefused => Ok(Probe::Stale),
-            _ => Err(ProbeError::Connect {
-                path: socket.to_path_buf(),
-                source: err,
-            }),
+    let fail = |source: io::Error| ProbeError::Connect {
+        path: socket.to_path_buf(),
+        source,
+    };
+    for _ in 0..ATTEMPTS {
+        match UnixStream::connect(socket) {
+            Ok(stream) => match confirm(stream).map_err(fail)? {
+                Confirmation::Answered | Confirmation::Silent => return Ok(Probe::Running),
+                Confirmation::Died => {}
+            },
+            Err(err) => match err.kind() {
+                io::ErrorKind::NotFound => return Ok(Probe::Absent),
+                io::ErrorKind::ConnectionRefused => return Ok(Probe::Stale),
+                // A listener torn down mid-connect; the next attempt sees the
+                // path's settled state.
+                io::ErrorKind::ConnectionReset | io::ErrorKind::WouldBlock => {}
+                _ => return Err(fail(err)),
+            },
+        }
+    }
+    // Still connectable after every dead connection: something keeps reviving
+    // the socket, and whatever it is, it is not a corpse to bind over.
+    Ok(Probe::Running)
+}
+
+/// What became of one connection the probe opened.
+enum Confirmation {
+    /// The server answered the hello.
+    Answered,
+    /// Nothing answered within [`ANSWER_PATIENCE`], but the connection held.
+    Silent,
+    /// The connection died unanswered: the listener went away under the probe.
+    Died,
+}
+
+/// Ask an established connection for proof that a server is on it.
+///
+/// Writes the ordinary opening frame — a hello no server mutates anything on
+/// (04 §4: a non-attach connection must never mutate the session by
+/// connecting) — and waits for the first byte of the answer. Which byte it is
+/// does not matter; that a peer wrote it is the proof.
+fn confirm(mut stream: UnixStream) -> io::Result<Confirmation> {
+    stream.set_read_timeout(Some(ANSWER_PATIENCE))?;
+    stream.set_write_timeout(Some(ANSWER_PATIENCE))?;
+
+    let hello = Hello {
+        proto: amx_proto::version::window(),
+        client: ClientInfo {
+            name: "amx-probe".to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            term: None,
         },
+        ..Hello::default()
+    };
+    let payload = serde_json::to_vec(&hello).map_err(io::Error::other)?;
+    let len = u32::try_from(payload.len()).map_err(io::Error::other)?;
+    let mut frame = FrameHeader::new(len, CONTROL_CHANNEL).encode().to_vec();
+    frame.extend_from_slice(&payload);
+    if let Err(err) = stream.write_all(&frame) {
+        return outcome_of(err);
+    }
+
+    let mut answer = [0_u8; 1];
+    loop {
+        return match stream.read(&mut answer) {
+            Ok(0) => Ok(Confirmation::Died),
+            Ok(_) => Ok(Confirmation::Answered),
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => outcome_of(err),
+        };
+    }
+}
+
+/// Classify an I/O failure on an established probe connection.
+fn outcome_of(err: io::Error) -> io::Result<Confirmation> {
+    match err.kind() {
+        // The timeouts set on the stream expiring: the peer holds on quietly.
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => Ok(Confirmation::Silent),
+        io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe => Ok(Confirmation::Died),
+        _ => Err(err),
     }
 }
 

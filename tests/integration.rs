@@ -61,12 +61,20 @@ async fn resize_delivers_sigwinch_and_the_child_sees_new_dimensions() {
     term.wait_for(ALT_ENTER);
     term.wait_output("the shell prompt to render", |seen| shows(seen, "$"));
 
-    // The trap is the proof of *signal delivery*: nothing runs it but the
-    // child receiving SIGWINCH, and what it records is the size the pty holds
-    // at that moment.
+    // The trap is the proof of *signal delivery*: nothing runs it but a
+    // process on the pane's pty receiving SIGWINCH, and what it records is
+    // the size the pty holds at that moment. It lives in one non-interactive
+    // `sh` held as the pty's foreground job, because the resize signal goes
+    // to the foreground process *group* and an interactive shell is not
+    // reliably in it (job control gives each foreground command a group of
+    // its own), and because whether a pending trap runs while a shell reads
+    // at its prompt is shell-specific — bash runs it there, dash does not.
+    // Non-interactive sh pins both down: one group, and a pending trap runs
+    // at every command boundary, which the spin on `:` supplies immediately.
     term.type_line(&format!(
-        "trap 'stty size >> {}' WINCH; stty size > {0}; echo trap-armed",
-        sizes.display()
+        "sh -c 'trap \"stty size >> {f}\" WINCH; stty size > {f}; \
+         echo trap-armed; while :; do :; done'",
+        f = sizes.display()
     ));
     term.wait_output("the trap to arm", |seen| shows(seen, "trap-armed"));
     rig::wait_until("the baseline size to be recorded", || {

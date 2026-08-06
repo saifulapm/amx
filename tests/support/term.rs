@@ -40,8 +40,17 @@ pub fn open_pty(rows: u16, cols: u16) -> Pty {
             .expect("openpt");
     rustix::pty::grantpt(&master).expect("grantpt");
     rustix::pty::unlockpt(&master).expect("unlockpt");
+    let name = rustix::pty::ptsname(&master, Vec::new()).expect("ptsname");
+    let slave = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(PathBuf::from(name.to_string_lossy().into_owned()))
+        .expect("open the pty slave");
+    // Sized through the slave, the way openpty(3) does it: the window lives on
+    // the terminal, not on a descriptor, and the slave takes TIOCSWINSZ on
+    // every platform where darwin's master refuses it until the slave is open.
     rustix::termios::tcsetwinsize(
-        &master,
+        &slave,
         rustix::termios::Winsize {
             ws_row: rows,
             ws_col: cols,
@@ -50,12 +59,6 @@ pub fn open_pty(rows: u16, cols: u16) -> Pty {
         },
     )
     .expect("set the pty window size");
-    let name = rustix::pty::ptsname(&master, Vec::new()).expect("ptsname");
-    let slave = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(PathBuf::from(name.to_string_lossy().into_owned()))
-        .expect("open the pty slave");
     // Non-blocking master: a test reads what is there and moves on rather than
     // blocking on a child with nothing more to say.
     let flags = rustix::fs::fcntl_getfl(&master).expect("getfl");
@@ -141,7 +144,7 @@ impl Terminal {
     /// sent by hand — same information, same order.
     pub fn resize(&self, rows: u16, cols: u16) {
         rustix::termios::tcsetwinsize(
-            &self.pty.master,
+            &self.pty.slave,
             rustix::termios::Winsize {
                 ws_row: rows,
                 ws_col: cols,

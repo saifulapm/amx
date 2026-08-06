@@ -10,6 +10,7 @@
 #![allow(dead_code, reason = "each test binary uses a subset of the harness")]
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
+#[cfg(target_os = "linux")]
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{ErrorKind, Read as _, Write as _};
@@ -207,13 +208,16 @@ pub fn open_pty(rows: u16, cols: u16) -> Pty {
             .expect("openpt");
     rustix::pty::grantpt(&master).expect("grantpt");
     rustix::pty::unlockpt(&master).expect("unlockpt");
-    set_size(&master, rows, cols);
     let name = rustix::pty::ptsname(&master, Vec::new()).expect("ptsname");
     let slave = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(PathBuf::from(name.to_string_lossy().into_owned()))
         .expect("open the pty slave");
+    // Sized through the slave, the way openpty(3) does it: the window lives on
+    // the terminal, not on a descriptor, and the slave takes TIOCSWINSZ on
+    // every platform where darwin's master refuses it until the slave is open.
+    set_size(&slave, rows, cols);
     // Non-blocking on the master: a test reads what is there and moves on
     // rather than blocking on a child that has nothing more to say.
     let flags = rustix::fs::fcntl_getfl(&master).expect("getfl");
@@ -279,7 +283,7 @@ impl Terminal {
 
     /// Resize the terminal, which sends the child a `SIGWINCH`.
     pub fn resize(&self, rows: u16, cols: u16) {
-        set_size(&self.pty.master, rows, cols);
+        set_size(&self.pty.slave, rows, cols);
     }
 
     /// Send bytes to the child's stdin.
@@ -372,18 +376,20 @@ pub fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
 
 /// How many `amx server` processes for `session` are alive.
 ///
-/// Read straight out of `/proc`, because "exactly one server survives the race"
-/// is a claim about processes and nothing else can attest to it: a socket has
-/// only one peer whether the loser exited or is sitting there unreachable.
+/// "Exactly one server survives the race" is a claim about processes, and only
+/// the process table can attest to it: a socket has only one peer whether the
+/// loser exited or is sitting there unreachable. Test binaries run their tests
+/// in parallel threads of one process, so every test's servers are the same
+/// executable and only the session separates them — which is why every server
+/// this counts is started with an explicit `--session` in its argv.
 ///
-/// Matched by `AMX_SESSION` rather than by the argv alone: test binaries run
-/// their tests in parallel threads of one process, so every test's servers are
-/// the same executable and only the session name separates them.
+/// Linux reads `/proc` and checks `AMX_SESSION` in the environment as well;
+/// macOS has no `/proc` and another process's environment is not readable
+/// there, so it matches the argv `ps` reports.
+#[cfg(target_os = "linux")]
 pub fn server_processes(exe: &Path, session: &str) -> usize {
     let marker = OsString::from(format!("AMX_SESSION={session}"));
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return 0;
-    };
+    let entries = std::fs::read_dir("/proc").expect("/proc is readable");
     entries
         .filter_map(Result::ok)
         .filter(|entry| {
@@ -394,7 +400,23 @@ pub fn server_processes(exe: &Path, session: &str) -> usize {
         .count()
 }
 
+/// See the Linux twin above; `ps -o command=` is the process table here.
+#[cfg(not(target_os = "linux"))]
+pub fn server_processes(exe: &Path, session: &str) -> usize {
+    let out = Command::new("ps")
+        .args(["-axww", "-o", "command="])
+        .output()
+        .expect("run ps");
+    assert!(out.status.success(), "ps failed: {out:?}");
+    let server = format!("{} server --session {session}", exe.display());
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|line| line.trim_end() == server)
+        .count()
+}
+
 /// A `/proc` file of NUL-separated strings.
+#[cfg(target_os = "linux")]
 fn nul_separated(path: &Path) -> Vec<OsString> {
     use std::os::unix::ffi::OsStringExt as _;
 
