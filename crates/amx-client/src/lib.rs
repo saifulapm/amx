@@ -18,5 +18,6 @@ pub mod copy;
 pub mod input;
 pub mod model;
 pub mod net;
+pub mod picker;
 pub mod render;
 pub mod term;
