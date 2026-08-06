@@ -365,12 +365,23 @@ async fn spawn_detached_starts_a_session_leader_with_null_stdio() {
     // exactly what `setsid` made it. Everything is read through `/proc/$$`
     // rather than `/proc/self` because `self` would be the `readlink` process,
     // whose stdout is the redirection this very line sets up.
+    //
+    // The fd probes capture first and redirect after, and that order is what
+    // makes the script portable: `readlink /proc/$$/fd/1 > file` reports
+    // `/dev/null` under bash (the external readlink is forked, `$$`'s own fd1
+    // is untouched) but reports `file` itself under dash/ash — Ubuntu's
+    // `/bin/sh` — which applies the redirect to the shell's fd1 before running
+    // the command. A command substitution's subshell inherits the shell's fds
+    // without modifying them, and `$$` still names the shell inside it.
     let script = format!(
         "cut -d' ' -f6 /proc/$$/stat > {out}/sess; \
          echo $$ > {out}/pid; \
-         readlink /proc/$$/fd/0 > {out}/fd0; \
-         readlink /proc/$$/fd/1 > {out}/fd1; \
-         readlink /proc/$$/fd/2 > {out}/fd2; \
+         fd0=$(readlink /proc/$$/fd/0); \
+         fd1=$(readlink /proc/$$/fd/1); \
+         fd2=$(readlink /proc/$$/fd/2); \
+         printf '%s\\n' \"$fd0\" > {out}/fd0; \
+         printf '%s\\n' \"$fd1\" > {out}/fd1; \
+         printf '%s\\n' \"$fd2\" > {out}/fd2; \
          echo done > {out}/ok",
         out = out.display()
     );
