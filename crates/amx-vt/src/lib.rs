@@ -61,7 +61,7 @@ pub use enums::{
     Dirty, PointSpace, RowSemanticPrompt, Screen, StyleColor, Underline,
 };
 pub use error::{Error, Result, UnknownVariant};
-pub use history::{Point, RowRead, Scroll, Scrollbar};
+pub use history::{Point, RowRead, Scroll, Scrollbar, TrackedRow};
 pub use key::{Key, KeyAction, KeyEncoder, KeyEvent, KittyKeyFlags, Mods};
 pub use render::{Colors, Cursor, RenderState, Rgb, Style};
 pub use snapshot::{Cell, Row, Snapshot, SnapshotRef, Snapshots, TextRef};
