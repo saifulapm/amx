@@ -47,6 +47,18 @@ macro_rules! uuid_id {
             pub const fn as_uuid(&self) -> &Uuid {
                 &self.0
             }
+
+            #[doc = concat!("Rebuild a `", $label, "` from its raw UUID bytes, e.g. off a binary stream.")]
+            #[must_use]
+            pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+                Self(Uuid::from_bytes(bytes))
+            }
+
+            /// The raw UUID bytes, for binary stream encodings.
+            #[must_use]
+            pub const fn into_bytes(self) -> [u8; 16] {
+                self.0.into_bytes()
+            }
         }
 
         impl fmt::Display for $name {

@@ -3,16 +3,16 @@
 //! T04's suite (`crates/amx-proto/tests/goldens.rs`) pins the control channel:
 //! one golden per method plus the envelope shapes, regenerated with
 //! `AMX_UPDATE_GOLDENS=1`. This suite extends that same tree and mechanic to
-//! the binary stream surface — which `amx-proto` cannot golden itself, because
-//! its `GridMessage`/`HistoryChunk`/`RawPaneIo` codecs are declared there but
-//! implemented in `amx-server` (`damage/codec.rs`, `history/pack.rs`) — and
-//! adds the law T04 could not state: a method or stream message without a
-//! golden is a test failure, not an oversight.
+//! the binary stream surface, and adds the law T04 could not state: a method
+//! or stream message without a golden is a test failure, not an oversight —
+//! with the owed names *derived* from the message enums through exhaustive
+//! matches, so a new variant refuses to compile until it says what it owes.
 //!
-//! Stream bytes are produced by the real pipeline: a libghostty-vt terminal
-//! fed fixed input, published into a snapshot, run through the server's
-//! encoder. The goldens therefore freeze the entire path a client will one
-//! day decode, cell layout included.
+//! Grid stream bytes are produced by the real pipeline: a libghostty-vt
+//! terminal fed fixed input, published into a snapshot, run through the
+//! server's encoder — the same `amx_proto::stream` codec the client decodes.
+//! The goldens therefore freeze the entire path a client decodes, cell layout
+//! included.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
@@ -23,9 +23,12 @@ use amx_core::{GridGeneration, PaneId, RowHash, RowId, RowRange};
 use amx_proto::control::Method;
 use amx_proto::hello::{ClientInfo, Hello};
 use amx_proto::rpc::{RequestId, Response};
-use amx_proto::stream::{FlowControl, StreamId, StreamKind};
+use amx_proto::stream::grid::{self, Decoded, GridMessage};
+use amx_proto::stream::{
+    Cells, Cursor, FlowControl, HistoryChunk, RawDirection, RawPaneIo, StreamId, StreamKind,
+};
 use amx_proto::version;
-use amx_server::damage::{DirtySet, Encoder, decode};
+use amx_server::damage::{DirtySet, Encoder};
 use amx_server::history::{RowPack, hash_bytes};
 use amx_vt::{Effects, RenderState, Snapshot, Snapshots, Terminal, TerminalOptions};
 use rig::{check_bytes_golden, check_json_golden, goldens_dir};
@@ -119,11 +122,11 @@ fn grid_stream_goldens_match() {
         }),
         encoder.payload(),
     );
-    let decoded = decode::decode(encoder.payload()).expect("the keyframe decodes");
+    let decoded = grid::decode(encoder.payload()).expect("the keyframe decodes");
     assert!(
         matches!(
             decoded,
-            decode::Decoded::Reset { generation, rows, cols, ref grid, .. }
+            Decoded::Reset { generation, rows, cols, ref grid, .. }
                 if generation == GridGeneration::from_raw(7)
                     && rows == 4 && cols == 10 && grid.len() == 4
         ),
@@ -148,11 +151,11 @@ fn grid_stream_goldens_match() {
         }),
         encoder.payload(),
     );
-    let decoded = decode::decode(encoder.payload()).expect("the delta decodes");
+    let decoded = grid::decode(encoder.payload()).expect("the delta decodes");
     assert!(
         matches!(
             decoded,
-            decode::Decoded::Delta { generation, ref rects, ref grid, .. }
+            Decoded::Delta { generation, ref rects, ref grid, .. }
                 if generation == GridGeneration::from_raw(8)
                     && rects.len() == 2 && grid.len() == 2
         ),
@@ -169,7 +172,11 @@ fn grid_stream_goldens_match() {
     let range = RowRange::new(RowId::from_raw(40), RowId::from_raw(41));
     let hashes = [hash_bytes(b"alpha"), hash_bytes(b"beta")];
     let mut scrolled = Vec::new();
-    decode::encode_scrolled(range, &hashes, &mut scrolled);
+    GridMessage::Scrolled {
+        range,
+        hashes: &hashes,
+    }
+    .encode(&mut scrolled);
     check_bytes_golden(
         "stream/grid_scrolled",
         &json!({
@@ -179,13 +186,64 @@ fn grid_stream_goldens_match() {
         }),
         &scrolled,
     );
-    let decoded = decode::decode(&scrolled).expect("the scroll notice decodes");
+    let decoded = grid::decode(&scrolled).expect("the scroll notice decodes");
     assert_eq!(
         decoded,
-        decode::Decoded::Scrolled {
+        Decoded::Scrolled {
             range,
             hashes: hashes.to_vec()
         }
+    );
+}
+
+#[test]
+fn raw_stream_goldens_match() {
+    let message = RawPaneIo {
+        pane: pane_id(),
+        direction: RawDirection::ToPane,
+        bytes: b"ls -la\r",
+    };
+    let mut bytes = Vec::new();
+    message.encode(&mut bytes);
+    check_bytes_golden(
+        "stream/raw_pane_io",
+        &json!({
+            "kind": "raw pane input, as if typed",
+            "pane": pane_id(),
+            "direction": "to_pane",
+            "text": "ls -la\\r",
+        }),
+        &bytes,
+    );
+    assert_eq!(RawPaneIo::decode(&bytes).expect("the run decodes"), message);
+}
+
+#[test]
+fn history_chunk_goldens_match() {
+    let mut rows = Vec::new();
+    amx_proto::stream::history::put_row(b"line0", false, &mut rows);
+    amx_proto::stream::history::put_row(b"line1 wraps", true, &mut rows);
+    let chunk = HistoryChunk {
+        request: RequestId::from(9),
+        range: RowRange::new(RowId::from_raw(40), RowId::from_raw(41)),
+        more: true,
+        rows: &rows,
+    };
+    let mut bytes = Vec::new();
+    chunk.encode(&mut bytes);
+    check_bytes_golden(
+        "stream/history_chunk",
+        &json!({
+            "kind": "one chunk of a history range transfer",
+            "request": 9,
+            "rows": ["line0", "line1 wraps"],
+            "more": true,
+        }),
+        &bytes,
+    );
+    assert_eq!(
+        HistoryChunk::decode(&bytes).expect("the chunk decodes"),
+        chunk
     );
 }
 
@@ -285,8 +343,9 @@ fn protocol_goldens_cover_every_control_method_and_stream_message() {
     }
     assert_files(&goldens_dir().join("proto"), &proto);
 
-    // Streams: walked variant by variant so a new `StreamKind` refuses to
-    // compile until this list says what goldens it owes.
+    // Streams: walked variant by variant so a new `StreamKind` — or a new
+    // message on any stream's codec — refuses to compile until the matches
+    // below say what goldens it owes.
     let pane = pane_id();
     let mut stream = BTreeSet::new();
     for kind in [
@@ -297,25 +356,17 @@ fn protocol_goldens_cover_every_control_method_and_stream_message() {
     ] {
         match kind {
             StreamKind::PaneGrid { .. } => {
-                for name in ["grid_reset", "grid_delta", "grid_scrolled", "grid_cursor"] {
-                    stream.insert(name.to_owned());
-                }
+                stream.extend(grid_message_goldens());
                 stream.insert("kind_pane_grid".to_owned());
             }
             StreamKind::History { .. } => {
-                // The chunk payload layout is pinned; the chunk *envelope*
-                // (request id, range, more-flag) has no encoder anywhere yet —
-                // `amx_proto::stream::HistoryChunk::encode` is `todo!()` — so
-                // there is nothing to freeze. Landing that codec makes this
-                // entry owe a `history_chunk` golden.
+                // Chunk envelope plus the row payload layout it carries.
+                stream.insert("history_chunk".to_owned());
                 stream.insert("history_rows".to_owned());
                 stream.insert("kind_history".to_owned());
             }
             StreamKind::RawPaneIo { .. } => {
-                // Bytes travel verbatim; the framing around them
-                // (`amx_proto::stream::RawPaneIo::encode`) is `todo!()` with no
-                // server-side counterpart. The binding kind is pinned; the
-                // codec golden becomes owed the day the codec exists.
+                stream.insert("raw_pane_io".to_owned());
                 stream.insert("kind_raw_pane_io".to_owned());
             }
             StreamKind::Graphics { .. } => {
@@ -348,6 +399,49 @@ fn protocol_goldens_cover_every_control_method_and_stream_message() {
         stream.insert(name.to_owned());
     }
     assert_files(&goldens_dir().join("stream"), &stream);
+}
+
+/// The golden each grid stream message variant owes, derived by constructing
+/// one of each and matching exhaustively: a new `GridMessage` variant fails to
+/// compile here until it names its golden.
+fn grid_message_goldens() -> Vec<String> {
+    let cursor = Cursor {
+        row: 0,
+        col: 0,
+        visible: true,
+        shape: amx_proto::stream::CursorShape::Block,
+        blink: false,
+    };
+    let generation = GridGeneration::FIRST;
+    let range = RowRange::new(RowId::from_raw(0), RowId::from_raw(0));
+    [
+        GridMessage::Reset {
+            generation,
+            rows: 0,
+            cols: 0,
+            cells: Cells::new(&[]),
+            cursor,
+        },
+        GridMessage::Delta {
+            generation,
+            rects: &[],
+            cells: Cells::new(&[]),
+            cursor,
+        },
+        GridMessage::Scrolled { range, hashes: &[] },
+        GridMessage::Cursor(cursor),
+    ]
+    .iter()
+    .map(|message| {
+        match message {
+            GridMessage::Reset { .. } => "grid_reset",
+            GridMessage::Delta { .. } => "grid_delta",
+            GridMessage::Scrolled { .. } => "grid_scrolled",
+            GridMessage::Cursor(_) => "grid_cursor",
+        }
+        .to_owned()
+    })
+    .collect()
 }
 
 /// Assert `dir` holds exactly `expected` golden files — nothing owed missing,

@@ -47,21 +47,13 @@
 //! gap. Every published snapshot is a *complete* copy of the visible grid, so
 //! nothing is lost — only the shortcut is.
 //!
-//! ## The wire codec lives here
+//! ## The wire codec lives in `amx-proto`
 //!
-//! [`GridMessage::encode`](amx_proto::stream::GridMessage::encode) is still
-//! `todo!()` in `amx-proto`, and its `decode` counterpart cannot be implemented
-//! as declared: it promises a borrowed `&'a [DamageRect]` out of a `&'a [u8]`,
-//! which no safe code can produce from an arbitrarily-aligned little-endian
-//! payload. So the layout lives in [`codec`], [`cell`] and [`decode`], next to
-//! the encoder that produces it — the same choice
-//! [`history::pack`](crate::history::pack) already made for history rows. When
-//! `amx-proto` grows a real codec it should be this one, with `decode` taking
-//! the rect buffer as an argument.
+//! The byte layout is `amx_proto::stream::{codec, cell, grid}`, shared with
+//! the client; [`codec`] here is only the adapter from `amx-vt`'s snapshot
+//! types into that wire vocabulary.
 
-pub mod cell;
 pub mod codec;
-pub mod decode;
 pub mod dirty;
 pub mod encode;
 pub mod keyframe;

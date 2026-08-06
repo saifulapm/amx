@@ -22,16 +22,19 @@
 //! unimplemented method as unknown would tell a client to stop offering it.
 
 mod pane;
+mod stream;
 mod workspace;
 
 use amx_proto::control::{
-    Call, Dispatch, pane as pane_proto, session, workspace as workspace_proto,
+    Call, Dispatch, client as client_proto, pane as pane_proto, session, stream as stream_proto,
+    workspace as workspace_proto,
 };
 use amx_proto::rpc::RpcError;
 use serde_json::Value;
 use tokio::sync::oneshot;
 
-use crate::actor::{CoreCommand, CoreHandle, Reply, SessionCall};
+use crate::actor::{ClientCall, CoreCommand, CoreHandle, Reply, SessionCall};
+use crate::conn::streams::ConnStreams;
 
 /// The JSON-RPC code for a method this build knows but has not implemented.
 ///
@@ -45,13 +48,46 @@ pub const NOT_IMPLEMENTED: i32 = -32000;
 #[derive(Clone, Debug)]
 pub struct Router {
     core: CoreHandle,
+    /// The connection's stream bindings, present on real client connections.
+    ///
+    /// `stream.bind` and `pane.history` need them; every other method routes
+    /// to the `Core` alone, which is why a `Router` without them (a test
+    /// driving dispatch directly) still serves the rest of the table.
+    streams: Option<ConnStreams>,
 }
 
 impl Router {
     /// Route calls to `core`.
     #[must_use]
     pub const fn new(core: CoreHandle) -> Self {
-        Self { core }
+        Self {
+            core,
+            streams: None,
+        }
+    }
+
+    /// Adopt the connection's stream bindings.
+    pub fn attach_streams(&mut self, streams: ConnStreams) {
+        self.streams = Some(streams);
+    }
+
+    /// The connection's stream bindings, if this router serves a connection.
+    #[must_use]
+    pub(crate) fn streams(&self) -> Option<&ConnStreams> {
+        self.streams.as_ref()
+    }
+
+    /// The bus head, via the ordinary `ping` path.
+    pub(crate) async fn head(&self) -> Result<amx_core::Seq, RpcError> {
+        let identity = self
+            .call(|reply| {
+                CoreCommand::Session(SessionCall::Ping {
+                    params: session::PingParams {},
+                    reply,
+                })
+            })
+            .await?;
+        Ok(identity.seq)
     }
 
     /// Send one command and await its reply.
@@ -179,6 +215,36 @@ impl Dispatch for Router {
         params: pane_proto::ResizeParams,
     ) -> Result<pane_proto::ResizeReply, RpcError> {
         pane::resize(self, params).await
+    }
+
+    async fn session_state(
+        &mut self,
+        params: session::StateParams,
+    ) -> Result<session::StateReply, RpcError> {
+        self.call(|reply| CoreCommand::Session(SessionCall::State { params, reply }))
+            .await
+    }
+
+    async fn stream_bind(
+        &mut self,
+        params: stream_proto::BindParams,
+    ) -> Result<stream_proto::BindReply, RpcError> {
+        stream::bind(self, params).await
+    }
+
+    async fn pane_history(
+        &mut self,
+        params: stream_proto::HistoryParams,
+    ) -> Result<stream_proto::HistoryReply, RpcError> {
+        stream::history(self, params).await
+    }
+
+    async fn client_viewport(
+        &mut self,
+        params: client_proto::Viewport,
+    ) -> Result<client_proto::ViewportReply, RpcError> {
+        self.call(|reply| CoreCommand::Client(ClientCall::Viewport { params, reply }))
+            .await
     }
 }
 

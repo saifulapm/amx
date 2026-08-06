@@ -6,23 +6,12 @@
 //! `net::Session` and `App::attach` work end to end against the actual
 //! server binary this client will run against.
 //!
-//! What it does *not* do is read the pane's cells off a real bound grid
-//! stream, because there is no such stream anywhere in the merged tree to
-//! read from: `amx_proto::stream::grid::GridMessage::decode` is `todo!()`
-//! with no per-cell wire layout defined by any golden, no task in
-//! `docs/06-m0-plan.md`'s DAG claims `amx-proto/src/stream/**`, and
-//! `workspace.create`'s reply (`amx_proto::control::workspace::CreateReply`,
-//! frozen by T01) does not carry the id of the root pane the server just
-//! created for it — there is no event-bus delivery over the wire yet to learn
-//! it another way either. So this test mints the pane id locally (identity a
-//! real client would instead learn from the server once those exist) and
-//! applies a keyframe to it directly, the way `App`'s decode path will once
-//! T04's codec lands (`net`'s module doc has the same note). What *is* real
-//! and under test is everything from there on: the model update, the SGR
-//! differ, the border/status chrome, and the blit — reconstructed from the
-//! actual ANSI bytes `App::repaint` produced and compared cell-for-cell
-//! against the grid that was applied, proving the render matches the server
-//! grid rather than merely asserting the model does.
+//! The live wire path — keyframes decoded off a bound grid stream into the
+//! model — is covered end to end by the workspace `tests/` suite against the
+//! real binary. This test pins the render half in isolation: it adopts a
+//! mirrored workspace with a known grid and proves the ANSI bytes
+//! `App::repaint` produces reconstruct that grid cell for cell — the model
+//! update, the SGR differ, the border/status chrome, and the blit.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
@@ -68,6 +57,9 @@ async fn attach_renders_the_pane_grid_matching_the_server_grid() {
             layout: BspLayout::with_root(pane),
         },
     );
+    // The attach already folded the server's seeded workspace and focused it;
+    // this test renders its own mirror instead.
+    app.model().focus_workspace(workspace);
 
     // Exactly the inset chrome computes for a lone pane in a 24x80 pty (see
     // `support::open_pty`'s default): content area 80x23 (one status row),

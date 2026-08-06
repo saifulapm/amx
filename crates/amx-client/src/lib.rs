@@ -20,4 +20,5 @@ pub mod model;
 pub mod net;
 pub mod picker;
 pub mod render;
+pub mod stream;
 pub mod term;

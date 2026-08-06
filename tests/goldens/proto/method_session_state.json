@@ -1,0 +1,45 @@
+{
+  "reply": {
+    "focused_workspace": "00000000-0000-0000-0000-0000000000b1",
+    "panes": [
+      {
+        "cols": 39,
+        "history_floor": 4,
+        "history_head": 120,
+        "pane": "00000000-0000-0000-0000-0000000000a1",
+        "rows": 22,
+        "short": 1
+      }
+    ],
+    "seq": 52,
+    "workspaces": [
+      {
+        "focus": "00000000-0000-0000-0000-0000000000a2",
+        "label": "dev",
+        "layout": {
+          "root": {
+            "split": {
+              "axis": "x",
+              "first": {
+                "leaf": "00000000-0000-0000-0000-0000000000a1"
+              },
+              "ratio": 0.5,
+              "second": {
+                "leaf": "00000000-0000-0000-0000-0000000000a2"
+              }
+            }
+          },
+          "zoomed": null
+        },
+        "short": 1,
+        "workspace": "00000000-0000-0000-0000-0000000000b1"
+      }
+    ]
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "session.state",
+    "params": {}
+  }
+}

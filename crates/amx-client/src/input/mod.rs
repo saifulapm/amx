@@ -21,8 +21,11 @@
 //! - **terminal** (default): bytes go to the focused pane; `ctrl+a` enters
 //!   prefix.
 //! - **prefix** (one-shot): `w` enters navigate, a second `ctrl+a` sends the
-//!   literal byte to the pane, `x`/`v` split, `z` zooms, `d` closes; any
-//!   other key is swallowed and the mode falls back to terminal.
+//!   literal byte to the pane, `x`/`v` split, `z` zooms, `d` detaches, `p`
+//!   opens the picker; any other key is swallowed and the mode falls back to
+//!   terminal. Closing a pane is navigate's `d`, deliberately not prefix's:
+//!   the detach verb owns the prefix chord (04 §7 lists detach among the
+//!   prefix one-shots) and a destroy verb must not sit one key from it.
 //! - **navigate** (sticky): `hjkl` move focus, `HJKL` resize, `x`/`v` split,
 //!   `s`+direction swaps with the neighbour, `m` moves the pane to another
 //!   workspace, `d` closes, digits jump to the n-th pane, `c` enters copy
@@ -96,10 +99,14 @@ pub enum Action {
     Swap(Direction),
     /// `m`: move the focused pane to another workspace.
     MovePane,
-    /// `d`: close the focused pane.
+    /// Navigate `d`: close the focused pane.
     Close,
     /// Prefix `z`: toggle zoom on the focused pane.
     Zoom,
+    /// Prefix `d`: detach this client, leaving the session running.
+    Detach,
+    /// Prefix `p`: open the picker.
+    Picker,
     /// A digit: jump focus to the n-th pane (1-based, layout order).
     Jump(u8),
 }
@@ -128,6 +135,8 @@ pub enum InputEvent<'a> {
     },
     /// Send this control call to the server.
     Call(Call),
+    /// Detach this client: leave the terminal, keep the session running.
+    Detach,
 }
 
 /// The input state machine's own state: what survives between reads.
@@ -305,7 +314,11 @@ impl Input {
                 Mode::Terminal
             }
             b'd' => {
-                out.push(Action::Close);
+                out.push(Action::Detach);
+                Mode::Terminal
+            }
+            b'p' => {
+                out.push(Action::Picker);
                 Mode::Terminal
             }
             _ => Mode::Terminal,

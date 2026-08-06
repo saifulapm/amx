@@ -126,6 +126,63 @@ impl Terminal {
         self.pty.master.flush().expect("flush the pty");
     }
 
+    /// Type a line of shell input, newline included.
+    pub fn type_line(&mut self, line: &str) {
+        self.send(line.as_bytes());
+        self.send(b"\r");
+    }
+
+    /// Resize the terminal the child runs on.
+    ///
+    /// The winsize change is followed by an explicit `SIGWINCH` to the child:
+    /// a real emulator's kernel-side delivery goes to the pty's foreground
+    /// process group, but the harness spawns the client without a controlling
+    /// tty (no `setsid`), so that group is empty here and the signal must be
+    /// sent by hand — same information, same order.
+    pub fn resize(&self, rows: u16, cols: u16) {
+        rustix::termios::tcsetwinsize(
+            &self.pty.master,
+            rustix::termios::Winsize {
+                ws_row: rows,
+                ws_col: cols,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            },
+        )
+        .expect("resize the pty");
+        let pid = rustix::process::Pid::from_raw(self.pid().cast_signed()).expect("a live pid");
+        let _ = rustix::process::kill_process(pid, rustix::process::Signal::WINCH);
+    }
+
+    /// Read until the rasterized screen holds still: the same cells across
+    /// several consecutive polls. Returns that settled screen.
+    ///
+    /// For "identical grid" comparisons: capturing while a shell is still
+    /// printing its prompt would freeze a half-drawn frame as the baseline.
+    pub fn wait_settled(&mut self) -> crate::screen::Screen {
+        let deadline = Instant::now() + PATIENCE;
+        let mut last = crate::screen::rasterize(self.output());
+        let mut stable = 0;
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the screen to settle"
+            );
+            std::thread::sleep(TICK);
+            self.drain();
+            let now = crate::screen::rasterize(self.output());
+            if now == last && !now.is_empty() {
+                stable += 1;
+                if stable >= 10 {
+                    return now;
+                }
+            } else {
+                stable = 0;
+                last = now;
+            }
+        }
+    }
+
     /// Send the prefix key and then `key`.
     pub fn chord(&mut self, key: u8) {
         self.send(&[PREFIX, key]);

@@ -21,6 +21,7 @@
 
 pub mod negotiate;
 pub mod reader;
+pub mod streams;
 pub mod writer;
 
 use amx_core::{ClientId, Ctx, Event};
@@ -131,13 +132,21 @@ pub async fn serve(stream: UnixStream, ctx: Ctx, core: CoreHandle) -> Result<(),
     tracing::debug!(%client, proto = welcome.proto, "client attached");
 
     let (outbound, queue) = writer::channel();
+    // Stream bindings are connection state: the pumps spawned for bound grid
+    // streams write into this connection's priority writer and die with it.
+    let streams = streams::ConnStreams::new(outbound.clone(), ctx.cancel.child_token());
+    reader.share_caps(streams.caps());
+    router.attach_streams(streams.clone());
+
     let outcome = tokio::select! {
-        result = reader::run(&mut reader, &mut router, &outbound, &ctx.cancel) => result,
+        result = reader::run(&mut reader, &mut router, &streams, &outbound, &ctx.cancel) => result,
         result = writer::run(write_half, queue, ctx.cancel.clone()) => {
             result.map(|_report| ()).map_err(ConnError::from)
         }
     };
 
+    // Joined before the detach is published: no pump outlives its connection.
+    streams.shutdown().await;
     ctx.bus.publish(Event::ClientDetached { client });
     tracing::debug!(%client, "client detached");
     outcome

@@ -67,7 +67,14 @@ impl FrameWriter {
 
     /// Write one cell, changing SGR state only if it differs from the last
     /// cell written.
+    ///
+    /// A zero char writes nothing: it marks a wide cell's spacer tail, whose
+    /// column the wide glyph before it already advanced over — emitting even a
+    /// space there would shove the rest of the row one column right.
     pub fn write_cell(&mut self, cell: &Cell) {
+        if cell.ch == '\0' {
+            return;
+        }
         self.set_attrs(cell.attrs);
         let mut encoded = [0_u8; 4];
         self.buf

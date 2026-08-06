@@ -66,7 +66,11 @@ impl Rect {
 }
 
 /// Which dimension a split divides.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// Serialized because the layout tree crosses the wire in `session.state`:
+/// the client mirrors the server's tree as state (04 §3).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Axis {
     /// Divides width: the two children sit side by side.
     X,

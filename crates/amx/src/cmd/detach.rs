@@ -1,24 +1,15 @@
-//! The detach chord: prefix, then one key.
+//! The one-pane viewport's detach chord: prefix, then `q`.
 //!
-//! 04 §7's input model is modal — "Prefix mode (`ctrl+a`, configurable):
-//! one-shot commands — split, zoom, kill, **detach**, next-attention, picker,
-//! rename" — and the full mode machine over it is T14's
-//! (`amx-client/src/input/**`, plus `App::handle_input`, which is still
-//! `todo!()`).
-//!
-//! Detach is the one sequence this binary cannot wait for, because a client
-//! that cannot be left is worse than a client that cannot be typed in: the
-//! terminal it took would only come back by killing it. So [`Chord`] is
-//! deliberately the smallest thing that recognises `prefix`+key in a byte
-//! stream, and nothing else — it decodes no keys, tracks no modes, and forwards
-//! nothing. When T14's mode machine lands, its detach arm replaces this and the
-//! attach loops call `App::handle_input` instead.
+//! The full client's detach is the input machine's own prefix `d` verb
+//! (04 §7) and lives in `amx-client`; nothing here applies to it. The
+//! chrome-free `amx attach --pane` viewport deliberately runs no mode
+//! machine — every byte belongs to the pane — so the one sequence it must
+//! recognise itself, prefix+`q` (04 §1), gets the smallest possible
+//! recogniser: [`Chord`] decodes no keys, tracks no modes, and forwards
+//! nothing.
 
 /// The prefix key: `ctrl+a` (04 §7's default).
 pub const PREFIX: u8 = 0x01;
-
-/// The key that detaches a full client: `prefix` then `d`.
-pub const DETACH: u8 = b'd';
 
 /// The key that detaches a single-pane viewport: `prefix` then `q` (04 §1).
 pub const DETACH_PANE: u8 = b'q';

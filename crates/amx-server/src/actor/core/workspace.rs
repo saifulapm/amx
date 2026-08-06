@@ -26,7 +26,8 @@ impl Core {
         params: workspace::CreateParams,
         reply: Reply<workspace::CreateReply>,
     ) {
-        let (ws, _pane, effect) = self.state.open_workspace();
+        let (ws, pane, effect) = self.state.open_workspace();
+        let _ = self.next_pane_short(pane);
         self.effects.absorb(effect);
         self.finish_workspace_create(ws, params, reply);
     }
@@ -66,7 +67,7 @@ impl Core {
                 });
             }
         }
-        let short = self.next_workspace_short();
+        let short = self.next_workspace_short(ws);
         let _ = reply.send(Ok(workspace::CreateReply {
             workspace: ws,
             short,
@@ -100,10 +101,12 @@ impl Core {
         let ws = if spawn {
             self.open_workspace_live()?
         } else {
-            let (ws, _pane, effect) = self.state.open_workspace();
+            let (ws, pane, effect) = self.state.open_workspace();
+            let _ = self.next_pane_short(pane);
             self.effects.absorb(effect);
             ws
         };
+        let _ = self.next_workspace_short(ws);
         self.publish(Event::WorkspaceCreated { workspace: ws });
         // Freshly created and present: switching to it cannot fail.
         if let Ok(effect) = self.state.switch_workspace(ws) {
@@ -127,10 +130,11 @@ impl Core {
     /// back to it.
     fn open_workspace_live(&mut self) -> Result<WorkspaceId, RpcError> {
         let (ws, root, effect) = self.state.open_workspace();
+        let _ = self.next_pane_short(root);
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         match self.spawn_pane(root, cwd.clone(), None) {
-            Ok(handle) => {
-                self.panes.insert(root, handle);
+            Ok(wiring) => {
+                self.panes.insert(root, wiring);
                 // The pane was just minted: recording its cwd cannot fail.
                 let _ = self.state.set_pane_cwd(root, cwd);
                 self.effects.absorb(effect);
@@ -181,8 +185,8 @@ impl Core {
             Ok((panes, effect)) => {
                 self.effects.absorb(effect);
                 for pane in &panes {
-                    if let Some(handle) = self.panes.remove(pane) {
-                        let _ = handle.try_send(PaneCommand::Kill);
+                    if let Some(wiring) = self.panes.remove(pane) {
+                        let _ = wiring.handle.try_send(PaneCommand::Kill);
                     }
                 }
                 let seq = self.publish(Event::WorkspaceClosed {

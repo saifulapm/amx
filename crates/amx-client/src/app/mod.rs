@@ -6,22 +6,31 @@
 //! consequences (bytes to the focused pane, control calls, local focus).
 //! [`Mode::Copy`]'s keys are owned by `crate::copy`: the `Mode::Copy` arm in
 //! `input` dispatches through that module's key table.
+//!
+//! The module splits by responsibility: this file is the presentation core —
+//! model, chrome, input consequences — [`wired`] is the live loop over the
+//! session socket (frames in, input and calls out), and [`overlay`] is the
+//! picker and copy-mode surfaces drawn over the panes.
+
+mod overlay;
+mod wired;
 
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Write;
 use std::os::fd::AsFd;
-use std::path::Path;
 
-use amx_core::{Direction, PaneId, Rect, WorkspaceId};
-use amx_proto::ClientInfo;
+use amx_core::{Direction, PaneId, Rect, RowRange, WorkspaceId};
 use amx_proto::control::{Call, pane as pane_proto};
 
+use crate::cache::Scrollback;
 use crate::input::{self, Action, Input, InputEvent};
 use crate::model::{ClientModel, WorkspaceModel};
 use crate::net::{NetError, Session};
 use crate::render::{FrameWriter, chrome, grid};
-use crate::term::{Sigwinch, TermError, TermSize, TerminalGuard};
+use crate::term::{TermError, TermSize, TerminalGuard};
+
+pub use overlay::{CopyUi, PickTarget, PickerUi};
 
 /// Interaction mode the client is in (04 §7).
 ///
@@ -58,6 +67,9 @@ pub enum AppError {
     /// A terminal operation failed.
     #[error(transparent)]
     Term(#[from] TermError),
+    /// The server's snapshot could not be decoded.
+    #[error("malformed session state: {0}")]
+    BadState(&'static str),
 }
 
 /// How long a burst of `SIGWINCH` is allowed to keep arriving before it is
@@ -73,6 +85,20 @@ pub struct App<Fd: AsFd, W: Write> {
     writer: FrameWriter,
     mode: Mode,
     pending_resize: Option<TermSize>,
+    /// This client's live stream bindings.
+    bindings: crate::stream::Bindings,
+    /// Per-pane scrollback caches, filled over the history stream.
+    caches: HashMap<PaneId, Scrollback>,
+    /// The open picker, if any; its bytes bypass the mode machine.
+    picker: Option<PickerUi>,
+    /// The live copy-mode engine while [`Mode::Copy`] is active.
+    copy: Option<CopyUi>,
+    /// Bytes owed to the client's own terminal outside the frame (OSC 52).
+    emit: Vec<u8>,
+    /// History ranges copy mode wants fetched, drained by the wired loop.
+    wanted_history: Vec<(PaneId, RowRange)>,
+    /// Something changed since the last flush; the wired loop repaints.
+    dirty: bool,
     /// The last computed pane layout, kept across frames so an unchanged
     /// layout costs zero allocation on repaint: `amx_core::Layout::rects`
     /// builds a fresh `Vec` every call (it lives in `amx-core`, out of this
@@ -94,18 +120,12 @@ pub struct App<Fd: AsFd, W: Write> {
 }
 
 impl<Fd: AsFd, W: Write> App<Fd, W> {
-    /// Connect to `socket`, negotiate, take `fd` into raw mode (writing the
-    /// alt-screen sequence to `out`), and build an empty model sized to
-    /// `fd`'s current window.
-    pub async fn attach(
-        socket: &Path,
-        fd: Fd,
-        out: W,
-        client: ClientInfo,
-    ) -> Result<Self, AppError> {
-        let stream = crate::net::connect(socket).await?;
-        let (session, _welcome) = Session::attach(stream, client, true, None).await?;
-        let term = TerminalGuard::enter(fd, out)?;
+    /// Wrap a negotiated session and an entered terminal into an app with an
+    /// empty model sized to the terminal.
+    ///
+    /// The tail of [`App::attach`], public so tests can assemble an `App`
+    /// from pieces they control.
+    pub fn assemble(session: Session, term: TerminalGuard<Fd, W>) -> Result<Self, AppError> {
         let size = term.size()?;
         Ok(Self {
             session,
@@ -114,6 +134,13 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             writer: FrameWriter::new(),
             mode: Mode::default(),
             pending_resize: None,
+            bindings: crate::stream::Bindings::new(),
+            caches: HashMap::new(),
+            picker: None,
+            copy: None,
+            emit: Vec::new(),
+            wanted_history: Vec::new(),
+            dirty: true,
             pane_rects: Vec::new(),
             layout_dirty: true,
             focus: HashMap::new(),
@@ -128,6 +155,12 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         self.mode
     }
 
+    /// Whether the picker is open (its bytes bypass the mode machine).
+    #[must_use]
+    pub const fn picker_open(&self) -> bool {
+        self.picker.is_some()
+    }
+
     /// The underlying control session, for making calls outside the render
     /// loop (workspace/pane verbs).
     pub fn session(&mut self) -> &mut Session {
@@ -140,6 +173,12 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         &mut self.model
     }
 
+    /// The scrollback cache for `pane`, created empty on first touch — the
+    /// same seam the history stream fills, exposed for tests.
+    pub fn cache_mut(&mut self, pane: PaneId) -> &mut Scrollback {
+        self.caches.entry(pane).or_default()
+    }
+
     /// Record a `WorkspaceId`, its layout mirror and a pane's server-sized
     /// grid, folding both into the presentation model (the shape every
     /// integration test in this crate drives, in lieu of the event-bus
@@ -148,6 +187,9 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// yet).
     pub fn adopt_workspace(&mut self, id: WorkspaceId, model: WorkspaceModel) {
         self.model.set_workspace(id, model);
+        // Adopting is a test seam: the adopted mirror is what the test wants
+        // rendered, ahead of whatever the live attach already folded.
+        self.model.focus_workspace(id);
         self.layout_dirty = true;
     }
 
@@ -163,12 +205,25 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// focus has moved — the server's focus stays canonical and the echo
     /// keeps the two from silently diverging.
     pub fn handle_input(&mut self, bytes: &[u8], sink: &mut impl FnMut(InputEvent<'_>)) {
+        if self.picker.is_some() {
+            self.picker_input(bytes, sink);
+            return;
+        }
+        if self.mode == Mode::Copy {
+            self.copy_input(bytes);
+            return;
+        }
         let mut actions = self.input.take_scratch();
         self.mode = self.input.feed(self.mode, bytes, &mut actions);
         for &action in &actions {
             self.apply_action(action, bytes, sink);
         }
         self.input.put_scratch(actions);
+        if self.mode == Mode::Copy {
+            // Navigate's `c` was consumed by the machine; the engine opens
+            // here, over the focused pane's cache, or not at all.
+            self.enter_copy();
+        }
     }
 
     /// The pane input currently addresses: this workspace's recorded focus,
@@ -201,6 +256,19 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         bytes: &[u8],
         sink: &mut impl FnMut(InputEvent<'_>),
     ) {
+        // The two verbs that need no focused pane come first: a client must be
+        // able to leave (or reach the picker) even in an empty session.
+        match action {
+            Action::Detach => {
+                sink(InputEvent::Detach);
+                return;
+            }
+            Action::Picker => {
+                self.open_picker();
+                return;
+            }
+            _ => {}
+        }
         let Some(ws) = self.model.focused_workspace_id() else {
             return;
         };
@@ -285,6 +353,8 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             Action::Zoom => sink(InputEvent::Call(Call::PaneZoom(pane_proto::ZoomParams {
                 pane,
             }))),
+            // Handled above, before the focused-pane requirement.
+            Action::Detach | Action::Picker => {}
             // Interim numbering until short numbers reach the client: n-th
             // pane in layout order. Local-only — `pane.focus` speaks
             // directions, and a direct set-focus core op does not exist yet.
@@ -379,43 +449,52 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 grid::blit(&mut self.writer, pane_grid, inner);
             }
         }
-        let status = status_text(&self.model);
+        self.draw_overlays();
+        let status = status_text(&self.model, self.mode, self.picker.is_some());
         chrome::status_line(
             &mut self.writer,
             self.model.term.h.saturating_sub(1),
             self.model.term.w,
             &status,
         );
+        self.place_cursor();
         self.repaints += 1;
+    }
+
+    /// Park the terminal cursor on the focused pane's cursor cell, when it is
+    /// visible; hide it otherwise so chrome never shows a stray block.
+    fn place_cursor(&mut self) {
+        if self.picker.is_some() || self.copy.is_some() {
+            self.writer.set_cursor_visible(false);
+            return;
+        }
+        let placed = (|| {
+            let ws = self.model.focused_workspace_id()?;
+            let pane = *self.focus.get(&ws)?;
+            let rect = self
+                .pane_rects
+                .iter()
+                .find(|(id, _)| *id == pane)
+                .map(|(_, rect)| *rect)?;
+            let inner = chrome::inset(rect);
+            let grid = self.model.pane(pane)?;
+            let cursor = grid.cursor();
+            (cursor.visible && cursor.row < inner.h && cursor.col < inner.w)
+                .then(|| (inner.y + cursor.row, inner.x + cursor.col))
+        })();
+        match placed {
+            Some((row, col)) => {
+                self.writer.move_to(row, col);
+                self.writer.set_cursor_visible(true);
+            }
+            None => self.writer.set_cursor_visible(false),
+        }
     }
 
     /// The bytes the last [`Self::repaint`] produced.
     #[must_use]
     pub fn frame(&self) -> &[u8] {
         self.writer.bytes()
-    }
-
-    /// Run until `sigwinch` and the connection both end, resizing on a
-    /// debounced `SIGWINCH` and otherwise idle. A stdin arm calling
-    /// [`Self::handle_input`] belongs here, but its two outlets are not on
-    /// the wire yet — forwarded bytes need the raw pane I/O codec
-    /// (`amx_proto::stream::raw`, still `todo!()`), and fire-and-forget
-    /// calls need a session that can interleave them — so the loop stays
-    /// resize-only until those land.
-    pub async fn run(mut self, mut sigwinch: Sigwinch) -> Result<(), AppError> {
-        self.repaint();
-        loop {
-            tokio::select! {
-                signal = sigwinch.recv() => {
-                    let Some(()) = signal else { return Ok(()) };
-                    let size = self.term.size()?;
-                    self.note_resize(size);
-                }
-                () = tokio::time::sleep(RESIZE_DEBOUNCE), if self.has_pending_resize() => {
-                    self.settle_resize(&mut |_size| {});
-                }
-            }
-        }
     }
 }
 
@@ -428,12 +507,22 @@ impl<Fd: AsFd, W: Write> fmt::Debug for App<Fd, W> {
     }
 }
 
-fn status_text(model: &ClientModel) -> String {
+fn status_text(model: &ClientModel, mode: Mode, picker: bool) -> String {
     let label = model
         .focused_workspace()
         .and_then(|ws| ws.label.clone())
         .unwrap_or_else(|| "amx".to_owned());
-    format!(" {label} ")
+    let mode = if picker {
+        " PICK"
+    } else {
+        match mode {
+            Mode::Terminal => "",
+            Mode::Prefix => " PREFIX",
+            Mode::Navigate => " NAV",
+            Mode::Copy => " COPY",
+        }
+    };
+    format!(" {label}{mode} ")
 }
 
 /// A pane's id together with the rect chrome computed for it — exposed so

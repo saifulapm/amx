@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use amx::cmd::detach::{Chord, DETACH, DETACH_PANE, PREFIX};
+use amx::cmd::detach::{Chord, DETACH_PANE, PREFIX};
 use amx::cmd::viewport::paint;
 use amx_client::model::{Cell, PaneGrid};
 use amx_client::render::FrameWriter;
@@ -140,39 +140,41 @@ fn a_session_selects_its_own_runtime_and_state_directories() {
 // ----------------------------------------------------------- the detach chord
 
 #[test]
-fn the_detach_chord_is_the_prefix_and_then_one_key() {
-    let mut chord = Chord::new(DETACH);
+fn the_viewport_detach_chord_is_the_prefix_and_then_q() {
+    let mut chord = Chord::new(DETACH_PANE);
     assert!(!chord.feed(b"hello"), "ordinary keys are not a chord");
-    assert!(!chord.feed(&[DETACH]), "nor is the key without the prefix");
+    assert!(
+        !chord.feed(&[DETACH_PANE]),
+        "nor is the key without the prefix"
+    );
 
     assert!(!chord.feed(&[PREFIX]));
     assert!(chord.is_armed());
-    assert!(chord.feed(&[DETACH]), "prefix then d detaches");
+    assert!(chord.feed(&[DETACH_PANE]), "prefix then q detaches");
     assert!(!chord.is_armed(), "and disarms");
 
     // Split across reads, because a terminal delivers what it delivers.
-    let mut split = Chord::new(DETACH);
+    let mut split = Chord::new(DETACH_PANE);
     assert!(!split.feed(&[PREFIX]));
-    assert!(split.feed(&[DETACH]));
+    assert!(split.feed(&[DETACH_PANE]));
 
     // A different key after the prefix is not a detach, and disarms.
-    let mut other = Chord::new(DETACH);
+    let mut other = Chord::new(DETACH_PANE);
     assert!(!other.feed(&[PREFIX, b'x']));
     assert!(!other.is_armed());
-    assert!(!other.feed(&[DETACH]));
+    assert!(!other.feed(&[DETACH_PANE]));
 
     // A doubled prefix re-arms: `ctrl+a ctrl+a` is how a literal prefix is
     // sent, so the state after it is "prefix pending", not "back to normal".
-    let mut doubled = Chord::new(DETACH);
+    let mut doubled = Chord::new(DETACH_PANE);
     assert!(!doubled.feed(&[PREFIX, PREFIX]));
     assert!(doubled.is_armed());
-    assert!(doubled.feed(&[DETACH]));
+    assert!(doubled.feed(&[DETACH_PANE]));
 
-    // The one-pane viewport detaches on a different key (04 §1), and the
-    // full client's key is not it.
-    let mut viewport = Chord::new(DETACH_PANE);
-    assert!(!viewport.feed(&[PREFIX, DETACH]));
-    assert!(viewport.feed(&[PREFIX, DETACH_PANE]));
+    // The full client's detach is the input machine's prefix `d` verb, not a
+    // chord here; `d` after the prefix means nothing to this recogniser.
+    let mut full = Chord::new(DETACH_PANE);
+    assert!(!full.feed(&[PREFIX, b'd']));
 }
 
 // -------------------------------------------------------------- the viewport

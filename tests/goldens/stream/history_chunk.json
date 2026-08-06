@@ -1,0 +1,17 @@
+{
+  "bytes": [
+    "00 09 00 00 00 00 00 00 00 28 00 00 00 00 00 00",
+    "00 29 00 00 00 00 00 00 00 01 05 00 00 00 6c 69",
+    "6e 65 30 00 0b 00 00 00 6c 69 6e 65 31 20 77 72",
+    "61 70 73 01"
+  ],
+  "message": {
+    "kind": "one chunk of a history range transfer",
+    "more": true,
+    "request": 9,
+    "rows": [
+      "line0",
+      "line1 wraps"
+    ]
+  }
+}

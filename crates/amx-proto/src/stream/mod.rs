@@ -1,5 +1,7 @@
 //! Binary streams: binding, flow control and channel priority (04 §4).
 
+pub mod cell;
+pub mod codec;
 pub mod grid;
 pub mod history;
 pub mod raw;
@@ -7,8 +9,10 @@ pub mod raw;
 use amx_core::PaneId;
 use serde::{Deserialize, Serialize};
 
-pub use grid::{Cells, Cursor, CursorShape, DamageRect, GridMessage};
-pub use history::HistoryChunk;
+pub use cell::{CellRef, CellStyle, CellWide, PackedCell, Rgb, Underline};
+pub use codec::{CodecError, Reader};
+pub use grid::{Cells, Cursor, CursorShape, DamageRect, Decoded, GridMessage};
+pub use history::{HistoryChunk, PackedRow, PackedRows};
 pub use raw::{RawDirection, RawPaneIo};
 
 /// A bound binary stream.

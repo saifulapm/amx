@@ -18,11 +18,12 @@ use amx_core::platform::{Pty, PtyCommand, WinSize};
 use amx_core::{Bus, PaneId};
 use amx_proto::FrameHeader;
 use amx_proto::frame::FRAME_HEADER_LEN;
+use amx_proto::stream::PackedCell;
+use amx_proto::stream::grid::{Decoded, decode};
 use amx_proto::stream::{Cursor, DamageRect, StreamId};
 use amx_server::actor::{PaneHost, PaneHostConfig, SnapshotFeed};
 use amx_server::conn::writer::{self, Outbound, WriteError, WriterReport};
-use amx_server::damage::cell::PackedCell;
-use amx_server::damage::decode::{Decoded, decode};
+use amx_server::damage::codec::expected_cell;
 use amx_server::damage::{GridStream, GridStreamConfig, KeyframePolicy};
 use amx_server::platform::UnixPty;
 use amx_vt::{Snapshot, SnapshotRef};
@@ -428,7 +429,7 @@ impl ReferenceGrid {
             let expected: Vec<PackedCell> = ours
                 .cells()
                 .iter()
-                .map(|cell| PackedCell::of(ours, cell))
+                .map(|cell| expected_cell(ours, cell))
                 .collect();
             assert_eq!(
                 theirs,

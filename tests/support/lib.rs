@@ -35,6 +35,6 @@ pub mod wire;
 
 pub use env::{Env, Output, PATIENCE, ServerChild, TICK, TempDir, wait_until};
 pub use golden::{check_bytes_golden, check_json_golden, goldens_dir};
-pub use screen::{Screen, rasterize};
+pub use screen::{Screen, rasterize, shows};
 pub use term::{ALT_ENTER, ALT_LEAVE, PREFIX, Terminal};
 pub use wire::{Wire, read_frame, result_of};

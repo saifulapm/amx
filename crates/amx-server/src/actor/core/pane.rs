@@ -19,7 +19,7 @@ use thiserror::Error;
 use tokio::sync::oneshot;
 
 use super::Core;
-use crate::actor::{PaneCommand, PaneHandle, PaneHost, PaneHostConfig, PaneHostError, Reply};
+use crate::actor::{PaneCommand, PaneHost, PaneHostConfig, PaneHostError, PaneWiring, Reply};
 use crate::platform::UnixPty;
 
 /// The grid every freshly spawned pane starts at.
@@ -64,7 +64,7 @@ impl Core {
                     pane: new_pane,
                     workspace: ws,
                 });
-                let short = self.next_pane_short();
+                let short = self.next_pane_short(new_pane);
                 let _ = reply.send(Ok(pane::SplitReply {
                     pane: new_pane,
                     short,
@@ -113,8 +113,8 @@ impl Core {
                 }
             };
         match self.spawn_pane(new_pane, cwd.clone(), params.command.clone()) {
-            Ok(pane_handle) => {
-                self.panes.insert(new_pane, pane_handle);
+            Ok(wiring) => {
+                self.panes.insert(new_pane, wiring);
                 // The pane was just minted: recording its cwd cannot fail.
                 let _ = self.state.set_pane_cwd(new_pane, cwd);
                 self.effects.absorb(effect);
@@ -122,7 +122,7 @@ impl Core {
                     pane: new_pane,
                     workspace: ws,
                 });
-                let short = self.next_pane_short();
+                let short = self.next_pane_short(new_pane);
                 let _ = reply.send(Ok(pane::SplitReply {
                     pane: new_pane,
                     short,
@@ -147,9 +147,13 @@ impl Core {
     /// the source pane's own recorded cwd, and finally to this process's own
     /// cwd if even that was never recorded (04 §7).
     async fn resolve_split_cwd(&self, source: PaneId) -> PathBuf {
-        if let Some(handle) = self.panes.get(&source) {
+        if let Some(wiring) = self.panes.get(&source) {
             let (tx, rx) = oneshot::channel();
-            if handle.send(PaneCommand::ForegroundCwd(tx)).await.is_ok()
+            if wiring
+                .handle
+                .send(PaneCommand::ForegroundCwd(tx))
+                .await
+                .is_ok()
                 && let Ok(Some(cwd)) = rx.await
             {
                 return cwd;
@@ -166,18 +170,29 @@ impl Core {
     ///
     /// `pub(super)` because a live `workspace.create` spawns its root pane's
     /// shell through the same path a split uses — one spawn path, not two.
+    ///
+    /// The pane spawns at its projected cell size when a client has declared a
+    /// viewport (04 §3 — the active client drives sizes), and at the 24x80
+    /// default otherwise.
     pub(super) fn spawn_pane(
         &self,
         pane: PaneId,
         cwd: PathBuf,
         command: Option<Vec<String>>,
-    ) -> Result<PaneHandle, SpawnError> {
-        let session = UnixPty.spawn(&pty_command(cwd, command))?;
-        let mut config = PaneHostConfig::new(pane, self.ctx.bus.clone(), DEFAULT_SIZE);
+    ) -> Result<PaneWiring, SpawnError> {
+        let size = self
+            .planned_size(pane)
+            .map_or(DEFAULT_SIZE, |(rows, cols)| WinSize { rows, cols });
+        let session = UnixPty.spawn(&pty_command(cwd, command, size))?;
+        let mut config = PaneHostConfig::new(pane, self.ctx.bus.clone(), size);
         config.core = Some(self.handle.clone());
         config.cancel = self.ctx.cancel.child_token();
         let host = PaneHost::spawn(config, session)?;
-        Ok(host.handle().clone())
+        let wiring = PaneWiring {
+            handle: host.handle().clone(),
+            frames: host.frames(),
+        };
+        Ok(wiring)
     }
 
     pub(super) fn handle_pane_zoom(
@@ -378,8 +393,8 @@ impl Core {
         match self.state.close(ws, params.pane) {
             Ok(effect) => {
                 self.effects.absorb(effect);
-                if let Some(handle) = self.panes.remove(&params.pane) {
-                    let _ = handle.try_send(PaneCommand::Kill);
+                if let Some(wiring) = self.panes.remove(&params.pane) {
+                    let _ = wiring.handle.try_send(PaneCommand::Kill);
                 }
                 let seq = self.publish(Event::LayoutChanged { workspace: ws });
                 let _ = reply.send(Ok(pane::CloseReply { seq }));
@@ -420,7 +435,7 @@ fn default_shell() -> OsString {
 }
 
 /// Build the command a freshly spawned pane runs.
-fn pty_command(cwd: PathBuf, command: Option<Vec<String>>) -> PtyCommand {
+fn pty_command(cwd: PathBuf, command: Option<Vec<String>>, size: WinSize) -> PtyCommand {
     let mut argv = command.into_iter().flatten();
     let (program, args) = match argv.next() {
         Some(first) => (OsString::from(first), argv.map(OsString::from).collect()),
@@ -431,6 +446,6 @@ fn pty_command(cwd: PathBuf, command: Option<Vec<String>>) -> PtyCommand {
         args,
         env: Vec::new(),
         cwd: Some(cwd),
-        size: DEFAULT_SIZE,
+        size,
     }
 }

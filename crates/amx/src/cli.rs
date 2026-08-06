@@ -36,8 +36,14 @@ pub fn cli() -> Command {
         )
         .subcommand(attach())
         .subcommand(server())
-        .subcommand(session())
         .subcommands(amx_proto::control::cli::method_commands());
+
+    // The generated tree owns the `session` group (it carries `session.state`);
+    // the lifecycle verbs merge into it rather than shadowing it, so one
+    // `amx session …` namespace serves both.
+    root = root.mut_subcommand("session", |generated| {
+        session_lifecycle(generated.about("Session state and the lifecycle of running sessions"))
+    });
 
     // Every leaf of the generated tree takes its parameters as one JSON object,
     // so a method that grows a field needs no edit here. Typed flags per method
@@ -79,15 +85,14 @@ fn server() -> Command {
         )
 }
 
-/// `amx session …` — the lifecycle verbs.
-fn session() -> Command {
+/// The `amx session …` lifecycle verbs, added onto the generated group.
+fn session_lifecycle(group: Command) -> Command {
     let name = || {
         Arg::new("name")
             .value_name("NAME")
             .help("The session to act on [default: the selected session]")
     };
-    Command::new("session")
-        .about("Enumerate and manage running sessions")
+    group
         .subcommand_required(true)
         .arg_required_else_help(true)
         .subcommand(Command::new("list").about("List the sessions with a server running"))

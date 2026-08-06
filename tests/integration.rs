@@ -1,0 +1,259 @@
+//! T19's exit criteria, made real: the wired client against the real binary.
+//!
+//! Every test here drives `amx` on a real pseudoterminal over the real socket
+//! and asserts on consequences no blank-grid client could fake — bytes typed
+//! into the terminal change the filesystem through the pane's child process,
+//! shell output crosses the wire and lands in the rasterized screen, a resize
+//! reaches the child as `SIGWINCH` with the projected dimensions, and a
+//! detach/reattach round-trips the identical, non-blank grid.
+
+#![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
+
+use rig::env::processes_with_arg;
+use rig::screen::render;
+use rig::wire::result_of;
+use rig::{ALT_ENTER, Env, Wire, shows};
+use serde_json::json;
+
+const ROWS: u16 = 24;
+const COLS: u16 = 80;
+
+/// The pane a lone workspace shows at 24x80: content area 23 rows minus the
+/// border, so the child's grid is 21x78.
+const INNER: (u16, u16) = (21, 78);
+
+// ------------------------------------------------- typed bytes reach the child
+
+#[tokio::test]
+async fn typed_bytes_reach_the_panes_child_process() {
+    let env = Env::new("typed");
+    let hit = env.scratch().join("typed-hit");
+
+    let mut term = env.attach_on_tty(&[], ROWS, COLS);
+    term.wait_for(ALT_ENTER);
+    // The seeded shell's prompt arriving on screen proves the grid stream is
+    // live before anything is typed at it.
+    term.wait_output("the shell prompt to render", |seen| shows(seen, "$"));
+
+    term.type_line(&format!("touch {}", hit.display()));
+    rig::wait_until("the typed command's file to appear", || hit.is_file());
+
+    // And the round trip back: output produced by the child crosses the wire
+    // into this client's screen. `printf` so the typed line itself cannot
+    // satisfy the assertion.
+    term.type_line("printf 'ok-%s\\n' typed-mark");
+    term.wait_output("the child's output to render", |seen| {
+        shows(seen, "ok-typed-mark")
+    });
+
+    term.chord(b'd');
+    assert_eq!(term.wait(), Some(0));
+}
+
+// ----------------------------------------------- resize reaches the child
+
+#[tokio::test]
+async fn resize_delivers_sigwinch_and_the_child_sees_new_dimensions() {
+    let env = Env::new("winch");
+    let sizes = env.scratch().join("winch-sizes");
+
+    let mut term = env.attach_on_tty(&[], ROWS, COLS);
+    term.wait_for(ALT_ENTER);
+    term.wait_output("the shell prompt to render", |seen| shows(seen, "$"));
+
+    // The trap is the proof of *signal delivery*: nothing runs it but the
+    // child receiving SIGWINCH, and what it records is the size the pty holds
+    // at that moment.
+    term.type_line(&format!(
+        "trap 'stty size >> {}' WINCH; stty size > {0}; echo trap-armed",
+        sizes.display()
+    ));
+    term.wait_output("the trap to arm", |seen| shows(seen, "trap-armed"));
+    rig::wait_until("the baseline size to be recorded", || {
+        std::fs::read_to_string(&sizes)
+            .is_ok_and(|s| s.contains(&format!("{} {}", INNER.0, INNER.1)))
+    });
+
+    // Grow the client's terminal: the viewport re-declares, the server
+    // re-projects the layout, the pane's pty resizes, the child hears it.
+    term.resize(30, 100);
+    let grown = (30 - 1 - 2, 100 - 2);
+    rig::wait_until("the child to record the post-SIGWINCH size", || {
+        std::fs::read_to_string(&sizes)
+            .is_ok_and(|s| s.contains(&format!("{} {}", grown.0, grown.1)))
+    });
+
+    term.chord(b'd');
+    assert_eq!(term.wait(), Some(0));
+}
+
+// -------------------------------------- detach, reattach, identical content
+
+#[tokio::test]
+async fn detach_and_reattach_shows_the_identical_non_blank_grid() {
+    let env = Env::new("reattach");
+
+    let mut first = env.attach_on_tty(&[], ROWS, COLS);
+    first.wait_for(ALT_ENTER);
+    first.type_line("printf 'ok-%s\\n' reattach-mark");
+    first.wait_output("the marker to render", |seen| {
+        shows(seen, "ok-reattach-mark")
+    });
+    let before = first.wait_settled();
+    assert!(
+        render(&before).contains("ok-reattach-mark"),
+        "the baseline grid is non-blank and holds the marker"
+    );
+
+    // The civilised exit: prefix `d`, the input machine's own detach verb.
+    first.chord(b'd');
+    assert_eq!(first.wait(), Some(0), "prefix d detaches cleanly");
+
+    let mut second = env.attach_on_tty(&[], ROWS, COLS);
+    second.wait_for(ALT_ENTER);
+    second.wait_output("the reattached screen to match the first", |seen| {
+        rig::rasterize(seen) == before
+    });
+    let after = rig::rasterize(second.output());
+    assert!(
+        render(&after).contains("ok-reattach-mark"),
+        "the reattached grid holds the same content, not a fresh blank:\n{}",
+        render(&after)
+    );
+
+    second.chord(b'd');
+    assert_eq!(second.wait(), Some(0));
+}
+
+// -------------------------------------- a second client's model, over the wire
+
+#[tokio::test]
+async fn session_state_populates_a_second_clients_model() {
+    let env = Env::new("second");
+
+    let mut first = env.attach_on_tty(&[], ROWS, COLS);
+    first.wait_for(ALT_ENTER);
+    first.type_line("printf 'ok-%s\\n' second-mark");
+    first.wait_output("the marker to render", |seen| shows(seen, "ok-second-mark"));
+
+    // The wire view: the snapshot names the seeded workspace, its layout and
+    // its focused pane — everything a fresh model folds.
+    let mut wire = Wire::connect(&env.socket()).await;
+    wire.hello(amx_proto::version::window()).await;
+    let state = wire.request("session.state", json!({})).await;
+    let state = result_of(&state);
+    assert_eq!(state["workspaces"].as_array().expect("workspaces").len(), 1);
+    assert!(state["focused_workspace"].is_string());
+    assert!(state["workspaces"][0]["layout"]["root"].is_object());
+    assert!(state["panes"][0]["pane"].is_string());
+    let (rows, cols) = INNER;
+    assert_eq!(
+        state["panes"][0]["rows"], rows,
+        "the active client's size drives the pane"
+    );
+    assert_eq!(state["panes"][0]["cols"], cols);
+
+    // The living proof: a second real client folds that snapshot, binds the
+    // pane's stream, and paints content it never typed.
+    let mut second = env.attach_on_tty(&[], ROWS, COLS);
+    second.wait_for(ALT_ENTER);
+    second.wait_output("the first client's content in the second's model", |seen| {
+        shows(seen, "ok-second-mark")
+    });
+    assert!(first.alive(), "the first client is untouched");
+
+    first.chord(b'd');
+    assert_eq!(first.wait(), Some(0));
+    second.chord(b'd');
+    assert_eq!(second.wait(), Some(0));
+}
+
+// ------------------------------------------------------- the picker, end to end
+
+#[tokio::test]
+async fn picker_switches_workspaces_end_to_end() {
+    let env = Env::new("picker");
+
+    let mut term = env.attach_on_tty(&[], ROWS, COLS);
+    term.wait_for(ALT_ENTER);
+    term.wait_output("the shell prompt to render", |seen| shows(seen, "$"));
+
+    // A second workspace, labelled, unfocused — created over the wire so the
+    // client only learns of it the way any client does, via session.state.
+    let mut wire = Wire::connect(&env.socket()).await;
+    wire.hello(amx_proto::version::window()).await;
+    let created = wire
+        .request(
+            "workspace.create",
+            json!({ "label": "beta", "focus": false }),
+        )
+        .await;
+    let beta = result_of(&created)["workspace"]
+        .as_str()
+        .expect("the new workspace's id")
+        .to_owned();
+
+    // Prefix p opens the picker; typing filters to the labelled workspace;
+    // Enter chooses it. The status line naming `beta` proves the switch round
+    // tripped: the label only reaches this client through a fresh
+    // session.state fold after workspace.switch succeeded.
+    term.chord(b'p');
+    term.wait_output("the picker to open", |seen| shows(seen, "> "));
+    term.send(b"beta\r");
+    // The *status line* names the workspace — the picker's own rows also said
+    // "beta", so the assertion reads the bottom row specifically.
+    term.wait_output("the status line to name the new workspace", |seen| {
+        let screen = rig::rasterize(seen);
+        (0..COLS.saturating_sub(4)).any(|col| {
+            "beta".chars().enumerate().all(|(at, ch)| {
+                // Bottom-row cells only.
+                #[allow(clippy::cast_possible_truncation, reason = "at < 4")]
+                let col = col + at as u16;
+                screen.get(&(ROWS - 1, col)) == Some(&ch)
+            })
+        })
+    });
+
+    let state = wire.request("session.state", json!({})).await;
+    assert_eq!(
+        result_of(&state)["focused_workspace"].as_str(),
+        Some(beta.as_str()),
+        "the server's focus followed the picker's choice"
+    );
+
+    term.chord(b'd');
+    assert_eq!(term.wait(), Some(0));
+}
+
+// --------------------------------------------------- the pane survives clients
+
+#[tokio::test]
+async fn a_process_started_by_typing_outlives_every_client() {
+    let env = Env::new("outlives");
+    let marker = format!("amx-rig-outlives-{}", std::process::id());
+
+    let mut term = env.attach_on_tty(&[], ROWS, COLS);
+    term.wait_for(ALT_ENTER);
+    term.wait_output("the shell prompt to render", |seen| shows(seen, "$"));
+
+    // Start a process whose argv carries the marker, through nothing but
+    // typed bytes. `read` rather than a real command on purpose: a builtin
+    // keeps the shell — and the marker in its argv — alive, where a trailing
+    // external command would be exec'd over it.
+    term.type_line(&format!("sh -c 'echo held; read _held' {marker}"));
+    rig::wait_until("the process to appear in the table", || {
+        processes_with_arg(&marker) >= 1
+    });
+
+    term.chord(b'd');
+    assert_eq!(term.wait(), Some(0));
+    assert!(
+        processes_with_arg(&marker) >= 1,
+        "detaching leaves the typed process running"
+    );
+
+    env.stop();
+    rig::wait_until("session stop reaps the pane's children", || {
+        processes_with_arg(&marker) == 0
+    });
+}

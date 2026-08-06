@@ -7,18 +7,13 @@
 //! same place, a detached `amx server` and a poll until it answers.
 //!
 //! [`full`] is the ordinary client — chrome, layout, every visible pane — and
-//! [`crate::cmd::viewport`] is the degenerate one-pane form of it.
-//!
-//! **What the loop here does not do yet.** It reads stdin only to recognise the
-//! detach chord (see [`crate::cmd::detach`] for why that one sequence cannot
-//! wait) and forwards nothing to panes: `App::handle_input` is T14's `todo!()`,
-//! and the raw pane I/O stream it would write to has no encoding yet
-//! (`amx_proto::stream::raw` is `todo!()` too). When T14 lands, the stdin arm
-//! calls `App::handle_input` and this file's chord goes away.
+//! [`crate::cmd::viewport`] is the degenerate one-pane form of it. Both run
+//! the wired `App` loop: stdin through the modal input machine, frames off
+//! the bound streams, detach on prefix `d` (the input machine's own verb).
 
 use std::process::ExitCode;
 
-use amx_client::app::{App, RESIZE_DEBOUNCE};
+use amx_client::app::App;
 use amx_client::term::{self, Sigwinch};
 use amx_core::{Ctx, PaneId};
 use amx_proto::ClientInfo;
@@ -26,9 +21,6 @@ use amx_server::session::daemon::{self, READY_TIMEOUT};
 use amx_server::session::probe::clear_if_stale;
 use anyhow::Context as _;
 use clap::ArgMatches;
-use tokio::io::AsyncReadExt as _;
-
-use crate::cmd::detach::{Chord, DETACH};
 
 /// What `amx attach` was asked for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -127,9 +119,9 @@ pub fn client_info() -> ClientInfo {
     }
 }
 
-/// The ordinary client: chrome, layout, every visible pane.
+/// The ordinary client: chrome, layout, every visible pane, live.
 async fn full(ctx: &Ctx) -> anyhow::Result<ExitCode> {
-    let mut app = App::attach(
+    let app = App::attach(
         &ctx.socket,
         std::io::stdin(),
         std::io::stdout(),
@@ -139,40 +131,19 @@ async fn full(ctx: &Ctx) -> anyhow::Result<ExitCode> {
     .context("attach to the session")?;
 
     let mut out = std::io::stdout();
-    let mut sigwinch = Sigwinch::install().context("watch for terminal resizes")?;
-    let mut stdin = tokio::io::stdin();
-    let mut chord = Chord::new(DETACH);
-    let mut input = [0_u8; 1024];
+    let sigwinch = Sigwinch::install().context("watch for terminal resizes")?;
+    let stdin = tokio::io::stdin();
 
-    app.repaint();
-    flush(&mut out, app.frame())?;
-
-    loop {
-        tokio::select! {
-            read = stdin.read(&mut input) => {
-                // End of input is a detach too: whatever was driving this
-                // terminal has gone, and the panes are not its to take along.
-                let Ok(n @ 1..) = read else { break };
-                if chord.feed(&input[..n]) {
-                    break;
-                }
-            }
-            signal = sigwinch.recv() => {
-                let Some(()) = signal else { break };
-                let size = term::window_size(std::io::stdin())
-                    .context("read the terminal size")?;
-                app.note_resize(size);
-            }
-            () = tokio::time::sleep(RESIZE_DEBOUNCE), if app.has_pending_resize() => {
-                app.settle_resize(&mut |_size| {});
-                flush(&mut out, app.frame())?;
-            }
-        }
-    }
-
-    // Dropping the app restores the terminal: raw mode off, alt screen left,
-    // exactly as the guard found it. The session keeps running.
-    drop(app);
+    // The loop ends on prefix `d` (the input machine's detach verb) or on
+    // stdin closing; dropping the app then restores the terminal — raw mode
+    // off, alt screen left — and the session keeps running.
+    app.run(sigwinch, stdin, |bytes| {
+        use std::io::Write as _;
+        out.write_all(bytes)?;
+        out.flush()
+    })
+    .await
+    .context("run the attached client")?;
     Ok(ExitCode::SUCCESS)
 }
 

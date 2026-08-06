@@ -1,0 +1,12 @@
+{
+  "bytes": [
+    "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 a1",
+    "00 6c 73 20 2d 6c 61 0d"
+  ],
+  "message": {
+    "direction": "to_pane",
+    "kind": "raw pane input, as if typed",
+    "pane": "00000000-0000-0000-0000-0000000000a1",
+    "text": "ls -la\\r"
+  }
+}
