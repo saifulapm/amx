@@ -127,7 +127,8 @@ async fn drained(out: &Outbound) {
 #[tokio::test]
 async fn grid_stream_flush_and_outbound_do_not_allocate_per_frame() {
     let pane = Pane::controlled().await;
-    pane.write(b"cells for the stream to flush\r".as_slice()).await;
+    pane.write(b"cells for the stream to flush\r".as_slice())
+        .await;
     let snapshot = pane.snapshot_until("cells for the stream").await;
     let generation = pane.feed().generation();
 

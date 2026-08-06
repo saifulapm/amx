@@ -387,9 +387,10 @@ impl Parser {
         let Some(transfer) = self.transfers.front_mut() else {
             return;
         };
-        let step = transfer
-            .chunks
-            .next_chunk(&mut self.history, &self.terminal, &mut transfer.rows);
+        let step =
+            transfer
+                .chunks
+                .next_chunk(&mut self.history, &self.terminal, &mut transfer.rows);
         let outcome = match step {
             Some(Ok(_)) if transfer.chunks.more() => return,
             Some(Ok(_)) | None => Ok(()),

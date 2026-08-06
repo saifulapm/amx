@@ -302,9 +302,9 @@ async fn a_large_history_read_does_not_stall_frame_publication() {
     let mut pane = Harness::with_scrollback("yes 'history filler line'", 64 * 1024 * 1024);
     let mut feed = pane.host.frames();
 
-    pane.wait_for_event(|event| {
-        matches!(event, Event::HistoryCommitted { range, .. } if range.last.get() >= DEEP)
-    })
+    pane.wait_for_event(
+        |event| matches!(event, Event::HistoryCommitted { range, .. } if range.last.get() >= DEEP),
+    )
     .await;
 
     let (reply, answer) = oneshot::channel();
