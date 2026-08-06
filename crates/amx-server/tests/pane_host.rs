@@ -471,6 +471,89 @@ async fn foreground_cwd_reads_the_directory_the_child_is_in() {
     host.shutdown().await.expect("the pane task ended");
 }
 
+/// The published frame and the grid generation travel in one slot: a reader
+/// must never observe the post-resize generation paired with a pre-resize
+/// grid. Two separate reads (`latest()` + `generation()`) cannot promise
+/// that — [`SnapshotFeed::frame`] does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn published_frame_and_generation_change_together() {
+    let pane = Harness::start("printf 'steady\\n'; sleep 60");
+    pane.wait_for_text("steady").await;
+    let feed = pane.host.frames();
+    let (snapshot, generation) = feed.frame();
+    assert_eq!(generation, GridGeneration::FIRST);
+    assert_eq!((snapshot.rows(), snapshot.cols()), (SIZE.rows, SIZE.cols));
+
+    pane.host
+        .handle()
+        .send(PaneCommand::Resize {
+            rows: 30,
+            cols: 100,
+        })
+        .await
+        .expect("the pane is running");
+
+    // From here every observed pair must be internally consistent: the old
+    // generation only with the old geometry, the new generation only with the
+    // new one. The bump-before-publish window is exactly where a torn read
+    // would show the new generation on the old grid.
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let (snapshot, generation) = feed.frame();
+        if generation == GridGeneration::FIRST.next() {
+            assert_eq!(
+                (snapshot.rows(), snapshot.cols()),
+                (30, 100),
+                "the bumped generation must never be paired with the pre-resize grid"
+            );
+            break;
+        }
+        assert_eq!(
+            (snapshot.rows(), snapshot.cols()),
+            (SIZE.rows, SIZE.cols),
+            "the old generation must never be paired with the post-resize grid"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "the resized frame never published"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+
+    pane.stop().await;
+}
+
+/// The dedicated hang-up path works with a mailbox nothing can be queued
+/// into: `PaneCommand::Kill` can be refused exactly then, and a kill that
+/// can be refused is a child that can be orphaned.
+#[tokio::test]
+async fn kill_bypasses_a_full_command_mailbox() {
+    let mut pane = Harness::start("sleep 60");
+    // Let the shell's startup output drain so the actor is parked.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Single-threaded scheduler, no awaits: the actor cannot drain between
+    // these sends, so the mailbox is genuinely full afterwards.
+    while pane
+        .host
+        .handle()
+        .try_send(PaneCommand::Write(bytes::Bytes::from_static(b"x")))
+        .is_ok()
+    {}
+    assert!(
+        pane.host.handle().try_send(PaneCommand::Kill).is_err(),
+        "the mailbox kill must be refused here, or this test is not testing anything"
+    );
+
+    pane.host.kill();
+    let exited = pane
+        .wait_for_event(|event| matches!(event, Event::PaneExited { .. }))
+        .await;
+    assert!(matches!(exited, Event::PaneExited { status: None, .. }));
+
+    pane.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kill_hangs_the_pane_up_and_reports_the_exit() {
     let mut pane = Harness::start("sleep 60");

@@ -33,15 +33,18 @@
 //! tracker the terminal, forwards what the tracker found, and serves history
 //! ranges through it.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc as sync_mpsc;
 use std::time::{Duration, Instant};
 
 use amx_core::platform::WinSize;
-use amx_core::{InvalidationCause, RowHash, RowId, RowRange};
+use amx_core::{GridGeneration, InvalidationCause, RowHash, RowId, RowRange};
 use amx_vt::{Effect as VtEffect, Effects, RenderState, SnapshotRef, Snapshots, Terminal};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, warn};
 
+use super::PublishedFrame;
 use super::probe::PaneProbe;
 use crate::actor::{HistoryError, HistoryRows};
 use crate::history::{HistoryEvent, HistoryTracker};
@@ -103,6 +106,19 @@ pub(super) enum HostEvent {
     Title(String),
     /// The application rang the bell.
     Bell,
+    /// The grid was resized and its generation bumped.
+    ///
+    /// Produced here rather than in the pane actor so the generation moves on
+    /// the same thread that publishes frames: a bump made anywhere else could
+    /// land between a frame and the generation a reader pairs it with.
+    Resized {
+        /// New row count.
+        rows: u16,
+        /// New column count.
+        cols: u16,
+        /// The generation the resize minted.
+        generation: GridGeneration,
+    },
     /// Rows were committed to history.
     Committed {
         /// The rows, in order.
@@ -137,11 +153,15 @@ pub(super) struct Parser {
     /// The published snapshot slot. Readers clone the `Arc` out of it and hold
     /// that; the borrow is a pointer copy, and no reader ever holds it across
     /// work of its own.
-    published: watch::Sender<SnapshotRef>,
+    published: watch::Sender<PublishedFrame>,
     events: mpsc::UnboundedSender<HostEvent>,
     pty: PtyActorHandle,
     probe: PaneProbe,
     frame_interval: Duration,
+    /// The pane's grid generation (04 §4). This thread is the only writer:
+    /// the bump happens when the resize is applied to the terminal, so every
+    /// frame published after it carries the geometry the generation names.
+    generation: Arc<AtomicU64>,
     /// Row ids, the eviction floor and invalidation (04 §3).
     history: HistoryTracker,
     /// What the last observation found, reused so a frame allocates nothing
@@ -163,6 +183,7 @@ impl Parser {
             probe,
             frame_interval,
             size,
+            generation,
         } = parts;
         Self {
             terminal,
@@ -175,6 +196,7 @@ impl Parser {
             pty,
             probe,
             frame_interval,
+            generation,
             history: HistoryTracker::new(size.cols, size.rows),
             found: Vec::new(),
         }
@@ -268,15 +290,23 @@ impl Parser {
         }
     }
 
-    /// Resize the grid, then the pty the child sees.
+    /// Resize the grid, bump the generation, then resize the pty the child
+    /// sees.
     ///
     /// This order is the contract: the terminal reflows first, so the frame
-    /// published after the `SIGWINCH` already describes the new geometry.
+    /// published after the `SIGWINCH` already describes the new geometry. The
+    /// generation bump happens here and only here, exactly once per applied
+    /// resize — 04 §4 makes the generation the thing a client compares
+    /// against to decide a delta is uninterpretable, so bumping it twice for
+    /// one resize would cost every client a keyframe. A resize the terminal
+    /// refused bumps nothing.
     fn resize(&mut self, size: WinSize) -> bool {
         if let Err(err) = self.terminal.resize(size.cols, size.rows) {
             warn!(error = %err, "pane terminal resize failed");
             return false;
         }
+        let generation = self.current_generation().next();
+        self.generation.store(generation.get(), Ordering::Release);
         // No responses travel with the resize: libghostty-vt emits the in-band
         // size report through the write-pty callback, and amx-vt only binds
         // that callback's sink inside `Terminal::write`, so a reply produced
@@ -284,6 +314,11 @@ impl Parser {
         if let Err(err) = self.pty.resize(size, Vec::new()) {
             warn!(error = %err, "pane pty resize failed");
         }
+        self.send(HostEvent::Resized {
+            rows: size.rows,
+            cols: size.cols,
+            generation,
+        });
         // What the resize did to history — a width reflow invalidates every id,
         // a height change moves rows between history and the live grid and
         // invalidates nothing (04 §3) — is the tracker's to work out from the
@@ -306,9 +341,16 @@ impl Parser {
         self.render.update(&mut self.terminal)?;
         self.snapshots.publish(&mut self.render)?;
         // `send_replace` rather than `send`: a pane with no reader attached is
-        // normal, and publication must not care.
-        self.published.send_replace(self.snapshots.latest());
+        // normal, and publication must not care. The generation rides in the
+        // slot with the frame it describes — this thread is the only bumper,
+        // so the pair is consistent by construction.
+        self.published
+            .send_replace((self.snapshots.latest(), self.current_generation()));
         Ok(())
+    }
+
+    fn current_generation(&self) -> GridGeneration {
+        GridGeneration::from_raw(self.generation.load(Ordering::Acquire))
     }
 
     /// Follow the scrollback across a frame and report what moved.
@@ -355,10 +397,11 @@ pub(super) struct ParserParts {
     pub(super) render: RenderState,
     pub(super) snapshots: Snapshots,
     pub(super) done: sync_mpsc::Sender<Box<Scratch>>,
-    pub(super) published: watch::Sender<SnapshotRef>,
+    pub(super) published: watch::Sender<PublishedFrame>,
     pub(super) events: mpsc::UnboundedSender<HostEvent>,
     pub(super) pty: PtyActorHandle,
     pub(super) probe: PaneProbe,
     pub(super) frame_interval: Duration,
     pub(super) size: WinSize,
+    pub(super) generation: Arc<AtomicU64>,
 }

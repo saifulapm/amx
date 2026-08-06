@@ -25,6 +25,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
+use super::PublishedFrame;
 use super::parser::{HostEvent, ParserCommand};
 use crate::actor::{CoreCommand, CoreHandle, HistoryError, HistoryRows, PaneCommand, PaneReport};
 use crate::pty::{ChildExit, PtyActorHandle};
@@ -46,7 +47,7 @@ enum Step {
 pub(super) struct Mailboxes {
     pub(super) commands: mpsc::Receiver<PaneCommand>,
     pub(super) events: mpsc::UnboundedReceiver<HostEvent>,
-    pub(super) frames: watch::Receiver<SnapshotRef>,
+    pub(super) frames: watch::Receiver<PublishedFrame>,
 }
 
 /// The pane actor.
@@ -131,7 +132,18 @@ impl Actor {
                 pane: self.pane,
                 generation,
             });
-            self.report(PaneReport::Damage { generation }).await;
+            // `try_send`, not `send`: damage is the one report produced at
+            // frame rate, and a pane that blocked on a saturated `Core` here
+            // would stop serving its own mailbox — one half of a
+            // Core↔PaneHost deadlock. Dropping is safe for damage alone: the
+            // dirty state stays accumulated and the next frame's report
+            // covers it.
+            if let Some(core) = &self.core {
+                let _ = core.try_send(CoreCommand::PaneReport {
+                    pane: self.pane,
+                    report: PaneReport::Damage { generation },
+                });
+            }
         }
     }
 
@@ -158,32 +170,17 @@ impl Actor {
         Effect::Nothing
     }
 
-    /// Resize the grid, bumping the generation exactly once.
+    /// Forward a resize to the parser thread, which owns the terminal.
     ///
-    /// The bump happens here and only here: 04 §4 makes the generation the
-    /// thing a client compares against to decide a delta is uninterpretable, so
-    /// bumping it twice for one resize would cost every client a keyframe.
+    /// The generation bump and the `PaneResized` event come back from the
+    /// parser as [`HostEvent::Resized`] once the terminal has actually
+    /// reflowed: bumping here would let a reader pair the new generation with
+    /// a frame published before the resize was applied.
     async fn resize(&mut self, rows: u16, cols: u16) -> Effect {
-        // The parser goes first: a generation bumped for a resize that never
-        // reached the terminal would cost every client a keyframe for nothing.
-        if self
-            .parser
-            .send(ParserCommand::Resize {
-                size: WinSize { rows, cols },
-            })
-            .is_err()
-        {
-            return Effect::Nothing;
-        }
-        let generation = self.generation().next();
-        self.generation.store(generation.get(), Ordering::Release);
-        self.bus.publish(Event::PaneResized {
-            pane: self.pane,
-            rows,
-            cols,
-            generation,
+        let _ = self.parser.send(ParserCommand::Resize {
+            size: WinSize { rows, cols },
         });
-        Effect::PaneDamage(self.pane)
+        Effect::Nothing
     }
 
     /// A frame is a command on the parser thread, answered to the caller.
@@ -249,6 +246,18 @@ impl Actor {
                 self.report(PaneReport::Title(title)).await;
             }
             HostEvent::Bell => self.report(PaneReport::Bell).await,
+            HostEvent::Resized {
+                rows,
+                cols,
+                generation,
+            } => {
+                self.bus.publish(Event::PaneResized {
+                    pane: self.pane,
+                    rows,
+                    cols,
+                    generation,
+                });
+            }
             HostEvent::Committed { range, hashes } => {
                 self.bus.publish(Event::HistoryCommitted {
                     pane: self.pane,
