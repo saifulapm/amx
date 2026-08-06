@@ -148,9 +148,9 @@ action — drop the cache from `from_row` — is identical.
 
 ## The model this settles on
 
-State per pane: `oldest_row` (floor), `head` (next id to be committed), one
-anchor with its row id and content hash, the floor row's content hash, and the
-last observed grid size.
+State per pane: `oldest_row` (floor), `head` (next id to be committed), the
+highest id ever *issued*, one anchor with its row id and content hash, the floor
+row's content hash, and the last observed grid size.
 
 Each observation, on the parser thread, after a frame:
 
@@ -171,10 +171,20 @@ Each observation, on the parser thread, after a frame:
 6. Re-anchor on history row `S−1` and re-read both hashes.
 
 **Rebaseline** means: emit `Invalidated{from_row: oldest_row_prev, cause}` if
-anything was committed, then set `floor = head_prev` so the surviving rows get
-ids that were never issued before. Ids are allocated in increasing order and no
-id is ever reassigned to a different row without an announcement, across
+anything was ever issued, then set `floor` to the highest id ever issued so the
+surviving rows get ids that were never handed out before. It is the *issued*
+high-water mark and not the head, because the head falls back below it whenever
+a taller grid reclaims committed rows — rebaselining from the head there would
+hand an announced id to a different row. Ids are allocated in increasing order
+and no id is ever reassigned to a different row without an announcement, across
 trimming, clear, reset and reflow alike.
+
+The one place an id is *deliberately* reissued is that same reclaim: rows a
+taller grid pulls back into the live area keep their ids and commit again under
+them. If the application overwrote them meanwhile, the content changed and the
+id's announcement carries a different hash, which is precisely what 04 §3 puts
+the hash there for. No invalidation fires, because a height change reflows
+nothing.
 
 **Validated end to end (measured):** 28,900 lines written across 40 ticks of
 wildly different sizes through an 8 KiB scrollback (repeated pruning, two anchor
