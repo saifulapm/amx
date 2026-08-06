@@ -218,6 +218,10 @@ impl Terminal {
     }
 
     /// Read until `cond` holds over everything painted so far, or fail.
+    ///
+    /// The failure shows what *was* seen: a client that refused instead of
+    /// painting said why on this same stream, and a timeout that swallows the
+    /// refusal turns its cause into a guess.
     pub fn wait_output(&mut self, what: &str, mut cond: impl FnMut(&[u8]) -> bool) {
         let deadline = Instant::now() + PATIENCE;
         loop {
@@ -227,8 +231,9 @@ impl Terminal {
             }
             assert!(
                 Instant::now() < deadline,
-                "timed out waiting for {what} ({} bytes seen)",
-                self.seen.len()
+                "timed out waiting for {what}; seen so far ({} bytes): {:?}",
+                self.seen.len(),
+                String::from_utf8_lossy(&self.seen)
             );
             std::thread::sleep(TICK);
         }
