@@ -208,6 +208,36 @@ method_table! {
         about: "Create a workspace",
     }
 
+    /// Rename a workspace.
+    WorkspaceRename {
+        wire: "workspace.rename",
+        handler: workspace_rename,
+        params: workspace::RenameParams,
+        reply: workspace::RenameReply,
+        cli: ["workspace", "rename"],
+        about: "Rename a workspace",
+    }
+
+    /// Kill a workspace and every pane it holds.
+    WorkspaceKill {
+        wire: "workspace.kill",
+        handler: workspace_kill,
+        params: workspace::KillParams,
+        reply: workspace::KillReply,
+        cli: ["workspace", "kill"],
+        about: "Kill a workspace and every pane it holds",
+    }
+
+    /// Focus a workspace.
+    WorkspaceSwitch {
+        wire: "workspace.switch",
+        handler: workspace_switch,
+        params: workspace::SwitchParams,
+        reply: workspace::SwitchReply,
+        cli: ["workspace", "switch"],
+        about: "Focus a workspace",
+    }
+
     /// Split a pane, creating a new one beside it.
     PaneSplit {
         wire: "pane.split",
@@ -216,5 +246,45 @@ method_table! {
         reply: pane::SplitReply,
         cli: ["pane", "split"],
         about: "Split a pane and run a command in the new one",
+    }
+
+    /// Toggle a pane between its layout slot and the full workspace.
+    PaneZoom {
+        wire: "pane.zoom",
+        handler: pane_zoom,
+        params: pane::ZoomParams,
+        reply: pane::ZoomReply,
+        cli: ["pane", "zoom"],
+        about: "Toggle a pane between its layout slot and the full workspace",
+    }
+
+    /// Exchange two panes' positions in the layout.
+    PaneSwap {
+        wire: "pane.swap",
+        handler: pane_swap,
+        params: pane::SwapParams,
+        reply: pane::SwapReply,
+        cli: ["pane", "swap"],
+        about: "Swap two panes' positions without restarting either",
+    }
+
+    /// Move a pane into a different workspace.
+    PaneMove {
+        wire: "pane.move",
+        handler: pane_move,
+        params: pane::MoveParams,
+        reply: pane::MoveReply,
+        cli: ["pane", "move"],
+        about: "Move a pane into a different workspace",
+    }
+
+    /// Close a pane.
+    PaneClose {
+        wire: "pane.close",
+        handler: pane_close,
+        params: pane::CloseParams,
+        reply: pane::CloseReply,
+        cli: ["pane", "close"],
+        about: "Close a pane",
     }
 }

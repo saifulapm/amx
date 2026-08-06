@@ -1,6 +1,6 @@
 //! `workspace.*` payloads.
 
-use amx_core::{Seq, ShortNumber, WorkspaceId};
+use amx_core::{PaneId, Seq, ShortNumber, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
 /// Parameters of `workspace.create`.
@@ -26,5 +26,60 @@ pub struct CreateReply {
     /// Its user-visible number.
     pub short: ShortNumber,
     /// The bus sequence at which the workspace existed.
+    pub seq: Seq,
+}
+
+/// Parameters of `workspace.rename`.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RenameParams {
+    /// The workspace to rename.
+    pub workspace: WorkspaceId,
+    /// Its new label.
+    pub label: String,
+}
+
+/// Reply to `workspace.rename`.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RenameReply {
+    /// The bus sequence at which the rename took effect.
+    pub seq: Seq,
+}
+
+/// Parameters of `workspace.kill`.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct KillParams {
+    /// The workspace to kill, with every pane it holds.
+    pub workspace: WorkspaceId,
+}
+
+/// Reply to `workspace.kill`.
+///
+/// Reports which panes it took with it (T16's
+/// `workspace_kill_reports_which_panes_it_took_with_it`) rather than leaving
+/// the caller to infer the loss from separate `pane.exited` events.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct KillReply {
+    /// Every pane the killed workspace took with it.
+    pub panes: Vec<PaneId>,
+    /// The bus sequence at which the workspace was gone.
+    pub seq: Seq,
+}
+
+/// Parameters of `workspace.switch`.
+///
+/// Focus is workspace-scoped, not client-scoped (04 §2's `FocusChanged` event
+/// carries no client id), so this call has none either.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SwitchParams {
+    /// The workspace to focus.
+    pub workspace: WorkspaceId,
+}
+
+/// Reply to `workspace.switch`.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SwitchReply {
+    /// The pane focused inside the now-focused workspace, if it has one.
+    pub focused_pane: Option<PaneId>,
+    /// The bus sequence at which the switch took effect.
     pub seq: Seq,
 }
