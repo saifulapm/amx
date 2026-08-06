@@ -1,9 +1,13 @@
-//! The Unix pty layer: opening a terminal and driving it.
+//! The Unix pty layer: opening a terminal, and the actor that owns one.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
 use std::ffi::OsString;
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::io::{Read as _, Write as _};
+use std::os::fd::{AsFd, BorrowedFd};
+use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -11,6 +15,8 @@ use amx_core::platform::{
     PlatformError, ProcessId, ProcessTree, Pty, PtyCommand, PtySession, WinSize,
 };
 use amx_server::platform::{UnixProcessTree, UnixPty, UnixPtySession};
+use amx_server::pty::{ChildExit, PtyActor, PtyActorConfig, PtyActorHandle, ReadCallback};
+use bytes::Bytes;
 
 /// The initial size every test spawns at.
 const SIZE: WinSize = WinSize { rows: 24, cols: 80 };
@@ -201,4 +207,220 @@ fn resize_delivers_sigwinch_to_the_child() {
     );
 
     session.kill().expect("kill");
+}
+
+#[test]
+fn reader_eof_reports_child_exit_status() {
+    let _turn = pty_turn();
+    let session = UnixPty.spawn(&shell("exit 7")).expect("spawn");
+
+    let (exits, exited) = mpsc::channel();
+    let mut config = PtyActorConfig::new(session, Box::new(|_bytes, _responses| {}));
+    config.on_exit = Some(Box::new(move |exit| {
+        let _ = exits.send(exit);
+    }));
+    let (handle, thread) = PtyActor::spawn(config).expect("actor");
+
+    assert_eq!(
+        exited.recv_timeout(PATIENCE).expect("exit report"),
+        ChildExit::Code(7),
+        "the status the child exited with should survive the end of its terminal"
+    );
+    drop(handle);
+    thread.join().expect("actor thread");
+}
+
+// ------------------------------------------------------------ the actor
+
+/// A pty stand-in over a socket pair.
+///
+/// It exists to make the actor's own behaviour observable: how much of a write
+/// the terminal accepts at a time is a property of the terminal, and here it is
+/// a knob rather than a race.
+struct FakeSession {
+    io: UnixStream,
+    chunk: usize,
+    writes: Arc<AtomicUsize>,
+}
+
+impl FakeSession {
+    /// The actor's end, the test's end, and the write-call counter.
+    fn pair(chunk: usize) -> (Self, UnixStream, Arc<AtomicUsize>) {
+        let (near, far) = UnixStream::pair().expect("socket pair");
+        near.set_nonblocking(true).expect("non-blocking");
+        far.set_read_timeout(Some(PATIENCE)).expect("read timeout");
+        let writes = Arc::new(AtomicUsize::new(0));
+        let session = Self {
+            io: near,
+            chunk,
+            writes: Arc::clone(&writes),
+        };
+        (session, far, writes)
+    }
+}
+
+impl AsFd for FakeSession {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.io.as_fd()
+    }
+}
+
+impl PtySession for FakeSession {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, PlatformError> {
+        match (&self.io).read(buf) {
+            Ok(count) => Ok(count),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(PlatformError::WouldBlock)
+            }
+            Err(err) => Err(PlatformError::Io(err)),
+        }
+    }
+
+    fn write(&mut self, buf: &[u8]) -> Result<usize, PlatformError> {
+        self.writes.fetch_add(1, Ordering::Relaxed);
+        let take = buf.len().min(self.chunk);
+        match (&self.io).write(&buf[..take]) {
+            Ok(count) => Ok(count),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(PlatformError::WouldBlock)
+            }
+            Err(err) => Err(PlatformError::Io(err)),
+        }
+    }
+
+    fn resize(&mut self, _size: WinSize) -> Result<(), PlatformError> {
+        Ok(())
+    }
+
+    fn child(&self) -> ProcessId {
+        ProcessId(0)
+    }
+
+    fn foreground_group(&self) -> Result<ProcessId, PlatformError> {
+        Err(PlatformError::Unsupported("socket pair has no terminal"))
+    }
+
+    fn try_wait(&mut self) -> Result<Option<Option<i32>>, PlatformError> {
+        Ok(None)
+    }
+
+    fn kill(&mut self) -> Result<(), PlatformError> {
+        Ok(())
+    }
+}
+
+/// Start an actor over a fake session.
+fn fake_actor(
+    session: FakeSession,
+    idle_timeout: Duration,
+    on_read: ReadCallback,
+) -> (PtyActorHandle, thread::JoinHandle<()>) {
+    let mut config = PtyActorConfig::new(session, on_read);
+    config.idle_timeout = idle_timeout;
+    PtyActor::spawn(config).expect("actor")
+}
+
+#[test]
+fn out_of_band_response_never_precedes_an_earlier_in_band_response() {
+    let (session, mut far, _writes) = FakeSession::pair(4096);
+    let (entered, reading) = mpsc::channel();
+    let dispatched = Arc::new(AtomicBool::new(false));
+
+    let in_band = {
+        let dispatched = Arc::clone(&dispatched);
+        Box::new(move |_bytes: &[u8], responses: &mut Vec<Bytes>| {
+            // Announce that the parser is running, then give the out-of-band
+            // writer every chance to get its answer in first.
+            let _ = entered.send(());
+            while !dispatched.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(1));
+            }
+            thread::sleep(Duration::from_millis(100));
+            responses.push(Bytes::from_static(b"IN"));
+        })
+    };
+    let (handle, thread) = fake_actor(session, Duration::from_millis(50), in_band);
+
+    far.write_all(b"?").expect("ask the parser something");
+    reading.recv_timeout(PATIENCE).expect("parser ran");
+
+    let out_of_band = {
+        let handle = handle.clone();
+        thread::spawn(move || {
+            dispatched.store(true, Ordering::Release);
+            handle
+                .write_terminal_response(|| Some(Bytes::from_static(b"OOB")))
+                .expect("out-of-band response");
+        })
+    };
+
+    let mut replies = [0u8; 5];
+    far.read_exact(&mut replies).expect("both replies");
+    assert_eq!(
+        &replies, b"INOOB",
+        "the reply the read produced first must reach the child first"
+    );
+
+    out_of_band.join().expect("out-of-band thread");
+    handle.shutdown();
+    thread.join().expect("actor thread");
+}
+
+#[test]
+fn partial_write_resumes_at_the_correct_offset() {
+    const CHUNK: usize = 7;
+    let (session, mut far, writes) = FakeSession::pair(CHUNK);
+    let (handle, thread) = fake_actor(
+        session,
+        Duration::from_millis(50),
+        Box::new(|_bytes, _responses| {}),
+    );
+
+    let payload: Vec<u8> = (0..200u32).map(|index| (index % 251) as u8).collect();
+    handle
+        .try_write_input(Bytes::from(payload.clone()))
+        .expect("queue input");
+
+    let mut seen = vec![0u8; payload.len()];
+    far.read_exact(&mut seen).expect("the whole payload");
+    assert_eq!(
+        seen, payload,
+        "a partial write must resume where the terminal stopped, not repeat or skip"
+    );
+    assert!(
+        writes.load(Ordering::Relaxed) >= payload.len() / CHUNK,
+        "the terminal took {CHUNK} bytes at a time, so this was written in pieces"
+    );
+
+    handle.shutdown();
+    thread.join().expect("actor thread");
+}
+
+#[test]
+fn wake_pipe_makes_a_queued_write_visible_without_waiting_for_idle_timeout() {
+    // Long enough that a test which waited for it would fail instead of pass.
+    let idle = Duration::from_secs(60);
+    let (session, mut far, _writes) = FakeSession::pair(4096);
+    far.set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("read timeout");
+    let (handle, thread) = fake_actor(session, idle, Box::new(|_bytes, _responses| {}));
+
+    // Let the actor reach its poll before queueing anything, so the wake is
+    // what gets it out rather than the loop not having parked yet.
+    thread::sleep(Duration::from_millis(50));
+    let started = Instant::now();
+    handle
+        .try_write_input(Bytes::from_static(b"ping"))
+        .expect("queue input");
+
+    let mut seen = [0u8; 4];
+    far.read_exact(&mut seen).expect("input reached the pty");
+    assert_eq!(&seen, b"ping");
+    assert!(
+        started.elapsed() < idle,
+        "the write waited for the idle timeout instead of the wake"
+    );
+
+    handle.shutdown();
+    thread.join().expect("actor thread");
 }
