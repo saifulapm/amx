@@ -13,6 +13,7 @@
 #![forbid(unsafe_code)]
 
 pub mod app;
+pub mod cache;
 pub mod input;
 pub mod model;
 pub mod net;
