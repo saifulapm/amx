@@ -1,0 +1,143 @@
+//! What `amx server` runs: the actors of one session, under one supervisor.
+//!
+//! 04 §2: "The server is a set of tokio actors with typed mailboxes, supervised
+//! by a root task with `CancellationToken` + `JoinSet` (structured shutdown;
+//! nothing detached, everything joined)." This function is the assembly of that
+//! sentence — `Core`, `Gateway` and the signal watch are spawned through
+//! [`Runtime::spawn`] and nowhere else, and the only way out is through
+//! [`Runtime::shutdown`], which returns when the `JoinSet` is empty.
+//!
+//! Stopping is therefore one path with three entrances: a `SIGTERM` (what
+//! `amx session stop` sends), a `SIGINT` (what a `ctrl+c` on a foreground
+//! server sends), and a direct [`Ctx::cancel`] (what a test uses, and what an
+//! in-process client will use once "local run" is server + client in one
+//! process tree). All three cancel the same token, and the socket is removed on
+//! the way out by the gateway that bound it.
+
+use amx_core::{Ctx, Scheduled};
+use thiserror::Error;
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
+
+use crate::actor::CoreHandle;
+use crate::actor::core::Core;
+use crate::actor::gateway::{Gateway, GatewayError, GatewayReport};
+use crate::runtime::{Runtime, ShutdownReport};
+
+/// Depth of the `Core` actor's mailbox.
+///
+/// Bounded, like every mailbox here: a client that calls faster than the `Core`
+/// folds is slowed at its own `send`, which is the backpressure that keeps a
+/// burst from becoming an unbounded queue.
+pub const CORE_MAILBOX: usize = 256;
+
+/// What, besides [`Ctx::cancel`], is allowed to stop the server.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StopOn {
+    /// `SIGTERM` and `SIGINT` cancel the session.
+    ///
+    /// What the daemon uses: `amx session stop` signals the pid the socket's
+    /// peer credentials name, and this is the half that hears it.
+    Signals,
+    /// Only the session's own cancellation token stops it.
+    ///
+    /// What a test uses, so that one test's shutdown cannot be another test's
+    /// process-wide signal.
+    Cancellation,
+}
+
+/// The server could not start.
+#[derive(Debug, Error)]
+pub enum ServeError {
+    /// The session socket could not be taken — most often because this session
+    /// is already running, which is not a failure so much as an answer.
+    #[error(transparent)]
+    Gateway(#[from] GatewayError),
+}
+
+/// What one server run did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ServeReport {
+    /// The gateway's connection accounting.
+    pub gateway: GatewayReport,
+    /// The supervisor's task accounting.
+    pub shutdown: ShutdownReport,
+}
+
+impl ServeReport {
+    /// Whether every task and every connection was joined without panicking.
+    #[must_use]
+    pub fn clean(&self) -> bool {
+        self.gateway.clean() && self.shutdown.clean()
+    }
+}
+
+/// Run one session's server until it is stopped, then join everything.
+///
+/// Binds the socket before spawning the accept loop, so a caller that loses the
+/// bind race (another server got there first) is told immediately, by the error
+/// rather than by a process that starts and does nothing.
+pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
+    let (core_tx, core_rx) = mpsc::channel(CORE_MAILBOX);
+    // Bound before anything is spawned: losing this race is the ordinary
+    // outcome for the second `amx` of two started at once, and it must cost a
+    // returned error rather than a set of actors that have to be torn down.
+    let gateway = Gateway::bind(ctx.clone(), CoreHandle::new(core_tx.clone()))?;
+
+    let mut runtime = Runtime::new(ctx.clone());
+    let core = Core::new(ctx.clone(), CoreHandle::new(core_tx));
+    runtime.spawn(async move {
+        // The output sink is where the damage stream will attach; there is no
+        // per-client encoder to hand a batch to yet, so a folded batch is
+        // dropped rather than queued for nobody.
+        let _core = core.run(core_rx, |_: &Scheduled| {}).await;
+    });
+
+    let (report_tx, report_rx) = oneshot::channel();
+    runtime.spawn(async move {
+        let _ = report_tx.send(gateway.run().await);
+    });
+
+    if stop == StopOn::Signals {
+        runtime.spawn(watch_signals(ctx.cancel.clone()));
+    }
+
+    ctx.cancel.cancelled().await;
+    let shutdown = runtime.shutdown().await;
+    let gateway = report_rx.await.unwrap_or_default();
+    Ok(ServeReport { gateway, shutdown })
+}
+
+/// Cancel `cancel` on `SIGTERM` or `SIGINT`, and return when it is cancelled.
+///
+/// Returning on cancellation is what makes this a `Runtime` task like any
+/// other: the shutdown that this task may itself have started still joins it.
+async fn watch_signals(cancel: CancellationToken) {
+    let (mut terminate, mut interrupt) = match (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::interrupt()),
+    ) {
+        (Ok(terminate), Ok(interrupt)) => (terminate, interrupt),
+        (terminate, interrupt) => {
+            // Nothing to do but say so: a server that cannot hear `SIGTERM` is
+            // still a working server, it just has to be stopped another way.
+            let err = terminate.err().or(interrupt.err());
+            tracing::error!(error = ?err, "could not install signal handlers");
+            cancel.cancelled().await;
+            return;
+        }
+    };
+
+    tokio::select! {
+        _ = terminate.recv() => {
+            tracing::info!("SIGTERM: shutting the session down");
+            cancel.cancel();
+        }
+        _ = interrupt.recv() => {
+            tracing::info!("SIGINT: shutting the session down");
+            cancel.cancel();
+        }
+        () = cancel.cancelled() => {}
+    }
+}
