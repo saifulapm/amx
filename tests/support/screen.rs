@@ -40,6 +40,15 @@ pub fn rasterize(bytes: &[u8]) -> Screen {
                         break;
                     }
                 }
+                if terminator == '\0' && chars.peek().is_none() {
+                    // The capture ended inside this sequence: a wait polls the
+                    // stream at arbitrary byte boundaries, so a frame's tail
+                    // may not have arrived yet. The screen holds at the last
+                    // whole sequence; the next poll reparses the completed
+                    // tail. Only end-of-input is tolerated — an unknown
+                    // terminator mid-stream still panics below.
+                    break;
+                }
                 apply_csi(&mut cells, &mut row, &mut col, &params, terminator);
             }
             '\r' => col = 0,
@@ -102,4 +111,22 @@ pub fn render(screen: &Screen) -> String {
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rasterize;
+
+    #[test]
+    fn a_capture_ending_mid_sequence_keeps_the_last_whole_frame() {
+        let screen = rasterize(b"\x1b[1;1Hab\x1b[3;");
+        assert_eq!(screen.get(&(0, 0)), Some(&'a'));
+        assert_eq!(screen.get(&(0, 1)), Some(&'b'));
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown CSI terminator")]
+    fn an_unknown_terminator_mid_stream_is_still_loud() {
+        let _ = rasterize(b"\x1b[3;\0after");
+    }
 }
