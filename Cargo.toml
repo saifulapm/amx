@@ -7,6 +7,7 @@ members = [
     "crates/amx-proto",
     "crates/amx-server",
     "crates/amx-vt",
+    "tests",
 ]
 
 [workspace.package]

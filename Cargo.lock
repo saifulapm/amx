@@ -71,6 +71,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "amx-rig"
+version = "0.1.0"
+dependencies = [
+ "amx-core",
+ "amx-proto",
+ "amx-server",
+ "amx-vt",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "amx-server"
 version = "0.1.0"
 dependencies = [

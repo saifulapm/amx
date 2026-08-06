@@ -1,0 +1,9 @@
+{
+  "bytes": [
+    "03 03 00 03 00 01 00"
+  ],
+  "message": {
+    "cursor": "Cursor { x: 3, y: 3, visible: true, visible_in_viewport: true, blinking: false, wide_tail: false, style: Block }",
+    "kind": "cursor-only"
+  }
+}

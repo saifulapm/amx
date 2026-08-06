@@ -1,0 +1,23 @@
+{
+  "bytes": [
+    "01 08 00 00 00 00 00 00 00 02 00 00 00 00 00 01",
+    "00 0a 00 02 00 00 00 01 00 0a 00 03 00 03 00 01",
+    "00 3b 00 00 00 0a 00 00 01 68 00 01 69 00 01 20",
+    "08 cc 66 66 01 72 08 cc 66 66 01 65 08 cc 66 66",
+    "01 64 00 00 00 00 00 00 00 00 0a 00 00 00 00 00",
+    "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+  ],
+  "message": {
+    "cursor": "Cursor { x: 3, y: 3, visible: true, visible_in_viewport: true, blinking: false, wide_tail: false, style: Block }",
+    "dirty_rows": [
+      0,
+      2
+    ],
+    "generation": 8,
+    "kind": "incremental delta",
+    "text": [
+      "hi red",
+      ""
+    ]
+  }
+}

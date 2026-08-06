@@ -1,0 +1,5 @@
+{
+  "flow": "stream_cap",
+  "stream": 1,
+  "max_frame": 65536
+}

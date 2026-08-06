@@ -1,0 +1,11 @@
+{
+  "proto": [
+    1,
+    1
+  ],
+  "features": [],
+  "client": {
+    "name": "amx",
+    "version": "0.1.0"
+  }
+}
