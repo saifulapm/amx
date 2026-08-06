@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::event::{Bus, Event, Seq};
+use crate::event::{Bus, Delivery, Event, Seq, Subscription};
 
 /// A condition on *current state*, notified by events.
 ///
@@ -57,6 +57,7 @@ pub trait StatePredicate {
 pub struct Waiter<P> {
     predicate: P,
     subscribed_at: Seq,
+    subscription: Subscription,
 }
 
 impl<P: StatePredicate> Waiter<P> {
@@ -66,8 +67,13 @@ impl<P: StatePredicate> Waiter<P> {
     /// cannot accidentally introduce the window described above.
     #[must_use]
     pub fn new(bus: &Bus, predicate: P) -> Self {
-        let _ = (bus, &predicate);
-        todo!("subscribe, then hold the subscription and the predicate")
+        let subscription = bus.subscribe();
+        let subscribed_at = subscription.subscribed_at();
+        Self {
+            predicate,
+            subscribed_at,
+            subscription,
+        }
     }
 
     /// The bus sequence this wait subscribed at.
@@ -82,8 +88,32 @@ impl<P: StatePredicate> Waiter<P> {
     }
 
     /// Run the wait to completion.
-    pub async fn wait(self) -> Result<P::Output, WaitError> {
-        todo!("evaluate at subscribe seq, notify on events, re-evaluate on gap")
+    pub async fn wait(mut self) -> Result<P::Output, WaitError> {
+        // Step 2: a condition that already holds must not wait for a
+        // transition that already happened.
+        if let Some(output) = self.predicate.evaluate() {
+            return Ok(output);
+        }
+        loop {
+            match self.subscription.recv().await {
+                None => return Err(WaitError::BusClosed),
+                // A transition inside the gap is exactly why this
+                // re-evaluates unconditionally rather than trying to infer
+                // what happened from the events on either side of it.
+                Some(Delivery::Gap { .. }) => {
+                    if let Some(output) = self.predicate.evaluate() {
+                        return Ok(output);
+                    }
+                }
+                Some(Delivery::Event(envelope)) => {
+                    if self.predicate.interested(&envelope.event)
+                        && let Some(output) = self.predicate.evaluate()
+                    {
+                        return Ok(output);
+                    }
+                }
+            }
+        }
     }
 }
 
