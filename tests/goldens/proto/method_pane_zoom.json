@@ -1,0 +1,14 @@
+{
+  "reply": {
+    "seq": 46,
+    "zoomed": true
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "pane.zoom",
+    "params": {
+      "pane": "00000000-0000-0000-0000-0000000000a1"
+    }
+  }
+}

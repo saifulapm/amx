@@ -1,0 +1,14 @@
+{
+  "reply": {
+    "focused_pane": "00000000-0000-0000-0000-0000000000a1",
+    "seq": 44
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "workspace.switch",
+    "params": {
+      "workspace": "00000000-0000-0000-0000-0000000000b1"
+    }
+  }
+}

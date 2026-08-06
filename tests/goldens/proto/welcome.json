@@ -1,0 +1,12 @@
+{
+  "proto": 1,
+  "features": [
+    "grid.stream"
+  ],
+  "server": {
+    "name": "amxd",
+    "version": "0.1.0"
+  },
+  "seq": 41,
+  "session": "00000000-0000-0000-0000-0000000000c1"
+}
