@@ -19,6 +19,20 @@ use crate::event::Bus;
 /// Longest permitted session name, in bytes.
 pub const MAX_SESSION_NAME: usize = 64;
 
+/// The directory amx owns under every root it is given.
+///
+/// Both roots are shared with every other program on the system, so neither
+/// the runtime root nor the state root is ever written to directly: a session
+/// lives at `<root>/amx/<session>`.
+pub const AMX_DIR: &str = "amx";
+
+/// The socket's file name inside a session's runtime directory.
+///
+/// One socket per session, not two, not three (04 §1) — so the name is a
+/// constant rather than a parameter, and a session directory that holds
+/// anything else holds it beside this.
+pub const SOCKET_NAME: &str = "sock";
+
 /// The name of a session, validated to be usable as a directory component.
 ///
 /// A session name selects a server instance: `--session work` or `AMX_SESSION`
@@ -117,10 +131,31 @@ impl Env {
     ///
     /// Call this exactly once, at process start, and pass the result down. It
     /// is the only function in the crate that reads process state.
+    ///
+    /// An empty variable counts as unset — an exported-but-empty
+    /// `XDG_RUNTIME_DIR` is a shell artifact, not a directory named `""` — and
+    /// an `AMX_SESSION` that is not a valid [`SessionName`] is dropped rather
+    /// than carried as an unusable value, since nothing downstream could do
+    /// anything with it but fail.
     #[must_use]
     pub fn from_process() -> Self {
-        todo!("read XDG_RUNTIME_DIR, XDG_STATE_HOME, HOME, AMX_SESSION, TMPDIR")
+        Self {
+            runtime_dir: read_path("XDG_RUNTIME_DIR"),
+            state_home: read_path("XDG_STATE_HOME"),
+            home: read_path("HOME"),
+            session: std::env::var("AMX_SESSION")
+                .ok()
+                .and_then(|name| SessionName::new(name).ok()),
+            tmpdir: read_path("TMPDIR"),
+        }
     }
+}
+
+/// One environment variable as a path, treating unset and empty alike.
+fn read_path(key: &str) -> Option<PathBuf> {
+    std::env::var_os(key)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 /// Everything a task needs to find the session it belongs to.
@@ -156,7 +191,58 @@ impl Ctx {
     /// nothing here consults the process environment, which is what makes two
     /// sessions in one test process independent.
     pub fn for_session(session: SessionName, env: &Env) -> Result<Self, CtxError> {
-        let _ = (session, env);
-        todo!("derive runtime_dir, socket and state_dir from env")
+        let runtime_dir = runtime_root(env)?.join(AMX_DIR).join(session.as_str());
+        let state_dir = state_root(env)?.join(AMX_DIR).join(session.as_str());
+        Ok(Self {
+            session,
+            socket: runtime_dir.join(SOCKET_NAME),
+            runtime_dir,
+            state_dir,
+            bus: Arc::new(Bus::new(crate::event::bus::DEFAULT_REPLAY_CAPACITY)),
+            cancel: CancellationToken::new(),
+        })
     }
+}
+
+/// The directory a session's socket lives under, before `amx/<session>`.
+///
+/// `$XDG_RUNTIME_DIR` is the right answer and `$TMPDIR` is the fallback for
+/// the systems that do not set one (a bare `ssh` session on macOS, most
+/// containers). Both must be absolute: a relative root would resolve against
+/// whatever directory the process happened to start in, so two invocations of
+/// the same session name would find two different sockets.
+fn runtime_root(env: &Env) -> Result<PathBuf, CtxError> {
+    let root = env
+        .runtime_dir
+        .clone()
+        .or_else(|| env.tmpdir.clone())
+        .ok_or_else(|| CtxError::NoRuntimeDir {
+            reason: "neither XDG_RUNTIME_DIR nor TMPDIR is set".to_owned(),
+        })?;
+    if root.is_relative() {
+        return Err(CtxError::NoRuntimeDir {
+            reason: format!("{} is not an absolute path", root.display()),
+        });
+    }
+    Ok(root)
+}
+
+/// The directory a session's snapshots live under, before `amx/<session>`.
+///
+/// `$XDG_STATE_HOME`, or the `$HOME/.local/state` the XDG base directory
+/// specification defines it to default to.
+fn state_root(env: &Env) -> Result<PathBuf, CtxError> {
+    let root = env
+        .state_home
+        .clone()
+        .or_else(|| env.home.as_ref().map(|home| home.join(".local/state")))
+        .ok_or_else(|| CtxError::NoStateDir {
+            reason: "neither XDG_STATE_HOME nor HOME is set".to_owned(),
+        })?;
+    if root.is_relative() {
+        return Err(CtxError::NoStateDir {
+            reason: format!("{} is not an absolute path", root.display()),
+        });
+    }
+    Ok(root)
 }
