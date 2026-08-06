@@ -16,3 +16,4 @@ pub mod history;
 pub mod platform;
 pub mod pty;
 pub mod runtime;
+pub mod session;
