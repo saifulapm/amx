@@ -31,6 +31,7 @@ version = "0.1.0"
 dependencies = [
  "amx-core",
  "amx-proto",
+ "amx-server",
  "rustix",
  "serde_json",
  "thiserror",

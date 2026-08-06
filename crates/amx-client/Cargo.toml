@@ -29,3 +29,11 @@ tokio = { workspace = true, features = [
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 unicode-width = { workspace = true }
+
+# Test-only: the T13 acceptance suite drives a real amx-server over a real
+# socket, and the raw-mode restoration tests need a real pty rather than a
+# regular file (`tcgetattr`/`tcsetattr` require a tty). Neither is a runtime
+# dependency of the client itself.
+[dev-dependencies]
+amx-server = { workspace = true }
+rustix = { workspace = true, features = ["pty", "process", "std", "termios"] }
