@@ -41,7 +41,11 @@ impl TempDir {
     pub fn new(tag: &str) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("amx-t10-{tag}-{}-{n}", std::process::id()));
+        // Kept short deliberately: this directory prefixes a unix socket path,
+        // and darwin's $TMPDIR alone eats half the sun_path budget (~104
+        // bytes). A four-char tag survives for debuggability.
+        let brief: String = tag.chars().take(4).collect();
+        let path = std::env::temp_dir().join(format!("a{}-{n}-{brief}", std::process::id()));
         std::fs::create_dir_all(&path).expect("create the temp dir");
         Self(path)
     }
