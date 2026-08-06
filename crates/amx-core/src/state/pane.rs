@@ -1,5 +1,7 @@
 //! A pane: one leaf of a workspace's layout tree.
 
+use std::path::{Path, PathBuf};
+
 use crate::id::PaneId;
 
 /// A pane's session-state metadata.
@@ -12,13 +14,18 @@ use crate::id::PaneId;
 pub struct Pane {
     id: PaneId,
     label: Option<String>,
+    cwd: Option<PathBuf>,
 }
 
 impl Pane {
-    /// A freshly minted pane with no label.
+    /// A freshly minted pane with no label and no recorded cwd.
     #[must_use]
     pub(crate) fn new(id: PaneId) -> Self {
-        Self { id, label: None }
+        Self {
+            id,
+            label: None,
+            cwd: None,
+        }
     }
 
     /// This pane's stable identity.
@@ -36,5 +43,20 @@ impl Pane {
     /// Set the pane's label.
     pub(crate) fn set_label(&mut self, label: Option<String>) {
         self.label = label;
+    }
+
+    /// The directory the pane's process was started in.
+    ///
+    /// For a split this is the *foreground process* cwd of the source pane,
+    /// not the source pane's own directory, with a defined fallback when that
+    /// is unreadable (04 §7) — `foreground_cwd` as pane API state.
+    #[must_use]
+    pub fn cwd(&self) -> Option<&Path> {
+        self.cwd.as_deref()
+    }
+
+    /// Record the directory the pane's process was started in.
+    pub(crate) fn set_cwd(&mut self, cwd: PathBuf) {
+        self.cwd = Some(cwd);
     }
 }
