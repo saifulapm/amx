@@ -9,6 +9,7 @@
 //! layer. What is fixed here is the mailbox vocabulary those actors speak.
 
 pub mod actor;
+pub mod conn;
 pub mod dispatch;
 pub mod platform;
 pub mod pty;
