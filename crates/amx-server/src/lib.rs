@@ -10,6 +10,7 @@
 
 pub mod actor;
 pub mod conn;
+pub mod damage;
 pub mod dispatch;
 pub mod history;
 pub mod platform;
