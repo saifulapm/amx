@@ -36,6 +36,27 @@ pub const fn supports(version: u16) -> bool {
 /// at all, which is the one negotiation outcome that cannot be degraded into a
 /// working session.
 pub fn negotiate(peer: (u16, u16), ours: (u16, u16)) -> Result<u16, NegotiationError> {
-    let _ = (peer, ours);
-    todo!("intersect the windows and take the maximum")
+    let (peer_min, peer_max) = peer;
+    let (our_min, our_max) = ours;
+    if peer_min > peer_max {
+        return Err(NegotiationError::MalformedWindow {
+            min: peer_min,
+            max: peer_max,
+        });
+    }
+
+    let lo = peer_min.max(our_min);
+    let hi = peer_max.min(our_max);
+    if lo > hi {
+        return Err(NegotiationError::NoCommonVersion {
+            peer_min,
+            peer_max,
+            our_min,
+            our_max,
+        });
+    }
+    // `hi` is the greatest integer in both closed intervals: the intersection
+    // of two overlapping integer ranges is itself a contiguous range, and `hi`
+    // is its top.
+    Ok(hi)
 }

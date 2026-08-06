@@ -133,7 +133,14 @@ impl Hello {
         seq: Seq,
         session: SessionId,
     ) -> Result<Welcome, NegotiationError> {
-        let _ = (server, supported, seq, session);
-        todo!("negotiate version, intersect features")
+        let proto = crate::version::negotiate(self.proto, crate::version::window())?;
+        let features = self.features.intersection(supported).cloned().collect();
+        Ok(Welcome {
+            proto,
+            features,
+            server,
+            seq,
+            session,
+        })
     }
 }
