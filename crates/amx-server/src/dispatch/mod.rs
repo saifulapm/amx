@@ -11,22 +11,27 @@
 //! actor and awaits the answer; the `Core` is the only thing that mutates the
 //! state tree and the only thing that publishes the resulting event.
 //!
-//! # Handler seams for T16
+//! # Handler seams
 //!
-//! T16 owns the `pane.*` and `workspace.*` behaviour and lands
-//! `dispatch/pane.rs` and `dispatch/workspace.rs`. Every handler below that is
-//! not yet backed by a [`CoreCommand`] variant is marked `T16 seam` and answers
-//! [`NOT_IMPLEMENTED`]. Filling one in is: add the mailbox variant in
-//! `actor/mod.rs`, handle it in `actor/core.rs`, and replace the seam body with
-//! a `self.call(...)` line — the connection, framing and writer layers below
-//! this module do not change.
+//! T16 filled the last two of these — `pane.*` and `workspace.*`, in
+//! [`pane`] and [`workspace`] — so M0's method table has no handler left
+//! answering [`NOT_IMPLEMENTED`]. The mechanism itself stays: a method landed
+//! in the shared table before its `Core` wiring exists is a compile error here
+//! until it gets a handler, and until then [`seam`] is what a build in that
+//! state answers with rather than `METHOD_NOT_FOUND` — reporting an
+//! unimplemented method as unknown would tell a client to stop offering it.
 
-use amx_proto::control::{Call, Dispatch, pane, session, workspace};
+mod pane;
+mod workspace;
+
+use amx_proto::control::{
+    Call, Dispatch, pane as pane_proto, session, workspace as workspace_proto,
+};
 use amx_proto::rpc::RpcError;
 use serde_json::Value;
 use tokio::sync::oneshot;
 
-use crate::actor::{CoreCommand, CoreHandle, PaneCall, Reply, SessionCall, WorkspaceCall};
+use crate::actor::{CoreCommand, CoreHandle, Reply, SessionCall};
 
 /// The JSON-RPC code for a method this build knows but has not implemented.
 ///
@@ -54,7 +59,10 @@ impl Router {
     /// A `Core` that has stopped is an internal error for this call, not a
     /// reason to tear the connection down: the client gets a typed failure and
     /// the session's shutdown path closes the socket in its own time.
-    async fn call<T>(&self, make: impl FnOnce(Reply<T>) -> CoreCommand) -> Result<T, RpcError> {
+    pub(crate) async fn call<T>(
+        &self,
+        make: impl FnOnce(Reply<T>) -> CoreCommand,
+    ) -> Result<T, RpcError> {
         let (tx, rx) = oneshot::channel();
         self.core
             .send(make(tx))
@@ -66,7 +74,11 @@ impl Router {
     }
 }
 
-/// T16 seam: `method` is in the table but has no handler yet.
+/// `method` is in the table but has no handler yet.
+#[allow(
+    dead_code,
+    reason = "no method in M0's table is currently a seam; kept for the next one that lands ahead of its Core wiring"
+)]
 fn seam(method: &'static str) -> RpcError {
     RpcError::new(NOT_IMPLEMENTED, format!("{method} is not implemented yet"))
 }
@@ -94,64 +106,76 @@ impl Dispatch for Router {
 
     async fn workspace_create(
         &mut self,
-        params: workspace::CreateParams,
-    ) -> Result<workspace::CreateReply, RpcError> {
-        self.call(|reply| CoreCommand::Workspace(WorkspaceCall::Create { params, reply }))
-            .await
+        params: workspace_proto::CreateParams,
+    ) -> Result<workspace_proto::CreateReply, RpcError> {
+        workspace::create(self, params).await
     }
 
-    /// T16 seam — `dispatch/workspace.rs`.
     async fn workspace_rename(
         &mut self,
-        _params: workspace::RenameParams,
-    ) -> Result<workspace::RenameReply, RpcError> {
-        Err(seam("workspace.rename"))
+        params: workspace_proto::RenameParams,
+    ) -> Result<workspace_proto::RenameReply, RpcError> {
+        workspace::rename(self, params).await
     }
 
-    /// T16 seam — `dispatch/workspace.rs`.
     async fn workspace_kill(
         &mut self,
-        _params: workspace::KillParams,
-    ) -> Result<workspace::KillReply, RpcError> {
-        Err(seam("workspace.kill"))
+        params: workspace_proto::KillParams,
+    ) -> Result<workspace_proto::KillReply, RpcError> {
+        workspace::kill(self, params).await
     }
 
-    /// T16 seam — `dispatch/workspace.rs`.
     async fn workspace_switch(
         &mut self,
-        _params: workspace::SwitchParams,
-    ) -> Result<workspace::SwitchReply, RpcError> {
-        Err(seam("workspace.switch"))
+        params: workspace_proto::SwitchParams,
+    ) -> Result<workspace_proto::SwitchReply, RpcError> {
+        workspace::switch(self, params).await
     }
 
     async fn pane_split(
         &mut self,
-        params: pane::SplitParams,
-    ) -> Result<pane::SplitReply, RpcError> {
-        self.call(|reply| CoreCommand::Pane(PaneCall::Split { params, reply }))
-            .await
+        params: pane_proto::SplitParams,
+    ) -> Result<pane_proto::SplitReply, RpcError> {
+        pane::split(self, params).await
     }
 
-    /// T16 seam — `dispatch/pane.rs`.
-    async fn pane_zoom(&mut self, _params: pane::ZoomParams) -> Result<pane::ZoomReply, RpcError> {
-        Err(seam("pane.zoom"))
+    async fn pane_zoom(
+        &mut self,
+        params: pane_proto::ZoomParams,
+    ) -> Result<pane_proto::ZoomReply, RpcError> {
+        pane::zoom(self, params).await
     }
 
-    /// T16 seam — `dispatch/pane.rs`.
-    async fn pane_swap(&mut self, _params: pane::SwapParams) -> Result<pane::SwapReply, RpcError> {
-        Err(seam("pane.swap"))
+    async fn pane_swap(
+        &mut self,
+        params: pane_proto::SwapParams,
+    ) -> Result<pane_proto::SwapReply, RpcError> {
+        pane::swap(self, params).await
     }
 
-    /// T16 seam — `dispatch/pane.rs`.
-    async fn pane_move(&mut self, _params: pane::MoveParams) -> Result<pane::MoveReply, RpcError> {
-        Err(seam("pane.move"))
+    async fn pane_move(
+        &mut self,
+        params: pane_proto::MoveParams,
+    ) -> Result<pane_proto::MoveReply, RpcError> {
+        pane::move_pane(self, params).await
     }
 
-    /// T16 seam — `dispatch/pane.rs`.
     async fn pane_close(
         &mut self,
-        _params: pane::CloseParams,
-    ) -> Result<pane::CloseReply, RpcError> {
-        Err(seam("pane.close"))
+        params: pane_proto::CloseParams,
+    ) -> Result<pane_proto::CloseReply, RpcError> {
+        pane::close(self, params).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NOT_IMPLEMENTED, seam};
+
+    #[test]
+    fn seam_reports_not_implemented_not_missing() {
+        let err = seam("pane.example");
+        assert_eq!(err.code, NOT_IMPLEMENTED);
+        assert!(err.message.contains("pane.example"));
     }
 }
