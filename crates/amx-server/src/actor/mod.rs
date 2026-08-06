@@ -10,6 +10,8 @@ pub mod pane_host;
 
 use std::path::PathBuf;
 
+pub mod core;
+
 use amx_core::{GridGeneration, InvalidationCause, PaneId, RowId, RowRange};
 use amx_proto::control::{client, pane, session, workspace};
 use amx_proto::rpc::RpcError;
