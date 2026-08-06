@@ -1,0 +1,35 @@
+[package]
+name = "amx-proto"
+description = "amx wire protocol: framing, negotiation, the control method table and binary streams"
+license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# The method table also generates the CLI tree; only the binary needs that, so
+# clap stays optional rather than reaching every crate that speaks the protocol.
+cli = ["dep:clap"]
+
+[dependencies]
+amx-core = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true, optional = true, features = [
+    "error-context",
+    "help",
+    "std",
+    "suggestions",
+    "usage",
+] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Self-dependency with `cli` on, so the method table's clap tree is covered by
+# a plain `cargo test` and not only under `--all-features`.
+amx-proto = { workspace = true, features = ["cli"] }

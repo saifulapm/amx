@@ -1,0 +1,27 @@
+[package]
+name = "amx"
+description = "A minimal, keyboard-only agent terminal multiplexer"
+license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+amx-client = { workspace = true }
+amx-core = { workspace = true }
+amx-proto = { workspace = true, features = ["cli"] }
+amx-server = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true, features = [
+    "error-context",
+    "help",
+    "std",
+    "suggestions",
+    "usage",
+] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

@@ -1,0 +1,13 @@
+# Contract types are wire types: doc comments on public items are the product.
+missing-docs-in-crate-items = true
+
+# The module budget (soft 500 / hard 1000 lines) is enforced by
+# scripts/check-module-size.sh; these keep single items from hiding inside it.
+too-many-lines-threshold = 120
+too-many-arguments-threshold = 6
+type-complexity-threshold = 300
+
+# `unwrap`/`expect` are denied outside tests; allow them in tests only.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

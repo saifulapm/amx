@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # rust-toolchain.toml pins the version and components; rustup honours it
+      # on the first cargo invocation, so installing it here only front-loads
+      # the download and keeps the failure legible.
+      - name: Install pinned Rust
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The pinned Zig toolchain that builds the vendored terminal core belongs
+      # here, next to the Rust install, once amx-vt has a build script.
+
+      - name: ci
+        run: scripts/ci.sh
