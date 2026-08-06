@@ -21,7 +21,10 @@ dependencies = [
  "amx-server",
  "anyhow",
  "clap",
+ "rustix",
+ "serde_json",
  "tokio",
+ "tracing",
  "tracing-subscriber",
 ]
 

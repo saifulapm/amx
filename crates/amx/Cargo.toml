@@ -23,5 +23,20 @@ clap = { workspace = true, features = [
     "suggestions",
     "usage",
 ] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { workspace = true, features = [
+    "io-std",
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "signal",
+    "time",
+] }
+tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+serde_json = { workspace = true }
+
+# Test-only: the CLI acceptance tests drive the real binary against a real
+# terminal, and `tcgetattr`/`tcsetattr` refuse anything that is not a tty.
+[dev-dependencies]
+rustix = { workspace = true, features = ["pty", "std", "termios"] }
