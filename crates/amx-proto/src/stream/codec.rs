@@ -6,6 +6,7 @@
 //! damage encoder; it lives here now so the server and the client decode one
 //! implementation instead of two.
 
+use bytes::BufMut;
 use thiserror::Error;
 
 use crate::stream::grid::{Cursor, CursorShape, DamageRect};
@@ -79,11 +80,11 @@ pub enum CodecError {
 ///
 /// Distinct from any terminal library's cursor: this is the six-byte shape the
 /// grid stream carries, nothing more.
-pub fn put_cursor(cursor: Cursor, out: &mut Vec<u8>) {
-    out.extend_from_slice(&cursor.row.to_le_bytes());
-    out.extend_from_slice(&cursor.col.to_le_bytes());
-    out.push(u8::from(cursor.visible) * CURSOR_VISIBLE + u8::from(cursor.blink) * CURSOR_BLINK);
-    out.push(match cursor.shape {
+pub fn put_cursor(cursor: Cursor, out: &mut impl BufMut) {
+    out.put_u16_le(cursor.row);
+    out.put_u16_le(cursor.col);
+    out.put_u8(u8::from(cursor.visible) * CURSOR_VISIBLE + u8::from(cursor.blink) * CURSOR_BLINK);
+    out.put_u8(match cursor.shape {
         CursorShape::Block => 0,
         CursorShape::Underline => 1,
         CursorShape::Bar => 2,
@@ -91,11 +92,11 @@ pub fn put_cursor(cursor: Cursor, out: &mut Vec<u8>) {
 }
 
 /// Append a damage rect.
-pub fn put_rect(rect: DamageRect, out: &mut Vec<u8>) {
-    out.extend_from_slice(&rect.row.to_le_bytes());
-    out.extend_from_slice(&rect.col.to_le_bytes());
-    out.extend_from_slice(&rect.rows.to_le_bytes());
-    out.extend_from_slice(&rect.cols.to_le_bytes());
+pub fn put_rect(rect: DamageRect, out: &mut impl BufMut) {
+    out.put_u16_le(rect.row);
+    out.put_u16_le(rect.col);
+    out.put_u16_le(rect.rows);
+    out.put_u16_le(rect.cols);
 }
 
 /// A cursor over a payload that never reads past its end.

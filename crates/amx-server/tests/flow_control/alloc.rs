@@ -11,9 +11,12 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use amx_core::GridGeneration;
-use amx_server::damage::{DirtySet, Encoder};
+use amx_proto::stream::FlowControl;
+use amx_server::conn::writer::{self, Outbound};
+use amx_server::damage::{DirtySet, Encoder, KeyframePolicy};
+use tokio_util::sync::CancellationToken;
 
-use super::harness::{MAX_FRAME, Pane};
+use super::harness::{MAX_FRAME, Pane, grid_stream};
 
 /// An allocator that counts on the calling thread.
 struct CountingAlloc;
@@ -94,6 +97,94 @@ async fn damage_encode_does_not_allocate_per_frame() {
     assert!(
         !encoder.payload().is_empty(),
         "the measurement must have encoded something"
+    );
+
+    pane.stop().await;
+}
+
+/// Let the writer task drain the queue and drop the frame it popped.
+///
+/// Single-threaded runtime on purpose: yielding runs the writer to its next
+/// await point, so when this returns the frame's payload has been written and
+/// dropped — which is exactly the condition under which the encoder's buffer
+/// is reclaimable on the next build.
+async fn drained(out: &Outbound) {
+    while !out.is_empty() {
+        tokio::task::yield_now().await;
+    }
+    // The writer drops the popped frame at the end of its loop iteration; one
+    // more turn guarantees that iteration has finished.
+    tokio::task::yield_now().await;
+}
+
+/// The production path the pump drives — [`GridStream::flush`] building the
+/// payload, freezing it into an outbound frame, and queueing it for the writer
+/// — must not allocate per message either. The encoder-only test above holds
+/// the scratch buffers to the rule; this one holds the hand-off to the wire,
+/// which is where a per-frame `Bytes::copy_from_slice` used to hide.
+///
+/// [`GridStream::flush`]: amx_server::damage::GridStream::flush
+#[tokio::test]
+async fn grid_stream_flush_and_outbound_do_not_allocate_per_frame() {
+    let pane = Pane::controlled().await;
+    pane.write(b"cells for the stream to flush\r".as_slice()).await;
+    let snapshot = pane.snapshot_until("cells for the stream").await;
+    let generation = pane.feed().generation();
+
+    let mut stream = grid_stream(&pane, KeyframePolicy::default());
+    let (out, queue) = writer::channel();
+    let cancel = CancellationToken::new();
+    let writer = tokio::spawn(writer::run(tokio::io::sink(), queue, cancel.clone()));
+
+    stream.absorb(&snapshot, generation);
+
+    // Warm to steady state: the first flushes size the scratch, the queue and
+    // the payload buffer, and the writer's wake channel cycles past its first
+    // internal block boundary so the measured loop sees only reused blocks.
+    // A resync forces a keyframe — the largest message this stream ever
+    // builds — on every iteration.
+    for _ in 0..40 {
+        stream.control(FlowControl::Resync {
+            stream: stream.stream(),
+        });
+        stream
+            .flush(&snapshot, &out)
+            .expect("the keyframe fits the cap")
+            .expect("a resync always owes a message");
+        drained(&out).await;
+    }
+
+    // The drains between iterations await, so the measurement brackets each
+    // synchronous flush rather than the whole loop: `allocations()` is
+    // thread-local and the window contains no await points.
+    let mut allocated = 0;
+    for _ in 0..64 {
+        stream.control(FlowControl::Resync {
+            stream: stream.stream(),
+        });
+        let before = allocations();
+        let sent = stream.flush(&snapshot, &out);
+        allocated += allocations() - before;
+        sent.expect("the keyframe fits the cap")
+            .expect("a resync always owes a message");
+        drained(&out).await;
+    }
+
+    assert_eq!(
+        allocated, 0,
+        "flushing 64 keyframes through the outbound queue allocated {allocated} times; \
+         the flush path must hand the encoder's buffer out without copying and \
+         reclaim it once the writer drops the frame"
+    );
+
+    cancel.cancel();
+    let report = writer
+        .await
+        .expect("the writer task ended")
+        .expect("the sink never fails");
+    assert_eq!(
+        report.frames, 104,
+        "every flushed keyframe reached the writer"
     );
 
     pane.stop().await;
