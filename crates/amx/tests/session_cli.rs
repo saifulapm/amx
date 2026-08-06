@@ -7,8 +7,6 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
-use std::time::Duration;
-
 use amx_server::session::probe::{Probe, probe, server_pid};
 
 mod support;

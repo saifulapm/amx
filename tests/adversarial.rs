@@ -315,7 +315,10 @@ async fn a_zero_size_viewport_still_gets_a_live_projection() {
     wire.hello(window()).await;
     let (_workspace, _root) = workspace_with_root(&mut wire).await;
     let reply = wire
-        .request("client.viewport", json!({"rows": 0, "cols": 0, "panes": []}))
+        .request(
+            "client.viewport",
+            json!({"rows": 0, "cols": 0, "panes": []}),
+        )
         .await;
     assert!(
         result_of(&reply)["seq"].is_u64(),
@@ -332,10 +335,9 @@ async fn a_zero_size_viewport_still_gets_a_live_projection() {
             .as_array()
             .expect("state lists panes")
             .clone();
-        if panes
-            .iter()
-            .any(|pane| (pane["rows"].as_u64(), pane["cols"].as_u64()) == (Some(want.0), Some(want.1)))
-        {
+        if panes.iter().any(|pane| {
+            (pane["rows"].as_u64(), pane["cols"].as_u64()) == (Some(want.0), Some(want.1))
+        }) {
             break;
         }
         assert!(

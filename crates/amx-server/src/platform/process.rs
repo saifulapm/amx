@@ -163,9 +163,8 @@ mod imp {
         let mut buffer = vec![0 as libc::pid_t; needed + 8];
         let bytes = size_of_val(buffer.as_slice());
         // SAFETY: the buffer is `bytes` bytes of writable pid-sized slots.
-        let filled = unsafe {
-            libc::proc_listchildpids(pid, buffer.as_mut_ptr().cast(), bytes as c_int)
-        };
+        let filled =
+            unsafe { libc::proc_listchildpids(pid, buffer.as_mut_ptr().cast(), bytes as c_int) };
         let Ok(filled) = usize::try_from(filled) else {
             return Err(errno_error());
         };

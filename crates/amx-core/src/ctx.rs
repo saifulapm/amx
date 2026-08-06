@@ -228,10 +228,7 @@ fn runtime_amx_dir(env: &Env) -> Result<PathBuf, CtxError> {
         require_absolute(root)?;
         return Ok(root.join(AMX_DIR));
     }
-    let root = env
-        .tmpdir
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    let root = env.tmpdir.clone().unwrap_or_else(|| PathBuf::from("/tmp"));
     require_absolute(&root)?;
     secured_user_dir(&root)
 }

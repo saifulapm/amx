@@ -8,8 +8,6 @@
 #![allow(dead_code, reason = "each test uses a subset of the harness")]
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
-use std::time::Duration;
-
 use amx_server::actor::SnapshotFeed;
 use amx_server::conn::writer::Outbound;
 use amx_server::damage::{GridStream, Sent};

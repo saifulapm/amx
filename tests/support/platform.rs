@@ -92,8 +92,8 @@ pub fn read_bytes(pid: u32) -> Option<u64> {
 pub fn processes_with_arg(marker: &str) -> usize {
     #[cfg(target_os = "linux")]
     {
-        let entries = std::fs::read_dir("/proc")
-            .expect("unsupported platform probe: /proc is not readable");
+        let entries =
+            std::fs::read_dir("/proc").expect("unsupported platform probe: /proc is not readable");
         entries
             .filter_map(Result::ok)
             .filter(|entry| {
