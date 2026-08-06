@@ -1,0 +1,51 @@
+# The M0 exit-criteria rig (05 "Test rig from day one", 06 §4 T18).
+#
+# A package rather than a plain directory because the workspace manifest is
+# virtual: nothing at the root compiles tests. Its library is the harness —
+# spawning the real `amx` binary on a temp runtime dir and driving the real
+# socket — and every `[[test]]` below is one suite over that harness. Test
+# files sit at the package root (not `tests/tests/`) so the repository keeps
+# the layout 04 §9 names: integration tests live in `tests/`.
+[package]
+name = "amx-rig"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Integration test rig: goldens, skew harness, adversarial suite"
+publish = false
+autotests = false
+
+[lib]
+name = "rig"
+path = "support/lib.rs"
+
+[[test]]
+name = "protocol"
+path = "protocol.rs"
+
+[[test]]
+name = "skew"
+path = "skew.rs"
+
+[[test]]
+name = "adversarial"
+path = "adversarial.rs"
+
+[[test]]
+name = "hygiene"
+path = "hygiene.rs"
+
+[dependencies]
+amx-core = { workspace = true }
+amx-proto = { workspace = true }
+amx-server = { workspace = true }
+amx-vt = { workspace = true }
+rustix = { workspace = true, features = ["fs", "process", "pty", "std", "termios"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true
