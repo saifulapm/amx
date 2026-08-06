@@ -33,6 +33,7 @@
 //! tracker the terminal, forwards what the tracker found, and serves history
 //! ranges through it.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc as sync_mpsc;
@@ -47,7 +48,7 @@ use tracing::{debug, warn};
 use super::PublishedFrame;
 use super::probe::PaneProbe;
 use crate::actor::{HistoryError, HistoryRows};
-use crate::history::{HistoryEvent, HistoryTracker};
+use crate::history::{CHUNK_ROWS, HistoryChunks, HistoryEvent, HistoryTracker};
 use crate::pty::{ChildExit, PtyActorHandle};
 
 /// How long the parser parks when it has no frame pending.
@@ -167,6 +168,22 @@ pub(super) struct Parser {
     /// What the last observation found, reused so a frame allocates nothing
     /// more than the hashes it announces.
     found: Vec<HistoryEvent>,
+    /// History transfers in progress, served one chunk per loop turn.
+    transfers: VecDeque<Transfer>,
+}
+
+/// One chunked history read in flight, its reply held until the range is done.
+///
+/// Held as parser state rather than drained inside one command: the pty thread
+/// blocks in `done.recv()` while a parse waits its turn, so a transfer served
+/// whole would stall the read callback — and the published frame — for the
+/// whole range. One chunk per loop turn (~a quarter millisecond, [`CHUNK_ROWS`]
+/// at the measured ~3 µs a row) is the yield point 04 §4's chunking promises.
+struct Transfer {
+    range: RowRange,
+    chunks: HistoryChunks,
+    rows: Vec<u8>,
+    reply: oneshot::Sender<Result<HistoryRows, HistoryError>>,
 }
 
 impl Parser {
@@ -199,6 +216,7 @@ impl Parser {
             generation,
             history: HistoryTracker::new(size.cols, size.rows),
             found: Vec::new(),
+            transfers: VecDeque::new(),
         }
     }
 
@@ -207,9 +225,24 @@ impl Parser {
         self.probe.parser_started();
         let mut deadline: Option<Instant> = None;
         loop {
-            let waited = match deadline {
-                Some(at) => commands.recv_timeout(at.saturating_duration_since(Instant::now())),
-                None => commands.recv_timeout(IDLE_TICK),
+            let waited = if self.transfers.is_empty() {
+                match deadline {
+                    Some(at) => commands.recv_timeout(at.saturating_duration_since(Instant::now())),
+                    None => commands.recv_timeout(IDLE_TICK),
+                }
+            } else {
+                // A transfer is in progress: take whatever has already queued
+                // without blocking, so a parse or a publish waits for at most
+                // one chunk, and the chunk below is served either way.
+                match commands.try_recv() {
+                    Ok(command) => Ok(command),
+                    Err(sync_mpsc::TryRecvError::Empty) => {
+                        Err(sync_mpsc::RecvTimeoutError::Timeout)
+                    }
+                    Err(sync_mpsc::TryRecvError::Disconnected) => {
+                        Err(sync_mpsc::RecvTimeoutError::Disconnected)
+                    }
+                }
             };
             match waited {
                 Ok(ParserCommand::Stop) => break,
@@ -227,6 +260,7 @@ impl Parser {
                 deadline = None;
                 self.publish();
             }
+            self.serve_chunk();
         }
     }
 
@@ -242,9 +276,21 @@ impl Parser {
                 false
             }
             ParserCommand::History { range, reply } => {
-                let rows = self.history(range);
-                self.probe.served_history();
-                let _ = reply.send(rows);
+                // Chunked through the history module, which re-checks the
+                // range against the eviction floor per chunk and refuses what
+                // the scrollback has thrown away rather than faking it (04 §3).
+                match self.history.chunked(range, CHUNK_ROWS) {
+                    Ok(chunks) => self.transfers.push_back(Transfer {
+                        range,
+                        chunks,
+                        rows: Vec::new(),
+                        reply,
+                    }),
+                    Err(err) => {
+                        self.probe.served_history();
+                        let _ = reply.send(Err(err));
+                    }
+                }
                 false
             }
             // Handled by the caller, which stops the loop rather than looping
@@ -375,13 +421,31 @@ impl Parser {
         }
     }
 
-    /// Read a committed range out of the scrollback.
+    /// Serve one chunk of the oldest transfer, replying when its range is done.
     ///
-    /// Chunked through the history module, which re-checks the range against
-    /// the eviction floor per chunk and refuses what the scrollback has thrown
-    /// away rather than faking it (04 §3).
-    fn history(&mut self, range: RowRange) -> Result<HistoryRows, HistoryError> {
-        self.history.read(&self.terminal, range)
+    /// Called once per loop turn, which is the interleaving: a parse queued
+    /// behind a large transfer is delayed by one chunk, never the whole range.
+    fn serve_chunk(&mut self) {
+        let Some(transfer) = self.transfers.front_mut() else {
+            return;
+        };
+        let step =
+            transfer
+                .chunks
+                .next_chunk(&mut self.history, &self.terminal, &mut transfer.rows);
+        let outcome = match step {
+            Some(Ok(_)) if transfer.chunks.more() => return,
+            Some(Ok(_)) | None => Ok(()),
+            Some(Err(err)) => Err(err),
+        };
+        let Some(transfer) = self.transfers.pop_front() else {
+            return;
+        };
+        self.probe.served_history();
+        let _ = transfer.reply.send(outcome.map(|()| HistoryRows {
+            range: transfer.range,
+            rows: transfer.rows,
+        }));
     }
 
     fn send(&self, event: HostEvent) {

@@ -6,7 +6,6 @@
 use amx_core::{GridGeneration, PaneId};
 use amx_proto::stream::{Cursor, FlowControl, Priority, StreamId};
 use amx_vt::Snapshot;
-use bytes::Bytes;
 
 use super::DamageError;
 use super::codec;
@@ -326,7 +325,9 @@ impl GridStream {
             SentKind::Cursor
         };
 
-        let payload = Bytes::copy_from_slice(self.encoder.payload());
+        // Zero-copy hand-off: the encoder's buffer is split and frozen, and
+        // reclaimed for the next message once the writer drops this frame.
+        let payload = self.encoder.take_payload();
         let bytes = payload.len();
         out.send(OutFrame::stream(
             self.channel,

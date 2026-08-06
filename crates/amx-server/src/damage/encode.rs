@@ -20,15 +20,19 @@
 //!
 //! ## Buffers
 //!
-//! Three `Vec`s, cleared and refilled, never freed: the rect list, the packed
-//! cells and the payload. After the first few frames every one of them is at
-//! its steady-state capacity and encoding a frame allocates nothing at all,
-//! which is the performance rule and what
-//! `damage_encode_does_not_allocate_per_frame` asserts.
+//! Reused scratch, cleared and refilled, never freed: the rect list and the
+//! packed cells are `Vec`s, and the payload is a `BytesMut` so the finished
+//! message leaves as a zero-copy [`Bytes`] ([`Encoder::take_payload`]) instead
+//! of being copied into a frame. Once the writer drops the frame the split-off
+//! bytes fall back to one owner and the next build reclaims the allocation, so
+//! after the first few frames encoding and flushing allocate nothing at all —
+//! the performance rule, asserted by `damage_encode_does_not_allocate_per_frame`
+//! and `grid_stream_flush_and_outbound_do_not_allocate_per_frame`.
 
 use amx_core::GridGeneration;
 use amx_proto::stream::DamageRect;
 use amx_vt::Snapshot;
+use bytes::{Bytes, BytesMut};
 
 use amx_proto::stream::cell;
 use amx_proto::stream::{Cells, GridMessage};
@@ -50,7 +54,7 @@ pub struct Encoder {
     rects: Vec<DamageRect>,
     covered: Vec<u16>,
     cells: Vec<u8>,
-    payload: Vec<u8>,
+    payload: BytesMut,
     complete: bool,
 }
 
@@ -65,6 +69,18 @@ impl Encoder {
     #[must_use]
     pub fn payload(&self) -> &[u8] {
         &self.payload
+    }
+
+    /// Take the last message as a frame payload, without copying it.
+    ///
+    /// The bytes are split out of the scratch buffer and frozen; the scratch
+    /// is left empty. When the frame is written and dropped the refcount on
+    /// the split-off bytes falls back to one, and the next build's `reserve`
+    /// reclaims the allocation — so a steady stream of frames cycles one
+    /// buffer instead of copying out of it once per message.
+    #[must_use]
+    pub fn take_payload(&mut self) -> Bytes {
+        self.payload.split().freeze()
     }
 
     /// The rects the last delta described.

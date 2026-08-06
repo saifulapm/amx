@@ -31,6 +31,7 @@
 //! receiving side, where correctness is worth an allocation.
 
 use amx_core::{GridGeneration, RowHash, RowId, RowRange};
+use bytes::BufMut;
 
 use super::cell::{self, PackedCell};
 use super::codec::{CodecError, Reader, put_cursor, put_rect};
@@ -181,8 +182,11 @@ impl GridMessage<'_> {
     /// Append the little-endian encoding of this message to `out`.
     ///
     /// `out` is caller-owned and reused across frames: encoding a grid message
-    /// must not allocate on the hot path.
-    pub fn encode(&self, out: &mut Vec<u8>) {
+    /// must not allocate on the hot path. Generic over [`BufMut`] so the
+    /// server can build straight into the `BytesMut` it freezes into the
+    /// outbound frame — encoding into a `Vec` and copying out of it would put
+    /// that copy (and its allocation) on every frame.
+    pub fn encode(&self, out: &mut impl BufMut) {
         match *self {
             Self::Reset {
                 generation,
@@ -191,10 +195,10 @@ impl GridMessage<'_> {
                 cells,
                 cursor,
             } => {
-                out.push(TAG_RESET);
-                out.extend_from_slice(&generation.get().to_le_bytes());
-                out.extend_from_slice(&rows.to_le_bytes());
-                out.extend_from_slice(&cols.to_le_bytes());
+                out.put_u8(TAG_RESET);
+                out.put_u64_le(generation.get());
+                out.put_u16_le(rows);
+                out.put_u16_le(cols);
                 put_cursor(cursor, out);
                 put_cells(cells, out);
             }
@@ -204,11 +208,11 @@ impl GridMessage<'_> {
                 cells,
                 cursor,
             } => {
-                out.push(TAG_DELTA);
-                out.extend_from_slice(&generation.get().to_le_bytes());
+                out.put_u8(TAG_DELTA);
+                out.put_u64_le(generation.get());
                 // The rect list is bounded by the grid height upstream.
                 let count = u16::try_from(rects.len()).unwrap_or(u16::MAX);
-                out.extend_from_slice(&count.to_le_bytes());
+                out.put_u16_le(count);
                 for rect in rects.iter().take(usize::from(count)) {
                     put_rect(*rect, out);
                 }
@@ -216,18 +220,18 @@ impl GridMessage<'_> {
                 put_cells(cells, out);
             }
             Self::Scrolled { range, hashes } => {
-                out.push(TAG_SCROLLED);
-                out.extend_from_slice(&range.first.get().to_le_bytes());
-                out.extend_from_slice(&range.last.get().to_le_bytes());
+                out.put_u8(TAG_SCROLLED);
+                out.put_u64_le(range.first.get());
+                out.put_u64_le(range.last.get());
                 // One entry per row in the range, itself `u64`-bounded.
                 let count = u32::try_from(hashes.len()).unwrap_or(u32::MAX);
-                out.extend_from_slice(&count.to_le_bytes());
+                out.put_u32_le(count);
                 for hash in hashes.iter().take(count as usize) {
-                    out.extend_from_slice(&hash.get().to_le_bytes());
+                    out.put_u64_le(hash.get());
                 }
             }
             Self::Cursor(cursor) => {
-                out.push(TAG_CURSOR);
+                out.put_u8(TAG_CURSOR);
                 put_cursor(cursor, out);
             }
         }
@@ -235,11 +239,11 @@ impl GridMessage<'_> {
 }
 
 /// Append the packed cells with their length prefix.
-fn put_cells(cells: Cells<'_>, out: &mut Vec<u8>) {
+fn put_cells(cells: Cells<'_>, out: &mut impl BufMut) {
     // Cell bytes are bounded by the frame cap, itself a `u32` on the wire.
     let len = u32::try_from(cells.as_bytes().len()).unwrap_or(u32::MAX);
-    out.extend_from_slice(&len.to_le_bytes());
-    out.extend_from_slice(&cells.as_bytes()[..len as usize]);
+    out.put_u32_le(len);
+    out.put_slice(&cells.as_bytes()[..len as usize]);
 }
 
 /// One row of decoded cells.

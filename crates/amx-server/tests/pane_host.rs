@@ -40,12 +40,25 @@ impl Harness {
     }
 
     fn with_size(script: &str, size: WinSize) -> Self {
+        Self::spawn(script, size, None)
+    }
+
+    /// A pane whose scrollback holds `max_scrollback` bytes, for tests that
+    /// build a deep history and need the eviction floor to stay put.
+    fn with_scrollback(script: &str, max_scrollback: usize) -> Self {
+        Self::spawn(script, SIZE, Some(max_scrollback))
+    }
+
+    fn spawn(script: &str, size: WinSize, max_scrollback: Option<usize>) -> Self {
         let bus = Arc::new(Bus::default());
         let events = bus.subscribe();
         let session = UnixPty.spawn(&shell(script, size)).expect("spawn a pty");
 
         let mut config = PaneHostConfig::new(PaneId::new_v4(), Arc::clone(&bus), size);
         config.frame_interval = FRAME;
+        if let Some(bytes) = max_scrollback {
+            config.max_scrollback = bytes;
+        }
         let host = PaneHost::spawn(config, session).expect("start the pane host");
         Self { host, bus, events }
     }
@@ -272,6 +285,70 @@ async fn history_range_command_is_served_from_the_parser_thread() {
         probe.parses(),
         parses,
         "an idle pane serves history without waiting for pty output"
+    );
+
+    pane.stop().await;
+}
+
+/// Rows a "large" transfer covers: at the measured ~3 µs a row this is well
+/// over a hundred milliseconds of serving — dozens of frame intervals — so a
+/// transfer served in one piece would visibly freeze publication.
+const DEEP: u64 = 50_000;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_large_history_read_does_not_stall_frame_publication() {
+    // 64 MiB of scrollback keeps every row of the deep history fetchable, so
+    // the transfer is bounded by serving cost, never refused by eviction.
+    let mut pane = Harness::with_scrollback("yes 'history filler line'", 64 * 1024 * 1024);
+    let mut feed = pane.host.frames();
+
+    pane.wait_for_event(
+        |event| matches!(event, Event::HistoryCommitted { range, .. } if range.last.get() >= DEEP),
+    )
+    .await;
+
+    let (reply, answer) = oneshot::channel();
+    pane.host
+        .handle()
+        .send(PaneCommand::HistoryRange {
+            range: RowRange::new(RowId::FIRST, RowId::from_raw(DEEP - 1)),
+            reply,
+        })
+        .await
+        .expect("the pane is running");
+
+    // The pane keeps flooding while the transfer runs. Served one chunk per
+    // parser turn, publication interleaves with the read; served in one piece,
+    // the parser goes dark until the reply and nothing lands in between.
+    let mut answer = answer;
+    let mut frames_during = 0_u32;
+    let rows = loop {
+        tokio::select! {
+            served = tokio::time::timeout(PATIENCE, &mut answer) => {
+                break served
+                    .expect("the transfer finished before the deadline")
+                    .expect("the parser answered")
+                    .expect("the range is committed");
+            }
+            fresh = feed.changed() => {
+                assert!(fresh, "the pane stopped mid-transfer");
+                frames_during += 1;
+            }
+        }
+    };
+
+    assert_eq!(rows.range.row_count(), Some(DEEP));
+    let unpacked = unpack(&rows.rows);
+    assert_eq!(unpacked.len(), usize::try_from(DEEP).expect("fits"));
+    assert!(
+        unpacked.iter().all(|row| row == "history filler line"),
+        "the transfer served the rows the range names"
+    );
+    assert!(
+        frames_during >= 5,
+        "only {frames_during} frames were published while {DEEP} rows were served; \
+         a large history read must interleave with publication instead of \
+         blocking the parser for the whole range"
     );
 
     pane.stop().await;
