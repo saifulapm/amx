@@ -139,9 +139,10 @@ impl Harness {
 
     /// Let every actor drain what the setup queued and go quiet, so the
     /// synchronous phase that follows starts from parked tasks with empty
-    /// mailboxes.
+    /// mailboxes. The ping below proves the Core's mailbox drained; the nap
+    /// is for the pane actors, whose parked state has no observable signal.
     async fn settle(&self) {
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await; // deliberate
         let (reply, answer) = oneshot::channel();
         self.tx
             .send(CoreCommand::Session(amx_server::actor::SessionCall::Ping {

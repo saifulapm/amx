@@ -524,12 +524,14 @@ async fn a_paused_stream_with_pending_damage_sleeps_until_a_flow_signal() {
     flow.send(FlowControl::Pause { stream: STREAM })
         .await
         .expect("the pump is listening");
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // Pause application has no observable edge; this is a scheduling window.
+    tokio::time::sleep(Duration::from_millis(150)).await; // deliberate
     pane.write(paint(2, "held-back")).await;
     pane.snapshot_until("held-back").await;
 
     // Half a second paused: an armed retry timer would fire here 100+ times.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // An adversarial hold observing absence — a window by nature.
+    tokio::time::sleep(Duration::from_millis(500)).await; // deliberate
     frames.drain_into(&mut reference);
     assert_eq!(reference.deltas, 0, "nothing may be sent while paused");
 

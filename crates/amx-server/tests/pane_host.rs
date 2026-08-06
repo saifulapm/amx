@@ -605,7 +605,7 @@ async fn published_frame_and_generation_change_together() {
             Instant::now() < deadline,
             "the resized frame never published"
         );
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        tokio::time::sleep(TICK).await;
     }
 
     pane.stop().await;
@@ -617,8 +617,9 @@ async fn published_frame_and_generation_change_together() {
 #[tokio::test]
 async fn kill_bypasses_a_full_command_mailbox() {
     let mut pane = Harness::start("sleep 60");
-    // Let the shell's startup output drain so the actor is parked.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Let the shell's startup output drain so the actor is parked; a parked
+    // actor has no observable signal, so this is a scheduling window.
+    tokio::time::sleep(Duration::from_millis(200)).await; // deliberate
 
     // Single-threaded scheduler, no awaits: the actor cannot drain between
     // these sends, so the mailbox is genuinely full afterwards.
