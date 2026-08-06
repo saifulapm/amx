@@ -1186,6 +1186,43 @@ fmt --check` green.
 
 ---
 
+### T19 — Integration: the cross-crate seam
+
+- **Difficulty:** hard · **Wave:** 8 · **Depends on:** T13–T18
+- **Goal:** the wired product: a real client on a real terminal against the
+  real binary over the real socket, with every claim proven end to end —
+  typed bytes reach the pane's child process, a fresh attach renders actual
+  shell output, resize delivers `SIGWINCH` with the projected dimensions,
+  detach/reattach round-trips an identical *and non-blank* grid, a second
+  client's model is populated from `session.state`, and the picker switches
+  workspaces over the wire.
+- **Scope:** the seams the wave plan left unowned — `amx-proto/src/stream/*`
+  shared codecs (server delegates to them), the `session.state` /
+  `stream.bind` / `pane.history` / `client.viewport` method rows with their
+  server dispatch, the client's session wiring (`app/wired.rs`: frames in,
+  input and calls out), and the end-to-end suite in `tests/integration.rs`
+  plus the content assertions retrofitted onto `tests/adversarial.rs`.
+- **Why it exists:** §5's file-ownership check is what made the waves
+  parallel — every task owned its files exclusively — and it is also why no
+  task owned the place where they meet. T13 built rendering against a model
+  nobody filled, T18 asserted "identical grid" against screens that could be
+  identically *blank*, and the codecs the server encoded with had no shared
+  home a client could decode with. The cross-crate seam (proto codec ↔ server
+  dispatch ↔ client wiring) was unowned by construction, so its integration
+  is a task, not a hope.
+- **Acceptance:**
+  - `typed_bytes_reach_the_panes_child_process`
+  - `resize_delivers_sigwinch_and_the_child_sees_new_dimensions`
+  - `detach_and_reattach_shows_the_identical_non_blank_grid`
+  - `session_state_populates_a_second_clients_model`
+  - `picker_switches_workspaces_end_to_end`
+  - `a_process_started_by_typing_outlives_every_client`
+  - the T18 adversarial suite tightened to compare screens that demonstrably
+    hold pane content, closing the blank-grid loophole its scope note
+    recorded
+
+---
+
 ## 5. Waves and merge order
 
 Merge in wave order; within a wave, any order — no two tasks in a wave touch the
@@ -1200,7 +1237,8 @@ same file.
 | 4 | T10 gateway+dispatch · T12 scrollback identity | 2 | T11, T13, T16 |
 | 5 | T11 flow control · T13 client core · T16 verbs | 3 | T14, T17 |
 | 6 | T14 client input · T17 sessions+CLI | 2 | T15, T18 |
-| 7 | T15 cache+copy+picker · T18 test rig | 2 | M0 exit |
+| 7 | T15 cache+copy+picker · T18 test rig | 2 | T19 |
+| 8 | **T19** integration | 1 | M0 exit |
 
 **File-ownership check for concurrent waves** (no overlaps):
 
@@ -1219,6 +1257,9 @@ same file.
   `app.rs`); T17 `amx-server/src/session/**` + `crates/amx/src/**`.
 - Wave 7 — T15 `amx-client/src/{cache/**,copy.rs,picker.rs}`; T18 workspace
   `tests/**`.
+- Wave 8 — T19 runs alone and owns the seams by exception: it may touch any
+  file the integration requires, which is exactly what the exclusive
+  ownership above could not grant a concurrent task.
 
 The two places where a later task must edit an earlier task's file are declared
 up front rather than discovered: T14 edits one hook block in T13's `app.rs`, and
