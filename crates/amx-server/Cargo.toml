@@ -1,0 +1,42 @@
+[package]
+name = "amx-server"
+description = "amx session server: actors, PTY, connections, damage and history"
+license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+amx-core = { workspace = true }
+amx-proto = { workspace = true }
+amx-vt = { workspace = true }
+bytes = { workspace = true }
+rustix = { workspace = true, features = [
+    "event",
+    "fs",
+    "pipe",
+    "process",
+    "pty",
+    "std",
+    "termios",
+] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
