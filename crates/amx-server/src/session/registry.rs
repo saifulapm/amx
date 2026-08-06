@@ -136,7 +136,9 @@ pub enum DeleteError {
 /// Derived from [`Ctx::for_session`] rather than rebuilt, so the place sessions
 /// are *listed* from and the place a session *binds* in cannot drift apart:
 /// there is exactly one expression of `<runtime root>/amx/<session>` in the
-/// tree and this reads the parent off it.
+/// tree and this reads the parent off it. The cost of borrowing that derivation
+/// is that listing also needs a *state* root to be configured, which it does not
+/// use — the same environment failure every other verb hits first.
 pub fn runtime_root(env: &Env) -> Result<PathBuf, CtxError> {
     let ctx = Ctx::for_session(SessionName::default(), env)?;
     Ok(ctx
