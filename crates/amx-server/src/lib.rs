@@ -9,3 +9,4 @@
 //! layer. What is fixed here is the mailbox vocabulary those actors speak.
 
 pub mod actor;
+pub mod platform;
