@@ -1,0 +1,57 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/amx",
+    "crates/amx-client",
+    "crates/amx-core",
+    "crates/amx-proto",
+    "crates/amx-server",
+    "crates/amx-vt",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+repository = "https://github.com/saifulapm/amx"
+
+# Versions are pinned once here; members select features. Every member also
+# carries a literal `license = "MIT OR Apache-2.0"` field of its own.
+[workspace.dependencies]
+amx-client = { path = "crates/amx-client", version = "0.1.0" }
+amx-core = { path = "crates/amx-core", version = "0.1.0" }
+amx-proto = { path = "crates/amx-proto", version = "0.1.0" }
+amx-server = { path = "crates/amx-server", version = "0.1.0" }
+amx-vt = { path = "crates/amx-vt", version = "0.1.0" }
+
+anyhow = "1.0"
+bytes = "1.12"
+clap = { version = "4.6", default-features = false }
+proptest = "1.11"
+rustix = "1.1"
+serde = "1.0"
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = "1.53"
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+unicode-width = "0.2"
+uuid = "1.24"
+
+# Public items are contracts: an undocumented one is an unspecified one.
+# `unwrap`/`expect` are denied outside tests; an invariant that genuinely cannot
+# fail carries a local `allow` plus the comment stating the invariant. clippy's
+# in-test exemption only reaches `#[test]` bodies and `#[cfg(test)]` modules, so
+# a file in `tests/` opens with:
+#     #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
+[workspace.lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+
+[profile.release]
+lto = "thin"
