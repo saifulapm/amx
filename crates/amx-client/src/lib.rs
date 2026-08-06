@@ -11,3 +11,9 @@
 //! row id and scrolled at memory speed.
 
 #![forbid(unsafe_code)]
+
+pub mod app;
+pub mod model;
+pub mod net;
+pub mod render;
+pub mod term;
