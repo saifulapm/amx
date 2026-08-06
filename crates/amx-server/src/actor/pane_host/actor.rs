@@ -249,12 +249,12 @@ impl Actor {
                 self.report(PaneReport::Title(title)).await;
             }
             HostEvent::Bell => self.report(PaneReport::Bell).await,
-            HostEvent::Committed(range) => {
+            HostEvent::Committed { range, hashes } => {
                 self.bus.publish(Event::HistoryCommitted {
                     pane: self.pane,
                     range,
                 });
-                self.report(PaneReport::Committed(range)).await;
+                self.report(PaneReport::Committed { range, hashes }).await;
             }
             HostEvent::Invalidated { from_row, cause } => {
                 self.bus.publish(Event::HistoryInvalidated {

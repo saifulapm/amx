@@ -11,6 +11,7 @@
 pub mod actor;
 pub mod conn;
 pub mod dispatch;
+pub mod history;
 pub mod platform;
 pub mod pty;
 pub mod runtime;

@@ -217,6 +217,7 @@ fn run_bindgen(
         "ghostty_key_.*",
         "ghostty_osc_.*",
         "ghostty_grid_ref.*",
+        "ghostty_tracked_grid_ref_.*",
         "ghostty_result_.*",
         "ghostty_style_.*",
     ] {

@@ -28,7 +28,12 @@ pub struct TerminalOptions {
     pub cols: u16,
     /// Height in cells. Must be greater than zero.
     pub rows: u16,
-    /// How many lines of scrollback to keep.
+    /// How much memory, in bytes, the scrollback may hold.
+    ///
+    /// `terminal.h:187` calls it a line count; it is not. Measured against the
+    /// vendored library, 8192 holds 4269 rows at 20 columns and 387 at 200, and
+    /// the row capacity of one pane moves as its pages recycle. Nothing may be
+    /// derived from it — see `docs/notes/scrollback-identity.md`.
     pub max_scrollback: usize,
 }
 

@@ -1,8 +1,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
-//! Scrollback reads and viewport addressing — the minimal surface T12 builds
-//! row identity on top of.
+//! Scrollback reads, viewport addressing and row anchors — the surface amx's
+//! row identity is built on, and the traps the T12 spike found in it
+//! (`docs/notes/scrollback-identity.md`).
 
-use amx_vt::{Effects, Point, Scroll, Terminal, TerminalOptions};
+use amx_vt::{Effects, Point, PointSpace, Scroll, Terminal, TerminalOptions};
 
 fn pane(cols: u16, rows: u16, scrollback: usize) -> (Terminal, Effects) {
     let terminal = Terminal::new(TerminalOptions {
@@ -166,5 +167,258 @@ fn a_delta_scroll_moves_by_rows() {
     assert_eq!(
         terminal.scrollbar().expect("a scrollbar").offset,
         pinned - 2
+    );
+}
+
+/// A viewport parked in history stays parked while history is read: the read
+/// path resolves points, and resolving a point mutates nothing (R5).
+#[test]
+fn a_history_read_leaves_a_scrolled_viewport_alone() {
+    let (mut terminal, mut effects) = pane(20, 4, 4096);
+    fill(&mut terminal, &mut effects, 50);
+    terminal.scroll_viewport(Scroll::Row(3));
+    let parked = terminal.scrollbar().expect("a scrollbar");
+
+    let mut text = String::new();
+    for y in 0..40 {
+        text.clear();
+        terminal
+            .read_row(Point::history(y), &mut text)
+            .expect("row");
+    }
+
+    assert_eq!(terminal.scrollbar().expect("a scrollbar"), parked);
+    assert!(!terminal.viewport_pinned().expect("pinned"));
+}
+
+/// The `history` space does not stop at the active area, so a caller that does
+/// not bound reads by [`Terminal::scrollback_rows`] serves *live* rows as
+/// history. The library will not catch it; only a row past the whole screen is
+/// an error.
+#[test]
+fn a_history_point_past_the_scrollback_reads_a_live_row() {
+    let (mut terminal, mut effects) = pane(20, 4, 4096);
+    fill(&mut terminal, &mut effects, 10);
+    let scrollback = u32::try_from(terminal.scrollback_rows().expect("rows")).expect("fits");
+
+    let mut history = String::new();
+    terminal
+        .read_row(Point::history(scrollback), &mut history)
+        .expect("a row past the end of history still reads");
+    let mut live = String::new();
+    terminal
+        .read_row(Point::viewport(0), &mut live)
+        .expect("a live row");
+
+    assert_eq!(history, live, "history(scrollback) is the first live row");
+}
+
+/// The one primitive amx's row identity rests on: an anchor placed on a row
+/// follows it into history and reports how far down it is, so a caller that
+/// knows the row's id learns exactly how many rows were discarded below it.
+#[test]
+fn an_anchor_follows_its_row_and_measures_what_was_discarded() {
+    let (mut terminal, mut effects) = pane(20, 4, 8192);
+    fill(&mut terminal, &mut effects, 200);
+    let scrollback = terminal.scrollback_rows().expect("rows");
+    let newest = u32::try_from(scrollback - 1).expect("fits");
+    // Nothing has been pruned yet at this depth, so the newest history row's id
+    // is its own offset.
+    let anchor_id = u64::from(newest);
+    let anchor = terminal.track(Point::history(newest)).expect("an anchor");
+    assert!(anchor.alive());
+    assert_eq!(
+        anchor.row(PointSpace::History).expect("history"),
+        Some(newest)
+    );
+    assert_eq!(anchor.row(PointSpace::Active).expect("active"), None);
+
+    fill(&mut terminal, &mut effects, 4000);
+
+    let offset = anchor
+        .row(PointSpace::History)
+        .expect("history")
+        .expect("the anchor is still in history");
+    let floor = anchor_id - u64::from(offset);
+    let mut oldest = String::new();
+    terminal
+        .read_row(Point::history(0), &mut oldest)
+        .expect("the oldest row");
+    assert_eq!(
+        oldest.trim_end(),
+        format!("line{floor}"),
+        "the derived floor names the row the scrollback actually starts at"
+    );
+}
+
+/// The failure the model has to survive: when the whole scrollback turns over
+/// between two observations the anchor is gone, and no count can be recovered.
+#[test]
+fn an_anchor_dies_when_the_whole_history_turns_over() {
+    let (mut terminal, mut effects) = pane(20, 4, 8192);
+    fill(&mut terminal, &mut effects, 50);
+    let newest = u32::try_from(terminal.scrollback_rows().expect("rows") - 1).expect("fits");
+    let anchor = terminal.track(Point::history(newest)).expect("an anchor");
+
+    fill(&mut terminal, &mut effects, 20_000);
+
+    assert!(!anchor.alive());
+    assert_eq!(anchor.row(PointSpace::History).expect("history"), None);
+}
+
+/// Growing the grid pulls the newest history rows back into the live area. The
+/// anchor follows them out of history and its history offset goes stale, so
+/// `Active` is what says whether an anchor may be trusted as a floor probe.
+#[test]
+fn an_anchor_pulled_back_into_the_live_area_says_so() {
+    let (mut terminal, mut effects) = pane(20, 4, 4096);
+    fill(&mut terminal, &mut effects, 20);
+    let scrollback = terminal.scrollback_rows().expect("rows");
+    let newest = u32::try_from(scrollback - 1).expect("fits");
+    let anchor = terminal.track(Point::history(newest)).expect("an anchor");
+
+    terminal.resize(20, 10).expect("a taller grid");
+
+    let grown = terminal.scrollback_rows().expect("rows");
+    assert!(grown < scrollback, "a taller grid reclaims history rows");
+    assert!(anchor.alive());
+    assert!(
+        anchor.row(PointSpace::Active).expect("active").is_some(),
+        "the anchored row is in the live area now"
+    );
+    assert!(
+        anchor.row(PointSpace::History).expect("history")
+            >= Some(u32::try_from(grown).expect("fits")),
+        "its history offset is stale — it counts past the end of history"
+    );
+}
+
+/// The trap that makes a content check mandatory: erasing the scrollback leaves
+/// the anchor reporting a value, and the row it names is a different row.
+#[test]
+fn an_erased_scrollback_leaves_an_anchor_alive_and_wrong() {
+    let (mut terminal, mut effects) = pane(20, 4, 4096);
+    fill(&mut terminal, &mut effects, 20);
+    let newest = u32::try_from(terminal.scrollback_rows().expect("rows") - 1).expect("fits");
+    let mut anchored = String::new();
+    terminal
+        .read_row(Point::history(newest), &mut anchored)
+        .expect("the anchored row");
+    let anchor = terminal.track(Point::history(newest)).expect("an anchor");
+
+    terminal.write(b"\x1b[3J", &mut effects);
+
+    assert_eq!(terminal.scrollback_rows().expect("rows"), 0);
+    assert!(anchor.alive(), "the library keeps a discarded pin alive");
+    let at = anchor
+        .row(PointSpace::Active)
+        .expect("active")
+        .expect("it points somewhere in the live area");
+    let mut now = String::new();
+    terminal
+        .read_row(
+            Point {
+                space: PointSpace::Active,
+                y: at,
+            },
+            &mut now,
+        )
+        .expect("the row it points at");
+    assert_ne!(
+        now, anchored,
+        "an alive anchor is not proof of identity — the row underneath changed"
+    );
+}
+
+/// Only width changes reflow, and a reflow rewrites the *oldest* row too, which
+/// is why invalidation starts at the eviction floor rather than at the tail.
+#[test]
+fn a_width_change_rewrites_history_from_its_oldest_row() {
+    let (mut terminal, mut effects) = pane(20, 4, 4096);
+    for line in 0..20 {
+        effects.clear();
+        terminal.write(
+            format!("line{line} padded out to twenty\r\n").as_bytes(),
+            &mut effects,
+        );
+    }
+    let before = terminal.scrollback_rows().expect("rows");
+    let mut oldest = String::new();
+    terminal
+        .read_row(Point::history(0), &mut oldest)
+        .expect("the oldest row");
+
+    terminal.resize(10, 4).expect("a narrower grid");
+
+    let mut reflowed = String::new();
+    terminal
+        .read_row(Point::history(0), &mut reflowed)
+        .expect("the oldest row");
+    assert!(terminal.scrollback_rows().expect("rows") > before);
+    assert_ne!(reflowed, oldest);
+}
+
+/// A height change moves rows between history and the live area without
+/// reflowing anything: the content that stays in history is untouched.
+#[test]
+fn a_height_change_does_not_rewrite_history() {
+    let (mut terminal, mut effects) = pane(20, 4, 4096);
+    fill(&mut terminal, &mut effects, 20);
+    let mut oldest = String::new();
+    terminal
+        .read_row(Point::history(0), &mut oldest)
+        .expect("the oldest row");
+    let before = terminal.scrollback_rows().expect("rows");
+
+    terminal.resize(20, 10).expect("a taller grid");
+    let grown = terminal.scrollback_rows().expect("rows");
+    terminal.resize(20, 4).expect("a shorter grid");
+
+    let mut after = String::new();
+    terminal
+        .read_row(Point::history(0), &mut after)
+        .expect("the oldest row");
+    assert!(grown < before, "growing reclaimed rows from history");
+    assert_eq!(terminal.scrollback_rows().expect("rows"), before);
+    assert_eq!(after, oldest);
+}
+
+/// Both scrollback counters are per *active screen*, so tracking has to freeze
+/// while the alternate screen is up rather than read a wipe that never was.
+#[test]
+fn the_alternate_screen_reports_no_scrollback() {
+    let (mut terminal, mut effects) = pane(20, 4, 4096);
+    fill(&mut terminal, &mut effects, 20);
+    let primary = terminal.scrollback_rows().expect("rows");
+
+    terminal.write(b"\x1b[?1049h", &mut effects);
+    assert_eq!(terminal.scrollback_rows().expect("rows"), 0);
+    fill(&mut terminal, &mut effects, 20);
+    assert_eq!(
+        terminal.scrollback_rows().expect("rows"),
+        0,
+        "output on the alternate screen commits nothing to history"
+    );
+
+    terminal.write(b"\x1b[?1049l", &mut effects);
+    assert_eq!(terminal.scrollback_rows().expect("rows"), primary);
+}
+
+/// `max_scrollback` is a memory bound, not a row count — the same limit holds
+/// an order of magnitude fewer rows at ten times the width. Nothing about the
+/// eviction floor may be derived from it.
+#[test]
+fn the_scrollback_limit_is_a_memory_bound_not_a_row_count() {
+    let mut settled = Vec::new();
+    for cols in [20u16, 200] {
+        let (mut terminal, mut effects) = pane(cols, 4, 8192);
+        fill(&mut terminal, &mut effects, 20_000);
+        settled.push(terminal.scrollback_rows().expect("rows"));
+    }
+
+    assert_ne!(settled[0], 8192);
+    assert!(
+        settled[0] > settled[1] * 4,
+        "a narrow pane keeps far more rows under the same limit: {settled:?}"
     );
 }
