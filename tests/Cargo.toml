@@ -41,6 +41,10 @@ path = "hygiene.rs"
 name = "firstrun"
 path = "firstrun.rs"
 
+[[test]]
+name = "integration"
+path = "integration.rs"
+
 [dependencies]
 amx-core = { workspace = true }
 amx-proto = { workspace = true }

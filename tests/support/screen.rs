@@ -83,6 +83,12 @@ fn apply_csi(cells: &mut Screen, row: &mut u16, col: &mut u16, params: &str, ter
     }
 }
 
+/// Whether the screen `bytes` paint shows `text` somewhere.
+#[must_use]
+pub fn shows(bytes: &[u8], text: &str) -> bool {
+    render(&rasterize(bytes)).contains(text)
+}
+
 /// Render a screen as text, one line per row, for failure messages.
 #[must_use]
 pub fn render(screen: &Screen) -> String {

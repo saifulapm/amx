@@ -61,6 +61,10 @@ pub struct Env {
 
 impl Env {
     /// A fresh environment whose session name is unique to it.
+    ///
+    /// `SHELL` defaults to `/bin/sh` so seeded panes behave the same on every
+    /// machine; a test that wants its own shell overrides it with
+    /// [`Env::set_var`], which wins by coming later on the command.
     #[must_use]
     pub fn new(tag: &str) -> Self {
         let dir = TempDir::new(tag);
@@ -69,8 +73,16 @@ impl Env {
         Self {
             dir,
             session: tag.to_owned(),
-            vars: Vec::new(),
+            vars: vec![("SHELL".to_owned(), "/bin/sh".to_owned())],
         }
+    }
+
+    /// A scratch directory panes and tests can exchange files through.
+    #[must_use]
+    pub fn scratch(&self) -> PathBuf {
+        let dir = self.dir.path().join("scratch");
+        std::fs::create_dir_all(&dir).expect("create the scratch dir");
+        dir
     }
 
     /// Set a variable on every command this environment spawns.
