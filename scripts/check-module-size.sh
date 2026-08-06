@@ -44,9 +44,18 @@ while IFS= read -r file; do
         warned=$((warned + 1))
     fi
 done < <(
-    find "$root" \
-        \( -path '*/target' -o -path '*/vendor' -o -path '*/.git' -o -name 'OUT_DIR' \) -prune -o \
-        -name '*.rs' -type f -print | sort
+    # In a git checkout, only tracked files are in budget — untracked material
+    # (reference checkouts, scratch dirs) is not ours to measure. Non-git roots
+    # (the tests use synthetic tempdirs) fall back to find.
+    if git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+        git -C "$root" ls-files -- '*.rs' | while IFS= read -r rel; do
+            printf '%s/%s\n' "$root" "$rel"
+        done | sort
+    else
+        find "$root" \
+            \( -path '*/target' -o -path '*/vendor' -o -path '*/.git' -o -name 'OUT_DIR' \) -prune -o \
+            -name '*.rs' -type f -print | sort
+    fi
 )
 
 if [ "$failed" -gt 0 ]; then
