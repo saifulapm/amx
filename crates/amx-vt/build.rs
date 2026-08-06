@@ -110,10 +110,17 @@ fn build_vendored(vendor_dir: &Path, source_dir: &Path) -> PathBuf {
         env::var("AMX_LIBGHOSTTY_VT_OPTIMIZE").unwrap_or_else(|_| "ReleaseFast".to_string());
     let simd = env::var("AMX_LIBGHOSTTY_VT_SIMD").unwrap_or_else(|_| "true".to_string());
 
+    // Each target gets its own prefix: a cross-check (say, apple-darwin from
+    // Linux) must never clobber the native static library under the default
+    // shared zig-out, or the next native link pulls foreign objects.
+    let prefix = source_dir.join("zig-out").join(&target);
+
     let mut command = Command::new(zig);
     command
         .current_dir(source_dir)
         .arg("build")
+        .arg("--prefix")
+        .arg(&prefix)
         .arg("-Demit-lib-vt")
         .arg(format!("-Doptimize={optimize}"))
         .arg(format!("-Dsimd={simd}"))
@@ -135,7 +142,7 @@ fn build_vendored(vendor_dir: &Path, source_dir: &Path) -> PathBuf {
         ));
     }
 
-    source_dir.join("zig-out").join("lib")
+    prefix.join("lib")
 }
 
 fn link(lib_dir: &Path) {
@@ -193,6 +200,13 @@ fn run_bindgen(
     let mut builder = bindgen::Builder::default()
         .header(header.to_string_lossy())
         .clang_arg(format!("-I{}", include_dir.display()))
+        // Cross-compilation: libclang defaults to the host, which drags the
+        // host's libc headers into a foreign-target parse (glibc's stubs.h
+        // breaks an apple-darwin check on Linux). The vendored headers only
+        // need <stdbool.h>/<stddef.h>/<stdint.h>, all provided by clang's
+        // builtins, so a freestanding parse needs no target sysroot at all.
+        .clang_arg(format!("--target={}", var("TARGET")))
+        .clang_arg("-ffreestanding")
         // The wrapper maps every constant through an exhaustive `match`, so
         // the constants must arrive as plain values, not as a Rust enum whose
         // variants would silently absorb a renumbering.
