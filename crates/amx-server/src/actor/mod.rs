@@ -200,6 +200,27 @@ pub enum WorkspaceCall {
         /// Where the reply goes.
         reply: Reply<workspace::CreateReply>,
     },
+    /// `workspace.rename`.
+    Rename {
+        /// Parameters.
+        params: workspace::RenameParams,
+        /// Where the reply goes.
+        reply: Reply<workspace::RenameReply>,
+    },
+    /// `workspace.kill`.
+    Kill {
+        /// Parameters.
+        params: workspace::KillParams,
+        /// Where the reply goes.
+        reply: Reply<workspace::KillReply>,
+    },
+    /// `workspace.switch`.
+    Switch {
+        /// Parameters.
+        params: workspace::SwitchParams,
+        /// Where the reply goes.
+        reply: Reply<workspace::SwitchReply>,
+    },
 }
 
 /// `pane.*` calls.
@@ -211,6 +232,34 @@ pub enum PaneCall {
         params: pane::SplitParams,
         /// Where the reply goes.
         reply: Reply<pane::SplitReply>,
+    },
+    /// `pane.zoom`.
+    Zoom {
+        /// Parameters.
+        params: pane::ZoomParams,
+        /// Where the reply goes.
+        reply: Reply<pane::ZoomReply>,
+    },
+    /// `pane.swap`.
+    Swap {
+        /// Parameters.
+        params: pane::SwapParams,
+        /// Where the reply goes.
+        reply: Reply<pane::SwapReply>,
+    },
+    /// `pane.move`.
+    Move {
+        /// Parameters.
+        params: pane::MoveParams,
+        /// Where the reply goes.
+        reply: Reply<pane::MoveReply>,
+    },
+    /// `pane.close`.
+    Close {
+        /// Parameters.
+        params: pane::CloseParams,
+        /// Where the reply goes.
+        reply: Reply<pane::CloseReply>,
     },
 }
 
@@ -245,6 +294,17 @@ impl PaneHandle {
     /// its sender rather than growing an unbounded queue behind it.
     pub async fn send(&self, command: PaneCommand) -> Result<(), MailboxError> {
         self.tx.send(command).await.map_err(|_| MailboxError::Gone)
+    }
+
+    /// Send a command without waiting for mailbox capacity.
+    ///
+    /// For callers that cannot `.await` — `Core::absorb` folds a batch
+    /// synchronously (04 §2) — and for which a full mailbox is not worth
+    /// blocking over: a close or a kill is rare next to the traffic that would
+    /// fill 256 slots, so losing one to backpressure is an acceptable and
+    /// logged trade rather than a reason to make the whole fold async.
+    pub fn try_send(&self, command: PaneCommand) -> Result<(), MailboxError> {
+        self.tx.try_send(command).map_err(|_| MailboxError::Gone)
     }
 
     /// Whether the actor is gone.

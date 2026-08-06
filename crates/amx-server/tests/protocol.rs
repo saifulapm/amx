@@ -6,7 +6,6 @@
 use amx_proto::control::{session, workspace};
 use amx_proto::version::{COMPAT_WINDOW, PROTO_MAX, PROTO_MIN, window};
 use amx_proto::{Feature, RequestId, RpcError, RpcOutcome};
-use amx_server::dispatch::NOT_IMPLEMENTED;
 use serde_json::json;
 
 mod support;
@@ -100,8 +99,8 @@ async fn an_unknown_method_is_a_reply_not_a_disconnect() {
 }
 
 #[tokio::test]
-async fn a_method_with_no_handler_yet_reports_a_seam_not_a_missing_method() {
-    let server = Server::start("seam").await;
+async fn a_call_naming_a_pane_that_does_not_exist_is_a_reply_not_a_disconnect() {
+    let server = Server::start("noexist").await;
     let mut client = server.attach().await;
 
     let pane = amx_core::PaneId::new_v4().to_string();
@@ -109,13 +108,14 @@ async fn a_method_with_no_handler_yet_reports_a_seam_not_a_missing_method() {
         .request(1, "pane.close", json!({ "pane": pane }))
         .await;
     let RpcOutcome::Error(err) = &reply.outcome else {
-        panic!("pane.close has no handler yet");
+        panic!("closing a pane nobody has is not success");
     };
-    assert_eq!(
-        err.code, NOT_IMPLEMENTED,
-        "a method in the shared table must not be reported as unknown — that \
-         would tell the client to stop offering it"
-    );
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+
+    // The connection is still alive: a well-formed call the `Core` rejected on
+    // its merits, not a reason to drop the peer.
+    let reply = client.request(2, "ping", json!({})).await;
+    assert!(matches!(reply.outcome, RpcOutcome::Result(_)));
 
     server.shutdown().await;
 }

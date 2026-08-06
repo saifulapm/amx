@@ -87,7 +87,10 @@ impl Server {
         let mut runtime = Runtime::new(ctx.clone());
 
         let (core_tx, core_rx) = mpsc::channel(64);
-        runtime.spawn(Core::new(ctx.clone()).run(core_rx, |_: &Scheduled| {}));
+        let core = Core::new(ctx.clone(), CoreHandle::new(core_tx.clone()));
+        runtime.spawn(async move {
+            let _ = core.run(core_rx, |_: &Scheduled| {}).await;
+        });
 
         let gateway =
             Gateway::bind(ctx.clone(), CoreHandle::new(core_tx)).expect("bind the session socket");

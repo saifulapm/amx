@@ -32,6 +32,7 @@ enum Placement {
 pub struct SessionState {
     panes: BTreeMap<PaneId, Pane>,
     workspaces: BTreeMap<WorkspaceId, Workspace>,
+    active_workspace: Option<WorkspaceId>,
 }
 
 impl SessionState {
@@ -297,5 +298,67 @@ impl SessionState {
         }
         ws.set_label(label);
         Ok(Effect::Layout)
+    }
+
+    /// Record the directory `pane`'s process was started in.
+    ///
+    /// Pure metadata: it is never consulted by a layout operation and does not
+    /// itself invalidate anything on screen.
+    pub fn set_pane_cwd(
+        &mut self,
+        pane: PaneId,
+        cwd: std::path::PathBuf,
+    ) -> Result<(), StateError> {
+        let p = self
+            .panes
+            .get_mut(&pane)
+            .ok_or(StateError::NoSuchPane(pane))?;
+        p.set_cwd(cwd);
+        Ok(())
+    }
+
+    /// Remove `workspace` entirely, taking every pane it holds with it.
+    ///
+    /// Returns the panes that were in it, so the caller can report — or stop —
+    /// what it took with it rather than leaving that to be inferred from
+    /// separate per-pane events.
+    pub fn kill_workspace(
+        &mut self,
+        workspace: WorkspaceId,
+    ) -> Result<(Vec<PaneId>, Effect), StateError> {
+        let ws = self
+            .workspaces
+            .remove(&workspace)
+            .ok_or(StateError::NoSuchWorkspace(workspace))?;
+        let panes = ws.layout().panes();
+        for pane in &panes {
+            self.panes.remove(pane);
+        }
+        if self.active_workspace == Some(workspace) {
+            self.active_workspace = None;
+        }
+        Ok((panes, Effect::Full))
+    }
+
+    /// The workspace currently focused for the session, if one was ever
+    /// switched to.
+    #[must_use]
+    pub const fn active_workspace(&self) -> Option<WorkspaceId> {
+        self.active_workspace
+    }
+
+    /// Focus `workspace` for the session.
+    ///
+    /// A no-op — reported as [`Effect::Nothing`] — when it is already the
+    /// active workspace.
+    pub fn switch_workspace(&mut self, workspace: WorkspaceId) -> Result<Effect, StateError> {
+        if !self.workspaces.contains_key(&workspace) {
+            return Err(StateError::NoSuchWorkspace(workspace));
+        }
+        if self.active_workspace == Some(workspace) {
+            return Ok(Effect::Nothing);
+        }
+        self.active_workspace = Some(workspace);
+        Ok(Effect::Full)
     }
 }

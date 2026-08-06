@@ -9,11 +9,20 @@ use std::sync::Arc;
 use amx_core::{Bus, Ctx, Level, Scheduled, SessionName, ShortNumber};
 use amx_proto::control::workspace;
 use amx_server::actor::CoreCommand;
+use amx_server::actor::CoreHandle;
 use amx_server::actor::WorkspaceCall;
 use amx_server::actor::core::Core;
 use amx_server::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+
+/// A `CoreHandle` for a `Core` that will never actually receive on it in this
+/// test — `absorb` is called directly — but `Core::new` still needs one to
+/// hand to any pane it spawns.
+fn unused_handle() -> CoreHandle {
+    let (tx, _rx) = mpsc::channel(1);
+    CoreHandle::new(tx)
+}
 
 /// A `Ctx` with fabricated, never-touched-on-disk paths, distinguished by
 /// `tag` so parallel tests never share a runtime/state/socket path.
@@ -76,7 +85,7 @@ async fn no_task_is_detached() {
 #[test]
 fn effects_fold_across_a_batch_into_one_scheduled_output() {
     let ctx = test_ctx("fold");
-    let mut core = Core::new(ctx);
+    let mut core = Core::new(ctx, unused_handle());
 
     for _ in 0..3 {
         let (reply, _answer) = oneshot::channel();
@@ -106,7 +115,7 @@ fn effects_fold_across_a_batch_into_one_scheduled_output() {
 fn core_actor_publishes_one_event_per_state_transition() {
     let ctx = test_ctx("events");
     let bus = ctx.bus.clone();
-    let mut core = Core::new(ctx);
+    let mut core = Core::new(ctx, unused_handle());
     assert_eq!(bus.head(), 0);
 
     for _ in 0..3 {
@@ -151,15 +160,16 @@ fn ctx_paths_are_derived_from_the_passed_env_not_process_env() {
 async fn core_actor_runs_under_the_runtime_and_answers_calls() {
     let ctx = test_ctx("wire");
     let mut runtime = Runtime::new(ctx.clone());
-    let core = Core::new(ctx);
-
     let (tx, rx) = mpsc::channel(8);
+    let core = Core::new(ctx, CoreHandle::new(tx.clone()));
     let (scheduled_tx, mut scheduled_rx) = mpsc::unbounded_channel();
     let sink = move |scheduled: &Scheduled| {
         let _ = scheduled_tx.send(scheduled.level());
     };
 
-    runtime.spawn(core.run(rx, sink));
+    runtime.spawn(async move {
+        let _ = core.run(rx, sink).await;
+    });
     assert_eq!(runtime.task_count(), 1);
 
     let (reply, answer) = oneshot::channel();
