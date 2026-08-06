@@ -63,7 +63,10 @@ async fn bare_amx_daemonizes_then_attaches_when_no_server_is_running() {
 #[tokio::test]
 async fn bare_amx_attaches_to_an_existing_server_without_daemonizing() {
     let env = Env::new("existing");
-    let mut server = env.spawn(&["server"]);
+    // `--session` on the argv and not only in `$AMX_SESSION`, because
+    // `server_processes` below counts by command line on the platform where
+    // another process's environment is unreadable (macOS has no `/proc`).
+    let mut server = env.spawn(&["server", "--session", &env.session]);
     wait_until("the server binds", || {
         probe(&env.socket()).expect("probe").is_running()
     });
