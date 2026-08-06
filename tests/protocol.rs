@@ -257,6 +257,7 @@ fn envelope_goldens_match() {
                 version: "0.1.0".to_owned(),
                 term: None,
             },
+            attach: false,
             resume: None,
         },
     );

@@ -87,6 +87,7 @@ fn control_goldens_match() {
                 version: "0.1.0".into(),
                 term: Some("xterm-ghostty".into()),
             },
+            attach: false,
             resume: Some(Resume {
                 last_seq: 41,
                 generations: vec![],

@@ -167,6 +167,16 @@ impl Client {
 
     /// Do the handshake, offering `proto` plus one feature no server has.
     pub async fn hello(&mut self, proto: (u16, u16)) -> Welcome {
+        self.hello_with(proto, false).await
+    }
+
+    /// Do the handshake as an attached client: `attach: true`, which seeds an
+    /// empty session with its first workspace before the welcome comes back.
+    pub async fn hello_as_attach(&mut self, proto: (u16, u16)) -> Welcome {
+        self.hello_with(proto, true).await
+    }
+
+    async fn hello_with(&mut self, proto: (u16, u16), attach: bool) -> Welcome {
         let hello = Hello {
             proto,
             features: BTreeSet::from([Feature::GRID_STREAM, Feature::named(UNKNOWN_FEATURE)]),
@@ -175,6 +185,7 @@ impl Client {
                 version: "0.0.0".to_owned(),
                 term: None,
             },
+            attach,
             resume: None,
         };
         self.send_control(&serde_json::to_vec(&hello).expect("encode hello"))

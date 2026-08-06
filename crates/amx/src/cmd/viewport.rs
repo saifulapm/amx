@@ -59,7 +59,7 @@ pub async fn one_pane(ctx: &Ctx, pane: PaneId, takeover: bool) -> anyhow::Result
     let stream = net::connect(&ctx.socket)
         .await
         .context("connect to the session")?;
-    let (_session, _welcome) = Session::attach(stream, client_info(), None)
+    let (_session, _welcome) = Session::attach(stream, client_info(), true, None)
         .await
         .context("negotiate with the session")?;
     // `--takeover` has nothing to send yet: size authority rides

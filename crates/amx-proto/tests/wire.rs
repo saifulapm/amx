@@ -98,6 +98,7 @@ fn hello_round_trips_and_keeps_unknown_features() {
             version: "0.1.0".into(),
             term: None,
         },
+        attach: false,
         resume: Some(Resume {
             last_seq: 7,
             generations: vec![(PaneId::new_v4(), GridGeneration::FIRST.next())],
@@ -308,6 +309,7 @@ fn negotiation_intersects_features_rather_than_requiring_equality() {
             version: "0.1.0".into(),
             term: None,
         },
+        attach: false,
         resume: None,
     };
     let supported = BTreeSet::from([Feature::GRID_STREAM, Feature::RAW_PANE_IO]);
@@ -338,6 +340,7 @@ fn negotiation_fails_only_when_versions_do_not_overlap() {
         proto: (5, 9),
         features: BTreeSet::new(),
         client: ClientInfo::default(),
+        attach: false,
         resume: None,
     };
     let error = hello

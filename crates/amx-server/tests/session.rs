@@ -451,6 +451,7 @@ async fn attach(socket: &Path) -> UnixStream {
             version: "0.0.0".to_owned(),
             term: None,
         },
+        attach: false,
         resume: None,
     };
     send(&mut stream, &serde_json::to_vec(&hello).expect("encode")).await;

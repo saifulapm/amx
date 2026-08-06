@@ -44,6 +44,7 @@ impl Wire {
                 version: "0.0.0".to_owned(),
                 term: None,
             },
+            attach: false,
             resume: None,
         };
         self.hello_value(&serde_json::to_value(&hello).expect("encode hello"))
