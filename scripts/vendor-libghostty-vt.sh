@@ -9,7 +9,7 @@
 #   vendor-libghostty-vt.sh sync --source-repo <ghostty checkout>
 #       Rebuild the source dist from a clean ghostty checkout at the pinned
 #       commit, replace vendor/libghostty-vt/, re-apply the local patches and
-#       rewrite vendor/libghostty-vt.vendor.json.
+#       rewrite vendor/libghostty-vt.vendor.json and libghostty-vt.sha256.
 #
 # `sync` is only run when the pin moves. See vendor/README.md for what the
 # build still fetches and why.
@@ -27,6 +27,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 vendor_dir="$repo_root/vendor"
 dest_dir="$vendor_dir/libghostty-vt"
 manifest="$vendor_dir/libghostty-vt.vendor.json"
+checksums="$vendor_dir/libghostty-vt.sha256"
 patch_dir="$vendor_dir/patches/libghostty-vt"
 toolchain_dir="$vendor_dir/toolchain"
 
@@ -67,12 +68,20 @@ zig_sha256() {
     esac
 }
 
-sha256_of() {
+# coreutils on Linux, the perl script BSDs ship on macOS. Both print
+# "<hash>  <path>" and both read that format back with -c, which is what the
+# vendoring test uses to verify the tree.
+sha256_tool() {
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | cut -d' ' -f1
+        printf 'sha256sum'
     else
-        shasum -a 256 "$1" | cut -d' ' -f1
+        printf 'shasum -a 256'
     fi
+}
+
+sha256_of() {
+    # shellcheck disable=SC2046 # sha256_tool intentionally expands to argv
+    $(sha256_tool) "$1" | cut -d' ' -f1
 }
 
 # Path to the pinned compiler, downloading it if it is not there yet.
@@ -199,7 +208,23 @@ $patch_json  ],
   "zig_dependency_fetch": "network: zig build resolves the whole declared dependency graph (~347 MB) before compiling, so the resolved set is not committed; see vendor/README.md"
 }
 JSON
+    write_checksums
     printf 'vendored %s from %s into %s\n' "$root" "$head" "$dest_dir"
+}
+
+# Freeze the vendored tree. The patch manifest says how the tree differs from
+# the dist; this says nothing has been hand-edited since, which is the drift the
+# manifest alone cannot catch.
+write_checksums() {
+    (
+        cd "$dest_dir"
+        # shellcheck disable=SC2046 # sha256_tool intentionally expands to argv
+        find . \( -type f -o -type l \) \
+            -not -path './.zig-cache/*' -not -path './zig-out/*' -print0 |
+            LC_ALL=C sort -z |
+            xargs -0 $(sha256_tool)
+    ) >"$checksums"
+    printf 'recorded %s checksums\n' "$(wc -l <"$checksums" | tr -d ' ')"
 }
 
 case "${1:-}" in

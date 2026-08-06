@@ -4,7 +4,8 @@ Every file in `vendor/libghostty-vt/` that differs from the source dist is
 listed here, one section per patch. `scripts/vendor-libghostty-vt.sh sync`
 re-applies each patch in `vendor/patches/libghostty-vt/` after extracting a
 fresh dist and refuses to finish if one does not apply, so this file and the
-tree cannot drift apart silently.
+tree cannot drift apart silently. `libghostty-vt.sha256` closes the other half:
+a file edited in place without a patch fails the vendoring tests.
 
 Drop a patch when the vendored source commit carries the upstream behavior and
 its verification still passes without it.

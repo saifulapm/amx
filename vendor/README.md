@@ -8,9 +8,14 @@ and links (`docs/06-m0-plan.md` D-M0-1). The PTY layer is written directly on
 libghostty-vt/              the extracted source dist, patches applied
 libghostty-vt.vendor.json   source commit, dist archive, extracted dir, zig pin
 libghostty-vt.patches.md    one section per local patch (see it before editing)
+libghostty-vt.sha256        every vendored file, hashed; the tests check it
 patches/libghostty-vt/      the patch files themselves
 toolchain/                  downloaded Zig, gitignored
 ```
+
+Do not hand-edit the vendored tree: `vendored_tree_matches_recorded_checksums`
+fails on any file that is not what `sync` wrote. Add a patch instead, and let
+`sync` re-apply it.
 
 Re-vendoring — only when the pinned commit moves:
 

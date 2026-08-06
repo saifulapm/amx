@@ -125,6 +125,83 @@ fn patch_manifest_lists_every_file_diverging_from_the_dist() {
     }
 }
 
+/// The patch manifest says how the tree differs from the dist; the checksum
+/// file says nothing else has been touched since. Together they are the claim
+/// that `vendor/libghostty-vt/` is the pinned dist plus the listed patches and
+/// nothing more.
+#[test]
+fn vendored_tree_matches_recorded_checksums() {
+    let vendor = vendor_dir();
+    let checksums = vendor.join("libghostty-vt.sha256");
+    let recorded = fs::read_to_string(&checksums).expect("the checksum file is readable");
+    let tree = vendor.join("libghostty-vt");
+
+    // Files first: a deletion or an addition never reaches the hash check.
+    let mut listed: Vec<String> = recorded
+        .lines()
+        .filter_map(|line| line.split_once("  ").map(|(_, path)| path.to_string()))
+        .collect();
+    listed.sort();
+    let mut present = Vec::new();
+    walk(&tree, &tree, &mut present);
+    present.sort();
+    assert_eq!(
+        present, listed,
+        "the vendored tree and libghostty-vt.sha256 list different files; \
+         re-run scripts/vendor-libghostty-vt.sh sync"
+    );
+
+    let (program, args) = checksum_command();
+    let output = std::process::Command::new(program)
+        .args(args)
+        .arg(&checksums)
+        .current_dir(&tree)
+        .output()
+        .unwrap_or_else(|err| panic!("cannot run {program}: {err}"));
+    assert!(
+        output.status.success(),
+        "the vendored tree does not match libghostty-vt.sha256:\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// coreutils on Linux, the BSD/perl one on macOS — the script writes whichever
+/// it found and both read the same format back.
+fn checksum_command() -> (&'static str, &'static [&'static str]) {
+    if std::process::Command::new("sha256sum")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        ("sha256sum", &["--check", "--quiet", "--strict"])
+    } else {
+        ("shasum", &["-a", "256", "--check", "--status"])
+    }
+}
+
+fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
+    for entry in fs::read_dir(dir).expect("the vendored tree is readable") {
+        let path = entry.expect("directory entry").path();
+        let relative = path.strip_prefix(root).expect("paths are under the root");
+        // The dist's own build output is not part of what was vendored.
+        if matches!(
+            relative.components().next().map(|c| c.as_os_str()),
+            Some(name) if name == ".zig-cache" || name == "zig-out"
+        ) {
+            continue;
+        }
+        // Symlinks count as entries, not as directories to descend into:
+        // the dist ships CLAUDE.md as a link to AGENTS.md.
+        let metadata = path.symlink_metadata().expect("entry metadata");
+        if metadata.is_dir() {
+            walk(root, &path, out);
+        } else {
+            out.push(format!("./{}", relative.display()));
+        }
+    }
+}
+
 /// A zig of the wrong version must be reported as such, naming the fix.
 #[test]
 fn build_fails_with_clear_message_on_wrong_zig_version() {
