@@ -38,7 +38,14 @@ where
         .enable_all()
         .build()
         .context("start the tokio runtime")?;
-    runtime.block_on(cmd::dispatch(&env, &matches))
+    let outcome = runtime.block_on(cmd::dispatch(&env, &matches));
+    // Not `drop`: dropping a runtime waits for every blocking task, and the
+    // attach loop leaves one behind by construction — `tokio::io::stdin` reads
+    // on a blocking thread, and the read that is pending when the user detaches
+    // only returns when they press another key. Waiting for that would hang
+    // every detach until the terminal was typed into again.
+    runtime.shutdown_background();
+    outcome
 }
 
 /// Which session a set of matches selects.

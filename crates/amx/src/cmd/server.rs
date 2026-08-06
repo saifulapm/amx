@@ -42,6 +42,11 @@ pub async fn run(ctx: Ctx) -> anyhow::Result<ExitCode> {
 /// so this reaches a human only when the server is run in the foreground. A log
 /// file under the session's runtime directory is the obvious next step and is
 /// not M0 scope.
+///
+/// `$RUST_LOG` is the one environment variable read outside `Env`. It is not
+/// the W9 hazard the rule is about: it selects a log level, never a path or an
+/// identity, so it cannot make two sessions share state or make one test's
+/// environment reach another's.
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
 

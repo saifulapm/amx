@@ -39,4 +39,4 @@ serde_json = { workspace = true }
 # Test-only: the CLI acceptance tests drive the real binary against a real
 # terminal, and `tcgetattr`/`tcsetattr` refuse anything that is not a tty.
 [dev-dependencies]
-rustix = { workspace = true, features = ["pty", "std", "termios"] }
+rustix = { workspace = true, features = ["fs", "pty", "std", "termios"] }
