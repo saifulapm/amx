@@ -1,0 +1,16 @@
+[package]
+name = "amx-vt"
+description = "Safe Rust wrapper over libghostty-vt for amx"
+license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+# This crate depends on nothing else in the workspace: the terminal core knows
+# about grids and cells, not about panes, sessions or the wire protocol.
+[dependencies]
+thiserror = { workspace = true }
