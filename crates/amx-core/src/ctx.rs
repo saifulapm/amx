@@ -6,7 +6,7 @@
 //! then threaded; nothing below this line calls `std::env::var`.
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -23,7 +23,10 @@ pub const MAX_SESSION_NAME: usize = 64;
 ///
 /// Both roots are shared with every other program on the system, so neither
 /// the runtime root nor the state root is ever written to directly: a session
-/// lives at `<root>/amx/<session>`.
+/// lives at `<root>/amx/<session>` — except under a world-writable runtime
+/// root (`$TMPDIR`, `/tmp`), where the level is `amx-<uid>` so that one
+/// user's directory cannot be planted for another. See
+/// [`Ctx::for_session`].
 pub const AMX_DIR: &str = "amx";
 
 /// The socket's file name inside a session's runtime directory.
@@ -122,7 +125,8 @@ pub struct Env {
     pub home: Option<PathBuf>,
     /// `$AMX_SESSION`, the session selected without a `--session` flag.
     pub session: Option<SessionName>,
-    /// `$TMPDIR`, the last-resort root when there is no runtime directory.
+    /// `$TMPDIR`, the shared-root fallback when there is no runtime
+    /// directory; `/tmp` is the resort behind it.
     pub tmpdir: Option<PathBuf>,
 }
 
@@ -169,7 +173,8 @@ fn read_path(key: &str) -> Option<PathBuf> {
 pub struct Ctx {
     /// Which named session this is.
     pub session: SessionName,
-    /// `$XDG_RUNTIME_DIR/amx/<session>`.
+    /// `$XDG_RUNTIME_DIR/amx/<session>`, or `<shared root>/amx-<uid>/<session>`
+    /// under the `$TMPDIR`//`/tmp` fallbacks.
     pub runtime_dir: PathBuf,
     /// `<runtime_dir>/sock`, created mode 0600 — one socket per session, not
     /// two, not three (04 §1).
@@ -189,9 +194,12 @@ impl Ctx {
     /// [`DEFAULT_REPLAY_CAPACITY`](crate::event::bus::DEFAULT_REPLAY_CAPACITY)
     /// and a fresh cancellation token. Paths come from the passed `env` only:
     /// nothing here consults the process environment, which is what makes two
-    /// sessions in one test process independent.
+    /// sessions in one test process independent. (Under the shared-root
+    /// fallbacks the uid — process state, but immutable — joins the path, and
+    /// the per-user level is created and verified here; see
+    /// [`runtime_amx_dir`].)
     pub fn for_session(session: SessionName, env: &Env) -> Result<Self, CtxError> {
-        let runtime_dir = runtime_root(env)?.join(AMX_DIR).join(session.as_str());
+        let runtime_dir = runtime_amx_dir(env)?.join(session.as_str());
         let state_dir = state_root(env)?.join(AMX_DIR).join(session.as_str());
         Ok(Self {
             session,
@@ -204,27 +212,75 @@ impl Ctx {
     }
 }
 
-/// The directory a session's socket lives under, before `amx/<session>`.
+/// The amx level a session's runtime directory sits in, before `<session>`.
 ///
-/// `$XDG_RUNTIME_DIR` is the right answer and `$TMPDIR` is the fallback for
-/// the systems that do not set one (a bare `ssh` session on macOS, most
-/// containers). Both must be absolute: a relative root would resolve against
-/// whatever directory the process happened to start in, so two invocations of
-/// the same session name would find two different sockets.
-fn runtime_root(env: &Env) -> Result<PathBuf, CtxError> {
+/// `$XDG_RUNTIME_DIR` is the right answer where it exists: created per user
+/// with mode 0700, so a plain `amx` level inside it is private already. The
+/// fallbacks are shared roots — `$TMPDIR` where set (macOS points it at a
+/// per-user folder, but nothing enforces that), and `/tmp` as the final
+/// resort for the stock containers that set neither variable — so there the
+/// level is `amx-<uid>`, created 0700 and verified to belong to this uid
+/// before use. Every root must be absolute: a relative root would resolve
+/// against whatever directory the process happened to start in, so two
+/// invocations of the same session name would find two different sockets.
+fn runtime_amx_dir(env: &Env) -> Result<PathBuf, CtxError> {
+    if let Some(root) = &env.runtime_dir {
+        require_absolute(root)?;
+        return Ok(root.join(AMX_DIR));
+    }
     let root = env
-        .runtime_dir
+        .tmpdir
         .clone()
-        .or_else(|| env.tmpdir.clone())
-        .ok_or_else(|| CtxError::NoRuntimeDir {
-            reason: "neither XDG_RUNTIME_DIR nor TMPDIR is set".to_owned(),
-        })?;
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    require_absolute(&root)?;
+    secured_user_dir(&root)
+}
+
+/// Refuse a relative runtime root.
+fn require_absolute(root: &Path) -> Result<(), CtxError> {
     if root.is_relative() {
         return Err(CtxError::NoRuntimeDir {
             reason: format!("{} is not an absolute path", root.display()),
         });
     }
-    Ok(root)
+    Ok(())
+}
+
+/// This user's amx level under a shared root: `<root>/amx-<uid>`, mode 0700.
+///
+/// The root is writable by everyone, so the level is claimed defensively: it
+/// is created 0700, and a pre-existing entry is used only if it really is a
+/// directory (not a planted symlink) owned by this uid. Anything else is a
+/// refusal — the socket's privacy rests on this directory being ours.
+fn secured_user_dir(root: &Path) -> Result<PathBuf, CtxError> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
+
+    let uid = rustix::process::getuid().as_raw();
+    let dir = root.join(format!("{AMX_DIR}-{uid}"));
+    let reject = |reason: String| CtxError::NoRuntimeDir { reason };
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(0o700);
+    match builder.create(&dir) {
+        // The mode passed to mkdir is filtered by the umask; set it outright.
+        Ok(()) => std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|err| reject(format!("cannot secure {}: {err}", dir.display())))?,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(reject(format!("cannot create {}: {err}", dir.display()))),
+    }
+    // `symlink_metadata`, so a planted symlink is seen as itself, not through.
+    let meta = std::fs::symlink_metadata(&dir)
+        .map_err(|err| reject(format!("cannot inspect {}: {err}", dir.display())))?;
+    if !meta.is_dir() {
+        return Err(reject(format!("{} is not a directory", dir.display())));
+    }
+    if meta.uid() != uid {
+        return Err(reject(format!(
+            "{} belongs to uid {}, not {uid}",
+            dir.display(),
+            meta.uid()
+        )));
+    }
+    Ok(dir)
 }
 
 /// The directory a session's snapshots live under, before `amx/<session>`.

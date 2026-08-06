@@ -16,6 +16,7 @@
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -189,23 +190,31 @@ async fn two_named_sessions_are_fully_isolated() {
 
 #[test]
 fn a_session_context_needs_a_runtime_root_and_a_state_root() {
-    let empty = Env::default();
-    assert!(
-        Ctx::for_session(SessionName::default(), &empty).is_err(),
-        "no runtime directory anywhere is a refusal, not a guess at /tmp"
-    );
-
-    // $TMPDIR is the documented fallback for systems with no $XDG_RUNTIME_DIR.
+    // A shared root ($TMPDIR here, /tmp when nothing at all is set) gets a
+    // per-user amx level, so one user's directory cannot be planted for
+    // another on a world-writable root.
+    let dir = TempDir::new("tmpdir-fallback");
+    let uid = rustix::process::getuid().as_raw();
     let env = Env {
-        tmpdir: Some(PathBuf::from("/tmp")),
+        tmpdir: Some(dir.path().to_path_buf()),
         home: Some(PathBuf::from("/home/someone")),
         ..Env::default()
     };
     let ctx = Ctx::for_session(SessionName::default(), &env).expect("derive");
-    assert_eq!(ctx.socket, PathBuf::from("/tmp/amx/default/sock"));
+    assert_eq!(
+        ctx.socket,
+        dir.path().join(format!("amx-{uid}/default/sock"))
+    );
     assert_eq!(
         ctx.state_dir,
         PathBuf::from("/home/someone/.local/state/amx/default")
+    );
+    let meta = std::fs::metadata(dir.path().join(format!("amx-{uid}")))
+        .expect("the per-user level was created");
+    assert_eq!(
+        meta.permissions().mode() & 0o777,
+        0o700,
+        "the per-user level is private"
     );
 
     // A relative root would resolve against the process's cwd, so two runs of
@@ -216,6 +225,34 @@ fn a_session_context_needs_a_runtime_root_and_a_state_root() {
         ..Env::default()
     };
     assert!(Ctx::for_session(SessionName::default(), &relative).is_err());
+
+    // A state root is still required: /tmp is a resort for the socket, whose
+    // loss a reboot already implies, never for persistent state.
+    let stateless = Env {
+        tmpdir: Some(dir.path().to_path_buf()),
+        ..Env::default()
+    };
+    assert!(Ctx::for_session(SessionName::default(), &stateless).is_err());
+}
+
+#[test]
+fn a_planted_per_user_level_under_a_shared_root_is_refused() {
+    let dir = TempDir::new("planted-level");
+    let uid = rustix::process::getuid().as_raw();
+    let env = Env {
+        tmpdir: Some(dir.path().to_path_buf()),
+        home: Some(PathBuf::from("/home/someone")),
+        ..Env::default()
+    };
+
+    // A symlink where the per-user level belongs would hand the socket to
+    // whatever directory the planter chose; it must be seen and refused.
+    std::os::unix::fs::symlink("/somewhere/else", dir.path().join(format!("amx-{uid}")))
+        .expect("plant a symlink");
+    assert!(
+        Ctx::for_session(SessionName::default(), &env).is_err(),
+        "a planted symlink is a refusal, not a home"
+    );
 }
 
 // -------------------------------------------------------------- the registry
