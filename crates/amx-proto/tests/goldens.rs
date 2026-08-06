@@ -228,4 +228,31 @@ fn control_goldens_match() {
         Call::PaneClose(pane::CloseParams { pane: pane_id() }),
         pane::CloseReply { seq: 49 },
     );
+
+    call_golden(
+        "method_pane_focus",
+        Call::PaneFocus(pane::FocusParams {
+            workspace: workspace_id(),
+            direction: pane::MoveDirection::Left,
+        }),
+        pane::FocusReply {
+            pane: Some(pane_id()),
+            seq: 50,
+        },
+    );
+
+    call_golden(
+        "method_pane_resize",
+        Call::PaneResize(pane::ResizeParams {
+            pane: pane_id(),
+            // Exactly representable in an f32, so the golden stays readable
+            // rather than picking up a float tail.
+            direction: pane::MoveDirection::Right,
+            delta: 0.0625,
+        }),
+        pane::ResizeReply {
+            resized: true,
+            seq: 51,
+        },
+    );
 }

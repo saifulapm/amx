@@ -1,0 +1,16 @@
+{
+  "reply": {
+    "resized": true,
+    "seq": 51
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "pane.resize",
+    "params": {
+      "delta": 0.0625,
+      "direction": "right",
+      "pane": "00000000-0000-0000-0000-0000000000a1"
+    }
+  }
+}

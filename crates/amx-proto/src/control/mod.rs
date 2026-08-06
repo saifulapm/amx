@@ -287,4 +287,24 @@ method_table! {
         cli: ["pane", "close"],
         about: "Close a pane",
     }
+
+    /// Move a workspace's focus to the geometric neighbour in a direction.
+    PaneFocus {
+        wire: "pane.focus",
+        handler: pane_focus,
+        params: pane::FocusParams,
+        reply: pane::FocusReply,
+        cli: ["pane", "focus"],
+        about: "Move focus to the neighbouring pane in a direction",
+    }
+
+    /// Nudge the split holding a pane by a ratio delta.
+    PaneResize {
+        wire: "pane.resize",
+        handler: pane_resize,
+        params: pane::ResizeParams,
+        reply: pane::ResizeReply,
+        cli: ["pane", "resize"],
+        about: "Grow or shrink a pane's slot in a direction",
+    }
 }
