@@ -92,6 +92,7 @@ dependencies = [
  "amx-proto",
  "amx-vt",
  "bytes",
+ "libc",
  "rustix",
  "serde_json",
  "thiserror",

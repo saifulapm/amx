@@ -3,7 +3,8 @@
 //! D-M0-3: the four-call `openpt`/`grantpt`/`unlockpt`/`ptsname` sequence is
 //! written out here rather than taken as a dependency, and the child is spawned
 //! with [`std::process::Command`] plus a `pre_exec` that does setsid, TIOCSCTTY
-//! and dup2 — the `login_tty` dance, and the only `unsafe` in the crate.
+//! and dup2 — the `login_tty` dance, and one of the crate's two drops to
+//! `unsafe` (the other is the darwin libproc reader in [`super::process`]).
 
 use std::io;
 use std::os::fd::{AsFd, AsRawFd as _, BorrowedFd, OwnedFd};
