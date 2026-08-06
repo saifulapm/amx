@@ -300,6 +300,53 @@ async fn flow_control_urandom_pane_with_stalled_client_bounds_memory_and_preserv
     server.shutdown();
 }
 
+// ------------------------------------------------------------ 0×0 viewport
+
+#[tokio::test]
+async fn a_zero_size_viewport_still_gets_a_live_projection() {
+    let env = Env::new("zeroview");
+    let server = env.server();
+
+    // The degenerate declaration a client on a 0×0 pty really sends —
+    // python's `pty.fork` reports exactly this size. It must be clamped into
+    // a live projection, not dropped: dropped, the session sits dark with no
+    // indication until a real size happens to arrive.
+    let mut wire = Wire::connect(&env.socket()).await;
+    wire.hello(window()).await;
+    let (_workspace, _root) = workspace_with_root(&mut wire).await;
+    let reply = wire
+        .request("client.viewport", json!({"rows": 0, "cols": 0, "panes": []}))
+        .await;
+    assert!(
+        result_of(&reply)["seq"].is_u64(),
+        "a degenerate viewport is clamped, not refused"
+    );
+
+    // The root pane is projected under the clamped default grid: the
+    // interior a 24×80 client gets (one status line, a one-cell border).
+    let want = (24 - 1 - 2, 80 - 2);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let state = wire.request("session.state", json!({})).await;
+        let panes = result_of(&state)["panes"]
+            .as_array()
+            .expect("state lists panes")
+            .clone();
+        if panes
+            .iter()
+            .any(|pane| (pane["rows"].as_u64(), pane["cols"].as_u64()) == (Some(want.0), Some(want.1)))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the seeded pane never took the clamped projection: {panes:?}"
+        );
+    }
+
+    server.shutdown();
+}
+
 // ------------------------------------------------------------ mid-frame close
 
 #[tokio::test]

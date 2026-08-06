@@ -21,6 +21,19 @@ const DEFAULT_ROWS: u16 = 24;
 /// See [`DEFAULT_ROWS`].
 const DEFAULT_COLS: u16 = 80;
 
+/// The smallest declared viewport the projection takes at its word.
+///
+/// Below this nothing tiles — a status line, a border and at least a cell of
+/// interior need the room — and such declarations are real: a client on a
+/// pty that reports 0×0 (python's `pty.fork` default) attaches and declares
+/// exactly that. A dimension under the minimum falls back to the default
+/// grid, so panes keep a live projection and render the moment the client
+/// learns its real size, instead of the session sitting dark with no
+/// indication of why.
+const MIN_VIEWPORT_ROWS: u16 = 4;
+/// See [`MIN_VIEWPORT_ROWS`].
+const MIN_VIEWPORT_COLS: u16 = 4;
+
 /// The interior a one-cell border leaves inside `rect` — the same inset the
 /// client's chrome applies, mirrored here because the server must know each
 /// pane's *cell* rect to size its PTY.
@@ -92,12 +105,22 @@ impl Core {
     }
 
     /// Record the active client's declared size and re-project every layout.
+    ///
+    /// Degenerate dimensions clamp to the default grid rather than being
+    /// dropped: dropping would starve every projection for as long as the
+    /// client's terminal misreports itself (see [`MIN_VIEWPORT_ROWS`]).
     pub(super) fn handle_viewport(&mut self, params: &client::Viewport) {
-        if params.rows == 0 || params.cols == 0 {
-            // A zero size starves every projection; nothing sane to do with it.
-            return;
-        }
-        self.viewport = Some((params.rows, params.cols));
+        let rows = if params.rows < MIN_VIEWPORT_ROWS {
+            DEFAULT_ROWS
+        } else {
+            params.rows
+        };
+        let cols = if params.cols < MIN_VIEWPORT_COLS {
+            DEFAULT_COLS
+        } else {
+            params.cols
+        };
+        self.viewport = Some((rows, cols));
         self.reconcile_pane_sizes();
     }
 
