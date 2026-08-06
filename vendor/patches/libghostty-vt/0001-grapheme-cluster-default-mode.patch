@@ -1,0 +1,27 @@
+Subject: default C API terminals to grapheme cluster mode
+
+amx reads libghostty-vt cells directly, so a multi-codepoint grapheme cluster
+must occupy one cell — DEC private mode 2027. The C API can set the *current*
+mode with ghostty_terminal_mode_set, but RIS restores the terminal's default
+modes and GhosttyTerminalOptions has no field for those, so clustering is lost
+on every full reset. Setting it in Terminal.Options.default_modes makes it both
+the initial and the post-reset value.
+
+Vendored base: c5a21edfcbc2d5b46540ad91b7980aca31f5f1f3
+
+diff --git a/vendor/libghostty-vt/src/terminal/c/terminal.zig b/vendor/libghostty-vt/src/terminal/c/terminal.zig
+--- a/vendor/libghostty-vt/src/terminal/c/terminal.zig
++++ b/vendor/libghostty-vt/src/terminal/c/terminal.zig
+@@ -343,6 +343,12 @@ fn new_(
+         .cols = opts.cols,
+         .rows = opts.rows,
+         .max_scrollback = opts.max_scrollback,
++
++        // Embedders that read cells directly need DEC mode 2027 so a
++        // multi-codepoint grapheme cluster occupies one cell. Setting it as a
++        // default mode rather than a current mode means RIS restores it; the
++        // C API has no other way to survive a reset.
++        .default_modes = .{ .grapheme_cluster = true },
+     });
+     errdefer t.deinit(alloc);
+
