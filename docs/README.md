@@ -15,6 +15,7 @@ herdr's structural weaknesses.
 | [03-vision.md](03-vision.md) | What amx is, design principles, the name, the competitive landscape (tmux/zellij, herdr, Superlogical) |
 | [04-architecture.md](04-architecture.md) | The amx design: process model, event bus, protocol, agent layer, persistence |
 | [05-roadmap.md](05-roadmap.md) | Milestones and build order |
+| [06-m0-plan.md](06-m0-plan.md) | M0 execution plan: crate/module map, shared contracts, task DAG, waves, risks |
 
 ## TL;DR
 

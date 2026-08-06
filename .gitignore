@@ -1,6 +1,9 @@
 # reference checkout of herdr, not part of this repo
 /herdr/
 
+# local scheduling notes, not part of the design docs
+*.local.md
+
 /target/
 **/*.rs.bk
 .claude/settings.local.json
