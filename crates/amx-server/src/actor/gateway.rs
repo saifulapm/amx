@@ -31,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::actor::CoreHandle;
 use crate::conn;
+use crate::session::probe;
 
 /// Mode the session socket is created with: owner read/write only.
 pub const SOCKET_MODE: u32 = 0o600;
@@ -140,13 +141,46 @@ impl Gateway {
     /// Must be called inside a tokio runtime: the listener registers with the
     /// reactor as it binds. Fails rather than stealing the socket if a live
     /// server answers on it.
+    ///
+    /// Stale-socket cleanup is [`probe::clear_if_stale`], inode guard
+    /// included: between the probe and the unlink another starting server may
+    /// have replaced the file with its own not-yet-listening socket, and
+    /// unlinking that one would strand a live server. If the guard skips the
+    /// removal and this bind then loses the race, the path is probed once
+    /// more so the caller hears [`GatewayError::AlreadyRunning`] rather than
+    /// a bare bind failure.
     pub fn bind(ctx: Ctx, core: CoreHandle) -> Result<Self, GatewayError> {
         prepare_dir(&ctx.runtime_dir)?;
-        clear_stale(&ctx.socket)?;
-        let listener = UnixListener::bind(&ctx.socket).map_err(|source| GatewayError::Bind {
-            path: ctx.socket.clone(),
-            source,
-        })?;
+        match probe::clear_if_stale(&ctx.socket) {
+            Ok(found) if found.is_running() => {
+                return Err(GatewayError::AlreadyRunning {
+                    path: ctx.socket.clone(),
+                });
+            }
+            Ok(_) => {}
+            Err(err) => return Err(probe_error(&ctx.socket, err)),
+        }
+        let listener = match UnixListener::bind(&ctx.socket) {
+            Ok(listener) => listener,
+            Err(source) if source.kind() == io::ErrorKind::AddrInUse => {
+                // Lost the bind race: whatever took the path first owns it.
+                return Err(match probe::probe(&ctx.socket) {
+                    Ok(found) if found.is_running() => GatewayError::AlreadyRunning {
+                        path: ctx.socket.clone(),
+                    },
+                    _ => GatewayError::Bind {
+                        path: ctx.socket.clone(),
+                        source,
+                    },
+                });
+            }
+            Err(source) => {
+                return Err(GatewayError::Bind {
+                    path: ctx.socket.clone(),
+                    source,
+                });
+            }
+        };
         fs::set_permissions(&ctx.socket, fs::Permissions::from_mode(SOCKET_MODE)).map_err(
             |source| GatewayError::Bind {
                 path: ctx.socket.clone(),
@@ -269,21 +303,12 @@ fn prepare_dir(dir: &Path) -> Result<(), GatewayError> {
     })
 }
 
-/// Probe an existing socket file: answer means occupied, refusal means stale.
-fn clear_stale(path: &Path) -> Result<(), GatewayError> {
-    match std::os::unix::net::UnixStream::connect(path) {
-        Ok(_probe) => Err(GatewayError::AlreadyRunning {
-            path: path.to_path_buf(),
-        }),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::ConnectionRefused => fs::remove_file(path)
-            .map_err(|source| GatewayError::Probe {
-                path: path.to_path_buf(),
-                source,
-            }),
-        Err(source) => Err(GatewayError::Probe {
-            path: path.to_path_buf(),
-            source,
-        }),
+/// Flatten a probe failure into the gateway's error vocabulary.
+fn probe_error(path: &Path, err: probe::ProbeError) -> GatewayError {
+    let (probe::ProbeError::Connect { source, .. } | probe::ProbeError::Remove { source, .. }) =
+        err;
+    GatewayError::Probe {
+        path: path.to_path_buf(),
+        source,
     }
 }
