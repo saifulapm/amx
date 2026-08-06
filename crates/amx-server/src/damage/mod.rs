@@ -83,6 +83,25 @@ use crate::conn::writer::{Outbound, OutboundError};
 /// client is not a spin loop.
 pub const DRAIN_RETRY: Duration = Duration::from_millis(4);
 
+/// The smallest frame cap a client may negotiate on a grid stream.
+///
+/// A keyframe is indivisible, so a cap below what one costs turns the stream
+/// into a retry loop that can never succeed; `max_frame: 0` would spin at the
+/// retry interval forever. Caps below this floor are clamped to it at
+/// [`GridStream::control`] time. The value matches what a default 24×80 grid's
+/// keyframe comfortably fits in; a grid too large even for a client's clamped
+/// cap is a terminal stream error, not a retry.
+pub const MIN_STREAM_FRAME: u32 = 64 * 1024;
+
+/// How many consecutive keyframes may fail to fit before the stream is torn
+/// down instead of retried.
+///
+/// The count only moves on an owed keyframe: a keyframe cannot split, so a
+/// cap that cannot carry one will never carry one unless the client raises it
+/// — each new publication retries once, and a raise arriving in between
+/// resets the count via the successful flush.
+pub const KEYFRAME_CAP_STRIKES: u32 = 3;
+
 /// A grid stream could not produce or queue a frame.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Error)]
 pub enum DamageError {
@@ -126,19 +145,44 @@ pub async fn pump(
     cancel: CancellationToken,
 ) -> DamageStats {
     let mut flow_open = true;
+    let mut cap_strikes: u32 = 0;
     loop {
-        let snapshot = frames.latest();
-        stream.absorb(&snapshot, frames.generation());
+        // One read for both halves: the snapshot and the generation it was
+        // published under travel in the same slot, so a resize landing
+        // between two separate reads can never pair one publication's cells
+        // with another's generation.
+        let (snapshot, generation) = frames.frame();
+        stream.absorb(&snapshot, generation);
         match stream.flush(&snapshot, &out) {
-            Ok(_) => {}
+            Ok(_) => cap_strikes = 0,
             Err(DamageError::Outbound(OutboundError::Closed)) => break,
+            Err(error @ DamageError::FrameTooLarge { .. }) if stream.owed_keyframe().is_some() => {
+                // A keyframe cannot split, so retrying against the same cap
+                // can never succeed. Give the client a bounded chance to
+                // raise it, then treat the stream as broken rather than
+                // retrying at the drain interval forever.
+                cap_strikes += 1;
+                if cap_strikes >= KEYFRAME_CAP_STRIKES {
+                    tracing::warn!(
+                        pane = %stream.pane(),
+                        %error,
+                        "grid stream cap cannot carry a keyframe; closing the stream"
+                    );
+                    break;
+                }
+                tracing::warn!(pane = %stream.pane(), %error, "grid stream keyframe dropped");
+            }
             Err(error) => {
                 tracing::warn!(pane = %stream.pane(), %error, "grid stream frame dropped");
             }
         }
         drop(snapshot);
 
-        let retry = stream.owes();
+        // The timer retry exists for one case: the writer had not drained. A
+        // paused stream's flush is a no-op until a flow signal arrives, and
+        // an unfittable keyframe stays unfittable until the cap changes —
+        // arming the timer for either is a busy loop dressed as patience.
+        let retry = stream.owes() && !stream.is_paused() && cap_strikes == 0;
         tokio::select! {
             () = cancel.cancelled() => break,
             fresh = frames.changed() => {
@@ -150,7 +194,7 @@ pub async fn pump(
                 Some(signal) => stream.control(signal),
                 None => flow_open = false,
             },
-            () = sleep_if(retry) => {}
+            () = sleep_if(retry) => stream.note_retry(),
         }
     }
     stream.stats()

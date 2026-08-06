@@ -34,6 +34,12 @@ pub struct DamageStats {
     pub partials: u64,
     /// Flushes declined because the writer had not drained.
     pub stalls: u64,
+    /// Timer wakeups taken while something was owed.
+    ///
+    /// The pump's drain-retry timer, counted: a paused stream or one whose
+    /// keyframe cannot fit its cap must not show up here — its wakeups come
+    /// from flow signals and new frames, never from spinning on the clock.
+    pub retries: u64,
     /// Payload bytes queued.
     pub bytes: u64,
 }
@@ -252,11 +258,21 @@ impl GridStream {
         }
     }
 
+    /// Record one drain-retry timer wakeup.
+    pub fn note_retry(&mut self) {
+        self.stats.retries += 1;
+    }
+
     /// Apply a flow-control signal from the client.
+    ///
+    /// A requested cap below [`MIN_STREAM_FRAME`](super::MIN_STREAM_FRAME) is
+    /// clamped to it: a keyframe is indivisible, so a cap of, say, zero would
+    /// make every future keyframe unbuildable and the stream permanently
+    /// unrecoverable — a floor is part of the protocol, not a courtesy.
     pub fn control(&mut self, flow: FlowControl) {
         match flow {
             FlowControl::StreamCap { stream, max_frame } if stream == self.stream => {
-                self.max_frame = max_frame;
+                self.max_frame = max_frame.max(super::MIN_STREAM_FRAME);
             }
             FlowControl::Pause { stream } if stream == self.stream => self.paused = true,
             FlowControl::Resume { stream } if stream == self.stream => self.paused = false,
