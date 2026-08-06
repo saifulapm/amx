@@ -1,0 +1,16 @@
+{
+  "reply": {
+    "seq": 41,
+    "server": {
+      "name": "amxd",
+      "version": "0.1.0"
+    },
+    "session": "00000000-0000-0000-0000-0000000000c1"
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "ping",
+    "params": {}
+  }
+}

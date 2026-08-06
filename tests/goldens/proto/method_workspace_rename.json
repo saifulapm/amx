@@ -1,0 +1,14 @@
+{
+  "reply": {
+    "seq": 42
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "workspace.rename",
+    "params": {
+      "label": "dev",
+      "workspace": "00000000-0000-0000-0000-0000000000b1"
+    }
+  }
+}

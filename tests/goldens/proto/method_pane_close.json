@@ -1,0 +1,13 @@
+{
+  "reply": {
+    "seq": 49
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "pane.close",
+    "params": {
+      "pane": "00000000-0000-0000-0000-0000000000a1"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "proto": [
+    1,
+    1
+  ],
+  "features": [
+    "grid.stream",
+    "history.ranges"
+  ],
+  "client": {
+    "name": "amx",
+    "version": "0.1.0",
+    "term": "xterm-ghostty"
+  },
+  "resume": {
+    "last_seq": 41,
+    "generations": []
+  }
+}

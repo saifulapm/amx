@@ -2,10 +2,12 @@
 
 use std::collections::BTreeSet;
 
-use amx_core::{GridGeneration, PaneId};
+use amx_core::{GridGeneration, PaneId, SessionId};
 use amx_proto::control::{Call, Method, SPECS, pane};
+use amx_proto::error::NegotiationError;
 use amx_proto::frame::{CONTROL_CHANNEL, FRAME_HEADER_LEN, MAX_CONTROL_FRAME};
-use amx_proto::hello::{ClientInfo, Feature, Hello, Resume};
+use amx_proto::hello::{ClientInfo, Feature, Hello, Resume, ServerInfo};
+use amx_proto::rpc::{Request, RequestId};
 use amx_proto::stream::{FlowControl, Priority, StreamId, StreamKind};
 use amx_proto::{FrameError, FrameHeader};
 
@@ -235,4 +237,144 @@ fn method_table_generates_the_clap_tree() {
     for spec in SPECS {
         assert!(amx_proto::control::cli::has_path(spec.cli));
     }
+}
+
+#[test]
+fn method_table_generates_matching_serde_names_dispatch_and_clap_tree() {
+    // The M0 verb surface: ping + workspace{create,rename,kill,switch} +
+    // pane{split,zoom,swap,move,close}.
+    assert_eq!(Method::ALL.len(), 10);
+    assert_eq!(Method::ALL.len(), SPECS.len());
+
+    for method in Method::ALL {
+        let spec = method.spec();
+        assert_eq!(spec.wire, method.wire_name());
+        assert_eq!(Method::from_wire_name(spec.wire), Some(*method));
+        assert_eq!(spec.cli.join("."), spec.wire);
+
+        let json = serde_json::to_string(method).unwrap();
+        assert_eq!(json, format!("\"{}\"", spec.wire));
+        assert_eq!(serde_json::from_str::<Method>(&json).unwrap(), *method);
+
+        assert!(
+            amx_proto::control::cli::has_path(spec.cli),
+            "{} is not reachable from the generated clap tree",
+            spec.wire
+        );
+    }
+
+    // `crates/amx-proto/tests/dispatch.rs`'s `StubServer` implements
+    // `Dispatch` for every row above: a row without a handler fails that
+    // file's build, not this one's, so dispatch completeness is proven there.
+}
+
+#[test]
+fn negotiation_picks_highest_common_version() {
+    // window() is (1, 1) today; exercise the general algorithm directly so
+    // this test keeps meaning once PROTO_MAX moves past 1.
+    assert_eq!(amx_proto::version::negotiate((1, 1), (1, 1)).unwrap(), 1);
+    assert_eq!(amx_proto::version::negotiate((1, 3), (2, 4)).unwrap(), 3);
+    assert_eq!(amx_proto::version::negotiate((1, 5), (3, 3)).unwrap(), 3);
+    assert_eq!(
+        amx_proto::version::negotiate((2, 2), (1, 5)).unwrap(),
+        2,
+        "highest common version, not the client's preference or the server's max"
+    );
+
+    let no_overlap = amx_proto::version::negotiate((1, 1), (2, 2)).unwrap_err();
+    assert!(matches!(
+        no_overlap,
+        NegotiationError::NoCommonVersion { .. }
+    ));
+
+    let malformed = amx_proto::version::negotiate((5, 3), (1, 9)).unwrap_err();
+    assert!(matches!(
+        malformed,
+        NegotiationError::MalformedWindow { .. }
+    ));
+}
+
+#[test]
+fn negotiation_intersects_features_rather_than_requiring_equality() {
+    let hello = Hello {
+        proto: (1, 1),
+        features: BTreeSet::from([
+            Feature::GRID_STREAM,
+            Feature::HISTORY_RANGES,
+            Feature::named("client.only.thing"),
+        ]),
+        client: ClientInfo {
+            name: "amx".into(),
+            version: "0.1.0".into(),
+            term: None,
+        },
+        resume: None,
+    };
+    let supported = BTreeSet::from([Feature::GRID_STREAM, Feature::RAW_PANE_IO]);
+
+    let welcome = hello
+        .accept(
+            ServerInfo {
+                name: "amxd".into(),
+                version: "0.1.0".into(),
+            },
+            &supported,
+            9,
+            SessionId::new_v4(),
+        )
+        .unwrap();
+
+    assert_eq!(welcome.proto, 1);
+    assert_eq!(
+        welcome.features,
+        BTreeSet::from([Feature::GRID_STREAM]),
+        "neither side's extra feature survives — only the intersection does"
+    );
+}
+
+#[test]
+fn negotiation_fails_only_when_versions_do_not_overlap() {
+    let hello = Hello {
+        proto: (5, 9),
+        features: BTreeSet::new(),
+        client: ClientInfo::default(),
+        resume: None,
+    };
+    let error = hello
+        .accept(
+            ServerInfo::default(),
+            &BTreeSet::new(),
+            0,
+            SessionId::new_v4(),
+        )
+        .unwrap_err();
+    assert!(matches!(error, NegotiationError::NoCommonVersion { .. }));
+}
+
+#[test]
+fn unknown_control_fields_are_ignored() {
+    // A newer peer's envelope and params both carry fields this build has
+    // never heard of; neither may become a decode failure (04 §4).
+    let json = r#"{
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "pane.split",
+        "params": {
+            "pane": "00000000-0000-0000-0000-000000000001",
+            "direction": "vertical",
+            "future_param_field": true
+        },
+        "future_envelope_field": "ignored"
+    }"#;
+
+    let request: Request =
+        serde_json::from_str(json).expect("unknown envelope fields must be ignored");
+    assert_eq!(request.id, RequestId::Number(4));
+    assert_eq!(request.method, "pane.split");
+
+    let call = Call::decode(&request.method, request.params).unwrap();
+    let Call::PaneSplit(split) = call else {
+        panic!("decoded the wrong variant");
+    };
+    assert_eq!(split.direction, pane::SplitDirection::Vertical);
 }

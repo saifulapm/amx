@@ -1,0 +1,16 @@
+{
+  "reply": {
+    "pane": "00000000-0000-0000-0000-0000000000a2",
+    "seq": 45,
+    "short": 2
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "pane.split",
+    "params": {
+      "direction": "vertical",
+      "pane": "00000000-0000-0000-0000-0000000000a1"
+    }
+  }
+}

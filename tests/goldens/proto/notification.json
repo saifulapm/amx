@@ -1,0 +1,8 @@
+{
+  "jsonrpc": "2.0",
+  "method": "pane.exited",
+  "params": {
+    "pane": "00000000-0000-0000-0000-0000000000a1",
+    "status": 0
+  }
+}
