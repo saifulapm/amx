@@ -114,6 +114,13 @@ pub struct App<Fd: AsFd, W: Write> {
     focus: HashMap<WorkspaceId, PaneId>,
     /// The modal byte machine behind [`Self::handle_input`].
     input: Input,
+    /// The rendered status line, rebuilt only when its inputs change so a
+    /// repaint of an unchanged status costs a comparison, not two `String`s.
+    status: String,
+    /// The workspace label [`Self::status`] was built from.
+    status_label: String,
+    /// The mode tag [`Self::status`] was built from.
+    status_mode: &'static str,
     /// How many full repaints this app has done. Exposed for tests; production
     /// callers have no need of it.
     pub repaints: u64,
@@ -145,6 +152,9 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             layout_dirty: true,
             focus: HashMap::new(),
             input: Input::new(),
+            status: String::new(),
+            status_label: String::new(),
+            status_mode: "",
             repaints: 0,
         })
     }
@@ -450,12 +460,12 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             }
         }
         self.draw_overlays();
-        let status = status_text(&self.model, self.mode, self.picker.is_some());
+        self.refresh_status();
         chrome::status_line(
             &mut self.writer,
             self.model.term.h.saturating_sub(1),
             self.model.term.w,
-            &status,
+            &self.status,
         );
         self.place_cursor();
         self.repaints += 1;
@@ -491,6 +501,31 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         }
     }
 
+    /// Rebuild the cached status line if the label or mode changed.
+    ///
+    /// Repainting is per-frame; a workspace label or mode change is not. The
+    /// comparison keeps `format!`-style `String` churn off the repaint path —
+    /// `repaint_does_not_allocate_after_the_first_frame` holds it there.
+    fn refresh_status(&mut self) {
+        let label = self
+            .model
+            .focused_workspace()
+            .and_then(|ws| ws.label.as_deref())
+            .unwrap_or("amx");
+        let mode = mode_tag(self.mode, self.picker.is_some());
+        if !self.status.is_empty() && self.status_label == label && self.status_mode == mode {
+            return;
+        }
+        self.status_label.clear();
+        self.status_label.push_str(label);
+        self.status_mode = mode;
+        self.status.clear();
+        self.status.push(' ');
+        self.status.push_str(label);
+        self.status.push_str(mode);
+        self.status.push(' ');
+    }
+
     /// The bytes the last [`Self::repaint`] produced.
     #[must_use]
     pub fn frame(&self) -> &[u8] {
@@ -507,12 +542,9 @@ impl<Fd: AsFd, W: Write> fmt::Debug for App<Fd, W> {
     }
 }
 
-fn status_text(model: &ClientModel, mode: Mode, picker: bool) -> String {
-    let label = model
-        .focused_workspace()
-        .and_then(|ws| ws.label.clone())
-        .unwrap_or_else(|| "amx".to_owned());
-    let mode = if picker {
+/// The status line's mode suffix.
+const fn mode_tag(mode: Mode, picker: bool) -> &'static str {
+    if picker {
         " PICK"
     } else {
         match mode {
@@ -521,8 +553,7 @@ fn status_text(model: &ClientModel, mode: Mode, picker: bool) -> String {
             Mode::Navigate => " NAV",
             Mode::Copy => " COPY",
         }
-    };
-    format!(" {label}{mode} ")
+    }
 }
 
 /// A pane's id together with the rect chrome computed for it — exposed so
