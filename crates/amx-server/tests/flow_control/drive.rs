@@ -16,7 +16,7 @@ use amx_server::damage::{GridStream, Sent};
 use amx_vt::SnapshotRef;
 use tokio::time::Instant;
 
-use super::harness::{Frames, PATIENCE, Pane, ReferenceGrid, Wire, screen};
+use super::harness::{Frames, PATIENCE, Pane, ReferenceGrid, TICK, Wire, screen};
 
 /// One published frame, folded into every stream, with a drain offered to each.
 pub async fn step(
@@ -68,7 +68,7 @@ pub async fn settle(
                 .map(|(stream, _)| stream.stats())
                 .collect::<Vec<_>>()
         );
-        tokio::time::sleep(Duration::from_millis(2)).await;
+        tokio::time::sleep(TICK).await;
     }
 }
 
@@ -91,7 +91,7 @@ pub async fn emit(
             "the stream never sent anything: {:?}",
             stream.stats()
         );
-        tokio::time::sleep(Duration::from_millis(2)).await;
+        tokio::time::sleep(TICK).await;
     }
 }
 
@@ -137,7 +137,7 @@ pub async fn catch_up(
             "{tag:?} never landed: {:?}",
             stream.stats()
         );
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::sleep(TICK).await;
     }
 }
 
@@ -155,6 +155,6 @@ pub async fn await_client(
             return;
         }
         assert!(Instant::now() < deadline, "the client never saw {what}");
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::sleep(TICK).await;
     }
 }

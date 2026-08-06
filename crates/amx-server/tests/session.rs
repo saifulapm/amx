@@ -466,7 +466,9 @@ async fn await_ready_waits_for_the_socket_and_gives_up_on_a_deadline() {
 
     let starting = ctx.clone();
     let late = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        // Start late so await_ready has to actually wait; a long delay
+        // only makes it wait longer, never fail.
+        tokio::time::sleep(Duration::from_millis(30)).await; // deliberate
         Session::start(starting).await
     });
     daemon::await_ready(&ctx.socket, PATIENCE)

@@ -37,7 +37,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use drive::{await_client, catch_up, emit, paint, sample, scroll_burst, settle, step};
-use harness::{MAX_FRAME, PATIENCE, Pane, ReferenceGrid, Wire, grid_stream, screen, text_of};
+use harness::{MAX_FRAME, PATIENCE, Pane, ReferenceGrid, TICK, Wire, grid_stream, screen, text_of};
 
 /// A pipe small enough that one grid frame fills it.
 const TINY_PIPE: usize = 512;
@@ -287,7 +287,7 @@ async fn threshold_crossing_emits_a_keyframe_not_a_delta() {
             stream.dirty().marked(),
             stream.dirty().rows()
         );
-        tokio::time::sleep(Duration::from_millis(2)).await;
+        tokio::time::sleep(TICK).await;
     }
     assert_eq!(
         stream.owed_keyframe(),
@@ -422,7 +422,7 @@ async fn two_clients_at_different_speeds_each_stay_consistent() {
             quick_stream.stats(),
             slow_stream.stats()
         );
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::sleep(TICK).await;
     };
 
     let _ = quick.finish().await;

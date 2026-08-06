@@ -27,6 +27,9 @@ use tokio_util::sync::CancellationToken;
 /// How long a test waits for the server to do something.
 pub const PATIENCE: Duration = Duration::from_secs(5);
 
+/// How long a poll loop waits between looks at its condition.
+pub const TICK: Duration = Duration::from_millis(5);
+
 /// A feature name no server build has, for testing the intersection.
 pub const UNKNOWN_FEATURE: &str = "amx.test.feature-no-server-has";
 
@@ -246,7 +249,7 @@ pub async fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
             tokio::time::Instant::now() < deadline,
             "timed out waiting until {what}"
         );
-        tokio::time::sleep(Duration::from_millis(2)).await;
+        tokio::time::sleep(TICK).await;
     }
 }
 

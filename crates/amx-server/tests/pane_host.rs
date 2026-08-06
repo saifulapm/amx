@@ -20,6 +20,9 @@ const SIZE: WinSize = WinSize { rows: 24, cols: 80 };
 /// How long a test waits for a pane to do something.
 const PATIENCE: Duration = Duration::from_secs(10);
 
+/// How long a poll loop waits between looks at its condition.
+const TICK: Duration = Duration::from_millis(5);
+
 /// A short frame interval, so a test does not spend its patience waiting for
 /// output to coalesce.
 const FRAME: Duration = Duration::from_millis(2);
@@ -103,7 +106,7 @@ impl Harness {
                 "the pane never rendered {needle:?}: {:?}",
                 screen(&snapshot)
             );
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(TICK).await;
         }
     }
 
@@ -228,8 +231,11 @@ async fn history_range_command_is_served_from_the_parser_thread() {
         |event| matches!(event, Event::HistoryCommitted { range, .. } if range.last.get() >= 9),
     )
     .await;
-    // The pane is quiet now: nothing below can be riding on a pty read.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // The script's last line on screen is the completion marker: after it the
+    // shell is in its silent tail, so no pty byte is coming and the parse
+    // count below cannot move again. A fixed nap here flaked on loaded
+    // runners; a marker cannot.
+    pane.wait_for_text("line 60").await;
     let parses = pane.probe().parses();
 
     let (reply, answer) = oneshot::channel();
@@ -425,15 +431,20 @@ async fn snapshot_read_during_heavy_output_is_internally_consistent() {
     }
 
     // Heavy output keeps flowing; a published snapshot is plain data and does
-    // not change under the reader that holds it.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // not change under the reader that holds it. The proof the parser really
+    // published past the held frame is the frame counter moving, not a nap.
+    let frames_at_hold = pane.probe().frames();
+    let deadline = Instant::now() + PATIENCE;
+    while pane.probe().frames() < frames_at_hold + 2 {
+        assert!(
+            Instant::now() < deadline,
+            "the parser stopped publishing under the hold"
+        );
+        tokio::time::sleep(TICK).await;
+    }
     assert_eq!(
         captured, *held,
         "a held snapshot was mutated while the parser kept publishing"
-    );
-    assert!(
-        pane.probe().frames() > 1,
-        "the parser kept publishing during the hold"
     );
 
     pane.stop().await;
