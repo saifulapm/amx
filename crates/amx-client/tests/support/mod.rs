@@ -139,8 +139,18 @@ pub fn open_pty_sized(rows: u16, cols: u16) -> Pty {
             .expect("openpt");
     rustix::pty::grantpt(&master).expect("grantpt");
     rustix::pty::unlockpt(&master).expect("unlockpt");
+    let name = rustix::pty::ptsname(&master, Vec::new()).expect("ptsname");
+    let path = PathBuf::from(name.to_string_lossy().into_owned());
+    let slave = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .expect("open the pty slave");
+    // Sized through the slave, the way openpty(3) does it: the window lives on
+    // the terminal, not on a descriptor, and the slave takes TIOCSWINSZ on
+    // every platform where darwin's master refuses it until the slave is open.
     rustix::termios::tcsetwinsize(
-        &master,
+        &slave,
         rustix::termios::Winsize {
             ws_row: rows,
             ws_col: cols,
@@ -149,13 +159,6 @@ pub fn open_pty_sized(rows: u16, cols: u16) -> Pty {
         },
     )
     .expect("set the pty window size");
-    let name = rustix::pty::ptsname(&master, Vec::new()).expect("ptsname");
-    let path = PathBuf::from(name.to_string_lossy().into_owned());
-    let slave = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&path)
-        .expect("open the pty slave");
     Pty {
         master: std::fs::File::from(master),
         slave,
