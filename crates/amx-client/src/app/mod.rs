@@ -155,6 +155,12 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         self.mode
     }
 
+    /// Whether the picker is open (its bytes bypass the mode machine).
+    #[must_use]
+    pub const fn picker_open(&self) -> bool {
+        self.picker.is_some()
+    }
+
     /// The underlying control session, for making calls outside the render
     /// loop (workspace/pane verbs).
     pub fn session(&mut self) -> &mut Session {

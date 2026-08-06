@@ -155,6 +155,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
 
     /// Feed stdin bytes through the modal layer and act on every consequence.
     pub async fn handle_bytes(&mut self, bytes: &[u8]) -> Result<Flow, AppError> {
+        let picker_was_open = self.picker_open();
         let mut events: Vec<OwnedEvent> = Vec::new();
         self.handle_input(bytes, &mut |event| {
             events.push(match event {
@@ -167,6 +168,14 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             });
         });
         self.dirty = true;
+
+        // A picker that just opened lists whatever the model held — which,
+        // with no event subscription in M0, may be stale. Re-sync and rebuild
+        // it so a workspace another client created a moment ago is choosable.
+        if !picker_was_open && self.picker_open() {
+            self.sync_state().await?;
+            self.open_picker();
+        }
 
         let mut resync = false;
         for event in events {
