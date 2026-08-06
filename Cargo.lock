@@ -49,6 +49,7 @@ name = "amx-core"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "rustix",
  "serde",
  "serde_json",
  "thiserror",
@@ -92,6 +93,7 @@ dependencies = [
  "amx-proto",
  "amx-vt",
  "bytes",
+ "libc",
  "rustix",
  "serde_json",
  "thiserror",

@@ -7,13 +7,11 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
-use std::time::Duration;
-
 use amx_server::session::probe::{Probe, probe, server_pid};
 
 mod support;
 
-use support::{ALT_ENTER, ALT_LEAVE, Env, server_processes, wait_until, window};
+use support::{ALT_ENTER, ALT_LEAVE, Env, TICK, server_processes, wait_until, window};
 
 /// The terminal size every attaching test uses.
 const ROWS: u16 = 24;
@@ -361,6 +359,6 @@ fn wait_for_exit(child: &mut std::process::Child) -> Option<i32> {
             std::time::Instant::now() < deadline,
             "the server did not exit"
         );
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(TICK);
     }
 }

@@ -39,6 +39,9 @@ pub const SIZE: WinSize = WinSize { rows: 24, cols: 80 };
 /// How long a test waits for a pane to do something.
 pub const PATIENCE: Duration = Duration::from_secs(10);
 
+/// How long a poll loop waits between looks at its condition.
+pub const TICK: Duration = Duration::from_millis(5);
+
 /// A short frame interval, so a test does not spend its patience waiting.
 pub const FRAME: Duration = Duration::from_millis(2);
 
@@ -84,7 +87,7 @@ impl Pane {
                 return pane;
             }
             assert!(Instant::now() < deadline, "the pane never came up clean");
-            tokio::time::sleep(Duration::from_millis(2)).await;
+            tokio::time::sleep(TICK).await;
         }
     }
 
@@ -127,7 +130,7 @@ impl Pane {
                 Instant::now() < deadline,
                 "the pane never rendered {needle:?}"
             );
-            tokio::time::sleep(Duration::from_millis(2)).await;
+            tokio::time::sleep(TICK).await;
         }
     }
 
@@ -251,7 +254,9 @@ impl Wire {
                     break;
                 }
                 if !delay.is_zero() {
-                    tokio::time::sleep(delay).await;
+                    // A client consuming at a controlled rate is the
+                    // scenario, not a wait: nothing asserts on this nap.
+                    tokio::time::sleep(delay).await; // deliberate
                 }
             }
         });
@@ -268,7 +273,7 @@ impl Wire {
         let deadline = Instant::now() + PATIENCE;
         while !self.out.is_empty() {
             assert!(Instant::now() < deadline, "the writer never drained");
-            tokio::time::sleep(Duration::from_millis(2)).await;
+            tokio::time::sleep(TICK).await;
         }
     }
 

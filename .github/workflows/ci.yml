@@ -10,8 +10,13 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # Both tier-1 platforms (03 §design principles) run the full pipeline.
   ci:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
 
@@ -28,7 +33,9 @@ jobs:
 
       # bindgen regenerates amx-vt's FFI surface from the vendored headers on
       # every build and needs libclang plus its builtin headers to do it.
+      # macOS runners carry both with the Xcode command line tools.
       - name: Install libclang
+        if: runner.os == 'Linux'
         run: sudo apt-get install -y --no-install-recommends libclang-dev
 
       # The pinned Zig that builds the vendored terminal core. The vendoring
@@ -39,6 +46,13 @@ jobs:
         with:
           path: vendor/toolchain
           key: zig-toolchain-${{ runner.os }}-${{ runner.arch }}-0.15.2
+
+      # One cache path for every OS: zig's default global cache differs
+      # per platform, and the cache step above needs a single answer.
+      # $GITHUB_ENV, because a workflow-level `env:` value is never
+      # shell-expanded and zig would take a literal `~` at its word.
+      - name: Pin the Zig cache path
+        run: echo "ZIG_GLOBAL_CACHE_DIR=$HOME/.cache/zig" >> "$GITHUB_ENV"
 
       - name: Install pinned Zig
         run: scripts/vendor-libghostty-vt.sh toolchain
@@ -57,3 +71,56 @@ jobs:
 
       - name: ci
         run: scripts/ci.sh
+
+  # A cheap tripwire between full macOS runs: cross-check every target for
+  # aarch64-apple-darwin from Linux, which catches cfg'd-API compile breaks
+  # (rustix declares CLOEXEC-at-open and pipe2 only where the kernel has
+  # them) without a mac in the loop.
+  darwin-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install pinned Rust
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-apple-darwin
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install libclang
+        run: sudo apt-get install -y --no-install-recommends libclang-dev
+
+      - name: Cache Zig toolchain
+        uses: actions/cache@v4
+        with:
+          path: vendor/toolchain
+          key: zig-toolchain-${{ runner.os }}-${{ runner.arch }}-0.15.2
+
+      # One cache path for every OS: zig's default global cache differs
+      # per platform, and the cache step above needs a single answer.
+      # $GITHUB_ENV, because a workflow-level `env:` value is never
+      # shell-expanded and zig would take a literal `~` at its word.
+      - name: Pin the Zig cache path
+        run: echo "ZIG_GLOBAL_CACHE_DIR=$HOME/.cache/zig" >> "$GITHUB_ENV"
+
+      - name: Install pinned Zig
+        run: scripts/vendor-libghostty-vt.sh toolchain
+
+      - name: Cache Zig packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: zig-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/libghostty-vt/build.zig.zon') }}
+          restore-keys: |
+            zig-packages-${{ runner.os }}-${{ runner.arch }}-
+
+      # The vendored headers only need compiler-builtin includes
+      # (stdint/stddef/stdbool/limits); -nostdlibinc keeps host glibc headers
+      # out of a darwin-targeted libclang parse, which has no darwin sysroot
+      # to read instead.
+      - name: Cross-check aarch64-apple-darwin
+        env:
+          BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_darwin: -nostdlibinc
+        run: cargo check --workspace --all-targets --target aarch64-apple-darwin

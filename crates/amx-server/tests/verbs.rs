@@ -43,6 +43,12 @@ use support::TempDir;
 /// `/proc`.
 const PATIENCE: Duration = Duration::from_secs(5);
 
+/// How long a poll loop waits between looks at its condition.
+const TICK: Duration = Duration::from_millis(5);
+
+/// How long a loop whose every look has a side effect waits between tries.
+const RETRY: Duration = Duration::from_millis(50);
+
 /// A `Ctx` with fabricated, never-touched-on-disk paths — nothing here binds
 /// a socket, so there is no filesystem state for it to collide over.
 fn fresh_ctx(tag: &str) -> Ctx {
@@ -168,7 +174,7 @@ async fn find_process_in(dir: &Path) -> u32 {
             "no process ever appeared with cwd {}",
             dir.display()
         );
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(TICK).await;
     }
 }
 
@@ -181,7 +187,7 @@ async fn wait_for_no_process_in(dir: &Path) {
             "a process never exited out of {}",
             dir.display()
         );
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(TICK).await;
     }
 }
 
@@ -285,7 +291,8 @@ async fn split_inherits_the_source_pane_foreground_process_cwd() {
             Instant::now() < deadline,
             "a split from the source pane never inherited its foreground cwd"
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Every look re-splits, so pace retries slower than a tick.
+        tokio::time::sleep(RETRY).await; // deliberate
     }
 
     harness.stop().await;
@@ -318,7 +325,8 @@ async fn split_falls_back_to_the_pane_cwd_when_the_foreground_cwd_is_unreadable(
             Instant::now() < deadline,
             "a split from a pane with no live process never fell back to its recorded cwd"
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Every look re-splits, so pace retries slower than a tick.
+        tokio::time::sleep(RETRY).await; // deliberate
     }
 
     harness.stop().await;

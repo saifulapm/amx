@@ -6,7 +6,6 @@
 //! this test executable instead — `cargo test --workspace` (what CI runs)
 //! builds it there before any test runs.
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -209,34 +208,20 @@ impl ServerChild {
         self.child.try_wait().expect("try_wait").is_none()
     }
 
-    /// The server's resident set size in bytes, read from `/proc`.
+    /// The server's resident set size in bytes.
     #[must_use]
     pub fn rss_bytes(&self) -> u64 {
-        let statm = std::fs::read_to_string(format!("/proc/{}/statm", self.pid()))
-            .expect("the server has a /proc entry");
-        let resident: u64 = statm
-            .split_whitespace()
-            .nth(1)
-            .expect("statm has a resident field")
-            .parse()
-            .expect("resident is a number");
-        resident * 4096
+        crate::platform::rss_bytes(self.pid())
     }
 
-    /// Bytes the server has read from anywhere, per `/proc/<pid>/io`.
+    /// Bytes the server has read from anywhere, or `None` where the platform
+    /// cannot account for io (see [`crate::platform::read_bytes`]).
     ///
     /// Under a flooding pane this is dominated by the pty; a flood test uses
     /// the delta to prove the server really ingested the flood it survived.
     #[must_use]
-    pub fn read_bytes(&self) -> u64 {
-        let io = std::fs::read_to_string(format!("/proc/{}/io", self.pid()))
-            .expect("the server has a /proc io entry");
-        io.lines()
-            .find_map(|line| line.strip_prefix("rchar: "))
-            .expect("io reports rchar")
-            .trim()
-            .parse()
-            .expect("rchar is a number")
+    pub fn read_bytes(&self) -> Option<u64> {
+        crate::platform::read_bytes(self.pid())
     }
 
     /// Ask the server to exit and wait for it, asserting a clean code.
@@ -301,35 +286,14 @@ pub fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
 
 /// How many live processes have `marker` in their argv.
 ///
-/// Read straight out of `/proc`: a claim like "the pane's process survived the
-/// client dying" is about processes, and only the process table can attest to
-/// it. Markers are per-test-unique strings planted in the spawned command.
+/// A claim like "the pane's process survived the client dying" is about
+/// processes, and only the process table can attest to it. Markers are
+/// per-test-unique strings planted in the spawned command. The reader is
+/// per-platform (see [`crate::platform::processes_with_arg`]) and panics
+/// rather than answer a vacuous zero.
 #[must_use]
 pub fn processes_with_arg(marker: &str) -> usize {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return 0;
-    };
-    entries
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            nul_separated(&entry.path().join("cmdline"))
-                .iter()
-                .any(|arg| arg.to_string_lossy().contains(marker))
-        })
-        .count()
-}
-
-/// A `/proc` file of NUL-separated strings.
-fn nul_separated(path: &Path) -> Vec<OsString> {
-    use std::os::unix::ffi::OsStringExt as _;
-
-    let Ok(raw) = std::fs::read(path) else {
-        return Vec::new();
-    };
-    raw.split(|byte| *byte == 0)
-        .filter(|part| !part.is_empty())
-        .map(|part| OsString::from_vec(part.to_vec()))
-        .collect()
+    crate::platform::processes_with_arg(marker)
 }
 
 /// The `amx` binary this test run built.

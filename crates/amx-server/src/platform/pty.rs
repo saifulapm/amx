@@ -3,7 +3,8 @@
 //! D-M0-3: the four-call `openpt`/`grantpt`/`unlockpt`/`ptsname` sequence is
 //! written out here rather than taken as a dependency, and the child is spawned
 //! with [`std::process::Command`] plus a `pre_exec` that does setsid, TIOCSCTTY
-//! and dup2 — the `login_tty` dance, and the only `unsafe` in the crate.
+//! and dup2 — the `login_tty` dance, and one of the crate's two drops to
+//! `unsafe` (the other is the darwin libproc reader in [`super::process`]).
 
 use std::io;
 use std::os::fd::{AsFd, AsRawFd as _, BorrowedFd, OwnedFd};
@@ -32,9 +33,7 @@ impl Pty for UnixPty {
     type Session = UnixPtySession;
 
     fn spawn(&self, command: &PtyCommand) -> Result<Self::Session, PlatformError> {
-        let master =
-            rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC)
-                .map_err(io_error)?;
+        let master = open_master().map_err(io_error)?;
         rustix::pty::grantpt(&master).map_err(io_error)?;
         rustix::pty::unlockpt(&master).map_err(io_error)?;
         let name = rustix::pty::ptsname(&master, Vec::new()).map_err(io_error)?;
@@ -90,6 +89,29 @@ impl Pty for UnixPty {
 
         Ok(UnixPtySession { master, child })
     }
+}
+
+/// Open the master descriptor with close-on-exec already set.
+///
+/// Linux takes `O_CLOEXEC` in the open itself, so the flag is on the
+/// descriptor from its first instant.
+#[cfg(target_os = "linux")]
+fn open_master() -> Result<OwnedFd, Errno> {
+    rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC)
+}
+
+/// Open the master descriptor with close-on-exec already set.
+///
+/// `posix_openpt` elsewhere (macOS among them) does not take `O_CLOEXEC`, so
+/// the flag goes on with a second `fcntl` call. Between the two calls a fork
+/// on another thread could capture the bare descriptor; the server confines
+/// every spawn to this module's `pre_exec` path, which dups only the slave,
+/// so the window is real but no code here can fall into it.
+#[cfg(not(target_os = "linux"))]
+fn open_master() -> Result<OwnedFd, Errno> {
+    let master = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
+    rustix::io::fcntl_setfd(&master, rustix::io::FdFlags::CLOEXEC)?;
+    Ok(master)
 }
 
 /// Make the freshly forked child the session leader of its own terminal.

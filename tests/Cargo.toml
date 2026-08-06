@@ -50,7 +50,7 @@ amx-core = { workspace = true }
 amx-proto = { workspace = true }
 amx-server = { workspace = true }
 amx-vt = { workspace = true }
-rustix = { workspace = true, features = ["fs", "process", "pty", "std", "termios"] }
+rustix = { workspace = true, features = ["fs", "param", "process", "pty", "std", "termios"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }

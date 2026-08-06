@@ -24,6 +24,9 @@ const SIZE: WinSize = WinSize { rows: 24, cols: 80 };
 /// How long a test waits for a child to say something.
 const PATIENCE: Duration = Duration::from_secs(5);
 
+/// How long a poll loop waits between looks at its condition.
+const TICK: Duration = Duration::from_millis(5);
+
 // ---------------------------------------------------------------- real ptys
 
 /// Opening a pty is process-global (`/proc/self/fd` is one table), so the
@@ -96,7 +99,7 @@ fn read_until(session: &mut UnixPtySession, needle: &[u8]) -> Vec<u8> {
                     break;
                 }
             }
-            Err(PlatformError::WouldBlock) => thread::sleep(Duration::from_millis(5)),
+            Err(PlatformError::WouldBlock) => thread::sleep(TICK),
             Err(err) => panic!("pty read failed: {err}"),
         }
     }
@@ -130,7 +133,7 @@ fn process_tree_answers_for_a_live_child_and_stops_when_it_is_gone() {
     session.kill().expect("kill");
     let deadline = Instant::now() + PATIENCE;
     while session.try_wait().expect("try_wait").is_none() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(5));
+        thread::sleep(TICK);
     }
     assert!(
         !tree.is_alive(child),
@@ -333,9 +336,12 @@ fn out_of_band_response_never_precedes_an_earlier_in_band_response() {
             // writer every chance to get its answer in first.
             let _ = entered.send(());
             while !dispatched.load(Ordering::Acquire) {
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(TICK);
             }
-            thread::sleep(Duration::from_millis(100));
+            // Hold the parser open so the out-of-band answer has every
+            // chance to jump the queue; the ordering assertion holds with or
+            // without the window, the window just arms it.
+            thread::sleep(Duration::from_millis(100)); // deliberate
             responses.push(Bytes::from_static(b"IN"));
         })
     };
@@ -405,9 +411,10 @@ fn wake_pipe_makes_a_queued_write_visible_without_waiting_for_idle_timeout() {
         .expect("read timeout");
     let (handle, thread) = fake_actor(session, idle, Box::new(|_bytes, _responses| {}));
 
-    // Let the actor reach its poll before queueing anything, so the wake is
-    // what gets it out rather than the loop not having parked yet.
-    thread::sleep(Duration::from_millis(50));
+    // Let the actor reach its poll before queueing, so the wake is what
+    // gets it out rather than the loop not having parked yet; a short
+    // window only makes the test vacuous, never red.
+    thread::sleep(Duration::from_millis(50)); // deliberate
     let started = Instant::now();
     handle
         .try_write_input(Bytes::from_static(b"ping"))

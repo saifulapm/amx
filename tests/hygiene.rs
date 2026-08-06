@@ -73,3 +73,68 @@ fn no_test_depends_on_wall_clock_sleep() {
         "the support crate's wait helpers have gone missing; this guard checks them"
     );
 }
+
+/// The same convention where the naps used to live: `crates/*/tests`.
+///
+/// Those suites legitimately *say* the forbidden word — spawned shells run
+/// `sleep 60` to stay alive, and that is program text under test, not a test
+/// waiting — so the scan matches the Rust call (`thread::sleep`,
+/// `tokio::time::sleep`) rather than the word. Every call must either pace a
+/// deadline loop at a named `TICK`-family constant (the line names `(TICK)`)
+/// or be a scheduling window the test opens on purpose — a controlled ingest
+/// rate, an adversarial hold — marked `// deliberate` on the same line, with
+/// the justification above it. A deliberate window must never be load-bearing
+/// for the green path: expiring long or short may weaken the test, never
+/// redden it.
+#[test]
+fn crate_tests_wait_on_conditions_not_wall_clock() {
+    // `<workspace>/tests/../crates`: this package sits beside `crates/`.
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates");
+    let call = ["::sl", "eep"].concat();
+
+    let mut suites = 0;
+    let mut flagged = Vec::new();
+    for krate in fs::read_dir(&crates).expect("read crates/") {
+        let tests = krate.expect("a directory entry").path().join("tests");
+        if !tests.is_dir() {
+            continue;
+        }
+        for path in rust_files(&tests) {
+            suites += 1;
+            let text = fs::read_to_string(&path).expect("read the suite");
+            for (n, line) in text.lines().enumerate() {
+                if line.contains(&call)
+                    && !line.contains("(TICK)")
+                    && !line.trim_end().ends_with("// deliberate")
+                {
+                    flagged.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        flagged.is_empty(),
+        "wall-clock naps outside a TICK-paced loop; wait on a condition, or \
+         mark a justified scheduling window `// deliberate`:\n{}",
+        flagged.join("\n")
+    );
+    assert!(
+        suites >= 10,
+        "the crates scan found too few suites ({suites}) to be believed"
+    );
+}
+
+/// Every `.rs` file under `dir`, recursively.
+fn rust_files(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let entries = fs::read_dir(dir).expect("read a test directory");
+    for entry in entries {
+        let path = entry.expect("a directory entry").path();
+        if path.is_dir() {
+            found.extend(rust_files(&path));
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            found.push(path);
+        }
+    }
+    found
+}

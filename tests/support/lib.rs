@@ -29,6 +29,7 @@
 
 pub mod env;
 pub mod golden;
+pub mod platform;
 pub mod screen;
 pub mod term;
 pub mod wire;
