@@ -1,0 +1,313 @@
+//! The adversarial suite behind M0's exit criteria (05 M0, 06 §4 T18).
+//!
+//! Everything here is process-level and drives the real `amx` binary over the
+//! real socket: kill -9 is a real `SIGKILL`, the second terminal is a second
+//! pseudoterminal, the flood is a real `cat /dev/urandom` in a real pane.
+//!
+//! **Scope note, honestly stated.** In this build no grid bytes cross the
+//! socket — the damage pump exists and is proven at the unit level
+//! (`amx-server/tests/flow_control.rs`), but no control method binds a stream
+//! channel yet, so an attached client paints chrome over an empty model.
+//! "Identical grid" and "uncorrupted grid" are therefore asserted at the
+//! strongest layer the wire offers today: the rasterized screen two clients
+//! actually paint, plus the server-side facts (same session, same pane
+//! processes, bounded memory) that make the eventual cell-level comparison
+//! meaningful. When stream binding lands, these tests tighten rather than
+//! change shape.
+
+#![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
+
+use std::time::{Duration, Instant};
+
+use amx_proto::version::window;
+use amx_server::session::probe::{Probe, probe};
+use rig::env::processes_with_arg;
+use rig::screen::render;
+use rig::wire::{split_running, workspace_with_root};
+use rig::{ALT_ENTER, ALT_LEAVE, Env, Screen, Wire, rasterize, result_of, wait_until};
+use serde_json::json;
+
+const ROWS: u16 = 24;
+const COLS: u16 = 80;
+
+/// Whether a rasterized screen shows a fully painted frame: the status line
+/// padded across the whole bottom row.
+fn painted(screen: &Screen) -> bool {
+    (0..COLS).all(|col| screen.contains_key(&(ROWS - 1, col)))
+}
+
+/// The session id `amx ping` reports for this environment.
+fn session_id(env: &Env) -> String {
+    let reply: serde_json::Value =
+        serde_json::from_str(env.run(&["ping"]).ok()).expect("ping prints the reply as JSON");
+    reply["session"]
+        .as_str()
+        .expect("the reply names the session")
+        .to_owned()
+}
+
+/// A marker string no other test's processes carry.
+fn marker(tag: &str) -> String {
+    format!("amx-rig-{tag}-{}", std::process::id())
+}
+
+// ------------------------------------------------------------------ kill -9
+
+#[tokio::test]
+async fn kill_dash_9_the_client_then_reattach_yields_an_identical_grid() {
+    let env = Env::new("kill9");
+
+    // The first client daemonizes the server and paints its frame.
+    let mut first = env.attach_on_tty(&[], ROWS, COLS);
+    first.wait_for(ALT_ENTER);
+    first.wait_output("a fully painted frame", |seen| painted(&rasterize(seen)));
+    let before = rasterize(first.output());
+    let session = session_id(&env);
+
+    // Give the session something to lose: a pane running a real process.
+    let marker = marker("kill9");
+    let mut wire = Wire::connect(&env.socket()).await;
+    wire.hello(window()).await;
+    let (_workspace, root) = workspace_with_root(&mut wire).await;
+    let _pane = split_running(&mut wire, root, &["sh", "-c", "cat; true", &marker]).await;
+    wait_until("the pane's process appears", || {
+        processes_with_arg(&marker) == 1
+    });
+
+    // kill -9. No detach, no goodbye, no chance to clean up.
+    first.kill_dash_9();
+
+    // The server shrugs: still answering, same session, pane untouched.
+    assert_eq!(probe(&env.socket()).expect("probe"), Probe::Running);
+    assert_eq!(
+        session_id(&env),
+        session,
+        "the same server instance answers"
+    );
+    assert_eq!(
+        processes_with_arg(&marker),
+        1,
+        "the pane's process survived its client"
+    );
+
+    // Reattach from a fresh terminal of the same size: the same screen, cell
+    // for cell — not merely "a" screen.
+    let mut second = env.attach_on_tty(&[], ROWS, COLS);
+    second.wait_for(ALT_ENTER);
+    second.wait_output("the reattached screen to match the first", |seen| {
+        rasterize(seen) == before
+    });
+    assert_eq!(
+        rasterize(second.output()),
+        before,
+        "reattach must land on the identical screen:\nfirst:\n{}\nsecond:\n{}",
+        render(&before),
+        render(&rasterize(second.output()))
+    );
+
+    // And this client can leave the civilised way.
+    second.chord(b'd');
+    assert_eq!(second.wait(), Some(0), "detach is a clean exit");
+    assert_eq!(
+        processes_with_arg(&marker),
+        1,
+        "detaching leaves the pane running"
+    );
+}
+
+// --------------------------------------------------------- second terminal
+
+#[tokio::test]
+async fn reattach_from_a_second_terminal_while_the_first_is_live() {
+    let env = Env::new("two-terms");
+
+    let mut first = env.attach_on_tty(&[], ROWS, COLS);
+    first.wait_for(ALT_ENTER);
+    first.wait_output("a fully painted frame", |seen| painted(&rasterize(seen)));
+    let screen = rasterize(first.output());
+
+    // The second terminal attaches while the first is still attached — no
+    // takeover, no eviction, both connections live at once.
+    let mut second = env.attach_on_tty(&[], ROWS, COLS);
+    second.wait_for(ALT_ENTER);
+    second.wait_output("the second terminal to paint the same screen", |seen| {
+        rasterize(seen) == screen
+    });
+    assert!(first.alive(), "the first client must not be evicted");
+
+    // The server still answers a third party while serving both.
+    let mut wire = Wire::connect(&env.socket()).await;
+    wire.hello(window()).await;
+    let reply = wire.request("ping", json!({})).await;
+    assert!(result_of(&reply)["seq"].is_u64());
+
+    // Each detaches cleanly, in either order, restoring its own terminal.
+    second.chord(b'd');
+    assert_eq!(second.wait(), Some(0));
+    assert!(
+        rig::term::contains(second.output(), ALT_LEAVE),
+        "the second client left the alternate screen"
+    );
+    assert_eq!(second.termios(), second.initial_termios());
+
+    assert!(first.alive(), "one detach must not take the other client");
+    first.chord(b'd');
+    assert_eq!(first.wait(), Some(0));
+    assert_eq!(first.termios(), first.initial_termios());
+
+    assert_eq!(probe(&env.socket()).expect("probe"), Probe::Running);
+}
+
+// ------------------------------------------------------------- flow control
+
+/// What "bounded" means for the whole server process under a flood: however
+/// long the pane runs, resident memory stops growing once the scrollback
+/// budget is full. Generous on purpose — the point is not the constant but
+/// that it does not scale with the flood.
+const RSS_GROWTH_BOUND: u64 = 64 * 1024 * 1024;
+
+#[tokio::test]
+async fn flow_control_urandom_pane_with_stalled_client_bounds_memory_and_preserves_grids() {
+    let env = Env::new("flood");
+    let server = env.server();
+
+    // A control-plane client that keeps behaving.
+    let mut control = Wire::connect(&env.socket()).await;
+    control.hello(window()).await;
+    let (workspace, root) = workspace_with_root(&mut control).await;
+
+    // The adversarial pane from the M0 exit criterion.
+    let marker = marker("flood");
+    let _flood = split_running(
+        &mut control,
+        root,
+        &["sh", "-c", "cat /dev/urandom; true", &marker],
+    )
+    .await;
+    wait_until("the flood starts", || processes_with_arg(&marker) == 1);
+
+    // A stalled client: it attaches, fires off calls, and then reads nothing
+    // at all while the flood runs.
+    let mut stalled = Wire::connect(&env.socket()).await;
+    stalled.hello(window()).await;
+    for id in 0..32_u64 {
+        stalled.send_request(100 + id, "ping", json!({})).await;
+    }
+
+    // A real client watching the session throughout.
+    let mut live = env.attach_on_tty(&[], ROWS, COLS);
+    live.wait_for(ALT_ENTER);
+    live.wait_output("a fully painted frame", |seen| painted(&rasterize(seen)));
+    let baseline_screen = rasterize(live.output());
+
+    // Observe: one second of warm-up, then the bound holds while the flood
+    // keeps running. The interval is a sampling cadence, not a wait — every
+    // tick re-checks real state, and the control connection must answer with
+    // monotonic sequence numbers the entire time.
+    let mut ticker = tokio::time::interval(Duration::from_millis(50));
+    let start = Instant::now();
+    let ingested_before = server.read_bytes();
+    let mut baseline_rss = None;
+    let mut peak: u64 = 0;
+    let mut last_seq = 0_u64;
+    while start.elapsed() < Duration::from_secs(3) {
+        ticker.tick().await;
+        let rss = server.rss_bytes();
+        if start.elapsed() >= Duration::from_secs(1) {
+            let base = *baseline_rss.get_or_insert(rss);
+            peak = peak.max(rss);
+            assert!(
+                peak.saturating_sub(base) < RSS_GROWTH_BOUND,
+                "server RSS grew {} bytes past its post-warm-up baseline of {base}",
+                peak - base
+            );
+        }
+        let reply = control.request("ping", json!({})).await;
+        let seq = result_of(&reply)["seq"].as_u64().expect("ping carries seq");
+        assert!(
+            seq >= last_seq,
+            "sequence numbers went backwards under load"
+        );
+        last_seq = seq;
+        assert_eq!(
+            processes_with_arg(&marker),
+            1,
+            "the flood must keep running"
+        );
+    }
+
+    // The bound above means nothing unless the flood really flowed: the
+    // server must have read megabytes off the pane's pty while its memory
+    // stood still.
+    let ingested = server.read_bytes().saturating_sub(ingested_before);
+    assert!(
+        ingested > 8 * 1024 * 1024,
+        "the server ingested only {ingested} bytes; the flood never reached it"
+    );
+
+    // The stalled client was neither disconnected nor corrupted: every reply
+    // it never read is still there, in order, when it finally reads.
+    for _ in 0..32 {
+        let reply = stalled.read_response().await;
+        assert!(
+            result_of(&reply)["seq"].is_u64(),
+            "a stalled client's replies must survive the flood intact"
+        );
+    }
+
+    // No attached client's screen was corrupted by three seconds of urandom:
+    // the live client still shows exactly the frame it painted, and detaches
+    // cleanly, terminal restored.
+    live.drain();
+    assert_eq!(
+        rasterize(live.output()),
+        baseline_screen,
+        "the flood must not leak into another client's screen"
+    );
+    live.chord(b'd');
+    assert_eq!(live.wait(), Some(0), "the live client detaches cleanly");
+    assert_eq!(live.termios(), live.initial_termios());
+
+    // Tear the flood down through the same wire surface and prove it died.
+    let killed = control
+        .request("workspace.kill", json!({ "workspace": workspace }))
+        .await;
+    assert!(result_of(&killed)["panes"].is_array());
+    wait_until("the flood is reaped", || processes_with_arg(&marker) == 0);
+
+    server.shutdown();
+}
+
+// ------------------------------------------------------------ mid-frame close
+
+#[tokio::test]
+async fn server_survives_a_client_that_closes_mid_frame() {
+    let env = Env::new("midframe");
+    let mut server = env.server();
+
+    // Gone mid-payload, after a clean handshake.
+    let mut wire = Wire::connect(&env.socket()).await;
+    wire.hello(window()).await;
+    wire.send_partial_frame(4096, &[b'{'; 64]).await;
+    wire.abandon();
+
+    // Gone mid-header, before ever saying hello.
+    let mut wire = Wire::connect(&env.socket()).await;
+    wire.send_bytes(&[0xff, 0x00, 0x00]).await;
+    wire.abandon();
+
+    // Gone mid-hello: the declared payload never finishes arriving.
+    let mut wire = Wire::connect(&env.socket()).await;
+    wire.send_partial_frame(512, br#"{"proto":[1,1],"#).await;
+    wire.abandon();
+
+    // After all three, the next client gets a full-service session.
+    let mut next = Wire::connect(&env.socket()).await;
+    let welcome = next.hello(window()).await;
+    assert_eq!(welcome.proto, amx_proto::version::PROTO_MAX);
+    let reply = next.request("ping", json!({})).await;
+    assert!(result_of(&reply)["seq"].is_u64());
+    assert!(server.alive(), "the server outlived every rude client");
+
+    server.shutdown();
+}
