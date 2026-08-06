@@ -1,7 +1,11 @@
 //! Per-subscriber cursors, and what a subscriber can be handed.
 
-use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
+
+use crate::event::bus::Shared;
 use crate::event::{Envelope, Seq};
 
 /// What a subscriber receives from the bus.
@@ -44,13 +48,47 @@ pub enum Delivery {
 #[derive(Debug)]
 pub struct Subscription {
     subscribed_at: Seq,
+    next: Seq,
+    /// `None` for a [`Subscription::new`] built with no backing bus: such a
+    /// subscription behaves as already closed, since there is nothing for it
+    /// to read.
+    backing: Option<Backing>,
+}
+
+#[derive(Debug)]
+struct Backing {
+    shared: Arc<Shared>,
+    changed: watch::Receiver<()>,
 }
 
 impl Subscription {
     /// Build a subscription positioned at `subscribed_at`.
+    ///
+    /// This constructor has no way to reach a bus's replay buffer or wakeup
+    /// channel — [`Bus::subscribe`](crate::event::Bus::subscribe) and
+    /// [`Bus::subscribe_after`](crate::event::Bus::subscribe_after) are what
+    /// actually produce a working, live subscription. A `Subscription` built
+    /// directly behaves as already closed: `recv` returns `None` immediately.
     #[must_use]
     pub fn new(subscribed_at: Seq) -> Self {
-        Self { subscribed_at }
+        Self {
+            subscribed_at,
+            next: subscribed_at + 1,
+            backing: None,
+        }
+    }
+
+    /// Build a live subscription backed by a bus's shared state.
+    pub(crate) fn from_bus(
+        subscribed_at: Seq,
+        shared: Arc<Shared>,
+        changed: watch::Receiver<()>,
+    ) -> Self {
+        Self {
+            subscribed_at,
+            next: subscribed_at + 1,
+            backing: Some(Backing { shared, changed }),
+        }
     }
 
     /// The bus head at the moment this subscription was created.
@@ -69,6 +107,52 @@ impl Subscription {
     /// the stream, but a full replay buffer never does; that case is
     /// [`Delivery::Gap`].
     pub async fn recv(&mut self) -> Option<Delivery> {
-        todo!("advance the cursor, or report the gap it fell into")
+        loop {
+            if let Some(delivery) = self.try_next() {
+                return Some(delivery);
+            }
+            let backing = self.backing.as_mut()?;
+            if backing.changed.changed().await.is_err() {
+                // Every sender is gone, i.e. the bus was dropped. One last
+                // check in case a final publish raced with that drop.
+                return self.try_next();
+            }
+        }
+    }
+
+    /// Deliver the next buffered event or gap without waiting, or `None` if
+    /// the subscriber is caught up with the bus head.
+    // Invariant: the lock is never held across a panic, so poisoning here
+    // means a real bug worth surfacing rather than a recoverable condition.
+    #[allow(
+        clippy::expect_used,
+        reason = "invariant: lock is never held across a panic"
+    )]
+    fn try_next(&mut self) -> Option<Delivery> {
+        let backing = self.backing.as_ref()?;
+        let state = backing.shared.state.lock().expect("bus mutex poisoned");
+        if self.next > state.head {
+            return None;
+        }
+        match state.buffer.front() {
+            Some(oldest) if self.next < oldest.seq => {
+                let from = self.next;
+                let to = oldest.seq - 1;
+                self.next = oldest.seq;
+                Some(Delivery::Gap { from, to })
+            }
+            Some(oldest) => {
+                let idx = (self.next - oldest.seq) as usize;
+                let envelope = state.buffer[idx].clone();
+                self.next += 1;
+                Some(Delivery::Event(envelope))
+            }
+            None => {
+                let from = self.next;
+                let to = state.head;
+                self.next = state.head + 1;
+                Some(Delivery::Gap { from, to })
+            }
+        }
     }
 }
