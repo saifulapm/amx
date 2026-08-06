@@ -101,12 +101,15 @@ pub async fn ensure_running(ctx: &Ctx) -> anyhow::Result<Started> {
         "--session".into(),
         ctx.session.to_string().into(),
     ];
-    daemon::spawn_detached(&exe, &args).context("start the session server")?;
+    let mut started = daemon::spawn_detached(&exe, &args).context("start the session server")?;
 
     // The spawn may lose the bind race with another `amx` that started at the
     // same moment; that is not a failure, because what this waits for is a
     // server answering, not *this* server answering.
     daemon::await_ready(&ctx.socket, READY_TIMEOUT).await?;
+    // ...and if it did lose, it has already exited, so reap it here rather
+    // than leaving a zombie for as long as this client stays attached.
+    let _ = started.try_wait();
     Ok(Started::Daemonized)
 }
 

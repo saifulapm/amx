@@ -374,7 +374,7 @@ async fn spawn_detached_starts_a_session_leader_with_null_stdio() {
          echo done > {out}/ok",
         out = out.display()
     );
-    daemon::spawn_detached(
+    let mut child = daemon::spawn_detached(
         Path::new("/bin/sh"),
         &[OsString::from("-c"), OsString::from(script)],
     )
@@ -382,6 +382,7 @@ async fn spawn_detached_starts_a_session_leader_with_null_stdio() {
 
     let ok = out.join("ok");
     wait_until("the detached process ran", || ok.exists()).await;
+    let _ = child.wait();
 
     let read = |name: &str| {
         std::fs::read_to_string(out.join(name))

@@ -22,7 +22,7 @@ use std::ffi::OsString;
 use std::io;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use thiserror::Error;
@@ -79,11 +79,14 @@ pub fn current_exe() -> Result<PathBuf, DaemonError> {
 
 /// Start `program args…` detached from this process's terminal.
 ///
-/// Returns the new process's pid. The child is not waited on: it is expected to
-/// outlive this process, and once this process exits it is reparented to init,
-/// which reaps it. (Until then a daemon that dies early stays a zombie in this
-/// process's table — visible, harmless, and gone the moment the client exits.)
-pub fn spawn_detached(program: &Path, args: &[OsString]) -> Result<u32, DaemonError> {
+/// The returned [`Child`] is a handle, not an obligation: dropping it leaves
+/// the process running (that is the point), and a caller that never waits on it
+/// simply leaves a reparent-to-init to clean up after this process exits. What
+/// a caller *should* do is [`Child::try_wait`] once the socket answers, because
+/// the one server that predictably dies young is the one that lost the bind
+/// race, and reaping it there is the difference between a zombie that lives as
+/// long as the client and one that lives a millisecond.
+pub fn spawn_detached(program: &Path, args: &[OsString]) -> Result<Child, DaemonError> {
     let mut command = Command::new(program);
     command
         .args(args)
@@ -103,13 +106,10 @@ pub fn spawn_detached(program: &Path, args: &[OsString]) -> Result<u32, DaemonEr
         });
     }
 
-    command
-        .spawn()
-        .map(|child| child.id())
-        .map_err(|source| DaemonError::Spawn {
-            program: program.to_path_buf(),
-            source,
-        })
+    command.spawn().map_err(|source| DaemonError::Spawn {
+        program: program.to_path_buf(),
+        source,
+    })
 }
 
 /// Poll `socket` until a server answers on it, or `timeout` elapses.
