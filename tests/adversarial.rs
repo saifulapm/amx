@@ -4,16 +4,10 @@
 //! real socket: kill -9 is a real `SIGKILL`, the second terminal is a second
 //! pseudoterminal, the flood is a real `cat /dev/urandom` in a real pane.
 //!
-//! **Scope note, honestly stated.** In this build no grid bytes cross the
-//! socket — the damage pump exists and is proven at the unit level
-//! (`amx-server/tests/flow_control.rs`), but no control method binds a stream
-//! channel yet, so an attached client paints chrome over an empty model.
-//! "Identical grid" and "uncorrupted grid" are therefore asserted at the
-//! strongest layer the wire offers today: the rasterized screen two clients
-//! actually paint, plus the server-side facts (same session, same pane
-//! processes, bounded memory) that make the eventual cell-level comparison
-//! meaningful. When stream binding lands, these tests tighten rather than
-//! change shape.
+//! Grid bytes cross the socket in this build, so "identical grid" and
+//! "uncorrupted grid" are claims about content: every compared screen first
+//! shows a marker typed into the pane and echoed back through its shell, so
+//! two equally blank frames can never satisfy an equality assertion.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
@@ -24,7 +18,7 @@ use amx_server::session::probe::{Probe, probe};
 use rig::env::processes_with_arg;
 use rig::screen::render;
 use rig::wire::{split_running, workspace_with_root};
-use rig::{ALT_ENTER, ALT_LEAVE, Env, Screen, Wire, rasterize, result_of, wait_until};
+use rig::{ALT_ENTER, ALT_LEAVE, Env, Screen, Wire, rasterize, result_of, shows, wait_until};
 use serde_json::json;
 
 const ROWS: u16 = 24;
@@ -61,18 +55,23 @@ async fn kill_dash_9_the_client_then_reattach_yields_an_identical_grid() {
     let mut first = env.attach_on_tty(&[], ROWS, COLS);
     first.wait_for(ALT_ENTER);
     first.wait_output("a fully painted frame", |seen| painted(&rasterize(seen)));
-    let before = rasterize(first.output());
     let session = session_id(&env);
 
-    // Give the session something to lose: a pane running a real process.
+    // Give the session something to lose — a process started by typing into
+    // the seeded shell — and the grid something no blank frame fakes. `read`
+    // keeps the shell, and the marker in its argv, alive.
     let marker = marker("kill9");
-    let mut wire = Wire::connect(&env.socket()).await;
-    wire.hello(window()).await;
-    let (_workspace, root) = workspace_with_root(&mut wire).await;
-    let _pane = split_running(&mut wire, root, &["sh", "-c", "cat; true", &marker]).await;
-    wait_until("the pane's process appears", || {
+    first.type_line(&format!("sh -c 'echo held; read _held' {marker}"));
+    first.wait_output("the child's output to render", |seen| shows(seen, "held"));
+    wait_until("the typed process appears", || {
         processes_with_arg(&marker) == 1
     });
+    let before = first.wait_settled();
+    assert!(
+        render(&before).contains(&marker),
+        "the baseline grid is non-blank and holds the marker:\n{}",
+        render(&before)
+    );
 
     // kill -9. No detach, no goodbye, no chance to clean up.
     first.kill_dash_9();
@@ -124,7 +123,15 @@ async fn reattach_from_a_second_terminal_while_the_first_is_live() {
     let mut first = env.attach_on_tty(&[], ROWS, COLS);
     first.wait_for(ALT_ENTER);
     first.wait_output("a fully painted frame", |seen| painted(&rasterize(seen)));
-    let screen = rasterize(first.output());
+    first.type_line("printf 'ok-%s\\n' two-terms-mark");
+    first.wait_output("the marker to render", |seen| {
+        shows(seen, "ok-two-terms-mark")
+    });
+    let screen = first.wait_settled();
+    assert!(
+        render(&screen).contains("ok-two-terms-mark"),
+        "the shared baseline is non-blank"
+    );
 
     // The second terminal attaches while the first is still attached — no
     // takeover, no eviction, both connections live at once.
@@ -171,12 +178,27 @@ async fn flow_control_urandom_pane_with_stalled_client_bounds_memory_and_preserv
     let env = Env::new("flood");
     let server = env.server();
 
+    // A real client watching the seeded workspace throughout, with content of
+    // its own on screen so "uncorrupted" is a claim about something. It
+    // attaches before the flood's workspace exists, so its screen owes the
+    // flood pane nothing.
+    let mut live = env.attach_on_tty(&[], ROWS, COLS);
+    live.wait_for(ALT_ENTER);
+    live.wait_output("a fully painted frame", |seen| painted(&rasterize(seen)));
+    live.type_line("printf 'ok-%s\\n' flood-mark");
+    live.wait_output("the marker to render", |seen| shows(seen, "ok-flood-mark"));
+    let baseline_screen = live.wait_settled();
+    assert!(
+        render(&baseline_screen).contains("ok-flood-mark"),
+        "the watched screen is non-blank before the flood"
+    );
+
     // A control-plane client that keeps behaving.
     let mut control = Wire::connect(&env.socket()).await;
     control.hello(window()).await;
     let (workspace, root) = workspace_with_root(&mut control).await;
 
-    // The adversarial pane from the M0 exit criterion.
+    // The adversarial pane from the M0 exit criterion, in its own workspace.
     let marker = marker("flood");
     let _flood = split_running(
         &mut control,
@@ -193,12 +215,6 @@ async fn flow_control_urandom_pane_with_stalled_client_bounds_memory_and_preserv
     for id in 0..32_u64 {
         stalled.send_request(100 + id, "ping", json!({})).await;
     }
-
-    // A real client watching the session throughout.
-    let mut live = env.attach_on_tty(&[], ROWS, COLS);
-    live.wait_for(ALT_ENTER);
-    live.wait_output("a fully painted frame", |seen| painted(&rasterize(seen)));
-    let baseline_screen = rasterize(live.output());
 
     // Observe: one second of warm-up, then the bound holds while the flood
     // keeps running. The interval is a sampling cadence, not a wait — every
