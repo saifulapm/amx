@@ -1,10 +1,9 @@
 //! How one cell is packed on the grid stream.
 //!
-//! [`Cells`](amx_proto::stream::Cells) is deliberately opaque — "the packed
-//! layout is defined by the codec, not by this type" — so the layout lives
-//! here, next to the encoder that produces it, in the same hand-rolled
-//! little-endian style as the frame header and
-//! [`history::pack`](crate::history::pack). Readable in a hex dump is the point.
+//! [`Cells`](crate::stream::Cells) is deliberately opaque — "the packed layout
+//! is defined by the codec, not by this type" — so the layout lives here, in
+//! the same hand-rolled little-endian style as the frame header. Readable in a
+//! hex dump is the point.
 //!
 //! ```text
 //! cell := u8  flags
@@ -22,14 +21,18 @@
 //!         text bytes (UTF-8, one grapheme cluster; empty for a blank cell)
 //! ```
 //!
-//! Colours are presence-flagged rather than sent as a sentinel because
-//! `None` means "the frame default", which the client resolves against its own
+//! Colours are presence-flagged rather than sent as a sentinel because `None`
+//! means "the frame default", which the client resolves against its own
 //! palette; a sentinel RGB would make the default unrepresentable. The text
-//! length escapes to 16 bits because a grapheme cluster has no small bound —
-//! [`TextRef`](amx_vt::TextRef) already carries a `u16` — while the
-//! overwhelmingly common cell is one ASCII byte and pays one length byte.
-
-use amx_vt::{Cell, CellWide, Rgb, Row, Style, Underline};
+//! length escapes to 16 bits because a grapheme cluster has no small bound,
+//! while the overwhelmingly common cell is one ASCII byte and pays one length
+//! byte.
+//!
+//! The types here are the *wire's* vocabulary, not any terminal library's: the
+//! server maps its terminal cells into a [`CellRef`] at encode time (a field
+//! copy, no allocation), and the client reads [`PackedCell`]s out. `amx-proto`
+//! depends on `amx-core` alone, so this is the one cell model both sides of
+//! the socket can share.
 
 use super::codec::{CodecError, Reader};
 
@@ -49,8 +52,99 @@ const FLAG_RESERVED: u8 = 0b1100_0000;
 /// A text length of 0xff means the real length follows as a `u16`.
 const TEXT_ESCAPE: u8 = u8::MAX;
 
+/// Where the underline style sits in the style word.
+const UNDERLINE_SHIFT: u32 = 8;
+/// How wide the underline style field is.
+const UNDERLINE_MASK: u16 = 0b111;
+
+/// A direct colour, as the wire carries it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Rgb {
+    /// Red.
+    pub r: u8,
+    /// Green.
+    pub g: u8,
+    /// Blue.
+    pub b: u8,
+}
+
+/// A cell's width class.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum CellWide {
+    /// One column.
+    #[default]
+    Narrow,
+    /// Two columns; the next cell is its spacer tail.
+    Wide,
+    /// The second column of a wide cell.
+    SpacerTail,
+    /// A spacer before a wide cell that would have straddled the margin.
+    SpacerHead,
+}
+
+impl CellWide {
+    /// Every width class, for exhaustive round-trip tests.
+    pub const ALL: &'static [Self] =
+        &[Self::Narrow, Self::Wide, Self::SpacerTail, Self::SpacerHead];
+}
+
+/// An underline style.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum Underline {
+    /// No underline.
+    #[default]
+    None,
+    /// A single line.
+    Single,
+    /// A double line.
+    Double,
+    /// A curly line.
+    Curly,
+    /// A dotted line.
+    Dotted,
+    /// A dashed line.
+    Dashed,
+}
+
+impl Underline {
+    /// Every underline style, for exhaustive round-trip tests.
+    pub const ALL: &'static [Self] = &[
+        Self::None,
+        Self::Single,
+        Self::Double,
+        Self::Curly,
+        Self::Dotted,
+        Self::Dashed,
+    ];
+}
+
+/// The SGR attributes one cell carries.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct CellStyle {
+    /// Bold.
+    pub bold: bool,
+    /// Italic.
+    pub italic: bool,
+    /// Faint.
+    pub faint: bool,
+    /// Blink.
+    pub blink: bool,
+    /// Inverse video.
+    pub inverse: bool,
+    /// Invisible.
+    pub invisible: bool,
+    /// Struck through.
+    pub strikethrough: bool,
+    /// Overlined.
+    pub overline: bool,
+    /// Underline style.
+    pub underline: Underline,
+    /// Underline colour; `None` follows the foreground.
+    pub underline_color: Option<Rgb>,
+}
+
 /// Bit positions of the boolean attributes inside the style word.
-const STYLE_BITS: [fn(&Style) -> bool; 8] = [
+const STYLE_BITS: [fn(&CellStyle) -> bool; 8] = [
     |style| style.bold,
     |style| style.italic,
     |style| style.faint,
@@ -61,57 +155,50 @@ const STYLE_BITS: [fn(&Style) -> bool; 8] = [
     |style| style.overline,
 ];
 
-/// Where the underline style sits in the style word.
-const UNDERLINE_SHIFT: u32 = 8;
-/// How wide the underline style field is.
-const UNDERLINE_MASK: u16 = 0b111;
-
-/// One decoded cell, owned.
+/// One cell as the encoder sees it: borrowed text, copied attributes.
 ///
-/// The encoder never builds one of these — it writes straight out of the
-/// published snapshot — so this type exists for the receiving side: the client,
-/// and the replay that
-/// `no_client_grid_is_corrupted_after_coalescing` compares against the server's
-/// own grid.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PackedCell {
-    /// The grapheme cluster, empty for a blank cell.
-    pub text: String,
-    /// Narrow, wide, or a spacer.
+/// Borrowed because encoding runs on the server's hot path — the text bytes
+/// come straight out of the published snapshot and are never copied before
+/// they land in the output buffer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CellRef<'a> {
+    /// The grapheme cluster's UTF-8 bytes; empty for a blank cell.
+    pub text: &'a [u8],
+    /// Width class.
     pub wide: CellWide,
     /// Resolved foreground; `None` is the frame default.
     pub foreground: Option<Rgb>,
     /// Resolved background; `None` is the frame default.
     pub background: Option<Rgb>,
     /// SGR attributes.
-    pub style: Style,
+    pub style: CellStyle,
 }
 
-impl PackedCell {
-    /// The cell a snapshot holds, in the form the wire carries it.
-    ///
-    /// The reference point for cell-for-cell comparison: whatever this returns
-    /// for the server's grid is exactly what a client replaying the stream must
-    /// end up holding.
-    #[must_use]
-    pub fn of(row: &Row, cell: &Cell) -> Self {
-        Self {
-            text: String::from_utf8_lossy(row.text(cell)).into_owned(),
-            wide: cell.wide,
-            foreground: cell.foreground,
-            background: cell.background,
-            style: cell.style,
-        }
-    }
-}
-
-/// Append one cell of `row` to `out`.
+/// One decoded cell, owned.
 ///
-/// Appends only: the caller owns `out` and reuses it across frames, so encoding
-/// a cell allocates exactly as often as the buffer needs to grow, which after
-/// the first few frames is never.
-pub fn encode(row: &Row, cell: &Cell, out: &mut Vec<u8>) {
-    let styled = cell.style != Style::default();
+/// What the receiving side holds: the client's grid cache, and any replay that
+/// compares an emitted stream against the grid it was read from.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackedCell {
+    /// The grapheme cluster, empty for a blank cell.
+    pub text: String,
+    /// Width class.
+    pub wide: CellWide,
+    /// Resolved foreground; `None` is the frame default.
+    pub foreground: Option<Rgb>,
+    /// Resolved background; `None` is the frame default.
+    pub background: Option<Rgb>,
+    /// SGR attributes.
+    pub style: CellStyle,
+}
+
+/// Append one cell to `out`.
+///
+/// Appends only: the caller owns `out` and reuses it across frames, so
+/// encoding a cell allocates exactly as often as the buffer needs to grow,
+/// which after the first few frames is never.
+pub fn encode(cell: &CellRef<'_>, out: &mut Vec<u8>) {
+    let styled = cell.style != CellStyle::default();
     let mut flags = width_code(cell.wide);
     if styled {
         flags |= FLAG_STYLED;
@@ -137,9 +224,8 @@ pub fn encode(row: &Row, cell: &Cell, out: &mut Vec<u8>) {
         out.extend_from_slice(&[rgb.r, rgb.g, rgb.b]);
     }
 
-    let text = row.text(cell);
     // A grapheme cluster is bounded by the snapshot's own `u16` text length.
-    let len = u16::try_from(text.len()).unwrap_or(u16::MAX);
+    let len = u16::try_from(cell.text.len()).unwrap_or(u16::MAX);
     if len < u16::from(TEXT_ESCAPE) {
         // The `as` narrowing is exact: the branch proves the value fits.
         #[allow(clippy::cast_possible_truncation, reason = "len < 0xff on this arm")]
@@ -148,7 +234,7 @@ pub fn encode(row: &Row, cell: &Cell, out: &mut Vec<u8>) {
         out.push(TEXT_ESCAPE);
         out.extend_from_slice(&len.to_le_bytes());
     }
-    out.extend_from_slice(&text[..usize::from(len)]);
+    out.extend_from_slice(&cell.text[..usize::from(len)]);
 }
 
 /// Read one cell out of `reader`.
@@ -226,7 +312,7 @@ const fn width_of(code: u8) -> CellWide {
 }
 
 /// Pack the attributes into the style word.
-fn style_word(style: &Style) -> u16 {
+fn style_word(style: &CellStyle) -> u16 {
     let mut word = 0_u16;
     for (bit, read) in STYLE_BITS.iter().enumerate() {
         if read(style) {
@@ -236,8 +322,8 @@ fn style_word(style: &Style) -> u16 {
     word | (underline_code(style.underline) << UNDERLINE_SHIFT)
 }
 
-fn style_of(word: u16, underline_color: Option<Rgb>) -> Style {
-    Style {
+fn style_of(word: u16, underline_color: Option<Rgb>) -> CellStyle {
+    CellStyle {
         bold: word & 1 != 0,
         italic: word & (1 << 1) != 0,
         faint: word & (1 << 2) != 0,
@@ -298,7 +384,7 @@ mod tests {
 
     #[test]
     fn every_attribute_survives_the_style_word() {
-        let style = Style {
+        let style = CellStyle {
             bold: true,
             italic: true,
             faint: true,
@@ -312,5 +398,27 @@ mod tests {
         };
         let word = style_word(&style);
         assert_eq!(style_of(word, style.underline_color), style);
+    }
+
+    #[test]
+    fn a_full_cell_round_trips() {
+        let cell = CellRef {
+            text: "\u{4f60}".as_bytes(),
+            wide: CellWide::Wide,
+            foreground: Some(Rgb { r: 250, g: 0, b: 7 }),
+            background: None,
+            style: CellStyle {
+                bold: true,
+                ..CellStyle::default()
+            },
+        };
+        let mut bytes = Vec::new();
+        encode(&cell, &mut bytes);
+        let decoded = decode(&mut Reader::new(&bytes)).expect("the cell decodes");
+        assert_eq!(decoded.text, "\u{4f60}");
+        assert_eq!(decoded.wide, CellWide::Wide);
+        assert_eq!(decoded.foreground, cell.foreground);
+        assert_eq!(decoded.background, None);
+        assert!(decoded.style.bold);
     }
 }

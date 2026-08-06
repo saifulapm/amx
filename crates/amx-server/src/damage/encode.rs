@@ -30,9 +30,12 @@ use amx_core::GridGeneration;
 use amx_proto::stream::DamageRect;
 use amx_vt::Snapshot;
 
-use super::codec::{self, CURSOR_BYTES, RECT_BYTES, TAG_DELTA, TAG_RESET};
+use amx_proto::stream::cell;
+use amx_proto::stream::{Cells, GridMessage};
+
+use super::DamageError;
+use super::codec::{self, CURSOR_BYTES, RECT_BYTES};
 use super::dirty::DirtySet;
-use super::{DamageError, cell};
 
 /// Bytes before the rect list: the tag and the generation.
 const DELTA_PREFIX: usize = 1 + 8;
@@ -126,15 +129,14 @@ impl Encoder {
         }
 
         self.payload.clear();
-        self.payload.push(TAG_RESET);
-        self.payload
-            .extend_from_slice(&generation.get().to_le_bytes());
-        self.payload
-            .extend_from_slice(&snapshot.rows().to_le_bytes());
-        self.payload
-            .extend_from_slice(&snapshot.cols().to_le_bytes());
-        codec::put_cursor(codec::cursor_of(snapshot.cursor()), &mut self.payload);
-        self.put_cells();
+        GridMessage::Reset {
+            generation,
+            rows: snapshot.rows(),
+            cols: snapshot.cols(),
+            cells: Cells::new(&self.cells),
+            cursor: codec::cursor_of(snapshot.cursor()),
+        }
+        .encode(&mut self.payload);
         Ok(())
     }
 
@@ -190,18 +192,13 @@ impl Encoder {
         self.rects_from_covered(snapshot.cols());
 
         self.payload.clear();
-        self.payload.push(TAG_DELTA);
-        self.payload
-            .extend_from_slice(&generation.get().to_le_bytes());
-        // The rect list is built from covered rows, so its length is bounded by
-        // them and cannot overflow the count field.
-        let count = u16::try_from(self.rects.len()).unwrap_or(u16::MAX);
-        self.payload.extend_from_slice(&count.to_le_bytes());
-        for rect in self.rects.iter().take(usize::from(count)) {
-            codec::put_rect(*rect, &mut self.payload);
+        GridMessage::Delta {
+            generation,
+            rects: &self.rects,
+            cells: Cells::new(&self.cells),
+            cursor: codec::cursor_of(snapshot.cursor()),
         }
-        codec::put_cursor(codec::cursor_of(snapshot.cursor()), &mut self.payload);
-        self.put_cells();
+        .encode(&mut self.payload);
         Ok(())
     }
 
@@ -211,8 +208,7 @@ impl Encoder {
         self.covered.clear();
         self.complete = true;
         self.payload.clear();
-        self.payload.push(codec::TAG_CURSOR);
-        codec::put_cursor(codec::cursor_of(snapshot.cursor()), &mut self.payload);
+        GridMessage::Cursor(codec::cursor_of(snapshot.cursor())).encode(&mut self.payload);
     }
 
     /// Append one row's cells to the scratch, count first.
@@ -235,7 +231,7 @@ impl Encoder {
             return;
         };
         for cell in &cells[..usize::from(count)] {
-            cell::encode(row, cell, &mut self.cells);
+            cell::encode(&codec::wire_cell(row, cell), &mut self.cells);
         }
     }
 
@@ -253,13 +249,5 @@ impl Encoder {
                 }),
             }
         }
-    }
-
-    /// Append the packed cells with their length prefix.
-    fn put_cells(&mut self) {
-        // Cell bytes are bounded by the frame cap, itself a `u32` on the wire.
-        let len = u32::try_from(self.cells.len()).unwrap_or(u32::MAX);
-        self.payload.extend_from_slice(&len.to_le_bytes());
-        self.payload.extend_from_slice(&self.cells[..len as usize]);
     }
 }

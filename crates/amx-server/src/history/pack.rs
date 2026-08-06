@@ -10,10 +10,10 @@
 //! the rest of the wire encodings, so the goldens stay readable.
 //!
 //! **Provisional:** rows carry their characters and their soft-wrap flag, not
-//! their styling. `amx-proto`'s packed cell layout does not exist yet (T04/T11
-//! own it), and inventing a second one here would leave two to migrate.
-//! Scrollback therefore renders unstyled in the client until that layout lands;
-//! this is the only place that has to change.
+//! their styling; scrollback renders unstyled in the client. The row layout
+//! itself is `amx_proto::stream::history`'s — this module only reads a row out
+//! of the terminal and hands it to that one writer, so the bytes served and
+//! the bytes a client unpacks can never disagree.
 
 use amx_core::RowHash;
 use amx_vt::{Point, Terminal};
@@ -22,9 +22,6 @@ use amx_vt::{Point, Terminal};
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 /// The FNV-1a 64-bit prime.
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-/// Bit 0 of a row's flag byte: the row soft-wraps into the next one.
-const FLAG_WRAPPED: u8 = 1 << 0;
 
 /// One row's packed bytes.
 ///
@@ -53,13 +50,7 @@ impl RowPack {
     ) -> amx_vt::Result<()> {
         scratch.clear();
         let read = terminal.read_row(Point::history(offset), scratch)?;
-        let text = scratch.as_bytes();
-        // A row cannot be longer than the grid is wide times the longest
-        // grapheme cluster; u32 is what the wire encodings use for lengths.
-        let len = u32::try_from(text.len()).unwrap_or(u32::MAX);
-        out.extend_from_slice(&len.to_le_bytes());
-        out.extend_from_slice(&text[..len as usize]);
-        out.push(u8::from(read.wrapped) * FLAG_WRAPPED);
+        amx_proto::stream::history::put_row(scratch.as_bytes(), read.wrapped, out);
         Ok(())
     }
 }

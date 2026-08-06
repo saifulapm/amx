@@ -1,89 +1,19 @@
-//! The grid stream's byte layout: message tags, the cursor, and a reader.
+//! Adapters from libghostty-vt's cell model to the wire's.
 //!
-//! Hand-rolled little-endian, like every other amx wire encoding, so the bytes
-//! stay legible in a dump and in a golden. The shape of a message is:
-//!
-//! ```text
-//! message  := u8 tag, body
-//!
-//! 0 reset  := u64 generation, u16 rows, u16 cols, cursor,
-//!             u32 cell byte count, rows            (every row, top to bottom)
-//! 1 delta  := u64 generation, u16 rect count, rects, cursor,
-//!             u32 cell byte count, rows      (the rects' rows, in rect order)
-//! 2 scroll := u64 first row id, u64 last row id, u32 count, u64 hash × count
-//! 3 cursor := cursor
-//!
-//! row      := u16 cell count, cells
-//! rect     := u16 row, u16 col, u16 rows, u16 cols
-//! cursor   := u16 row, u16 col, u8 flags (bit 0 visible, bit 1 blink),
-//!             u8 shape (0 block, 1 underline, 2 bar)
-//! ```
-//!
-//! The cell byte count is carried explicitly even though the rects imply how
-//! many rows follow, because a cell is variable width: without it a decoder
-//! that disagreed about a cell's length would silently mis-parse the rest of
-//! the frame instead of failing at a known boundary. Rows carry their own cell
-//! count for the same reason — a row need not be exactly `cols` cells wide.
-//!
-//! This lives in `amx-server` and not in `amx-proto` because
-//! [`GridMessage::encode`](amx_proto::stream::GridMessage::encode) is still
-//! `todo!()` and its `decode` counterpart cannot be written as declared — see
-//! the module docs of [`crate::damage`].
+//! The grid stream's byte layout lives in `amx-proto` (`stream::{codec, cell,
+//! grid}`) so server and client decode one implementation. What remains here
+//! is the seam `amx-proto` cannot own: mapping `amx-vt`'s snapshot types into
+//! the wire vocabulary, one exhaustive match per enum so a re-vendor that
+//! grows a variant is a compile error at the mapping site.
 
-use amx_proto::stream::{Cursor, CursorShape, DamageRect};
+use amx_proto::stream::cell::{CellRef, CellStyle, CellWide, PackedCell, Rgb, Underline};
+use amx_proto::stream::{Cursor, CursorShape};
 use amx_vt::CursorStyle;
-use thiserror::Error;
 
-/// A keyframe: the whole visible grid.
-pub const TAG_RESET: u8 = 0;
-/// An incremental update over a rect list.
-pub const TAG_DELTA: u8 = 1;
-/// Rows that left the live grid.
-pub const TAG_SCROLLED: u8 = 2;
-/// The cursor moved and nothing else did.
-pub const TAG_CURSOR: u8 = 3;
-
-/// Bytes one rect occupies.
-pub const RECT_BYTES: usize = 8;
-/// Bytes one cursor occupies.
-pub const CURSOR_BYTES: usize = 6;
-
-/// The cursor is drawn.
-const CURSOR_VISIBLE: u8 = 1 << 0;
-/// The cursor blinks.
-const CURSOR_BLINK: u8 = 1 << 1;
-
-/// A grid stream payload could not be read.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Error)]
-pub enum CodecError {
-    /// The payload ended before the message did.
-    #[error("grid message truncated: wanted {wanted} more bytes, {left} left")]
-    Truncated {
-        /// Bytes the next field needs.
-        wanted: usize,
-        /// Bytes still in the payload.
-        left: usize,
-    },
-    /// The tag byte names a message this build does not know.
-    #[error("unknown grid message tag {tag}")]
-    UnknownTag {
-        /// The tag that arrived.
-        tag: u8,
-    },
-    /// A cell set a flag bit no version of the layout has defined.
-    #[error("cell flags {flags:#010b} set a reserved bit")]
-    Reserved {
-        /// The flags byte.
-        flags: u8,
-    },
-    /// A cell's text was not UTF-8.
-    #[error("cell text is not utf-8")]
-    BadText,
-    /// The message declared more cell bytes than it carried, or fewer than its
-    /// rects need.
-    #[error("cell payload does not match the rects it belongs to")]
-    CellMismatch,
-}
+pub use amx_proto::stream::codec::{
+    CURSOR_BYTES, CodecError, RECT_BYTES, Reader, put_cursor, put_rect,
+};
+pub use amx_proto::stream::grid::{TAG_CURSOR, TAG_DELTA, TAG_RESET, TAG_SCROLLED};
 
 /// A cursor position on the wire.
 ///
@@ -107,190 +37,74 @@ pub fn cursor_of(cursor: amx_vt::Cursor) -> Cursor {
     }
 }
 
-/// Append a cursor.
-pub fn put_cursor(cursor: Cursor, out: &mut Vec<u8>) {
-    out.extend_from_slice(&cursor.row.to_le_bytes());
-    out.extend_from_slice(&cursor.col.to_le_bytes());
-    out.push(u8::from(cursor.visible) * CURSOR_VISIBLE + u8::from(cursor.blink) * CURSOR_BLINK);
-    out.push(match cursor.shape {
-        CursorShape::Block => 0,
-        CursorShape::Underline => 1,
-        CursorShape::Bar => 2,
-    });
-}
-
-/// Append a damage rect.
-pub fn put_rect(rect: DamageRect, out: &mut Vec<u8>) {
-    out.extend_from_slice(&rect.row.to_le_bytes());
-    out.extend_from_slice(&rect.col.to_le_bytes());
-    out.extend_from_slice(&rect.rows.to_le_bytes());
-    out.extend_from_slice(&rect.cols.to_le_bytes());
-}
-
-/// A cursor over a payload that never reads past its end.
-#[derive(Clone, Copy, Debug)]
-pub struct Reader<'a> {
-    bytes: &'a [u8],
-    at: usize,
-}
-
-impl<'a> Reader<'a> {
-    /// Read `bytes` from the start.
-    #[must_use]
-    pub const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, at: 0 }
-    }
-
-    /// Bytes not yet read.
-    #[must_use]
-    pub const fn left(&self) -> usize {
-        self.bytes.len() - self.at
-    }
-
-    /// Whether the payload is exhausted.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.left() == 0
-    }
-
-    /// Take `n` bytes.
-    ///
-    /// # Errors
-    ///
-    /// [`CodecError::Truncated`] if fewer than `n` remain.
-    pub fn take(&mut self, n: usize) -> Result<&'a [u8], CodecError> {
-        let end = self.at.checked_add(n).ok_or(CodecError::Truncated {
-            wanted: n,
-            left: self.left(),
-        })?;
-        let slice = self.bytes.get(self.at..end).ok_or(CodecError::Truncated {
-            wanted: n,
-            left: self.left(),
-        })?;
-        self.at = end;
-        Ok(slice)
-    }
-
-    /// Read one byte.
-    ///
-    /// # Errors
-    ///
-    /// [`CodecError::Truncated`] at the end of the payload.
-    pub fn u8(&mut self) -> Result<u8, CodecError> {
-        Ok(self.take(1)?[0])
-    }
-
-    /// Read a little-endian `u16`.
-    ///
-    /// # Errors
-    ///
-    /// [`CodecError::Truncated`] at the end of the payload.
-    pub fn u16(&mut self) -> Result<u16, CodecError> {
-        Ok(u16::from_le_bytes(fixed(self.take(2)?)))
-    }
-
-    /// Read a little-endian `u32`.
-    ///
-    /// # Errors
-    ///
-    /// [`CodecError::Truncated`] at the end of the payload.
-    pub fn u32(&mut self) -> Result<u32, CodecError> {
-        Ok(u32::from_le_bytes(fixed(self.take(4)?)))
-    }
-
-    /// Read a little-endian `u64`.
-    ///
-    /// # Errors
-    ///
-    /// [`CodecError::Truncated`] at the end of the payload.
-    pub fn u64(&mut self) -> Result<u64, CodecError> {
-        Ok(u64::from_le_bytes(fixed(self.take(8)?)))
-    }
-
-    /// Read a cursor.
-    ///
-    /// # Errors
-    ///
-    /// [`CodecError::Truncated`] if the payload ends inside it.
-    pub fn cursor(&mut self) -> Result<Cursor, CodecError> {
-        let row = self.u16()?;
-        let col = self.u16()?;
-        let flags = self.u8()?;
-        let shape = self.u8()?;
-        Ok(Cursor {
-            row,
-            col,
-            visible: flags & CURSOR_VISIBLE != 0,
-            blink: flags & CURSOR_BLINK != 0,
-            shape: match shape {
-                1 => CursorShape::Underline,
-                2 => CursorShape::Bar,
-                // Anything else is a shape this build does not draw; a block is
-                // the DECSCUSR reset value and the safe fallback.
-                _ => CursorShape::Block,
-            },
-        })
-    }
-
-    /// Read a damage rect.
-    ///
-    /// # Errors
-    ///
-    /// [`CodecError::Truncated`] if the payload ends inside it.
-    pub fn rect(&mut self) -> Result<DamageRect, CodecError> {
-        Ok(DamageRect {
-            row: self.u16()?,
-            col: self.u16()?,
-            rows: self.u16()?,
-            cols: self.u16()?,
-        })
+/// One snapshot cell in the wire's borrowed form, ready to encode.
+#[must_use]
+pub fn wire_cell<'a>(row: &'a amx_vt::Row, cell: &'a amx_vt::Cell) -> CellRef<'a> {
+    CellRef {
+        text: row.text(cell),
+        wide: wide_of(cell.wide),
+        foreground: cell.foreground.map(rgb_of),
+        background: cell.background.map(rgb_of),
+        style: style_of(&cell.style),
     }
 }
 
-/// Widen a slice the caller just proved is exactly `N` bytes long.
-fn fixed<const N: usize>(bytes: &[u8]) -> [u8; N] {
-    let mut out = [0_u8; N];
-    out.copy_from_slice(bytes);
-    out
+/// The cell a snapshot holds, in the owned form the wire decodes to.
+///
+/// The reference point for cell-for-cell comparison: whatever this returns for
+/// the server's grid is exactly what a client replaying the stream must end up
+/// holding.
+#[must_use]
+pub fn expected_cell(row: &amx_vt::Row, cell: &amx_vt::Cell) -> PackedCell {
+    let wire = wire_cell(row, cell);
+    PackedCell {
+        text: String::from_utf8_lossy(wire.text).into_owned(),
+        wide: wire.wide,
+        foreground: wire.foreground,
+        background: wire.background,
+        style: wire.style,
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_short_payload_is_truncated_not_a_panic() {
-        let mut reader = Reader::new(&[1, 2, 3]);
-        assert_eq!(reader.u16(), Ok(0x0201));
-        assert!(matches!(reader.u32(), Err(CodecError::Truncated { .. })));
+const fn rgb_of(rgb: amx_vt::Rgb) -> Rgb {
+    Rgb {
+        r: rgb.r,
+        g: rgb.g,
+        b: rgb.b,
     }
+}
 
-    #[test]
-    fn a_cursor_round_trips() {
-        let cursor = Cursor {
-            row: 7,
-            col: 42,
-            visible: true,
-            shape: CursorShape::Bar,
-            blink: true,
-        };
-        let mut bytes = Vec::new();
-        put_cursor(cursor, &mut bytes);
-        assert_eq!(bytes.len(), CURSOR_BYTES);
-        assert_eq!(Reader::new(&bytes).cursor(), Ok(cursor));
+const fn wide_of(wide: amx_vt::CellWide) -> CellWide {
+    match wide {
+        amx_vt::CellWide::Narrow => CellWide::Narrow,
+        amx_vt::CellWide::Wide => CellWide::Wide,
+        amx_vt::CellWide::SpacerTail => CellWide::SpacerTail,
+        amx_vt::CellWide::SpacerHead => CellWide::SpacerHead,
     }
+}
 
-    #[test]
-    fn a_rect_round_trips() {
-        let rect = DamageRect {
-            row: 3,
-            col: 0,
-            rows: 9,
-            cols: 80,
-        };
-        let mut bytes = Vec::new();
-        put_rect(rect, &mut bytes);
-        assert_eq!(bytes.len(), RECT_BYTES);
-        assert_eq!(Reader::new(&bytes).rect(), Ok(rect));
+const fn underline_of(underline: amx_vt::Underline) -> Underline {
+    match underline {
+        amx_vt::Underline::None => Underline::None,
+        amx_vt::Underline::Single => Underline::Single,
+        amx_vt::Underline::Double => Underline::Double,
+        amx_vt::Underline::Curly => Underline::Curly,
+        amx_vt::Underline::Dotted => Underline::Dotted,
+        amx_vt::Underline::Dashed => Underline::Dashed,
+    }
+}
+
+fn style_of(style: &amx_vt::Style) -> CellStyle {
+    CellStyle {
+        bold: style.bold,
+        italic: style.italic,
+        faint: style.faint,
+        blink: style.blink,
+        inverse: style.inverse,
+        invisible: style.invisible,
+        strikethrough: style.strikethrough,
+        overline: style.overline,
+        underline: underline_of(style.underline),
+        underline_color: style.underline_color.map(rgb_of),
     }
 }
