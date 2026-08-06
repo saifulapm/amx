@@ -227,8 +227,9 @@ impl Terminal {
             }
             assert!(
                 Instant::now() < deadline,
-                "timed out waiting for {what} ({} bytes seen)",
-                self.seen.len()
+                "timed out waiting for {what} ({} bytes seen):\n{}",
+                self.seen.len(),
+                String::from_utf8_lossy(&self.seen)
             );
             std::thread::sleep(TICK);
         }
