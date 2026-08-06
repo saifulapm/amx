@@ -1,0 +1,137 @@
+//! Platform probes for the rig: the process table, memory, ingestion.
+//!
+//! Tier 1 is Linux and macOS (03 §design principles), and a probe that
+//! quietly answers wrong on one of them converts a porting gap into a 10s
+//! timeout — or worse, a green test. So every probe here either answers from
+//! the platform's real source, degrades *loudly* (an `Option` the caller must
+//! acknowledge), or panics naming the gap.
+
+#[cfg(target_os = "macos")]
+use std::process::Command;
+
+/// A process's resident set size in bytes.
+///
+/// Linux reads `statm` (pages, scaled by the real page size — arm64 kernels
+/// run 16K and 64K pages, so 4096 must not be assumed); macOS asks `ps`,
+/// whose `rss=` column is kilobytes.
+#[must_use]
+pub fn rss_bytes(pid: u32) -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        let statm = std::fs::read_to_string(format!("/proc/{pid}/statm"))
+            .expect("the process has a /proc entry");
+        let resident: u64 = statm
+            .split_whitespace()
+            .nth(1)
+            .expect("statm has a resident field")
+            .parse()
+            .expect("resident is a number");
+        resident * rustix::param::page_size() as u64
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid.to_string()])
+            .output()
+            .expect("run ps");
+        let kilobytes: u64 = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .expect("ps reports a resident size");
+        kilobytes * 1024
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        panic!("unsupported platform probe: rss_bytes has no reader for this OS");
+    }
+}
+
+/// Bytes the process has read from anywhere, or `None` where the platform
+/// cannot say.
+///
+/// Linux answers from `/proc/<pid>/io`, which exists only on kernels built
+/// with `CONFIG_TASK_IO_ACCOUNTING`; macOS has no equivalent the rig can
+/// reach without entitlements. `None` is a loud answer: the caller must
+/// decide what its assertion means without the number, visibly.
+#[must_use]
+pub fn read_bytes(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let path = format!("/proc/{pid}/io");
+        // Availability, not permission: a missing file is a kernel without io
+        // accounting; anything else is still a hard expectation.
+        if !std::path::Path::new(&path).exists() {
+            return None;
+        }
+        let io = std::fs::read_to_string(&path).expect("the io entry is readable");
+        Some(
+            io.lines()
+                .find_map(|line| line.strip_prefix("rchar: "))
+                .expect("io reports rchar")
+                .trim()
+                .parse()
+                .expect("rchar is a number"),
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// How many live processes have `marker` in their argv.
+///
+/// A claim like "the pane's process survived the client dying" is about
+/// processes, and only the process table can attest to it: `/proc` on Linux,
+/// `pgrep -f` on macOS. An unreadable table is a panic, not a zero — a zero
+/// here silently satisfies every "wait until it is gone" and times out every
+/// "wait until it exists".
+#[must_use]
+pub fn processes_with_arg(marker: &str) -> usize {
+    #[cfg(target_os = "linux")]
+    {
+        let entries = std::fs::read_dir("/proc")
+            .expect("unsupported platform probe: /proc is not readable");
+        entries
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                nul_separated(&entry.path().join("cmdline"))
+                    .iter()
+                    .any(|arg| arg.to_string_lossy().contains(marker))
+            })
+            .count()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // `pgrep` exits 1 for "no match", which is an answer, not a failure.
+        let out = Command::new("pgrep")
+            .args(["-f", marker])
+            .output()
+            .expect("run pgrep");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = marker;
+        panic!("unsupported platform probe: processes_with_arg has no reader for this OS");
+    }
+}
+
+/// A `/proc` file of NUL-separated strings.
+#[cfg(target_os = "linux")]
+fn nul_separated(path: &std::path::Path) -> Vec<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let Ok(raw) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    raw.split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| std::ffi::OsString::from_vec(part.to_vec()))
+        .collect()
+}

@@ -254,12 +254,18 @@ async fn flow_control_urandom_pane_with_stalled_client_bounds_memory_and_preserv
 
     // The bound above means nothing unless the flood really flowed: the
     // server must have read megabytes off the pane's pty while its memory
-    // stood still.
-    let ingested = server.read_bytes().saturating_sub(ingested_before);
-    assert!(
-        ingested > 8 * 1024 * 1024,
-        "the server ingested only {ingested} bytes; the flood never reached it"
-    );
+    // stood still. Where the kernel keeps no io accounting the number does
+    // not exist; say so out loud instead of failing on a probe gap.
+    match (ingested_before, server.read_bytes()) {
+        (Some(before), Some(after)) => {
+            let ingested = after.saturating_sub(before);
+            assert!(
+                ingested > 8 * 1024 * 1024,
+                "the server ingested only {ingested} bytes; the flood never reached it"
+            );
+        }
+        _ => eprintln!("io accounting unavailable on this platform; ingestion bound not checked"),
+    }
 
     // The stalled client was neither disconnected nor corrupted: every reply
     // it never read is still there, in order, when it finally reads.
