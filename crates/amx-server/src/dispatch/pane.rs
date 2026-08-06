@@ -57,3 +57,21 @@ pub(super) async fn close(
         .call(|reply| CoreCommand::Pane(PaneCall::Close { params, reply }))
         .await
 }
+
+pub(super) async fn focus(
+    router: &Router,
+    params: pane::FocusParams,
+) -> Result<pane::FocusReply, RpcError> {
+    router
+        .call(|reply| CoreCommand::Pane(PaneCall::Focus { params, reply }))
+        .await
+}
+
+pub(super) async fn resize(
+    router: &Router,
+    params: pane::ResizeParams,
+) -> Result<pane::ResizeReply, RpcError> {
+    router
+        .call(|reply| CoreCommand::Pane(PaneCall::Resize { params, reply }))
+        .await
+}

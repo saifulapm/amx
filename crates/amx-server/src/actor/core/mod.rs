@@ -227,6 +227,12 @@ impl Core {
             CoreCommand::Pane(PaneCall::Close { params, reply }) => {
                 self.handle_pane_close(params, reply);
             }
+            CoreCommand::Pane(PaneCall::Focus { params, reply }) => {
+                self.handle_pane_focus(params, reply);
+            }
+            CoreCommand::Pane(PaneCall::Resize { params, reply }) => {
+                self.handle_pane_resize(params, reply);
+            }
             CoreCommand::Client(ClientCall::Viewport { params: _, reply }) => {
                 let _ = reply.send(Ok(()));
             }

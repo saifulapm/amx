@@ -282,6 +282,87 @@ impl Core {
         }
     }
 
+    pub(super) fn handle_pane_focus(
+        &mut self,
+        params: pane::FocusParams,
+        reply: Reply<pane::FocusReply>,
+    ) {
+        match self
+            .state
+            .move_focus(params.workspace, move_direction(params.direction))
+        {
+            Ok(effect) => {
+                let moved = !matches!(effect, amx_core::Effect::Nothing);
+                self.effects.absorb(effect);
+                let pane = self
+                    .state
+                    .workspace(params.workspace)
+                    .and_then(|w| w.focus());
+                // A bump against the workspace edge changed nothing, so there
+                // is no transition to publish; the reply still reports where
+                // focus (already) is.
+                let seq = if moved {
+                    self.publish(Event::FocusChanged {
+                        workspace: params.workspace,
+                        pane,
+                    })
+                } else {
+                    self.ctx.bus.head()
+                };
+                let _ = reply.send(Ok(pane::FocusReply { pane, seq }));
+            }
+            Err(err) => {
+                let _ = reply.send(Err(RpcError::new(
+                    RpcError::INVALID_PARAMS,
+                    err.to_string(),
+                )));
+            }
+        }
+    }
+
+    pub(super) fn handle_pane_resize(
+        &mut self,
+        params: pane::ResizeParams,
+        reply: Reply<pane::ResizeReply>,
+    ) {
+        if !params.delta.is_finite() || params.delta < 0.0 {
+            let _ = reply.send(Err(RpcError::new(
+                RpcError::INVALID_PARAMS,
+                format!(
+                    "resize delta must be finite and non-negative, got {}",
+                    params.delta
+                ),
+            )));
+            return;
+        }
+        let Some(ws) = self.workspace_of(params.pane) else {
+            let _ = reply.send(Err(Self::no_such_pane(params.pane)));
+            return;
+        };
+        let delta = match params.direction {
+            pane::MoveDirection::Left | pane::MoveDirection::Up => -params.delta,
+            pane::MoveDirection::Right | pane::MoveDirection::Down => params.delta,
+        };
+        match self.state.resize(ws, params.pane, delta) {
+            Ok(effect) => {
+                let resized = !matches!(effect, amx_core::Effect::Nothing);
+                self.effects.absorb(effect);
+                let seq = if resized {
+                    self.publish(Event::LayoutChanged { workspace: ws })
+                } else {
+                    self.ctx.bus.head()
+                };
+                let _ = reply.send(Ok(pane::ResizeReply { resized, seq }));
+            }
+            Err(err) => {
+                let _ = reply.send(Err(RpcError::new(
+                    RpcError::INVALID_PARAMS,
+                    err.to_string(),
+                )));
+            }
+        }
+    }
+
     pub(super) fn handle_pane_close(
         &mut self,
         params: pane::CloseParams,
@@ -314,6 +395,15 @@ fn split_direction(direction: pane::SplitDirection) -> Direction {
     match direction {
         pane::SplitDirection::Vertical => Direction::Right,
         pane::SplitDirection::Horizontal => Direction::Down,
+    }
+}
+
+fn move_direction(direction: pane::MoveDirection) -> Direction {
+    match direction {
+        pane::MoveDirection::Left => Direction::Left,
+        pane::MoveDirection::Down => Direction::Down,
+        pane::MoveDirection::Up => Direction::Up,
+        pane::MoveDirection::Right => Direction::Right,
     }
 }
 
