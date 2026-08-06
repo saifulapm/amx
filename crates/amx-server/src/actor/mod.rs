@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 pub mod core;
 
-use amx_core::{GridGeneration, InvalidationCause, PaneId, RowId, RowRange};
+use amx_core::{GridGeneration, InvalidationCause, PaneId, RowHash, RowId, RowRange};
 use amx_proto::control::{client, pane, session, workspace};
 use amx_proto::rpc::RpcError;
 use amx_vt::SnapshotRef;
@@ -80,7 +80,17 @@ pub enum PaneReport {
         generation: GridGeneration,
     },
     /// Rows were committed to history with stable ids.
-    Committed(RowRange),
+    ///
+    /// `hashes` covers the *last* `hashes.len()` rows of `range` — 04 §3 has
+    /// rows leaving the live grid announced "id + content hash" on the pane's
+    /// delta stream, and hashing is capped per frame so a flood cannot put an
+    /// unbounded cost on the frame path.
+    Committed {
+        /// The rows, in order.
+        range: RowRange,
+        /// Content hashes for the tail of `range`.
+        hashes: Vec<RowHash>,
+    },
     /// History at or beyond `from_row` no longer means what clients cached.
     Invalidated {
         /// First invalid row.

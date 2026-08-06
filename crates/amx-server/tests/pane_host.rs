@@ -129,6 +129,24 @@ impl Harness {
     }
 }
 
+/// Unpack served history rows: `u32` length, text, one flag byte per row
+/// (`amx_server::history`).
+fn unpack(bytes: &[u8]) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut at = 0;
+    while at + 5 <= bytes.len() {
+        let len = u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes")) as usize;
+        at += 4;
+        rows.push(
+            String::from_utf8_lossy(&bytes[at..at + len])
+                .trim_end()
+                .to_owned(),
+        );
+        at += len + 1;
+    }
+    rows
+}
+
 fn shell(script: &str, size: WinSize) -> PtyCommand {
     PtyCommand {
         program: OsString::from("/bin/sh"),
@@ -229,13 +247,10 @@ async fn history_range_command_is_served_from_the_parser_thread() {
         .expect("the parser answered")
         .expect("the range is committed");
 
-    let text: Vec<String> = rows
-        .rows
-        .split(|byte| *byte == b'\n')
-        .map(|row| String::from_utf8_lossy(row).trim_end().to_owned())
-        .filter(|row| !row.is_empty())
-        .collect();
-    assert_eq!(text, ["line 1", "line 2", "line 3", "line 4", "line 5"]);
+    assert_eq!(
+        unpack(&rows.rows),
+        ["line 1", "line 2", "line 3", "line 4", "line 5"]
+    );
     assert_eq!(rows.range.row_count(), Some(5));
 
     let probe = pane.probe();

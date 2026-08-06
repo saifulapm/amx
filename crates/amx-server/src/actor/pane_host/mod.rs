@@ -68,8 +68,12 @@ const DEFAULT_FRAME_INTERVAL: Duration = Duration::from_millis(8);
 /// How many commands may queue for one pane before its sender waits.
 const DEFAULT_MAILBOX: usize = 256;
 
-/// How many rows of scrollback a pane keeps.
-const DEFAULT_SCROLLBACK: usize = 10_000;
+/// How much memory a pane's scrollback may hold.
+///
+/// Bytes, not rows: the vendored library's `max_scrollback` is a memory bound
+/// whatever its header says, and the rows it buys move with the pane's width
+/// (`docs/notes/scrollback-identity.md`).
+const DEFAULT_SCROLLBACK: usize = 4 * 1024 * 1024;
 
 /// Everything one pane host needs to start.
 pub struct PaneHostConfig {
@@ -81,7 +85,7 @@ pub struct PaneHostConfig {
     pub core: Option<CoreHandle>,
     /// Initial grid size. The pty was opened at this size too.
     pub size: WinSize,
-    /// How many rows of scrollback to keep.
+    /// How much memory, in bytes, the scrollback may hold.
     pub max_scrollback: usize,
     /// How long output coalesces before a frame is published.
     pub frame_interval: Duration,
@@ -197,7 +201,7 @@ impl PaneHost {
             pty: pty.clone(),
             probe: probe.clone(),
             frame_interval,
-            cols: size.cols,
+            size,
         });
         let parser_thread = std::thread::Builder::new()
             .name(format!("amx-vt-{}", short(pane)))

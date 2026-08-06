@@ -223,7 +223,10 @@ impl Core {
                 self.effects.absorb(Effect::PaneDamage(pane));
                 self.publish(Event::PaneDamage { pane, generation });
             }
-            PaneReport::Committed(range) => {
+            // The hashes ride the pane's delta stream, not the bus: 04 §3 puts
+            // them next to the rows they describe, and the bus event is the
+            // session-state fact that ids `range` now exist.
+            PaneReport::Committed { range, .. } => {
                 self.publish(Event::HistoryCommitted { pane, range });
             }
             PaneReport::Invalidated { from_row, cause } => {

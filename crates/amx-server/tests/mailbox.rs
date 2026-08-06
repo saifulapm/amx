@@ -2,7 +2,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
-use amx_core::{GridGeneration, InvalidationCause, RowId, RowRange};
+use amx_core::{GridGeneration, InvalidationCause, RowHash, RowId, RowRange};
 use amx_server::actor::{HistoryError, MailboxError, PaneCommand, PaneHandle, PaneReport};
 use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot};
@@ -66,7 +66,10 @@ fn pane_reports_cover_every_transition_the_bus_publishes() {
         PaneReport::Damage {
             generation: GridGeneration::FIRST,
         },
-        PaneReport::Committed(RowRange::single(RowId::FIRST)),
+        PaneReport::Committed {
+            range: RowRange::single(RowId::FIRST),
+            hashes: vec![RowHash::from_raw(0)],
+        },
         PaneReport::Invalidated {
             from_row: RowId::FIRST,
             cause: InvalidationCause::WidthReflow,

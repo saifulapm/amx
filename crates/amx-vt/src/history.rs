@@ -1,18 +1,21 @@
-//! Raw scrollback reads and viewport addressing.
+//! Raw scrollback reads, viewport addressing and row anchors.
 //!
-//! This is deliberately the *minimal* surface the vendored headers support
-//! today, and no more. The scrollback identity model in 04 §3 — monotonic row
-//! ids, an eviction floor, `history.invalidated{from_row}` — is amx-side
-//! bookkeeping that libghostty-vt has no concept of (M0 plan R4), and it is
-//! T12's to design. Nothing here assigns an identity to a row, hashes one,
-//! tracks eviction, or claims a row read twice is the same row.
+//! This is the raw surface only. The scrollback identity model in 04 §3 —
+//! monotonic row ids, an eviction floor, `history.invalidated{from_row}` — is
+//! amx-side bookkeeping that libghostty-vt has no concept of (M0 plan R4), and
+//! it lives in `amx-server`'s `history` module. Nothing here assigns an
+//! identity to a row, hashes one, or claims a row read twice is the same row.
 //!
-//! **What is deliberately not built here:** `RowId` allocation, the eviction
-//! floor, content hashes, invalidation causes, and any notion that a row
-//! survives a reflow. Building them on top of these reads without the T12 spike
-//! would mean inventing an identity the library does not provide.
+//! What this module does provide is the one primitive that model could not be
+//! built without: [`TrackedRow`], an anchor the library keeps pointing at its
+//! cell across scrolls, prunes and reflows. Subtracting an anchor's current
+//! history offset from the id it was anchored with is the only way the C API
+//! offers to tell rows *committed* to history from rows *pruned* off the top.
+//! `docs/notes/scrollback-identity.md` records what the anchors do and do not
+//! guarantee — in particular that an anchor can be alive and point at a
+//! different row than the one it was given.
 //!
-//! ## What the headers do settle (M0 plan R5)
+//! ## What the headers settle (M0 plan R5)
 //!
 //! R5 records as unverified whether history can be read "without moving the
 //! live viewport", and warns that `GHOSTTY_SCROLL_VIEWPORT_ROW` mutates the
@@ -280,7 +283,7 @@ impl Terminal {
         }
         Ok(TrackedRow {
             raw,
-            _not_send: PhantomData,
+            _not_sync: PhantomData,
         })
     }
 
@@ -307,15 +310,23 @@ impl Terminal {
 /// eviction floor; nothing else in the C API distinguishes a row that was
 /// committed from a row that was pruned.
 ///
-/// Neither [`Send`] nor [`Sync`]: resolving an anchor reads the terminal's page
-/// list, so it may only be used on the thread that owns the terminal.
+/// [`Send`] with its terminal and never [`Sync`], for the same reason
+/// [`Terminal`] is: an anchor is part of the terminal's state — resolving one
+/// reads the page list, dropping one unregisters from it — so it travels with
+/// the terminal to the thread that owns it and is never shared.
 #[derive(Debug)]
 pub struct TrackedRow {
     raw: sys::GhosttyTrackedGridRef,
-    /// A raw pointer would do it, but spelling the bound out means adding an
-    /// `unsafe impl Send` reads as the mistake it would be.
-    _not_send: PhantomData<*const ()>,
+    /// `Cell<()>` is `Send` and not `Sync`, spelled out so that adding a manual
+    /// `Sync` impl reads as the mistake it would be.
+    _not_sync: PhantomData<std::cell::Cell<()>>,
 }
+
+// SAFETY: as `Terminal`. libghostty-vt requires operations on one terminal to
+// be serialized, not to happen on one thread, and an anchor is only reachable
+// through the terminal that created it: both move to the parser thread
+// together, and `!Sync` is what keeps "together" true.
+unsafe impl Send for TrackedRow {}
 
 impl TrackedRow {
     /// Whether the anchored row still exists.

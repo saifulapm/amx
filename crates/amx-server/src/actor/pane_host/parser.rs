@@ -25,28 +25,26 @@
 //! resize through [`PtyActorHandle::resize`], which does not take that lock.
 //! Taking it here would deadlock against a read callback already waiting on us.
 //!
-//! ## Row identity is provisional (R4)
+//! ## Row identity
 //!
-//! libghostty-vt has no row-id concept and nothing that distinguishes rows
-//! committed to history from rows pruned off the top, which is exactly what the
-//! M0 plan's R4 records as unverified and hands to T12's spike. What this file
-//! does is the least it can do and still answer a `HistoryRange`: it watches
-//! `scrollback_rows()` across frames and treats growth as commits. That is
-//! correct until the scrollback reaches its cap, at which point commits and
-//! evictions cancel out and the counter stops moving. T12 owns the real model;
-//! nothing here hashes a row, survives a reflow, or claims otherwise.
+//! Row ids, the eviction floor and invalidation are [`HistoryTracker`]'s
+//! (`crate::history`), observed here once per published frame because that is
+//! where the terminal is. This file holds no model of its own: it hands the
+//! tracker the terminal, forwards what the tracker found, and serves history
+//! ranges through it.
 
 use std::sync::mpsc as sync_mpsc;
 use std::time::{Duration, Instant};
 
 use amx_core::platform::WinSize;
-use amx_core::{InvalidationCause, RowId, RowRange};
-use amx_vt::{Effect as VtEffect, Effects, Point, RenderState, SnapshotRef, Snapshots, Terminal};
+use amx_core::{InvalidationCause, RowHash, RowId, RowRange};
+use amx_vt::{Effect as VtEffect, Effects, RenderState, SnapshotRef, Snapshots, Terminal};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, warn};
 
 use super::probe::PaneProbe;
 use crate::actor::{HistoryError, HistoryRows};
+use crate::history::{HistoryEvent, HistoryTracker};
 use crate::pty::{ChildExit, PtyActorHandle};
 
 /// How long the parser parks when it has no frame pending.
@@ -106,7 +104,12 @@ pub(super) enum HostEvent {
     /// The application rang the bell.
     Bell,
     /// Rows were committed to history.
-    Committed(RowRange),
+    Committed {
+        /// The rows, in order.
+        range: RowRange,
+        /// Content hashes for the tail of `range` (04 §3).
+        hashes: Vec<RowHash>,
+    },
     /// Cached history at or beyond `from_row` is no longer valid.
     Invalidated {
         /// First invalid row.
@@ -139,14 +142,11 @@ pub(super) struct Parser {
     pty: PtyActorHandle,
     probe: PaneProbe,
     frame_interval: Duration,
-    /// Columns as of the last resize, to tell a reflow from a plain resize.
-    cols: u16,
-    /// How many rows the terminal reported in its scrollback last frame.
-    scrollback: u64,
-    /// How many rows this pane has ever committed to history.
-    committed: u64,
-    /// The oldest row id still fetchable.
-    floor: u64,
+    /// Row ids, the eviction floor and invalidation (04 §3).
+    history: HistoryTracker,
+    /// What the last observation found, reused so a frame allocates nothing
+    /// more than the hashes it announces.
+    found: Vec<HistoryEvent>,
 }
 
 impl Parser {
@@ -162,7 +162,7 @@ impl Parser {
             pty,
             probe,
             frame_interval,
-            cols,
+            size,
         } = parts;
         Self {
             terminal,
@@ -175,10 +175,8 @@ impl Parser {
             pty,
             probe,
             frame_interval,
-            cols,
-            scrollback: 0,
-            committed: 0,
-            floor: 0,
+            history: HistoryTracker::new(size.cols, size.rows),
+            found: Vec::new(),
         }
     }
 
@@ -286,15 +284,10 @@ impl Parser {
         if let Err(err) = self.pty.resize(size, Vec::new()) {
             warn!(error = %err, "pane pty resize failed");
         }
-        // 04 §3: only width changes reflow, so only a width change invalidates
-        // what a client cached.
-        if size.cols != self.cols && self.committed > 0 {
-            self.send(HostEvent::Invalidated {
-                from_row: RowId::from_raw(self.floor),
-                cause: InvalidationCause::WidthReflow,
-            });
-        }
-        self.cols = size.cols;
+        // What the resize did to history — a width reflow invalidates every id,
+        // a height change moves rows between history and the live grid and
+        // invalidates nothing (04 §3) — is the tracker's to work out from the
+        // terminal itself, at the next frame boundary.
         true
     }
 
@@ -320,74 +313,33 @@ impl Parser {
 
     /// Follow the scrollback across a frame and report what moved.
     fn track_history(&mut self) {
-        let scrollback = match self.terminal.scrollback_rows() {
-            Ok(rows) => rows as u64,
-            Err(err) => {
-                debug!(error = %err, "pane scrollback size could not be read");
-                return;
-            }
-        };
-        // `committed` is the sum of every growth ever seen and `scrollback` is
-        // that sum minus what has been discarded, so `committed >= scrollback`
-        // holds; the saturating arithmetic is there so a library surprise costs
-        // a wrong row id rather than a panicking pane.
-        if scrollback > self.scrollback {
-            let first = RowId::from_raw(self.committed);
-            self.committed += scrollback - self.scrollback;
-            self.send(HostEvent::Committed(RowRange::new(
-                first,
-                RowId::from_raw(self.committed.saturating_sub(1)),
-            )));
-        } else if scrollback < self.scrollback {
-            // The scrollback only ever shrinks when history is discarded — a
-            // trim holds it at its cap. Ids are not reused, so what a client
-            // cached below the new floor is gone rather than renumbered.
-            self.send(HostEvent::Invalidated {
-                from_row: RowId::from_raw(self.committed.saturating_sub(scrollback)),
-                cause: InvalidationCause::Clear,
-            });
-        }
-        self.scrollback = scrollback;
-
-        let floor = self.committed.saturating_sub(scrollback);
-        if floor > self.floor {
-            self.floor = floor;
-            self.send(HostEvent::Evicted {
-                oldest_row: RowId::from_raw(floor),
-            });
+        self.found.clear();
+        self.history.observe(&mut self.terminal, &mut self.found);
+        for event in self.found.drain(..) {
+            let event = match event {
+                HistoryEvent::Committed(committed) => HostEvent::Committed {
+                    range: committed.range,
+                    hashes: committed.hashes,
+                },
+                HistoryEvent::Invalidated { from_row, cause } => {
+                    HostEvent::Invalidated { from_row, cause }
+                }
+                HistoryEvent::Evicted { oldest_row } => HostEvent::Evicted { oldest_row },
+            };
+            // Inlined rather than `self.send`: `found` is borrowed by the
+            // drain, and the borrow checker is right that it would be a second
+            // borrow of `self`.
+            let _ = self.events.send(event);
         }
     }
 
     /// Read a committed range out of the scrollback.
     ///
-    /// One `read_row` per row, each resolved through a grid reference, which
-    /// leaves the live viewport exactly where it was (T06 settled R5). It is
-    /// also why this is a bulk command and never touches the frame path.
+    /// Chunked through the history module, which re-checks the range against
+    /// the eviction floor per chunk and refuses what the scrollback has thrown
+    /// away rather than faking it (04 §3).
     fn history(&mut self, range: RowRange) -> Result<HistoryRows, HistoryError> {
-        if range.first.get() < self.floor {
-            return Err(HistoryError::Evicted {
-                oldest: RowId::from_raw(self.floor),
-            });
-        }
-        if self.committed == 0 || range.last.get() >= self.committed {
-            return Err(HistoryError::NotCommitted {
-                head: RowId::from_raw(self.committed.saturating_sub(1)),
-            });
-        }
-
-        let mut rows = Vec::new();
-        let mut text = String::new();
-        for id in range.first.get()..=range.last.get() {
-            let offset = u32::try_from(id - self.floor)
-                .map_err(|_| HistoryError::Terminal("row is past the addressable grid".into()))?;
-            text.clear();
-            self.terminal
-                .read_row(Point::history(offset), &mut text)
-                .map_err(|err| HistoryError::Terminal(err.to_string()))?;
-            rows.extend_from_slice(text.as_bytes());
-            rows.push(b'\n');
-        }
-        Ok(HistoryRows { range, rows })
+        self.history.read(&self.terminal, range)
     }
 
     fn send(&self, event: HostEvent) {
@@ -408,5 +360,5 @@ pub(super) struct ParserParts {
     pub(super) pty: PtyActorHandle,
     pub(super) probe: PaneProbe,
     pub(super) frame_interval: Duration,
-    pub(super) cols: u16,
+    pub(super) size: WinSize,
 }
