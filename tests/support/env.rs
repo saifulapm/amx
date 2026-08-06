@@ -66,14 +66,35 @@ impl Env {
     /// [`Env::set_var`], which wins by coming later on the command.
     #[must_use]
     pub fn new(tag: &str) -> Self {
-        let dir = TempDir::new(tag);
+        // The directory name spends no bytes on the tag — `run/amx/<tag>`
+        // inside already names it — because the session socket lives down
+        // this path and the whole thing has a hard budget: darwin caps
+        // `sun_path` at 104 bytes, and a mac's `$TMPDIR` is ~50 of them
+        // before this harness adds a byte.
+        let dir = TempDir::new("env");
         std::fs::create_dir_all(dir.path().join("run")).expect("create the runtime root");
         std::fs::create_dir_all(dir.path().join("state")).expect("create the state root");
-        Self {
+        let env = Self {
             dir,
             session: tag.to_owned(),
             vars: vec![("SHELL".to_owned(), "/bin/sh".to_owned())],
-        }
+        };
+        // Checked against the budget's remainder rather than the platform's
+        // own limit, so a tag that would only overflow on a mac fails just as
+        // loudly here on a roomy Linux `/tmp`.
+        let socket = env.socket();
+        let spent = socket
+            .strip_prefix(std::env::temp_dir())
+            .expect("the env lives under $TMPDIR")
+            .as_os_str()
+            .len();
+        assert!(
+            spent <= 54,
+            "{} spends {spent} of the 54 bytes darwin's sun_path leaves after \
+             a mac runner's $TMPDIR; shorten the tag",
+            socket.display()
+        );
+        env
     }
 
     /// A scratch directory panes and tests can exchange files through.
