@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
+#[cfg(not(target_vendor = "apple"))]
 use rustix::pipe::{PipeFlags, pipe_with};
 
 /// How large a batch the wake drain reads at a time.
@@ -62,13 +63,34 @@ pub struct WakePipe {
 /// Both ends are `CLOEXEC` so a pty child never inherits them, and both are
 /// `NONBLOCK` so neither side can be parked by the other.
 pub fn wake_pipe() -> io::Result<WakePipe> {
-    let (reader, writer) = pipe_with(PipeFlags::CLOEXEC | PipeFlags::NONBLOCK)?;
+    let (reader, writer) = new_pipe()?;
     Ok(WakePipe {
         reader,
         writer: WakeWriter {
             fd: Arc::new(writer),
         },
     })
+}
+
+/// Both ends open with the flags already set — `pipe2` takes them atomically.
+#[cfg(not(target_vendor = "apple"))]
+fn new_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+    Ok(pipe_with(PipeFlags::CLOEXEC | PipeFlags::NONBLOCK)?)
+}
+
+/// macOS has no `pipe2`, so the flags go on with `fcntl` calls after the
+/// open. Between those calls a fork on another thread could capture a bare
+/// descriptor; the server only ever execs through the pty module's spawn,
+/// which runs in this same process, so the window is real but unentered here.
+#[cfg(target_vendor = "apple")]
+fn new_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+    let (reader, writer) = rustix::pipe::pipe()?;
+    for fd in [&reader, &writer] {
+        rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::CLOEXEC)?;
+        let flags = rustix::fs::fcntl_getfl(fd)?;
+        rustix::fs::fcntl_setfl(fd, flags | rustix::fs::OFlags::NONBLOCK)?;
+    }
+    Ok((reader, writer))
 }
 
 /// Empty the wake pipe.
