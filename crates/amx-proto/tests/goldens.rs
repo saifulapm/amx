@@ -46,6 +46,9 @@ fn check_golden(name: &str, value: &impl Serialize) {
     );
 }
 
+#[path = "goldens/m2.rs"]
+mod m2;
+
 fn pane_id() -> PaneId {
     "00000000-0000-0000-0000-0000000000a1".parse().unwrap()
 }
@@ -293,10 +296,15 @@ fn control_goldens_match() {
                     cols: 39,
                     history_head: RowId::from_raw(120),
                     history_floor: RowId::from_raw(4),
+                    // A blocked agent, so the golden freezes the shape the
+                    // status line and every wait predicate read — including
+                    // the queue position, which is derived from `attention`
+                    // below and must agree with it.
+                    agent: Some(m2::agent_snapshot()),
                 },
                 // The second pane freezes the absent-label shape beside the
-                // present one: both optional fields are skipped when unset, so
-                // a peer from before M1 reads the bytes it always read.
+                // present one: every optional field is skipped when unset, so
+                // a peer from before M1 or M2 reads the bytes it always read.
                 session::PaneState {
                     pane: other_pane_id(),
                     short: ShortNumber::new(2),
@@ -305,8 +313,10 @@ fn control_goldens_match() {
                     cols: 40,
                     history_head: RowId::from_raw(0),
                     history_floor: RowId::from_raw(0),
+                    agent: None,
                 },
             ],
+            attention: vec![pane_id()],
             restore: Some(session::RestoreSummary {
                 restored: 3,
                 lost: 1,

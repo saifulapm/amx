@@ -14,6 +14,7 @@ pub mod wait;
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::{AgentKind, AgentState, StatusCause};
 use crate::id::{ClientId, GridGeneration, PaneId, WorkspaceId};
 use crate::scrollback::{InvalidationCause, RowId, RowRange};
 
@@ -32,11 +33,11 @@ pub type Seq = u64;
 /// One state transition.
 ///
 /// `#[non_exhaustive]`: M0 built three of the five actors in 04 §2, so
-/// persistence and agent transitions add variants later — M1 adds the first
-/// two of them without a protocol bump, which is what the attribute is for.
-/// Every consumer must therefore have a catch-all arm, and the skew harness
-/// asserts that an unhandled variant is a soft failure on the wire rather than
-/// a hard one.
+/// persistence and agent transitions add variants later — M1 added the first
+/// two of them without a protocol bump and M2's four agent transitions are the
+/// next, which is what the attribute is for. Every consumer must therefore have
+/// a catch-all arm, and the skew harness asserts that an unhandled variant is a
+/// soft failure on the wire rather than a hard one.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -187,6 +188,63 @@ pub enum Event {
         /// How many sections were rejected and kept their running values.
         rejected_sections: u32,
     },
+    /// A pane's agent status changed.
+    ///
+    /// Published by `AgentHub` and by nothing else: 04 §2 gives every
+    /// transition one publisher, and while pane events already break that rule
+    /// (R-M2-3) the agent events do not get to make it worse.
+    ///
+    /// The publish is ordered *after* the `StatusView` write it describes
+    /// (`docs/08-m2-plan.md` §3). A waiter woken by this event therefore always
+    /// reads a view at least as new as the event; the reverse order can hang a
+    /// wait forever — wake, read a stale view, decide `false`, and no further
+    /// event ever comes.
+    AgentStatus {
+        /// The pane whose agent moved.
+        pane: PaneId,
+        /// What it was, or `None` for the first status a pane ever takes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<AgentState>,
+        /// What it is now.
+        to: AgentState,
+        /// What moved it. For an `edges` agent every exit from `working` or
+        /// `blocked` is `screen` or `staleness` and never `hook` — see
+        /// [`ExitAuthority`](crate::agent::ExitAuthority).
+        cause: StatusCause,
+    },
+    /// A pane's foreground program was identified as a known agent.
+    ///
+    /// Separate from [`AgentStatus`](Self::AgentStatus) because identity and
+    /// state move independently: an identified agent changes state many times,
+    /// and a pane can change state (`busy`/`quiet`) without ever being
+    /// identified. V01 §4 measured a case where the gap between them is long —
+    /// Codex fires no hook at all until the first prompt, so a pane holding an
+    /// idle Codex is identified by tier 3 alone, for as long as the user takes
+    /// to type.
+    AgentIdentified {
+        /// The pane.
+        pane: PaneId,
+        /// Which agent it is running.
+        kind: AgentKind,
+    },
+    /// A pane entered `blocked` and joined the attention queue.
+    ///
+    /// The queue is ordered by block time and a re-block re-enters at the tail
+    /// (D-M2-8). This is the event the reference notifier filters on and the
+    /// one the client turns into an OSC 9/99 to its host terminal — the one
+    /// built-in notify path (03 §4).
+    AttentionEnqueued {
+        /// The pane now wanting attention.
+        pane: PaneId,
+    },
+    /// A pane left the attention queue.
+    ///
+    /// On leaving `blocked` *or* on pane exit: a queue that kept a dead pane's
+    /// entry would send `next-attention` to a pane that is not there.
+    AttentionDequeued {
+        /// The pane that no longer wants attention.
+        pane: PaneId,
+    },
 }
 
 impl Event {
@@ -221,6 +279,10 @@ impl Event {
             Self::ClientDetached { .. } => "client_detached",
             Self::SessionRestored { .. } => "session_restored",
             Self::ConfigReloaded { .. } => "config_reloaded",
+            Self::AgentStatus { .. } => "agent_status",
+            Self::AgentIdentified { .. } => "agent_identified",
+            Self::AttentionEnqueued { .. } => "attention_enqueued",
+            Self::AttentionDequeued { .. } => "attention_dequeued",
         }
     }
 }

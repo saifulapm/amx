@@ -13,7 +13,7 @@ use std::task::{Context, Poll, Waker};
 
 use amx_core::{Layout, PaneId, RowId, SessionId, ShortNumber, WorkspaceId};
 use amx_proto::control::{
-    Call, Dispatch, Method, client, dispatch, pane, session, stream, workspace,
+    Call, Dispatch, Method, agent, client, dispatch, pane, session, stream, wait, workspace,
 };
 use amx_proto::hello::ServerInfo;
 use amx_proto::rpc::RpcError;
@@ -180,7 +180,9 @@ impl Dispatch for StubServer {
                 cols: 80,
                 history_head: RowId::from_raw(3),
                 history_floor: RowId::from_raw(0),
+                agent: None,
             }],
+            attention: Vec::new(),
             restore: None,
         })
     }
@@ -214,6 +216,141 @@ impl Dispatch for StubServer {
     ) -> Result<client::ViewportReply, RpcError> {
         let _ = params;
         Ok(client::ViewportReply { seq: self.seq })
+    }
+    // ------------------------------------------------------ M2's twelve rows
+    //
+    // The stub answers every one, because the property this suite proves is
+    // that the table *routes* — a row with no arm here would not compile, which
+    // is the same guarantee `dispatch/mod.rs` gives the real server.
+
+    async fn agent_report(
+        &mut self,
+        _params: Box<agent::ReportParams>,
+    ) -> Result<agent::ReportReply, RpcError> {
+        Ok(agent::ReportReply {
+            accepted: true,
+            seq: self.seq,
+        })
+    }
+
+    async fn agent_start(
+        &mut self,
+        _params: agent::StartParams,
+    ) -> Result<agent::StartReply, RpcError> {
+        Ok(agent::StartReply {
+            pane: PaneId::new_v4(),
+            short: ShortNumber::FIRST,
+            readiness: agent::Readiness::Ready,
+            agent: None,
+            seq: self.seq,
+        })
+    }
+
+    async fn agent_prompt(
+        &mut self,
+        _params: agent::PromptParams,
+    ) -> Result<agent::PromptReply, RpcError> {
+        Ok(agent::PromptReply {
+            pane: PaneId::new_v4(),
+            agent: None,
+            satisfied: true,
+            submitted_seq: self.seq,
+        })
+    }
+
+    async fn agent_explain(
+        &mut self,
+        _params: agent::ExplainParams,
+    ) -> Result<agent::ExplainReply, RpcError> {
+        Ok(agent::ExplainReply {
+            pane: PaneId::new_v4(),
+            kind: None,
+            manifest: None,
+            manifest_version: None,
+            matched: None,
+            region_preview: Vec::new(),
+            rules: Vec::new(),
+            agent: None,
+        })
+    }
+
+    async fn agent_next(
+        &mut self,
+        _params: agent::NextParams,
+    ) -> Result<agent::NextReply, RpcError> {
+        Ok(agent::NextReply {
+            pane: None,
+            workspace: None,
+            waiting: 0,
+            seq: self.seq,
+        })
+    }
+
+    async fn wait(&mut self, _params: wait::WaitParams) -> Result<wait::WaitReply, RpcError> {
+        Ok(wait::WaitReply {
+            pane: PaneId::new_v4(),
+            satisfied: true,
+            agent: None,
+            status: None,
+            seq: self.seq,
+        })
+    }
+
+    async fn events_subscribe(
+        &mut self,
+        _params: wait::SubscribeParams,
+    ) -> Result<wait::SubscribeReply, RpcError> {
+        Ok(wait::SubscribeReply { seq: self.seq })
+    }
+
+    async fn pane_send_text(
+        &mut self,
+        _params: pane::SendTextParams,
+    ) -> Result<pane::SendTextReply, RpcError> {
+        Ok(pane::SendTextReply {
+            pane: PaneId::new_v4(),
+            seq: self.seq,
+        })
+    }
+
+    async fn pane_send_keys(
+        &mut self,
+        params: pane::SendKeysParams,
+    ) -> Result<pane::SendKeysReply, RpcError> {
+        Ok(pane::SendKeysReply {
+            pane: PaneId::new_v4(),
+            keys: u32::try_from(params.keys.len()).unwrap_or(u32::MAX),
+            seq: self.seq,
+        })
+    }
+
+    async fn pane_run(&mut self, _params: pane::RunParams) -> Result<pane::RunReply, RpcError> {
+        Ok(pane::RunReply {
+            pane: PaneId::new_v4(),
+            bracketed: false,
+            seq: self.seq,
+        })
+    }
+
+    async fn pane_read(&mut self, _params: pane::ReadParams) -> Result<pane::ReadReply, RpcError> {
+        Ok(pane::ReadReply {
+            pane: PaneId::new_v4(),
+            rows: Vec::new(),
+            seq: self.seq,
+        })
+    }
+
+    async fn pane_wait_output(
+        &mut self,
+        _params: wait::WaitOutputParams,
+    ) -> Result<wait::WaitOutputReply, RpcError> {
+        Ok(wait::WaitOutputReply {
+            pane: PaneId::new_v4(),
+            matched: false,
+            line: None,
+            row: None,
+            seq: self.seq,
+        })
     }
 }
 

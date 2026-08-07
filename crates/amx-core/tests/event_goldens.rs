@@ -25,6 +25,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use amx_core::agent::{AgentKind, AgentState, StatusCause};
 use amx_core::event::{Envelope, Event, Seq};
 use amx_core::{ClientId, GridGeneration, InvalidationCause, PaneId, RowId, RowRange, WorkspaceId};
 
@@ -124,11 +125,57 @@ fn every_event() -> Vec<Event> {
         Event::ConfigReloaded {
             rejected_sections: 1,
         },
+        // M2's four. `agent_status` is the one that carries shape: a `from`
+        // that is present here and absent on a pane's first status, and a
+        // `cause` that is the whole of 04 §5's precedence made visible to
+        // `amx events --json`.
+        Event::AgentStatus {
+            pane,
+            from: Some(AgentState::Working),
+            to: AgentState::Blocked,
+            cause: StatusCause::Hook,
+        },
+        Event::AgentIdentified {
+            pane,
+            kind: AgentKind::new("claude").unwrap(),
+        },
+        Event::AttentionEnqueued { pane },
+        Event::AttentionDequeued { pane },
     ]
 }
 
 #[test]
+fn event_goldens_cover_agent_status_and_attention_variants() {
+    let owed = golden_every_event();
+
+    // M2's four, named here so the acceptance this test carries is legible
+    // without counting the fixture list. They are the shapes `amx events
+    // --json` and the reference notifier are written against, frozen before
+    // either exists rather than after somebody depends on them.
+    for m2 in [
+        "agent_status",
+        "agent_identified",
+        "attention_enqueued",
+        "attention_dequeued",
+    ] {
+        assert!(owed.contains(m2), "M2's {m2} owes a golden");
+    }
+}
+
+#[test]
 fn event_envelope_goldens_cover_session_restored_and_config_reloaded() {
+    let owed = golden_every_event();
+
+    // Both of M1's variants, named here for the same reason M2's are above.
+    for m1 in ["session_restored", "config_reloaded"] {
+        assert!(owed.contains(m1), "M1's {m1} owes a golden");
+    }
+
+    assert_files(&goldens_dir(), &owed);
+}
+
+/// Golden every event in [`every_event`], returning the tags it covered.
+fn golden_every_event() -> BTreeSet<String> {
     let mut owed = BTreeSet::new();
     for event in every_event() {
         let name = event.tag().to_owned();
@@ -148,14 +195,7 @@ fn event_envelope_goldens_cover_session_restored_and_config_reloaded() {
         );
         check_golden(&name, &envelope);
     }
-
-    // Both of M1's variants, named here so the acceptance this test carries is
-    // legible without counting the list above.
-    for m1 in ["session_restored", "config_reloaded"] {
-        assert!(owed.contains(m1), "M1's {m1} owes a golden");
-    }
-
-    assert_files(&goldens_dir(), &owed);
+    owed
 }
 
 /// Check `value` against `goldens/event/<name>.json`, or regenerate it.

@@ -1,8 +1,22 @@
 {
   "reply": {
+    "attention": [
+      "00000000-0000-0000-0000-0000000000a1"
+    ],
     "focused_workspace": "00000000-0000-0000-0000-0000000000b1",
     "panes": [
       {
+        "agent": {
+          "attention": 0,
+          "cause": "hook",
+          "kind": "claude",
+          "session_ref": {
+            "kind": "id",
+            "value": "c9a3c73b-b184-4871-8e98-79b46b87b635"
+          },
+          "state": "blocked",
+          "transition_seq": 51
+        },
         "cols": 39,
         "history_floor": 4,
         "history_head": 120,

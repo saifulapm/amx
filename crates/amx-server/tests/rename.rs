@@ -195,6 +195,8 @@ async fn workspace_and_pane_labels_survive_snapshot_and_restore() {
                 short: p.short,
                 label: p.label.clone(),
                 cwd: None,
+                argv: None,
+                agent: None,
             })
             .collect(),
     };

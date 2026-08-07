@@ -32,6 +32,7 @@ pub mod snapshot;
 
 use std::path::PathBuf;
 
+use amx_core::agent::{AgentKind, RefSource, SessionRef, StartSource};
 use amx_core::{Layout, PaneId, RowRange, ShortNumber, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -86,10 +87,11 @@ pub enum PersistError {
 
 /// One session, as it survives a restart.
 ///
-/// Deliberately *not* a mirror of everything the server holds: no argv (M1
-/// restore respawns shells in saved cwds, and argv-as-data is M2), and nothing
+/// Deliberately *not* a mirror of everything the server holds: nothing
 /// client-side — presentation state lives in the client (04 §6), so the schema
-/// has nowhere to put it.
+/// has nowhere to put it — and no derived state. M2's additions are both
+/// durable facts about a pane (what it was spawned as, which conversation it
+/// was in), never a status, which dies with the process it described.
 ///
 /// Unknown fields are ignored, matching the wire's tolerance rule in both
 /// directions: a v2 writer can add fields without stranding a v1 reader inside
@@ -182,9 +184,13 @@ pub struct WorkspaceSnapshot {
 
 /// One pane, as the snapshot holds it.
 ///
-/// No argv: M1 restore respawns a shell in the saved directory (05, M1). The
-/// version window is what makes adding argv later a field addition rather than
-/// a schema break.
+/// M2 added [`argv`](Self::argv) and [`agent`](Self::agent), which is the field
+/// addition M1 pre-announced here ("argv-as-data is M2") and the precedent
+/// R-M1-8 recorded: both are `#[serde(default, skip_serializing_if)]`, so under
+/// the unknown-field contract a v1 reader parses a file that carries them and a
+/// v1 writer produces bytes a pre-M2 reader recognises. **[`VERSION`] stays 1
+/// and [`READ_WINDOW`] stays `{1}`** — no version-window machinery moves for an
+/// additive optional field, only the golden regenerates.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct PaneSnapshot {
     /// Its identity.
@@ -203,6 +209,60 @@ pub struct PaneSnapshot {
     /// substituted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
+    /// The argv this pane's process was spawned with, when amx spawned it.
+    ///
+    /// Recorded by V07 at spawn, written here by V15. `None` for a pane whose
+    /// process amx did not choose — a restored shell, or a pane the user typed
+    /// into. Restore never execs this: 04's respawn model keeps a pane its
+    /// shell, and D-M2-7 launches an agent by *typing* into that shell, so the
+    /// invocation lands in the user's own history and the pane survives the
+    /// agent's eventual exit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argv: Option<Vec<String>>,
+    /// Which agent was in this pane and which conversation it was in.
+    ///
+    /// `None` for every pane running a plain shell, which is most of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentSnapshot>,
+}
+
+/// What a snapshot remembers about a pane's agent.
+///
+/// Deliberately *not* [`amx_core::agent::AgentSnapshot`], which is the live
+/// status the hub holds and the wire reports. The two differ in exactly the way
+/// that matters: a status is derived and dies with the process — restoring
+/// "this agent was `working` yesterday" would be restoring a lie — while
+/// identity and a conversation ref are durable facts. So this type carries the
+/// five fields D-M2-7 names and no state at all.
+///
+/// The ref is validated on read as well as on write, because a `session.json`
+/// is user-editable. [`SessionRef`] and [`RefSource`] deserialize through their
+/// own constructors, so a hand-edited file holding a relative path, a control
+/// character or a foreign source fails to parse into these fields and the pane
+/// restores as a plain shell with the loss reported (04 §6). That is one of
+/// D-M2-7's three gates; the other two — that the source names the *same*
+/// stanza the ref claims — need the registry and are V15's, at report time and
+/// again at plan time.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct AgentSnapshot {
+    /// Which agent, by registry stanza id.
+    pub kind: AgentKind,
+    /// The name the user gave it.
+    ///
+    /// Redundant with the pane's own label by construction (D-M2-9 makes them
+    /// the same string) and stored anyway: a snapshot that lost the association
+    /// would leave `agent start dev` and the restored pane's label agreeing only
+    /// by luck.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The conversation to resume, when one was captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_ref: Option<SessionRef>,
+    /// The hook path the ref came from, `amx:<agent-id>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RefSource>,
+    /// How the agent got into the pane.
+    pub start_source: StartSource,
 }
 
 /// The magic four bytes every scrollback sidecar opens with.

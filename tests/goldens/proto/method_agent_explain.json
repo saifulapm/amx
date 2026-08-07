@@ -1,0 +1,50 @@
+{
+  "reply": {
+    "agent": {
+      "attention": 0,
+      "cause": "hook",
+      "kind": "claude",
+      "session_ref": {
+        "kind": "id",
+        "value": "c9a3c73b-b184-4871-8e98-79b46b87b635"
+      },
+      "state": "blocked",
+      "transition_seq": 51
+    },
+    "kind": "claude",
+    "manifest": "claude.toml",
+    "manifest_version": "1",
+    "matched": "permission-dialog",
+    "pane": "00000000-0000-0000-0000-0000000000a1",
+    "region_preview": [
+      "  Bash(echo spike-permission-probe)",
+      "❯ 1. Yes",
+      "  2. No"
+    ],
+    "rules": [
+      {
+        "asserts": "blocked",
+        "evidence": "contains \"1. Yes\"",
+        "matched": true,
+        "priority": 100,
+        "region": "bottom_non_empty_lines(8)",
+        "rule": "permission-dialog"
+      },
+      {
+        "asserts": "idle",
+        "matched": false,
+        "priority": 50,
+        "region": "bottom_lines(3)",
+        "rule": "idle-prompt"
+      }
+    ]
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "agent.explain",
+    "params": {
+      "target": "dev"
+    }
+  }
+}

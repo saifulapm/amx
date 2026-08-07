@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use amx_core::agent::AgentSnapshot;
 use amx_core::{Layout, PaneId, RowId, Seq, SessionId, ShortNumber, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
@@ -71,6 +72,18 @@ pub struct PaneState {
     pub history_head: RowId,
     /// The oldest history row still fetchable (the eviction floor).
     pub history_floor: RowId,
+    /// What `AgentHub` makes of the program in this pane, when it tracks one.
+    ///
+    /// Additive and optional, like the label above it: absent on the wire when
+    /// the pane has no tracked agent, so a peer built before M2 reads exactly
+    /// the bytes it always did. The R-M1-8 precedent — additive optional fields
+    /// under the unknown-field contract stay inside protocol v1.
+    ///
+    /// The same value `AgentHub`'s `StatusView` holds, not a projection of it:
+    /// a client rendering one shape while a wait evaluates another is how the
+    /// status line and `amx wait` come to disagree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentSnapshot>,
 }
 
 /// Reply to `session.state`: the full snapshot a fresh client folds into its
@@ -91,6 +104,18 @@ pub struct StateReply {
     pub workspaces: Vec<WorkspaceState>,
     /// Every pane, across all workspaces.
     pub panes: Vec<PaneState>,
+    /// The attention queue, in queue order: agents waiting on the user.
+    ///
+    /// The *same* queue the status line renders `⚑N` from, `agent.next`
+    /// focuses the head of, and the reference notifier consumes — D-M2-8 makes
+    /// `session.state` the query, so there is no second "read the queue"
+    /// method that could answer differently. Ordered by block time; a pane that
+    /// unblocked and blocked again is at the tail.
+    ///
+    /// Additive: empty on a session with no blocked agents, and absent from the
+    /// bytes a pre-M2 peer parses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attention: Vec<PaneId>,
     /// What this server's startup restore cost, if it performed one.
     ///
     /// Counts only: the entries are served whole by `session.report`. They

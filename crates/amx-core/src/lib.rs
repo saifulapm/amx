@@ -1,5 +1,6 @@
 //! Core types for amx: identity, the event bus, render effects, the session
-//! context, configuration, scrollback identity and the platform seam.
+//! context, configuration, scrollback identity, the agent layer's vocabulary
+//! and the platform seam.
 //!
 //! This crate is the shared vocabulary of the server and the client and has no
 //! I/O of its own. Everything public here is a contract: the doc comment on a
@@ -8,6 +9,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agent;
 pub mod config;
 pub mod ctx;
 pub mod effect;
@@ -19,6 +21,10 @@ pub mod platform;
 pub mod scrollback;
 pub mod state;
 
+pub use agent::{
+    Activity, AgentKind, AgentSnapshot, AgentState, CoverageClass, ExitAuthority, HookToken,
+    RefKind, RefSource, SessionRef, StartSource, StatusCause,
+};
 pub use config::{Config, ConfigDiagnostic, PersistConfig, TerminalConfig};
 pub use ctx::{Ctx, Env, SessionName};
 pub use effect::{Effect, EffectSet, Level, Scheduled};

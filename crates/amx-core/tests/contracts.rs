@@ -1,5 +1,11 @@
 //! The core contracts: what the event stream promises and how effects fold.
 
+#![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
+
+use amx_core::agent::{
+    Activity, AgentKind, AgentState, CoverageClass, ExitAuthority, HookToken, RefKind, RefSource,
+    SessionRef, StatusCause,
+};
 use amx_core::event::{Delivery, Envelope, Event};
 use amx_core::{Effect, EffectSet, GridGeneration, Level, PaneId, Scheduled, WorkspaceId};
 
@@ -165,4 +171,175 @@ fn grid_generation_is_monotonic() {
     let first = GridGeneration::FIRST;
     assert!(first < first.next());
     assert!(first.next() < first.next().next());
+}
+
+// ------------------------------------------------------------ the agent layer
+
+#[test]
+fn the_m2_event_variants_round_trip_and_tag_themselves() {
+    let pane = PaneId::new_v4();
+
+    let status = Event::AgentStatus {
+        pane,
+        from: Some(AgentState::Working),
+        to: AgentState::Blocked,
+        cause: StatusCause::Hook,
+    };
+    let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(json["event"], "agent_status");
+    assert_eq!(json["from"], "working");
+    assert_eq!(json["to"], "blocked");
+    assert_eq!(json["cause"], "hook");
+    assert_eq!(serde_json::from_value::<Event>(json).unwrap(), status);
+
+    // A pane's *first* status has nothing to come from, and `from` is absent
+    // rather than null so a consumer reading the field cannot mistake "there
+    // was no previous state" for "the previous state was something I do not
+    // recognise".
+    let first = Event::AgentStatus {
+        pane,
+        from: None,
+        to: AgentState::Quiet,
+        cause: StatusCause::Probe,
+    };
+    let json = serde_json::to_value(&first).unwrap();
+    assert!(json.get("from").is_none(), "{json}");
+    assert_eq!(serde_json::from_value::<Event>(json).unwrap(), first);
+
+    let identified = Event::AgentIdentified {
+        pane,
+        kind: AgentKind::new("claude").unwrap(),
+    };
+    let json = serde_json::to_value(&identified).unwrap();
+    assert_eq!(json["event"], "agent_identified");
+    assert_eq!(
+        json["kind"], "claude",
+        "a kind is a bare string on the wire"
+    );
+    assert_eq!(serde_json::from_value::<Event>(json).unwrap(), identified);
+
+    for (event, tag) in [
+        (Event::AttentionEnqueued { pane }, "attention_enqueued"),
+        (Event::AttentionDequeued { pane }, "attention_dequeued"),
+    ] {
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["event"], tag);
+        assert_eq!(serde_json::from_value::<Event>(json).unwrap(), event);
+    }
+}
+
+#[test]
+fn only_the_full_class_may_leave_a_held_state_on_a_hook_edge() {
+    // V01 measured every user-initiated exit as silent on both shipped agents,
+    // so `edges` — the class both of them ship in — cannot be handed the
+    // authority to close a turn, and there is no way to forge one.
+    for class in [
+        CoverageClass::Edges,
+        CoverageClass::Identity,
+        CoverageClass::None,
+    ] {
+        assert!(
+            ExitAuthority::from_hook(class).is_none(),
+            "{class} must not take an exit from a hook",
+        );
+        assert!(class.exit_is_screen_owned(), "{class}");
+        assert!(class.needs_screen(), "{class}");
+    }
+    assert_eq!(
+        ExitAuthority::from_hook(CoverageClass::Full).map(ExitAuthority::cause),
+        Some(StatusCause::Hook),
+    );
+    assert!(!CoverageClass::Full.exit_is_screen_owned());
+
+    // Entry is the asymmetry: an `edges` agent's entry edges apply instantly
+    // even though its exits never do.
+    assert!(CoverageClass::Edges.hook_entries_apply());
+    assert!(!CoverageClass::Edges.hook_exits_apply());
+    assert!(!CoverageClass::Identity.hook_entries_apply());
+
+    // The two exits that always exist, for every class.
+    assert_eq!(ExitAuthority::from_screen().cause(), StatusCause::Screen);
+    assert_eq!(
+        ExitAuthority::from_staleness().cause(),
+        StatusCause::Staleness,
+    );
+}
+
+#[test]
+fn tier_three_cannot_spell_blocked() {
+    // 04 §5's "busy/quiet, never fake `blocked`", as a property of the types:
+    // the only way from an `Activity` to an `AgentState` is this conversion,
+    // and neither arm reaches `Blocked`.
+    for activity in [Activity::Busy, Activity::Quiet] {
+        let state = AgentState::from(activity);
+        assert!(!state.wants_attention(), "{state} came from tier 3");
+        assert!(!state.is_agent(), "{state} came from tier 3");
+        assert!(!state.is_held(), "{state} came from tier 3");
+    }
+    assert!(AgentState::Blocked.wants_attention());
+    assert!(AgentState::Blocked.is_held());
+    assert!(AgentState::Working.is_held());
+    assert!(!AgentState::Idle.is_held());
+}
+
+#[test]
+fn a_session_ref_cannot_be_built_or_parsed_out_of_shape() {
+    let ok = SessionRef::new(RefKind::Id, "c9a3c73b-b184-4871-8e98-79b46b87b635").unwrap();
+    assert_eq!(ok.kind(), RefKind::Id);
+
+    // Every rule D-M2-7 states, refused at the constructor...
+    assert!(SessionRef::new(RefKind::Id, "").is_err());
+    assert!(SessionRef::new(RefKind::Id, "a\u{1b}[2Jb").is_err());
+    assert!(SessionRef::new(RefKind::Path, "relative/path.jsonl").is_err());
+    assert!(SessionRef::new(RefKind::Path, "/abs/path.jsonl").is_ok());
+    assert!(SessionRef::new(RefKind::Id, "x".repeat(513)).is_err());
+
+    // ...and again on the way in from disk, which is the gate that matters:
+    // a `session.json` is user-editable, and this is what stops a hand-edited
+    // one from reaching an argv (D-M2-7's snapshot-read gate).
+    let hostile = serde_json::json!({ "kind": "path", "value": "../../etc/passwd" });
+    assert!(serde_json::from_value::<SessionRef>(hostile).is_err());
+
+    let json = serde_json::to_value(&ok).unwrap();
+    assert_eq!(json["kind"], "id");
+    assert_eq!(serde_json::from_value::<SessionRef>(json).unwrap(), ok);
+}
+
+#[test]
+fn a_ref_source_names_the_agent_it_claims() {
+    let claude = AgentKind::new("claude").unwrap();
+    let source = RefSource::for_agent(&claude);
+    assert_eq!(source.as_str(), "amx:claude");
+    assert_eq!(source.agent(), claude);
+
+    // The allowlist's shape half. The other half — that this id names a stanza,
+    // and the *same* stanza the ref claims — needs the registry and is V03's.
+    for foreign in ["claude", "amx:", "herdr:claude", "amx:../claude"] {
+        assert!(
+            RefSource::new(foreign).is_err(),
+            "{foreign} is not one of amx's own hook paths",
+        );
+        assert!(serde_json::from_value::<RefSource>(serde_json::json!(foreign)).is_err());
+    }
+}
+
+#[test]
+fn an_agent_kind_is_a_bare_validated_string() {
+    for good in ["claude", "codex", "open-code", "kilo_2"] {
+        assert_eq!(AgentKind::new(good).unwrap().as_str(), good);
+    }
+    for bad in ["", "Claude", "cl aude", "../claude", &"x".repeat(65)] {
+        assert!(AgentKind::new(bad).is_err(), "{bad:?} must not be a kind");
+        assert!(serde_json::from_value::<AgentKind>(serde_json::json!(bad)).is_err());
+    }
+}
+
+#[test]
+fn a_hook_token_does_not_print_itself() {
+    // A token that reached a log line would outlive the pane that minted it,
+    // in a file the user did not expect to hold one.
+    let token = HookToken::new("b7f0c1a4d9e25638");
+    assert_eq!(token.as_str(), "b7f0c1a4d9e25638");
+    let shown = format!("{token:?}");
+    assert!(!shown.contains("b7f0"), "{shown}");
 }

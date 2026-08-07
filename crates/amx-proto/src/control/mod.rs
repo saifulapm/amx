@@ -5,7 +5,8 @@
 //! clap tree and parsing, and docs (fixes W6's four hand-synced lists — adding
 //! a method is one enum variant + one handler)."
 //!
-//! That is what [`method_table!`] does. One row per method produces:
+//! That is what `method_table!` (in [`table`]) does. One row per method
+//! produces:
 //!
 //! - a [`Method`] variant and its wire name, in both directions;
 //! - a [`Call`] variant carrying the method's parameter type;
@@ -20,173 +21,24 @@
 //! schema`, so it is not generated here yet; [`SPECS`] is the table it will be
 //! generated from.
 
+pub mod agent;
 #[cfg(feature = "cli")]
 pub mod cli;
 pub mod client;
 pub mod pane;
 pub mod session;
 pub mod stream;
+mod table;
+pub mod wait;
 pub mod workspace;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use table::MethodSpec;
+use table::method_table;
+
 use crate::rpc::RpcError;
-
-/// One row of the method table, as data.
-///
-/// The CLI tree, and later the schema artifact, are built by walking [`SPECS`]
-/// rather than by repeating the method list — the repetition W6 is about.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct MethodSpec {
-    /// The method.
-    pub method: Method,
-    /// Its wire name, e.g. `pane.split`.
-    pub wire: &'static str,
-    /// Its CLI path, e.g. `["pane", "split"]`.
-    pub cli: &'static [&'static str],
-    /// One-line description, used as the CLI `about` and in generated docs.
-    pub about: &'static str,
-}
-
-macro_rules! method_table {
-    ($(
-        $(#[$doc:meta])*
-        $variant:ident {
-            wire: $wire:literal,
-            handler: $handler:ident,
-            params: $params:ty,
-            reply: $reply:ty,
-            cli: [$($seg:literal),+ $(,)?],
-            about: $about:literal $(,)?
-        }
-    )*) => {
-        /// Every control method, by name.
-        ///
-        /// Serializes as its wire name in both directions, so the name a peer
-        /// sends and the name this table declares can never drift apart.
-        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
-        pub enum Method {
-            $(
-                $(#[$doc])*
-                #[serde(rename = $wire)]
-                $variant,
-            )*
-        }
-
-        impl Method {
-            /// Every method in table order.
-            pub const ALL: &'static [Method] = &[$(Method::$variant),*];
-
-            /// This method's wire name.
-            #[must_use]
-            pub const fn wire_name(self) -> &'static str {
-                match self {
-                    $(Self::$variant => $wire,)*
-                }
-            }
-
-            /// The method with this wire name, if any.
-            ///
-            /// `None` is the skew-tolerant answer: an unknown method becomes a
-            /// `METHOD_NOT_FOUND` reply, never a dropped connection.
-            #[must_use]
-            pub fn from_wire_name(name: &str) -> Option<Self> {
-                match name {
-                    $($wire => Some(Self::$variant),)*
-                    _ => None,
-                }
-            }
-
-            /// This method's table row.
-            #[must_use]
-            pub const fn spec(self) -> &'static MethodSpec {
-                match self {
-                    $(Self::$variant => &SPECS[Self::$variant as usize],)*
-                }
-            }
-        }
-
-        /// The method table, as data.
-        pub const SPECS: &[MethodSpec] = &[
-            $(MethodSpec {
-                method: Method::$variant,
-                wire: $wire,
-                cli: &[$($seg),+],
-                about: $about,
-            },)*
-        ];
-
-        /// A control call with its parameters decoded.
-        #[derive(Clone, PartialEq, Debug)]
-        pub enum Call {
-            $(
-                $(#[$doc])*
-                $variant($params),
-            )*
-        }
-
-        impl Call {
-            /// Which method this call is.
-            #[must_use]
-            pub const fn method(&self) -> Method {
-                match self {
-                    $(Self::$variant(_) => Method::$variant,)*
-                }
-            }
-
-            /// Decode a call from an envelope's method name and params.
-            ///
-            /// Params default to `null` when absent, so a method whose
-            /// parameter type is all-optional can be called with no `params`
-            /// member at all.
-            pub fn decode(method: &str, params: Option<Value>) -> Result<Self, RpcError> {
-                let params = params.unwrap_or(Value::Null);
-                match Method::from_wire_name(method) {
-                    $(Some(Method::$variant) => serde_json::from_value::<$params>(params)
-                        .map(Self::$variant)
-                        .map_err(|e| RpcError::new(RpcError::INVALID_PARAMS, e.to_string())),)*
-                    None => Err(RpcError::method_not_found(method)),
-                }
-            }
-
-            /// Re-encode this call's parameters.
-            pub fn params(&self) -> Result<Value, RpcError> {
-                match self {
-                    $(Self::$variant(p) => serde_json::to_value(p)
-                        .map_err(|e| RpcError::new(RpcError::INTERNAL_ERROR, e.to_string())),)*
-                }
-            }
-        }
-
-        /// The server side of the method table.
-        ///
-        /// One method per table row: a new row does not compile until it has a
-        /// handler, which is the property that replaces W6's hand-synced lists.
-        /// Handlers return the method's reply type, and the server's own
-        /// handlers additionally return an
-        /// [`Effect`](amx_core::Effect) alongside it, so a state change that
-        /// forgets to report itself is a type error (D2).
-        #[allow(async_fn_in_trait, reason = "dispatch is used generically, never as a trait object")]
-        pub trait Dispatch {
-            $(
-                #[doc = concat!("Handle `", $wire, "`.")]
-                async fn $handler(&mut self, params: $params) -> Result<$reply, RpcError>;
-            )*
-        }
-
-        /// Route one decoded call to its handler and serialize the reply.
-        pub async fn dispatch<D: Dispatch>(target: &mut D, call: Call) -> Result<Value, RpcError> {
-            match call {
-                $(Call::$variant(params) => {
-                    let reply: $reply = target.$handler(params).await?;
-                    serde_json::to_value(reply)
-                        .map_err(|e| RpcError::new(RpcError::INTERNAL_ERROR, e.to_string()))
-                })*
-            }
-        }
-    };
-}
 
 method_table! {
     /// Liveness and clock check; the connect probe's payload.
@@ -367,5 +219,130 @@ method_table! {
         reply: client::ViewportReply,
         cli: ["client", "viewport"],
         about: "Declare this client's terminal size and visible panes",
+    }
+
+    /// One agent hook invocation, forwarded by `amx _hook`.
+    ///
+    /// Boxed, like `PersistCommand::Snapshot`: a hook payload is much the
+    /// largest thing on the table — it carries a session id, a transcript
+    /// path, a tool name and a subagent scope — and [`Call`]'s size is set by
+    /// its biggest variant, which every other call would then pay for.
+    AgentReport {
+        wire: "agent.report",
+        handler: agent_report,
+        params: Box<agent::ReportParams>,
+        reply: agent::ReportReply,
+        cli: ["agent", "report"],
+        about: "Report one agent hook event (used by `amx _hook`)",
+    }
+
+    /// Start a named agent in a new pane and wait for it to be ready.
+    AgentStart {
+        wire: "agent.start",
+        handler: agent_start,
+        params: agent::StartParams,
+        reply: agent::StartReply,
+        cli: ["agent", "start"],
+        about: "Start a named agent in a new pane, ready for input",
+    }
+
+    /// Submit a prompt to an agent, optionally waiting for what it does next.
+    AgentPrompt {
+        wire: "agent.prompt",
+        handler: agent_prompt,
+        params: agent::PromptParams,
+        reply: agent::PromptReply,
+        cli: ["agent", "prompt"],
+        about: "Send a prompt to an agent, optionally waiting for it to finish",
+    }
+
+    /// Report how a pane's status was detected, rule by rule.
+    AgentExplain {
+        wire: "agent.explain",
+        handler: agent_explain,
+        params: agent::ExplainParams,
+        reply: agent::ExplainReply,
+        cli: ["agent", "explain"],
+        about: "Explain how a pane's agent status was detected",
+    }
+
+    /// Focus the head of the attention queue.
+    AgentNext {
+        wire: "agent.next",
+        handler: agent_next,
+        params: agent::NextParams,
+        reply: agent::NextReply,
+        cli: ["agent", "next"],
+        about: "Focus the agent at the head of the attention queue",
+    }
+
+    /// Wait for a pane's agent status, or for its process to end.
+    Wait {
+        wire: "wait",
+        handler: wait,
+        params: wait::WaitParams,
+        reply: wait::WaitReply,
+        cli: ["wait"],
+        about: "Wait until a pane's agent is blocked or idle, or its process exits",
+    }
+
+    /// Subscribe this connection to the event bus.
+    EventsSubscribe {
+        wire: "events.subscribe",
+        handler: events_subscribe,
+        params: wait::SubscribeParams,
+        reply: wait::SubscribeReply,
+        cli: ["events", "subscribe"],
+        about: "Stream bus events on this connection as notifications",
+    }
+
+    /// Write text into a pane's process, verbatim.
+    PaneSendText {
+        wire: "pane.send_text",
+        handler: pane_send_text,
+        params: pane::SendTextParams,
+        reply: pane::SendTextReply,
+        cli: ["pane", "send-text"],
+        about: "Write text into a pane's process, verbatim",
+    }
+
+    /// Encode and send key combos to a pane's process.
+    PaneSendKeys {
+        wire: "pane.send_keys",
+        handler: pane_send_keys,
+        params: pane::SendKeysParams,
+        reply: pane::SendKeysReply,
+        cli: ["pane", "send-keys"],
+        about: "Send key combos (`ctrl+h`, `f1`, …) to a pane's process",
+    }
+
+    /// Type a line into a pane and submit it, bracketed-paste aware.
+    PaneRun {
+        wire: "pane.run",
+        handler: pane_run,
+        params: pane::RunParams,
+        reply: pane::RunReply,
+        cli: ["pane", "run"],
+        about: "Type a line into a pane and submit it",
+    }
+
+    /// Read a pane's visible grid as text.
+    PaneRead {
+        wire: "pane.read",
+        handler: pane_read,
+        params: pane::ReadParams,
+        reply: pane::ReadReply,
+        cli: ["pane", "read"],
+        about: "Read a pane's visible screen as text",
+    }
+
+    /// Wait for a pattern to appear on a pane's screen.
+    PaneWaitOutput {
+        wire: "pane.wait_output",
+        handler: pane_wait_output,
+        params: wait::WaitOutputParams,
+        reply: wait::WaitOutputReply,
+        cli: ["pane", "wait-output"],
+        about: "Wait for text or a regex to appear on a pane's screen",
     }
 }

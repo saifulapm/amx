@@ -10,7 +10,9 @@
 //! The second guard here is the same idea one milestone up: a *seam* — a
 //! method that landed in the shared table before its implementation — is
 //! allowed to exist only while its milestone is being built, and the way that
-//! stops being permanent is a test that fails once the milestone ships.
+//! stops being permanent is a test that fails once the milestone ships. M2's
+//! twelve are declared below with the task that closes each; V17 empties the
+//! list and deletes the helper together.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
@@ -134,18 +136,37 @@ fn crate_tests_wait_on_conditions_not_wall_clock() {
     );
 }
 
-/// The milestone guard: no method in the table is answered by a stub.
+/// The tasks allowed to own a dispatch seam while M2 is being built.
 ///
-/// `dispatch/mod.rs` explains the mechanic — a row that lands before its
-/// wiring is answered through a `seam` helper rather than
-/// `METHOD_NOT_FOUND`, because telling a client a method is unknown tells it
-/// to stop offering it. The helper is deliberately temporary: U01 introduced
-/// it with M1's two new rows, U06 and U07 closed them, and it retired with
-/// the list. This test is what keeps it retired between milestones — the next
-/// contracts task reintroduces both the helper and this test's exemption
-/// together, so a seam can never quietly outlive the milestone that opened it.
+/// The exemption `dispatch/mod.rs` describes: U01 introduced the `seam` helper
+/// with M1's two rows, U06 and U07 closed them, and helper and exemption
+/// retired together. V02 reintroduces both, for M2's twelve rows, and V17
+/// deletes both again — which is what stops a seam from quietly outliving the
+/// milestone that opened it. An empty list here means the helper must be gone
+/// from the tree entirely.
+///
+/// The names are the wave tasks of `docs/08-m2-plan.md` §5. Every `seam(` call
+/// site must name one, so a seam nobody owns cannot be written — that is T19's
+/// and U01's lesson (exclusive file ownership leaves the *seams* unowned by
+/// construction) applied to the dispatch table itself.
+const SEAM_OWNERS: &[&str] = &["V06", "V08", "V09", "V11", "V12", "V13"];
+
+/// How many seams M2's contracts task opened.
+///
+/// One per row of §4's table. The count is here rather than only in the plan so
+/// that closing a seam without deleting its call site, or opening a
+/// thirteenth, fails a test instead of passing a review.
+const SEAM_COUNT: usize = 12;
+
+/// The milestone guard: every dispatch seam names the task that closes it.
+///
+/// A row that lands before its wiring is answered through a `seam` helper
+/// rather than `METHOD_NOT_FOUND`, because telling a client a method is unknown
+/// tells it to stop offering it. This test is what keeps that temporary: while
+/// [`SEAM_OWNERS`] is non-empty each call site must name a task from it, and
+/// when M2's integration task empties the list the helper has to go with it.
 #[test]
-fn no_control_method_is_answered_by_a_seam_stub() {
+fn every_dispatch_seam_names_the_task_that_closes_it() {
     // `<workspace>/tests/../crates`: the shipped code, not the suites, since a
     // test harness may legitimately name the concept.
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates");
@@ -154,7 +175,8 @@ fn no_control_method_is_answered_by_a_seam_stub() {
     // the word would ban the vocabulary.
     let call = "seam(";
 
-    let mut found = Vec::new();
+    let mut unowned = Vec::new();
+    let mut owned = 0;
     for krate in fs::read_dir(&crates).expect("read crates/") {
         let src = krate.expect("a directory entry").path().join("src");
         if !src.is_dir() {
@@ -164,17 +186,37 @@ fn no_control_method_is_answered_by_a_seam_stub() {
             let text = fs::read_to_string(&path).expect("read a source file");
             for (n, line) in text.lines().enumerate() {
                 // Prose says "the seam (`Pty`, `Ipc`)"; code says `seam(…)`.
-                if line.contains(call) && !line.trim_start().starts_with("//") {
-                    found.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                if !line.contains(call) || line.trim_start().starts_with("//") {
+                    continue;
+                }
+                // The helper's own definition is not a seam.
+                if line.contains("fn seam") {
+                    continue;
+                }
+                if SEAM_OWNERS.iter().any(|owner| line.contains(owner)) {
+                    owned += 1;
+                } else {
+                    unowned.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
                 }
             }
         }
     }
+
     assert!(
-        found.is_empty(),
-        "a dispatch seam outlived its milestone — every method in the table \
-         must have a handler by the milestone's integration task:\n{}",
-        found.join("\n")
+        unowned.is_empty(),
+        "a dispatch seam names no task that closes it; every `seam(…)` call \
+         passes the owning task from {SEAM_OWNERS:?} as its second argument:\n{}",
+        unowned.join("\n")
+    );
+    assert_eq!(
+        owned, SEAM_COUNT,
+        "M2 opened {SEAM_COUNT} seams (docs/08-m2-plan.md §4's twelve rows); \
+         found {owned}. Closing one means deleting its call site, and closing \
+         the last means deleting the helper and emptying SEAM_OWNERS.",
+    );
+    assert!(
+        !SEAM_OWNERS.is_empty() || owned == 0,
+        "with no owners declared, no seam may exist at all",
     );
 }
 

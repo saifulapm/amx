@@ -1,0 +1,13 @@
+{
+  "reply": {
+    "seq": 65
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "events.subscribe",
+    "params": {
+      "after_seq": 41
+    }
+  }
+}

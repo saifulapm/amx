@@ -5,11 +5,17 @@
 //! [`CoreCommand`] to the `Core`. Every command that needs an answer carries
 //! its own `oneshot` sender, so there is no correlation table to keep in sync
 //! and no reply that can arrive for a request nobody is waiting on.
+//!
+//! The other two actors keep their vocabulary in their own modules and
+//! re-export it here: [`persist`] for the snapshot mailbox, and [`agent`] for
+//! `AgentHub`'s — its mailbox, its handle, and the [`StatusView`] wait
+//! predicates read live state from.
 
 pub mod pane_host;
 
 use std::path::PathBuf;
 
+pub mod agent;
 pub mod core;
 pub mod gateway;
 pub mod persist;
@@ -22,6 +28,9 @@ use bytes::Bytes;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
+pub use agent::{
+    AGENT_MAILBOX, AgentCommand, AgentHandle, SpawnedIdentity, StatusUpdate, StatusView,
+};
 pub use pane_host::{PaneHost, PaneHostConfig, PaneHostError, PaneProbe, SnapshotFeed};
 pub use persist::{Capture, PersistCommand, PersistHandle};
 

@@ -1,0 +1,16 @@
+{
+  "reply": {
+    "bracketed": true,
+    "pane": "00000000-0000-0000-0000-0000000000a1",
+    "seq": 68
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "pane.run",
+    "params": {
+      "target": "00000000-0000-0000-0000-0000000000a1",
+      "text": "claude --resume c9a3c73b-b184-4871-8e98-79b46b87b635"
+    }
+  }
+}
