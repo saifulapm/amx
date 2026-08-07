@@ -212,21 +212,34 @@ pub fn restore_evidence(env: &Env, pane: PaneId) -> String {
     )
 }
 
+/// Every file in the history directory, staging files included.
+///
+/// The counterpart to [`sidecars`], for the two questions that are about the
+/// directory rather than about what restore can read: "was anything written at
+/// all" — a staging file is a leak like any other — and "what was there when
+/// this failed".
+pub fn history_files(env: &Env) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(history_dir(env)) else {
+        return Vec::new();
+    };
+    entries.flatten().map(|entry| entry.path()).collect()
+}
+
 /// Every file in the history directory with its size.
 ///
-/// The whole directory, staging files included, unlike [`sidecars`]: an empty
-/// dump and a dump caught before its rename are different failures and this is
-/// the only place that can tell them apart. Naming a `.tmp` here is what
-/// convicted the wait that used to count one as a sidecar.
+/// Staging files included, because an empty dump and a dump caught before its
+/// rename are different failures and this is the only place that can tell them
+/// apart. Naming a `.tmp` here is what convicted the wait that used to count
+/// one as a sidecar.
 fn sidecar_sizes(env: &Env) -> String {
-    let Ok(entries) = std::fs::read_dir(history_dir(env)) else {
+    if !history_dir(env).exists() {
         return "there is no history directory".to_owned();
-    };
-    let listed: Vec<String> = entries
-        .flatten()
-        .map(|entry| {
-            let bytes = entry.metadata().map_or(0, |meta| meta.len());
-            format!("{} ({bytes} bytes)", entry.path().display())
+    }
+    let listed: Vec<String> = history_files(env)
+        .iter()
+        .map(|path| {
+            let bytes = std::fs::metadata(path).map_or(0, |meta| meta.len());
+            format!("{} ({bytes} bytes)", path.display())
         })
         .collect();
     if listed.is_empty() {
