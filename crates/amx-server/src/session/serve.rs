@@ -3,9 +3,10 @@
 //! 04 §2: "The server is a set of tokio actors with typed mailboxes, supervised
 //! by a root task with `CancellationToken` + `JoinSet` (structured shutdown;
 //! nothing detached, everything joined)." This function is the assembly of that
-//! sentence — `Core`, `Gateway`, the config watcher and the signal watch are
-//! spawned through [`Runtime::spawn`] and nowhere else, and the only way out is
-//! through [`Runtime::shutdown`], which returns when the `JoinSet` is empty.
+//! sentence — `Core`, `AgentHub`, `Gateway`, `Persist`, the config watcher and
+//! the signal watch are spawned through [`Runtime::spawn`] and nowhere else,
+//! and the only way out is through [`Runtime::shutdown`], which returns when
+//! the `JoinSet` is empty.
 //!
 //! Stopping is therefore one path with three entrances: a `SIGTERM` (what
 //! `amx session stop` sends), a `SIGINT` (what a `ctrl+c` on a foreground
@@ -23,10 +24,11 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use crate::actor::agent_hub::AgentHub;
 use crate::actor::core::{Core, RestoreOptions};
 use crate::actor::gateway::{Gateway, GatewayError, GatewayReport};
 use crate::actor::persist::{PERSIST_MAILBOX, Persist};
-use crate::actor::{CoreHandle, PersistHandle};
+use crate::actor::{AGENT_MAILBOX, AgentHandle, CoreHandle, PersistHandle, StatusView};
 use crate::config_rt::ConfigRuntime;
 use crate::platform::watch::watch_config;
 use crate::runtime::{Runtime, ShutdownReport};
@@ -100,6 +102,29 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     core.set_config(config.subscribe());
     let persist_config = config.subscribe();
     spawn_config_watcher(&mut runtime, &ctx, config);
+
+    // Assembled *before* the restore, unlike persistence below and for the
+    // opposite reason: the restore is this session's first pane spawn, and a
+    // hub that was not listening yet would miss every `PaneStarted` it
+    // produces — a restored session of five agents would come back untracked
+    // until each pane happened to respawn. Its bus subscription is taken here
+    // too, so the `PaneCreated` events the restore publishes land in it.
+    let (agent_tx, agent_rx) = mpsc::channel(AGENT_MAILBOX);
+    let agent_events = ctx.bus.subscribe();
+    core.set_agent(AgentHandle::new(agent_tx));
+    // The hub is the view's only writer. Its readers are the long-poll calls
+    // (`wait`, `agent.prompt --wait`), which run on connection tasks and need a
+    // clone of it in the router — that half is V11's, with `conn/**`, and until
+    // it lands the view is written and read by nobody, which is the honest
+    // state of a wait path that does not exist yet.
+    let hub = AgentHub::new(
+        ctx.clone(),
+        CoreHandle::new(core_tx.clone()),
+        StatusView::new(),
+    );
+    runtime.spawn(async move {
+        let _agents = hub.run(agent_rx, agent_events).await;
+    });
     // Between the bind and the accept loop (D-M1-9): the bind has claimed the
     // session, so this server is the one that owns its state, and the earliest
     // client that can possibly connect already sees the restored session. A
