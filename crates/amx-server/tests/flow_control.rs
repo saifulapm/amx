@@ -85,17 +85,60 @@ async fn stalled_client_coalesces_damage_instead_of_queueing_deltas() {
         "most flushes should have found the writer busy: {stats:?}"
     );
     assert!(
-        stats.coalesced * 10 >= stats.absorbed * 9,
-        "almost every published frame should have merged into a set that already \
-         held damage rather than becoming a frame of its own: {stats:?}"
-    );
-    assert!(
         !stream.dirty().is_empty(),
         "the damage is waiting in the set, not queued at the writer"
     );
-    assert!(
-        wire.out.depth(Priority::Grid) <= 1,
-        "at most one frame is queued ahead of the stalled write"
+    assert_eq!(
+        wire.out.depth(Priority::Grid),
+        1,
+        "the wedged write holds one frame behind it and the queue goes no further"
+    );
+
+    // The coalescing itself, measured where it is a property of the mechanism
+    // rather than of the machine.
+    //
+    // The rounds above cannot state it. An absorb counts as coalesced when it
+    // finds damage already pending, so the ones that do *not* count are the
+    // first, the ones a sent frame had just emptied the set for — and the ones
+    // that arrived while the set was still empty because the pane had nothing
+    // new to show yet. That last group is the problem: `pane.write` only queues
+    // bytes for a real `cat` behind a real pty, and how far behind it runs is a
+    // question about CPU, not about damage. Under a loaded machine two thirds
+    // of the rounds can publish an unchanged grid, and a ratio over all 60 of
+    // them measures the child's throughput.
+    //
+    // From here nothing can empty the set again: the writer is wedged
+    // mid-`write_all` on a pipe nobody reads, so every flush stalls and no
+    // frame is sent. Every publication therefore *must* merge into the pending
+    // set, whether or not the pane had anything new in it — which is the
+    // coalescing claim, stated so that a starved child cannot change the
+    // answer.
+    let wedged = stream.stats();
+    for round in 60..80 {
+        pane.write(scroll_burst(round)).await;
+        step(&pane, &feed, &mut [(&mut stream, &wire.out)]).await;
+    }
+    let stats = stream.stats();
+    assert_eq!(
+        stats.frames(),
+        wedged.frames(),
+        "the writer stayed wedged, so nothing more went out: {stats:?}"
+    );
+    assert_eq!(
+        stats.absorbed - wedged.absorbed,
+        20,
+        "one publication per round here too: {stats:?}"
+    );
+    assert_eq!(
+        stats.coalesced - wedged.coalesced,
+        stats.absorbed - wedged.absorbed,
+        "with the writer wedged, every publication merges into the set that is \
+         already holding damage: {stats:?}"
+    );
+    assert_eq!(
+        stats.stalls - wedged.stalls,
+        stats.absorbed - wedged.absorbed,
+        "and every flush finds the writer still busy: {stats:?}"
     );
 
     let _ = wire.finish().await;
