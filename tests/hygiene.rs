@@ -212,23 +212,22 @@ const AGENT_EVENTS: &[&str] = &[
     "Event::AttentionDequeued",
 ];
 
-/// R-M2-3: agent events have exactly one publisher, and it is the hub.
+/// The seven pane-thread events, by the name their variants carry in the tree.
 ///
-/// 04 §2 gives every transition one sequence number, which requires one
-/// publisher per transition. The tree already breaks that for *pane* events —
-/// the pane actor publishes seven kinds directly and `Core` republishes six of
-/// them, so every damage and title change gets two sequences today (R-M2-3
-/// records it for a dedicated cleanup with its own golden review). M2's job was
-/// not to fix that but to **not extend it**, and this is what holds M2 to it.
-///
-/// Two things are checked, because the rule has two halves:
-///
-/// - an agent event is **handed to a bus or an event list** — `publish(Event::…`
-///   or `push(Event::…` — in exactly one file, `actor/agent_hub/commit.rs`,
-///   where the fusion machine's effects become announcements;
-/// - the bus sees that list only through `StatusView::commit`, whose one caller
-///   is the hub — which is also what enforces §3's write-before-publish
-///   ordering, since the view write and the publish are one call.
+/// Named for the same reason [`AGENT_EVENTS`] is: an eighth kind added without
+/// being listed here is an eighth kind nothing guards.
+const PANE_EVENTS: &[&str] = &[
+    "Event::PaneDamage",
+    "Event::PaneTitle",
+    "Event::PaneResized",
+    "Event::HistoryCommitted",
+    "Event::HistoryInvalidated",
+    "Event::HistoryEvicted",
+    "Event::PaneExited",
+];
+
+/// Where in the shipped code any of `events` is handed to a bus or an event
+/// list — `publish(Event::…` or `push(Event::…`.
 ///
 /// Naming the *verbs* rather than the variants is what keeps this from
 /// flagging every consumer: a `match` arm reading `Event::AgentStatus { .. }`
@@ -237,15 +236,57 @@ const AGENT_EVENTS: &[&str] = &[
 ///
 /// The limit, stated rather than hidden: a publisher that binds an event to a
 /// local first (`let e = Event::AgentStatus { … }; bus.publish(e);`) slips
-/// past. This is a tripwire over a rule the tree is *known* to have broken once
-/// already for pane events — it exists to make the ordinary way of breaking it
-/// again fail a test, not to be a proof.
-#[test]
-fn agent_events_have_exactly_one_publisher() {
+/// past. These are tripwires over a rule the tree is *known* to have broken
+/// once already — they exist to make the ordinary way of breaking it again
+/// fail a test, not to be a proof.
+fn announcements_of(events: &[&str]) -> Vec<String> {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates");
     let verbs = ["publish(", "push("];
 
     let mut announced = Vec::new();
+    for krate in fs::read_dir(&crates).expect("read crates/") {
+        let src = krate.expect("a directory entry").path().join("src");
+        if !src.is_dir() {
+            continue;
+        }
+        for path in rust_files(&src) {
+            let text = fs::read_to_string(&path).expect("read a source file");
+            for (n, line) in text.lines().enumerate() {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                let names_one = events.iter().any(|event| line.contains(event));
+                if names_one && verbs.iter().any(|verb| line.contains(verb)) {
+                    announced.push(format!("{}:{}: {}", path.display(), n + 1, code));
+                }
+            }
+        }
+    }
+    announced
+}
+
+/// R-M2-3: agent events have exactly one publisher, and it is the hub.
+///
+/// 04 §2 gives every transition one sequence number, which requires one
+/// publisher per transition — read per event *kind*, which is the reading
+/// `docs/09-m3-plan.md` D-M3-2 settled on and
+/// [`pane_events_have_exactly_one_publisher`] is the other half of. The hub
+/// owns the four agent kinds.
+///
+/// Two things are checked, because the rule has two halves:
+///
+/// - an agent event is announced in exactly one file,
+///   `actor/agent_hub/commit.rs`, where the fusion machine's effects become
+///   announcements;
+/// - the bus sees that list only through `StatusView::commit`, whose one caller
+///   is the hub — which is also what enforces §3's write-before-publish
+///   ordering, since the view write and the publish are one call.
+#[test]
+fn agent_events_have_exactly_one_publisher() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates");
+    let announced = announcements_of(AGENT_EVENTS);
+
     let mut committers = Vec::new();
     for krate in fs::read_dir(&crates).expect("read crates/") {
         let src = krate.expect("a directory entry").path().join("src");
@@ -260,11 +301,6 @@ fn agent_events_have_exactly_one_publisher() {
                 if code.starts_with("//") {
                     continue;
                 }
-                let at = format!("{where_it_is}:{}: {}", n + 1, code);
-                let names_one = AGENT_EVENTS.iter().any(|event| line.contains(event));
-                if names_one && verbs.iter().any(|verb| line.contains(verb)) {
-                    announced.push(at.clone());
-                }
                 // The server's own `.commit(` calls only: `commit` is an
                 // ordinary word and the client's row cache has three of its
                 // own. The type's definition carries the doctest that documents
@@ -272,7 +308,7 @@ fn agent_events_have_exactly_one_publisher() {
                 // rather than a publisher.
                 let server = where_it_is.contains("amx-server");
                 if server && line.contains(".commit(") && !where_it_is.ends_with("actor/agent.rs") {
-                    committers.push(at);
+                    committers.push(format!("{where_it_is}:{}: {code}", n + 1));
                 }
             }
         }
@@ -309,6 +345,42 @@ fn agent_events_have_exactly_one_publisher() {
         committers.len(),
         1,
         "exactly one commit call site, in the hub: {committers:?}"
+    );
+}
+
+/// D-M3-2: pane-thread events have exactly one publisher, and it is the pane
+/// actor that owns those threads.
+///
+/// This is the rule the agent guard above was written *around*: until M3,
+/// `Core` republished six of the seven kinds from the report that followed
+/// each one, so a title change or an exit burned two sequence numbers. M2
+/// could live with that because its consumers read the bus at-least-once; the
+/// reconnect-resync cannot, because the duplicates halve the replay ring a
+/// resuming client spends.
+///
+/// `Core` stays the publisher of everything it owns — panes created, renamed
+/// and closed, workspaces, focus, layout, restore, config — which is why this
+/// is a list of *kinds* and not a ban on `Core` publishing.
+#[test]
+fn pane_events_have_exactly_one_publisher() {
+    let announced = announcements_of(PANE_EVENTS);
+
+    let stray: Vec<&String> = announced
+        .iter()
+        .filter(|at| !at.contains("actor/pane_host/actor.rs"))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "a pane event is announced outside the pane actor, which is a second \
+         publisher of a transition that owes exactly one sequence number \
+         (04 §2, `docs/09-m3-plan.md` D-M3-2). A `Core` fold beside a report \
+         is fine; a publish is not:\n{stray:?}"
+    );
+    assert_eq!(
+        announced.len(),
+        PANE_EVENTS.len(),
+        "one announcement per event variant, all of them in the pane actor; \
+         found {announced:?}"
     );
 }
 

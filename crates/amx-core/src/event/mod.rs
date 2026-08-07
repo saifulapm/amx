@@ -191,8 +191,9 @@ pub enum Event {
     /// A pane's agent status changed.
     ///
     /// Published by `AgentHub` and by nothing else: 04 §2 gives every
-    /// transition one publisher, and while pane events already break that rule
-    /// (R-M2-3) the agent events do not get to make it worse.
+    /// transition one publisher, read per event kind — the hub owns the agent
+    /// kinds, the pane actor owns the pane-thread kinds, `Core` owns the rest
+    /// (`docs/09-m3-plan.md` D-M3-2, which closed R-M2-3).
     ///
     /// The publish is ordered *after* the `StatusView` write it describes
     /// (`docs/08-m2-plan.md` §3). A waiter woken by this event therefore always
