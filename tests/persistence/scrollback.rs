@@ -1,18 +1,26 @@
-//! Scrollback sidecars: what survives a reboot when the user opts in, and
-//! what is never written when they do not.
+//! Scrollback sidecars: what survives a reboot when the user opts in, what is
+//! never written when they do not, and what is removed when they change their
+//! mind.
 //!
-//! The proof turns on a shell that prints its markers on the first run and
-//! stays silent on the second. After the reboot nothing prints, so a marker on
-//! the restored screen can only have been replayed off the disk — and the
-//! marker still on the live grid when the server died must *not* be there,
-//! because M1 persists history and a live grid is not history (D-M1-6).
+//! Every proof turns on a shell that prints its markers exactly once and stays
+//! silent afterwards. After the reboot nothing prints, so a marker on the
+//! restored screen can only have been replayed off the disk — and the marker
+//! still on the live grid when the server died must *not* be there, because M1
+//! persists history and a live grid is not history (D-M1-6).
+//!
+//! The two sessions here differ in *when* the scrollback arrives, and that
+//! turned out to be the whole difference between a sidecar and no sidecar: one
+//! produces it while the pane is still being created, the other long after the
+//! session has settled, which is the shape every real session spends its life
+//! in.
 
 use rig::env::processes_with_arg;
 use rig::screen::render;
 use rig::{ALT_ENTER, Env, rasterize, shows, wait_until};
 
 use crate::fixtures::{
-    COLS, ROWS, focused_pane, marker_shell, painted, sidecars, snapshot_mentions,
+    COLS, ROWS, focused_pane, history_dir, marker_shell, painted, sidecar_holds, sidecars,
+    snapshot_mentions,
 };
 
 // ---------------------------------------------------------------- sidecars
@@ -60,12 +68,7 @@ async fn sidecars_restore_scrollback_only_when_opted_in() {
     let root = focused_pane(&env).await;
     term.wait_until_or(
         "a sidecar holding the scrolled-off markers is dumped",
-        || {
-            sidecars(&env).iter().any(|path| {
-                std::fs::read(path)
-                    .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains(EARLY_MARK))
-            })
-        },
+        || sidecar_holds(&env, EARLY_MARK),
         || format!("the history directory holds {:?}", sidecars(&env)),
     );
     let dumped = sidecars(&env);
@@ -142,6 +145,122 @@ async fn sidecars_restore_scrollback_only_when_opted_in() {
         "nothing was saved, so nothing can be replayed; the screen held:\n{}",
         render(&settled)
     );
+    term.chord(b'd');
+    assert_eq!(term.wait(), Some(0));
+    server.shutdown();
+}
+
+// ------------------------------------------------- scrollback that arrives late
+
+/// The session above produces its scrollback while the pane is still being
+/// created, so the save the *pane* earns is what carries the dump along with
+/// it. A real session is the other order — a user opens a terminal, watches it
+/// settle, and only then runs something — and the scrollback that arrives then
+/// has to reach disk on its own account, with no structural change to ride.
+#[tokio::test]
+async fn scrollback_produced_after_the_session_settles_is_still_dumped() {
+    // One `read` per burst of markers, so the pane is silent until this test
+    // types at it — long after the attach's structural events have been saved
+    // and the debounce disarmed.
+    let body = format!(
+        "while read _line; do i=1; while [ $i -le {MARK_LINES} ]; \
+         do echo \"snap-$i \"; i=$((i+1)); done; done"
+    );
+    let shell = marker_shell("late", &body);
+    let mut env = Env::new("late");
+    env.set_var("SHELL", &shell.path());
+    std::fs::write(env.config_path(), "[persist]\nhistory = true\n").expect("write the config");
+
+    let server = env.server();
+    let mut term = env.attach_on_tty(&[], ROWS, COLS);
+    term.wait_for(ALT_ENTER);
+    term.wait_output("a fully painted frame", |seen| painted(&rasterize(seen)));
+    let root = focused_pane(&env).await;
+    // Waited for by its consequence, like every save in this suite: once the
+    // snapshot names the pane, the save the attach earned has been written and
+    // the debounce is disarmed. Nothing but the output typed below can arm it
+    // again — which is exactly the claim under test.
+    term.wait_until("the attach's save lands", || {
+        snapshot_mentions(&env, &root.to_string())
+    });
+    term.wait_settled();
+    assert!(
+        sidecars(&env).is_empty(),
+        "nothing has scrolled yet, so there is nothing to dump: {:?}",
+        sidecars(&env)
+    );
+
+    term.type_line("");
+    term.wait_output("the markers to scroll past", |seen| shows(seen, LIVE_MARK));
+    term.wait_until_or(
+        "the scrolled-off markers reach a sidecar on their own account",
+        || sidecar_holds(&env, EARLY_MARK),
+        || format!("the history directory holds {:?}", sidecars(&env)),
+    );
+    assert!(
+        !shows(term.output(), EARLY_MARK),
+        "the early marker has scrolled off the live grid, which is what makes \
+         it scrollback; the screen holds:\n{}",
+        render(&rasterize(term.output()))
+    );
+    term.chord(b'd');
+    assert_eq!(term.wait(), Some(0));
+
+    // The power cut, and the proof that the dump is worth something: the
+    // restored pane's shell is waiting on `read` and prints nothing, so a
+    // marker on the screen can only have been replayed off the disk.
+    server.kill_dash_9();
+    wait_until("the killed server's shells are reaped", || {
+        processes_with_arg(shell.marker()) == 0
+    });
+
+    let server = env.server();
+    let mut term = env.attach_on_tty(&[], ROWS, COLS);
+    term.wait_for(ALT_ENTER);
+    term.wait_output("the replayed scrollback to render", |seen| {
+        shows(seen, EARLY_MARK)
+    });
+    assert!(
+        !shows(term.output(), LIVE_MARK),
+        "only history is persisted; the live grid at kill time is not:\n{}",
+        render(&rasterize(term.output()))
+    );
+    term.chord(b'd');
+    assert_eq!(term.wait(), Some(0));
+    server.shutdown();
+}
+
+// --------------------------------------------------------------- the wipe
+
+#[tokio::test]
+async fn turning_history_off_wipes_the_sidecars() {
+    let body =
+        format!("i=1; while [ $i -le {MARK_LINES} ]; do echo \"snap-$i \"; i=$((i+1)); done");
+    let shell = marker_shell("wipe", &body);
+    let mut env = Env::new("wipe");
+    env.set_var("SHELL", &shell.path());
+    std::fs::write(env.config_path(), "[persist]\nhistory = true\n").expect("write the config");
+
+    let server = env.server();
+    let mut term = env.attach_on_tty(&[], ROWS, COLS);
+    term.wait_for(ALT_ENTER);
+    term.wait_output("the markers to scroll past", |seen| shows(seen, LIVE_MARK));
+    term.wait_until_or(
+        "a sidecar holding the scrolled-off markers is dumped",
+        || sidecar_holds(&env, EARLY_MARK),
+        || format!("the history directory holds {:?}", sidecars(&env)),
+    );
+
+    // The toggle, hot, through the file the running server is watching. D-M1-6
+    // says off wipes *immediately* — not at the next save — because what is on
+    // disk is the user's scrollback.
+    std::fs::write(env.config_path(), "[persist]\nhistory = false\n").expect("rewrite the config");
+    term.wait_until_or(
+        "the sidecars are gone, directory and all",
+        || !history_dir(&env).exists(),
+        || format!("the history directory holds {:?}", sidecars(&env)),
+    );
+
     term.chord(b'd');
     assert_eq!(term.wait(), Some(0));
     server.shutdown();
