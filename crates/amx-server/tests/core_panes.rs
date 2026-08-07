@@ -492,22 +492,69 @@ async fn a_pane_transition_publishes_exactly_one_event() {
 /// everything": damage reports reach `Core` by `try_send` and are droppable
 /// under saturation, so a `Core` that owned the publish could starve
 /// `pane.wait_output` on a busy session. It is also why damage cannot be
-/// counted the way a title can — the drops are deliberate — so the six kinds
-/// are driven straight into the mailbox here, where the count is exactly zero
-/// and nothing is racing it.
+/// counted the way a title can — the drops are deliberate — so every kind is
+/// driven straight into the mailbox here, where the count is exactly zero.
 ///
-/// The folds are asserted in the same breath, because deleting them along with
+/// The reports are addressed to a pane id no actor backs, which is what makes
+/// the count *exactly* zero rather than nearly: `Core` folds a report by pane
+/// id and never asks whether the pane is live, so any event naming this id can
+/// only have come from the fold. Addressing them to a running pane instead
+/// races that pane's own first frame, which is a legitimate `PaneDamage` from
+/// the legitimate publisher.
+///
+/// The folds are asserted in the same breath, against a pane that *is* in the
+/// layout so `session.state` answers for it — deleting the folds along with
 /// the publishes would be the easy way to make this test pass and would break
-/// `session.state`'s synchronous answer for the history window.
+/// that answer.
 #[tokio::test]
 async fn a_pane_report_folds_without_publishing() {
     let harness = Harness::start("reports-are-not-events", 64);
     let root = harness.seed_workspace().await;
-    let pane = harness.split_silent(root).await;
+    let folded = harness.split_silent(root).await;
+    let unbacked = PaneId::new_v4();
     harness.settle().await;
 
     let mut events = harness.ctx.bus.subscribe();
-    for report in [
+    for pane in [unbacked, folded] {
+        for report in reports() {
+            harness
+                .tx
+                .send(CoreCommand::PaneReport { pane, report })
+                .await
+                .expect("core mailbox is open");
+        }
+    }
+
+    // The window moved: commit put the head one past row 9, eviction raised
+    // the floor to 3, invalidation pulled the head back to row 7.
+    let (head, floor) = harness.history_window(folded).await;
+    assert_eq!(
+        (head, floor),
+        (RowId::from_raw(7), RowId::from_raw(3)),
+        "the folds beside the deleted publishes have to stay"
+    );
+
+    let stray: Vec<Event> = drain_quiet(&mut events)
+        .await
+        .into_iter()
+        .filter(|event| names(event, unbacked))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "folding a pane report published {} event(s) about a pane no actor \
+         backs; reports are mailbox messages and the pane actor already \
+         announced every one of these:\n{stray:#?}",
+        stray.len()
+    );
+
+    harness.ctx.cancel.cancel();
+    let _ = harness.task.await;
+}
+
+/// One of every report a `PaneHost` can send, with values chosen so the folds
+/// they feed are distinguishable from each other.
+fn reports() -> Vec<PaneReport> {
+    vec![
         PaneReport::Damage {
             generation: GridGeneration::FIRST,
         },
@@ -525,33 +572,21 @@ async fn a_pane_report_folds_without_publishing() {
         PaneReport::Title("not session state".to_owned()),
         PaneReport::Bell,
         PaneReport::Exited { status: Some(0) },
-    ] {
-        harness
-            .tx
-            .send(CoreCommand::PaneReport { pane, report })
-            .await
-            .expect("core mailbox is open");
+    ]
+}
+
+/// Whether `event` is one of the seven pane kinds and is about `pane`.
+fn names(event: &Event, pane: PaneId) -> bool {
+    match event {
+        Event::PaneDamage { pane: p, .. }
+        | Event::PaneTitle { pane: p, .. }
+        | Event::PaneResized { pane: p, .. }
+        | Event::HistoryCommitted { pane: p, .. }
+        | Event::HistoryInvalidated { pane: p, .. }
+        | Event::HistoryEvicted { pane: p, .. }
+        | Event::PaneExited { pane: p, .. } => *p == pane,
+        _ => false,
     }
-
-    // The window moved: commit put the head one past row 9, eviction raised
-    // the floor to 3, invalidation pulled the head back to row 7.
-    let (head, floor) = harness.history_window(pane).await;
-    assert_eq!(
-        (head, floor),
-        (RowId::from_raw(7), RowId::from_raw(3)),
-        "the folds beside the deleted publishes have to stay"
-    );
-
-    let stray = drain_quiet(&mut events).await;
-    assert!(
-        stray.is_empty(),
-        "folding a pane report published {} event(s); reports are mailbox \
-         messages and the pane actor already announced every one of these:\n{stray:#?}",
-        stray.len()
-    );
-
-    harness.ctx.cancel.cancel();
-    let _ = harness.task.await;
 }
 
 /// The ranges `pane` announced as committed, in the order they arrived.
