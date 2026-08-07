@@ -129,6 +129,15 @@ pub enum DeleteError {
         #[source]
         source: io::Error,
     },
+    /// A directory on the context is not one this session owns, so the
+    /// recursive delete refused to run on it.
+    #[error("refusing to remove {}: it is not session {session}'s own directory", path.display())]
+    NotSessionOwned {
+        /// The path that was left alone.
+        path: PathBuf,
+        /// The session it was supposed to belong to.
+        session: SessionName,
+    },
 }
 
 /// The directory every session's runtime directory sits in.
@@ -228,13 +237,25 @@ pub async fn stop(ctx: &Ctx, timeout: Duration) -> Result<StopOutcome, StopError
 /// Remove a stopped session's runtime and state directories.
 ///
 /// Refuses a running session: see the module doc.
+///
+/// Both directories are removed *recursively*, because since M1 the state
+/// directory has contents — `session.json` and, when history is on, a
+/// `history/` full of per-pane sidecars (D-M1-4). A recursive delete driven by
+/// a path is worth being careful about, so this one is pinned twice over: the
+/// paths come from [`Ctx`], never from an argument, and [`session_owned`]
+/// re-checks that each is the `<root>/amx/<session>` directory this very
+/// context names before a single entry is unlinked. `remove_dir_all` itself
+/// does not follow symbolic links — a symlink inside the tree is unlinked, not
+/// descended — so a planted link cannot walk the delete out of the session's
+/// own directory either.
 pub fn delete(ctx: &Ctx) -> Result<(), DeleteError> {
     if probe(&ctx.socket)?.is_running() {
         return Err(DeleteError::Running {
             session: ctx.session.clone(),
         });
     }
-    let removed = remove_dir(&ctx.runtime_dir)? | remove_dir(&ctx.state_dir)?;
+    let removed =
+        remove_tree(&ctx.runtime_dir, &ctx.session)? | remove_tree(&ctx.state_dir, &ctx.session)?;
     if removed {
         Ok(())
     } else {
@@ -244,8 +265,14 @@ pub fn delete(ctx: &Ctx) -> Result<(), DeleteError> {
     }
 }
 
-/// Remove `dir` if it is there; `true` if it was.
-fn remove_dir(dir: &Path) -> Result<bool, DeleteError> {
+/// Recursively remove `dir` if it is there; `true` if it was.
+fn remove_tree(dir: &Path, session: &SessionName) -> Result<bool, DeleteError> {
+    if !session_owned(dir, session) {
+        return Err(DeleteError::NotSessionOwned {
+            path: dir.to_path_buf(),
+            session: session.clone(),
+        });
+    }
     match fs::remove_dir_all(dir) {
         Ok(()) => Ok(true),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -254,6 +281,29 @@ fn remove_dir(dir: &Path) -> Result<bool, DeleteError> {
             source,
         }),
     }
+}
+
+/// Whether `dir` is the directory `session` owns under one of amx's roots.
+///
+/// The shape [`Ctx::for_session`] builds and the only shape a recursive delete
+/// may touch: a component named for the session, directly inside amx's own
+/// level of a shared root — `amx`, or `amx-<uid>` under the world-writable
+/// runtime fallbacks. `Ctx`'s fields are public, so this is what keeps a
+/// hand-assembled context from turning `session delete` into an arbitrary
+/// recursive remove.
+fn session_owned(dir: &Path, session: &SessionName) -> bool {
+    let named_for_the_session = dir.file_name().is_some_and(|name| name == session.as_str());
+    let under_amx = dir
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|level| level.to_str())
+        .is_some_and(|level| {
+            level == amx_core::ctx::AMX_DIR
+                || level
+                    .strip_prefix(amx_core::ctx::AMX_DIR)
+                    .is_some_and(|rest| rest.starts_with('-'))
+        });
+    named_for_the_session && under_amx
 }
 
 /// Send `SIGTERM` to `pid`.
