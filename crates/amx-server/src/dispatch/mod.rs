@@ -26,12 +26,12 @@
 //! `tests/hygiene.rs` that lets them exist — the two always move together, so a
 //! seam can never quietly outlive the milestone that opened it. Every call
 //! below names the task that closes it, and the hygiene suite reads those names
-//! back: **V06** `agent.explain`, **V08** `agent.next`, **V09**
-//! `agent.report`, **V11** `wait`/`events.subscribe`/`pane.wait_output`,
-//! **V13** `agent.start`/`agent.prompt`. V12's four —
-//! `pane.send_text`/`send_keys`/`run`/`read` — are filled, and left the list
-//! with the count in `tests/hygiene.rs`. V17 empties it again and deletes the
-//! helper, which is the milestone's exit check.
+//! back: **V06** `agent.explain`, **V08** `agent.next`, **V11**
+//! `wait`/`events.subscribe`/`pane.wait_output`, **V13**
+//! `agent.start`/`agent.prompt`. V12's four —
+//! `pane.send_text`/`send_keys`/`run`/`read` — and V09's `agent.report` are
+//! filled, and left the list with the count in `tests/hygiene.rs`. V17 empties
+//! it again and deletes the helper, which is the milestone's exit check.
 
 mod agent;
 mod events;
@@ -48,7 +48,7 @@ use amx_proto::rpc::RpcError;
 use serde_json::Value;
 use tokio::sync::oneshot;
 
-use crate::actor::{ClientCall, CoreCommand, CoreHandle, Reply, SessionCall};
+use crate::actor::{AgentHandle, ClientCall, CoreCommand, CoreHandle, Reply, SessionCall};
 use crate::conn::streams::ConnStreams;
 
 /// The JSON-RPC code for a method this build knows but has not implemented.
@@ -91,6 +91,14 @@ pub struct Router {
     /// to the `Core` alone, which is why a `Router` without them (a test
     /// driving dispatch directly) still serves the rest of the table.
     streams: Option<ConnStreams>,
+    /// The `AgentHub`'s mailbox, present once a session has assembled one.
+    ///
+    /// `Option` for the same reason [`streams`](Self::streams) is: it is a
+    /// capability of the connection rather than of the table. A router without
+    /// a hub answers `agent.report` honestly — the report reached the session
+    /// and no tracked pane, which is what `accepted: false` means — instead of
+    /// failing a call an agent's hook cannot be told about anyway.
+    agent: Option<AgentHandle>,
 }
 
 impl Router {
@@ -100,6 +108,7 @@ impl Router {
         Self {
             core,
             streams: None,
+            agent: None,
         }
     }
 
@@ -112,6 +121,23 @@ impl Router {
     #[must_use]
     pub(crate) fn streams(&self) -> Option<&ConnStreams> {
         self.streams.as_ref()
+    }
+
+    /// Adopt the session's `AgentHub` mailbox.
+    ///
+    /// The call site the `agent.*` handlers were written against
+    /// (`docs/08-m2-plan.md` §6's wave-4 resolution: `dispatch/agent.rs` is one
+    /// task's file and reaches the hub *through the handle V02 typed*, so the
+    /// hub's own task never edits the dispatch tree). A session that has
+    /// assembled a hub hands it to every connection's router here.
+    pub fn attach_agent(&mut self, agent: AgentHandle) {
+        self.agent = Some(agent);
+    }
+
+    /// The session's `AgentHub`, if one is assembled.
+    #[must_use]
+    pub(crate) fn agent(&self) -> Option<&AgentHandle> {
+        self.agent.as_ref()
     }
 
     /// The bus head, via the ordinary `ping` path.
