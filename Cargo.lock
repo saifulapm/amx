@@ -95,6 +95,7 @@ dependencies = [
  "amx-vt",
  "bytes",
  "libc",
+ "regex",
  "rustix",
  "serde",
  "serde_json",

@@ -1,0 +1,30 @@
+╭─── Claude Code v2.1.224 ─────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                    │
+│                Welcome back Saiful!                │ Run /init to create a CLAUDE.md file with … │
+│                                                    │ ─────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ What's new                                  │
+│                      ▝▜█████▛▘                     │ Added self-hosted environments: `claude se… │
+│                        ▘▘ ▝▝                       │ Added `archive` plugin source: install plu… │
+│                                                    │ Added a cancel-and-confirm step when remov… │
+│   Opus 5 (1M context) · Claude Max · Saiful Islam  │ /release-notes for more                     │
+│         ~/.claude/jobs/405c2693/tmp/scratch        │                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "refactor <filepath>"
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,30 @@
+╭────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.147.0)                     │
+│                                                │
+│ model:     gpt-5.6-terra   /model to change    │
+│ directory: ~/.claude/jobs/405c2693/tmp/scratch │
+╰────────────────────────────────────────────────╯
+
+  Tip: New For a limited time, Codex is included in your plan for free – let’s build together.
+
+
+› Use /skills to list available skills
+
+  gpt-5.6-terra default · ~/.claude/jobs/405c2693/tmp/scratch
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

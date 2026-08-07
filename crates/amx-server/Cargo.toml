@@ -15,6 +15,7 @@ amx-core = { workspace = true }
 amx-proto = { workspace = true }
 amx-vt = { workspace = true }
 bytes = { workspace = true }
+regex = { workspace = true }
 rustix = { workspace = true, features = [
     "event",
     "fs",

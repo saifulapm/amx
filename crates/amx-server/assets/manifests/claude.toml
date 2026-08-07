@@ -1,0 +1,111 @@
+# Claude Code's screen manifest.
+#
+# Written against screens captured from Claude Code 2.1.224 on 2026-08-07 —
+# the version `docs/notes/hook-coverage.md` measured. The captures are the
+# fixtures under `crates/amx-server/tests/fixtures/manifest/`, and
+# `crates/amx-server/tests/manifest.rs` asserts every rule below against them,
+# so a rule here that stops matching the real UI fails the build rather than a
+# user's status line.
+#
+# What tier 2 is for, on this agent: V01 measured every *entry* edge arriving
+# by hook, fast and complete, and every *exit by the user* — Esc during
+# generation, Esc during a tool call, a permission dialog answered "No" or
+# cancelled — arriving not at all. So these rules do not have to see a turn
+# start. They have to see, reliably, that a turn is *over*, which is why the
+# idle rule is the most carefully guarded one in the file.
+
+id = "claude"
+version = "2026.08.07"
+
+# The window title carries a braille spinner for exactly as long as a turn is
+# running, and is the one region that keeps saying "working" while the grid is
+# busy painting the answer. Measured across a turn on 2.1.224: `✳ <summary>`
+# at rest, `⠂ <summary>` / `⠐ <summary>` while generating.
+#
+# There is deliberately no title *idle* rule to match it. The same observation
+# showed the title sitting at `✳` for most of a short turn, so a low-priority
+# rule reading idle off it would assert idle in the middle of one — and an
+# idle asserted while an agent is working is the one wrong answer that both
+# clears a held state and empties the attention queue.
+[[rule]]
+name = "title_spinner_working"
+state = "working"
+priority = 1100
+region = "title"
+regex = ['^[\x{2800}-\x{28FF}]']
+
+# The permission dialog. V01 §3 M3 measured `PermissionRequest` firing 8–14 ms
+# *before* this paints, so the hook tier normally gets here first; this rule's
+# real job is the other end — the dialog is on screen for as long as the user
+# ignores it, and it is the only thing that keeps `Blocked` true while they do.
+#
+# `bottom_non_empty_lines(8)` because the dialog replaces the prompt box at the
+# foot of the screen, and because the same words in a scrolled-back transcript
+# must not match: a previous turn's permission dialog is still text on the
+# screen after it has been answered.
+[[rule]]
+name = "permission_dialog"
+state = "blocked"
+priority = 900
+region = "bottom_non_empty_lines(8)"
+contains = ["do you want to proceed?"]
+any = [
+  { line_regex = ['^\s*❯?\s*1\.\s*Yes'] },
+  { line_regex = ['^\s*2\.\s*No'] },
+  { contains = ["esc to cancel"] },
+]
+
+# The footer's interrupt hint, which is on screen for the whole of a turn and
+# for none of the rest of the time. The bottom-anchored region is not a detail:
+# herdr's changelog records `whole_recent` matching a stale "esc to interrupt"
+# in scrollback as a production bug, and this screen scrolls its own history.
+[[rule]]
+name = "footer_interrupt_hint_working"
+state = "working"
+priority = 800
+region = "bottom_lines(6)"
+contains = ["esc to interrupt"]
+
+# The status line the TUI paints while it is thinking, before any answer text
+# arrives: `✽ Percolating… (3s · thinking)`. The leading glyph cycles through a
+# small set of shapes, so the pattern anchors on the shape of the line — a word
+# with an ellipsis, then an elapsed-seconds count in parentheses — rather than
+# on any one of them.
+#
+# It is a second witness for the same state as the rule above, kept because the
+# two fail differently: the footer hint disappears the moment the user starts
+# typing into the composer, and this line does not.
+[[rule]]
+name = "spinner_line_working"
+state = "working"
+priority = 780
+region = "bottom_non_empty_lines(8)"
+line_regex = ['^\s*\S+ \S+… \(\d+s']
+
+# The prompt box: a `❯` composer line between two full-width rules, with the
+# footer under it. All three anchors are required, and together they are what
+# tells an idle screen from a permission dialog *structurally* — the dialog
+# replaces the box, so its own `❯ 1. Yes` line has no rules around it.
+#
+# `visible_idle` because this is the box itself, not the absence of a working
+# marker: D-M2-6 lets an idle read off the real prompt box skip fusion's
+# confirmation hold, which is what keeps a status line from lagging a turn's
+# end by three screen evaluations.
+#
+# The composer's separator after `❯` is U+00A0, not a space — the capture on
+# 2.1.224 shows `❯\u{a0}Try "refactor <filepath>"` — so the pattern matches any
+# whitespace or an end of line, never a literal space.
+[[rule]]
+name = "prompt_box_idle"
+state = "idle"
+priority = 200
+region = "bottom_non_empty_lines(5)"
+visible_idle = true
+line_regex = [
+  '^❯(\s|$)',
+  '^─{20,}',
+]
+not = [
+  { contains = ["esc to interrupt"] },
+  { contains = ["do you want to proceed?"] },
+]
