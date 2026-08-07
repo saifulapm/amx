@@ -43,7 +43,7 @@ use super::{Capture, PersistCommand};
 use crate::actor::{CoreCommand, CoreHandle, MailboxError, SessionCall};
 use crate::persist::io::{SyncAll, Syncs, write_atomic};
 use crate::persist::snapshot::encode;
-use crate::persist::{PersistError, SNAPSHOT_NAME, Snapshot};
+use crate::persist::{PersistError, SNAPSHOT_NAME, Snapshot, sidecar};
 
 /// How long the session must be quiet before a debounced save fires.
 ///
@@ -73,6 +73,8 @@ pub struct PersistReport {
     pub unchanged: u64,
     /// Scrollback sidecars dumped.
     pub dumps: u64,
+    /// Times `[persist] history` was turned off and the sidecars removed.
+    pub wipes: u64,
 }
 
 /// When the pending change is due to be written.
@@ -105,6 +107,10 @@ enum Step {
     Delivery(Delivery),
     /// The bus is gone; stop watching it.
     BusClosed,
+    /// The configuration changed.
+    Configured,
+    /// Nobody will publish configuration again; stop watching it.
+    ConfigClosed,
     /// The debounce fired.
     Save,
     /// Cancelled, or the mailbox closed.
@@ -133,6 +139,10 @@ pub struct Persist {
     last: Option<Snapshot>,
     /// Which pane's scrollback has moved since it was last dumped.
     sidecars: Sidecars,
+    /// Whether `[persist] history` was on the last time it was looked at, so a
+    /// reload can tell which way the toggle moved. Only the falling edge has
+    /// work to do, and it has to happen exactly once per fall.
+    history: bool,
     report: PersistReport,
 }
 
@@ -155,10 +165,12 @@ impl Persist {
     /// toggle, so every save asks the receiver what it is now.
     #[must_use]
     pub fn new(ctx: Ctx, core: CoreHandle, config: watch::Receiver<Config>) -> Self {
+        let history = config.borrow().persist.history;
         Self {
             ctx,
             core,
             config,
+            history,
             syncs: Arc::new(SyncAll),
             due: None,
             pending: None,
@@ -192,6 +204,7 @@ impl Persist {
     ) -> PersistReport {
         let cancel = self.ctx.cancel.clone();
         let mut watching = true;
+        let mut configured = true;
         loop {
             let due = self.due.map(Due::at);
             // Deliberately not `biased`: with a fixed order, a pane flooding
@@ -208,6 +221,10 @@ impl Persist {
                     Some(delivery) => Step::Delivery(delivery),
                     None => Step::BusClosed,
                 },
+                changed = self.config.changed(), if configured => match changed {
+                    Ok(()) => Step::Configured,
+                    Err(_) => Step::ConfigClosed,
+                },
                 () = tokio::time::sleep_until(due.unwrap_or_else(Instant::now)),
                     if due.is_some() => Step::Save,
             };
@@ -215,6 +232,8 @@ impl Persist {
                 Step::Command(command) => self.command(command).await,
                 Step::Delivery(delivery) => self.observe(delivery),
                 Step::BusClosed => watching = false,
+                Step::Configured => self.reconfigure().await,
+                Step::ConfigClosed => configured = false,
                 Step::Save => {
                     if let Err(err) = self.save().await {
                         tracing::warn!(error = %err, "the debounced save failed");
@@ -272,6 +291,54 @@ impl Persist {
             // folding per-frame damage in would put the quiet window out of
             // reach of any pane producing output (D-M1-7).
             _ => {}
+        }
+    }
+
+    /// Apply a configuration change to the scrollback sidecars (D-M1-6).
+    ///
+    /// The toggle is hot both ways, and the two directions are deliberately not
+    /// symmetric. Turning history *on* only arms the debounce: the dump rides
+    /// the next save, where it belongs — reading a full pane's scrollback costs
+    /// parser time (04 §3) and no config edit should buy itself a burst of it.
+    /// Turning it *off* acts now, because what is on disk is the user's
+    /// scrollback and a session's worth of secrets does not get to sit there
+    /// until the next structural change happens to come along. It is the same
+    /// order herdr keeps, for the same reason.
+    async fn reconfigure(&mut self) {
+        let history = self.config.borrow().persist.history;
+        if history == self.history {
+            return;
+        }
+        self.history = history;
+        if history {
+            self.mark_dirty();
+        } else {
+            self.wipe_sidecars().await;
+        }
+    }
+
+    /// Remove every scrollback sidecar this session has written.
+    ///
+    /// On the blocking pool for the same reason a save is: this is an unlink
+    /// per pane plus a directory removal, and the runtime's workers are not
+    /// where filesystem latency gets to be discovered. Forgetting what was
+    /// dumped is part of the delete rather than an afterthought — a pane whose
+    /// sidecar was removed must be dumped again in full if history is ever
+    /// turned back on.
+    async fn wipe_sidecars(&mut self) {
+        self.sidecars.forget_dumps();
+        let dir = sidecar::dir(&self.ctx.state_dir);
+        let removed = tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&dir) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            outcome => outcome,
+        })
+        .await;
+        match removed {
+            Ok(Ok(())) => self.report.wipes += 1,
+            Ok(Err(err)) => {
+                tracing::warn!(error = %err, "the scrollback sidecars were not removed")
+            }
+            Err(err) => tracing::warn!(error = %err, "the sidecar wipe panicked"),
         }
     }
 

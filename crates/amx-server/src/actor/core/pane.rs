@@ -21,6 +21,7 @@ use tokio::sync::oneshot;
 
 use super::Core;
 use crate::actor::{PaneCommand, PaneHost, PaneHostConfig, PaneHostError, Reply};
+use crate::config_rt;
 use crate::platform::UnixPty;
 
 /// The grid every freshly spawned pane starts at.
@@ -197,7 +198,11 @@ impl Core {
         let size = self
             .planned_size(pane)
             .map_or(DEFAULT_SIZE, |(rows, cols)| WinSize { rows, cols });
-        let session = UnixPty.spawn(&pty_command(cwd, command, size))?;
+        // Read here, once per spawn: an edit to `[terminal] shell` reaches the
+        // next pane and no other, because a pane's process is never restarted
+        // for a configuration change (D-M1-8).
+        let shell = config_rt::shell(&self.config.borrow());
+        let session = UnixPty.spawn(&pty_command(shell, cwd, command, size))?;
         let mut config = PaneHostConfig::new(pane, self.ctx.bus.clone(), size);
         config.core = Some(self.handle.clone());
         config.cancel = self.ctx.cancel.child_token();
@@ -472,21 +477,17 @@ fn move_direction(direction: pane::MoveDirection) -> Direction {
     }
 }
 
-/// The user's shell, or a safe universal fallback.
-///
-/// Config (and so a configurable default command) is M1 (06 §1's dependency
-/// table); `$SHELL` is the same default every terminal multiplexer uses
-/// absent one.
-fn default_shell() -> OsString {
-    std::env::var_os("SHELL").unwrap_or_else(|| OsString::from("/bin/sh"))
-}
-
 /// Build the command a freshly spawned pane runs.
-fn pty_command(cwd: PathBuf, command: Option<Vec<String>>, size: WinSize) -> PtyCommand {
+fn pty_command(
+    shell: OsString,
+    cwd: PathBuf,
+    command: Option<Vec<String>>,
+    size: WinSize,
+) -> PtyCommand {
     let mut argv = command.into_iter().flatten();
     let (program, args) = match argv.next() {
         Some(first) => (OsString::from(first), argv.map(OsString::from).collect()),
-        None => (default_shell(), Vec::new()),
+        None => (shell, Vec::new()),
     };
     PtyCommand {
         program,

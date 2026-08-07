@@ -3,9 +3,9 @@
 //! 04 §2: "The server is a set of tokio actors with typed mailboxes, supervised
 //! by a root task with `CancellationToken` + `JoinSet` (structured shutdown;
 //! nothing detached, everything joined)." This function is the assembly of that
-//! sentence — `Core`, `Gateway` and the signal watch are spawned through
-//! [`Runtime::spawn`] and nowhere else, and the only way out is through
-//! [`Runtime::shutdown`], which returns when the `JoinSet` is empty.
+//! sentence — `Core`, `Gateway`, the config watcher and the signal watch are
+//! spawned through [`Runtime::spawn`] and nowhere else, and the only way out is
+//! through [`Runtime::shutdown`], which returns when the `JoinSet` is empty.
 //!
 //! Stopping is therefore one path with three entrances: a `SIGTERM` (what
 //! `amx session stop` sends), a `SIGINT` (what a `ctrl+c` on a foreground
@@ -15,6 +15,7 @@
 //! the way out by the gateway that bound it.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use amx_core::{Ctx, Scheduled};
 use thiserror::Error;
@@ -25,6 +26,8 @@ use tokio_util::sync::CancellationToken;
 use crate::actor::CoreHandle;
 use crate::actor::core::{Core, RestoreOptions};
 use crate::actor::gateway::{Gateway, GatewayError, GatewayReport};
+use crate::config_rt::ConfigRuntime;
+use crate::platform::watch::watch_config;
 use crate::runtime::{Runtime, ShutdownReport};
 
 /// Depth of the `Core` actor's mailbox.
@@ -89,6 +92,12 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
 
     let mut runtime = Runtime::new(ctx.clone());
     let mut core = Core::new(ctx.clone(), CoreHandle::new(core_tx));
+    // Read before anything spawns a process: restore below is the session's
+    // first pane spawn, and it must use the shell the user configured rather
+    // than the one this server would have picked a moment earlier.
+    let config = ConfigRuntime::load(&ctx);
+    core.set_config(config.subscribe());
+    spawn_config_watcher(&mut runtime, &ctx, config);
     // Between the bind and the accept loop (D-M1-9): the bind has claimed the
     // session, so this server is the one that owns its state, and the earliest
     // client that can possibly connect already sees the restored session. A
@@ -120,6 +129,31 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     let shutdown = runtime.shutdown().await;
     let gateway = report_rx.await.unwrap_or_default();
     Ok(ServeReport { gateway, shutdown })
+}
+
+/// Put the config watcher under the supervisor, if the watch can be
+/// established.
+///
+/// A watch that cannot be set up (no permission to create the config
+/// directory, an inotify instance limit already reached) costs hot reloading
+/// and nothing else: the configuration read at startup stays in force for the
+/// life of the server, which is what every pre-M1 amx did. Refusing to serve
+/// the session over it would trade a working multiplexer for a missing
+/// convenience.
+fn spawn_config_watcher(runtime: &mut Runtime, ctx: &Ctx, config: ConfigRuntime) {
+    match watch_config(ctx, ctx.cancel.clone()) {
+        Ok(watcher) => {
+            let bus = Arc::clone(&ctx.bus);
+            runtime.spawn(config.run(bus, watcher));
+        }
+        Err(err) => {
+            tracing::warn!(
+                path = %ctx.config_path.display(),
+                error = %err,
+                "config changes will not be picked up until this session restarts",
+            );
+        }
+    }
 }
 
 /// Where a restored pane whose saved directory has vanished respawns.

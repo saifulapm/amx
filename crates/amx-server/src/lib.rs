@@ -8,8 +8,13 @@
 //! `Gateway`. M1 adds the fourth, `Persist`: [`persist`] is the on-disk format
 //! it writes, and its mailbox joins the vocabulary in [`actor`]. `AgentHub`
 //! arrives with the agent layer.
+//!
+//! The user's settings reach those actors through [`config_rt`]: the file is
+//! read at startup, watched by [`platform::watch`], and published on a channel
+//! every actor can read the current value from.
 
 pub mod actor;
+pub mod config_rt;
 pub mod conn;
 pub mod damage;
 pub mod dispatch;
