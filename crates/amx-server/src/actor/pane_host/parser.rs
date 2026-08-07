@@ -77,6 +77,12 @@ pub(super) enum ParserCommand {
     /// Feed these bytes to the terminal and hand the buffer back with the
     /// replies. The sender blocks until it comes back.
     Parse(Box<Scratch>),
+    /// Feed these bytes to the terminal and answer nobody.
+    ///
+    /// Restored scrollback (D-M1-6). Unlike [`Parse`](Self::Parse) there is no
+    /// buffer to hand back and no reply to order: the bytes came off disk, not
+    /// off the pty, so nothing is blocked waiting for them.
+    Seed(Vec<u8>),
     /// Resize the grid, then the pty.
     Resize {
         /// New size.
@@ -268,6 +274,7 @@ impl Parser {
     fn handle(&mut self, command: ParserCommand) -> bool {
         match command {
             ParserCommand::Parse(scratch) => self.parse(scratch),
+            ParserCommand::Seed(bytes) => self.seed(&bytes),
             ParserCommand::Resize { size } => self.resize(size),
             ParserCommand::Snapshot(reply) => {
                 self.publish();
@@ -310,6 +317,20 @@ impl Parser {
         let _ = self.done.send(scratch);
         self.probe.parsed();
         self.drain_effects();
+        true
+    }
+
+    /// Write restored scrollback into the terminal.
+    ///
+    /// Whatever the terminal wants to reply is dropped rather than queued: a
+    /// reply belongs to the program that provoked it, and these bytes came off
+    /// disk. Their side effects are dropped for the same reason — a bell saved
+    /// yesterday must not ring today. Everything else about them is ordinary
+    /// output, so the frame this dirties is published like any other.
+    fn seed(&mut self, bytes: &[u8]) -> bool {
+        self.effects.clear();
+        self.terminal.write(bytes, &mut self.effects);
+        self.effects.clear();
         true
     }
 

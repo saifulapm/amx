@@ -43,6 +43,19 @@ pub enum PaneCommand {
     /// `Bytes` is refcounted: the same input can be handed to a pane and
     /// mirrored to a raw I/O stream without copying it.
     Write(Bytes),
+    /// Write bytes into the pane's *terminal*, without going near the pty.
+    ///
+    /// The replay half of persistence (D-M1-6): a restored pane's saved
+    /// scrollback is fed to the fresh VT so the user's history is where they
+    /// left it, and the child that has just been spawned knows nothing about
+    /// it. `Write` cannot do this — those bytes go to the child — and nothing
+    /// but restore should send this: bytes that did not come from the process
+    /// are a lie about what the process printed, told exactly once, on purpose.
+    ///
+    /// Sent immediately after the spawn, so it is queued on the parser thread
+    /// ahead of the child's first output, which still has a fork, an exec and
+    /// a pty read to travel through.
+    Seed(Vec<u8>),
     /// Resize the pane's grid, which bumps its generation and signals the child.
     Resize {
         /// New row count.
