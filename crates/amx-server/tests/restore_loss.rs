@@ -67,11 +67,17 @@ async fn missing_cwd_respawns_in_home_and_reports_degraded() {
         "the entry names the directory that vanished, not the one it settled for",
     );
 
-    // The pane is alive, in the home directory it degraded into.
+    // The pane is alive, in the home directory it degraded into. Compared
+    // canonicalized: the live process reports its real cwd, and darwin's
+    // $TMPDIR reaches the same directory through the /var -> /private/var
+    // symlink the expectation was built from.
     let capture = running.capture().await;
     assert_eq!(
-        capture.snapshot.panes[0].cwd.as_deref(),
-        Some(home.as_path())
+        capture.snapshot.panes[0]
+            .cwd
+            .as_deref()
+            .map(|p| p.canonicalize().expect("the settled cwd exists")),
+        Some(home.canonicalize().expect("the home directory exists"))
     );
     let _ = running.wiring_of(pane).await;
 
