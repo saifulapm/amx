@@ -171,6 +171,47 @@ pub fn pids_with_arg(marker: &str) -> Vec<u32> {
     }
 }
 
+/// The slave index of every pty master `pid` holds open, or `None` where the
+/// platform will not say.
+///
+/// The index, not the descriptor number: two processes holding the same
+/// terminal give it different descriptor numbers and the same index, which is
+/// what makes "this server is holding *my* terminal" answerable at all. Linux
+/// reads `tty-index` out of `/proc/<pid>/fdinfo`; macOS has no unprivileged
+/// reader without `lsof`(8), and `None` says so rather than return an empty
+/// list a caller would read as "it holds none".
+#[must_use]
+pub fn pty_masters(pid: u32) -> Option<Vec<u32>> {
+    #[cfg(target_os = "linux")]
+    {
+        let entries = std::fs::read_dir(format!("/proc/{pid}/fd")).ok()?;
+        let mut found = Vec::new();
+        for entry in entries.filter_map(Result::ok) {
+            if std::fs::read_link(entry.path()).ok()? != std::path::Path::new("/dev/ptmx") {
+                continue;
+            }
+            let name = entry.file_name();
+            let Ok(info) =
+                std::fs::read_to_string(format!("/proc/{pid}/fdinfo/{}", name.to_string_lossy()))
+            else {
+                continue;
+            };
+            found.extend(
+                info.lines()
+                    .filter_map(|line| line.strip_prefix("tty-index:"))
+                    .filter_map(|value| value.trim().parse::<u32>().ok()),
+            );
+        }
+        found.sort_unstable();
+        Some(found)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// What every thread of `pid` is doing, as one human-readable block.
 ///
 /// The diagnosis a shutdown that never finished owes: "the server ignored

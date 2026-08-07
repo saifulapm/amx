@@ -19,6 +19,8 @@
 use std::fs;
 use std::path::Path;
 
+use rig::Env;
+
 /// The forbidden token, assembled so this file does not match itself.
 fn needle() -> String {
     ["sl", "eep"].concat()
@@ -327,6 +329,87 @@ fn agent_events_have_exactly_one_publisher() {
 fn a_tag_too_long_to_bind_on_darwin_is_refused_here_too() {
     let over = "a-session-tag-nobody-would-choose-but-somebody-eventually-will";
     rig::env::assert_sun_path_fits(Path::new(&std::env::temp_dir()), over);
+}
+
+/// A terminal this harness opens is the harness's, and stays the harness's.
+///
+/// W01's finding (`docs/notes/m3-shutdown-wedge.md` §3). Both halves of
+/// [`rig::term::open_pty`] used to be inheritable, so every `amx` the rig
+/// spawned — and every server those clients daemonized — kept a copy of every
+/// terminal the test binary had open at that instant. A server that seeded one
+/// pane was then found holding six pty masters, five of them belonging to other
+/// tests, and the shutdown wedge acquired a symptom ("the pane spawn repeated")
+/// that no code in the tree could produce.
+///
+/// Two assertions, because the mechanism and its consequence fail differently.
+/// The flag is checked everywhere: it is what the fix actually is. The
+/// inheritance is checked where the process table can be read — the same
+/// honest degradation every probe in [`rig::platform`] makes — because a flag
+/// that is set and a descriptor that does not travel are not the same claim,
+/// and this test exists because the second one was the one that was false.
+#[tokio::test]
+async fn a_harness_terminal_does_not_leak_into_the_processes_it_spawns() {
+    use std::os::fd::AsFd;
+
+    let pty = rig::term::open_pty(24, 80);
+    for (which, fd) in [("master", pty.master.as_fd()), ("slave", pty.slave.as_fd())] {
+        let flags = rustix::io::fcntl_getfd(fd).expect("read the descriptor flags");
+        assert!(
+            flags.contains(rustix::io::FdFlags::CLOEXEC),
+            "the harness's pty {which} is inheritable, so every process this rig \
+             spawns from here on keeps a copy of this terminal"
+        );
+    }
+
+    let Some(mine) = rig::platform::pty_masters(std::process::id()) else {
+        // Loud, not silent: the flag assertion above still ran, and this line
+        // is the record of which half of the claim this platform can make.
+        println!(
+            "this platform has no unprivileged reader for another process's \
+             descriptor table; the inheritance half of this test did not run"
+        );
+        return;
+    };
+    assert!(
+        mine.contains(&index_of(&pty)),
+        "the probe cannot see this process's own terminal, so its silence about \
+         the server's would mean nothing"
+    );
+
+    let env = Env::new("cloex");
+    let server = env.server();
+    let theirs = rig::platform::pty_masters(server.pid()).unwrap_or_default();
+    let shared: Vec<u32> = theirs.iter().copied().filter(|i| mine.contains(i)).collect();
+    server.shutdown();
+    assert!(
+        shared.is_empty(),
+        "the server holds terminal(s) {shared:?} that belong to this test binary; \
+         it should hold only its own panes' ({theirs:?} against the harness's {mine:?})"
+    );
+}
+
+/// The slave index of `pty`'s master, so the probe can be checked against a
+/// terminal whose owner is known.
+#[cfg(target_os = "linux")]
+fn index_of(pty: &rig::term::Pty) -> u32 {
+    use std::os::fd::AsRawFd as _;
+
+    let info = fs::read_to_string(format!(
+        "/proc/self/fdinfo/{}",
+        pty.master.as_raw_fd()
+    ))
+    .expect("read this descriptor's info");
+    info.lines()
+        .find_map(|line| line.strip_prefix("tty-index:"))
+        .and_then(|value| value.trim().parse().ok())
+        .expect("a pty master reports its slave index")
+}
+
+/// See the Linux arm; unreachable where [`rig::platform::pty_masters`] is
+/// `None`, which is the only caller's guard.
+#[cfg(not(target_os = "linux"))]
+fn index_of(_pty: &rig::term::Pty) -> u32 {
+    unreachable!("no index is asked for where the descriptor table cannot be read")
 }
 
 /// Every `.rs` file under `dir`, recursively.
