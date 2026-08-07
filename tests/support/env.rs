@@ -11,6 +11,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use amx_server::runtime::CENSUS_FILE;
+
 use crate::term::{Terminal, open_pty, termios_of};
 
 /// How long a test waits for something to happen before failing.
@@ -220,7 +222,10 @@ impl Env {
         wait_until("the server answers its socket", || {
             amx_server::session::probe::probe(&socket).is_ok_and(|p| p.is_running())
         });
-        ServerChild { child }
+        ServerChild {
+            child,
+            runtime_dir: self.runtime_dir(),
+        }
     }
 
     /// Start the real client on a fresh pseudoterminal of this size.
@@ -256,6 +261,10 @@ impl Drop for Env {
 #[derive(Debug)]
 pub struct ServerChild {
     child: Child,
+    /// Where the server writes its drain census if a shutdown overruns
+    /// (`amx_server::runtime::CENSUS_FILE`). Held so a wedge report can name
+    /// the task the drain is stuck on, not only the threads it is stuck in.
+    runtime_dir: PathBuf,
 }
 
 impl ServerChild {
@@ -320,8 +329,17 @@ impl ServerChild {
     /// and one hang would become a suite that hangs.
     ///
     /// The error carries what every thread of the wedged process was doing at
-    /// the moment the budget expired, because that is the observation nobody
-    /// has yet managed to make about this flake.
+    /// the moment the budget expired — and, since W01, the server's own drain
+    /// census: the names of the supervised tasks that had not returned
+    /// (`amx_server::runtime`). Threads say where the process is stuck;
+    /// the census says which actor it is stuck on, which is the half nobody
+    /// had ever managed to observe about this flake.
+    ///
+    /// [`PRESERVE`] suspends the kill. Set only by `scripts/spike/wedge.py`,
+    /// which needs the process alive to take backtraces and a descriptor
+    /// inventory off it, and which owns the cleanup afterwards. A suite run
+    /// with it set can leave processes behind, which is exactly why nothing
+    /// sets it by default.
     pub fn shutdown_within(mut self, budget: Duration) -> Result<(), String> {
         let pid = self.child.id();
         signal_term(pid);
@@ -336,21 +354,54 @@ impl ServerChild {
             }
             if Instant::now() >= deadline {
                 let stuck = crate::platform::thread_states(pid);
-                // Consuming `self` is not enough: `Drop` kills, but only once
-                // this value is dropped, and the caller is owed a live process
-                // table in the message it is about to print.
-                let _ = self.child.kill();
-                let _ = self.child.wait();
+                let census = self.census();
+                let fate = if preserve() {
+                    // Consuming `self` is not enough to stop `Drop` from
+                    // killing it, so the handle is leaked on purpose: the
+                    // harness that asked for this is the one that will clean up.
+                    std::mem::forget(self);
+                    "it has been left running for the spike harness to examine"
+                } else {
+                    // Consuming `self` is not enough: `Drop` kills, but only
+                    // once this value is dropped, and the caller is owed a live
+                    // process table in the message it is about to print.
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    "it has been SIGKILLed so the suite can go on"
+                };
                 return Err(format!(
                     "the server did not finish shutting down within {budget:?} of SIGTERM \
-                     — the drain wedge (R-M1-2) is what this looks like; it has been \
-                     SIGKILLed so the suite can go on.\n{stuck}"
+                     — the drain wedge (R-M1-2) is what this looks like; {fate}.\n\
+                     {census}{stuck}"
                 ));
             }
             std::thread::sleep(TICK);
         }
     }
+
+    /// What the server said it was still draining, or why it said nothing.
+    fn census(&self) -> String {
+        let path = self.runtime_dir.join(CENSUS_FILE);
+        match std::fs::read_to_string(&path) {
+            Ok(census) => format!("drain census ({}):\n{census}", path.display()),
+            Err(err) => format!(
+                "no drain census at {} ({err}) — the drain had not yet overrun \
+                 its census interval, or could not write there\n",
+                path.display()
+            ),
+        }
+    }
 }
+
+/// Whether a wedged server is left alive instead of killed.
+///
+/// See [`ServerChild::shutdown_within`].
+fn preserve() -> bool {
+    std::env::var_os(PRESERVE).is_some()
+}
+
+/// The variable that turns the preserve behaviour on.
+const PRESERVE: &str = "AMX_SPIKE_PRESERVE";
 
 impl Drop for ServerChild {
     fn drop(&mut self) {
