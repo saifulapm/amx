@@ -11,9 +11,10 @@ observed no cancellation token, so one silent peer could hold the drain open
 forever. The corpse it leaves is the field corpse, descriptor for descriptor.
 It is *not* the mechanism that produced the seven wedged servers found alive on
 this machine — the evidence rules that out, [§4](#what-this-does-not-settle-and-how-far-the-evidence-goes)
-says how — so a second, rarer path is still open, now narrowed to two lines of
-code and instrumented to announce itself. [§6](#6-what-this-means-for-the-export-path-w06)
-says what W06 may rely on and what it may not.
+says how — so a second, rarer path is still open, now narrowed to two `await`s
+in one file and instrumented to announce itself when it next fires.
+[§6](#6-what-this-means-for-the-export-path-w06) says what W06 may rely on and
+what it may not.
 
 Everything below was measured on this tree during the spike. Where a claim is a
 hypothesis it says so.
@@ -23,8 +24,10 @@ hypothesis it says so.
 ## 1. What was found alive
 
 The spike began by looking for a wedge to catch. There were seven on the
-machine already: leftover `amx server` processes from six earlier milestone
-worktrees, three to nine hours old, none of them anybody's session.
+machine already: leftover `amx server` processes from six M2-era worktrees and
+the main checkout, three and a half to nine hours old, none of them anybody's
+session — sessions named `typed`, `outlives`, `firstrun`, `kill9` and
+`hook-live`, which is to say test servers that were told to stop and did not.
 
 The discriminator is a second `SIGTERM`. A server that was merely leaked —
 started and never stopped — is still parked in `watch_signals`, and a signal
