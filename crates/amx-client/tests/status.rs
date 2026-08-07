@@ -1,5 +1,7 @@
-//! U07 acceptance: what the status line says — labels, and the restore-loss
-//! indicator 04 §6 requires ("shown in the status line ... never log-only").
+//! U07 and V14 acceptance: what the status line says — labels, the attention
+//! count 04 §5 requires ("the status line renders `⚑3` from the same state"),
+//! the focused pane's agent status, and the restore-loss indicator 04 §6
+//! requires ("shown in the status line ... never log-only").
 //!
 //! The assertions are made against rasterized frame bytes rather than against
 //! the cached `String`, because the thing a user sees is the row that lands on
@@ -18,6 +20,7 @@ mod support;
 
 use amx_client::app::App;
 use amx_client::model::WorkspaceModel;
+use amx_core::agent::{AgentSnapshot, AgentState, StatusCause};
 use amx_core::{Layout as BspLayout, PaneId, WorkspaceId};
 use amx_proto::ClientInfo;
 use amx_proto::control::session::RestoreSummary;
@@ -150,6 +153,105 @@ async fn status_line_names_the_focused_pane_once_it_is_labelled() {
     app.model().set_pane_label(pane, None);
     app.repaint();
     assert!(!status_row(&app).contains("editor"));
+
+    drop(app);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn status_line_renders_attention_count_and_updates_on_dequeue() {
+    let server = support::Server::start("attn").await;
+    let pty = support::open_pty_sized(ROWS, COLS);
+    let (mut app, pane) = app_with_one_pane("work", &server, pty.slave).await;
+    let second = PaneId::new_v4();
+
+    app.repaint();
+    assert!(
+        !status_row(&app).contains('⚑'),
+        "an empty queue is worth no indicator: {:?}",
+        status_row(&app),
+    );
+
+    assert!(app.model().enqueue_attention(pane));
+    app.repaint();
+    assert!(
+        status_row(&app).contains("⚑1"),
+        "one blocked agent, one on the count: {:?}",
+        status_row(&app),
+    );
+
+    // The regression this test exists for: the line is cached against its
+    // inputs, so a count added to the rendered text and not to the equality
+    // guard renders once and then freezes. Every step below is a repaint whose
+    // only changed input is the queue.
+    assert!(app.model().enqueue_attention(second));
+    app.repaint();
+    assert!(
+        status_row(&app).contains("⚑2"),
+        "the count follows the queue up: {:?}",
+        status_row(&app),
+    );
+
+    assert!(app.model().dequeue_attention(pane));
+    app.repaint();
+    assert!(
+        status_row(&app).contains("⚑1"),
+        "and back down again: {:?}",
+        status_row(&app),
+    );
+
+    assert!(app.model().dequeue_attention(second));
+    app.repaint();
+    assert!(
+        !status_row(&app).contains('⚑'),
+        "an emptied queue takes the indicator off: {:?}",
+        status_row(&app),
+    );
+
+    drop(app);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn status_line_names_the_focused_panes_agent_state() {
+    let server = support::Server::start("agst").await;
+    let pty = support::open_pty_sized(ROWS, COLS);
+    let (mut app, pane) = app_with_one_pane("work", &server, pty.slave).await;
+
+    app.repaint();
+    assert!(
+        !status_row(&app).contains("working"),
+        "nothing is tracked in that pane yet: {:?}",
+        status_row(&app),
+    );
+
+    app.model().set_pane_agent(
+        pane,
+        Some(AgentSnapshot {
+            kind: None,
+            state: AgentState::Working,
+            cause: StatusCause::Hook,
+            transition_seq: 12,
+            attention: None,
+            session_ref: None,
+        }),
+    );
+    app.repaint();
+    assert!(
+        status_row(&app).contains("working"),
+        "the focused pane's status belongs beside its name: {:?}",
+        status_row(&app),
+    );
+
+    // Cached against the state too, not only against the count.
+    app.model()
+        .apply_agent_status(pane, AgentState::Blocked, StatusCause::Hook, 13);
+    app.repaint();
+    let blocked = status_row(&app);
+    assert!(
+        blocked.contains("blocked") && !blocked.contains("working"),
+        "the line follows the transition: {blocked:?}",
+    );
 
     drop(app);
     server.shutdown().await;

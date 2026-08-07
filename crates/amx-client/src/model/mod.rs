@@ -6,199 +6,21 @@
 //! `amx-core` gives the server — split/close/swap here would be the same
 //! tree rewrite there, which is what "presentation, not truth" means in
 //! practice) plus one [`PaneGrid`] per pane the client is currently
-//! rendering.
+//! rendering, plus what M2 added beside them: each pane's agent status and the
+//! attention queue the status line counts.
+//!
+//! The cells live next door in [`grid`], re-exported from here so the module's
+//! public path never mentions the split.
+
+mod grid;
 
 use std::collections::HashMap;
 
-use amx_core::{GridGeneration, Layout, PaneId, Rect, WorkspaceId};
+use amx_core::agent::{AgentKind, AgentSnapshot, AgentState, StatusCause};
+use amx_core::{Layout, PaneId, Rect, Seq, WorkspaceId};
 use amx_proto::control::session::RestoreSummary;
-use amx_proto::stream::{Cursor, CursorShape, DamageRect};
 
-/// A cell's foreground or background color.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Color {
-    /// The terminal's default color.
-    #[default]
-    Default,
-    /// One of the 256-color palette entries.
-    Indexed(u8),
-    /// A direct RGB color.
-    Rgb(u8, u8, u8),
-}
-
-/// The SGR-ish attributes carried on one cell.
-///
-/// A minimal stand-in for the server's real per-cell attribute set. The wire
-/// type that would carry it end to end
-/// (`amx_proto::stream::grid::GridMessage`'s `Cells`) has no encode/decode
-/// yet — both bodies are still `todo!()`, and no per-cell byte layout is
-/// defined anywhere in the tree — so there is nothing to decode against today.
-/// This is only as rich as the blit path and the SGR differ need to prove
-/// themselves against; reconciling it with the server's real cell model is
-/// follow-up work for whichever task lands that codec.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct Attrs {
-    /// Foreground color.
-    pub fg: Color,
-    /// Background color.
-    pub bg: Color,
-    /// Bold.
-    pub bold: bool,
-    /// Italic.
-    pub italic: bool,
-    /// Underline.
-    pub underline: bool,
-    /// Foreground/background swapped.
-    pub reverse: bool,
-}
-
-/// One cell of a pane's grid.
-#[derive(Clone, PartialEq, Debug)]
-pub struct Cell {
-    /// The cell's content. A space for an empty cell.
-    pub ch: char,
-    /// The cell's attributes.
-    pub attrs: Attrs,
-}
-
-impl Default for Cell {
-    fn default() -> Self {
-        Self {
-            ch: ' ',
-            attrs: Attrs::default(),
-        }
-    }
-}
-
-/// One pane's grid as the client has it cached: exactly the server's cells,
-/// at the server's own size.
-///
-/// 04 §3: "Client sizes... non-active clients letterbox/clip the server-sized
-/// pane grids inside their own locally-computed chrome" — this type is
-/// deliberately never resized by anything other than [`PaneGrid::apply_reset`]
-/// answering a generation bump the server announced. Nothing in the render
-/// path may stretch or reflow it to fit a client's own rect.
-#[derive(Clone, Debug)]
-pub struct PaneGrid {
-    generation: GridGeneration,
-    rows: u16,
-    cols: u16,
-    cells: Vec<Cell>,
-    cursor: Cursor,
-}
-
-impl PaneGrid {
-    /// A blank grid of `rows` by `cols` cells, at [`GridGeneration::FIRST`].
-    #[must_use]
-    pub fn blank(rows: u16, cols: u16) -> Self {
-        Self {
-            generation: GridGeneration::FIRST,
-            rows,
-            cols,
-            cells: vec![Cell::default(); usize::from(rows) * usize::from(cols)],
-            cursor: Cursor {
-                row: 0,
-                col: 0,
-                visible: true,
-                shape: CursorShape::default(),
-                blink: false,
-            },
-        }
-    }
-
-    /// The generation this grid is at.
-    #[must_use]
-    pub const fn generation(&self) -> GridGeneration {
-        self.generation
-    }
-
-    /// Rows in the grid.
-    #[must_use]
-    pub const fn rows(&self) -> u16 {
-        self.rows
-    }
-
-    /// Columns in the grid.
-    #[must_use]
-    pub const fn cols(&self) -> u16 {
-        self.cols
-    }
-
-    /// The cursor as of the last applied message.
-    #[must_use]
-    pub const fn cursor(&self) -> Cursor {
-        self.cursor
-    }
-
-    /// The cell at `(row, col)`, or `None` outside the grid.
-    #[must_use]
-    pub fn cell(&self, row: u16, col: u16) -> Option<&Cell> {
-        self.index(row, col).map(|i| &self.cells[i])
-    }
-
-    fn index(&self, row: u16, col: u16) -> Option<usize> {
-        if row >= self.rows || col >= self.cols {
-            return None;
-        }
-        Some(usize::from(row) * usize::from(self.cols) + usize::from(col))
-    }
-
-    /// Replace the whole grid with a keyframe.
-    ///
-    /// The cell buffer is resized only when the shape actually changed —
-    /// resize is what bumps a generation in the first place, so this is not a
-    /// per-frame cost.
-    pub fn apply_reset(
-        &mut self,
-        generation: GridGeneration,
-        rows: u16,
-        cols: u16,
-        cells: &[Cell],
-        cursor: Cursor,
-    ) {
-        self.generation = generation;
-        self.rows = rows;
-        self.cols = cols;
-        self.cells.clear();
-        self.cells.extend_from_slice(cells);
-        self.cells
-            .resize(usize::from(rows) * usize::from(cols), Cell::default());
-        self.cursor = cursor;
-    }
-
-    /// Apply an incremental update: overwrite the cells inside `rects`.
-    ///
-    /// `cells` is packed rect-by-rect, row-major within each rect, matching
-    /// the order [`DamageRect`]s are listed in — the same packing
-    /// `GridMessage::Delta` documents for the wire.
-    pub fn apply_delta(
-        &mut self,
-        generation: GridGeneration,
-        rects: &[DamageRect],
-        cells: &[Cell],
-        cursor: Cursor,
-    ) {
-        self.generation = generation;
-        self.cursor = cursor;
-        let mut at = 0;
-        for rect in rects {
-            for r in rect.row..rect.row.saturating_add(rect.rows) {
-                for c in rect.col..rect.col.saturating_add(rect.cols) {
-                    let Some(cell) = cells.get(at) else { return };
-                    if let Some(i) = self.index(r, c) {
-                        self.cells[i] = cell.clone();
-                    }
-                    at += 1;
-                }
-            }
-        }
-    }
-
-    /// Apply a cursor-only update.
-    pub fn apply_cursor(&mut self, cursor: Cursor) {
-        self.cursor = cursor;
-    }
-}
+pub use grid::{Attrs, Cell, Color, PaneGrid};
 
 /// One workspace's layout, mirrored client-side.
 #[derive(Clone, Debug)]
@@ -235,6 +57,19 @@ pub struct ClientModel {
     /// server sent, and a label is state the server holds — they arrive on
     /// different paths and one can exist without the other.
     pane_labels: HashMap<PaneId, String>,
+    /// Each tracked pane's agent status, from `session.state` and then from
+    /// `agent_status`/`agent_identified` events.
+    ///
+    /// Beside the grids for the same reason the labels are: a status is state
+    /// the server holds, arriving on a different path from the cells, and
+    /// either can exist without the other.
+    agents: HashMap<PaneId, AgentSnapshot>,
+    /// The attention queue in queue order — the same order `session.state`
+    /// reports and `agent.next` walks (D-M2-8).
+    ///
+    /// The status line's `⚑N` is this vector's length, so the count a user
+    /// reads and the queue `next-attention` steps through cannot disagree.
+    attention: Vec<PaneId>,
     focus_workspace: Option<WorkspaceId>,
     /// What the server's startup restore cost, if it performed one.
     ///
@@ -253,6 +88,8 @@ impl ClientModel {
             workspaces: HashMap::new(),
             panes: HashMap::new(),
             pane_labels: HashMap::new(),
+            agents: HashMap::new(),
+            attention: Vec::new(),
             focus_workspace: None,
             restore: None,
             term: Rect::new(0, 0, cols, rows),
@@ -327,6 +164,139 @@ impl ClientModel {
         self.pane_labels.get(&pane).map(String::as_str)
     }
 
+    /// Record (or clear) a pane's agent status, as `session.state` reports it.
+    pub fn set_pane_agent(&mut self, pane: PaneId, agent: Option<AgentSnapshot>) {
+        match agent {
+            Some(mut agent) => {
+                agent.attention = self.queue_position(pane);
+                self.agents.insert(pane, agent);
+            }
+            None => {
+                self.agents.remove(&pane);
+            }
+        }
+    }
+
+    /// A pane's agent status, if the server tracks one there.
+    #[must_use]
+    pub fn pane_agent(&self, pane: PaneId) -> Option<&AgentSnapshot> {
+        self.agents.get(&pane)
+    }
+
+    /// Fold an `agent_status` event: the pane moved to `state` at `seq`.
+    ///
+    /// Returns whether anything changed. The sequence is the guard that makes
+    /// this safe to replay: `session.state` and the event stream overlap after
+    /// a resync, and a transition already reflected in the mirrored status must
+    /// not be applied a second time on top of a newer one. An event's bus
+    /// sequence *is* the transition's sequence — the hub publishes at the
+    /// transition — so comparing the two is comparing like with like.
+    pub fn apply_agent_status(
+        &mut self,
+        pane: PaneId,
+        state: AgentState,
+        cause: StatusCause,
+        seq: Seq,
+    ) -> bool {
+        let entry = self
+            .agents
+            .entry(pane)
+            .or_insert_with(|| AgentSnapshot::unidentified(seq));
+        if entry.transition_seq > seq {
+            return false;
+        }
+        let unchanged = entry.state == state && entry.cause == cause;
+        entry.state = state;
+        entry.cause = cause;
+        entry.transition_seq = seq;
+        !unchanged
+    }
+
+    /// Fold an `agent_identified` event: the pane is running `kind`.
+    ///
+    /// Separate from the status because identity and state move independently —
+    /// an identified agent changes state many times, and a pane can change
+    /// state without ever being identified.
+    pub fn apply_agent_identified(&mut self, pane: PaneId, kind: AgentKind, seq: Seq) -> bool {
+        let entry = self
+            .agents
+            .entry(pane)
+            .or_insert_with(|| AgentSnapshot::unidentified(seq));
+        if entry.kind.as_ref() == Some(&kind) {
+            return false;
+        }
+        entry.kind = Some(kind);
+        true
+    }
+
+    /// Replace the attention queue wholesale, as `session.state` reports it.
+    pub fn set_attention(&mut self, queue: Vec<PaneId>) {
+        self.attention = queue;
+        self.reindex_attention();
+    }
+
+    /// The attention queue, in queue order.
+    #[must_use]
+    pub fn attention(&self) -> &[PaneId] {
+        &self.attention
+    }
+
+    /// How many agents are waiting on the user — the status line's `⚑N`.
+    #[must_use]
+    pub fn attention_count(&self) -> u32 {
+        u32::try_from(self.attention.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Fold an `attention_enqueued` event, returning whether it was new.
+    ///
+    /// Idempotent, and it has to be: after a gap the client re-reads state and
+    /// then keeps folding deliveries, so an enqueue can arrive for a pane the
+    /// fresh snapshot already listed. A queue that grew a duplicate there would
+    /// make `⚑N` count the same agent twice.
+    pub fn enqueue_attention(&mut self, pane: PaneId) -> bool {
+        if self.attention.contains(&pane) {
+            return false;
+        }
+        self.attention.push(pane);
+        self.reindex_attention();
+        true
+    }
+
+    /// Fold an `attention_dequeued` event, returning whether it removed
+    /// anything.
+    pub fn dequeue_attention(&mut self, pane: PaneId) -> bool {
+        let before = self.attention.len();
+        self.attention.retain(|&id| id != pane);
+        let removed = self.attention.len() != before;
+        if removed {
+            self.reindex_attention();
+        }
+        removed
+    }
+
+    /// `pane`'s place in the queue, counted from zero.
+    fn queue_position(&self, pane: PaneId) -> Option<u32> {
+        self.attention
+            .iter()
+            .position(|&id| id == pane)
+            .and_then(|at| u32::try_from(at).ok())
+    }
+
+    /// Rewrite every mirrored snapshot's queue position from the queue itself.
+    ///
+    /// One place holds the truth — the vector — and the per-pane field is
+    /// derived from it on every change, so a snapshot can never claim a
+    /// position the queue disagrees with.
+    fn reindex_attention(&mut self) {
+        for (pane, agent) in &mut self.agents {
+            agent.attention = self
+                .attention
+                .iter()
+                .position(|id| id == pane)
+                .and_then(|at| u32::try_from(at).ok());
+        }
+    }
+
     /// Record what the server's startup restore cost, or that it did none.
     pub fn set_restore(&mut self, restore: Option<RestoreSummary>) {
         self.restore = restore;
@@ -342,6 +312,8 @@ impl ClientModel {
     pub fn remove_pane(&mut self, pane: PaneId) {
         self.panes.remove(&pane);
         self.pane_labels.remove(&pane);
+        self.agents.remove(&pane);
+        self.dequeue_attention(pane);
     }
 
     /// Drop a workspace the server no longer reports, moving focus off it.
@@ -363,10 +335,18 @@ impl ClientModel {
         }
     }
 
-    /// Keep only the pane grids `keep` admits, labels with them.
+    /// Keep only the pane grids `keep` admits — labels, agent statuses and
+    /// attention entries with them.
+    ///
+    /// A pane the server no longer reports must leave the attention queue too:
+    /// a queue holding a dead pane would send `next-attention` somewhere there
+    /// is nothing to look at.
     pub fn retain_panes(&mut self, keep: impl Fn(PaneId) -> bool) {
         self.panes.retain(|id, _| keep(*id));
         self.pane_labels.retain(|id, _| keep(*id));
+        self.agents.retain(|id, _| keep(*id));
+        self.attention.retain(|id| keep(*id));
+        self.reindex_attention();
     }
 
     /// The content area chrome leaves for panes: the whole terminal minus one
