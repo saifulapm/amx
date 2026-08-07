@@ -22,32 +22,67 @@
 
 use std::path::{Path, PathBuf};
 
-use amx_core::PaneId;
+use amx_core::{Config, PaneId, Scheduled};
 use amx_proto::RpcOutcome;
+use amx_server::actor::CoreHandle;
+use amx_server::actor::core::Core;
+use amx_server::actor::gateway::Gateway;
+use amx_server::runtime::Runtime;
 use serde_json::{Value, json};
+use tokio::sync::{mpsc, watch};
 
 mod support;
 
-use support::{Client, PATIENCE, Server, TICK, TempDir, result_of};
+use support::{Client, PATIENCE, TICK, TempDir, connect_to, ctx_under, result_of};
 
 /// A session, an attached client, and a directory the children record into.
+///
+/// Assembled here rather than through `support::Server` for one reason: a
+/// session that takes its `[terminal] shell` from the defaults spawns the
+/// *developer's own login shell* behind every pane it seeds, and this suite
+/// seeds one per test. Starting eight interactive shells and killing them a
+/// tenth of a second later is both slow and rude — a zsh interrupted during
+/// startup leaves a stale lock on the user's real history file, which stalls
+/// the next shell any suite starts for as long as its lock timeout. Pinning
+/// `/bin/sh` keeps the suite hermetic and quick; the config channel is the same
+/// one the serve path publishes on, so nothing about the pane path is faked.
 struct Rig {
-    server: Server,
+    runtime: Runtime,
     client: Client,
     dir: TempDir,
     root: PaneId,
     next: u64,
+    /// Kept alive so the `Core`'s receiver keeps reading the pinned shell.
+    _config: watch::Sender<Config>,
 }
 
 impl Rig {
-    /// Start a session, attach, and learn the seeded workspace's root pane.
+    /// Start a session on its own socket, attach, and learn the root pane.
     async fn start(tag: &str) -> Self {
-        let server = Server::start(tag).await;
+        let dir = TempDir::new(tag);
+        let ctx = ctx_under(dir.path());
+        let mut runtime = Runtime::new(ctx.clone());
+
+        let mut pinned = Config::default();
+        pinned.terminal.shell = Some("/bin/sh".to_owned());
+        let (config_tx, config_rx) = watch::channel(pinned);
+
+        let (core_tx, core_rx) = mpsc::channel(64);
+        let mut core = Core::new(ctx.clone(), CoreHandle::new(core_tx.clone()));
+        core.set_config(config_rx);
+        runtime.spawn(async move {
+            let _ = core.run(core_rx, |_: &Scheduled| {}).await;
+        });
+        let gateway =
+            Gateway::bind(ctx.clone(), CoreHandle::new(core_tx)).expect("bind the session socket");
+        runtime.spawn(async move {
+            let _ = gateway.run().await;
+        });
+
         // `attach: true` is what seeds an empty session with its first
         // workspace, and therefore with the pane every test here splits from.
-        let mut client = server.connect().await;
+        let mut client = connect_to(&ctx.socket).await;
         client.hello_as_attach(amx_proto::version::window()).await;
-        let dir = TempDir::new(tag);
         let state = request(&mut client, 1, "session.state", json!({})).await;
         let root = state["panes"][0]["pane"]
             .as_str()
@@ -55,11 +90,12 @@ impl Rig {
             .parse()
             .expect("a pane id");
         Self {
-            server,
+            runtime,
             client,
             dir,
             root,
             next: 2,
+            _config: config_tx,
         }
     }
 
@@ -138,7 +174,7 @@ impl Rig {
 
     async fn stop(self) {
         drop(self.client);
-        self.server.shutdown().await;
+        self.runtime.shutdown().await;
     }
 }
 
