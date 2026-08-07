@@ -11,27 +11,27 @@
 //! actor and awaits the answer; the `Core` is the only thing that mutates the
 //! state tree and the only thing that publishes the resulting event.
 //!
-//! # Handler seams
+//! # Handler seams: none, twice over now
 //!
 //! A method landed in the shared table before its `Core` wiring exists is a
-//! compile error here until it gets a handler, and until then the [`seam`]
-//! helper is what a build in that state answers with rather than
-//! `METHOD_NOT_FOUND` — reporting an unimplemented method as unknown would tell
-//! a client to stop offering it. T16 emptied the seam list for M0; U01 refilled
-//! it with M1's two new rows, each carrying the task that closed it — U06 took
-//! `session.report`, U07 took `pane.rename` — and the list emptied again, the
-//! helper retiring with it.
+//! compile error here until it gets a handler, and until then a `seam` helper
+//! was what a build in that state answered with rather than `METHOD_NOT_FOUND`
+//! — reporting an unimplemented method as unknown would tell a client to stop
+//! offering it. The helper is a milestone's tool and it has never been allowed
+//! to outlive one: T16 emptied the list for M0; U01 refilled it with M1's two
+//! new rows, each carrying the task that closed it — U06 took `session.report`,
+//! U07 took `pane.rename` — and the list emptied again, the helper retiring
+//! with it.
 //!
-//! V02 reintroduces both, for M2's twelve rows, together with the exemption in
-//! `tests/hygiene.rs` that lets them exist — the two always move together, so a
-//! seam can never quietly outlive the milestone that opened it. Every call
-//! below names the task that closes it, and the hygiene suite reads those names
-//! back: **V06** `agent.explain` and **V08** `agent.next`. V09's
-//! `agent.report`, V12's four — `pane.send_text`/`send_keys`/`run`/`read` —
-//! V11's three — `wait`/`pane.wait_output`/`events.subscribe` — and V13's two —
-//! `agent.start`/`agent.prompt` — are filled, and each left the list with the
-//! count in `tests/hygiene.rs`. V17 empties it again and deletes the helper,
-//! which is the milestone's exit check.
+//! V02 brought both back for M2's twelve rows, together with the exemption in
+//! `tests/hygiene.rs` that let them exist, because the two always move
+//! together. V12 closed four — `pane.send_text`/`send_keys`/`run`/`read` — V09
+//! `agent.report`, V11 three — `wait`/`pane.wait_output`/`events.subscribe` —
+//! V13 two — `agent.start`/`agent.prompt` — and **V17 closed the last two**,
+//! `agent.explain` and `agent.next`, deleting the helper and the exemption in
+//! the same commit. That deletion is M2's exit check: every row of §4's table
+//! answers with behavior, and the next milestone that wants a seam writes the
+//! helper again with its own list of owners.
 
 mod agent;
 mod events;
@@ -41,8 +41,8 @@ mod wait;
 mod workspace;
 
 use amx_proto::control::{
-    Call, Dispatch, Method, agent as agent_proto, client as client_proto, pane as pane_proto,
-    session, stream as stream_proto, wait as wait_proto, workspace as workspace_proto,
+    Call, Dispatch, agent as agent_proto, client as client_proto, pane as pane_proto, session,
+    stream as stream_proto, wait as wait_proto, workspace as workspace_proto,
 };
 use amx_proto::rpc::RpcError;
 use serde_json::Value;
@@ -51,36 +51,6 @@ use tokio::sync::oneshot;
 use crate::actor::{AgentHandle, ClientCall, CoreCommand, CoreHandle, Reply, SessionCall};
 use crate::conn::events::ConnEvents;
 use crate::conn::streams::ConnStreams;
-
-/// The JSON-RPC code for a method this build knows but has not implemented.
-///
-/// Deliberately not `METHOD_NOT_FOUND`: the method exists in the table both
-/// peers share, so reporting it as unknown would tell a client to stop offering
-/// it. `-32000` is inside JSON-RPC 2.0's implementation-defined server error
-/// range.
-pub const NOT_IMPLEMENTED: i32 = -32000;
-
-/// The answer a tabled method with no wiring behind it yet gives.
-///
-/// `owner` is the task that closes this seam, and it is in the message rather
-/// than only in a comment for two reasons: a client that hits one is told when
-/// to expect it to work, and `tests/hygiene.rs` walks the call sites and
-/// asserts each names a task from M2's declared list. A seam nobody owns is the
-/// failure mode T19 and U01 were both written about, so this signature makes
-/// one impossible to write.
-///
-/// Never a panic. A stub that panicked would take the connection — and, with
-/// the shutdown wedge still undiagnosed (R-M1-2), possibly the session — down
-/// with it, over a method that simply is not finished.
-fn seam<T>(method: Method, owner: &str) -> Result<T, RpcError> {
-    Err(RpcError::new(
-        NOT_IMPLEMENTED,
-        format!(
-            "{} is in this build's method table but not implemented yet; {owner} fills it",
-            method.wire_name()
-        ),
-    ))
-}
 
 /// Routes control calls to the `Core` actor.
 #[derive(Clone, Debug)]

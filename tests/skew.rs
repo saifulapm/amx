@@ -116,6 +116,15 @@ fn sample_params(method: Method) -> Value {
 /// Named rather than derived so the harness states what it is covering: a
 /// thirteenth row would compile (the exhaustive match above is what catches
 /// that) but would not be claimed here, and the assertion below counts.
+/// The code a dispatch seam used to answer with, kept here as the thing to
+/// assert the absence of.
+///
+/// `-32000`, inside JSON-RPC 2.0's implementation-defined server error range.
+/// The constant it names was deleted from `amx-server` with the helper (V17), so
+/// this is deliberately a literal: the test must keep meaning "nobody answers
+/// this" even after nothing in the tree defines it.
+const RETIRED_SEAM: i32 = -32000;
+
 const M2_ROWS: &[&str] = &[
     "agent.report",
     "agent.start",
@@ -144,17 +153,29 @@ async fn skew_calls_every_m2_row_and_none_is_method_not_found() {
         let reply = wire
             .request(method.wire_name(), sample_params(method))
             .await;
-        // A seam answers `NOT_IMPLEMENTED` (-32000), a wired row answers an
-        // ordinary failure for a pane that does not exist. Either is fine; what
-        // is not is `METHOD_NOT_FOUND`, which would tell a client this build
-        // does not have the method its own table lists — and would let a row
-        // land in the table with no handler at all, which is the failure this
-        // harness exists to catch.
+        // Two codes are forbidden, and the second one only since V17.
+        //
+        // `METHOD_NOT_FOUND` would tell a client this build does not have the
+        // method its own table lists, and would let a row land in the table
+        // with no handler at all — the failure this harness exists to catch.
+        //
+        // `NOT_IMPLEMENTED` (-32000) was the *permitted* answer while M2 was
+        // being built: a tabled row whose wiring had not landed answered
+        // through the `seam` helper rather than disowning itself. V17 closed
+        // the last two seams and deleted the helper, so nothing in the tree can
+        // produce this code any more — and asserting that here is the wire-side
+        // half of the ledger `tests/hygiene.rs` keeps at the source level. A row
+        // that starts answering it again has been un-implemented.
         if let amx_proto::RpcOutcome::Error(err) = &reply.outcome {
             assert_ne!(
                 err.code,
                 RpcError::METHOD_NOT_FOUND,
                 "the server disowned its own method {name}",
+            );
+            assert_ne!(
+                err.code, RETIRED_SEAM,
+                "{name} answers the retired seam code; M2's ledger is empty and \
+                 every row of docs/08-m2-plan.md §4 owes real behavior",
             );
         }
     }
