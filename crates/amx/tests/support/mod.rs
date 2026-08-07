@@ -91,14 +91,13 @@ impl Env {
     /// that chose it rather than at the first probe on a macOS runner.
     pub fn new(tag: &str) -> Self {
         let dir = TempDir::new(tag);
+        assert_sun_path_fits(dir.path(), tag);
         std::fs::create_dir_all(dir.path().join("run")).expect("create the runtime root");
         std::fs::create_dir_all(dir.path().join("state")).expect("create the state root");
-        let env = Self {
+        Self {
             dir,
             session: tag.to_owned(),
-        };
-        assert_sun_path_fits(&env.socket(), tag);
-        env
+        }
     }
 
     /// The `amx` binary under test.
@@ -387,12 +386,14 @@ impl Drop for Terminal {
     }
 }
 
-/// Assert `socket` spends no more than [`SUN_BUDGET`] below `$TMPDIR`.
+/// Assert the socket an environment rooted at `dir` and named `tag` will bind
+/// spends no more than [`SUN_BUDGET`] below `$TMPDIR`.
 ///
 /// Measured below `$TMPDIR` rather than absolutely, because the absolute
 /// length is the runner's business: `/tmp` on Linux and a 48-byte private
 /// directory on darwin, for the same harness and the same tag.
-pub fn assert_sun_path_fits(socket: &Path, tag: &str) {
+pub fn assert_sun_path_fits(dir: &Path, tag: &str) {
+    let socket = dir.join("run").join("amx").join(tag).join("sock");
     let tmp = std::env::temp_dir();
     let root = tmp.to_string_lossy().trim_end_matches('/').len();
     let spent = socket.as_os_str().len().saturating_sub(root);

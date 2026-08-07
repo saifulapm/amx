@@ -312,6 +312,23 @@ fn agent_events_have_exactly_one_publisher() {
     );
 }
 
+// ------------------------------------------------- the socket-path budget
+
+/// The other convention nothing used to check: a session tag long enough to
+/// push its socket past darwin's `sun_path`.
+///
+/// The guard lives in [`rig::env::assert_sun_path_fits`] and is charged against
+/// darwin's `$TMPDIR` on every platform, which is the only way a Linux
+/// developer finds out. This is the proof it still bites — and it is the shape
+/// the flags suite arrived in: a readable tag, a socket four bytes too long,
+/// green everywhere but on a macOS runner.
+#[test]
+#[should_panic(expected = "bytes below $TMPDIR")]
+fn a_tag_too_long_to_bind_on_darwin_is_refused_here_too() {
+    let over = "a-session-tag-nobody-would-choose-but-somebody-eventually-will";
+    rig::env::assert_sun_path_fits(Path::new(&std::env::temp_dir()), over);
+}
+
 /// Every `.rs` file under `dir`, recursively.
 fn rust_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut found = Vec::new();
