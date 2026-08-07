@@ -86,6 +86,13 @@ pub struct Session {
     next_id: u64,
     /// The frame cap per bound inbound channel; `None` means unbound.
     caps: Box<[Option<u32>; CHANNELS]>,
+    /// Bytes read off the socket but not yet returned as a whole frame.
+    ///
+    /// The wired client awaits [`Session::read_frame_into`] inside `select!`,
+    /// where losing to another branch drops the read future. Everything read
+    /// lands here before the next await, so a dropped call strands nothing
+    /// and the next one resumes mid-frame instead of desyncing the stream.
+    inbound: Vec<u8>,
 }
 
 impl Session {
@@ -113,6 +120,7 @@ impl Session {
             write,
             next_id: 1,
             caps: Box::new([None; CHANNELS]),
+            inbound: Vec::new(),
         };
 
         let hello = Hello {
@@ -153,26 +161,43 @@ impl Session {
     ///
     /// The payload buffer is sized only after the length passes the cap for
     /// its channel: a peer declaring 4 GiB costs a rejection, not 4 GiB.
+    ///
+    /// Cancel-safe, which the wired client's `select!` depends on: each turn
+    /// of the loop awaits one cancel-safe `read` and banks what it got in
+    /// [`Session::inbound`] before awaiting again, so a future dropped
+    /// mid-frame loses nothing and the next call carries on from the same
+    /// byte.
     pub async fn read_frame_into(&mut self, buf: &mut Vec<u8>) -> Result<FrameHeader, NetError> {
-        let mut header = [0_u8; FRAME_HEADER_LEN];
-        // A zero-length read of the first byte is the one place a disconnect
-        // is not an error — the same distinction the server's reader draws
-        // between a clean disconnect and a torn frame.
-        let read = self.read.read(&mut header[..1]).await?;
-        if read == 0 {
-            return Err(NetError::Closed);
+        loop {
+            if self.inbound.len() >= FRAME_HEADER_LEN {
+                let header = FrameHeader::decode_slice(&self.inbound)?;
+                if !header.is_control() {
+                    let cap = self.caps[usize::from(header.channel)]
+                        .ok_or(NetError::UnboundChannel(header.channel))?;
+                    header.check_stream_len(cap)?;
+                }
+                let total = FRAME_HEADER_LEN + header.payload_len();
+                if self.inbound.len() >= total {
+                    buf.clear();
+                    buf.extend_from_slice(&self.inbound[FRAME_HEADER_LEN..total]);
+                    self.inbound.drain(..total);
+                    return Ok(header);
+                }
+            }
+            let mut chunk = [0_u8; 4096];
+            let read = self.read.read(&mut chunk).await?;
+            if read == 0 {
+                // A disconnect on a frame boundary is the peer leaving; one
+                // mid-frame is the peer or the transport breaking — the same
+                // distinction the server's reader draws.
+                return Err(if self.inbound.is_empty() {
+                    NetError::Closed
+                } else {
+                    NetError::Io(std::io::ErrorKind::UnexpectedEof.into())
+                });
+            }
+            self.inbound.extend_from_slice(&chunk[..read]);
         }
-        self.read.read_exact(&mut header[1..]).await?;
-        let header = FrameHeader::decode(header)?;
-        if !header.is_control() {
-            let cap = self.caps[usize::from(header.channel)]
-                .ok_or(NetError::UnboundChannel(header.channel))?;
-            header.check_stream_len(cap)?;
-        }
-        buf.clear();
-        buf.resize(header.payload_len(), 0);
-        self.read.read_exact(buf).await?;
-        Ok(header)
     }
 
     /// Make one JSON-RPC call and wait for its reply, handing every stream
