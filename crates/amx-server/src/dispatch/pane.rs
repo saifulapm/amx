@@ -26,6 +26,7 @@ use crate::actor::{
     CoreCommand, Drive, DriveError, Driven, KeyStroke, PaneCall, PaneCommand, PaneWiring,
     SessionCall, StreamCall,
 };
+use crate::agent::address::{self, Scope};
 use crate::dispatch::Router;
 
 pub(super) async fn split(
@@ -223,15 +224,19 @@ pub(super) async fn read(
 ///
 /// The order is fixed and it is the reason a pane labelled with another pane's
 /// UUID cannot shadow it. A label must match exactly one pane — the driving
-/// verbs take the wider rule of `agent/address.rs`'s three (any pane, not only
-/// agent panes), because a script driving a plain shell has no agent to be
-/// unique among — and an ambiguous one is an error that *names the candidates*,
-/// since "ambiguous target" without them is a message nobody can act on.
+/// verbs take the wider rule of [`Scope::AnyPane`] (any pane, not only agent
+/// panes), because a script driving a plain shell has no agent to be unique
+/// among — and an ambiguous one is an error that *names the candidates*, since
+/// "ambiguous target" without them is a message nobody can act on.
+///
+/// The rule itself lives in `agent/address.rs`, which V13 lifted it into so the
+/// agent verbs' narrower scope could be the same function with a different
+/// [`Scope`] rather than a second implementation of the same order.
 ///
 /// Reading `session.state` is how the labels are learned, which costs one
-/// `Core` round trip on the label path and none on the UUID path. **V13** owns
-/// `agent/address.rs` and lands the agent-scoped rule beside this one; when it
-/// does, this function is what it lifts.
+/// `Core` round trip on the label path and none on the UUID path — the early
+/// parse below is what keeps that promise, and it is the reason the UUID case
+/// never touches the actor.
 pub(super) async fn resolve(
     router: &Router,
     target: &pane::PaneTarget,
@@ -247,30 +252,7 @@ pub(super) async fn resolve(
             })
         })
         .await?;
-    let mut found = state
-        .panes
-        .iter()
-        .filter(|state| state.label.as_deref() == Some(target.as_str()));
-    let Some(first) = found.next() else {
-        return Err(RpcError::new(
-            RpcError::INVALID_PARAMS,
-            format!("no pane is named {:?}", target.as_str()),
-        ));
-    };
-    let rest: Vec<String> = found.map(|state| state.pane.to_string()).collect();
-    if rest.is_empty() {
-        return Ok(first.pane);
-    }
-    Err(RpcError::new(
-        RpcError::INVALID_PARAMS,
-        format!(
-            "{:?} names {} panes: {}, {}",
-            target.as_str(),
-            rest.len() + 1,
-            first.pane,
-            rest.join(", ")
-        ),
-    ))
+    Ok(address::resolve(target, &state.panes, Scope::AnyPane)?)
 }
 
 /// Hand one drive to the pane and wait for its outcome.
