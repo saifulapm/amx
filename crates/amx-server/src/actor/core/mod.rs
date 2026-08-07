@@ -276,6 +276,25 @@ impl Core {
         self.session_id
     }
 
+    /// Continue an existing session's identity instead of minting a new one.
+    ///
+    /// The inheritance a live upgrade turns on (`docs/09-m3-plan.md` D-M3-5).
+    /// A reconnecting client branches on `Welcome.session`: the same id means
+    /// "this is the session I was talking to, my caches and my last seq still
+    /// mean something", a different one means "a different server, drop
+    /// everything". A successor that minted a fresh id would therefore tell
+    /// every client to throw away exactly the state the handoff went to the
+    /// trouble of carrying across.
+    ///
+    /// Only the import assembly calls this, and only before [`Core::run`]:
+    /// changing a live session's identity mid-flight would be the same lie in
+    /// the other direction.
+    #[must_use]
+    pub const fn with_session_id(mut self, session_id: SessionId) -> Self {
+        self.session_id = session_id;
+        self
+    }
+
     fn server_info(&self) -> ServerInfo {
         ServerInfo {
             name: SERVER_NAME.to_owned(),

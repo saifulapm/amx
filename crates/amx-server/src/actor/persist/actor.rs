@@ -7,12 +7,13 @@
 //!   structural events — pane and workspace lifecycle, layout, labels, focus —
 //!   and treats a [`Delivery::Gap`] as dirty without re-reading anything, since
 //!   a gap can only hide transitions and the capture that follows reads current
-//!   state anyway. Nothing anywhere has to remember to notify persistence.
-//! - **The debounce has a ceiling.** A save fires after [`QUIET_WINDOW`] of
-//!   quiet *or* [`STALENESS_CAP`] after the first unsaved change, whichever
-//!   comes first. herdr's trailing-only window (`SESSION_SAVE_DEBOUNCE`) never
-//!   fires at all while a session keeps changing; the cap is what makes
-//!   staleness bounded instead of merely usually-small.
+//!   state anyway. Nothing anywhere has to remember to notify persistence. The
+//!   reading itself is [`debounce::change_in`].
+//! - **The debounce has a ceiling.** A save fires after
+//!   [`QUIET_WINDOW`](debounce::QUIET_WINDOW) of quiet *or*
+//!   [`STALENESS_CAP`](debounce::STALENESS_CAP) after the first unsaved change,
+//!   whichever comes first. Both deadlines live in [`debounce`], which is where
+//!   "when to write" ended up when W03 split this file for the budget.
 //! - **Capture happens on `Core`, writing happens here, fsync happens on the
 //!   blocking pool.** The capture request goes through the ordinary
 //!   [`CoreHandle`] — no back door, the same rule the connection path follows —
@@ -32,32 +33,18 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
-use amx_core::{Config, Ctx, Delivery, Event, Subscription};
+use amx_core::{Config, Ctx, Delivery, Subscription};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 
+use super::debounce::{self, Change, Debounce};
 use super::sidecars::Sidecars;
 use super::{Capture, PersistCommand};
 use crate::actor::{CoreCommand, CoreHandle, MailboxError, SessionCall};
 use crate::persist::io::{SyncAll, Syncs, write_atomic};
 use crate::persist::snapshot::encode;
 use crate::persist::{PersistError, SNAPSHOT_NAME, Snapshot, sidecar};
-
-/// How long the session must be quiet before a debounced save fires.
-///
-/// The common path: structural change comes in bursts (a split, a focus move,
-/// a layout settle) and half a second of quiet means the burst is over.
-pub const QUIET_WINDOW: Duration = Duration::from_millis(500);
-
-/// How long after the *first* unsaved change a save fires regardless.
-///
-/// The ceiling the quiet window alone does not have. A session that keeps
-/// changing forever still saves every five seconds, which is what bounds the
-/// loss a `kill -9` can cost (D-M1-7). Not shrunk casually: darwin's
-/// `F_FULLFSYNC` is drastically slower than a Linux `fsync` (R-M1-6).
-pub const STALENESS_CAP: Duration = Duration::from_secs(5);
 
 /// What one run of the actor did.
 ///
@@ -75,24 +62,6 @@ pub struct PersistReport {
     pub dumps: u64,
     /// Times `[persist] history` was turned off and the sidecars removed.
     pub wipes: u64,
-}
-
-/// When the pending change is due to be written.
-///
-/// Both deadlines are absolute and set at most once per dirty span: `quiet`
-/// moves out with every new change, `cap` never does. The save fires at
-/// whichever arrives first.
-#[derive(Clone, Copy, Debug)]
-struct Due {
-    quiet: Instant,
-    cap: Instant,
-}
-
-impl Due {
-    /// The deadline the timer is armed to.
-    fn at(self) -> Instant {
-        self.quiet.min(self.cap)
-    }
 }
 
 /// What one turn of the loop decided.
@@ -131,8 +100,8 @@ pub struct Persist {
     /// write hands it to the blocking pool, and dynamically dispatched so the
     /// actor's type does not grow a parameter every caller would have to name.
     syncs: Arc<dyn Syncs + Send + Sync>,
-    /// When the pending change is due, or `None` when nothing is unsaved.
-    due: Option<Due>,
+    /// When the pending change is due, if anything is unsaved.
+    due: Debounce,
     /// A capture that arrived instead of being asked for — `Core`'s final push.
     pending: Option<Capture>,
     /// The snapshot last written, so an unchanged session is not rewritten.
@@ -172,7 +141,7 @@ impl Persist {
             config,
             history,
             syncs: Arc::new(SyncAll),
-            due: None,
+            due: Debounce::default(),
             pending: None,
             last: None,
             sidecars: Sidecars::default(),
@@ -206,7 +175,7 @@ impl Persist {
         let mut watching = true;
         let mut configured = true;
         loop {
-            let due = self.due.map(Due::at);
+            let due = self.due.at();
             // Deliberately not `biased`: with a fixed order, a pane flooding
             // the bus would keep the delivery branch ready forever and the
             // save timer would never be reached — herdr's starvation, rebuilt
@@ -251,7 +220,7 @@ impl Persist {
         match command {
             PersistCommand::Snapshot(snapshot) => {
                 self.pending = Some(Capture::without_sidecars(*snapshot));
-                self.mark_dirty();
+                self.due.mark();
             }
             PersistCommand::Flush { reply } => {
                 let _ = reply.send(self.save().await);
@@ -260,59 +229,36 @@ impl Persist {
     }
 
     /// Fold one bus delivery into the dirty state.
+    ///
+    /// History is the one reading that is not purely a classification: the
+    /// window is folded first and unconditionally — a window is a fact about a
+    /// pane, and no config toggle changes what its history did — while arming
+    /// the debounce for it needs someone to have opted in. With `[persist]
+    /// history` off, `Core` hands back no pane handles and the save this armed
+    /// would capture, dump nothing and write nothing.
+    ///
+    /// Those arrive at most once per rendered frame, so a pane under sustained
+    /// output holds the quiet window open and the save lands on
+    /// [`STALENESS_CAP`](debounce::STALENESS_CAP) instead. That is the ceiling
+    /// doing its job (D-M1-7): one save and one dump every five seconds, which
+    /// is the cadence D-M1-6 priced a full-pane dump against.
     fn observe(&mut self, delivery: Delivery) {
-        match delivery {
-            Delivery::Event(envelope) => self.event(&envelope.event),
+        let Delivery::Event(envelope) = &delivery else {
             // A gap can only hide transitions, and the capture that follows
             // reads current state anyway — so there is nothing to re-read, and
             // the honest reaction is simply to save.
-            Delivery::Gap { .. } => self.mark_dirty(),
-        }
-    }
-
-    /// Fold one event in: structure dirties, history moves a window, the rest
-    /// is noise.
-    fn event(&mut self, event: &Event) {
-        match event {
-            Event::PaneCreated { .. }
-            | Event::PaneExited { .. }
-            | Event::PaneRenamed { .. }
-            | Event::PaneResized { .. }
-            | Event::WorkspaceCreated { .. }
-            | Event::WorkspaceRenamed { .. }
-            | Event::WorkspaceClosed { .. }
-            | Event::FocusChanged { .. }
-            | Event::LayoutChanged { .. } => self.mark_dirty(),
-            // Scrollback is the session's *other* durable half, and it moves
-            // on its own schedule: a session settles into a shape and then
-            // spends the rest of the day producing history. A dump that only
-            // rode structural dirt would therefore never happen in a real
-            // session — the pane that scrolls is usually the pane nothing is
-            // being done to. So history that has outrun its sidecar arms the
-            // debounce too, but only when someone opted in: with `[persist]
-            // history` off, `Core` hands back no pane handles and the save
-            // this armed would capture, dump nothing and write nothing.
-            //
-            // These arrive at most once per rendered frame, so a pane under
-            // sustained output holds the quiet window open and the save lands
-            // on [`STALENESS_CAP`] instead. That is the ceiling doing its job
-            // (D-M1-7): one save and one dump every five seconds, which is the
-            // cadence D-M1-6 priced a full-pane dump against.
-            Event::HistoryCommitted { .. }
-            | Event::HistoryEvicted { .. }
-            | Event::HistoryInvalidated { .. } => {
-                // Folded first and unconditionally: a window is a fact about a
-                // pane, and no config toggle changes what its history did.
-                let owed = self.sidecars.observe(event);
+            self.due.mark();
+            return;
+        };
+        match debounce::change_in(&envelope.event) {
+            Change::Structure => self.due.mark(),
+            Change::History => {
+                let owed = self.sidecars.observe(&envelope.event);
                 if self.history && owed {
-                    self.mark_dirty();
+                    self.due.mark();
                 }
             }
-            // Damage, titles, clients coming and going — and whatever a later
-            // version of the enum adds. None of it is the session's shape, and
-            // folding per-frame damage in would put the quiet window out of
-            // reach of any pane producing output (D-M1-7).
-            _ => {}
+            Change::Nothing => {}
         }
     }
 
@@ -333,7 +279,7 @@ impl Persist {
         }
         self.history = history;
         if history {
-            self.mark_dirty();
+            self.due.mark();
         } else {
             self.wipe_sidecars().await;
         }
@@ -364,20 +310,6 @@ impl Persist {
         }
     }
 
-    /// Arm the debounce, or move its quiet deadline out if it is already armed.
-    fn mark_dirty(&mut self) {
-        let now = Instant::now();
-        match &mut self.due {
-            Some(due) => due.quiet = now + QUIET_WINDOW,
-            None => {
-                self.due = Some(Due {
-                    quiet: now + QUIET_WINDOW,
-                    cap: now + STALENESS_CAP,
-                });
-            }
-        }
-    }
-
     /// Capture, dump what moved, write what changed.
     ///
     /// The debounce is disarmed first and never re-armed on failure: a save
@@ -385,7 +317,7 @@ impl Persist {
     /// backpressure replaces here), it waits for the next change. The failure
     /// itself is returned, so a `Flush` hears about it.
     async fn save(&mut self) -> Result<(), PersistError> {
-        self.due = None;
+        self.due.disarm();
         let capture = match self.pending.take() {
             Some(capture) => capture,
             None => self.capture().await?,

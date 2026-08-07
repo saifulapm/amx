@@ -6,6 +6,13 @@
 //! its own `oneshot` sender, so there is no correlation table to keep in sync
 //! and no reply that can arrive for a request nobody is waiting on.
 //!
+//! The vocabulary itself lives in two siblings — [`panes`] for the `Core` ↔
+//! `PaneHost` direction, [`calls`] for what a connection asks of the `Core` —
+//! and both are re-exported here, so the split W03 made for the module budget
+//! (`docs/09-m3-plan.md` R-M3-7) is invisible to every caller. What stays in
+//! this file is the plumbing the two share: the reply alias, the two mailbox
+//! handles, and the one error a closed mailbox produces.
+//!
 //! The other two actors keep their vocabulary in their own modules and
 //! re-export it here: [`persist`] for the snapshot mailbox, and [`agent`] for
 //! `AgentHub`'s — its two directions, its handle, and the [`StatusView`] wait
@@ -13,407 +20,33 @@
 
 pub mod pane_host;
 
-use std::path::PathBuf;
-
 pub mod agent;
 pub mod agent_hub;
+pub mod calls;
 pub mod core;
 pub mod gateway;
+pub mod panes;
 pub mod persist;
 
-use amx_core::{GridGeneration, InvalidationCause, PaneId, RowHash, RowId, RowRange};
-use amx_proto::control::{client, pane, session, workspace};
 use amx_proto::rpc::RpcError;
-use amx_vt::SnapshotRef;
-use bytes::Bytes;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
 pub use agent::{
     AGENT_MAILBOX, AgentCall, AgentCommand, AgentHandle, SpawnedIdentity, StatusUpdate, StatusView,
 };
+pub use calls::{
+    ClientCall, CoreCommand, PaneCall, PaneWiring, SessionCall, StreamCall, WorkspaceCall,
+};
 pub use pane_host::{
     Drive, DriveError, Driven, KeyParseError, KeyStroke, PaneHost, PaneHostConfig, PaneHostError,
     PaneProbe, SnapshotFeed,
 };
+pub use panes::{HistoryError, HistoryRows, PaneCommand, PaneReport};
 pub use persist::{Capture, PersistCommand, PersistHandle};
 
 /// A reply channel for a command that answers.
 pub type Reply<T> = oneshot::Sender<Result<T, RpcError>>;
-
-/// What the `Core` asks of one `PaneHost`.
-///
-/// Everything that touches the pane's terminal state is a command, including
-/// reads. 04 §3: "Scrollback-dependent reads — history ranges, persistence
-/// snapshots — are served as commands executed on the parser actor thread,
-/// serialized like herdr's PTY actor commands. Readers therefore never contend
-/// with the parser on a pane-state mutex." A variant here that took a lock
-/// instead would be reintroducing W10 by hand.
-#[derive(Debug)]
-pub enum PaneCommand {
-    /// Write bytes into the pane's PTY.
-    ///
-    /// `Bytes` is refcounted: the same input can be handed to a pane and
-    /// mirrored to a raw I/O stream without copying it.
-    Write(Bytes),
-    /// Write bytes into the pane's *terminal*, without going near the pty.
-    ///
-    /// The replay half of persistence (D-M1-6): a restored pane's saved
-    /// scrollback is fed to the fresh VT so the user's history is where they
-    /// left it, and the child that has just been spawned knows nothing about
-    /// it. `Write` cannot do this — those bytes go to the child — and nothing
-    /// but restore should send this: bytes that did not come from the process
-    /// are a lie about what the process printed, told exactly once, on purpose.
-    ///
-    /// Sent immediately after the spawn, so it is queued on the parser thread
-    /// ahead of the child's first output, which still has a fork, an exec and
-    /// a pty read to travel through.
-    Seed(Vec<u8>),
-    /// Resize the pane's grid, which bumps its generation and signals the child.
-    Resize {
-        /// New row count.
-        rows: u16,
-        /// New column count.
-        cols: u16,
-    },
-    /// Publish and return the current POD cell snapshot.
-    TakeSnapshot(oneshot::Sender<SnapshotRef>),
-    /// Read a range of committed history.
-    HistoryRange {
-        /// The rows wanted.
-        range: RowRange,
-        /// Where to send them.
-        reply: oneshot::Sender<Result<HistoryRows, HistoryError>>,
-    },
-    /// Put driven input in front of the child: 04 §8's `send-text`,
-    /// `send-keys`, `run`.
-    ///
-    /// A command rather than a [`Write`](Self::Write) of bytes already made,
-    /// because they cannot be made anywhere else: key encoding and paste
-    /// bracketing are both questions about terminal state, and the terminal
-    /// belongs to the parser thread (04 §3). Forwarded there with the caller's
-    /// reply channel like any other terminal-dependent read;
-    /// [`pane_host::drive`](crate::actor::pane_host::drive) has the whole
-    /// argument, ordering against query replies included.
-    Drive {
-        /// What to put in front of the child.
-        what: pane_host::Drive,
-        /// Where the outcome goes.
-        reply: oneshot::Sender<Result<pane_host::Driven, pane_host::DriveError>>,
-    },
-    /// Read the foreground process's working directory.
-    ///
-    /// `None` when it cannot be read — the caller falls back to the pane's own
-    /// cwd rather than failing the split (04 §7).
-    ForegroundCwd(oneshot::Sender<Option<PathBuf>>),
-    /// Signal the child process.
-    Kill,
-    /// Stop the actor, releasing the PTY and the terminal.
-    Shutdown,
-}
-
-/// What a `PaneHost` tells the `Core`.
-///
-/// Reports are facts about what already happened; the `Core` turns them into
-/// bus events and effects. The pane actor never publishes to the bus itself —
-/// one publisher per transition is what keeps sequence numbers meaningful.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum PaneReport {
-    /// The grid has damage at this generation.
-    Damage {
-        /// The generation the damage belongs to.
-        generation: GridGeneration,
-    },
-    /// Rows were committed to history with stable ids.
-    ///
-    /// `hashes` covers the *last* `hashes.len()` rows of `range` — 04 §3 has
-    /// rows leaving the live grid announced "id + content hash" on the pane's
-    /// delta stream, and hashing is capped per frame so a flood cannot put an
-    /// unbounded cost on the frame path.
-    Committed {
-        /// The rows, in order.
-        range: RowRange,
-        /// Content hashes for the tail of `range`.
-        hashes: Vec<RowHash>,
-    },
-    /// History at or beyond `from_row` no longer means what clients cached.
-    Invalidated {
-        /// First invalid row.
-        from_row: RowId,
-        /// Why.
-        cause: InvalidationCause,
-    },
-    /// The eviction floor advanced.
-    Evicted {
-        /// The oldest row still fetchable.
-        oldest_row: RowId,
-    },
-    /// The application set the terminal title.
-    Title(String),
-    /// The application rang the bell.
-    Bell,
-    /// The child process ended.
-    Exited {
-        /// Exit status, or `None` if it was signalled.
-        status: Option<i32>,
-    },
-}
-
-/// Rows of history, packed for transfer.
-///
-/// Packed rather than structured: history is served straight into the wire
-/// encoding a [`HistoryChunk`](amx_proto::stream::HistoryChunk) carries, so a
-/// bulk fetch never rebuilds a cell model it is about to flatten again.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct HistoryRows {
-    /// The rows this buffer holds.
-    pub range: RowRange,
-    /// Packed rows.
-    pub rows: Vec<u8>,
-}
-
-/// Why a history range could not be served.
-#[derive(Clone, PartialEq, Eq, Debug, Error)]
-pub enum HistoryError {
-    /// The range starts below the pane's eviction floor.
-    ///
-    /// Refused, never faked: 04 §3 has clients treat evicted ranges as
-    /// unavailable rather than rendering blanks, which only works if the server
-    /// says so plainly.
-    #[error("rows below the eviction floor of {oldest}")]
-    Evicted {
-        /// The oldest row still fetchable.
-        oldest: RowId,
-    },
-    /// The range extends past what has been committed.
-    #[error("rows past the committed head of {head}")]
-    NotCommitted {
-        /// The newest committed row.
-        head: RowId,
-    },
-    /// The terminal could not serve the range.
-    #[error("terminal error: {0}")]
-    Terminal(String),
-}
-
-/// What a connection task asks of the `Core`.
-///
-/// One variant per dispatch group, mirroring the method table's domains: the
-/// connection decodes a call, hands the `Core` the typed parameters and a reply
-/// channel, and never touches session state itself.
-#[derive(Debug)]
-pub enum CoreCommand {
-    /// A `session.*` call.
-    Session(SessionCall),
-    /// A `workspace.*` call.
-    Workspace(WorkspaceCall),
-    /// A `pane.*` call.
-    Pane(PaneCall),
-    /// A `client.*` call.
-    Client(ClientCall),
-    /// A `stream.*` call's `Core` half.
-    Stream(StreamCall),
-    /// A pane actor reported a transition.
-    PaneReport {
-        /// Which pane.
-        pane: PaneId,
-        /// What happened.
-        report: PaneReport,
-    },
-    /// Something `AgentHub` decided; see [`AgentCall`].
-    Agent(AgentCall),
-    /// Shut the session down.
-    Shutdown,
-}
-
-/// A live pane's plumbing, handed to the connection that binds a stream on it.
-///
-/// The connection talks to the pane directly from then on — input bytes go to
-/// [`PaneWiring::handle`], grid frames come off [`PaneWiring::frames`] —
-/// so a keystroke never queues behind the `Core`'s mailbox (04 §4's round-trip
-/// budget is the reason this is a hand-off rather than a relay).
-#[derive(Clone, Debug)]
-pub struct PaneWiring {
-    /// The pane's command mailbox.
-    pub handle: PaneHandle,
-    /// The pane's published frames.
-    pub frames: SnapshotFeed,
-}
-
-/// The `Core` half of stream binding: resolving a pane to its live plumbing.
-#[derive(Debug)]
-pub enum StreamCall {
-    /// Fetch the wiring of a live pane.
-    Wiring {
-        /// The pane a stream is being bound for.
-        pane: PaneId,
-        /// Where the wiring goes.
-        reply: Reply<PaneWiring>,
-    },
-}
-
-/// `session.*` calls.
-#[derive(Debug)]
-pub enum SessionCall {
-    /// `ping`.
-    Ping {
-        /// Parameters.
-        params: session::PingParams,
-        /// Where the reply goes.
-        reply: Reply<session::PingReply>,
-    },
-    /// An attached client completed its handshake.
-    ///
-    /// Not a wire method: the gateway's connection task sends this on behalf
-    /// of a client whose hello declared an attach, and awaits the reply
-    /// before writing the welcome. The `Core` seeds a session with no
-    /// workspaces with its first one — a live shell to land in — so a bare
-    /// `amx` never renders an empty session. Seeding is idempotent by
-    /// construction: the `Core` serializes its mailbox, so the second of two
-    /// racing first attaches sees the first one's workspace and does nothing.
-    Attached {
-        /// Where the acknowledgement goes, once any seeding is done.
-        reply: Reply<()>,
-    },
-    /// `session.state`.
-    State {
-        /// Parameters.
-        params: session::StateParams,
-        /// Where the snapshot goes.
-        reply: Reply<session::StateReply>,
-    },
-    /// `session.report`.
-    ///
-    /// Answered from the [`RestoreReport`](amx_proto::control::session::RestoreReport)
-    /// the startup restore left on `Core`, which is where it lives for the
-    /// server's lifetime: 04 §6 requires restore loss to stay queryable, so it
-    /// is state, not a log line that has already scrolled away.
-    Report {
-        /// Parameters.
-        params: session::ReportParams,
-        /// Where the report goes.
-        reply: Reply<session::ReportReply>,
-    },
-    /// Assemble a snapshot of the session for persistence.
-    ///
-    /// Not a wire method: the `Persist` actor sends this through the ordinary
-    /// [`CoreHandle`] when its debounce fires — no back door, the same rule
-    /// the connection path follows — and `Core` answers synchronously from
-    /// [`SessionState`](amx_core::SessionState) plus its shorts maps. A
-    /// capture can never fail, so the reply channel carries the value bare.
-    Capture {
-        /// Whether the caller wants pane handles for sidecar dumps too.
-        sidecars: bool,
-        /// Where the capture goes.
-        reply: oneshot::Sender<Capture>,
-    },
-}
-
-/// `workspace.*` calls.
-#[derive(Debug)]
-pub enum WorkspaceCall {
-    /// `workspace.create`.
-    Create {
-        /// Parameters.
-        params: workspace::CreateParams,
-        /// Where the reply goes.
-        reply: Reply<workspace::CreateReply>,
-    },
-    /// `workspace.rename`.
-    Rename {
-        /// Parameters.
-        params: workspace::RenameParams,
-        /// Where the reply goes.
-        reply: Reply<workspace::RenameReply>,
-    },
-    /// `workspace.kill`.
-    Kill {
-        /// Parameters.
-        params: workspace::KillParams,
-        /// Where the reply goes.
-        reply: Reply<workspace::KillReply>,
-    },
-    /// `workspace.switch`.
-    Switch {
-        /// Parameters.
-        params: workspace::SwitchParams,
-        /// Where the reply goes.
-        reply: Reply<workspace::SwitchReply>,
-    },
-}
-
-/// `pane.*` calls.
-#[derive(Debug)]
-pub enum PaneCall {
-    /// `pane.split`.
-    Split {
-        /// Parameters.
-        params: pane::SplitParams,
-        /// Where the reply goes.
-        reply: Reply<pane::SplitReply>,
-    },
-    /// `pane.zoom`.
-    Zoom {
-        /// Parameters.
-        params: pane::ZoomParams,
-        /// Where the reply goes.
-        reply: Reply<pane::ZoomReply>,
-    },
-    /// `pane.swap`.
-    Swap {
-        /// Parameters.
-        params: pane::SwapParams,
-        /// Where the reply goes.
-        reply: Reply<pane::SwapReply>,
-    },
-    /// `pane.move`.
-    Move {
-        /// Parameters.
-        params: pane::MoveParams,
-        /// Where the reply goes.
-        reply: Reply<pane::MoveReply>,
-    },
-    /// `pane.rename`.
-    Rename {
-        /// Parameters.
-        params: pane::RenameParams,
-        /// Where the reply goes.
-        reply: Reply<pane::RenameReply>,
-    },
-    /// `pane.close`.
-    Close {
-        /// Parameters.
-        params: pane::CloseParams,
-        /// Where the reply goes.
-        reply: Reply<pane::CloseReply>,
-    },
-    /// `pane.focus`.
-    Focus {
-        /// Parameters.
-        params: pane::FocusParams,
-        /// Where the reply goes.
-        reply: Reply<pane::FocusReply>,
-    },
-    /// `pane.resize`.
-    Resize {
-        /// Parameters.
-        params: pane::ResizeParams,
-        /// Where the reply goes.
-        reply: Reply<pane::ResizeReply>,
-    },
-}
-
-/// `client.*` calls.
-#[derive(Debug)]
-pub enum ClientCall {
-    /// The client declared its terminal size and visible panes.
-    Viewport {
-        /// Parameters.
-        params: client::Viewport,
-        /// Where the acknowledgement goes.
-        reply: Reply<client::ViewportReply>,
-    },
-}
 
 /// A handle on one pane actor's mailbox.
 #[derive(Clone, Debug)]

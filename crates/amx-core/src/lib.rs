@@ -33,4 +33,4 @@ pub use event::{Bus, Delivery, Envelope, Event, Seq, Subscription};
 pub use id::{ClientId, GridGeneration, PaneId, SessionId, ShortNumber, ShortNumbers, WorkspaceId};
 pub use layout::{Axis, Direction, Layout, LayoutError, Rect};
 pub use scrollback::{EvictionFloor, InvalidationCause, RowHash, RowId, RowRange};
-pub use state::{Pane, SessionState, StateError, Workspace};
+pub use state::{Pane, SessionState, StateError, Workspace, Worktree};

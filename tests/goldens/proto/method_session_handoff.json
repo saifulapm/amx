@@ -1,0 +1,15 @@
+{
+  "reply": {
+    "accepted": true,
+    "seq": 57
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "session.handoff",
+    "params": {
+      "binary": "/home/s/.local/state/amx/staged/amx",
+      "timeout_ms": 30000
+    }
+  }
+}

@@ -56,6 +56,10 @@ impl Core {
                 label: ws.label().map(str::to_owned),
                 layout: ws.layout().clone(),
                 focus: ws.focus(),
+                // Pass-through, verbatim: see `core/persist.rs`. State and
+                // snapshot report the same block, which is what makes the two
+                // surfaces one fact rather than two.
+                worktree: ws.worktree().cloned(),
             });
             for pane in ws.layout().panes() {
                 let (rows, cols) = self

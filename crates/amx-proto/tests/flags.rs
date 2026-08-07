@@ -30,7 +30,7 @@ use amx_core::agent::AgentKind;
 use amx_proto::control::cli::{
     Field, PARAMS, ROWS, Source, method_commands, millis, params_from_flags, row,
 };
-use amx_proto::control::{Method, SPECS, agent, pane, wait};
+use amx_proto::control::{Method, SPECS, agent, pane, session, wait};
 use clap::{ArgMatches, Command};
 use serde_json::{Value, json};
 
@@ -50,6 +50,13 @@ use serde_json::{Value, json};
 fn fixtures() -> Vec<(Method, Value)> {
     let target = || pane::PaneTarget::new("build");
     vec![
+        (
+            Method::SessionHandoff,
+            json(&session::HandoffParams {
+                binary: PathBuf::from("/home/s/.local/state/amx/staged/amx"),
+                timeout_ms: Some(30_000),
+            }),
+        ),
         (
             Method::Wait,
             json(&wait::WaitParams {
@@ -201,12 +208,15 @@ fn the_flagged_rows_are_the_verbs_the_roadmap_spells_with_flags() {
     // nobody chose. 05's M2 lists `wait`, `agent prompt --wait` and `pane
     // wait-output --match/--regex` by name; the rest of those two verbs'
     // groups follow so a human need not remember which half speaks which
-    // language.
+    // language. M3 adds one more on the same grounds: `docs/09-m3-plan.md` §7
+    // spells the exit test's own invocation `amx session handoff --binary
+    // <path>`, so the flag is part of how the verb is meant to be typed.
     assert_eq!(
         ROWS.iter()
             .map(|row| row.method.wire_name())
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([
+            "session.handoff",
             "wait",
             "pane.wait_output",
             "agent.start",

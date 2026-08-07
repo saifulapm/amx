@@ -72,3 +72,94 @@ mid-report send fails rather than waits (`actor/core/mod.rs:380-385`, with the
 comment saying exactly that). Whatever the drain wedge is, it is not that.
 W02 changes nothing on that path: reports still flow, only the second publish
 is gone.
+
+---
+
+## W03 — M3 contracts
+
+**W02's hand-off is carried.** The `PaneReport` comment now reads as W02 wrote
+it, in `actor/panes.rs` — the file the split moved it to.
+
+**`PaneReport::Title` is still open.** W02 flagged, undecided, that the variant
+now folds to nothing and nothing reads it. `pane_host/actor.rs` is wave 2's
+file; W04 either drops the send and the variant or keeps it as the mailbox
+counterpart of a bus event with a deliberately empty arm. W03 did not decide it.
+
+**Three edits outside the §5 scope list, each forced by a field this task
+added.** None is behavior; all three are the pass-throughs without which the
+tree does not compile:
+
+- `actor/core/persist.rs` and `actor/core/view.rs` copy the workspace
+  `worktree` block into the snapshot and into `session.state`. Without them the
+  field exists and is unreachable, and `workspace_worktree_block_round_trips_
+  snapshot_and_state` would be asserting about serde rather than about amx.
+  W12's own scope (`dispatch/workspace.rs`, `core/workspace.rs`,
+  `core/restore.rs`) is untouched.
+- `amx-client/src/app/wired.rs` gains `Method::SessionHandoff` in the
+  "does not change the layout tree" arm of an exhaustive match, and passes
+  `generation: None` on its one `stream.bind`. Both are the minimum the new
+  row and the new field cost a file W09 owns in wave 4; the reconnect logic
+  that will *send* a generation is entirely W09's.
+- `crates/amx/src/cmd/viewport.rs` passes `generation: None` for the same
+  reason.
+
+**`tests/hygiene.rs` is edited, which W14's scope anticipates.** The seam guard
+was in its resting "no seam exists" form and had to be rewritten with M3's
+ledger — one row, `session.handoff`, in `dispatch/session.rs`, owed by W06 —
+because a helper and the test that bounds it always move together. W14 empties
+the ledger and restores the resting form.
+
+**`amx server --handoff-import` was left out on purpose.** §4 names it as
+hidden CLI surface but the W03 scope list does not, and it is a flag on an
+existing verb rather than a routing arm. **W07 adds the argument to `cli.rs`'s
+`server()` itself**; no wave-3 peer touches that file, so it is safe. Every
+other M3 verb — `update`, `work`, `layout`, `apply`, `_bridge`,
+`_handoff-caps` — is planted, routed, and refuses by name from the real binary.
+
+**`session.handoff` carries no `Core` command yet, deliberately.** A
+`SessionCall::Handoff` variant would force an arm in `actor/core/route.rs`,
+which is not W03's file and has no behavior to put in it. W06 adds the mailbox
+variant with the orchestrator that answers it; until then the seam replies
+without reaching `Core` at all.
+
+**One split more than the two the plan named.** `amx-vt/src/snapshot.rs` was at
+494 lines and the generation seed pushed it to 518, so it became
+`snapshot/{mod,publish}.rs` — the published value and the parser's end of the
+double buffer. The R-M1-3 rule ("no split waits for the hard limit") applied to
+a file this task grew rather than one it found over.
+
+**A latent bug the seed would have shipped.** `Snapshots::publish` decided
+"this is the first frame, force a full one" by testing `generation == 0`. A
+seeded counter makes that false on a fresh buffer, and the first frame after a
+handoff would have published blank rows for every undamaged row. The flag is
+now `published`, tracked separately; `Snapshots::new` is unaffected either way.
+
+**`HistoryTracker::resume` needed one behavior change, not just a
+constructor.** A tracker's proof that history is what it thinks it is comes
+from an anchor it placed itself, and a tracker handed an inherited terminal has
+none — so its first observation read as a `Clear`, invalidated every row the
+manifest had just carried across, and rebaselined the id space above them.
+`adopting` makes the first look adopt what it finds. Provably load-bearing:
+disabling that one branch turns
+`a_tracker_resumed_at_head_floor_commits_the_next_row_id_contiguously` red with
+`Invalidated { from_row: 2233, cause: Clear }`. `HistoryTracker::new` takes the
+same branch and is unchanged by it — floor and issued are both zero there, so
+the rebaseline it replaces moved nothing and announced nothing, and
+`a_fresh_tracker_still_starts_at_zero_and_announces_nothing_on_its_first_look`
+pins that.
+
+**The bridge skew row is a tripwire, not a run.** §4's law asks for "a bridge
+transport case in `tests/skew.rs`", and `amx _bridge` is a W11 stub, so the
+case cannot run the conformance table over it yet. Rather than a skip that
+would sit green forever,
+`the_bridge_transport_row_is_planted_and_fails_when_the_splice_arrives` asserts
+the stub's refusal by name — so **it goes red the day W11 writes the splice**,
+and finishing the row (`for &method in Method::ALL` over a `Wire` on the
+child's stdio) is the only way past it. W11's own acceptance name for the
+finished row is `every_skew_sample_row_answers_over_the_bridge_transport`.
+
+**Budget watch.** `amx-core/src/state/session.rs` is at 499 after
+`set_worktree`, and `tests/hygiene.rs` went 501 → 522 (already over before this
+task, and the seam ledger is what grew it). No `src/` file is over the soft
+budget; the next task to add to either of those two should expect to split
+rather than trim.

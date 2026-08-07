@@ -91,6 +91,18 @@ pub struct HistoryTracker {
     anchor: Option<Anchor>,
     /// The hash of history row 0, so a floor kept without a probe is checked.
     floor_hash: Option<RowHash>,
+    /// Whether the next observation adopts the terminal it finds rather than
+    /// treating an unprovable floor as a clear.
+    ///
+    /// Set for exactly one observation, at construction. A tracker's ordinary
+    /// proof that history is what it thinks it is comes from an anchor it
+    /// placed itself, and a tracker that has never looked at this terminal has
+    /// no anchor to place — so the first look would otherwise always read as a
+    /// clear. Harmless for [`HistoryTracker::new`] (floor and issued are both
+    /// zero, so the rebaseline it takes moves nothing and announces nothing)
+    /// and load-bearing for [`HistoryTracker::resume`], where a rebaseline
+    /// would invalidate the very rows the manifest carried across.
+    adopting: bool,
     cols: u16,
     rows: u16,
     /// Reused across observations: no per-frame allocation once warm.
@@ -112,12 +124,43 @@ impl HistoryTracker {
     /// A tracker for a pane that has committed nothing yet.
     #[must_use]
     pub fn new(cols: u16, rows: u16) -> Self {
+        Self::resume(cols, rows, RowId::from_raw(0), RowId::from_raw(0))
+    }
+
+    /// A tracker continuing a pane's id space from `head` and `floor`.
+    ///
+    /// 04 §6: "scrollback row ids are continuous across handoff". The successor
+    /// rebuilds a pane around a fresh terminal, so without this the first rows
+    /// it commits would take ids 0, 1, 2 — ids the exporter already handed out
+    /// for different rows, which is precisely what the never-reused contract
+    /// forbids and what a client's cached ranges would silently mis-address.
+    ///
+    /// `head` is one past the newest committed row and `floor` is the oldest
+    /// still fetchable, exactly as [`HistoryTracker::head`] and
+    /// [`HistoryTracker::oldest_row`] report them. `issued` starts at `head`
+    /// too: a rebaseline numbers survivors from above every id ever issued, and
+    /// the ids the exporter issued are ids this tracker must never reuse.
+    ///
+    /// The manifest's rows are replayed into the terminal *after* this, and
+    /// they re-wrap at the current width like any replayed history — so what is
+    /// continuous is the id space, not a promise that a given id names the same
+    /// glyphs. That is the same bound restore's sidecar replay carries
+    /// (D-M1-6), reached from the other direction.
+    ///
+    /// A `floor` above `head` is not representable as a state this tracker can
+    /// reach, so it is clamped rather than trusted: an id space where the
+    /// oldest fetchable row is newer than the newest committed one would make
+    /// [`committed`](HistoryTracker::committed) lie.
+    #[must_use]
+    pub fn resume(cols: u16, rows: u16, head: RowId, floor: RowId) -> Self {
+        let head = head.get();
         Self {
-            floor: 0,
-            head: 0,
-            issued: 0,
+            floor: floor.get().min(head),
+            head,
+            issued: head,
             anchor: None,
             floor_hash: None,
+            adopting: true,
             cols,
             rows,
             text: String::new(),
@@ -186,9 +229,18 @@ impl HistoryTracker {
             // area: the head recedes, the floor does not move, and nothing a
             // client cached became wrong.
             None
+        } else if self.adopting {
+            // The first look at a terminal this tracker did not watch fill.
+            // There is no anchor because none has ever been placed, so nothing
+            // here can prove the floor — and the caller is the one that knows
+            // it: `new` seeds a zero id space, `resume` seeds one a manifest
+            // just carried across. Reading either as a clear would invalidate
+            // rows that are exactly where they are supposed to be.
+            None
         } else {
             Some(InvalidationCause::Clear)
         };
+        self.adopting = false;
 
         if let Some(cause) = cause {
             self.rebaseline(floor_was, cause, out);

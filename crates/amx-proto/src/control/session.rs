@@ -48,6 +48,15 @@ pub struct WorkspaceState {
     /// The pane focused inside this workspace, if it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<PaneId>,
+    /// The git worktree this workspace was created for, if `amx work` created
+    /// it (D-M3-10).
+    ///
+    /// Additive and optional on the same terms as the label above it. The
+    /// server learns no git: the CLI runs `git worktree add`, and this block is
+    /// the membership the server has to *remember* so `amx work done` can find
+    /// the workspace by branch and restore can check the tree is still there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<amx_core::Worktree>,
 }
 
 /// One pane, as `session.state` reports it.
@@ -140,6 +149,113 @@ pub struct ReportReply {
     pub seq: Seq,
     /// The report itself, empty when the restore lost nothing.
     pub report: RestoreReport,
+    /// What the last live-upgrade handoff did, if this server has seen one.
+    ///
+    /// Additive and optional, under the same R-M1-8 contract as every other
+    /// field on this surface: absent from the bytes a pre-M3 peer parses, and
+    /// absent on a server that has never been asked to hand itself over.
+    ///
+    /// It rides `session.report` rather than getting a method of its own
+    /// because a refused or aborted handoff is exactly the kind of loss this
+    /// reply already exists to make queryable (04 §6, "never log-only"): the
+    /// caller's own connection dies at gateway retirement, so a handoff is
+    /// observed by reconnecting and then asking what happened (D-M3-8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<HandoffAttempt>,
+}
+
+/// Parameters of `session.handoff`.
+///
+/// The one new method row of M3 (`docs/09-m3-plan.md` §4). Deliberately small:
+/// the caller stages a binary and names it, and everything else about the
+/// swap — the token, the private socket, the stage timeouts — is the server's
+/// own business.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct HandoffParams {
+    /// The staged binary to hand the session over to.
+    ///
+    /// Already verified and in place by the time this call is made: `amx
+    /// update apply` stages, checksums and renames first, and only then asks
+    /// for the swap (D-M3-8).
+    pub binary: PathBuf,
+    /// How long any one stage of the protocol may take, in milliseconds.
+    ///
+    /// Absent means the server's own budget, which is herdr's 30 s per stage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+/// Reply to `session.handoff`: accepted, or refused with the reason.
+///
+/// Acceptance is not completion. The exporter retires its gateway partway
+/// through the protocol, so the connection that made this call dies before the
+/// swap finishes by design; the caller learns the outcome by reconnecting and
+/// reading [`ReportReply::handoff`] (D-M3-8).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct HandoffReply {
+    /// Whether the server accepted the handoff and started the protocol.
+    pub accepted: bool,
+    /// Why it was refused, for a human. Absent when it was accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The bus sequence at reply time.
+    pub seq: Seq,
+}
+
+/// How far a handoff got, by the stage names of `docs/09-m3-plan.md` §3.
+///
+/// Ordered as the protocol runs, so a reader can say "it got at least as far
+/// as X" without a table of its own.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandoffStage {
+    /// `<binary> _handoff-caps` ran, before any pane was touched.
+    PreFlight,
+    /// Panes were quiesced and their state captured.
+    Quiesce,
+    /// The manifest line was sent and the importer validated it.
+    Manifest,
+    /// The pty descriptors crossed, one message per pane.
+    Descriptors,
+    /// The importer rebuilt the session and reported `restored`.
+    Restore,
+    /// The exporter retired its gateway and unlinked the session socket.
+    Retire,
+    /// The importer bound the session socket and reported `ready`.
+    Ready,
+    /// Ownership transferred: the exporter reported `committed`.
+    Commit,
+}
+
+/// What became of one handoff attempt.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandoffOutcome {
+    /// Refused before anything was touched — a bad binary, a window that does
+    /// not overlap, a handoff already running.
+    Refused,
+    /// Started and rolled back: panes resumed, the socket answers again, and
+    /// this is still the server the caller was talking to.
+    Aborted,
+    /// Ownership transferred. Only a successor ever reports this, since the
+    /// exporter is gone by the time anyone could ask it.
+    Committed,
+}
+
+/// One handoff attempt, as `session.report` tells it.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct HandoffAttempt {
+    /// What became of it.
+    pub outcome: HandoffOutcome,
+    /// The last stage it completed.
+    pub stage: HandoffStage,
+    /// The binary it was aimed at.
+    pub binary: PathBuf,
+    /// Why, in one line, for a human reading `amx session report`.
+    ///
+    /// Absent on a committed handoff, which needs no explanation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// What a restore cost, in counts.

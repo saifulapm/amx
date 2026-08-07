@@ -1,11 +1,37 @@
 //! A workspace: one BSP layout tree, one focus, one label (D13).
 
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
 use crate::id::{PaneId, WorkspaceId};
 use crate::layout::{Layout, Rect};
 
 /// Viewport a freshly created workspace is assumed to have, until the first
 /// real terminal size arrives. 80x24 is the traditional terminal default.
 pub const DEFAULT_AREA: Rect = Rect::new(0, 0, 80, 24);
+
+/// The git worktree a workspace was created for (D-M3-10).
+///
+/// Membership, not machinery: the server learns no git. `amx work <branch>`
+/// runs `git worktree add` client-side, then creates a workspace carrying this
+/// block, and the two verbs that need the association read it back — `amx work
+/// done` resolves a workspace by [`branch`](Self::branch), and restore checks
+/// [`path`](Self::path) still exists and degrades the workspace to a plain one
+/// with a report entry when it does not.
+///
+/// Serializable because it crosses two surfaces unchanged: `session.state` on
+/// the wire and the persist snapshot on disk, both as an additive optional
+/// field inside protocol v1 and snapshot v1 (R-M1-8).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct Worktree {
+    /// The repository the worktree was added to, as an absolute path.
+    pub repo: PathBuf,
+    /// The branch it checks out.
+    pub branch: String,
+    /// Where the tree itself lives, as an absolute path.
+    pub path: PathBuf,
+}
 
 /// One workspace: a BSP layout tree over a set of panes, plus the focus and
 /// label that exist per workspace rather than per pane.
@@ -19,6 +45,7 @@ pub struct Workspace {
     layout: Layout,
     focus: Option<PaneId>,
     area: Rect,
+    worktree: Option<Worktree>,
 }
 
 impl Workspace {
@@ -31,6 +58,7 @@ impl Workspace {
             layout: Layout::with_root(pane),
             focus: Some(pane),
             area: DEFAULT_AREA,
+            worktree: None,
         }
     }
 
@@ -55,6 +83,7 @@ impl Workspace {
             layout,
             focus,
             area: DEFAULT_AREA,
+            worktree: None,
         }
     }
 
@@ -73,6 +102,21 @@ impl Workspace {
     /// Set the workspace's label.
     pub(crate) fn set_label(&mut self, label: Option<String>) {
         self.label = label;
+    }
+
+    /// The git worktree this workspace was created for, if any (D-M3-10).
+    #[must_use]
+    pub const fn worktree(&self) -> Option<&Worktree> {
+        self.worktree.as_ref()
+    }
+
+    /// Record — or clear — the git worktree this workspace belongs to.
+    ///
+    /// Cleared rather than removed when the tree vanishes: restore degrades
+    /// such a workspace to a plain one and reports the loss, and a workspace
+    /// with no membership is exactly what a plain one is.
+    pub fn set_worktree(&mut self, worktree: Option<Worktree>) {
+        self.worktree = worktree;
     }
 
     /// The workspace's layout tree.

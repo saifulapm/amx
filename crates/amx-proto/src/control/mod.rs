@@ -191,6 +191,21 @@ method_table! {
         about: "Report what the last restore lost or degraded",
     }
 
+    /// Hand this session over to a staged binary, live (04 §6, D-M3-6).
+    ///
+    /// The reply says only whether the protocol *started*: the exporter retires
+    /// its gateway partway through, so the connection that asked dies before
+    /// the swap finishes. Completion is observed by reconnecting and reading
+    /// `Welcome.session`; what went wrong is read from `session.report`.
+    SessionHandoff {
+        wire: "session.handoff",
+        handler: session_handoff,
+        params: session::HandoffParams,
+        reply: session::HandoffReply,
+        cli: ["session", "handoff"],
+        about: "Hand this session over to a staged binary without dropping a pane",
+    }
+
     /// Bind a binary stream to a frame channel on this connection.
     StreamBind {
         wire: "stream.bind",

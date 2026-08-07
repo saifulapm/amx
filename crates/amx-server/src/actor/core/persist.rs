@@ -151,6 +151,9 @@ impl Core {
                 label: ws.label().map(str::to_owned),
                 layout: ws.layout().clone(),
                 focus: ws.focus(),
+                // Pass-through, verbatim: the block is membership the CLI
+                // recorded, and nothing here reads or validates it (D-M3-10).
+                worktree: ws.worktree().cloned(),
             });
             for pane in ws.layout().panes() {
                 let state = self.state.pane(pane);
@@ -271,6 +274,9 @@ impl Core {
                 .as_ref()
                 .map(|restored| restored.report.clone())
                 .unwrap_or_default(),
+            // No handoff has been attempted on this server, and none can be
+            // until W06 builds the orchestrator that would record one.
+            handoff: None,
         }));
     }
 

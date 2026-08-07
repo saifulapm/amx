@@ -167,6 +167,9 @@ impl<S: PtySession + AsFd> Runner<S> {
                         .map_err(PtyActorError::Platform),
                 );
             }
+            Control::DupFd(reply) => {
+                let _ = reply.send(self.dup_fd());
+            }
             Control::Shutdown => return Some(Ending::Commanded),
         }
         None
@@ -215,6 +218,21 @@ impl<S: PtySession + AsFd> Runner<S> {
 
         self.state = State::Quiesced;
         Ok(())
+    }
+
+    /// Hand out a duplicate of the terminal's master descriptor.
+    ///
+    /// Quiesced only: see [`PtyActorHandle::dup_fd`](super::PtyActorHandle::dup_fd)
+    /// for why, and D-M3-3 for what the handoff does with it. Running is
+    /// refused rather than obliged, because the whole value of the descriptor
+    /// is that the state behind it is not moving.
+    fn dup_fd(&self) -> Result<OwnedFd, PtyActorError> {
+        match self.state {
+            State::Quiesced => rustix::io::fcntl_dupfd_cloexec(self.session.as_fd(), 0)
+                .map_err(|err| PtyActorError::Io(err.into())),
+            State::Running => Err(PtyActorError::NotQuiesced),
+            State::Released => Err(PtyActorError::Released),
+        }
     }
 
     /// Move queued input into the write queue.

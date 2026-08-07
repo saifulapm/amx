@@ -21,6 +21,7 @@ pub mod config_rt;
 pub mod conn;
 pub mod damage;
 pub mod dispatch;
+pub mod handoff;
 pub mod history;
 pub mod persist;
 pub mod platform;

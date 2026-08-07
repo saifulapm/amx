@@ -33,7 +33,7 @@ pub mod snapshot;
 use std::path::PathBuf;
 
 use amx_core::agent::{AgentKind, RefSource, SessionRef, StartSource};
-use amx_core::{Layout, PaneId, RowRange, ShortNumber, WorkspaceId};
+use amx_core::{Layout, PaneId, RowRange, ShortNumber, WorkspaceId, Worktree};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -180,6 +180,19 @@ pub struct WorkspaceSnapshot {
     /// The pane focused inside it, if it had one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<PaneId>,
+    /// The git worktree this workspace was created for, if `amx work` created
+    /// it (D-M3-10).
+    ///
+    /// Durable because both verbs that need the association outlive a restart:
+    /// `amx work done` resolves the workspace by branch, and restore validates
+    /// the path still exists — degrading a vanished tree to a plain workspace
+    /// with a report entry rather than resurrecting a directory that is gone.
+    ///
+    /// Additive under R-M1-8, exactly like `argv` and `agent` on the pane
+    /// beside it: **[`VERSION`] stays 1 and [`READ_WINDOW`] stays `{1}`**, and
+    /// only the golden regenerates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<Worktree>,
 }
 
 /// One pane, as the snapshot holds it.

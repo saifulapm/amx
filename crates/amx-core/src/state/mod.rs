@@ -13,4 +13,4 @@ mod workspace;
 pub use error::StateError;
 pub use pane::Pane;
 pub use session::SessionState;
-pub use workspace::Workspace;
+pub use workspace::{Workspace, Worktree};

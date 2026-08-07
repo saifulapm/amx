@@ -1,0 +1,200 @@
+//! M3's additive fields, and the both-directions tolerance that lets them ride
+//! protocol v1 (R-M1-8, `docs/09-m3-plan.md` §4).
+//!
+//! "Additive, no version bump" is a claim with two halves, and a field that
+//! only satisfies one of them strands a peer:
+//!
+//! - a peer that **sends** the field must be understood by a build that has it,
+//!   and its absence must decode to the same value it always did;
+//! - a peer that **does not** send it must produce exactly the bytes the older
+//!   peer produced, so nothing downstream sees a shape it has never seen.
+//!
+//! Both are asserted per field here rather than left to the goldens, because a
+//! golden freezes one example and this is about the two shapes at once.
+
+#![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
+
+use amx_core::GridGeneration;
+use amx_proto::control::{Call, Method, session, stream};
+use amx_proto::stream::StreamKind;
+use serde_json::json;
+
+fn pane() -> amx_core::PaneId {
+    "00000000-0000-0000-0000-0000000000a1".parse().unwrap()
+}
+
+/// D-M3-7: `stream.bind` grows an optional `generation`, and a bind without one
+/// is byte-for-byte the call M0 froze.
+#[test]
+fn stream_bind_with_generation_reads_at_v1_and_without_it_still_parses() {
+    // A re-bind after a reconnect claims what this client last saw.
+    let resumed = Call::decode(
+        "stream.bind",
+        Some(json!({ "kind": "pane_grid", "pane": pane(), "generation": 7 })),
+    )
+    .expect("a bind carrying a generation is a v1 call");
+    assert_eq!(resumed.method(), Method::StreamBind);
+    let Call::StreamBind(resumed) = resumed else {
+        panic!("decoded the wrong variant");
+    };
+    assert_eq!(resumed.kind, StreamKind::PaneGrid { pane: pane() });
+    assert_eq!(
+        resumed.generation,
+        Some(GridGeneration::from_raw(7)),
+        "the claimed generation is what decides keyframe-or-nothing",
+    );
+
+    // A first bind — every bind in the tree today — omits it, and decodes to
+    // the `None` that means "send me whatever you would have sent before".
+    let fresh = Call::decode(
+        "stream.bind",
+        Some(json!({ "kind": "pane_grid", "pane": pane() })),
+    )
+    .expect("a bind without a generation is the same v1 call");
+    let Call::StreamBind(fresh) = fresh else {
+        panic!("decoded the wrong variant");
+    };
+    assert_eq!(fresh.kind, resumed.kind);
+    assert_eq!(fresh.generation, None);
+
+    // And re-encoding that one produces the bytes a pre-M3 peer parses: the
+    // key is absent, not present-and-null, which is the difference between an
+    // additive field and a wire change.
+    let encoded = Call::StreamBind(fresh).params().expect("re-encode");
+    assert_eq!(
+        encoded,
+        json!({ "kind": "pane_grid", "pane": pane() }),
+        "an absent generation must serialize to nothing at all",
+    );
+
+    // The other direction of the tolerance rule, on the same row: a field this
+    // build has never heard of is ignored rather than fatal.
+    let from_the_future = Call::decode(
+        "stream.bind",
+        Some(json!({
+            "kind": "pane_grid",
+            "pane": pane(),
+            "generation": 7,
+            "predictive_echo": { "horizon_ms": 40 },
+        })),
+    )
+    .expect("an unknown field is dropped, never a decode failure");
+    assert_eq!(from_the_future.method(), Method::StreamBind);
+}
+
+/// The handoff-attempt row on `session.report` is additive in both directions.
+///
+/// A server that has never been asked to hand itself over writes the report M1
+/// wrote; one that has answers with the row, and a pre-M3 reader would drop it
+/// by the same contract that lets this build read a v2 field it has never seen.
+#[test]
+fn the_session_report_handoff_row_is_additive_in_both_directions() {
+    let quiet = session::ReportReply {
+        seq: 41,
+        report: session::RestoreReport::default(),
+        handoff: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&quiet).expect("encode"),
+        json!({ "seq": 41, "report": { "entries": [] } }),
+        "a server that has seen no handoff writes the bytes M1 wrote",
+    );
+
+    let attempted = session::ReportReply {
+        seq: 42,
+        report: session::RestoreReport::default(),
+        handoff: Some(session::HandoffAttempt {
+            outcome: session::HandoffOutcome::Aborted,
+            stage: session::HandoffStage::Manifest,
+            binary: "/tmp/amx".into(),
+            reason: Some("manifest version outside the read window".into()),
+        }),
+    };
+    let round_tripped: session::ReportReply =
+        serde_json::from_value(serde_json::to_value(&attempted).expect("encode")).expect("decode");
+    assert_eq!(round_tripped, attempted);
+
+    // A report from a build that has never heard of the row still parses here.
+    let older: session::ReportReply =
+        serde_json::from_value(json!({ "seq": 9, "report": { "entries": [] } })).expect("decode");
+    assert_eq!(older.handoff, None);
+}
+
+/// The stages are ordered as the protocol runs, so "it got at least as far as
+/// X" is a comparison rather than a table.
+///
+/// Pinned because the ordering is a promise the derive makes silently: a
+/// variant inserted in the wrong place would reorder it without a word.
+#[test]
+fn the_handoff_stages_are_ordered_as_the_protocol_runs() {
+    use session::HandoffStage::{
+        Commit, Descriptors, Manifest, PreFlight, Quiesce, Ready, Restore, Retire,
+    };
+
+    let ordered = [
+        PreFlight,
+        Quiesce,
+        Manifest,
+        Descriptors,
+        Restore,
+        Retire,
+        Ready,
+        Commit,
+    ];
+    for pair in ordered.windows(2) {
+        assert!(
+            pair[0] < pair[1],
+            "{:?} must precede {:?}",
+            pair[0],
+            pair[1]
+        );
+    }
+
+    // And every stage's wire name is the snake_case of what §3 calls it, so a
+    // `session report` row reads like the protocol document.
+    assert_eq!(
+        serde_json::to_value(PreFlight).expect("encode"),
+        json!("pre_flight")
+    );
+    assert_eq!(
+        serde_json::to_value(Descriptors).expect("encode"),
+        json!("descriptors")
+    );
+}
+
+/// The `session.handoff` reply says only whether the protocol *started*.
+///
+/// Frozen as a shape here because the distinction is the whole of D-M3-8's
+/// caller contract: the connection that asked dies at gateway retirement, so a
+/// reply that claimed completion would be claiming something it cannot know.
+#[test]
+fn a_handoff_reply_carries_acceptance_and_a_reason_only_when_refused() {
+    let accepted = session::HandoffReply {
+        accepted: true,
+        reason: None,
+        seq: 41,
+    };
+    assert_eq!(
+        serde_json::to_value(&accepted).expect("encode"),
+        json!({ "accepted": true, "seq": 41 }),
+    );
+
+    let refused = session::HandoffReply {
+        accepted: false,
+        reason: Some("no overlapping handoff window".into()),
+        seq: 41,
+    };
+    let bytes = serde_json::to_value(&refused).expect("encode");
+    assert_eq!(bytes["accepted"], json!(false));
+    assert!(bytes["reason"].is_string(), "a refusal says why: {bytes}");
+
+    // Params: the timeout is optional and absent means the server's own budget.
+    let minimal: stream::BindReply = serde_json::from_value(json!({
+        "stream": 1, "channel": 1, "max_frame": 1024
+    }))
+    .expect("decode");
+    assert_eq!(minimal.channel, 1);
+    let params: session::HandoffParams =
+        serde_json::from_value(json!({ "binary": "/tmp/amx" })).expect("decode");
+    assert_eq!(params.timeout_ms, None);
+}
