@@ -14,23 +14,34 @@
 //! # Handler seams
 //!
 //! A method landed in the shared table before its `Core` wiring exists is a
-//! compile error here until it gets a handler, and until then a `seam` helper
-//! is what a build in that state answers with rather than `METHOD_NOT_FOUND` —
-//! reporting an unimplemented method as unknown would tell a client to stop
-//! offering it. T16 emptied the seam list for M0; U01 refilled it with M1's
-//! two new rows, each carrying the task that closed it — U06 took
-//! `session.report`, U07 took `pane.rename` — and the list is empty again.
-//! The `seam` helper retired with it; the next milestone's contracts task
-//! reintroduces it alongside its own list, and "no `seam` in the tree" is
-//! the standing integration check U10 inherited.
+//! compile error here until it gets a handler, and until then the [`seam`]
+//! helper is what a build in that state answers with rather than
+//! `METHOD_NOT_FOUND` — reporting an unimplemented method as unknown would tell
+//! a client to stop offering it. T16 emptied the seam list for M0; U01 refilled
+//! it with M1's two new rows, each carrying the task that closed it — U06 took
+//! `session.report`, U07 took `pane.rename` — and the list emptied again, the
+//! helper retiring with it.
+//!
+//! V02 reintroduces both, for M2's twelve rows, together with the exemption in
+//! `tests/hygiene.rs` that lets them exist — the two always move together, so a
+//! seam can never quietly outlive the milestone that opened it. Every call
+//! below names the task that closes it, and the hygiene suite reads those names
+//! back: **V06** `agent.explain`, **V08** `agent.next`, **V09**
+//! `agent.report`, **V11** `wait`/`events.subscribe`/`pane.wait_output`,
+//! **V12** `pane.send_text`/`send_keys`/`run`/`read`, **V13**
+//! `agent.start`/`agent.prompt`. V17 empties the list again and deletes the
+//! helper, which is the milestone's exit check.
 
+mod agent;
+mod events;
 mod pane;
 mod stream;
+mod wait;
 mod workspace;
 
 use amx_proto::control::{
-    Call, Dispatch, client as client_proto, pane as pane_proto, session, stream as stream_proto,
-    workspace as workspace_proto,
+    Call, Dispatch, Method, agent as agent_proto, client as client_proto, pane as pane_proto,
+    session, stream as stream_proto, wait as wait_proto, workspace as workspace_proto,
 };
 use amx_proto::rpc::RpcError;
 use serde_json::Value;
@@ -46,6 +57,28 @@ use crate::conn::streams::ConnStreams;
 /// it. `-32000` is inside JSON-RPC 2.0's implementation-defined server error
 /// range.
 pub const NOT_IMPLEMENTED: i32 = -32000;
+
+/// The answer a tabled method with no wiring behind it yet gives.
+///
+/// `owner` is the task that closes this seam, and it is in the message rather
+/// than only in a comment for two reasons: a client that hits one is told when
+/// to expect it to work, and `tests/hygiene.rs` walks the call sites and
+/// asserts each names a task from M2's declared list. A seam nobody owns is the
+/// failure mode T19 and U01 were both written about, so this signature makes
+/// one impossible to write.
+///
+/// Never a panic. A stub that panicked would take the connection — and, with
+/// the shutdown wedge still undiagnosed (R-M1-2), possibly the session — down
+/// with it, over a method that simply is not finished.
+fn seam<T>(method: Method, owner: &str) -> Result<T, RpcError> {
+    Err(RpcError::new(
+        NOT_IMPLEMENTED,
+        format!(
+            "{} is in this build's method table but not implemented yet; {owner} fills it",
+            method.wire_name()
+        ),
+    ))
+}
 
 /// Routes control calls to the `Core` actor.
 #[derive(Clone, Debug)]
@@ -254,5 +287,89 @@ impl Dispatch for Router {
     ) -> Result<client_proto::ViewportReply, RpcError> {
         self.call(|reply| CoreCommand::Client(ClientCall::Viewport { params, reply }))
             .await
+    }
+
+    async fn agent_report(
+        &mut self,
+        params: Box<agent_proto::ReportParams>,
+    ) -> Result<agent_proto::ReportReply, RpcError> {
+        agent::report(self, params).await
+    }
+
+    async fn agent_start(
+        &mut self,
+        params: agent_proto::StartParams,
+    ) -> Result<agent_proto::StartReply, RpcError> {
+        agent::start(self, params).await
+    }
+
+    async fn agent_prompt(
+        &mut self,
+        params: agent_proto::PromptParams,
+    ) -> Result<agent_proto::PromptReply, RpcError> {
+        agent::prompt(self, params).await
+    }
+
+    async fn agent_explain(
+        &mut self,
+        params: agent_proto::ExplainParams,
+    ) -> Result<agent_proto::ExplainReply, RpcError> {
+        agent::explain(self, params).await
+    }
+
+    async fn agent_next(
+        &mut self,
+        params: agent_proto::NextParams,
+    ) -> Result<agent_proto::NextReply, RpcError> {
+        agent::next(self, params).await
+    }
+
+    async fn wait(
+        &mut self,
+        params: wait_proto::WaitParams,
+    ) -> Result<wait_proto::WaitReply, RpcError> {
+        wait::wait(self, params).await
+    }
+
+    async fn events_subscribe(
+        &mut self,
+        params: wait_proto::SubscribeParams,
+    ) -> Result<wait_proto::SubscribeReply, RpcError> {
+        events::subscribe(self, params).await
+    }
+
+    async fn pane_send_text(
+        &mut self,
+        params: pane_proto::SendTextParams,
+    ) -> Result<pane_proto::SendTextReply, RpcError> {
+        pane::send_text(self, params).await
+    }
+
+    async fn pane_send_keys(
+        &mut self,
+        params: pane_proto::SendKeysParams,
+    ) -> Result<pane_proto::SendKeysReply, RpcError> {
+        pane::send_keys(self, params).await
+    }
+
+    async fn pane_run(
+        &mut self,
+        params: pane_proto::RunParams,
+    ) -> Result<pane_proto::RunReply, RpcError> {
+        pane::run(self, params).await
+    }
+
+    async fn pane_read(
+        &mut self,
+        params: pane_proto::ReadParams,
+    ) -> Result<pane_proto::ReadReply, RpcError> {
+        pane::read(self, params).await
+    }
+
+    async fn pane_wait_output(
+        &mut self,
+        params: wait_proto::WaitOutputParams,
+    ) -> Result<wait_proto::WaitOutputReply, RpcError> {
+        wait::wait_output(self, params).await
     }
 }

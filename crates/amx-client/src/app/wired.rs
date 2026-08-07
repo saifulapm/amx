@@ -438,12 +438,29 @@ fn mutates_layout(method: Method) -> bool {
         | Method::WorkspaceRename
         | Method::WorkspaceKill
         | Method::WorkspaceSwitch => true,
+        // M2's rows change a pane's *contents* or its agent's status, never
+        // the layout tree — `agent.start` is the one that mints a pane, and it
+        // does so through the same `pane.split` path, whose own event the
+        // client already hears. `agent.next` moves focus, but through Core's
+        // ordinary focus change, which arrives as `FocusChanged`.
         Method::Ping
         | Method::SessionState
         | Method::SessionReport
         | Method::StreamBind
         | Method::PaneHistory
-        | Method::ClientViewport => false,
+        | Method::ClientViewport
+        | Method::AgentReport
+        | Method::AgentStart
+        | Method::AgentPrompt
+        | Method::AgentExplain
+        | Method::AgentNext
+        | Method::Wait
+        | Method::EventsSubscribe
+        | Method::PaneSendText
+        | Method::PaneSendKeys
+        | Method::PaneRun
+        | Method::PaneRead
+        | Method::PaneWaitOutput => false,
     }
 }
 
