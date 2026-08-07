@@ -216,6 +216,15 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// a layout-mutating call already covers.
     fn apply_event(&mut self, seq: Seq, event: &Event) -> Folded {
         match *event {
+            // The layout tree moved. Re-read state: the event says *that* a
+            // workspace changed shape, never what it changed to, and the tree
+            // is not something a mirror can reconstruct from a pane id.
+            //
+            // Only the calls this client makes itself resync (`mutates_layout`
+            // in `super::wired`), so without this arm a pane minted by another
+            // connection never appears on this screen at all — which is what
+            // `amx agent start`, run from a second terminal, does every time.
+            Event::PaneCreated { .. } | Event::LayoutChanged { .. } => Folded::Resync,
             // The notification rides `attention_enqueued` and not this, even
             // though a move into `blocked` implies one: the hub publishes both
             // and notifying from each would notify twice.
