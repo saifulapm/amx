@@ -134,3 +134,37 @@ pub fn reload(current: &Config, text: &str) -> (Config, Vec<ConfigDiagnostic>) {
     let _ = document;
     (current.clone(), Vec::new())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, PERSIST_SECTION, SECTIONS, TERMINAL_SECTION, reload};
+
+    /// The configuration of a machine with no file at all. A missing file must
+    /// be indistinguishable from an empty one, which is what makes "no config"
+    /// a normal startup rather than an error.
+    #[test]
+    fn defaults_are_the_no_file_configuration() {
+        let defaults = Config::default();
+        assert!(!defaults.persist.history, "scrollback holds secrets");
+        assert_eq!(defaults.terminal.shell, None);
+        assert_eq!(SECTIONS, &[PERSIST_SECTION, TERMINAL_SECTION]);
+    }
+
+    #[test]
+    fn a_file_level_parse_error_keeps_the_entire_running_config() {
+        let running = Config {
+            persist: super::PersistConfig { history: true },
+            terminal: super::TerminalConfig {
+                shell: Some("/bin/zsh".to_owned()),
+            },
+        };
+        let (next, diagnostics) = reload(&running, "[persist\nhistory = ");
+        assert_eq!(next, running, "a typo mid-edit must not yank live settings");
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].section, None,
+            "a whole-file failure names no section, because none applied",
+        );
+        assert!(!diagnostics[0].message.is_empty());
+    }
+}

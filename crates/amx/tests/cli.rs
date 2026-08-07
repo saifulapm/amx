@@ -123,6 +123,7 @@ fn a_session_selects_its_own_runtime_and_state_directories() {
     let env = Env {
         runtime_dir: Some(PathBuf::from("/run/user/1000")),
         state_home: Some(PathBuf::from("/home/u/.local/state")),
+        config_home: Some(PathBuf::from("/home/u/.config")),
         ..Env::default()
     };
     let matches = amx::cli::cli()
@@ -134,6 +135,12 @@ fn a_session_selects_its_own_runtime_and_state_directories() {
     assert_eq!(
         ctx.state_dir,
         PathBuf::from("/home/u/.local/state/amx/work")
+    );
+    // Config is per user, so it takes no session component — the one file
+    // every server this user runs reloads independently.
+    assert_eq!(
+        ctx.config_path,
+        PathBuf::from("/home/u/.config/amx/config.toml")
     );
 }
 
