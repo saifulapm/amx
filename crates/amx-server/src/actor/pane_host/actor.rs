@@ -152,6 +152,7 @@ impl Actor {
     async fn command(&mut self, command: PaneCommand) -> Step {
         match command {
             PaneCommand::Write(bytes) => Step::Effect(self.write(bytes).await),
+            PaneCommand::Seed(bytes) => Step::Effect(self.seed(bytes)),
             PaneCommand::Resize { rows, cols } => Step::Effect(self.resize(rows, cols).await),
             PaneCommand::TakeSnapshot(reply) => Step::Effect(self.snapshot(reply)),
             PaneCommand::HistoryRange { range, reply } => Step::Effect(self.history(range, reply)),
@@ -167,6 +168,13 @@ impl Actor {
         if let Err(err) = self.pty.write_input(bytes).await {
             debug!(error = %err, "pane input was not queued");
         }
+        Effect::Nothing
+    }
+
+    /// Restored scrollback goes to the parser thread, which owns the terminal
+    /// — never to the pty, which would hand it to the child as *input*.
+    fn seed(&mut self, bytes: Vec<u8>) -> Effect {
+        let _ = self.parser.send(ParserCommand::Seed(bytes));
         Effect::Nothing
     }
 

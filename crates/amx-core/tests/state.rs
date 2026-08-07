@@ -4,7 +4,10 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use amx_core::{Direction, Effect, Level, PaneId, Rect, SessionState, WorkspaceId};
+use amx_core::{
+    Direction, Effect, Layout, LayoutError, Level, PaneId, Rect, SessionState, StateError,
+    WorkspaceId,
+};
 use proptest::prelude::*;
 
 use support::grid_workspace;
@@ -27,6 +30,67 @@ fn move_pane_between_workspaces_preserves_the_pane_uuid() {
     assert!(state.workspace(ws_b).unwrap().layout().contains(pane_b));
     // The pane's own record — same UUID key — survived the move untouched.
     assert!(state.pane(pane_a).is_some());
+}
+
+#[test]
+fn an_adopted_workspace_keeps_the_ids_it_was_given() {
+    // What a restore does: yesterday's ids, yesterday's tree, over a session
+    // that has never seen either. Every join downstream — sidecar file names,
+    // short numbers, the client's mirror — is on these UUIDs (04 §6).
+    let mut donor = SessionState::new();
+    let (ws, root, _) = donor.open_workspace();
+    let (second, _) = donor.split(ws, root, Direction::Right, 0.5).unwrap();
+    let layout = donor.workspace(ws).unwrap().layout().clone();
+
+    let mut state = SessionState::new();
+    let effect = state
+        .adopt_workspace(ws, Some("build".to_owned()), layout, Some(second))
+        .unwrap();
+
+    assert_eq!(effect, Effect::Full);
+    let adopted = state.workspace(ws).unwrap();
+    assert_eq!(adopted.id(), ws);
+    assert_eq!(adopted.label(), Some("build"));
+    assert_eq!(adopted.focus(), Some(second));
+    assert!(adopted.layout().contains(root) && adopted.layout().contains(second));
+    // The panes are in the flat index too, so labels and cwds can be layered
+    // on through the ordinary handlers.
+    assert!(state.pane(root).is_some() && state.pane(second).is_some());
+    assert!(state.set_pane_cwd(root, "/tmp".into()).is_ok());
+}
+
+#[test]
+fn adopting_refuses_a_tree_the_session_could_not_hold() {
+    let mut state = SessionState::new();
+    let (ws, root, _) = state.open_workspace();
+    let taken = state.workspace(ws).unwrap().layout().clone();
+
+    // The same workspace twice.
+    let fresh = Layout::with_root(PaneId::new_v4());
+    assert!(matches!(
+        state.adopt_workspace(ws, None, fresh, None),
+        Err(StateError::WorkspaceExists(id)) if id == ws
+    ));
+    // A pane this session already holds, arriving under a new workspace.
+    assert!(matches!(
+        state.adopt_workspace(WorkspaceId::new_v4(), None, taken, None),
+        Err(StateError::Layout(LayoutError::AlreadyPresent(pane))) if pane == root
+    ));
+    // A focus that is not in the tree it claims to be in.
+    let stranger = PaneId::new_v4();
+    assert!(matches!(
+        state.adopt_workspace(
+            WorkspaceId::new_v4(),
+            None,
+            Layout::with_root(PaneId::new_v4()),
+            Some(stranger),
+        ),
+        Err(StateError::Layout(LayoutError::NoSuchPane(pane))) if pane == stranger
+    ));
+
+    // Nothing was half-applied: the session still holds exactly what it did.
+    assert_eq!(state.workspaces().count(), 1);
+    assert!(state.pane(stranger).is_none());
 }
 
 #[test]

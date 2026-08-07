@@ -14,6 +14,8 @@
 //! process tree). All three cancel the same token, and the socket is removed on
 //! the way out by the gateway that bound it.
 
+use std::path::PathBuf;
+
 use amx_core::{Ctx, Scheduled};
 use thiserror::Error;
 use tokio::signal::unix::{SignalKind, signal};
@@ -21,7 +23,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::actor::CoreHandle;
-use crate::actor::core::Core;
+use crate::actor::core::{Core, RestoreOptions};
 use crate::actor::gateway::{Gateway, GatewayError, GatewayReport};
 use crate::runtime::{Runtime, ShutdownReport};
 
@@ -86,7 +88,14 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     let gateway = Gateway::bind(ctx.clone(), CoreHandle::new(core_tx.clone()))?;
 
     let mut runtime = Runtime::new(ctx.clone());
-    let core = Core::new(ctx.clone(), CoreHandle::new(core_tx));
+    let mut core = Core::new(ctx.clone(), CoreHandle::new(core_tx));
+    // Between the bind and the accept loop (D-M1-9): the bind has claimed the
+    // session, so this server is the one that owns its state, and the earliest
+    // client that can possibly connect already sees the restored session. A
+    // restore that fails does not stop the server — a fresh session with a
+    // full loss report beats a refused start — which is why nothing here
+    // returns an error.
+    core.restore_from_disk(&RestoreOptions { home: home_dir() });
     runtime.spawn(async move {
         // Output rides two paths out of a folded batch. Grid traffic flows
         // from each pane's published frames through the per-client grid
@@ -111,6 +120,24 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     let shutdown = runtime.shutdown().await;
     let gateway = report_rx.await.unwrap_or_default();
     Ok(ServeReport { gateway, shutdown })
+}
+
+/// Where a restored pane whose saved directory has vanished respawns.
+///
+/// One of the two places the server reads its own environment rather than a
+/// `Ctx` — `$SHELL` for a pane's command is the other — because `$HOME` is a
+/// property of the user running the server, not of the session. Everything
+/// below this line takes it as a value, so a test degrades into a tempdir.
+/// A `$HOME` that is unset or is not a directory falls back to the directory
+/// the server itself was started in, and to `/` behind that: restore needs
+/// *somewhere* to put a pane, and refusing to restore it would turn a missing
+/// directory into a lost pane.
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_dir())
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 /// Cancel `cancel` on `SIGTERM` or `SIGINT`, and return when it is cancelled.

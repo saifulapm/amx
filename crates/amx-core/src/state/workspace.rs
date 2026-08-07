@@ -34,6 +34,30 @@ impl Workspace {
         }
     }
 
+    /// A workspace rebuilt from a snapshot: an existing id over an existing
+    /// tree, rather than a fresh one over a fresh pane.
+    ///
+    /// The caller (`SessionState::adopt_workspace`) has already checked that
+    /// `focus`, if set, is a leaf of `layout`; nothing else about a restored
+    /// workspace differs from one that was created live, which is the point —
+    /// after this it is an ordinary workspace and every handler treats it as
+    /// one.
+    #[must_use]
+    pub(crate) const fn adopted(
+        id: WorkspaceId,
+        label: Option<String>,
+        layout: Layout,
+        focus: Option<PaneId>,
+    ) -> Self {
+        Self {
+            id,
+            label,
+            layout,
+            focus,
+            area: DEFAULT_AREA,
+        }
+    }
+
     /// This workspace's stable identity.
     #[must_use]
     pub const fn id(&self) -> WorkspaceId {
