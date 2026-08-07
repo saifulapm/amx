@@ -25,6 +25,19 @@ pub const PATIENCE: Duration = Duration::from_secs(60);
 /// How long a poll loop waits between looks at its condition.
 pub const TICK: Duration = Duration::from_millis(5);
 
+/// How much of a `sun_path` a harness may spend below `$TMPDIR`.
+///
+/// `sun_path` is 104 bytes on darwin — the tighter of the two tier-1 platforms
+/// (Linux gives 108) — and darwin's per-user `$TMPDIR`,
+/// `/var/folders/<2>/<28>/T`, has already spent 48 of them before a test names
+/// anything. 52 is that rent rounded up; what is left is everything a harness
+/// adds: the temp root, `run/amx/`, the session name and `sock`.
+///
+/// Charged on every platform, deliberately. A check that only a macOS runner
+/// can fail is a check that only CI runs. The T17 harness
+/// (`crates/amx/tests/support`) states the same budget for the same reason.
+pub const SUN_BUDGET: usize = 104 - 52;
+
 /// A directory under `$TMPDIR`, removed when the test ends.
 #[derive(Debug)]
 pub struct TempDir(PathBuf);
@@ -74,16 +87,22 @@ impl Env {
     /// `SHELL` defaults to `/bin/sh` so seeded panes behave the same on every
     /// machine; a test that wants its own shell overrides it with
     /// [`Env::set_var`], which wins by coming later on the command.
+    ///
+    /// The socket this environment will bind is measured here, against
+    /// [`SUN_BUDGET`], so a tag too long to bind on darwin fails at the line
+    /// that chose it rather than at the first probe on a macOS runner.
     #[must_use]
     pub fn new(tag: &str) -> Self {
         let dir = TempDir::new(tag);
         std::fs::create_dir_all(dir.path().join("run")).expect("create the runtime root");
         std::fs::create_dir_all(dir.path().join("state")).expect("create the state root");
-        Self {
+        let env = Self {
             dir,
             session: tag.to_owned(),
             vars: vec![("SHELL".to_owned(), "/bin/sh".to_owned())],
-        }
+        };
+        assert_sun_path_fits(&env.socket(), tag);
+        env
     }
 
     /// A scratch directory panes and tests can exchange files through.
@@ -364,6 +383,24 @@ impl Output {
         assert_eq!(self.code, Some(0), "amx failed: {self:?}");
         &self.stdout
     }
+}
+
+/// Assert `socket` spends no more than [`SUN_BUDGET`] below `$TMPDIR`.
+///
+/// Measured below `$TMPDIR` rather than absolutely, because the absolute
+/// length is the runner's business: `/tmp` on Linux and a 48-byte private
+/// directory on darwin, for the same harness and the same tag.
+pub fn assert_sun_path_fits(socket: &Path, tag: &str) {
+    let tmp = std::env::temp_dir();
+    let root = tmp.to_string_lossy().trim_end_matches('/').len();
+    let spent = socket.as_os_str().len().saturating_sub(root);
+    assert!(
+        spent <= SUN_BUDGET,
+        "the socket for {tag:?} spends {spent} bytes below $TMPDIR and the \
+         budget is {SUN_BUDGET}; darwin would refuse to bind it. Shorten the \
+         tag — it names both the temp root and the session.\n{}",
+        socket.display()
+    );
 }
 
 /// Poll `cond` until it holds, failing the test if it never does.

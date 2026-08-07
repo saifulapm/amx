@@ -22,6 +22,19 @@ use std::time::{Duration, Instant};
 /// How long a test waits for something to happen.
 pub const PATIENCE: Duration = Duration::from_secs(10);
 
+/// How much of a `sun_path` a harness may spend below `$TMPDIR`.
+///
+/// `sun_path` is 104 bytes on darwin — the tighter of the two tier-1 platforms
+/// (Linux gives 108) — and darwin's per-user `$TMPDIR`,
+/// `/var/folders/<2>/<28>/T`, has already spent 48 of them before a test names
+/// anything. 52 is that rent rounded up; what is left is everything a harness
+/// adds: the temp root, `run/amx/`, the session name and `sock`.
+///
+/// Charged on every platform, deliberately. A check that only a macOS runner
+/// can fail is a check that only CI runs, and this suite has already shipped
+/// one socket path that fit in a developer's `/tmp` and not in a runner's.
+pub const SUN_BUDGET: usize = 104 - 52;
+
 /// How long a test sleeps between polls.
 pub const TICK: Duration = Duration::from_millis(5);
 
@@ -41,7 +54,11 @@ impl TempDir {
     pub fn new(tag: &str) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("amx-t17-{tag}-{}-{n}", std::process::id()));
+        // Kept short deliberately: this directory prefixes a unix socket path,
+        // and darwin's $TMPDIR alone eats half the sun_path budget (see
+        // [`SUN_BUDGET`]). A four-char tag survives for debuggability.
+        let brief: String = tag.chars().take(4).collect();
+        let path = std::env::temp_dir().join(format!("a{}-{n}-{brief}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create the temp dir");
         Self(path)
@@ -68,14 +85,20 @@ pub struct Env {
 
 impl Env {
     /// A fresh environment, with a session name unique to it.
+    ///
+    /// The socket this environment will bind is measured here, against
+    /// [`SUN_BUDGET`], so a tag too long to bind on darwin fails at the line
+    /// that chose it rather than at the first probe on a macOS runner.
     pub fn new(tag: &str) -> Self {
         let dir = TempDir::new(tag);
         std::fs::create_dir_all(dir.path().join("run")).expect("create the runtime root");
         std::fs::create_dir_all(dir.path().join("state")).expect("create the state root");
-        Self {
+        let env = Self {
             dir,
             session: tag.to_owned(),
-        }
+        };
+        assert_sun_path_fits(&env.socket(), tag);
+        env
     }
 
     /// The `amx` binary under test.
@@ -362,6 +385,24 @@ impl Drop for Terminal {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// Assert `socket` spends no more than [`SUN_BUDGET`] below `$TMPDIR`.
+///
+/// Measured below `$TMPDIR` rather than absolutely, because the absolute
+/// length is the runner's business: `/tmp` on Linux and a 48-byte private
+/// directory on darwin, for the same harness and the same tag.
+pub fn assert_sun_path_fits(socket: &Path, tag: &str) {
+    let tmp = std::env::temp_dir();
+    let root = tmp.to_string_lossy().trim_end_matches('/').len();
+    let spent = socket.as_os_str().len().saturating_sub(root);
+    assert!(
+        spent <= SUN_BUDGET,
+        "the socket for {tag:?} spends {spent} bytes below $TMPDIR and the \
+         budget is {SUN_BUDGET}; darwin would refuse to bind it. Shorten the \
+         tag — it names both the temp root and the session.\n{}",
+        socket.display()
+    );
 }
 
 /// Whether `haystack` contains `needle`.
