@@ -2,10 +2,25 @@
 //! of it.
 //!
 //! A [`PaneReport`] is a fact about something that already happened on a pane's
-//! own threads. `Core` is the only publisher of bus events (04 §2 — one
-//! publisher per transition is what keeps sequence numbers meaningful), so
-//! every report arrives here, updates whatever `Core` folds on the pane's
-//! behalf, and leaves as at most one [`Event`] plus at most one [`Effect`].
+//! own threads — a mailbox message, not a bus event. The pane actor that owns
+//! those threads has already published the transition; this is where `Core`
+//! folds what it keeps on the pane's behalf, and a report leaves as at most one
+//! [`Effect`] and no [`Event`] at all.
+//!
+//! That split is 04 §2's rule read per event *kind* rather than absolutely
+//! (`docs/09-m3-plan.md` D-M3-2): every transition owes exactly one sequence
+//! number, and the publisher of a pane-thread fact is the pane actor.
+//! Republishing here spent a second sequence number on the same transition,
+//! which halved the replay ring for the reconnect-resync that reads it across
+//! process generations. `Core` stays the publisher of everything it owns —
+//! panes created/renamed/closed, workspaces, focus, layout, restore, config.
+//!
+//! Damage is the reason the rule is per-kind and not "`Core` publishes
+//! everything". A damage report reaches this mailbox by `try_send` and is
+//! deliberately droppable under saturation
+//! ([`pane_host::actor`](crate::actor::pane_host)); the pane actor's own
+//! publish never drops. Funnelling `PaneDamage` through `Core` would let a
+//! saturated `Core` starve `pane.wait_output`.
 //!
 //! The history window is the fold worth naming: `session.state` answers
 //! synchronously, so it cannot ask a pane where its scrollback starts and ends.
@@ -34,43 +49,42 @@ impl Core {
     }
 
     /// Fold one report from `pane`.
+    ///
+    /// Nothing here publishes: the pane actor announced every one of these
+    /// before it sent the report.
     pub(super) fn handle_pane_report(&mut self, pane: PaneId, report: PaneReport) {
         match report {
-            PaneReport::Damage { generation } => {
+            PaneReport::Damage { .. } => {
                 self.effects.absorb(Effect::PaneDamage(pane));
-                self.publish(Event::PaneDamage { pane, generation });
             }
             // The hashes ride the pane's delta stream, not the bus: 04 §3 puts
-            // them next to the rows they describe, and the bus event is the
-            // session-state fact that ids `range` now exist.
+            // them next to the rows they describe. What `Core` takes from the
+            // report is the window `session.state` answers from, which it has
+            // to keep itself — the answer is synchronous, so it cannot ask the
+            // pane where its scrollback starts and ends.
             PaneReport::Committed { range, .. } => {
                 let (head, _) = self.history_window_mut(pane);
                 *head = (*head).max(RowId::from_raw(range.last.get().saturating_add(1)));
-                self.publish(Event::HistoryCommitted { pane, range });
             }
-            PaneReport::Invalidated { from_row, cause } => {
+            PaneReport::Invalidated { from_row, .. } => {
                 let (head, _) = self.history_window_mut(pane);
                 *head = from_row;
-                self.publish(Event::HistoryInvalidated {
-                    pane,
-                    from_row,
-                    cause,
-                });
             }
             PaneReport::Evicted { oldest_row } => {
                 let (head, floor) = self.history_window_mut(pane);
                 *floor = (*floor).max(oldest_row);
                 *head = (*head).max(*floor);
-                self.publish(Event::HistoryEvicted { pane, oldest_row });
             }
-            PaneReport::Title(title) => {
-                self.publish(Event::PaneTitle { pane, title });
-            }
+            // A title is the pane's own fact end to end. `Core` answers no
+            // question about it — no state row carries one — so with the
+            // publish gone there is nothing left for this arm to do.
+            PaneReport::Title(_) => {}
             // `Event` has no bell variant (T01's frozen enum): a bell is not
-            // session state, so there is nothing to publish. Flagged in T09's
-            // report rather than added there — extending `Event` is T01's file.
+            // session state, so there is nothing to fold and nothing to
+            // publish. Flagged in T09's report rather than added there —
+            // extending `Event` is T01's file.
             PaneReport::Bell => {}
-            PaneReport::Exited { status } => {
+            PaneReport::Exited { .. } => {
                 // The actor that reported this is on its way down: nothing
                 // left to send it, but its task is still ours to join, so the
                 // host moves to the draining list instead of being dropped.
@@ -78,7 +92,6 @@ impl Core {
                     self.draining.push(host);
                 }
                 self.effects.absorb(Effect::PaneDamage(pane));
-                self.publish(Event::PaneExited { pane, status });
             }
         }
     }
