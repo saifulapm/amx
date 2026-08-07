@@ -264,8 +264,9 @@ fn method_table_generates_matching_serde_names_dispatch_and_clap_tree() {
     // stream.bind + client.viewport; plus M1's pane.rename and session.report;
     // plus M2's twelve (`docs/08-m2-plan.md` §4): agent{report,start,prompt,
     // explain,next} + wait + events.subscribe + pane{send_text,send_keys,run,
-    // read,wait_output}.
-    assert_eq!(Method::ALL.len(), 18 + 12);
+    // read,wait_output}; plus M3's one (`docs/09-m3-plan.md` §4):
+    // session.handoff.
+    assert_eq!(Method::ALL.len(), 18 + 12 + 1);
     assert_eq!(Method::ALL.len(), SPECS.len());
 
     for method in Method::ALL {

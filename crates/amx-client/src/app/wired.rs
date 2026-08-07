@@ -308,8 +308,14 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         &mut self,
         kind: StreamKind,
     ) -> Result<Option<stream_proto::BindReply>, AppError> {
-        let params = serde_json::to_value(stream_proto::BindParams { kind })
-            .map_err(|_| AppError::BadState("unencodable bind"))?;
+        let params = serde_json::to_value(stream_proto::BindParams {
+            kind,
+            // A first bind on a fresh connection: there is no generation to
+            // claim. W09 sends the client's last-seen one when it re-binds
+            // after a reconnect (`docs/09-m3-plan.md` D-M3-7).
+            generation: None,
+        })
+        .map_err(|_| AppError::BadState("unencodable bind"))?;
         let value = match self.call(Method::StreamBind.wire_name(), params).await {
             Ok(value) => value,
             Err(crate::net::NetError::Call(_)) => return Ok(None),
@@ -465,7 +471,11 @@ fn mutates_layout(method: Method) -> bool {
         | Method::PaneSendKeys
         | Method::PaneRun
         | Method::PaneRead
-        | Method::PaneWaitOutput => false,
+        | Method::PaneWaitOutput
+        // The successor's `pane_created` and `layout_changed` are what a
+        // reconnecting client folds; the call that asked for the swap does not
+        // survive long enough to re-read anything.
+        | Method::SessionHandoff => false,
     }
 }
 

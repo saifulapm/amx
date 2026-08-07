@@ -148,8 +148,13 @@ async fn bind(
     bindings: &mut Bindings,
     kind: StreamKind,
 ) -> anyhow::Result<u8> {
-    let params =
-        serde_json::to_value(stream_proto::BindParams { kind }).context("encode the bind")?;
+    let params = serde_json::to_value(stream_proto::BindParams {
+        kind,
+        // A single-pane attach binds once on a fresh connection and has no
+        // generation to claim (D-M3-7).
+        generation: None,
+    })
+    .context("encode the bind")?;
     let value = session
         .call("stream.bind", params)
         .await

@@ -185,6 +185,7 @@ async fn workspace_and_pane_labels_survive_snapshot_and_restore() {
                 label: ws.label.clone(),
                 layout: ws.layout.clone(),
                 focus: ws.focus,
+                worktree: ws.worktree.clone(),
             })
             .collect(),
         panes: labelled

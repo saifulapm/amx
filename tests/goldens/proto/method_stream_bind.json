@@ -9,6 +9,7 @@
     "jsonrpc": "2.0",
     "method": "stream.bind",
     "params": {
+      "generation": 4,
       "kind": "pane_grid",
       "pane": "00000000-0000-0000-0000-0000000000a1"
     }

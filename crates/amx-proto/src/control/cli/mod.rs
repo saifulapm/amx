@@ -31,6 +31,7 @@ use super::{Method, MethodSpec, SPECS};
 mod agent;
 mod flag;
 mod pane;
+mod session;
 mod wait;
 
 pub use flag::{
@@ -54,6 +55,7 @@ const FLAGS: &str = "flags";
 /// flags — plus the rest of each of those verbs' own groups, so a human does
 /// not have to remember which half of `pane` speaks which language.
 pub const ROWS: &[FlagRow] = &[
+    session::HANDOFF,
     wait::WAIT,
     wait::WAIT_OUTPUT,
     agent::START,

@@ -5,7 +5,7 @@
 //! its own kind. Binding is per-connection — the reply's channel byte means
 //! something only on the connection that made the call.
 
-use amx_core::{PaneId, RowId, Seq};
+use amx_core::{GridGeneration, PaneId, RowId, Seq};
 use serde::{Deserialize, Serialize};
 
 use crate::stream::{StreamId, StreamKind};
@@ -16,6 +16,19 @@ pub struct BindParams {
     /// What the stream will carry, and for which pane.
     #[serde(flatten)]
     pub kind: StreamKind,
+    /// The grid generation this client already holds for the pane.
+    ///
+    /// The reconnect half of 04 §6's "keyframes for stale grids", additive on
+    /// the R-M1-8 terms every optional field here rides (D-M3-7): a fresh bind
+    /// omits it and opens exactly as it always did, a re-bind after a server
+    /// swap sends what it last saw, and the server opens delta-only when the
+    /// generations agree or with a `KeyframeReason::Generation` keyframe when
+    /// they do not.
+    ///
+    /// Meaningless on a non-grid stream, and ignored there rather than refused
+    /// — the unknown-field contract read one level in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<GridGeneration>,
 }
 
 /// Reply to `stream.bind`.

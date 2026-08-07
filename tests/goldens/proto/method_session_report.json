@@ -1,5 +1,11 @@
 {
   "reply": {
+    "handoff": {
+      "binary": "/home/s/.local/state/amx/staged/amx",
+      "outcome": "aborted",
+      "reason": "the importer exited before reporting restored",
+      "stage": "restore"
+    },
     "report": {
       "entries": [
         {
