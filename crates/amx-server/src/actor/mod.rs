@@ -31,7 +31,10 @@ use tokio::sync::{mpsc, oneshot};
 pub use agent::{
     AGENT_MAILBOX, AgentCommand, AgentHandle, SpawnedIdentity, StatusUpdate, StatusView,
 };
-pub use pane_host::{PaneHost, PaneHostConfig, PaneHostError, PaneProbe, SnapshotFeed};
+pub use pane_host::{
+    Drive, DriveError, Driven, KeyParseError, KeyStroke, PaneHost, PaneHostConfig, PaneHostError,
+    PaneProbe, SnapshotFeed,
+};
 pub use persist::{Capture, PersistCommand, PersistHandle};
 
 /// A reply channel for a command that answers.
@@ -80,6 +83,22 @@ pub enum PaneCommand {
         range: RowRange,
         /// Where to send them.
         reply: oneshot::Sender<Result<HistoryRows, HistoryError>>,
+    },
+    /// Put driven input in front of the child: 04 §8's `send-text`,
+    /// `send-keys`, `run`.
+    ///
+    /// A command rather than a [`Write`](Self::Write) of bytes already made,
+    /// because they cannot be made anywhere else: key encoding and paste
+    /// bracketing are both questions about terminal state, and the terminal
+    /// belongs to the parser thread (04 §3). Forwarded there with the caller's
+    /// reply channel like any other terminal-dependent read;
+    /// [`pane_host::drive`](crate::actor::pane_host::drive) has the whole
+    /// argument, ordering against query replies included.
+    Drive {
+        /// What to put in front of the child.
+        what: pane_host::Drive,
+        /// Where the outcome goes.
+        reply: oneshot::Sender<Result<pane_host::Driven, pane_host::DriveError>>,
     },
     /// Read the foreground process's working directory.
     ///

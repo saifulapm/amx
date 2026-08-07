@@ -26,7 +26,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use super::PublishedFrame;
-use super::parser::{HostEvent, ParserCommand};
+use super::drive::{Drive, DriveError, Driven};
+use super::mailbox::{HostEvent, ParserCommand};
 use crate::actor::{CoreCommand, CoreHandle, HistoryError, HistoryRows, PaneCommand, PaneReport};
 use crate::pty::{ChildExit, PtyActorHandle};
 
@@ -156,6 +157,7 @@ impl Actor {
             PaneCommand::Resize { rows, cols } => Step::Effect(self.resize(rows, cols).await),
             PaneCommand::TakeSnapshot(reply) => Step::Effect(self.snapshot(reply)),
             PaneCommand::HistoryRange { range, reply } => Step::Effect(self.history(range, reply)),
+            PaneCommand::Drive { what, reply } => Step::Effect(self.drive(what, reply)),
             PaneCommand::ForegroundCwd(reply) => Step::Effect(self.foreground_cwd(reply).await),
             PaneCommand::Kill => Step::Effect(self.kill().await),
             PaneCommand::Shutdown => Step::Stop,
@@ -207,6 +209,20 @@ impl Actor {
             && let ParserCommand::History { reply, .. } = err.0
         {
             let _ = reply.send(Err(HistoryError::Terminal("pane is stopping".into())));
+        }
+        Effect::Nothing
+    }
+
+    /// Driven input (04 §8) is a parser-thread command for the same reason a
+    /// history range is: the answer depends on state only that thread owns.
+    ///
+    /// Forwarded with the caller's own reply channel, so the parser answers the
+    /// connection directly and this actor never waits for it.
+    fn drive(&mut self, what: Drive, reply: oneshot::Sender<Result<Driven, DriveError>>) -> Effect {
+        if let Err(err) = self.parser.send(ParserCommand::Drive { what, reply })
+            && let ParserCommand::Drive { reply, .. } = err.0
+        {
+            let _ = reply.send(Err(DriveError::Gone));
         }
         Effect::Nothing
     }

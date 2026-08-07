@@ -32,6 +32,13 @@
 //! where the terminal is. This file holds no model of its own: it hands the
 //! tracker the terminal, forwards what the tracker found, and serves history
 //! ranges through it.
+//!
+//! ## Driven input
+//!
+//! `pane.send_text`/`send_keys`/`run` are commands here too, for the reasons
+//! [`super::drive`] states: the encoding and the bracketing are questions only
+//! this terminal can answer, and queueing the bytes from this thread is what
+//! keeps them ordered against query replies.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -40,114 +47,24 @@ use std::sync::mpsc as sync_mpsc;
 use std::time::{Duration, Instant};
 
 use amx_core::platform::WinSize;
-use amx_core::{GridGeneration, InvalidationCause, RowHash, RowId, RowRange};
-use amx_vt::{Effect as VtEffect, Effects, RenderState, SnapshotRef, Snapshots, Terminal};
+use amx_core::{GridGeneration, RowRange};
+use amx_vt::{Effect as VtEffect, Effects, RenderState, Snapshots, Terminal};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, warn};
 
 use super::PublishedFrame;
+use super::drive::Driver;
+use super::mailbox::{HostEvent, ParserCommand, Scratch};
 use super::probe::PaneProbe;
 use crate::actor::{HistoryError, HistoryRows};
 use crate::history::{CHUNK_ROWS, HistoryChunks, HistoryEvent, HistoryTracker};
-use crate::pty::{ChildExit, PtyActorHandle};
+use crate::pty::PtyActorHandle;
 
 /// How long the parser parks when it has no frame pending.
 ///
 /// A fallback for a wake that never arrived, exactly as the pty actor's idle
 /// timeout is: every path that makes the terminal dirty sends a command.
 const IDLE_TICK: Duration = Duration::from_millis(250);
-
-/// The buffer that shuttles between the pty thread and the parser thread.
-///
-/// One per pane, handed over with the bytes and handed back with the replies,
-/// so the hot path is two moves and no allocation.
-#[derive(Debug, Default)]
-pub(super) struct Scratch {
-    /// Bytes read off the pty.
-    pub(super) input: Vec<u8>,
-    /// What the terminal wants written back, concatenated in order.
-    pub(super) replies: Vec<u8>,
-}
-
-/// What the parser thread is asked to do.
-///
-/// Serialized like herdr's pty actor commands: one queue, one thread, so a
-/// history read and a parse can never interleave inside the terminal.
-pub(super) enum ParserCommand {
-    /// Feed these bytes to the terminal and hand the buffer back with the
-    /// replies. The sender blocks until it comes back.
-    Parse(Box<Scratch>),
-    /// Feed these bytes to the terminal and answer nobody.
-    ///
-    /// Restored scrollback (D-M1-6). Unlike [`Parse`](Self::Parse) there is no
-    /// buffer to hand back and no reply to order: the bytes came off disk, not
-    /// off the pty, so nothing is blocked waiting for them.
-    Seed(Vec<u8>),
-    /// Resize the grid, then the pty.
-    Resize {
-        /// New size.
-        size: WinSize,
-    },
-    /// Publish a frame now and answer with it.
-    Snapshot(oneshot::Sender<SnapshotRef>),
-    /// Read a committed range of history.
-    History {
-        /// The rows wanted.
-        range: RowRange,
-        /// Where they go.
-        reply: oneshot::Sender<Result<HistoryRows, HistoryError>>,
-    },
-    /// Stop the thread.
-    Stop,
-}
-
-/// What the parser thread tells the pane actor.
-///
-/// Sent on an unbounded channel on purpose: the pane actor can be awaiting a
-/// pty round trip when one of these is produced, and a parser that blocked on a
-/// full mailbox would deadlock against it. The rate is bounded by the frame
-/// interval, not by output volume.
-#[derive(Debug)]
-pub(super) enum HostEvent {
-    /// The application set the title.
-    Title(String),
-    /// The application rang the bell.
-    Bell,
-    /// The grid was resized and its generation bumped.
-    ///
-    /// Produced here rather than in the pane actor so the generation moves on
-    /// the same thread that publishes frames: a bump made anywhere else could
-    /// land between a frame and the generation a reader pairs it with.
-    Resized {
-        /// New row count.
-        rows: u16,
-        /// New column count.
-        cols: u16,
-        /// The generation the resize minted.
-        generation: GridGeneration,
-    },
-    /// Rows were committed to history.
-    Committed {
-        /// The rows, in order.
-        range: RowRange,
-        /// Content hashes for the tail of `range` (04 §3).
-        hashes: Vec<RowHash>,
-    },
-    /// Cached history at or beyond `from_row` is no longer valid.
-    Invalidated {
-        /// First invalid row.
-        from_row: RowId,
-        /// Why.
-        cause: InvalidationCause,
-    },
-    /// The eviction floor advanced.
-    Evicted {
-        /// Oldest row still fetchable.
-        oldest_row: RowId,
-    },
-    /// The child process ended.
-    Exited(ChildExit),
-}
 
 /// The parser thread's own state. Nothing here is shared.
 pub(super) struct Parser {
@@ -176,6 +93,9 @@ pub(super) struct Parser {
     found: Vec<HistoryEvent>,
     /// History transfers in progress, served one chunk per loop turn.
     transfers: VecDeque<Transfer>,
+    /// The encoder and buffer driven input is built with (04 §8), idle until
+    /// something drives this pane.
+    driver: Driver,
 }
 
 /// One chunked history read in flight, its reply held until the range is done.
@@ -223,6 +143,7 @@ impl Parser {
             history: HistoryTracker::new(size.cols, size.rows),
             found: Vec::new(),
             transfers: VecDeque::new(),
+            driver: Driver::default(),
         }
     }
 
@@ -298,6 +219,14 @@ impl Parser {
                         let _ = reply.send(Err(err));
                     }
                 }
+                false
+            }
+            ParserCommand::Drive { what, reply } => {
+                // The write is queued from this thread, which is what orders it
+                // behind the replies of every parse already served (04 §3), and
+                // the grid does not change until the child answers — so this
+                // schedules no frame of its own.
+                let _ = reply.send(self.driver.perform(what, &self.terminal, &self.pty));
                 false
             }
             // Handled by the caller, which stops the loop rather than looping
