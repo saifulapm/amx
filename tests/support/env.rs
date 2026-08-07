@@ -120,6 +120,35 @@ impl Env {
         self.dir.path().join("run").join("amx").join(&self.session)
     }
 
+    /// This environment's session state directory — where the snapshot and the
+    /// scrollback sidecars live (`$XDG_STATE_HOME/amx/<session>`, D-M1-4).
+    ///
+    /// The half of the "restart preserving state" helper that the crash suite
+    /// reads: the environment outlives any number of servers started on it, so
+    /// killing one and starting the next is the reboot M1 exits on, and this is
+    /// the directory that has to survive it. Named here rather than assembled
+    /// in a suite because the layout is the server's, not a test's.
+    #[must_use]
+    pub fn state_dir(&self) -> PathBuf {
+        self.dir
+            .path()
+            .join("state")
+            .join("amx")
+            .join(&self.session)
+    }
+
+    /// This environment's config file, and the directory it needs to sit in.
+    ///
+    /// Writing it is how a suite turns a `[persist]` toggle on for the server
+    /// it is about to start; a session with no file at all is the default
+    /// configuration, which is why nothing creates this by itself.
+    #[must_use]
+    pub fn config_path(&self) -> PathBuf {
+        let dir = self.dir.path().join("config").join("amx");
+        std::fs::create_dir_all(&dir).expect("create the config dir");
+        dir.join("config.toml")
+    }
+
     /// An `amx` command carrying this environment's roots and session.
     #[must_use]
     pub fn command(&self) -> Command {
@@ -237,6 +266,21 @@ impl ServerChild {
     #[must_use]
     pub fn read_bytes(&self) -> Option<u64> {
         crate::platform::read_bytes(self.pid())
+    }
+
+    /// `SIGKILL` the server and reap it, the way a power cut would end it.
+    ///
+    /// The other half of "restart preserving state": nothing is flushed, no
+    /// drain runs, no final capture is pushed — whatever is on disk is
+    /// whatever the debounced save last committed, which is exactly the claim
+    /// the crash suite is about. Consuming, because a killed server is not a
+    /// server any more, and reaping here rather than in [`Drop`] so the test
+    /// that killed it cannot leave a zombie behind for the next one to trip
+    /// over. `SIGKILL` and not `SIGTERM` on purpose: a term would run the very
+    /// shutdown path this suite must not depend on (R-M1-2).
+    pub fn kill_dash_9(mut self) {
+        self.child.kill().expect("SIGKILL the server");
+        self.child.wait().expect("reap the killed server");
     }
 
     /// Ask the server to exit and wait for it, asserting a clean code.
