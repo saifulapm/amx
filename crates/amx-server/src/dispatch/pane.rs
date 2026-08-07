@@ -232,7 +232,10 @@ pub(super) async fn read(
 /// `Core` round trip on the label path and none on the UUID path. **V13** owns
 /// `agent/address.rs` and lands the agent-scoped rule beside this one; when it
 /// does, this function is what it lifts.
-async fn resolve(router: &Router, target: &pane::PaneTarget) -> Result<PaneId, RpcError> {
+pub(super) async fn resolve(
+    router: &Router,
+    target: &pane::PaneTarget,
+) -> Result<PaneId, RpcError> {
     if let Ok(pane) = target.as_str().parse::<PaneId>() {
         return Ok(pane);
     }
