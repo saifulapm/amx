@@ -17,14 +17,34 @@
 //!
 //! Replies interleave with stream frames on one socket, so every read path
 //! hands non-control frames to the caller ([`Session::call_with`]) instead of
-//! failing on them, and JSON-RPC notifications — id-less by definition — are
-//! skipped rather than treated as malformed, mirroring the server's reader.
+//! failing on them.
+//!
+//! # Notifications
+//!
+//! JSON-RPC notifications — id-less by definition — are the server→client event
+//! path (D-M2-5). Until V11 built the server's half there was nothing to
+//! receive and this module dropped them; now a session that asked to
+//! ([`Session::collect_notifications`]) *queues* every one, so an event that
+//! arrives while a call is in flight is folded after the reply rather than
+//! lost. [`Session::take_notifications`] is where the caller collects them.
+//!
+//! Asked to, not always: `amx events --json` reads frames off this same
+//! `Session` and decodes the deliveries itself, and a queue it never drains
+//! would be memory it never uses. A connection that has not said it wants them
+//! behaves exactly as it did before this path existed.
+//!
+//! The queue is bounded, because a peer can publish faster than this client
+//! folds and an unbounded buffer would be a leak with a nicer name. Overflow is
+//! **reported, never silent**: `take_notifications` says that something was
+//! dropped, and the client answers exactly as it answers a
+//! [`Delivery::Gap`](amx_core::Delivery::Gap) — re-query state. Loss stays
+//! visible and recoverable at this layer too (04 §2).
 
 use std::io;
 use std::path::Path;
 
 use amx_proto::frame::{CONTROL_CHANNEL, FRAME_HEADER_LEN, MAX_CONTROL_FRAME};
-use amx_proto::rpc::{Request, RequestId, Response, RpcOutcome};
+use amx_proto::rpc::{Notification, Request, RequestId, Response, RpcOutcome};
 use amx_proto::{ClientInfo, Feature, FrameError, FrameHeader, Hello, Resume, Welcome};
 use serde_json::Value;
 use thiserror::Error;
@@ -34,6 +54,34 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 /// Channels are one byte, so a session can hold at most this many bindings.
 const CHANNELS: usize = u8::MAX as usize + 1;
+
+/// How many unfolded notifications a session holds before it starts reporting
+/// loss instead of growing.
+///
+/// Generous on purpose: the client drains after every wake and after every
+/// call, so reaching this means the consumer has stopped consuming, which is
+/// the case the bound exists for. A resync costs one round trip; an unbounded
+/// queue costs the process.
+const MAX_PENDING_NOTIFICATIONS: usize = 1024;
+
+/// What one control frame turned out to be, decided once as it is read.
+///
+/// Control frames are decoded exactly once. The reply's `Value` is kept here
+/// rather than re-parsed by [`Session::call_with`], so adding the notification
+/// path did not add a second parse to the reply path.
+#[derive(Debug, Default)]
+enum ControlFrame {
+    /// A JSON-RPC response, already decoded to a `Value`.
+    Reply(Value),
+    /// A server-initiated notification, already queued.
+    Notification,
+    /// JSON, but neither of those: the `Welcome` of the handshake, or
+    /// something a newer server says that this build has no reading of.
+    #[default]
+    Other,
+    /// Not JSON at all, which is a broken peer rather than a skew.
+    NotJson,
+}
 
 /// A session-socket operation failed.
 #[derive(Debug, Error)]
@@ -86,6 +134,15 @@ pub struct Session {
     next_id: u64,
     /// The frame cap per bound inbound channel; `None` means unbound.
     caps: Box<[Option<u32>; CHANNELS]>,
+    /// What the frame just read turned out to be, when it was a control one.
+    last_control: ControlFrame,
+    /// Whether this session queues notifications for its caller at all.
+    collecting: bool,
+    /// Notifications read but not yet handed to the caller.
+    notifications: Vec<Notification>,
+    /// A notification was dropped because [`MAX_PENDING_NOTIFICATIONS`] was
+    /// reached. Cleared by [`Session::take_notifications`], which reports it.
+    notifications_lost: bool,
 }
 
 impl Session {
@@ -113,6 +170,10 @@ impl Session {
             write,
             next_id: 1,
             caps: Box::new([None; CHANNELS]),
+            last_control: ControlFrame::default(),
+            collecting: false,
+            notifications: Vec::new(),
+            notifications_lost: false,
         };
 
         let hello = Hello {
@@ -149,10 +210,40 @@ impl Session {
         }
     }
 
+    /// Start queueing server-initiated notifications for
+    /// [`Session::take_notifications`].
+    ///
+    /// Call it *before* `events.subscribe`, not after: the subscription's first
+    /// deliveries can reach the socket ahead of its own reply, and a session
+    /// that started collecting afterwards would have dropped them.
+    pub fn collect_notifications(&mut self) {
+        self.collecting = true;
+    }
+
+    /// Move every notification read since the last call into `into`, which is
+    /// cleared first so one buffer can serve forever.
+    ///
+    /// Returns whether any notification was **dropped** on the way — the queue
+    /// filled while nothing was draining it. A caller must treat `true`
+    /// exactly as it treats a [`Delivery::Gap`](amx_core::Delivery::Gap): the
+    /// deliveries are gone but the state they described is not, so re-query
+    /// state and carry on. That equivalence is the whole reason this is
+    /// reported rather than logged.
+    #[must_use = "a dropped notification is a gap: the caller owes a state resync"]
+    pub fn take_notifications(&mut self, into: &mut Vec<Notification>) -> bool {
+        into.clear();
+        std::mem::swap(&mut self.notifications, into);
+        std::mem::take(&mut self.notifications_lost)
+    }
+
     /// Read one frame into `buf`, validating its declared length first.
     ///
     /// The payload buffer is sized only after the length passes the cap for
     /// its channel: a peer declaring 4 GiB costs a rejection, not 4 GiB.
+    ///
+    /// A control frame is decoded here and nowhere else: a notification joins
+    /// the queue [`Session::take_notifications`] drains, and a reply is kept
+    /// decoded for [`Session::call_with`] to match against its id.
     pub async fn read_frame_into(&mut self, buf: &mut Vec<u8>) -> Result<FrameHeader, NetError> {
         let mut header = [0_u8; FRAME_HEADER_LEN];
         // A zero-length read of the first byte is the one place a disconnect
@@ -172,16 +263,49 @@ impl Session {
         buf.clear();
         buf.resize(header.payload_len(), 0);
         self.read.read_exact(buf).await?;
+        if header.is_control() {
+            self.last_control = self.absorb_control(buf);
+        }
         Ok(header)
+    }
+
+    /// Decide what a control frame is, queueing it if it is a notification.
+    ///
+    /// A frame carrying an `id` is a reply and belongs to whichever call is
+    /// waiting; one without is either a notification or something this build
+    /// has no reading of, and both are skipped by the call loop rather than
+    /// failing it — the same catch-all rule the server's reader follows, and
+    /// what lets a newer peer speak without costing this one its session.
+    fn absorb_control(&mut self, payload: &[u8]) -> ControlFrame {
+        let Ok(value) = serde_json::from_slice::<Value>(payload) else {
+            return ControlFrame::NotJson;
+        };
+        if value.get("id").is_some() {
+            return ControlFrame::Reply(value);
+        }
+        let Ok(notification) = serde_json::from_value::<Notification>(value) else {
+            return ControlFrame::Other;
+        };
+        // Nobody is draining a queue, so there is no queue. It is still not the
+        // reply a call is waiting for, and the call loop skips it either way.
+        if self.collecting {
+            if self.notifications.len() >= MAX_PENDING_NOTIFICATIONS {
+                self.notifications_lost = true;
+            } else {
+                self.notifications.push(notification);
+            }
+        }
+        ControlFrame::Notification
     }
 
     /// Make one JSON-RPC call and wait for its reply, handing every stream
     /// frame that arrives meanwhile to `on_frame`.
     ///
-    /// Notifications (no `id`) are ignored, and a reply for some other id is
-    /// skipped rather than treated as an error — both mirror the server's own
-    /// reader, and both are what lets a newer peer say things this build does
-    /// not understand without costing it the session.
+    /// Notifications (no `id`) are queued rather than answered, and a reply for
+    /// some other id is skipped rather than treated as an error — both mirror
+    /// the server's own reader, and both are what lets a newer peer say things
+    /// this build does not understand without costing it the session. An event
+    /// that lands mid-call is therefore folded after the reply, not lost.
     pub async fn call_with(
         &mut self,
         method: &str,
@@ -202,13 +326,15 @@ impl Session {
                 on_frame(header, &buf);
                 continue;
             }
-            let value: Value = serde_json::from_slice(&buf)
-                .map_err(|_| NetError::Malformed("control frame is not JSON"))?;
-            if value.get("id").is_none() {
-                // A notification. Nothing here consumes one yet; dropped, not
-                // fatal.
-                continue;
-            }
+            let value = match std::mem::take(&mut self.last_control) {
+                ControlFrame::Reply(value) => value,
+                // Queued by `absorb_control`, or unreadable by this build.
+                // Either way it is not the answer this call is waiting for.
+                ControlFrame::Notification | ControlFrame::Other => continue,
+                ControlFrame::NotJson => {
+                    return Err(NetError::Malformed("control frame is not JSON"));
+                }
+            };
             let response: Response = serde_json::from_value(value)
                 .map_err(|_| NetError::Malformed("decode response"))?;
             if response.id != id {
