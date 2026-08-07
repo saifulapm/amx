@@ -8,16 +8,25 @@
 //! (04 §7), and swap/move never touching the process behind either pane.
 //!
 //! M2 adds the *driving* verbs of 04 §8 at the bottom of the file —
-//! `send_text`, `send_keys`, `run`, `read` — as seams **V12** fills. They do
-//! not follow the shape above: three of them reach the pane's actor directly
-//! rather than through `Core`, for the same reason a keystroke does (04 §4's
-//! round-trip budget), and V12 wires them that way.
+//! `send_text`, `send_keys`, `run`, `read`. They do not follow the shape above:
+//! they reach the pane's own actor rather than going through `Core`, for the
+//! same reason a keystroke does (04 §4's round-trip budget). `Core`'s part is
+//! the small one `stream.bind` already established — resolving a pane to its
+//! live plumbing — plus, on the label path only, the `session.state` read that
+//! turns a name into a pane.
 
-use amx_proto::control::{Method, pane};
+use amx_core::PaneId;
+use amx_proto::control::pane;
+use amx_proto::control::session;
 use amx_proto::rpc::RpcError;
+use tokio::sync::oneshot;
 
-use crate::actor::{CoreCommand, PaneCall};
-use crate::dispatch::{Router, seam};
+use crate::actor::pane_host::drive::PASTE_END;
+use crate::actor::{
+    CoreCommand, Drive, DriveError, Driven, KeyStroke, PaneCall, PaneCommand, PaneWiring,
+    SessionCall, StreamCall,
+};
+use crate::dispatch::Router;
 
 pub(super) async fn split(
     router: &Router,
@@ -93,66 +102,202 @@ pub(super) async fn resize(
 
 // ------------------------------------------- the driving verbs (04 §8, M2)
 //
-// A seam each; **V12** fills all four. They are the primitives everything else
-// in M2 rides — `agent.prompt` submits through `run`, the resume path types a
-// planned argv through it, and the exit suite drives its fake agents with
-// `send_keys` — so V12's tests assert what the *child* received, not what the
-// server sent.
+// The primitives everything else in M2 rides — `agent.prompt` submits through
+// `run`, the resume path types a planned argv through it, and the exit suite
+// drives its fake agents with `send_keys`.
 //
 // `read` is the one that does not reach the parser thread: it serves V05's text
 // view straight off the pane's published snapshot feed, which is lock-free and
 // contends with nothing. The other three are writes, and writes are serialized
 // with query replies on the parser thread so driven input can never reorder
-// against an out-of-band reply (04 §3's retained `response_order` guarantee).
+// against an out-of-band reply (04 §3's retained `response_order` guarantee) —
+// `actor/pane_host/drive.rs` is where that happens and why.
 
 /// `pane.send_text`: bytes to the child, verbatim.
-///
-/// **V12** fills this.
 pub(super) async fn send_text(
     router: &Router,
     params: pane::SendTextParams,
 ) -> Result<pane::SendTextReply, RpcError> {
-    let _ = (router, params);
-    seam(Method::PaneSendText, "V12")
+    let pane = resolve(router, &params.target).await?;
+    drive(router, pane, Drive::Text(params.text)).await?;
+    Ok(pane::SendTextReply {
+        pane,
+        seq: router.head().await?,
+    })
 }
 
 /// `pane.send_keys`: the key-combo grammar of 04 §8, encoded and sent.
 ///
-/// **V12** fills this. The encoding happens on the *parser thread*, through a
-/// new `ParserCommand` serialized like `History`, because it depends on the
-/// pane's kitty-keyboard flags — which the parser owns — and because that is
-/// also what keeps driven input ordered against query replies.
+/// The combos are parsed here, before the pane is touched, so an unreadable one
+/// is `INVALID_PARAMS` naming the offending element and *nothing* is delivered.
+/// The encoding itself happens on the parser thread, which owns the terminal
+/// whose Kitty-keyboard and cursor-key modes decide what the bytes are.
 pub(super) async fn send_keys(
     router: &Router,
     params: pane::SendKeysParams,
 ) -> Result<pane::SendKeysReply, RpcError> {
-    let _ = (router, params);
-    seam(Method::PaneSendKeys, "V12")
+    let mut strokes = Vec::with_capacity(params.keys.len());
+    for combo in &params.keys {
+        strokes.push(KeyStroke::parse(combo).map_err(|err| {
+            RpcError::new(
+                RpcError::INVALID_PARAMS,
+                format!("pane.send_keys: {err}, in the combo {combo:?}"),
+            )
+        })?);
+    }
+    let keys = u32::try_from(strokes.len()).unwrap_or(u32::MAX);
+    let pane = resolve(router, &params.target).await?;
+    drive(router, pane, Drive::Keys(strokes)).await?;
+    Ok(pane::SendKeysReply {
+        pane,
+        keys,
+        seq: router.head().await?,
+    })
 }
 
 /// `pane.run`: bracketed-paste-aware atomic text-plus-submit.
 ///
-/// **V12** fills this. Bracket **only** when the application in the pane
-/// enabled paste mode; bracketing one that did not types `[200~` into it.
+/// Whether to bracket is the pane's answer, not this handler's: only the
+/// terminal knows whether the application enabled paste mode, and bracketing
+/// one that did not types `[200~` into it.
 pub(super) async fn run(
     router: &Router,
     params: pane::RunParams,
 ) -> Result<pane::RunReply, RpcError> {
-    let _ = (router, params);
-    seam(Method::PaneRun, "V12")
+    // A paste terminator inside the text would end the bracket early and hand
+    // the rest of the line to the application as ordinary keystrokes, which is
+    // the one way an atomic submit can come apart. Refused rather than
+    // silently rewritten: the caller's text is not ours to edit.
+    if params
+        .text
+        .as_bytes()
+        .windows(PASTE_END.len())
+        .any(|w| w == PASTE_END)
+    {
+        return Err(RpcError::new(
+            RpcError::INVALID_PARAMS,
+            "pane.run: the text carries a bracketed-paste terminator",
+        ));
+    }
+    let pane = resolve(router, &params.target).await?;
+    let driven = drive(router, pane, Drive::Run(params.text)).await?;
+    Ok(pane::RunReply {
+        pane,
+        bracketed: driven.bracketed,
+        seq: router.head().await?,
+    })
 }
 
 /// `pane.read`: the visible grid as text.
 ///
-/// **V12** fills this, over V05's `Row::line()`/`Snapshot::tail(n)`. The
-/// visible grid is by construction the live bottom — scrollback and scroll
-/// position are client-side (04 §3) — so there is no scrolled-viewport hazard
-/// here to test against, unlike herdr, which had to anchor its detection buffer
-/// to the scrollback bottom and regression-test the anchor.
+/// Served from the pane's published snapshot — an `Arc` clone out of a
+/// lock-free slot — over V05's `Row::line()`/`Snapshot::tail(n)`, with no
+/// parser round trip. The visible grid is by construction the live bottom,
+/// since scrollback and scroll position are client-side (04 §3); scrollback
+/// proper is `pane.history`.
 pub(super) async fn read(
     router: &Router,
     params: pane::ReadParams,
 ) -> Result<pane::ReadReply, RpcError> {
-    let _ = (router, params);
-    seam(Method::PaneRead, "V12")
+    let pane = resolve(router, &params.target).await?;
+    let wiring = wiring(router, pane).await?;
+    let frame = wiring.frames.latest();
+    let wanted = params.lines.unwrap_or_else(|| frame.rows());
+    // Trailing blanks are trimmed: a row is padded to the grid's width, and
+    // every consumer of this reply — a script grepping output, an agent reading
+    // a screen — wants the line the user sees, not the padding.
+    let rows = frame
+        .tail(wanted)
+        .map(|row| row.line().trim_end().to_owned())
+        .collect();
+    Ok(pane::ReadReply {
+        pane,
+        rows,
+        seq: router.head().await?,
+    })
+}
+
+// ------------------------------------------------------------- the plumbing
+
+/// Resolve a [`PaneTarget`](pane::PaneTarget) to a pane: UUID, then label.
+///
+/// The order is fixed and it is the reason a pane labelled with another pane's
+/// UUID cannot shadow it. A label must match exactly one pane — the driving
+/// verbs take the wider rule of `agent/address.rs`'s three (any pane, not only
+/// agent panes), because a script driving a plain shell has no agent to be
+/// unique among — and an ambiguous one is an error that *names the candidates*,
+/// since "ambiguous target" without them is a message nobody can act on.
+///
+/// Reading `session.state` is how the labels are learned, which costs one
+/// `Core` round trip on the label path and none on the UUID path. **V13** owns
+/// `agent/address.rs` and lands the agent-scoped rule beside this one; when it
+/// does, this function is what it lifts.
+async fn resolve(router: &Router, target: &pane::PaneTarget) -> Result<PaneId, RpcError> {
+    if let Ok(pane) = target.as_str().parse::<PaneId>() {
+        return Ok(pane);
+    }
+    let state = router
+        .call(|reply| {
+            CoreCommand::Session(SessionCall::State {
+                params: session::StateParams::default(),
+                reply,
+            })
+        })
+        .await?;
+    let mut found = state
+        .panes
+        .iter()
+        .filter(|state| state.label.as_deref() == Some(target.as_str()));
+    let Some(first) = found.next() else {
+        return Err(RpcError::new(
+            RpcError::INVALID_PARAMS,
+            format!("no pane is named {:?}", target.as_str()),
+        ));
+    };
+    let rest: Vec<String> = found.map(|state| state.pane.to_string()).collect();
+    if rest.is_empty() {
+        return Ok(first.pane);
+    }
+    Err(RpcError::new(
+        RpcError::INVALID_PARAMS,
+        format!(
+            "{:?} names {} panes: {}, {}",
+            target.as_str(),
+            rest.len() + 1,
+            first.pane,
+            rest.join(", ")
+        ),
+    ))
+}
+
+/// Hand one drive to the pane and wait for its outcome.
+async fn drive(router: &Router, pane: PaneId, what: Drive) -> Result<Driven, RpcError> {
+    let wiring = wiring(router, pane).await?;
+    let (tx, rx) = oneshot::channel();
+    wiring
+        .handle
+        .send(PaneCommand::Drive { what, reply: tx })
+        .await
+        .map_err(|_| RpcError::new(RpcError::INTERNAL_ERROR, "the pane is gone"))?;
+    rx.await
+        .map_err(|_| RpcError::new(RpcError::INTERNAL_ERROR, "the pane dropped the write"))?
+        .map_err(|err| {
+            let code = match err {
+                // A full queue is the child's back-pressure reaching the
+                // caller, and a pane not taking input is one mid-quiesce:
+                // neither is a broken session, so both are reported the way a
+                // refused history range is — a caller-level failure worth
+                // retrying rather than an internal one.
+                DriveError::Full | DriveError::NotAccepting => RpcError::INVALID_PARAMS,
+                DriveError::Gone | DriveError::Encode(_) => RpcError::INTERNAL_ERROR,
+            };
+            RpcError::new(code, err.to_string())
+        })
+}
+
+/// The pane's live plumbing: its mailbox and its published frames.
+async fn wiring(router: &Router, pane: PaneId) -> Result<PaneWiring, RpcError> {
+    router
+        .call(|reply| CoreCommand::Stream(StreamCall::Wiring { pane, reply }))
+        .await
 }
