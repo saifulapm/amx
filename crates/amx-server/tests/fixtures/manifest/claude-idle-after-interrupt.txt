@@ -1,0 +1,30 @@
+  unshared. There is also a deliberate theological echo in "word," the sense of a command that
+  brings a world into being, which is not really an exaggeration of what a shell does: you speak,
+  and files exist or cease to exist. If the haiku has a seasonal feeling, a kigo in the traditional
+  sense, it is late night — the hour when the room is dark, the screen is the only light, and the
+  cursor's rhythm becomes the only clock. And underneath all three lines runs the quiet joke that
+  makes the form appropriate to the subject: a haiku is seventeen syllables of severe constraint
+  that must nonetheless summon an entire world, which is also a fair description of a command line.
+
+✻ Worked for 26s
+
+❯ Run the bash command: echo spike-permission-probe
+
+● Bash(echo spike-permission-probe)
+  ⎿  Interrupted · What should Claude do instead?
+
+✻ Churned for 9s
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents                               ● high · /effort
+
+
+
+
+
+
+
+
+

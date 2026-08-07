@@ -1,0 +1,30 @@
+
+
+❯ Write a haiku about terminals, then explain it in three long paragraphs.
+
+● Haiku
+
+  ▎ Cold glass, a green blink—
+  ▎ the whole machine holds its breath
+  ▎ waiting for my word
+
+  On the first line. The opening image is deliberately austere: two nouns and a color, no verb to
+  speak of. "Cold glass" does double duty — it is the literal phosphor screen of an old CRT, the
+  surface that stays chilly to the touch until the tube warms, and it is also an emotional
+  temperature, the indifference of a machine that has no stake in whether you type anything at all.
+  Against that coldness sits the "green blink," which is the cursor: the one warm, living thing in
+  the frame, and the only element in the poem that moves on its own. I chose green rather than white
+  because the amber-and-green monochrome palette is the terminal's ancestral memory — it summons
+  VT100s and teletype descendants, the era when a computer was a lamp you spoke into. The em dash at
+  the end of the line is the haiku's kireji, the cutting word: it stops the image cold and forces a
+  beat of silence, so that what follows arrives as a turn rather than a continuation. Read aloud,
+  the line is almost entirely consonantal stops — c, g, bl, k — which makes the mouth do what the
+  cursor does, close and open, close and open.
+
+  On the turn. The second line performs the poem's only real act of imagination: it takes the
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · esc to interrupt · ← for agents
+
