@@ -71,9 +71,24 @@ reach the `cancel` arm of its own `select!` — is already closed:
 mid-report send fails rather than waits (`actor/core/mod.rs:380-385`, with the
 comment saying exactly that). Whatever the drain wedge is, it is not that.
 W02 changes nothing on that path: reports still flow, only the second publish
-is gone. W01 confirmed it from the other side and its finding is
-[m3-shutdown-wedge.md](m3-shutdown-wedge.md): the wedge was a connection whose
-handshake watched no cancellation token, not a pane at all.
+is gone. W01 confirmed it from the other side.
+
+**W01 closed one drain mechanism and left one open — read its note, not its
+commit titles.** [m3-shutdown-wedge.md](m3-shutdown-wedge.md) §4 and §8 are the
+authority, and the short version is that "wedge fixed" would be the wrong
+summary. What is *closed* is a connection whose handshake watched no
+cancellation token: real, reproducible on demand, fixed. What is *open* is the
+mechanism that actually parked the wedged servers found on the machine — their
+stuck connection has no peer at all (`ss -x` peer inode 0, and a peerless unix
+socket was measured to return EOF on read and EPIPE on write), so the handshake
+cannot be where they sat. The remaining suspect is the connection epilogue,
+`ConnEvents::shutdown` and `ConnStreams::shutdown`, both in W08's
+neighbourhood; every await in both selects on the connection's token, and
+neither 800 kill-then-stop rounds nor ~18,000 storm cycles produced an
+occurrence. Genuinely open, not merely unexamined. **W06 therefore keeps its
+post-commit drain watchdog** — §2's outcome (b)/(c) branch is the one M3 is
+on, not (a). `scripts/spike/wedge.py --suites field` is the loop if anyone
+wants to keep one running.
 
 **W02 and W01 merge clean and green, checked rather than assumed.** The two
 branches share `tests/hygiene.rs` — W01 pins its CLOEXEC fix there, W02 the
