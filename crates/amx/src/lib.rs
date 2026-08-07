@@ -21,6 +21,7 @@ use anyhow::Context as _;
 
 pub mod cli;
 pub mod cmd;
+pub mod integration;
 
 /// Parse `argv` and run the command it names.
 ///
