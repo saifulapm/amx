@@ -16,15 +16,16 @@
 
 use std::path::PathBuf;
 
-use amx_core::{Ctx, Scheduled};
+use amx_core::{Config, Ctx, Scheduled};
 use thiserror::Error;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
-use crate::actor::CoreHandle;
 use crate::actor::core::{Core, RestoreOptions};
 use crate::actor::gateway::{Gateway, GatewayError, GatewayReport};
+use crate::actor::persist::{PERSIST_MAILBOX, Persist};
+use crate::actor::{CoreHandle, PersistHandle};
 use crate::runtime::{Runtime, ShutdownReport};
 
 /// Depth of the `Core` actor's mailbox.
@@ -88,7 +89,7 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     let gateway = Gateway::bind(ctx.clone(), CoreHandle::new(core_tx.clone()))?;
 
     let mut runtime = Runtime::new(ctx.clone());
-    let mut core = Core::new(ctx.clone(), CoreHandle::new(core_tx));
+    let mut core = Core::new(ctx.clone(), CoreHandle::new(core_tx.clone()));
     // Between the bind and the accept loop (D-M1-9): the bind has claimed the
     // session, so this server is the one that owns its state, and the earliest
     // client that can possibly connect already sees the restored session. A
@@ -96,6 +97,21 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     // full loss report beats a refused start — which is why nothing here
     // returns an error.
     core.restore_from_disk(&RestoreOptions { home: home_dir() });
+
+    // Persistence is assembled after the restore it must not re-save: the
+    // subscription is taken here, so the events restore just published sit
+    // behind it and the actor opens on a clean "nothing dirty" slate
+    // (`docs/07-m1-plan.md` §2). `Core` learns where persistence listens for
+    // one message only — the final capture it pushes on its way down.
+    let (persist_tx, persist_rx) = mpsc::channel(PERSIST_MAILBOX);
+    core.set_persist(PersistHandle::new(persist_tx));
+    let events = ctx.bus.subscribe();
+    let (_config_tx, config_rx) = watch::channel(startup_config(&ctx));
+    let persist = Persist::new(ctx.clone(), CoreHandle::new(core_tx), config_rx);
+    runtime.spawn(async move {
+        let _persist = persist.run(persist_rx, events).await;
+    });
+
     runtime.spawn(async move {
         // Output rides two paths out of a folded batch. Grid traffic flows
         // from each pane's published frames through the per-client grid
@@ -120,6 +136,28 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     let shutdown = runtime.shutdown().await;
     let gateway = report_rx.await.unwrap_or_default();
     Ok(ServeReport { gateway, shutdown })
+}
+
+/// The configuration this server starts with.
+///
+/// A missing file is the default configuration, never an error (D-M1-8): a
+/// machine with no `config.toml` is the common case, and the defaults are
+/// exactly what it means. Only the startup read lives here — watching the file
+/// and reloading it into the same channel is U08's, which is why the sender
+/// this pairs with is held and never sent on again.
+fn startup_config(ctx: &Ctx) -> Config {
+    let Ok(text) = std::fs::read_to_string(&ctx.config_path) else {
+        return Config::default();
+    };
+    let (config, rejected) = amx_core::config::reload(&Config::default(), &text);
+    for diagnostic in rejected {
+        tracing::warn!(
+            section = diagnostic.section,
+            error = %diagnostic.message,
+            "keeping the running values for a rejected config section"
+        );
+    }
+    config
 }
 
 /// Where a restored pane whose saved directory has vanished respawns.
