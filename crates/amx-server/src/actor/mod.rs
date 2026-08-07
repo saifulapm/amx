@@ -251,6 +251,18 @@ pub enum SessionCall {
         /// Where the snapshot goes.
         reply: Reply<session::StateReply>,
     },
+    /// `session.report`.
+    ///
+    /// Answered from the [`RestoreReport`](amx_proto::control::session::RestoreReport)
+    /// the startup restore left on `Core`, which is where it lives for the
+    /// server's lifetime: 04 §6 requires restore loss to stay queryable, so it
+    /// is state, not a log line that has already scrolled away.
+    Report {
+        /// Parameters.
+        params: session::ReportParams,
+        /// Where the report goes.
+        reply: Reply<session::ReportReply>,
+    },
     /// Assemble a snapshot of the session for persistence.
     ///
     /// Not a wire method: the `Persist` actor sends this through the ordinary

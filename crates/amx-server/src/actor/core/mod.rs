@@ -24,16 +24,19 @@
 //! Split by responsibility: this file is the struct, the mailbox loop and the
 //! routing that decides which handler a command reaches. The handlers live
 //! beside it — [`pane`] and [`workspace`] for the `pane.*`/`workspace.*`
-//! verbs, [`report`] for the fold over what pane actors report back, and
-//! [`persist`] for the snapshot capture the `Persist` actor asks for.
+//! verbs, [`report`] for the fold over what pane actors report back,
+//! [`persist`] for the snapshot capture the `Persist` actor asks for, and
+//! [`restore`] for the startup rebuild that puts yesterday's session back.
 
 mod pane;
 mod persist;
 mod report;
+mod restore;
 mod view;
 mod workspace;
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use amx_core::{
     Ctx, EffectSet, Event, Level, PaneId, RowId, Scheduled, SessionId, SessionState, ShortNumber,
@@ -44,9 +47,12 @@ use amx_proto::control::{client, session};
 use amx_proto::rpc::RpcError;
 use tokio::sync::mpsc;
 
+pub use self::persist::CAPTURE_PROBE_BUDGET;
+use self::persist::Restored;
+pub use self::restore::RestoreOptions;
 use crate::actor::{
-    ClientCall, CoreCommand, CoreHandle, PaneCall, PaneHandle, PaneHost, PaneWiring, SessionCall,
-    StreamCall, WorkspaceCall,
+    ClientCall, CoreCommand, CoreHandle, PaneCall, PaneHandle, PaneHost, PaneWiring,
+    PersistCommand, PersistHandle, SessionCall, StreamCall, WorkspaceCall,
 };
 
 /// Where a folded batch's output goes.
@@ -123,6 +129,21 @@ pub struct Core {
     /// asynchronously when a command (a split) needs to await something
     /// before `absorb` can fold it.
     handle: CoreHandle,
+    /// The `Persist` actor's mailbox, when the session has one.
+    ///
+    /// Used for exactly one message in normal operation — the final capture
+    /// pushed on the way down (`docs/07-m1-plan.md` §2) — because dirtiness is
+    /// *observed* off the event bus, not pushed: `Core` has no "remember to
+    /// tell persistence" call sites and never gains any.
+    persist: Option<PersistHandle>,
+    /// What this server's startup restore cost, if it performed one.
+    ///
+    /// Held for the process's lifetime: `session.report` serves the entries
+    /// whole and `session.state` carries their counts, so the client can show
+    /// the loss indicator without a second call (04 §6).
+    restore: Option<Restored>,
+    /// How long a capture waits for the foreground-cwd probes it started.
+    capture_budget: Duration,
 }
 
 impl Core {
@@ -150,7 +171,26 @@ impl Core {
             viewport: None,
             pane_sizes: HashMap::new(),
             handle,
+            persist: None,
+            restore: None,
+            capture_budget: CAPTURE_PROBE_BUDGET,
         }
+    }
+
+    /// Tell this `Core` where persistence is listening.
+    ///
+    /// Only the shutdown push uses it (see [`Core::persist`]); a `Core` without
+    /// one simply has nothing to push to, which is what every test that does
+    /// not care about persistence gets.
+    pub fn set_persist(&mut self, persist: PersistHandle) {
+        self.persist = Some(persist);
+    }
+
+    /// Change how long a capture waits for its foreground-cwd probes.
+    ///
+    /// [`CAPTURE_PROBE_BUDGET`] is the default and the one the server uses.
+    pub const fn set_capture_budget(&mut self, budget: Duration) {
+        self.capture_budget = budget;
     }
 
     /// The session context this actor was built from.
@@ -260,6 +300,9 @@ impl Core {
             }
             CoreCommand::Session(SessionCall::Capture { sidecars, reply }) => {
                 self.handle_capture(sidecars, reply);
+            }
+            CoreCommand::Session(SessionCall::Report { params: _, reply }) => {
+                self.handle_report(reply);
             }
             CoreCommand::Workspace(WorkspaceCall::Create { params, reply }) => {
                 self.handle_workspace_create_no_spawn(params, reply);
@@ -379,12 +422,26 @@ impl Core {
                 break;
             }
         }
+        self.push_final_capture();
         // The mailbox closes before the panes are joined: an actor mid-report
         // must see its send fail rather than wait on a receiver nobody will
         // drain again.
         drop(mailbox);
         self.join_panes().await;
         self
+    }
+
+    /// Hand persistence one last snapshot on the way down.
+    ///
+    /// Built from stored state only — the panes are about to be killed and
+    /// probing them would mean waiting on actors that are already draining —
+    /// and pushed with `try_send`, so a full persistence mailbox can never
+    /// wedge `Core`'s own drain (`docs/07-m1-plan.md` §2, R-M1-2). A push that
+    /// does not fit costs the last few seconds of changes, which the debounced
+    /// save has already bounded.
+    fn push_final_capture(&self) {
+        let Some(persist) = &self.persist else { return };
+        let _ = persist.try_send(PersistCommand::Snapshot(Box::new(self.capture_cheap())));
     }
 
     /// Route one command to its live handler — the ones that spawn a process
@@ -402,6 +459,13 @@ impl Core {
             }
             CoreCommand::Session(SessionCall::Attached { reply }) => {
                 self.handle_attached_live(reply);
+                false
+            }
+            // A capture on the live path refreshes each pane's cwd first,
+            // which is an `await` on the panes' own mailboxes and so cannot
+            // happen inside `absorb`. Same split as a create or a split.
+            CoreCommand::Session(SessionCall::Capture { sidecars, reply }) => {
+                self.handle_capture_live(sidecars, reply).await;
                 false
             }
             cmd => {

@@ -18,12 +18,12 @@
 //! a build in that state answers with rather than `METHOD_NOT_FOUND` —
 //! reporting an unimplemented method as unknown would tell a client to stop
 //! offering it. T16 emptied the seam list for M0; U01 refilled it with M1's
-//! two new rows, each carrying the task that closes it:
+//! two new rows, each carrying the task that closes it, and U06 closed
+//! `session.report`:
 //!
 //! | Method | Filled by |
 //! |---|---|
 //! | `pane.rename` | U07 |
-//! | `session.report` | U06 |
 //!
 //! When the last one lands, [`seam`] has no callers again — which is U10's
 //! `grep`-level acceptance check.
@@ -238,14 +238,12 @@ impl Dispatch for Router {
             .await
     }
 
-    /// Seam owned by **U06** (`docs/07-m1-plan.md` §4), which serves the
-    /// `RestoreReport` the restore path leaves on `Core`.
     async fn session_report(
         &mut self,
         params: session::ReportParams,
     ) -> Result<session::ReportReply, RpcError> {
-        let _ = params;
-        Err(seam("session.report"))
+        self.call(|reply| CoreCommand::Session(SessionCall::Report { params, reply }))
+            .await
     }
 
     async fn stream_bind(

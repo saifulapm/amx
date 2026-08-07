@@ -91,22 +91,21 @@ impl Core {
             focused_workspace: self.state.active_workspace(),
             workspaces,
             panes,
-            // U06 fills this from the `RestoreReport` it stores on `Core`
-            // (docs/07-m1-plan.md §4). `None` is the honest answer for a
-            // server that has not restored anything, which is every server
-            // until then.
-            restore: None,
+            // Counts only; the entries are `session.report`'s. They ride here
+            // so an attaching client can render the loss indicator without a
+            // second call (04 §6).
+            restore: self.restore_summary(),
         }
     }
 
-    fn short_of_workspace(&self, ws: amx_core::WorkspaceId) -> ShortNumber {
+    pub(super) fn short_of_workspace(&self, ws: amx_core::WorkspaceId) -> ShortNumber {
         self.workspace_shorts
             .get(&ws)
             .copied()
             .unwrap_or(ShortNumber::FIRST)
     }
 
-    fn short_of_pane(&self, pane: PaneId) -> ShortNumber {
+    pub(super) fn short_of_pane(&self, pane: PaneId) -> ShortNumber {
         self.pane_shorts
             .get(&pane)
             .copied()
