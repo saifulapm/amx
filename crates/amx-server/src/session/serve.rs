@@ -17,7 +17,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use amx_core::{Config, Ctx, Scheduled};
+use amx_core::{Ctx, Scheduled};
 use thiserror::Error;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, oneshot};
