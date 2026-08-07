@@ -96,6 +96,10 @@ pane-publisher rule — and the additions do not touch each other. Merging
 `origin/worktree-w01-wedge` (at `ee677f0`) into `worktree-w02-publisher` needs
 no conflict resolution, and `scripts/ci.sh` on the merged tree exits 0, 648
 tests, three runs. W01's `Runtime::spawn` rename reaches no file W02 edits.
+W01's tip has since moved to `ffc3abb`; the delta is its own note, its spike
+script, and seven lines of comment in `runtime.rs` — checked, not taken on
+trust — so the merge stays conflict-free and the three green runs remain the
+evidence for it.
 
 **A pre-existing test race the merge check surfaced, owned by neither branch.**
 `hook_exits_zero_and_fast_with_no_socket_no_env_or_dead_server`
@@ -110,7 +114,11 @@ difference is noise, not attribution, and the mechanism is visible in the test
 source. Recorded so the next person who sees it red does not go looking in the
 publisher change or the wedge fix. The repair, when someone owns that file, is
 to tolerate `BrokenPipe` on the payload write rather than to slow the emitter
-down.
+down — slowing it would fix the test by breaking the thing it measures, and the
+race gets *worse* as the emitter gets faster, which is the direction that code
+is meant to move. Confirmed by reading from the W01 side and carried in
+[m3-shutdown-wedge.md](m3-shutdown-wedge.md) §8 as well; that entry and this
+one are the same finding.
 
 **Sequential fills inherited from W01, repeated here so the ledger carries
 them.** `conn/mod.rs` is W08's file and W01 has landed fifteen lines on it (the
