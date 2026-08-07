@@ -78,10 +78,27 @@ pub(super) async fn prompt(
 
 /// `agent.explain`: how a pane's status was detected, rule by rule.
 ///
-/// **V06** fills this, as a sequential fill of this file rather than as part of
-/// its own wave's file set (§6 declares it). Every rule reports its verdict and
-/// its evidence, not only the winner: 04 §5 keeps herdr's `agent explain`
-/// because a detection you cannot interrogate is a detection you cannot fix.
+/// Every rule reports its verdict and its evidence, not only the winner: 04 §5
+/// keeps herdr's `agent explain` because a detection you cannot interrogate is
+/// a detection you cannot fix.
+///
+/// **V06 landed the explanation**, in
+/// [`Manifest::explain`](crate::agent::manifest::Manifest::explain): a compiled
+/// manifest plus one screen produces the whole reply bar the three fields only
+/// the hub knows, which [`Explanation::into_reply`](crate::agent::manifest::Explanation::into_reply)
+/// takes. What it could not land is *this arm*, because reaching a pane's
+/// manifest, its frames and its fused status means `AgentCommand::Explain` and
+/// a hub to answer it, and the hub is V08's — a wave later. So the seam stays
+/// until the hub exists, and closing it is a mailbox round trip:
+///
+/// ```text
+/// let pane = router.resolve(params.target).await?;
+/// router.agent().send(AgentCommand::Explain { pane, reply }).await
+/// ```
+///
+/// The count in `tests/hygiene.rs` (`SEAM_COUNT`) is why this could not simply
+/// be deleted and left to V08 either: seams are counted, and the count and the
+/// call sites move together.
 pub(super) async fn explain(
     router: &mut Router,
     params: agent::ExplainParams,
