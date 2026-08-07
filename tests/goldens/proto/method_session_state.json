@@ -6,11 +6,25 @@
         "cols": 39,
         "history_floor": 4,
         "history_head": 120,
+        "label": "editor",
         "pane": "00000000-0000-0000-0000-0000000000a1",
         "rows": 22,
         "short": 1
+      },
+      {
+        "cols": 40,
+        "history_floor": 0,
+        "history_head": 0,
+        "pane": "00000000-0000-0000-0000-0000000000a2",
+        "rows": 22,
+        "short": 2
       }
     ],
+    "restore": {
+      "degraded": 1,
+      "lost": 1,
+      "restored": 3
+    },
     "seq": 52,
     "workspaces": [
       {

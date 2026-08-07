@@ -175,6 +175,27 @@ pub struct ResizeReply {
     pub seq: Seq,
 }
 
+/// Parameters of `pane.rename`.
+///
+/// The workspace verb has existed since M0 (`workspace.rename`); this is its
+/// pane counterpart, and M1 adds it because a label is one of the things a
+/// snapshot restores — an unlabelled pane is indistinguishable from every
+/// other shell after a reboot.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RenameParams {
+    /// The pane to rename.
+    pub pane: PaneId,
+    /// Its new label.
+    pub label: String,
+}
+
+/// Reply to `pane.rename`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RenameReply {
+    /// The bus sequence at which the new label held.
+    pub seq: Seq,
+}
+
 /// Parameters of `pane.close`.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct CloseParams {

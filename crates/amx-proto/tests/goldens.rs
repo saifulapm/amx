@@ -258,6 +258,15 @@ fn control_goldens_match() {
         },
     );
 
+    call_golden(
+        "method_pane_rename",
+        Call::PaneRename(pane::RenameParams {
+            pane: pane_id(),
+            label: "editor".into(),
+        }),
+        pane::RenameReply { seq: 55 },
+    );
+
     let mut layout = Layout::with_root(pane_id());
     layout
         .split(pane_id(), amx_core::Direction::Right, other_pane_id(), 0.5)
@@ -275,14 +284,64 @@ fn control_goldens_match() {
                 layout,
                 focus: Some(other_pane_id()),
             }],
-            panes: vec![session::PaneState {
-                pane: pane_id(),
-                short: ShortNumber::new(1),
-                rows: 22,
-                cols: 39,
-                history_head: RowId::from_raw(120),
-                history_floor: RowId::from_raw(4),
-            }],
+            panes: vec![
+                session::PaneState {
+                    pane: pane_id(),
+                    short: ShortNumber::new(1),
+                    label: Some("editor".into()),
+                    rows: 22,
+                    cols: 39,
+                    history_head: RowId::from_raw(120),
+                    history_floor: RowId::from_raw(4),
+                },
+                // The second pane freezes the absent-label shape beside the
+                // present one: both optional fields are skipped when unset, so
+                // a peer from before M1 reads the bytes it always read.
+                session::PaneState {
+                    pane: other_pane_id(),
+                    short: ShortNumber::new(2),
+                    label: None,
+                    rows: 22,
+                    cols: 40,
+                    history_head: RowId::from_raw(0),
+                    history_floor: RowId::from_raw(0),
+                },
+            ],
+            restore: Some(session::RestoreSummary {
+                restored: 3,
+                lost: 1,
+                degraded: 1,
+            }),
+        },
+    );
+
+    call_golden(
+        "method_session_report",
+        Call::SessionReport(session::ReportParams {}),
+        session::ReportReply {
+            seq: 56,
+            report: session::RestoreReport {
+                entries: vec![
+                    session::RestoreLoss {
+                        severity: session::RestoreSeverity::Lost,
+                        entity: session::RestoreEntity::Pane,
+                        workspace: Some(workspace_id()),
+                        pane: Some(pane_id()),
+                        label: Some("build".into()),
+                        path: Some("/home/s/amx".into()),
+                        reason: "shell failed to start".into(),
+                    },
+                    session::RestoreLoss {
+                        severity: session::RestoreSeverity::Degraded,
+                        entity: session::RestoreEntity::Pane,
+                        workspace: Some(workspace_id()),
+                        pane: Some(other_pane_id()),
+                        label: None,
+                        path: Some("/home/s/gone".into()),
+                        reason: "saved directory no longer exists".into(),
+                    },
+                ],
+            },
         },
     );
 

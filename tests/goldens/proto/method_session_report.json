@@ -1,0 +1,32 @@
+{
+  "reply": {
+    "report": {
+      "entries": [
+        {
+          "entity": "pane",
+          "label": "build",
+          "pane": "00000000-0000-0000-0000-0000000000a1",
+          "path": "/home/s/amx",
+          "reason": "shell failed to start",
+          "severity": "lost",
+          "workspace": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+          "entity": "pane",
+          "pane": "00000000-0000-0000-0000-0000000000a2",
+          "path": "/home/s/gone",
+          "reason": "saved directory no longer exists",
+          "severity": "degraded",
+          "workspace": "00000000-0000-0000-0000-0000000000b1"
+        }
+      ]
+    },
+    "seq": 56
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "session.report",
+    "params": {}
+  }
+}
