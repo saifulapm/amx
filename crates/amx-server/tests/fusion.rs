@@ -373,6 +373,29 @@ fn an_anonymous_subagent_stop_after_the_parent_stop_never_revives_the_pane() {
         Vec::new()
     );
     assert_eq!(tracker.state, AgentState::Idle);
+
+    // The rule is enforced twice on purpose — the table refuses the row and the
+    // tracker refuses the input, because the tracker's guard also covers the
+    // ref, which is not the table's business. Both are asserted, so neither can
+    // be deleted as "already handled by the other one".
+    for event in [
+        HookEvent::UserPromptSubmit,
+        HookEvent::PermissionRequest,
+        HookEvent::SubagentStop,
+    ] {
+        for class in [
+            CoverageClass::Full,
+            CoverageClass::Edges,
+            CoverageClass::Identity,
+            CoverageClass::None,
+        ] {
+            assert_eq!(
+                precedence(class, &edge(event.clone(), true)),
+                EdgeEffect::Ignore,
+                "{event:?} on a {class} agent"
+            );
+        }
+    }
 }
 
 /// V01 §7 edge case 9: a tool call refused by a `permissions.deny` rule fires
