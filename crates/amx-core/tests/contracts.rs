@@ -47,6 +47,31 @@ fn event_delivery_enum_round_trips_serde() {
 }
 
 #[test]
+fn the_m1_event_variants_round_trip_and_tag_themselves() {
+    let restored = Event::SessionRestored {
+        workspaces: 2,
+        panes: 5,
+        lost: 1,
+        degraded: 3,
+    };
+    let json = serde_json::to_value(&restored).unwrap();
+    assert_eq!(json["event"], "session_restored");
+    assert_eq!(json["lost"], 1);
+    assert_eq!(
+        serde_json::from_value::<Event>(json).unwrap(),
+        restored,
+        "the restore summary must survive the bus's own encoding",
+    );
+
+    let reloaded = Event::ConfigReloaded {
+        rejected_sections: 1,
+    };
+    let json = serde_json::to_value(&reloaded).unwrap();
+    assert_eq!(json["event"], "config_reloaded");
+    assert_eq!(serde_json::from_value::<Event>(json).unwrap(), reloaded);
+}
+
+#[test]
 fn gap_is_a_delivery_variant_not_an_out_of_band_flag() {
     // The contract is that loss is *visible*: a subscriber cannot consume the
     // stream without handling the gap, because the gap is what `recv` hands it.

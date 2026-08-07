@@ -138,6 +138,24 @@ impl Dispatch for StubServer {
         })
     }
 
+    async fn pane_rename(
+        &mut self,
+        params: pane::RenameParams,
+    ) -> Result<pane::RenameReply, RpcError> {
+        let _ = params;
+        Ok(pane::RenameReply { seq: self.seq })
+    }
+
+    async fn session_report(
+        &mut self,
+        _params: session::ReportParams,
+    ) -> Result<session::ReportReply, RpcError> {
+        Ok(session::ReportReply {
+            seq: self.seq,
+            report: session::RestoreReport::default(),
+        })
+    }
+
     async fn session_state(
         &mut self,
         _params: session::StateParams,
@@ -157,11 +175,13 @@ impl Dispatch for StubServer {
             panes: vec![session::PaneState {
                 pane,
                 short: ShortNumber::FIRST,
+                label: None,
                 rows: 24,
                 cols: 80,
                 history_head: RowId::from_raw(3),
                 history_floor: RowId::from_raw(0),
             }],
+            restore: None,
         })
     }
 

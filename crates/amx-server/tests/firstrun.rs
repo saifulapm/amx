@@ -52,6 +52,7 @@ fn fresh_ctx(tag: &str) -> Ctx {
         runtime_dir: root.join("runtime"),
         socket: root.join("runtime/sock"),
         state_dir: root.join("state"),
+        config_path: root.join("config/amx/config.toml"),
         bus: Arc::new(Bus::new(64)),
         cancel: CancellationToken::new(),
     }

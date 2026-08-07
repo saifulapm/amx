@@ -43,6 +43,7 @@ fn env_under(root: &Path) -> Env {
     Env {
         runtime_dir: Some(root.join("run")),
         state_home: Some(root.join("state")),
+        config_home: Some(root.join("config")),
         home: Some(root.join("home")),
         session: None,
         tmpdir: Some(root.join("tmp")),

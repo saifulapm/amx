@@ -60,6 +60,12 @@ pub enum CtxError {
         /// Why the environment could not supply one.
         reason: String,
     },
+    /// Neither `XDG_CONFIG_HOME` nor a usable fallback was available.
+    #[error("no config directory: {reason}")]
+    NoConfigDir {
+        /// Why the environment could not supply one.
+        reason: String,
+    },
     /// The session name was rejected.
     #[error(transparent)]
     SessionName(#[from] SessionNameError),

@@ -36,6 +36,13 @@ pub const AMX_DIR: &str = "amx";
 /// anything else holds it beside this.
 pub const SOCKET_NAME: &str = "sock";
 
+/// The config file's name inside `<config root>/amx`.
+///
+/// Configuration is per user and shared by every session — it is configuration,
+/// not state — so it sits one level above the session directories, and every
+/// running server reloads the same file independently.
+pub const CONFIG_NAME: &str = "config.toml";
+
 /// The name of a session, validated to be usable as a directory component.
 ///
 /// A session name selects a server instance: `--session work` or `AMX_SESSION`
@@ -121,7 +128,9 @@ pub struct Env {
     pub runtime_dir: Option<PathBuf>,
     /// `$XDG_STATE_HOME` — where snapshots live.
     pub state_home: Option<PathBuf>,
-    /// `$HOME`, the fallback root for `state_home`.
+    /// `$XDG_CONFIG_HOME` — where `config.toml` lives.
+    pub config_home: Option<PathBuf>,
+    /// `$HOME`, the fallback root for `state_home` and `config_home`.
     pub home: Option<PathBuf>,
     /// `$AMX_SESSION`, the session selected without a `--session` flag.
     pub session: Option<SessionName>,
@@ -146,6 +155,7 @@ impl Env {
         Self {
             runtime_dir: read_path("XDG_RUNTIME_DIR"),
             state_home: read_path("XDG_STATE_HOME"),
+            config_home: read_path("XDG_CONFIG_HOME"),
             home: read_path("HOME"),
             session: std::env::var("AMX_SESSION")
                 .ok()
@@ -181,6 +191,12 @@ pub struct Ctx {
     pub socket: PathBuf,
     /// `$XDG_STATE_HOME/amx/<session>` — snapshots and history sidecars.
     pub state_dir: PathBuf,
+    /// `$XDG_CONFIG_HOME/amx/config.toml` — the user's config file.
+    ///
+    /// Not per session: one file, read by every server this user runs, each
+    /// reloading it on its own. It carries no session name because a session
+    /// is a runtime instance and configuration outlives all of them.
+    pub config_path: PathBuf,
     /// The session's event bus.
     pub bus: Arc<Bus>,
     /// The session's shutdown signal.
@@ -201,11 +217,13 @@ impl Ctx {
     pub fn for_session(session: SessionName, env: &Env) -> Result<Self, CtxError> {
         let runtime_dir = runtime_amx_dir(env)?.join(session.as_str());
         let state_dir = state_root(env)?.join(AMX_DIR).join(session.as_str());
+        let config_path = config_root(env)?.join(AMX_DIR).join(CONFIG_NAME);
         Ok(Self {
             session,
             socket: runtime_dir.join(SOCKET_NAME),
             runtime_dir,
             state_dir,
+            config_path,
             bus: Arc::new(Bus::new(crate::event::bus::DEFAULT_REPLAY_CAPACITY)),
             cancel: CancellationToken::new(),
         })
@@ -294,6 +312,28 @@ fn state_root(env: &Env) -> Result<PathBuf, CtxError> {
         })?;
     if root.is_relative() {
         return Err(CtxError::NoStateDir {
+            reason: format!("{} is not an absolute path", root.display()),
+        });
+    }
+    Ok(root)
+}
+
+/// The directory the config file lives under, before `amx/config.toml`.
+///
+/// `$XDG_CONFIG_HOME`, or the `$HOME/.config` the XDG base directory
+/// specification defines it to default to. Derived from the passed `env` for
+/// the same reason as every other path here: two sessions in one test process
+/// must be able to point at two different config files.
+fn config_root(env: &Env) -> Result<PathBuf, CtxError> {
+    let root = env
+        .config_home
+        .clone()
+        .or_else(|| env.home.as_ref().map(|home| home.join(".config")))
+        .ok_or_else(|| CtxError::NoConfigDir {
+            reason: "neither XDG_CONFIG_HOME nor HOME is set".to_owned(),
+        })?;
+    if root.is_relative() {
+        return Err(CtxError::NoConfigDir {
             reason: format!("{} is not an absolute path", root.display()),
         });
     }

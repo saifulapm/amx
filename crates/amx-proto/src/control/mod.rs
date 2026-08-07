@@ -309,6 +309,16 @@ method_table! {
         about: "Grow or shrink a pane's slot in a direction",
     }
 
+    /// Give a pane a user-visible label.
+    PaneRename {
+        wire: "pane.rename",
+        handler: pane_rename,
+        params: pane::RenameParams,
+        reply: pane::RenameReply,
+        cli: ["pane", "rename"],
+        about: "Give a pane a user-visible label",
+    }
+
     /// The full session snapshot a fresh client folds into its model.
     SessionState {
         wire: "session.state",
@@ -317,6 +327,16 @@ method_table! {
         reply: session::StateReply,
         cli: ["session", "state"],
         about: "Report the session's workspaces, layouts, focus and panes",
+    }
+
+    /// What the last startup restore lost or degraded, entry by entry.
+    SessionReport {
+        wire: "session.report",
+        handler: session_report,
+        params: session::ReportParams,
+        reply: session::ReportReply,
+        cli: ["session", "report"],
+        about: "Report what the last restore lost or degraded",
     }
 
     /// Bind a binary stream to a frame channel on this connection.

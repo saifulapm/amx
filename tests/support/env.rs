@@ -127,6 +127,11 @@ impl Env {
         command
             .env("XDG_RUNTIME_DIR", self.dir.path().join("run"))
             .env("XDG_STATE_HOME", self.dir.path().join("state"))
+            // Pinned, not just left to the `HOME` fallback: this process
+            // inherits the developer's environment, and an exported
+            // `XDG_CONFIG_HOME` would point the server under test at the
+            // developer's own `config.toml`.
+            .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
             .env("HOME", self.dir.path())
             .env("AMX_SESSION", &self.session);
         for (key, value) in &self.vars {

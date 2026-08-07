@@ -71,7 +71,9 @@ fn sample_params(method: Method) -> Value {
         Method::PaneResize => {
             json!({ "pane": bogus_pane, "direction": "right", "delta": 0.0625 })
         }
+        Method::PaneRename => json!({ "pane": bogus_pane, "label": "renamed" }),
         Method::SessionState => json!({}),
+        Method::SessionReport => json!({}),
         Method::StreamBind => json!({ "kind": "pane_grid", "pane": bogus_pane }),
         Method::PaneHistory => {
             json!({ "pane": bogus_pane, "first": 0, "last": 0, "request": 1 })

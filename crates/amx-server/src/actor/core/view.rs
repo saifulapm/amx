@@ -71,6 +71,10 @@ impl Core {
                 panes.push(session::PaneState {
                     pane,
                     short: self.short_of_pane(pane),
+                    label: self
+                        .state
+                        .pane(pane)
+                        .and_then(|pane| pane.label().map(str::to_owned)),
                     rows,
                     cols,
                     history_head: head,
@@ -87,6 +91,11 @@ impl Core {
             focused_workspace: self.state.active_workspace(),
             workspaces,
             panes,
+            // U06 fills this from the `RestoreReport` it stores on `Core`
+            // (docs/07-m1-plan.md §4). `None` is the honest answer for a
+            // server that has not restored anything, which is every server
+            // until then.
+            restore: None,
         }
     }
 

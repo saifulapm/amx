@@ -428,12 +428,14 @@ fn mutates_layout(method: Method) -> bool {
         | Method::PaneMove
         | Method::PaneResize
         | Method::PaneFocus
+        | Method::PaneRename
         | Method::WorkspaceCreate
         | Method::WorkspaceRename
         | Method::WorkspaceKill
         | Method::WorkspaceSwitch => true,
         Method::Ping
         | Method::SessionState
+        | Method::SessionReport
         | Method::StreamBind
         | Method::PaneHistory
         | Method::ClientViewport => false,

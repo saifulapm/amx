@@ -4,15 +4,17 @@
 //! supervised by a root task with `CancellationToken` + `JoinSet` (structured
 //! shutdown; nothing detached, everything joined)."
 //!
-//! M0 builds three of the five actors in that table — `Core`, `PaneHost` and
-//! `Gateway`; `Persist` and `AgentHub` arrive with persistence and the agent
-//! layer. What is fixed here is the mailbox vocabulary those actors speak.
+//! M0 built three of the five actors in that table — `Core`, `PaneHost` and
+//! `Gateway`. M1 adds the fourth, `Persist`: [`persist`] is the on-disk format
+//! it writes, and its mailbox joins the vocabulary in [`actor`]. `AgentHub`
+//! arrives with the agent layer.
 
 pub mod actor;
 pub mod conn;
 pub mod damage;
 pub mod dispatch;
 pub mod history;
+pub mod persist;
 pub mod platform;
 pub mod pty;
 pub mod runtime;

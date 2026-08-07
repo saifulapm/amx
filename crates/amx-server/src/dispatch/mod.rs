@@ -13,13 +13,20 @@
 //!
 //! # Handler seams
 //!
-//! T16 filled the last two of these — `pane.*` and `workspace.*`, in
-//! [`pane`] and [`workspace`] — so M0's method table has no handler left
-//! answering [`NOT_IMPLEMENTED`]. The mechanism itself stays: a method landed
-//! in the shared table before its `Core` wiring exists is a compile error here
-//! until it gets a handler, and until then [`seam`] is what a build in that
-//! state answers with rather than `METHOD_NOT_FOUND` — reporting an
-//! unimplemented method as unknown would tell a client to stop offering it.
+//! A method landed in the shared table before its `Core` wiring exists is a
+//! compile error here until it gets a handler, and until then [`seam`] is what
+//! a build in that state answers with rather than `METHOD_NOT_FOUND` —
+//! reporting an unimplemented method as unknown would tell a client to stop
+//! offering it. T16 emptied the seam list for M0; U01 refilled it with M1's
+//! two new rows, each carrying the task that closes it:
+//!
+//! | Method | Filled by |
+//! |---|---|
+//! | `pane.rename` | U07 |
+//! | `session.report` | U06 |
+//!
+//! When the last one lands, [`seam`] has no callers again — which is U10's
+//! `grep`-level acceptance check.
 
 mod pane;
 mod stream;
@@ -111,10 +118,6 @@ impl Router {
 }
 
 /// `method` is in the table but has no handler yet.
-#[allow(
-    dead_code,
-    reason = "no method in M0's table is currently a seam; kept for the next one that lands ahead of its Core wiring"
-)]
 fn seam(method: &'static str) -> RpcError {
     RpcError::new(NOT_IMPLEMENTED, format!("{method} is not implemented yet"))
 }
@@ -217,12 +220,32 @@ impl Dispatch for Router {
         pane::resize(self, params).await
     }
 
+    /// Seam owned by **U07** (`docs/07-m1-plan.md` §4), which routes it into
+    /// `dispatch::pane` once `Core`'s handler mutates state.
+    async fn pane_rename(
+        &mut self,
+        params: pane_proto::RenameParams,
+    ) -> Result<pane_proto::RenameReply, RpcError> {
+        let _ = params;
+        Err(seam("pane.rename"))
+    }
+
     async fn session_state(
         &mut self,
         params: session::StateParams,
     ) -> Result<session::StateReply, RpcError> {
         self.call(|reply| CoreCommand::Session(SessionCall::State { params, reply }))
             .await
+    }
+
+    /// Seam owned by **U06** (`docs/07-m1-plan.md` §4), which serves the
+    /// `RestoreReport` the restore path leaves on `Core`.
+    async fn session_report(
+        &mut self,
+        params: session::ReportParams,
+    ) -> Result<session::ReportReply, RpcError> {
+        let _ = params;
+        Err(seam("session.report"))
     }
 
     async fn stream_bind(

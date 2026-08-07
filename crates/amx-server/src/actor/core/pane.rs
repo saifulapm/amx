@@ -390,6 +390,25 @@ impl Core {
         }
     }
 
+    /// Give a pane a user-visible label.
+    ///
+    /// **Stub — U07 fills this** (`docs/07-m1-plan.md` §4). Every piece below
+    /// the wire already exists and is unwired: `SessionState::rename_pane`
+    /// mutates and returns the effect, [`Event::PaneRenamed`] is the
+    /// transition to publish. U01 planted the routing arm in `core/mod.rs` and
+    /// this signature so U07 never reopens either.
+    pub(super) fn handle_pane_rename(
+        &mut self,
+        params: pane::RenameParams,
+        reply: Reply<pane::RenameReply>,
+    ) {
+        let _ = params;
+        let _ = reply.send(Err(RpcError::new(
+            crate::dispatch::NOT_IMPLEMENTED,
+            "pane.rename is not implemented yet",
+        )));
+    }
+
     pub(super) fn handle_pane_close(
         &mut self,
         params: pane::CloseParams,

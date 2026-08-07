@@ -1,0 +1,14 @@
+{
+  "reply": {
+    "seq": 55
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "pane.rename",
+    "params": {
+      "label": "editor",
+      "pane": "00000000-0000-0000-0000-0000000000a1"
+    }
+  }
+}

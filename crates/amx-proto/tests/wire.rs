@@ -2,8 +2,8 @@
 
 use std::collections::BTreeSet;
 
-use amx_core::{GridGeneration, PaneId, SessionId};
-use amx_proto::control::{Call, Method, SPECS, pane};
+use amx_core::{GridGeneration, PaneId, RowId, SessionId, ShortNumber};
+use amx_proto::control::{Call, Method, SPECS, pane, session};
 use amx_proto::error::NegotiationError;
 use amx_proto::frame::{CONTROL_CHANNEL, FRAME_HEADER_LEN, MAX_CONTROL_FRAME};
 use amx_proto::hello::{ClientInfo, Feature, Hello, Resume, ServerInfo};
@@ -244,8 +244,8 @@ fn method_table_generates_the_clap_tree() {
 fn method_table_generates_matching_serde_names_dispatch_and_clap_tree() {
     // The M0 verb surface: ping + session.state + workspace{create,rename,
     // kill,switch} + pane{split,zoom,swap,move,close,focus,resize,history} +
-    // stream.bind + client.viewport.
-    assert_eq!(Method::ALL.len(), 16);
+    // stream.bind + client.viewport; plus M1's pane.rename and session.report.
+    assert_eq!(Method::ALL.len(), 18);
     assert_eq!(Method::ALL.len(), SPECS.len());
 
     for method in Method::ALL {
@@ -353,6 +353,87 @@ fn negotiation_fails_only_when_versions_do_not_overlap() {
         )
         .unwrap_err();
     assert!(matches!(error, NegotiationError::NoCommonVersion { .. }));
+}
+
+#[test]
+fn state_reply_with_restore_summary_round_trips_and_omits_when_none() {
+    let pane = PaneId::new_v4();
+    let mut reply = session::StateReply {
+        seq: 9,
+        focused_workspace: None,
+        workspaces: vec![],
+        panes: vec![session::PaneState {
+            pane,
+            short: ShortNumber::FIRST,
+            label: Some("editor".to_owned()),
+            rows: 24,
+            cols: 80,
+            history_head: RowId::from_raw(0),
+            history_floor: RowId::from_raw(0),
+        }],
+        restore: Some(session::RestoreSummary {
+            restored: 4,
+            lost: 1,
+            degraded: 2,
+        }),
+    };
+
+    let json = serde_json::to_value(&reply).unwrap();
+    assert_eq!(json["restore"]["lost"], 1);
+    assert_eq!(json["panes"][0]["label"], "editor");
+    assert_eq!(
+        serde_json::from_value::<session::StateReply>(json).unwrap(),
+        reply
+    );
+
+    // Absent, not null: both additions are optional, so a server that never
+    // restored anything and a pane with no label produce exactly the bytes a
+    // pre-M1 peer already knows how to read (R-M1-8).
+    reply.restore = None;
+    reply.panes[0].label = None;
+    let json = serde_json::to_value(&reply).unwrap();
+    assert!(json.get("restore").is_none(), "{json}");
+    assert!(json["panes"][0].get("label").is_none(), "{json}");
+
+    // And the same tolerance the other way: a summary from a newer amx with a
+    // field this build never heard of still decodes.
+    let from_the_future = serde_json::json!({
+        "seq": 9,
+        "workspaces": [],
+        "panes": [],
+        "restore": { "restored": 4, "lost": 1, "degraded": 2, "quarantined": 7 },
+    });
+    let decoded: session::StateReply = serde_json::from_value(from_the_future).unwrap();
+    assert_eq!(decoded.restore.unwrap().lost, 1);
+}
+
+#[test]
+fn a_restore_report_summarizes_its_own_entries() {
+    let report = session::RestoreReport {
+        entries: vec![
+            loss(session::RestoreSeverity::Lost),
+            loss(session::RestoreSeverity::Degraded),
+            loss(session::RestoreSeverity::Degraded),
+        ],
+    };
+    let summary = report.summary(4);
+    assert_eq!(summary.restored, 4);
+    assert_eq!(summary.lost, 1);
+    assert_eq!(summary.degraded, 2);
+    assert!(!summary.is_clean());
+    assert!(session::RestoreReport::default().summary(4).is_clean());
+}
+
+fn loss(severity: session::RestoreSeverity) -> session::RestoreLoss {
+    session::RestoreLoss {
+        severity,
+        entity: session::RestoreEntity::Pane,
+        workspace: None,
+        pane: Some(PaneId::new_v4()),
+        label: None,
+        path: None,
+        reason: "for the count".to_owned(),
+    }
 }
 
 #[test]

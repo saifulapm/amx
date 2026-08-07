@@ -22,18 +22,22 @@
 //! time.
 //!
 //! Split by responsibility: this file is the struct, the mailbox loop and the
-//! handlers with no dedicated domain (`ping`, pane reports); [`pane`] and
-//! [`workspace`] hold the `pane.*`/`workspace.*` handlers themselves.
+//! routing that decides which handler a command reaches. The handlers live
+//! beside it — [`pane`] and [`workspace`] for the `pane.*`/`workspace.*`
+//! verbs, [`report`] for the fold over what pane actors report back, and
+//! [`persist`] for the snapshot capture the `Persist` actor asks for.
 
 mod pane;
+mod persist;
+mod report;
 mod view;
 mod workspace;
 
 use std::collections::HashMap;
 
 use amx_core::{
-    Ctx, Effect, EffectSet, Event, Level, PaneId, RowId, Scheduled, SessionId, SessionState,
-    ShortNumber, WorkspaceId,
+    Ctx, EffectSet, Event, Level, PaneId, RowId, Scheduled, SessionId, SessionState, ShortNumber,
+    WorkspaceId,
 };
 use amx_proto::ServerInfo;
 use amx_proto::control::{client, session};
@@ -41,8 +45,8 @@ use amx_proto::rpc::RpcError;
 use tokio::sync::mpsc;
 
 use crate::actor::{
-    ClientCall, CoreCommand, CoreHandle, PaneCall, PaneHandle, PaneHost, PaneReport, PaneWiring,
-    SessionCall, StreamCall, WorkspaceCall,
+    ClientCall, CoreCommand, CoreHandle, PaneCall, PaneHandle, PaneHost, PaneWiring, SessionCall,
+    StreamCall, WorkspaceCall,
 };
 
 /// Where a folded batch's output goes.
@@ -214,16 +218,6 @@ impl Core {
         self.ctx.bus.publish(event)
     }
 
-    /// The pane's folded history window (`head`, `floor`), created at zero the
-    /// first time a report mentions the pane.
-    fn history_window_mut(&mut self, pane: PaneId) -> (&mut RowId, &mut RowId) {
-        let entry = self
-            .history
-            .entry(pane)
-            .or_insert((RowId::from_raw(0), RowId::from_raw(0)));
-        (&mut entry.0, &mut entry.1)
-    }
-
     fn no_such_pane(pane: PaneId) -> RpcError {
         RpcError::new(RpcError::INVALID_PARAMS, format!("no such pane: {pane}"))
     }
@@ -264,6 +258,9 @@ impl Core {
             CoreCommand::Session(SessionCall::State { params: _, reply }) => {
                 let _ = reply.send(Ok(self.session_state()));
             }
+            CoreCommand::Session(SessionCall::Capture { sidecars, reply }) => {
+                self.handle_capture(sidecars, reply);
+            }
             CoreCommand::Workspace(WorkspaceCall::Create { params, reply }) => {
                 self.handle_workspace_create_no_spawn(params, reply);
             }
@@ -287,6 +284,9 @@ impl Core {
             }
             CoreCommand::Pane(PaneCall::Move { params, reply }) => {
                 self.handle_pane_move(params, reply);
+            }
+            CoreCommand::Pane(PaneCall::Rename { params, reply }) => {
+                self.handle_pane_rename(params, reply);
             }
             CoreCommand::Pane(PaneCall::Close { params, reply }) => {
                 self.handle_pane_close(params, reply);
@@ -321,69 +321,6 @@ impl Core {
             }
             CoreCommand::PaneReport { pane, report } => self.handle_pane_report(pane, report),
             CoreCommand::Shutdown => {}
-        }
-    }
-
-    /// Hang up a closed or killed pane's terminal and park its host until the
-    /// exit is reported.
-    ///
-    /// [`PaneHost::kill`] bypasses the command mailbox, so a pane whose
-    /// mailbox is full cannot silently outlive its close — the old
-    /// `try_send(Kill)` could be dropped exactly then, orphaning the child
-    /// behind a success reply.
-    pub(super) fn hang_up_pane(&mut self, pane: PaneId) {
-        if let Some(host) = self.panes.remove(&pane) {
-            host.kill();
-            self.draining.push(host);
-        }
-    }
-
-    fn handle_pane_report(&mut self, pane: PaneId, report: PaneReport) {
-        match report {
-            PaneReport::Damage { generation } => {
-                self.effects.absorb(Effect::PaneDamage(pane));
-                self.publish(Event::PaneDamage { pane, generation });
-            }
-            // The hashes ride the pane's delta stream, not the bus: 04 §3 puts
-            // them next to the rows they describe, and the bus event is the
-            // session-state fact that ids `range` now exist.
-            PaneReport::Committed { range, .. } => {
-                let (head, _) = self.history_window_mut(pane);
-                *head = (*head).max(RowId::from_raw(range.last.get().saturating_add(1)));
-                self.publish(Event::HistoryCommitted { pane, range });
-            }
-            PaneReport::Invalidated { from_row, cause } => {
-                let (head, _) = self.history_window_mut(pane);
-                *head = from_row;
-                self.publish(Event::HistoryInvalidated {
-                    pane,
-                    from_row,
-                    cause,
-                });
-            }
-            PaneReport::Evicted { oldest_row } => {
-                let (head, floor) = self.history_window_mut(pane);
-                *floor = (*floor).max(oldest_row);
-                *head = (*head).max(*floor);
-                self.publish(Event::HistoryEvicted { pane, oldest_row });
-            }
-            PaneReport::Title(title) => {
-                self.publish(Event::PaneTitle { pane, title });
-            }
-            // `Event` has no bell variant (T01's frozen enum): a bell is not
-            // session state, so there is nothing to publish. Flagged in T09's
-            // report rather than added here — extending `Event` is T01's file.
-            PaneReport::Bell => {}
-            PaneReport::Exited { status } => {
-                // The actor that reported this is on its way down: nothing
-                // left to send it, but its task is still ours to join, so the
-                // host moves to the draining list instead of being dropped.
-                if let Some(host) = self.panes.remove(&pane) {
-                    self.draining.push(host);
-                }
-                self.effects.absorb(Effect::PaneDamage(pane));
-                self.publish(Event::PaneExited { pane, status });
-            }
         }
     }
 
@@ -448,19 +385,6 @@ impl Core {
         drop(mailbox);
         self.join_panes().await;
         self
-    }
-
-    /// Take every pane down and join its task: nothing detached, everything
-    /// joined (04 §2). Hang-up goes first because it bypasses the mailbox and
-    /// unblocks an actor stuck on a stuffed pty, so the shutdown send that
-    /// follows always lands.
-    async fn join_panes(&mut self) {
-        let mut hosts: Vec<PaneHost> = self.panes.drain().map(|(_, host)| host).collect();
-        hosts.append(&mut self.draining);
-        for host in hosts {
-            host.kill();
-            let _ = host.shutdown().await;
-        }
     }
 
     /// Route one command to its live handler — the ones that spawn a process

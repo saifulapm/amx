@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 pub mod core;
 pub mod gateway;
+pub mod persist;
 
 use amx_core::{GridGeneration, InvalidationCause, PaneId, RowHash, RowId, RowRange};
 use amx_proto::control::{client, pane, session, workspace};
@@ -22,6 +23,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
 pub use pane_host::{PaneHost, PaneHostConfig, PaneHostError, PaneProbe, SnapshotFeed};
+pub use persist::{Capture, PersistCommand, PersistHandle};
 
 /// A reply channel for a command that answers.
 pub type Reply<T> = oneshot::Sender<Result<T, RpcError>>;
@@ -236,6 +238,19 @@ pub enum SessionCall {
         /// Where the snapshot goes.
         reply: Reply<session::StateReply>,
     },
+    /// Assemble a snapshot of the session for persistence.
+    ///
+    /// Not a wire method: the `Persist` actor sends this through the ordinary
+    /// [`CoreHandle`] when its debounce fires — no back door, the same rule
+    /// the connection path follows — and `Core` answers synchronously from
+    /// [`SessionState`](amx_core::SessionState) plus its shorts maps. A
+    /// capture can never fail, so the reply channel carries the value bare.
+    Capture {
+        /// Whether the caller wants pane handles for sidecar dumps too.
+        sidecars: bool,
+        /// Where the capture goes.
+        reply: oneshot::Sender<Capture>,
+    },
 }
 
 /// `workspace.*` calls.
@@ -301,6 +316,13 @@ pub enum PaneCall {
         params: pane::MoveParams,
         /// Where the reply goes.
         reply: Reply<pane::MoveReply>,
+    },
+    /// `pane.rename`.
+    Rename {
+        /// Parameters.
+        params: pane::RenameParams,
+        /// Where the reply goes.
+        reply: Reply<pane::RenameReply>,
     },
     /// `pane.close`.
     Close {

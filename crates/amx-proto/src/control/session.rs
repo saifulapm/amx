@@ -1,5 +1,7 @@
 //! `session.*` payloads.
 
+use std::path::PathBuf;
+
 use amx_core::{Layout, PaneId, RowId, Seq, SessionId, ShortNumber, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +56,13 @@ pub struct PaneState {
     pub pane: PaneId,
     /// Its user-visible number.
     pub short: ShortNumber,
+    /// Its label, if one was set.
+    ///
+    /// Additive and optional, like the workspace label beside it: absent on
+    /// the wire when unset, so a peer built before `pane.rename` existed reads
+    /// exactly the bytes it always did (R-M1-8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// The pane grid's current rows.
     pub rows: u16,
     /// The pane grid's current columns.
@@ -82,4 +91,137 @@ pub struct StateReply {
     pub workspaces: Vec<WorkspaceState>,
     /// Every pane, across all workspaces.
     pub panes: Vec<PaneState>,
+    /// What this server's startup restore cost, if it performed one.
+    ///
+    /// Counts only: the entries are served whole by `session.report`. They
+    /// ride here so an attaching client can render the status-line indicator
+    /// without a second call — the indicator is the reason 04 §6 says restore
+    /// loss is "never log-only". Absent when the server started fresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<RestoreSummary>,
+}
+
+/// Parameters of `session.report`.
+///
+/// Empty, and a struct rather than a unit for the same reason [`PingParams`]
+/// is: a field added later must not change the wire shape.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct ReportParams {}
+
+/// Reply to `session.report`: the restore report, entry by entry.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ReportReply {
+    /// The bus sequence this report was read at.
+    pub seq: Seq,
+    /// The report itself, empty when the restore lost nothing.
+    pub report: RestoreReport,
+}
+
+/// What a restore cost, in counts.
+///
+/// The summary of a [`RestoreReport`], and derivable from it — but carried
+/// separately on `session.state` so the common case (render an indicator)
+/// never fetches the entries.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct RestoreSummary {
+    /// Workspaces and panes that came back.
+    pub restored: u32,
+    /// Entries that were pruned outright.
+    pub lost: u32,
+    /// Entries that came back with something missing.
+    pub degraded: u32,
+}
+
+impl RestoreSummary {
+    /// Whether anything at all went wrong.
+    #[must_use]
+    pub const fn is_clean(&self) -> bool {
+        self.lost == 0 && self.degraded == 0
+    }
+}
+
+/// Everything a restore could not do faithfully.
+///
+/// 04 §6: restore loss is "shown in the status line and queryable via `amx
+/// session report` — never log-only", which is why this is a reply payload and
+/// not a `warn!`. An empty report is the successful case, not an absent one.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct RestoreReport {
+    /// Every entry, in the order restore produced them.
+    #[serde(default)]
+    pub entries: Vec<RestoreLoss>,
+}
+
+impl RestoreReport {
+    /// Count this report's entries by severity.
+    ///
+    /// `restored` is not derivable from the entries — restore knows it and the
+    /// report does not — so the caller supplies it.
+    #[must_use]
+    pub fn summary(&self, restored: u32) -> RestoreSummary {
+        let count = |severity| {
+            u32::try_from(
+                self.entries
+                    .iter()
+                    .filter(|entry| entry.severity == severity)
+                    .count(),
+            )
+            .unwrap_or(u32::MAX)
+        };
+        RestoreSummary {
+            restored,
+            lost: count(RestoreSeverity::Lost),
+            degraded: count(RestoreSeverity::Degraded),
+        }
+    }
+}
+
+/// How badly one entry fared.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestoreSeverity {
+    /// It was pruned: a failed spawn, or a workspace left with no panes.
+    Lost,
+    /// It came back with something missing: a vanished cwd, an unreadable
+    /// scrollback sidecar.
+    Degraded,
+}
+
+/// What a restore entry is about.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestoreEntity {
+    /// The snapshot as a whole — unreadable, or from a newer amx.
+    Session,
+    /// One workspace.
+    Workspace,
+    /// One pane.
+    Pane,
+}
+
+/// One thing a restore lost or degraded.
+///
+/// Named for the common case; a `Degraded` entry is a partial loss and lands
+/// here too, because the surfaces that consume this — the status line, `amx
+/// session report` — want one list, ordered as restore produced it.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RestoreLoss {
+    /// How badly this one fared.
+    pub severity: RestoreSeverity,
+    /// What kind of thing it is.
+    pub entity: RestoreEntity,
+    /// The workspace, when the entry names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceId>,
+    /// The pane, when the entry names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<PaneId>,
+    /// The label the entity had in the snapshot, if it had one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The path the entry is about: a pane's saved cwd, a sidecar file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    /// Why, in one line, for a human reading `amx session report`.
+    pub reason: String,
 }
