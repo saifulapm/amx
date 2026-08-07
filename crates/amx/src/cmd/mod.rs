@@ -5,17 +5,29 @@
 //! line in land once, in the contracts task, so no two wave tasks collide over
 //! it (the U01 precedent). **V09** fills [`hook`], **V10** [`integration`],
 //! **V11** [`events`], **V16** [`skill`].
+//!
+//! M3's six are planted the same way by W03: **W10** fills [`update`], **W11**
+//! [`bridge`], **W12** [`work`], **W13** [`layout`] and [`apply`], **W06**
+//! [`handoff_caps`]. Each of those modules is a stub that names its owner and
+//! refuses; the arms below are what make the refusal reachable, so the task
+//! that fills one writes a body and touches nothing else.
 
+pub mod apply;
 pub mod attach;
+pub mod bridge;
 pub mod call;
 pub mod detach;
 pub mod events;
+pub mod handoff_caps;
 pub mod hook;
 pub mod integration;
+pub mod layout;
 pub mod server;
 pub mod session;
 pub mod skill;
+pub mod update;
 pub mod viewport;
+pub mod work;
 
 use std::process::ExitCode;
 
@@ -42,6 +54,17 @@ pub async fn dispatch(env: &Env, matches: &ArgMatches) -> anyhow::Result<ExitCod
         Some(("_hook", sub)) => Ok(hook::run(env, sub).await),
         Some(("integration", sub)) => integration::run(env, matches, sub).await,
         Some(("skill", sub)) => skill::run(env, matches, sub).await,
+        // M3's six. Four compose existing capabilities client-side and two are
+        // hidden plumbing; none of them is a control call, which is why each
+        // gets an arm here rather than a method-table row.
+        Some(("update", sub)) => update::run(env, matches, sub).await,
+        Some(("work", sub)) => work::run(env, matches, sub).await,
+        Some(("layout", sub)) => layout::run(env, matches, sub).await,
+        Some(("apply", sub)) => apply::run(env, matches, sub).await,
+        Some(("_bridge", sub)) => bridge::run(env, matches, sub).await,
+        // No session and no environment: it answers about the binary it is,
+        // and an exporter runs it before deciding whether to touch anything.
+        Some(("_handoff-caps", _)) => handoff_caps::run().await,
         // `events` is both: `events subscribe` is a generated method row, and a
         // bare `amx events [--json]` is the streaming consumer of 04 §8.
         Some(("events", sub)) => match sub.subcommand() {

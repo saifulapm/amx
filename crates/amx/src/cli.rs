@@ -18,11 +18,20 @@
 //! U01 precedent: `cli.rs` is a file every milestone wants a line in, so its
 //! lines land once, in the contracts task.
 //!
+//! M3 adds six, planted by W03 on the same terms (`docs/09-m3-plan.md` §4):
+//! `update`, `work`, `layout` and `apply` are public verbs that compose
+//! existing capabilities client-side, and `_bridge` and `_handoff-caps` are
+//! hidden — one is a byte splice, the other a single exec that prints what a
+//! binary can be handed. `amx session handoff` needs no line here at all: it is
+//! a real method-table row, so the generated tree carries it, flags and all.
+//!
 //! # Task ownership
 //!
 //! The trees below are complete; the command modules behind them are stubs.
 //! **V09** fills `_hook`, **V10** `integration`, **V11** `events`, **V16**
-//! `skill`.
+//! `skill`. For M3: **W10** fills `update`, **W11** `_bridge`, **W12** `work`,
+//! **W13** `layout` and `apply`, and **W06** `_handoff-caps` (the pre-flight
+//! probe its orchestrator runs).
 
 use clap::{Arg, ArgAction, Command};
 
@@ -57,6 +66,12 @@ pub fn cli() -> Command {
         .subcommand(hook())
         .subcommand(integration())
         .subcommand(skill())
+        .subcommand(update())
+        .subcommand(work())
+        .subcommand(layout())
+        .subcommand(apply())
+        .subcommand(bridge())
+        .subcommand(handoff_caps())
         .subcommands(amx_proto::control::cli::method_commands());
 
     // The generated tree owns the `session` group (it carries `session.state`);
@@ -233,6 +248,146 @@ fn skill() -> Command {
                         .help("Where to write it [default: the current directory]"),
                 ),
         )
+}
+
+/// `amx update check|apply` — self-update (D-M3-8).
+///
+/// **W10** fills these. What `check` must be honest about: until a release
+/// pipeline exists there is no manifest at the default channel URL, and the
+/// answer to that is the plain sentence, not an error and not a stub pretending
+/// otherwise (R-M3-4). `apply` stages, verifies a sha256, renames atomically
+/// over the running exe — legal on unix; ETXTBSY guards writes, not renames —
+/// and then asks the running session for `session.handoff`.
+fn update() -> Command {
+    Command::new("update")
+        .about("Check for a newer amx, or install one without dropping a pane")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(Command::new("check").about("Report whether a newer amx is published"))
+        .subcommand(
+            Command::new("apply")
+                .about("Install the newest amx and hand the running session over to it")
+                .arg(
+                    Arg::new("channel")
+                        .long("channel")
+                        .value_name("URL")
+                        .help("The channel manifest to read [default: the configured channel]"),
+                ),
+        )
+}
+
+/// `amx work <branch> [--kind]` / `amx work done [branch]` — worktrees
+/// (D-M3-10).
+///
+/// **W12** fills these. The server learns no git: the CLI runs `git worktree
+/// add` as argv — never a shell string — and the association it creates lives
+/// on the workspace as the block W03 added to state and snapshot. `done`
+/// collapses all three (agent, workspace, tree) and refuses a dirty tree
+/// without `--force`, which is the destructive-op caution M1's delete work set
+/// as policy.
+fn work() -> Command {
+    Command::new("work")
+        .about("Start a workspace on a git worktree, or take one down")
+        .subcommand_required(false)
+        .arg_required_else_help(true)
+        .arg(
+            Arg::new("branch")
+                .value_name("BRANCH")
+                .help("The branch to check out into a worktree of its own"),
+        )
+        .arg(
+            Arg::new("kind")
+                .long("kind")
+                .value_name("AGENT")
+                .help("Start this agent in the new workspace, by registry id"),
+        )
+        .subcommand(
+            Command::new("done")
+                .about("Kill the workspace and remove its worktree")
+                .arg(
+                    Arg::new("branch")
+                        .value_name("BRANCH")
+                        .help("Which one [default: the workspace this pane is in]"),
+                )
+                .arg(
+                    Arg::new("force")
+                        .long("force")
+                        .action(ArgAction::SetTrue)
+                        .help("Remove the worktree even when it has uncommitted changes"),
+                ),
+        )
+}
+
+/// `amx layout export` — a session's shape as a file (D-M3-11).
+///
+/// **W13** fills it, entirely client-side over the public verbs: export renders
+/// `session.state` into TOML. Session refs are deliberately not exported — a
+/// layout is a shape, not a conversation — which is also why the pair with
+/// [`apply`] is one-way per invocation rather than a sync.
+fn layout() -> Command {
+    Command::new("layout")
+        .about("Export this session's shape")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(
+            Command::new("export")
+                .about("Write this session's workspaces, splits and agent kinds to a file")
+                .arg(
+                    Arg::new("out")
+                        .long("out")
+                        .value_name("FILE")
+                        .help("Where to write it [default: stdout]"),
+                ),
+        )
+}
+
+/// `amx apply <file>` — replay a layout through the public verbs (D-M3-11).
+///
+/// **W13** fills it. A top-level verb rather than `layout apply`, as 04 §4's
+/// CLI surface spells it. It adds workspaces to the running session and
+/// suffixes names on collision; replacing a session is `session stop` plus
+/// this, two explicit steps.
+fn apply() -> Command {
+    Command::new("apply")
+        .about("Build workspaces, splits and agents from a layout file")
+        .arg(
+            Arg::new("file")
+                .required(true)
+                .value_name("FILE")
+                .help("The layout file to apply"),
+        )
+}
+
+/// `amx _bridge` — the byte splice an SSH remote speaks through (D-M3-9).
+///
+/// Hidden: it is not a verb a user runs, it is what `amx --remote host` runs on
+/// the far side, as `ssh host exec amx _bridge`. **W11** fills it, and it is a
+/// splice and nothing more — resolve the session, connect, copy both ways, and
+/// exit with the connect error before the first protocol byte if there is one.
+fn bridge() -> Command {
+    Command::new("_bridge")
+        .hide(true)
+        .about("Splice this process's stdio onto a session socket")
+        .arg(
+            Arg::new("daemonize")
+                .long("daemonize")
+                .action(ArgAction::SetTrue)
+                .help("Start the session server first when nothing answers"),
+        )
+}
+
+/// `amx _handoff-caps` — what this binary can be handed (D-M3-6 point 2).
+///
+/// Hidden, and one exec with JSON on stdout: `{version, handoff: [min,max],
+/// proto: [min,max]}`. It exists so an exporter can refuse a wrong successor
+/// *before* it quiesces a single pane — herdr validates after pausing
+/// everything and pays a full quiesce and rollback for a binary it could have
+/// rejected for free. **W06** fills it, since the orchestrator is the only
+/// caller and the windows it prints are the ones that orchestrator checks.
+fn handoff_caps() -> Command {
+    Command::new("_handoff-caps")
+        .hide(true)
+        .about("Print this binary's version and handoff/protocol windows as JSON")
 }
 
 /// The streaming half of `amx events`, added onto the generated group.
