@@ -90,7 +90,9 @@ impl Rig {
     /// because a fifth of a terminal is not a width the shipped rules were
     /// written for.
     pub async fn start_agent(&mut self, name: &str) -> Agent {
-        let created = self.call("workspace.create", json!({ "focus": true })).await;
+        let created = self
+            .call("workspace.create", json!({ "focus": true }))
+            .await;
         let workspace: WorkspaceId =
             serde_json::from_value(created["workspace"].clone()).expect("a workspace id");
         let reply = self
@@ -150,11 +152,8 @@ impl Rig {
     /// submit byte, and the agent's `read` is on the far side of a real pty's
     /// line discipline.
     pub async fn drive(&mut self, target: &str, command: &str) {
-        self.call(
-            "pane.run",
-            json!({ "target": target, "text": command }),
-        )
-        .await;
+        self.call("pane.run", json!({ "target": target, "text": command }))
+            .await;
     }
 
     /// The session's state tree.
@@ -270,7 +269,8 @@ impl Rig {
     pub async fn wait_snapshot_holds(&mut self, refs: &[String]) {
         let deadline = Instant::now() + rig::PATIENCE;
         loop {
-            let bytes = std::fs::read(self.env.state_dir().join("session.json")).unwrap_or_default();
+            let bytes =
+                std::fs::read(self.env.state_dir().join("session.json")).unwrap_or_default();
             let text = String::from_utf8_lossy(&bytes).into_owned();
             if refs.iter().all(|value| text.contains(value.as_str())) {
                 return;
@@ -345,7 +345,8 @@ impl Agent {
 /// A control connection that has said hello.
 pub async fn connected(env: &Env) -> Wire {
     let mut wire = Wire::connect(&env.socket()).await;
-    wire.hello((amx_proto::PROTO_MIN, amx_proto::PROTO_MAX)).await;
+    wire.hello((amx_proto::PROTO_MIN, amx_proto::PROTO_MAX))
+        .await;
     wire
 }
 

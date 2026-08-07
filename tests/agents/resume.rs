@@ -79,7 +79,9 @@ async fn a_hand_edited_conversation_restores_a_plain_shell_and_reports_the_loss(
     // shell ever ran the agent.
     let state = rig.state().await;
     assert!(
-        state["panes"].as_array().is_some_and(|panes| !panes.is_empty()),
+        state["panes"]
+            .as_array()
+            .is_some_and(|panes| !panes.is_empty()),
         "the session came back: {state}"
     );
     let report = rig.env.run(&["session", "report"]).ok().to_owned();

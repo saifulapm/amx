@@ -1169,6 +1169,84 @@ Cross-wave sequential edits are declared, not discovered: V07 extends V02's
 V11/V12 fill V02's `dispatch/{wait,events,pane}.rs` stubs; V14 splits
 `app/wired.rs` (M0's file). All sequential, never concurrent.
 
+### Wave outcomes — where reality diverged
+
+Written by V17 on the way out, the way 07 §5 did, so M3 plans from what
+happened rather than from what was hoped. Only the divergences are here; the
+tasks that landed as written are not listed.
+
+**W-1 — The plan's biggest miss was a seam nobody's file contained.** Every
+`agent.*` row and every wait worked in `crates/amx-server/tests/` and answered
+a real client with a refusal. `session/serve.rs` built the hub with a
+`StatusView` of its own, and `Router::attach_agent` had no call site outside a
+test harness — so over a socket the hub's mailbox was unreachable and the view
+every wait predicate reads was written by nobody. Both halves were correct and
+merged; the join belonged to neither owner's files. V17 closed it (the gateway
+carries the handle between the bind and the accept loop, and hands connections
+the view the hub writes), and `tests/agents.rs` is the suite that fails
+seventeen ways without it. **The lesson for M3's plan is a scope rule, not a
+bug report**: a task that adds a capability to *connections* must name the
+serve-path assembly in its scope, or the integration task inherits it — and it
+inherits it silently, because the in-process rigs are green either way. This is
+the third time the standing live-smoke lesson has been paid for.
+
+**W-2 — Tier 3's probe walk shipped with no caller, and still has none.**
+V07 built `agent/identity.rs` — the foreground-job walk, the wrapper
+unwrapping, `ProbeGate` with its three triggers — and the hub identifies panes
+from the *spawn argv* (`program_named`) and from the first hook report only.
+The comment in `agent_hub/mod.rs` naming "the foreground-job probe V13 wires to
+its readiness handshake" describes a wiring V13 did not do, and V17 deliberately
+did not do either: the useful trigger is `Damage` (a pane whose argv does not
+name its agent, painting for the first time), and reaching it means the hub
+awaiting a pane-host round trip from inside its own loop — which is a change to
+the actor's shape and to its shutdown discipline, both fixed by §3 and
+constrained by R-M2-6. That is a design decision, not an integration one.
+**What it costs today:** a `claude` typed by hand is identified by its first
+hook report, which V01 measured arriving at `SessionStart`, so Claude Code is
+unaffected. A **Codex** launched by hand is not identified until the user's
+first prompt, because Codex fires no `SessionStart` before then (V01 §4) — the
+exact case `identity.rs`'s own module docs were written about. M3 owns it.
+
+**W-3 — `agent.start` readiness can be answered by the opening assumption.**
+Identification transitions a quiet tracker to `Idle` with cause `probe`
+(`fusion/tracker.rs`, deliberately: "output arriving is a turn in progress,
+silence is a prompt waiting"), and `agent.start`'s readiness predicate asks only
+for kind-plus-`Idle`. So for a stanza with `startup_grace_ms = 0` the handshake
+can return before the agent has painted anything at all. The shipped stanzas'
+3 s and 5 s graces hide it, and the grace is the mechanism the plan chose for
+exactly this — but "readiness is evidence, not optimism" is not what the
+predicate currently says. A predicate that also required a non-`probe` cause
+would say it. Not changed in V17: it is V13's design and a behavior change to a
+merged verb. The exit suite waits for the paint itself and says so where it does.
+
+**W-4 — R-M2-2 is withdrawn; 04 §5 was right.** The plan recorded Codex's flag
+as `[features] codex_hooks` from third-party documentation. On the 0.147.0 that
+V01 actually installed and drove, hooks are `stable`, on by default, and the
+flag is `[features] hooks` — 04 §5's spelling. `codex_hooks` is a crate path
+inside the binary. 04 §5's "hooks experimental, behind a feature flag today"
+clause was the stale one and V17 corrected it. R-M2-1's fallback branch is
+retired with it: Codex is installed, measured, and ships `edges`.
+
+**W-5 — R-M2-9 resolved as flagged, and 04 §5 now says so.** The registry
+ships as parse-at-startup, not codegen, exactly as D-M2-2 argued. 04 §5's
+"generated from it" is now spelled "derives from it at load", with the
+conformance test named as what replaces the compile-time guarantee. No
+behavior changed; the document stopped promising a mechanism the milestone
+deliberately did not build.
+
+**W-6 — The `full` coverage class has still never been measured.** It is in
+04 §5's table on herdr's production data and nothing in M2 tested it; V01
+recorded it as leftover L12. The class exists in the type and the fusion
+machine has its arm, which is right — but no agent may be shipped into it
+without its own matrix. 04 §5's table now says so in the row.
+
+**W-7 — The seam ledger emptied on schedule.** V02 opened twelve; V12 closed
+four, V09 one, V11 three, V13 two, and V17 the last two (`agent.explain`,
+`agent.next`). The helper, its error code and the `tests/hygiene.rs` exemption
+were deleted together, and `tests/skew.rs` gained the wire-side half — no row
+may answer the retired code. Second milestone running that this discipline has
+worked exactly as designed; it is worth keeping for M3.
+
 ---
 
 ## 7. Risks & findings
@@ -1186,7 +1264,12 @@ milestone when measured. 04 §5's table already lists Codex as
 a contradiction, but it is a visible difference (flagged, and mirrored in the
 conformance test's tie to the findings doc).
 
-**R-M2-2 — 04 §5 names the wrong Codex feature flag.** Third-party
+**R-M2-2 — WITHDRAWN (V01 measured it; see §6's W-4).** 04 §5 named the flag
+correctly and the correction ran the other way: on Codex 0.147.0 hooks are
+stable and on by default behind `[features] hooks`, and it is 04 §5's
+"experimental" clause that was stale. The original text follows.
+
+~~**R-M2-2 — 04 §5 names the wrong Codex feature flag.**~~ Third-party
 documentation of Codex ≥0.114 says `[features] codex_hooks = true`; 04 §5's
 class table and herdr's installer both say `[features] hooks` (herdr even
 deletes a deprecated `codex_hooks` key — the flag has changed name at least
@@ -1248,8 +1331,12 @@ fake agents: bash 3.2 scripts, `pgrep -f` marker uniqueness, pty drain rules,
 the rasterizer's small CSI vocabulary (spinners as `\r`-overwrite), sun_path
 budgets. All encoded in V17's fixtures, none discovered fresh.
 
-**R-M2-9 — "Generated registry" is delivered as parse-at-startup, not
-codegen.** 04 §5/05 M2 say `agents.toml` → "generated"
+**R-M2-9 — RESOLVED as flagged (see §6's W-5): 04 §5 now says "derives from it
+at load".** The doc conversation this asked for happened, and the answer was to
+correct the wording rather than build a codegen step. The original text follows.
+
+~~**R-M2-9 — "Generated registry" is delivered as parse-at-startup, not
+codegen.**~~ 04 §5/05 M2 say `agents.toml` → "generated"
 lookup/labels/resume/fusion config. D-M2-2 satisfies the intent (one
 declarative source, no hand-synced lists, conformance-tested) without a
 codegen step, because every consumer is runtime data and the override path

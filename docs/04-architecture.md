@@ -220,7 +220,12 @@ by defining which source wins where):
   state is cleared by (a) a matching hook event, (b) tier-2 screen detection
   contradicting it, or (c) a bounded staleness timeout — whichever comes
   first. User interrupts and dialog cancels, invisible to hooks, are caught by
-  (b)/(c).
+  (b)/(c). The M2 spike widened this: on both shipped agents **every**
+  user-initiated exit is silent — Esc during generation, Esc during a tool
+  call, a dialog answered "No", a dialog cancelled with Esc — so for an `edges`
+  agent clause (a) is unreachable and tier 2 owns the exits outright. It
+  narrowed one thing too: `PermissionRequest` fires *before* its own dialog
+  paints, so the `blocked` **entry** is trustworthy on its own.
 - Subagent-scoped events never override the parent turn's state (herdr's
   "never revive an idle pane" lesson, kept as a rule of the fusion machine).
 
@@ -229,14 +234,20 @@ carries a hook coverage class:
 
 | Class | Meaning | Examples (per herdr's production data) |
 |---|---|---|
-| `full` | hook system covers the complete lifecycle; hooks may own state outright | Pi, OMP, OpenCode, Kilo |
-| `edges` | hooks see turn/tool/permission edges but miss interrupts/cancels → fusion | Claude Code; Codex (hooks experimental, behind a feature flag today) |
+| `full` | hook system covers the complete lifecycle; hooks may own state outright | Pi, OMP, OpenCode, Kilo — herdr's production data, **never measured here** |
+| `edges` | hooks see turn/tool/permission edges but miss interrupts/cancels → fusion | Claude Code; Codex (hooks are `stable` and on by default as of 0.147.0, behind `[features] hooks`) |
 | `identity` | hooks carry session identity only → screen detection owns state | agents with no usable lifecycle hooks |
 | `none` | tier-3 heuristics only | unknown programs |
 
 An **M2 spike validates coverage empirically** (does Claude Code's Stop fire
 on Esc-interrupt? any event on dialog cancel? Codex flag status) before any
-agent is promoted a class — classes are measured, not aspirational.
+agent is promoted a class — classes are measured, not aspirational. It ran:
+`docs/notes/hook-coverage.md` is the measurement, and both shipped agents came
+out `edges`. Two clauses above are its corrections. Codex's hooks are no longer
+experimental and the flag is the one named here, so the "experimental, behind a
+feature flag" reading is retired; and the `full` row is herdr's inheritance
+rather than an amx finding — no agent has been measured into it, and none may
+be shipped into it without its own matrix.
 
 **Tier 2 — screen manifests.** herdr's TOML rule engine (priority, region,
 gate trees, `skip_state_update` freezes, bottom-buffer snapshot, `agent
@@ -251,9 +262,17 @@ unknown programs: `busy/quiet`, never fake `blocked`.
 overridable) is the *only* place an agent is defined: id, aliases, executable,
 label, resume argv template, hook coverage class, manifest, integration asset.
 Every consumer — lookup, resume planner, fusion configuration, integration
-installer, docs table — is generated from it. Adding an agent = one stanza
-(fixes W6). A conformance test walks the registry and asserts every generated
-surface agrees.
+installer, docs table — **derives from it at load**: the file is embedded with
+`include_str!`, parsed once into a `Registry` at server start, and merged with
+the user's override. "Generated" here means *no second list anywhere*, not a
+codegen step; M2 weighed a macro and rejected it, because every consumer is
+runtime data and the override path forces a runtime parser to exist in any case
+(D-M2-2, and R-M2-9 flagged this wording before V03 shipped). Adding an agent =
+one stanza (fixes W6). What replaces the compile-time guarantee is a
+conformance test that walks the registry and asserts every derived surface
+agrees — including that the shipped coverage classes equal the ones
+`docs/notes/hook-coverage.md` measured, so a stanza cannot drift from the
+experiment.
 
 **The per-pane status tracker is an explicit typed state machine** — states
 and transitions as data, property-tested — not 400 lines of mutable locals

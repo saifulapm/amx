@@ -48,7 +48,8 @@ async fn next_attention_cycles_the_blocked_set_in_block_order() {
         let head = rig.call("agent.next", serde_json::json!({})).await;
         walked.push(head["pane"].as_str().unwrap_or_default().to_owned());
         assert_eq!(
-            head["workspace"], expected.workspace.to_string(),
+            head["workspace"],
+            expected.workspace.to_string(),
             "the reply names the workspace the head lives in: {head}"
         );
         // Answering the dialog is what takes a pane out of the queue.
@@ -57,11 +58,7 @@ async fn next_attention_cycles_the_blocked_set_in_block_order() {
     }
     assert_eq!(
         walked,
-        [
-            b.pane.to_string(),
-            c.pane.to_string(),
-            a.pane.to_string()
-        ],
+        [b.pane.to_string(), c.pane.to_string(), a.pane.to_string()],
         "the key walked exactly the blocked set, in block order"
     );
 
@@ -83,7 +80,9 @@ async fn next_attention_cycles_the_blocked_set_in_block_order() {
 #[tokio::test]
 async fn a_block_reaches_the_clients_indicator_and_the_chord_follows_it() {
     let mut rig = Rig::start("flag").await;
-    let mut term = rig.env.attach_on_tty(&[], super::fixtures::ROWS, super::fixtures::COLS);
+    let mut term = rig
+        .env
+        .attach_on_tty(&[], super::fixtures::ROWS, super::fixtures::COLS);
     term.wait_for(ALT_ENTER);
 
     let a = rig.start_agent("a1").await;

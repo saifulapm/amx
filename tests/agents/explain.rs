@@ -41,9 +41,7 @@ async fn the_registry_stanza_decides_the_argv_the_identity_and_the_manifest() {
     let entry = rig.pane_state(a.pane).await;
     assert_eq!(entry["agent"]["kind"], agent::KIND, "{entry}");
 
-    let explained = rig
-        .call("agent.explain", json!({ "target": a.name }))
-        .await;
+    let explained = rig.call("agent.explain", json!({ "target": a.name })).await;
     assert!(
         explained["manifest"]
             .as_str()
@@ -53,7 +51,8 @@ async fn the_registry_stanza_decides_the_argv_the_identity_and_the_manifest() {
     assert_eq!(explained["kind"], agent::KIND, "{explained}");
 
     let program = rig.agents.program().to_string_lossy().into_owned();
-    rig.wait_snapshot_holds(std::slice::from_ref(&program)).await;
+    rig.wait_snapshot_holds(std::slice::from_ref(&program))
+        .await;
     let snapshot = rig.snapshot().expect("the snapshot just landed");
     let saved = snapshot["panes"]
         .as_array()
@@ -91,7 +90,9 @@ async fn explain_names_the_matching_rule_and_reports_every_other_one() {
         "the shipped manifest's whole rule list comes back, not just the winner: {idle}"
     );
     assert!(
-        rules.iter().any(|rule| rule["rule"] == "permission_dialog" && rule["matched"] == false),
+        rules
+            .iter()
+            .any(|rule| rule["rule"] == "permission_dialog" && rule["matched"] == false),
         "a rule that did not match says so, which is half of what makes this debuggable: {idle}"
     );
     assert!(
@@ -121,13 +122,18 @@ async fn explain_answers_for_a_plain_shell_without_pretending_it_has_rules() {
     let mut rig = Rig::start("plai").await;
     let created = rig.call("workspace.create", json!({ "focus": true })).await;
     let switched = rig
-        .call("workspace.switch", json!({ "workspace": created["workspace"] }))
+        .call(
+            "workspace.switch",
+            json!({ "workspace": created["workspace"] }),
+        )
         .await;
     let root = switched["focused_pane"].as_str().expect("a focused pane");
     rig.call("pane.rename", json!({ "pane": root, "label": "shell" }))
         .await;
 
-    let explained = rig.call("agent.explain", json!({ "target": "shell" })).await;
+    let explained = rig
+        .call("agent.explain", json!({ "target": "shell" }))
+        .await;
     assert!(explained.get("manifest").is_none(), "{explained}");
     assert!(
         explained["rules"].as_array().is_none_or(Vec::is_empty),

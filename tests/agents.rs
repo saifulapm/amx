@@ -124,12 +124,14 @@ async fn five_named_fake_agents_report_correct_status_through_the_spike_edge_cas
     // ------------------------------------------- one key cycles the blocked set
     let head = rig.call("agent.next", serde_json::json!({})).await;
     assert_eq!(
-        head["pane"], agents[3].pane.to_string(),
+        head["pane"],
+        agents[3].pane.to_string(),
         "the head of the queue is the pane that blocked first: {head}"
     );
     assert_eq!(head["waiting"], 2, "{head}");
     assert_eq!(
-        head["workspace"], agents[3].workspace.to_string(),
+        head["workspace"],
+        agents[3].workspace.to_string(),
         "the head is in another workspace, and the reply says which: {head}"
     );
 
@@ -156,7 +158,8 @@ async fn five_named_fake_agents_report_correct_status_through_the_spike_edge_cas
     for a in &agents {
         let entry = fixtures::pane_entry(&state, a.pane);
         assert_eq!(
-            entry["agent"]["session_ref"]["value"], a.conversation(),
+            entry["agent"]["session_ref"]["value"],
+            a.conversation(),
             "{}'s conversation reached the wire: {entry}",
             a.name
         );
