@@ -206,6 +206,57 @@ impl Terminal {
         }
     }
 
+    /// Poll `cond` until it holds, draining the terminal between looks, and
+    /// answer whether it ever did.
+    ///
+    /// The drain is load-bearing, not politeness. A real emulator reads its
+    /// pty continuously, and darwin's pty output queue is small enough that a
+    /// client whose frames nobody reads blocks in its next terminal write —
+    /// wedged there, it reads no stdin and settles no resize, so bytes a test
+    /// already typed stop taking effect. A wait that stops reading is a wait
+    /// on a world it froze. (Linux's deeper buffer forgave this; darwin does
+    /// not.)
+    #[must_use]
+    pub fn try_wait_until(&mut self, mut cond: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            self.drain();
+            if cond() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(TICK);
+        }
+    }
+
+    /// [`Self::try_wait_until`], failing on expiry with the rendered screen —
+    /// what the client last painted is the discriminator a CI-only timeout
+    /// needs.
+    pub fn wait_until(&mut self, what: &str, cond: impl FnMut() -> bool) {
+        self.wait_until_or(what, cond, String::new);
+    }
+
+    /// [`Self::wait_until`], with a caller-supplied account of what was
+    /// observed joined to the rendered screen in the failure.
+    pub fn wait_until_or(
+        &mut self,
+        what: &str,
+        cond: impl FnMut() -> bool,
+        mut seen: impl FnMut() -> String,
+    ) {
+        if self.try_wait_until(cond) {
+            return;
+        }
+        let observed = seen();
+        let sep = if observed.is_empty() { "" } else { ": " };
+        panic!(
+            "timed out waiting until {what}{sep}{observed}; the screen held:\n{}",
+            crate::screen::render(&crate::screen::rasterize(self.output()))
+        );
+    }
+
     /// Read until the output contains `needle`, or fail.
     pub fn wait_for(&mut self, needle: &[u8]) {
         self.wait_output(
