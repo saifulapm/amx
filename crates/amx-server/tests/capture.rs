@@ -54,7 +54,19 @@ async fn capture_reflects_labels_layout_focus_shorts_and_cwds() {
     // what the previous save wrote — labels, the layout tree with its ratios,
     // the focus, the short numbers, the cwds and the focused workspace. Any of
     // those dropped on either leg shows up here.
-    assert_eq!(fx.core.capture_cheap(), saved);
+    //
+    // Every pane also comes back with one field the fixture could not have
+    // carried: the argv it was *just* respawned with, which V07 records on the
+    // pane and V15 captures. Asserted separately and then cleared, so the round
+    // trip above stays the exact-equality claim it was written to be.
+    let mut captured = fx.core.capture_cheap();
+    for pane in &mut captured.panes {
+        assert!(
+            pane.argv.take().is_some_and(|argv| !argv.is_empty()),
+            "every respawned pane records the argv it runs",
+        );
+    }
+    assert_eq!(captured, saved);
 
     fx.drain().await;
 }
