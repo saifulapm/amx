@@ -696,7 +696,10 @@ borrows credentials by symlink.
 
 ## 11. The M2 live smoke
 
-**Status: not yet run.** This is the outstanding half of M2's exit criterion.
+**Status: run on 2026-08-07. The transcripts are
+[m2-live-smoke.md](m2-live-smoke.md)**, which is where the results, the timings
+and the two defects it found live; the row at the end of this section records
+the run itself. This is the outstanding half of M2's exit criterion.
 
 Why it exists, in one sentence from the M2 plan (R-M2-14): "the exit criterion
 is only as strong as fake-agent fidelity". `tests/agents.rs` drives five
@@ -729,7 +732,7 @@ Record the run here:
 
 | Date | amx | Claude Code | Platform | Steps that failed | Notes |
 |---|---|---|---|---|---|
-| — | — | — | — | — | not yet run |
+| 2026-08-07 | `f8f41a3` | 2.1.224 | Arch Linux 7.1.5 x86_64 | none outright; 2 and 12 partial | [m2-live-smoke.md](m2-live-smoke.md). All four silent transitions settled from tier 2 in 61–142 ms and the staleness deadline was never reached. One client defect found and fixed (a pane another connection created never reached the screen); `pane.run` measured losing ~3% of turn-starting submits, raised not fixed |
 
 A step that fails is a finding, not a blocker to be argued around: write it in
 the row, and file it against the tier it belongs to. A manifest that has rotted
