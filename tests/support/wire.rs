@@ -76,11 +76,24 @@ impl Wire {
             .await;
     }
 
-    /// Read one control frame and decode it as a response.
+    /// Read control frames until one is a response, and decode it.
+    ///
+    /// Notifications are skipped rather than decoded: since V11 a connection
+    /// that has called `events.subscribe` receives bus deliveries on the same
+    /// control channel its replies arrive on, so "the next control frame is my
+    /// reply" stopped being true. JSON-RPC tells the two apart by the presence
+    /// of an `id` and by nothing else, which is the check made here, in
+    /// `amx-client`'s `call_with`, and in the server's own reader.
     pub async fn read_response(&mut self) -> Response {
-        let (header, payload) = read_frame(&mut self.stream).await;
-        assert!(header.is_control(), "a reply must be a control frame");
-        serde_json::from_slice(&payload).expect("decode response")
+        loop {
+            let (header, payload) = read_frame(&mut self.stream).await;
+            assert!(header.is_control(), "a reply must be a control frame");
+            let value: Value = serde_json::from_slice(&payload).expect("a JSON control frame");
+            if value.get("id").is_none() {
+                continue;
+            }
+            return serde_json::from_value(value).expect("decode response");
+        }
     }
 
     /// Send a control frame carrying `payload`.

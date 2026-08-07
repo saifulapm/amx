@@ -29,7 +29,7 @@ use tokio::net::UnixListener;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::actor::CoreHandle;
+use crate::actor::{CoreHandle, StatusView};
 use crate::conn;
 use crate::session::probe;
 
@@ -133,6 +133,7 @@ pub struct Gateway {
     core: CoreHandle,
     listener: UnixListener,
     probe: GatewayProbe,
+    status: StatusView,
 }
 
 impl Gateway {
@@ -211,6 +212,7 @@ impl Gateway {
             core,
             listener,
             probe: GatewayProbe::default(),
+            status: StatusView::new(),
         })
     }
 
@@ -218,6 +220,19 @@ impl Gateway {
     #[must_use]
     pub const fn probe(&self) -> &GatewayProbe {
         &self.probe
+    }
+
+    /// The [`StatusView`] every connection this gateway accepts will read.
+    ///
+    /// Created here rather than passed in, because it is a handle on shared
+    /// state and the gateway is what hands it to connections. `AgentHub` takes
+    /// a clone of *this* view at assembly and writes through it
+    /// (`docs/08-m2-plan.md` §3's "update `StatusView`, then publish the
+    /// event"); an empty view is exactly what a session with no hub yet has,
+    /// and a wait against one simply finds no status, which is the truth.
+    #[must_use]
+    pub fn status_view(&self) -> StatusView {
+        self.status.clone()
     }
 
     /// The socket this gateway is listening on.
@@ -252,6 +267,7 @@ impl Gateway {
                             stream,
                             self.client_ctx(&clients),
                             self.core.clone(),
+                            self.status.clone(),
                             LiveGuard(Arc::clone(&self.probe.live)),
                         ));
                     }
@@ -287,9 +303,15 @@ impl Gateway {
     }
 }
 
-async fn client_task(stream: tokio::net::UnixStream, ctx: Ctx, core: CoreHandle, guard: LiveGuard) {
+async fn client_task(
+    stream: tokio::net::UnixStream,
+    ctx: Ctx,
+    core: CoreHandle,
+    status: StatusView,
+    guard: LiveGuard,
+) {
     let _guard = guard;
-    if let Err(err) = conn::serve(stream, ctx, core).await {
+    if let Err(err) = conn::serve(stream, ctx, core, status).await {
         tracing::debug!(error = %err, "connection ended");
     }
 }

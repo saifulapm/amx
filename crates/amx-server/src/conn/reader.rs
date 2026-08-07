@@ -11,6 +11,12 @@
 //! - **A skew failure is a reply, not a disconnect.** An unknown method or bad
 //!   parameters produce a JSON-RPC error and the connection continues; only a
 //!   framing or transport violation ends it.
+//! - **A long poll never stops the reading.** `wait` and `pane.wait_output` run
+//!   until a condition holds, and their parameters document the other thing
+//!   that ends them: "until the connection dies". A reader that awaited one in
+//!   place could not observe the peer's disconnect while it waited, so the two
+//!   go onto their own tasks and their replies are queued by id like any other.
+//!   JSON-RPC correlates by id, so replies overtaking each other is ordinary.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -26,6 +32,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::actor::PaneCommand;
 use crate::conn::ConnError;
+use crate::conn::events::{ConnEvents, is_long_poll};
 use crate::conn::streams::ConnStreams;
 use crate::conn::writer::{OutFrame, Outbound, OutboundError};
 use crate::dispatch::Router;
@@ -172,6 +179,7 @@ pub async fn run<R>(
     reader: &mut Reader<R>,
     router: &mut Router,
     streams: &ConnStreams,
+    events: &ConnEvents,
     out: &Outbound,
     cancel: &CancellationToken,
 ) -> Result<(), ConnError>
@@ -241,6 +249,25 @@ where
 
         let request: Request = serde_json::from_value(value)
             .map_err(|_| ConnError::Malformed("control frame is not a JSON-RPC call"))?;
+        if request.is_jsonrpc_2() && is_long_poll(&request.method) {
+            // A clone of the router, not a borrow: the poll outlives this
+            // iteration by design, and a `Router` is two handles wide.
+            let mut router = router.clone();
+            let out = out.clone();
+            events.spawn_wait(async move {
+                let response =
+                    match crate::dispatch::handle(&mut router, &request.method, request.params)
+                        .await
+                    {
+                        Ok(result) => Response::ok(request.id, result),
+                        Err(error) => Response::err(request.id, error),
+                    };
+                // A queue failure here means the writer has already stopped,
+                // which is the connection ending: nothing to report to.
+                let _ = send_response(&out, response);
+            });
+            continue;
+        }
         let response = if request.is_jsonrpc_2() {
             match crate::dispatch::handle(router, &request.method, request.params).await {
                 Ok(result) => Response::ok(request.id, result),
