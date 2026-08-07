@@ -200,6 +200,118 @@ fn no_dispatch_seam_outlives_the_milestone_that_opened_it() {
     );
 }
 
+/// The four agent events, by the name their variants carry in the tree.
+///
+/// Named rather than derived: this guard is about who may *construct* them, so
+/// it has to know the spelling, and a fifth variant added without being listed
+/// here is a fifth variant nothing guards.
+const AGENT_EVENTS: &[&str] = &[
+    "Event::AgentStatus",
+    "Event::AgentIdentified",
+    "Event::AttentionEnqueued",
+    "Event::AttentionDequeued",
+];
+
+/// R-M2-3: agent events have exactly one publisher, and it is the hub.
+///
+/// 04 §2 gives every transition one sequence number, which requires one
+/// publisher per transition. The tree already breaks that for *pane* events —
+/// the pane actor publishes seven kinds directly and `Core` republishes six of
+/// them, so every damage and title change gets two sequences today (R-M2-3
+/// records it for a dedicated cleanup with its own golden review). M2's job was
+/// not to fix that but to **not extend it**, and this is what holds M2 to it.
+///
+/// Two things are checked, because the rule has two halves:
+///
+/// - an agent event is **handed to a bus or an event list** — `publish(Event::…`
+///   or `push(Event::…` — in exactly one file, `actor/agent_hub/commit.rs`,
+///   where the fusion machine's effects become announcements;
+/// - the bus sees that list only through `StatusView::commit`, whose one caller
+///   is the hub — which is also what enforces §3's write-before-publish
+///   ordering, since the view write and the publish are one call.
+///
+/// Naming the *verbs* rather than the variants is what keeps this from
+/// flagging every consumer: a `match` arm reading `Event::AgentStatus { .. }`
+/// is a subscriber, and a rule that could not tell one from a publisher would
+/// have to be turned off the first time somebody wrote a second consumer.
+///
+/// The limit, stated rather than hidden: a publisher that binds an event to a
+/// local first (`let e = Event::AgentStatus { … }; bus.publish(e);`) slips
+/// past. This is a tripwire over a rule the tree is *known* to have broken once
+/// already for pane events — it exists to make the ordinary way of breaking it
+/// again fail a test, not to be a proof.
+#[test]
+fn agent_events_have_exactly_one_publisher() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates");
+    let verbs = ["publish(", "push("];
+
+    let mut announced = Vec::new();
+    let mut committers = Vec::new();
+    for krate in fs::read_dir(&crates).expect("read crates/") {
+        let src = krate.expect("a directory entry").path().join("src");
+        if !src.is_dir() {
+            continue;
+        }
+        for path in rust_files(&src) {
+            let text = fs::read_to_string(&path).expect("read a source file");
+            let where_it_is = path.display().to_string();
+            for (n, line) in text.lines().enumerate() {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                let at = format!("{where_it_is}:{}: {}", n + 1, code);
+                let names_one = AGENT_EVENTS.iter().any(|event| line.contains(event));
+                if names_one && verbs.iter().any(|verb| line.contains(verb)) {
+                    announced.push(at.clone());
+                }
+                // The server's own `.commit(` calls only: `commit` is an
+                // ordinary word and the client's row cache has three of its
+                // own. The type's definition carries the doctest that documents
+                // the ordering, and a doctest is prose that happens to compile
+                // rather than a publisher.
+                let server = where_it_is.contains("amx-server");
+                if server && line.contains(".commit(") && !where_it_is.ends_with("actor/agent.rs") {
+                    committers.push(at);
+                }
+            }
+        }
+    }
+
+    let stray: Vec<&String> = announced
+        .iter()
+        .filter(|at| !at.contains("actor/agent_hub/commit.rs"))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "an agent event is announced outside the hub's commit path, which is \
+         a second publisher of a transition that owes exactly one sequence \
+         number (04 §2, R-M2-3):\n{stray:?}"
+    );
+    assert_eq!(
+        announced.len(),
+        AGENT_EVENTS.len(),
+        "one announcement per event variant, all of them in the hub; found \
+         {announced:?}"
+    );
+
+    let outside: Vec<&String> = committers
+        .iter()
+        .filter(|at| !at.contains("actor/agent_hub/"))
+        .collect();
+    assert!(
+        outside.is_empty(),
+        "StatusView::commit is the only path to the bus for an agent event, \
+         and the hub is its only caller — a second one is a second publisher \
+         (R-M2-3):\n{outside:?}"
+    );
+    assert_eq!(
+        committers.len(),
+        1,
+        "exactly one commit call site, in the hub: {committers:?}"
+    );
+}
+
 /// Every `.rs` file under `dir`, recursively.
 fn rust_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut found = Vec::new();

@@ -133,7 +133,7 @@ impl Rig {
                 "pane {pane} never painted {needle:?}; its screen is:\n{}",
                 screen.join("\n")
             );
-            tokio::time::sleep(rig::TICK).await;
+            rig::env::tick().await;
         }
     }
 
@@ -229,7 +229,7 @@ impl Rig {
                 "pane {pane} never reached {want}; it reads {seen:?} and its screen is:\n{}",
                 self.screen(pane).await.join("\n")
             );
-            tokio::time::sleep(rig::TICK).await;
+            rig::env::tick().await;
         }
     }
 
@@ -245,7 +245,7 @@ impl Rig {
                 Instant::now() < deadline,
                 "timed out waiting for {what}; the session reads {state}"
             );
-            tokio::time::sleep(rig::TICK).await;
+            rig::env::tick().await;
         }
     }
 
@@ -279,7 +279,7 @@ impl Rig {
                 Instant::now() < deadline,
                 "the snapshot never recorded every conversation; it holds:\n{text}"
             );
-            tokio::time::sleep(rig::TICK).await;
+            rig::env::tick().await;
         }
     }
 
@@ -297,7 +297,7 @@ impl Rig {
                 "{} of {want} conversations were typed back: {seen:?}",
                 seen.len()
             );
-            tokio::time::sleep(rig::TICK).await;
+            rig::env::tick().await;
         }
     }
 

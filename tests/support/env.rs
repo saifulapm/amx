@@ -384,6 +384,18 @@ pub fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
     }
 }
 
+/// One poll interval, awaited.
+///
+/// The async sibling of [`wait_until`]'s tick, and it lives here for the same
+/// reason that one does: `hygiene.rs` allows a nap in the harness's wait
+/// helpers and nowhere else, so a suite whose condition has to be `await`ed —
+/// anything asked over the wire — paces its loop with this rather than growing
+/// its own interval. The deadline is still the suite's, and its expiry is still
+/// the failure path.
+pub async fn tick() {
+    tokio::time::sleep(TICK).await;
+}
+
 /// [`wait_until`], with a diagnostic to name what was actually observed when
 /// the wait expires — a timeout that only says "not yet" leaves a CI-only
 /// failure undiagnosable.
