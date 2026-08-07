@@ -89,6 +89,12 @@ impl Core {
     /// Ask every live pane where its foreground process is, and record what
     /// answers in time.
     async fn refresh_cwds(&mut self) {
+        if self.capture_budget.is_zero() {
+            // No time to wait for an answer is no reason to ask the question:
+            // every pane contributes its stored cwd, and no pane's mailbox is
+            // disturbed for a reply that would be thrown away.
+            return;
+        }
         let mut pending = Vec::with_capacity(self.panes.len());
         for (pane, host) in &self.panes {
             let (tx, rx) = oneshot::channel();

@@ -121,19 +121,17 @@ async fn a_call_naming_a_pane_that_does_not_exist_is_a_reply_not_a_disconnect() 
 }
 
 #[tokio::test]
-async fn pane_rename_and_session_report_answer_not_implemented_not_404() {
-    // Both rows are in the table both peers share, so reporting them as
-    // unknown would tell a client to stop offering them — the distinction
-    // `dispatch::NOT_IMPLEMENTED` exists for. U06 and U07 replace these
-    // answers with real ones; until then the code is what a client sees.
+async fn an_unimplemented_row_answers_not_implemented_not_404() {
+    // The row is in the table both peers share, so reporting it as unknown
+    // would tell a client to stop offering it — the distinction
+    // `dispatch::NOT_IMPLEMENTED` exists for. U06 replaced `session.report`'s
+    // seam with the real thing; `pane.rename` is U07's, and until it lands
+    // this code is what a client sees.
     let server = Server::start("seams").await;
     let mut client = server.attach().await;
 
     let pane = amx_core::PaneId::new_v4().to_string();
-    for (id, method, params) in [
-        (1, "pane.rename", json!({ "pane": pane, "label": "editor" })),
-        (2, "session.report", json!({})),
-    ] {
+    for (id, method, params) in [(1, "pane.rename", json!({ "pane": pane, "label": "editor" }))] {
         let reply = client.request(id, method, params).await;
         let RpcOutcome::Error(err) = &reply.outcome else {
             panic!("{method} is a seam in this build, not an implemented method");

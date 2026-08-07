@@ -189,6 +189,9 @@ impl Core {
     /// Change how long a capture waits for its foreground-cwd probes.
     ///
     /// [`CAPTURE_PROBE_BUDGET`] is the default and the one the server uses.
+    /// Zero turns the refresh off: a capture that cannot wait for an answer
+    /// does not ask, and every pane contributes its stored cwd — the same
+    /// outcome a stalled probe produces, reached without the wait.
     pub const fn set_capture_budget(&mut self, budget: Duration) {
         self.capture_budget = budget;
     }
