@@ -1247,6 +1247,30 @@ were deleted together, and `tests/skew.rs` gained the wire-side half — no row
 may answer the retired code. Second milestone running that this discipline has
 worked exactly as designed; it is worth keeping for M3.
 
+**W-8 — `pane.run`'s submit is now a second chunk, not the tail of one write.**
+V12 built the verb as one `write()` because 04 §8 said "atomic text+submit".
+The live smoke measured what that costs against a paste-aware TUI: about 3% of
+turn-starting prompts lost their submit to real Claude Code — 6 in 170 paired
+trials, against 0 for a two-write path — because a `CR` arriving in the same
+read as the paste terminator can be taken for trailing whitespace of the paste
+(`docs/notes/m2-live-smoke.md` §8.2, which is the evidence and the A/B). The
+paste and the `CR` are now queued as a pair, and 04 §8 spells the property
+"queue-order atomic" rather than implying single-`write()` atomicity.
+
+The invariant survives, but not for the reason the escalation assumed, and the
+difference is the finding worth carrying into M3. "The queue is ordered, so
+back-to-back chunks cannot be separated" is false as stated: a pane's input
+queue has **two** producers — a drive on the parser thread, and the keystrokes
+an attached connection forwards — and reserving capacity for both chunks bounds
+the capacity, not the interleaving. The test written to pin the property caught
+it on the third run, with an interloper's byte sitting between a paste and its
+submit. The handle now places input chunks under an ordering lock
+(`pty/handle.rs`), which is what actually makes a pair adjacent; without it
+`nothing_can_be_queued_between_the_halves_of_a_pair` goes red. The
+deterministic half is all in CI (`tests/pty.rs` — a pair is two writes, in
+order, with nothing between); the 3% itself is a field measurement and no CI
+test claims it.
+
 ---
 
 ## 7. Risks & findings

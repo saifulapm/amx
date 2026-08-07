@@ -373,7 +373,12 @@ No manifests, no marketplace, no auto-installed hooks, no sandbox problem.
   own events.
 - The full pane-driving surface is API + CLI: `pane send-text`,
   `pane send-keys` (key-combo grammar: `ctrl+h`, `f1`, …), `pane run`
-  (bracketed-paste-aware atomic text+submit), `pane read`,
+  (bracketed-paste-aware **queue-order atomic** text+submit — the text and its
+  submit are queued back to back on the pane's ordered input queue, placed
+  under its ordering lock so nothing can interleave, not even the keystrokes an
+  attached connection forwards to the same pane; a single `write()` is
+  deliberately *not* used, because a paste-aware TUI can swallow a `CR` that
+  shares a read with the paste terminator), `pane read`,
   `pane wait-output --match/--regex` (an event-bus await over pane damage, not
   polling) — the primitives for driving ordinary terminals and tests, distinct
   from `agent prompt`.
