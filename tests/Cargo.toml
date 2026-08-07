@@ -45,6 +45,10 @@ path = "firstrun.rs"
 name = "integration"
 path = "integration.rs"
 
+[[test]]
+name = "persistence"
+path = "persistence.rs"
+
 [dependencies]
 amx-core = { workspace = true }
 amx-proto = { workspace = true }
