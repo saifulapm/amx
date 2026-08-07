@@ -35,6 +35,9 @@
 //! that it does not behave like one.
 
 mod actor;
+pub mod drive;
+pub mod keys;
+mod mailbox;
 mod parser;
 mod probe;
 
@@ -55,11 +58,14 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use self::actor::{Actor, Mailboxes};
-use self::parser::{HostEvent, Parser, ParserCommand, ParserParts, Scratch};
+use self::mailbox::{HostEvent, ParserCommand, Scratch};
+use self::parser::{Parser, ParserParts};
 use crate::actor::{CoreHandle, PaneCommand, PaneHandle};
 use crate::platform::UnixProcessTree;
 use crate::pty::{PtyActor, PtyActorConfig, PtyActorError, PtyActorHandle};
 
+pub use self::drive::{Drive, DriveError, Driven};
+pub use self::keys::{KeyParseError, KeyStroke};
 pub use self::probe::PaneProbe;
 
 /// How long output coalesces before a frame is published.

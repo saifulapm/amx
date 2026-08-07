@@ -28,8 +28,9 @@
 //! below names the task that closes it, and the hygiene suite reads those names
 //! back: **V06** `agent.explain`, **V08** `agent.next`, **V09**
 //! `agent.report`, **V11** `wait`/`events.subscribe`/`pane.wait_output`,
-//! **V12** `pane.send_text`/`send_keys`/`run`/`read`, **V13**
-//! `agent.start`/`agent.prompt`. V17 empties the list again and deletes the
+//! **V13** `agent.start`/`agent.prompt`. V12's four —
+//! `pane.send_text`/`send_keys`/`run`/`read` — are filled, and left the list
+//! with the count in `tests/hygiene.rs`. V17 empties it again and deletes the
 //! helper, which is the milestone's exit check.
 
 mod agent;
