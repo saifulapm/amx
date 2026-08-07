@@ -28,12 +28,19 @@ tokio = { workspace = true, features = [
     "io-util",
     "macros",
     "net",
+    # `integration status` execs the binary an installed hook names, under a
+    # timeout: a check that can hang is a check nobody runs.
+    "process",
     "rt-multi-thread",
     "signal",
     "time",
 ] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+# `serde`'s derive is not needed: the integration installer's one hand-written
+# `Deserialize` keeps an agent's configuration in the order it was written in,
+# which `serde_json`'s own `Value` cannot do without reordering the tree.
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Test-only: the CLI acceptance tests drive the real binary against a real

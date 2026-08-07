@@ -22,6 +22,7 @@ dependencies = [
  "anyhow",
  "clap",
  "rustix",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
