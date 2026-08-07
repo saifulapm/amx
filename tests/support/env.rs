@@ -294,6 +294,21 @@ pub fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
     }
 }
 
+/// [`wait_until`], with a diagnostic to name what was actually observed when
+/// the wait expires — a timeout that only says "not yet" leaves a CI-only
+/// failure undiagnosable.
+pub fn wait_until_or(what: &str, mut cond: impl FnMut() -> bool, mut seen: impl FnMut() -> String) {
+    let deadline = Instant::now() + PATIENCE;
+    while !cond() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting until {what}: {}",
+            seen()
+        );
+        std::thread::sleep(TICK);
+    }
+}
+
 /// How many live processes have `marker` in their argv.
 ///
 /// A claim like "the pane's process survived the client dying" is about

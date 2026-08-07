@@ -36,6 +36,9 @@ async fn typed_bytes_reach_the_panes_child_process() {
     term.wait_output("the shell prompt to render", |seen| shows(seen, "$"));
 
     term.type_line(&format!("touch {}", hit.display()));
+    // The echo discriminates: typed bytes that never render never reached the
+    // pty; an echoed line whose file never lands failed in the shell.
+    term.wait_output("the typed line to echo", |seen| shows(seen, "touch"));
     rig::wait_until("the typed command's file to appear", || hit.is_file());
 
     // And the round trip back: output produced by the child crosses the wire
@@ -77,19 +80,39 @@ async fn resize_delivers_sigwinch_and_the_child_sees_new_dimensions() {
         f = sizes.display()
     ));
     term.wait_output("the trap to arm", |seen| shows(seen, "trap-armed"));
-    rig::wait_until("the baseline size to be recorded", || {
-        std::fs::read_to_string(&sizes)
-            .is_ok_and(|s| s.contains(&format!("{} {}", INNER.0, INNER.1)))
-    });
+    rig::wait_until_or(
+        "the baseline size to be recorded",
+        || {
+            std::fs::read_to_string(&sizes)
+                .is_ok_and(|s| s.contains(&format!("{} {}", INNER.0, INNER.1)))
+        },
+        || {
+            format!(
+                "wanted {:?}, the file holds {:?}",
+                format!("{} {}", INNER.0, INNER.1),
+                std::fs::read_to_string(&sizes)
+            )
+        },
+    );
 
     // Grow the client's terminal: the viewport re-declares, the server
     // re-projects the layout, the pane's pty resizes, the child hears it.
     term.resize(30, 100);
     let grown = (30 - 1 - 2, 100 - 2);
-    rig::wait_until("the child to record the post-SIGWINCH size", || {
-        std::fs::read_to_string(&sizes)
-            .is_ok_and(|s| s.contains(&format!("{} {}", grown.0, grown.1)))
-    });
+    rig::wait_until_or(
+        "the child to record the post-SIGWINCH size",
+        || {
+            std::fs::read_to_string(&sizes)
+                .is_ok_and(|s| s.contains(&format!("{} {}", grown.0, grown.1)))
+        },
+        || {
+            format!(
+                "wanted {:?}, the file holds {:?}",
+                format!("{} {}", grown.0, grown.1),
+                std::fs::read_to_string(&sizes)
+            )
+        },
+    );
 
     term.chord(b'd');
     assert_eq!(term.wait(), Some(0));
@@ -249,6 +272,8 @@ async fn a_process_started_by_typing_outlives_every_client() {
     // keeps the shell — and the marker in its argv — alive, where a trailing
     // external command would be exec'd over it.
     term.type_line(&format!("sh -c 'echo held; read _held' {marker}"));
+    // The echo discriminates input loss from a process-table probe failure.
+    term.wait_output("the held marker to render", |seen| shows(seen, "held"));
     rig::wait_until("the process to appear in the table", || {
         processes_with_arg(&marker) >= 1
     });
