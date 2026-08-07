@@ -288,6 +288,39 @@ impl SessionState {
         })
     }
 
+    /// Focus `pane` inside `workspace`, naming it rather than moving towards
+    /// it.
+    ///
+    /// [`move_focus`](Self::move_focus) is the keyboard's verb: it walks the
+    /// geometry and cannot express "that one". `agent.next` can — it takes the
+    /// head of the attention queue and puts the user in front of it (04 §5's
+    /// attention queue, `docs/08-m2-plan.md` D-M2-8) — and so can anything else
+    /// that resolves a pane by name or id first.
+    ///
+    /// Focusing the pane that already has focus is a legal no-op, reported as
+    /// [`Effect::Nothing`], the same discipline [`resize`](Self::resize) keeps.
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::NoSuchWorkspace`] if there is no such workspace, and
+    /// [`LayoutError::NoSuchPane`] if `pane` is not one of its leaves — a
+    /// focus that silently landed somewhere else would be worse than a refusal.
+    pub fn focus_pane(
+        &mut self,
+        workspace: WorkspaceId,
+        pane: PaneId,
+    ) -> Result<Effect, StateError> {
+        let ws = self.workspace_mut(workspace)?;
+        if !ws.layout().contains(pane) {
+            return Err(StateError::Layout(LayoutError::NoSuchPane(pane)));
+        }
+        if ws.focus() == Some(pane) {
+            return Ok(Effect::Nothing);
+        }
+        ws.set_focus(Some(pane));
+        Ok(Effect::Layout)
+    }
+
     /// Move `workspace`'s focus to the geometric neighbour in direction
     /// `dir` (`hjkl`), if one exists.
     ///

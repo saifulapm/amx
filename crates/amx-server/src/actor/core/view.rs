@@ -79,14 +79,14 @@ impl Core {
                     cols,
                     history_head: head,
                     history_floor: floor,
-                    // V08 fills this from the status summaries `AgentHub`
-                    // mirrors into `Core` with `try_send` during normal
-                    // operation (`docs/08-m2-plan.md` §3's second read model —
-                    // the slower path, whose mailbox lag is harmless because
-                    // nothing awaits on it). `None` until then: a pane with no
-                    // tracked agent reports none, which is also the honest
-                    // answer for every pane running a plain shell.
-                    agent: None,
+                    // From the status summaries `AgentHub` mirrors into `Core`
+                    // with `try_send` during normal operation
+                    // (`docs/08-m2-plan.md` §3's second read model — the slower
+                    // path, whose mailbox lag is harmless because nothing
+                    // awaits on it). `None` for a pane with no tracked agent,
+                    // which is the honest answer for every pane running a plain
+                    // shell.
+                    agent: self.agent_status.get(&pane).cloned(),
                 });
             }
         }
@@ -100,10 +100,10 @@ impl Core {
             workspaces,
             panes,
             // The attention queue, in queue order, from the same mirror as the
-            // per-pane statuses above — V08 fills it. `session.state` *is* the
-            // query for the queue (D-M2-8): there is no second method that
-            // could answer differently from the status line.
-            attention: Vec::new(),
+            // per-pane statuses above. `session.state` *is* the query for the
+            // queue (D-M2-8): there is no second method that could answer
+            // differently from the status line.
+            attention: self.attention.clone(),
             // Counts only; the entries are `session.report`'s. They ride here
             // so an attaching client can render the loss indicator without a
             // second call (04 §6).

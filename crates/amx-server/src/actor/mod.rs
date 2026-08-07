@@ -8,14 +8,15 @@
 //!
 //! The other two actors keep their vocabulary in their own modules and
 //! re-export it here: [`persist`] for the snapshot mailbox, and [`agent`] for
-//! `AgentHub`'s — its mailbox, its handle, and the [`StatusView`] wait
-//! predicates read live state from.
+//! `AgentHub`'s — its two directions, its handle, and the [`StatusView`] wait
+//! predicates read live state from. The hub's loop lives in [`agent_hub`].
 
 pub mod pane_host;
 
 use std::path::PathBuf;
 
 pub mod agent;
+pub mod agent_hub;
 pub mod core;
 pub mod gateway;
 pub mod persist;
@@ -29,7 +30,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
 pub use agent::{
-    AGENT_MAILBOX, AgentCommand, AgentHandle, SpawnedIdentity, StatusUpdate, StatusView,
+    AGENT_MAILBOX, AgentCall, AgentCommand, AgentHandle, SpawnedIdentity, StatusUpdate, StatusView,
 };
 pub use pane_host::{
     Drive, DriveError, Driven, KeyParseError, KeyStroke, PaneHost, PaneHostConfig, PaneHostError,
@@ -219,6 +220,8 @@ pub enum CoreCommand {
         /// What happened.
         report: PaneReport,
     },
+    /// Something `AgentHub` decided; see [`AgentCall`].
+    Agent(AgentCall),
     /// Shut the session down.
     Shutdown,
 }

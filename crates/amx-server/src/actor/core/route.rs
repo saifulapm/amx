@@ -118,6 +118,7 @@ impl Core {
                 }));
             }
             CoreCommand::PaneReport { pane, report } => self.handle_pane_report(pane, report),
+            CoreCommand::Agent(call) => self.handle_agent_call(call),
             CoreCommand::Shutdown => {}
         }
     }
