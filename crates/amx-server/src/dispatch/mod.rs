@@ -14,13 +14,15 @@
 //! # Handler seams
 //!
 //! A method landed in the shared table before its `Core` wiring exists is a
-//! compile error here until it gets a handler, and until then [`seam`] is what
-//! a build in that state answers with rather than `METHOD_NOT_FOUND` —
+//! compile error here until it gets a handler, and until then a `seam` helper
+//! is what a build in that state answers with rather than `METHOD_NOT_FOUND` —
 //! reporting an unimplemented method as unknown would tell a client to stop
 //! offering it. T16 emptied the seam list for M0; U01 refilled it with M1's
 //! two new rows, each carrying the task that closed it — U06 took
-//! `session.report`, U07 took `pane.rename` — and the list is empty again:
-//! [`seam`] has no callers, which is U10's `grep`-level acceptance check.
+//! `session.report`, U07 took `pane.rename` — and the list is empty again.
+//! The `seam` helper retired with it; the next milestone's contracts task
+//! reintroduces it alongside its own list, and "no `seam` in the tree" is
+//! the standing integration check U10 inherited.
 
 mod pane;
 mod stream;
@@ -109,11 +111,6 @@ impl Router {
             RpcError::new(RpcError::INTERNAL_ERROR, "session core dropped the reply")
         })?
     }
-}
-
-/// `method` is in the table but has no handler yet.
-fn seam(method: &'static str) -> RpcError {
-    RpcError::new(NOT_IMPLEMENTED, format!("{method} is not implemented yet"))
 }
 
 /// Decode `method`/`params` and run the handler for it.
@@ -257,17 +254,5 @@ impl Dispatch for Router {
     ) -> Result<client_proto::ViewportReply, RpcError> {
         self.call(|reply| CoreCommand::Client(ClientCall::Viewport { params, reply }))
             .await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{NOT_IMPLEMENTED, seam};
-
-    #[test]
-    fn seam_reports_not_implemented_not_missing() {
-        let err = seam("pane.example");
-        assert_eq!(err.code, NOT_IMPLEMENTED);
-        assert!(err.message.contains("pane.example"));
     }
 }
