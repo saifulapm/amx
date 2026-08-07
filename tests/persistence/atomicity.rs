@@ -155,7 +155,8 @@ async fn kill_dash_9_mid_write_always_leaves_a_restorable_snapshot() {
             // saves, which the whole-or-old property must survive too.
             let label = format!("round-{round}");
             wait_until("the round's workspace reaches the snapshot", || {
-                String::from_utf8_lossy(&snapshot_bytes(&env)).contains(&label)
+                snapshot_bytes(&env)
+                    .is_some_and(|bytes| String::from_utf8_lossy(&bytes).contains(&label))
             });
         }
         landings.push(landed);
