@@ -171,6 +171,61 @@ pub fn pids_with_arg(marker: &str) -> Vec<u32> {
     }
 }
 
+/// What every thread of `pid` is doing, as one human-readable block.
+///
+/// The diagnosis a shutdown that never finished owes: "the server ignored
+/// SIGTERM" names the symptom, and the JoinSet drain the shutdown wedge
+/// (R-M1-2) lives in is only distinguishable from a busy server by where its
+/// threads are parked. Linux reads each task's name, run state and kernel wait
+/// channel out of `/proc`; macOS has no unprivileged equivalent the rig can
+/// read without `sample`(1) attaching to the process, so it says so rather
+/// than return an empty string a reader would mistake for "no threads".
+#[must_use]
+pub fn thread_states(pid: u32) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+            return format!("pid {pid} has no /proc entry — it is already gone");
+        };
+        let mut lines = Vec::new();
+        for task in tasks.filter_map(Result::ok) {
+            let dir = task.path();
+            let read = |name: &str| {
+                std::fs::read_to_string(dir.join(name))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned()
+            };
+            let comm = read("comm");
+            let wchan = read("wchan");
+            // `stat`'s third field is the run state, and the second is the
+            // command in parentheses — which may itself hold spaces, so the
+            // split starts after the closing one.
+            let stat = read("stat");
+            let state = stat
+                .rsplit_once(") ")
+                .and_then(|(_, rest)| rest.split_whitespace().next())
+                .unwrap_or("?")
+                .to_owned();
+            lines.push(format!(
+                "  {} [{}] state={state} wchan={}",
+                task.file_name().to_string_lossy(),
+                if comm.is_empty() { "?" } else { &comm },
+                if wchan.is_empty() { "0" } else { &wchan },
+            ));
+        }
+        lines.sort();
+        format!("threads of pid {pid}:\n{}", lines.join("\n"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        format!(
+            "no unprivileged per-thread state reader on this platform; \
+             run `sample {pid}` by hand against a server caught in this state"
+        )
+    }
+}
+
 /// A `/proc` file of NUL-separated strings.
 #[cfg(target_os = "linux")]
 fn nul_separated(path: &std::path::Path) -> Vec<std::ffi::OsString> {

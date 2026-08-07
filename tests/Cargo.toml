@@ -49,6 +49,10 @@ path = "integration.rs"
 name = "persistence"
 path = "persistence.rs"
 
+[[test]]
+name = "seams"
+path = "seams.rs"
+
 [dependencies]
 amx-core = { workspace = true }
 amx-proto = { workspace = true }
