@@ -41,6 +41,9 @@ tokio = { workspace = true, features = [
 ] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+# The per-spawn hook token (D-M2-4) is 122 random bits from the same generator
+# every id in the tree already uses; uuid is a workspace dependency already.
+uuid = { workspace = true, features = ["v4"] }
 
 # libproc (cwd, children) is not covered by rustix; libc carries the
 # declarations and is already in the tree transitively.

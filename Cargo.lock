@@ -104,6 +104,7 @@ dependencies = [
  "tokio-util",
  "toml",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
