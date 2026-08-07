@@ -11,11 +11,11 @@
 //! actor and awaits the answer; the `Core` is the only thing that mutates the
 //! state tree and the only thing that publishes the resulting event.
 //!
-//! # Handler seams: none, twice over now
+//! # Handler seams: one, and it is M3's
 //!
 //! A method landed in the shared table before its `Core` wiring exists is a
 //! compile error here until it gets a handler, and until then a `seam` helper
-//! was what a build in that state answered with rather than `METHOD_NOT_FOUND`
+//! is what a build in that state answers with rather than `METHOD_NOT_FOUND`
 //! — reporting an unimplemented method as unknown would tell a client to stop
 //! offering it. The helper is a milestone's tool and it has never been allowed
 //! to outlive one: T16 emptied the list for M0; U01 refilled it with M1's two
@@ -27,22 +27,27 @@
 //! `tests/hygiene.rs` that let them exist, because the two always move
 //! together. V12 closed four — `pane.send_text`/`send_keys`/`run`/`read` — V09
 //! `agent.report`, V11 three — `wait`/`pane.wait_output`/`events.subscribe` —
-//! V13 two — `agent.start`/`agent.prompt` — and **V17 closed the last two**,
+//! V13 two — `agent.start`/`agent.prompt` — and V17 closed the last two,
 //! `agent.explain` and `agent.next`, deleting the helper and the exemption in
-//! the same commit. That deletion is M2's exit check: every row of §4's table
-//! answers with behavior, and the next milestone that wants a seam writes the
-//! helper again with its own list of owners.
+//! the same commit.
+//!
+//! **W03 reopens it for M3's one new row**, `session.handoff`, whose orchestrator
+//! is W06's. The helper lives in [`session`] this time rather than here, so the
+//! task that closes the row deletes the file, the helper and the exemption
+//! together — and the list of owners it is held to is in `tests/hygiene.rs`.
 
 mod agent;
 mod events;
 mod pane;
+mod session;
 mod stream;
 mod wait;
 mod workspace;
 
 use amx_proto::control::{
-    Call, Dispatch, agent as agent_proto, client as client_proto, pane as pane_proto, session,
-    stream as stream_proto, wait as wait_proto, workspace as workspace_proto,
+    Call, Dispatch, agent as agent_proto, client as client_proto, pane as pane_proto,
+    session as session_proto, stream as stream_proto, wait as wait_proto,
+    workspace as workspace_proto,
 };
 use amx_proto::rpc::RpcError;
 use serde_json::Value;
@@ -139,7 +144,7 @@ impl Router {
         let identity = self
             .call(|reply| {
                 CoreCommand::Session(SessionCall::Ping {
-                    params: session::PingParams {},
+                    params: session_proto::PingParams {},
                     reply,
                 })
             })
@@ -183,7 +188,10 @@ pub async fn handle(
 }
 
 impl Dispatch for Router {
-    async fn ping(&mut self, params: session::PingParams) -> Result<session::PingReply, RpcError> {
+    async fn ping(
+        &mut self,
+        params: session_proto::PingParams,
+    ) -> Result<session_proto::PingReply, RpcError> {
         self.call(|reply| CoreCommand::Session(SessionCall::Ping { params, reply }))
             .await
     }
@@ -274,18 +282,25 @@ impl Dispatch for Router {
 
     async fn session_state(
         &mut self,
-        params: session::StateParams,
-    ) -> Result<session::StateReply, RpcError> {
+        params: session_proto::StateParams,
+    ) -> Result<session_proto::StateReply, RpcError> {
         self.call(|reply| CoreCommand::Session(SessionCall::State { params, reply }))
             .await
     }
 
     async fn session_report(
         &mut self,
-        params: session::ReportParams,
-    ) -> Result<session::ReportReply, RpcError> {
+        params: session_proto::ReportParams,
+    ) -> Result<session_proto::ReportReply, RpcError> {
         self.call(|reply| CoreCommand::Session(SessionCall::Report { params, reply }))
             .await
+    }
+
+    async fn session_handoff(
+        &mut self,
+        params: session_proto::HandoffParams,
+    ) -> Result<session_proto::HandoffReply, RpcError> {
+        session::handoff(self, params).await
     }
 
     async fn stream_bind(

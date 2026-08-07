@@ -108,6 +108,13 @@ fn sample_params(method: Method) -> Value {
         Method::PaneWaitOutput => {
             json!({ "target": bogus_pane, "match": "never", "timeout_ms": 1 })
         }
+        // M3's one. The binary does not exist, which is the point: the row has
+        // to route and answer, and a handoff that actually started would take
+        // the harness's own server with it.
+        Method::SessionHandoff => json!({
+            "binary": "/nonexistent/amx-from-a-version-that-was-never-built",
+            "timeout_ms": 1,
+        }),
     }
 }
 
@@ -116,13 +123,19 @@ fn sample_params(method: Method) -> Value {
 /// Named rather than derived so the harness states what it is covering: a
 /// thirteenth row would compile (the exhaustive match above is what catches
 /// that) but would not be claimed here, and the assertion below counts.
-/// The code a dispatch seam used to answer with, kept here as the thing to
-/// assert the absence of.
+/// The code a dispatch seam answers with while its wiring is being built.
 ///
 /// `-32000`, inside JSON-RPC 2.0's implementation-defined server error range.
-/// The constant it names was deleted from `amx-server` with the helper (V17), so
-/// this is deliberately a literal: the test must keep meaning "nobody answers
-/// this" even after nothing in the tree defines it.
+/// Deliberately a literal rather than an import: the assertions below have to
+/// keep meaning what they mean across the milestones where nothing in the tree
+/// defines it at all. V17 deleted M2's helper and W03 wrote M3's, in
+/// `dispatch/session.rs`, for `session.handoff` alone.
+///
+/// Two tests read it, in opposite directions:
+/// [`skew_calls_every_m2_row_and_none_is_method_not_found`] asserts no M2 row
+/// answers it — that ledger is closed and stays closed — and
+/// [`method_golden_and_skew_arm_cover_session_handoff`] asserts M3's one row
+/// *does*, until W06 lands.
 const RETIRED_SEAM: i32 = -32000;
 
 const M2_ROWS: &[&str] = &[
@@ -189,6 +202,55 @@ async fn skew_calls_every_m2_row_and_none_is_method_not_found() {
         12,
         "docs/08-m2-plan.md §4 tables twelve rows; this list must be all of them",
     );
+
+    drop(server);
+}
+
+/// M3's one row, over the wire, on a connection that survives it.
+///
+/// The other half of the goldens law of `docs/09-m3-plan.md` §4: a method
+/// golden freezes the *shape*, and this freezes that the shape is reachable —
+/// the table routes `session.handoff`, the server owns it, and asking for one
+/// leaves the session exactly as it was.
+///
+/// While W06 is unbuilt the answer is the seam code, which is the *permitted*
+/// answer for a tabled row without wiring and is asserted here as such:
+/// `METHOD_NOT_FOUND` would tell a client to stop offering the method that
+/// `amx update apply` exists to find. `session_handoff_answers_with_behavior`
+/// below is the other side of that ledger.
+#[tokio::test]
+async fn method_golden_and_skew_arm_cover_session_handoff() {
+    let env = Env::new("skew-handoff");
+    let mut server = env.server();
+    let mut wire = Wire::connect(&env.socket()).await;
+    wire.hello((PROTO_MIN, PROTO_MAX)).await;
+
+    let method = Method::from_wire_name("session.handoff")
+        .expect("session.handoff is in this build's method table");
+    let reply = wire
+        .request(method.wire_name(), sample_params(method))
+        .await;
+    let err = error_of(&reply);
+    assert_ne!(
+        err.code,
+        RpcError::METHOD_NOT_FOUND,
+        "the server disowned its own method: {err:?}",
+    );
+    assert_eq!(
+        err.code, RETIRED_SEAM,
+        "while W06 is unbuilt this row answers at the seam and says who owes \
+         it; anything else means the handler landed without this row being \
+         moved to the answered list: {err:?}",
+    );
+    assert!(
+        err.message.contains("W06"),
+        "a seam names the task that owes it: {err:?}",
+    );
+
+    // And the session it was asked to leave is still the session it was.
+    let alive = wire.request("ping", json!({})).await;
+    assert!(result_of(&alive)["seq"].is_u64());
+    assert!(server.alive(), "asking for a handoff started nothing");
 
     drop(server);
 }
@@ -316,6 +378,51 @@ async fn a_peer_with_no_common_version_is_refused_without_a_welcome() {
     let welcome = next.hello((PROTO_MIN, PROTO_MAX)).await;
     assert_eq!(welcome.proto, PROTO_MAX);
     assert!(server.alive(), "the server itself is untouched");
+
+    drop(server);
+}
+
+/// The second transport the skew table owes a run over (D-M3-9, §4's law).
+///
+/// A remote session is the same protocol over `ssh host exec amx _bridge`
+/// stdio, so "the skew window is honored remotely" is a claim about *this*
+/// table answering over *that* transport — and W11's acceptance spells it
+/// `every_skew_sample_row_answers_over_the_bridge_transport`. The row is
+/// planted here, with the harness beside it, so W11 finds the law rather than
+/// discovering it.
+///
+/// What it can assert today is the honest half: `amx _bridge` is routed, it is
+/// the binary's own verb, and it says plainly that it is not built. That is a
+/// tripwire rather than a skip — the day W11 writes the splice this assertion
+/// stops holding, and finishing the row is the only way past it. The loop to
+/// write then is the one two tests above: `for &method in Method::ALL`, over a
+/// `Wire` on the child's stdio instead of on the socket.
+#[tokio::test]
+async fn the_bridge_transport_row_is_planted_and_fails_when_the_splice_arrives() {
+    let env = Env::new("skew-bridge");
+    let server = env.server();
+
+    // Spawned exactly as ssh would run it — `amx _bridge --session <name>`,
+    // stdio and nothing else — so what this exercises is the real argv W11
+    // inherits, not a stand-in for it.
+    let bridged = env.run(&["_bridge"]);
+
+    assert_ne!(
+        bridged.code,
+        Some(0),
+        "an unwired `_bridge` must fail rather than exit zero having spliced \
+         nothing: {bridged:?}"
+    );
+    assert!(
+        bridged.stderr.contains("W11"),
+        "the refusal names the task that owes the splice, so this row's own \
+         successor is findable from a failing run: {bridged:?}"
+    );
+
+    // Nothing about the probe disturbed the session it was pointed at.
+    let mut wire = Wire::connect(&env.socket()).await;
+    let welcome = wire.hello((PROTO_MIN, PROTO_MAX)).await;
+    assert_eq!(welcome.proto, PROTO_MAX);
 
     drop(server);
 }
