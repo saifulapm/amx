@@ -12,7 +12,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use amx_core::{PaneId, WorkspaceId};
-use amx_server::persist::{HISTORY_DIR, SNAPSHOT_NAME};
+use amx_server::persist::{HISTORY_DIR, SIDECAR_EXTENSION, SNAPSHOT_NAME};
 use rig::wire::result_of;
 use rig::{Env, TempDir, Wire};
 use serde_json::{Value, json};
@@ -137,11 +137,23 @@ pub fn history_dir(env: &Env) -> PathBuf {
 }
 
 /// The scrollback sidecars on disk, by file name.
+///
+/// Committed ones only: a dump goes through the same `write_atomic` the
+/// snapshot does, so between its write and its rename there is a
+/// `<pane>.rows.<pid>.<n>.tmp` in this directory holding the whole payload and
+/// answering to none of the reads that matter. Restore looks up
+/// `<pane>.rows` and nothing else, so a test that counted the staging file was
+/// waiting for a dump that had not happened — and a `kill -9` on that evidence
+/// left the litter behind and no sidecar at all.
 pub fn sidecars(env: &Env) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(history_dir(env)) else {
         return Vec::new();
     };
-    entries.flatten().map(|entry| entry.path()).collect()
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == SIDECAR_EXTENSION))
+        .collect()
 }
 
 /// Whether any sidecar on disk holds `text`.
@@ -200,18 +212,25 @@ pub fn restore_evidence(env: &Env, pane: PaneId) -> String {
     )
 }
 
-/// Every sidecar on disk with its size, which is what tells an empty dump from
-/// a missing one.
+/// Every file in the history directory with its size.
+///
+/// The whole directory, staging files included, unlike [`sidecars`]: an empty
+/// dump and a dump caught before its rename are different failures and this is
+/// the only place that can tell them apart. Naming a `.tmp` here is what
+/// convicted the wait that used to count one as a sidecar.
 fn sidecar_sizes(env: &Env) -> String {
-    let listed: Vec<String> = sidecars(env)
-        .iter()
-        .map(|path| {
-            let bytes = std::fs::metadata(path).map_or(0, |meta| meta.len());
-            format!("{} ({bytes} bytes)", path.display())
+    let Ok(entries) = std::fs::read_dir(history_dir(env)) else {
+        return "there is no history directory".to_owned();
+    };
+    let listed: Vec<String> = entries
+        .flatten()
+        .map(|entry| {
+            let bytes = entry.metadata().map_or(0, |meta| meta.len());
+            format!("{} ({bytes} bytes)", entry.path().display())
         })
         .collect();
     if listed.is_empty() {
-        "the history directory holds no sidecars".to_owned()
+        "the history directory is empty".to_owned()
     } else {
         format!("the history directory holds {}", listed.join(", "))
     }
