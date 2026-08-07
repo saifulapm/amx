@@ -1,0 +1,7 @@
+{
+  "seq": 41,
+  "event": {
+    "event": "config_reloaded",
+    "rejected_sections": 1
+  }
+}

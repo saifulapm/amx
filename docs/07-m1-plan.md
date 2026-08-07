@@ -944,6 +944,48 @@ Cross-wave sequential edits are declared, not discovered: U08 extends three
 prior-wave files; U09 adds one helper to `tests/support/env.rs`; U10 may
 touch anything the integration requires.
 
+### Wave outcomes — what shipped differently
+
+Recorded by U10 on the way through, so the next milestone's plan inherits
+what this one learned rather than the shape it guessed at.
+
+- **The `Persist` spawn moved forward from U10 to U09** (`951ead3`). U09's
+  crash suite needs a server that actually saves, and the plan had left
+  nothing spawning the actor until wave 4 — a suite that cannot run until
+  its integration task lands is a suite that finds nothing. U08 then
+  replaced U09's startup read with its watched channel (`589c8ca`), and
+  U10 found `serve.rs` already in its final shape: bind, load config,
+  restore, spawn persist/core/gateway/watcher. **U10 changed no server
+  code at all.**
+- **The seam helper retired in wave 2, not wave 4** (`750e442`). U06 took
+  `session.report` and U07 took `pane.rename`, which emptied U01's list
+  before U10 existed. What U10 inherited was therefore not a removal but a
+  *standing check* — `hygiene.rs` now fails on a `seam(` call in shipped
+  code, so the next contracts task reintroduces the helper and the
+  exemption together.
+- **The kill storm became landing-aware** (`e278a6d`, `0aed519`). The
+  planned assertion was "every restart restores cleanly"; what U09 found
+  is that a kill lands in one of three places relative to a save, and the
+  whole-or-old claim means something different in each. The storm now
+  classifies where its kill landed and asserts against that, which is a
+  stronger statement than the plan asked for.
+- **The event envelope goldens live in `amx-core`, not the rig.** §3
+  assigned them to U10 without saying where; `Event` is `#[non_exhaustive]`
+  and a test crate — including that package's own — cannot match it
+  exhaustively. The goldens are named for a new `Event::tag`, whose match
+  inside the library is the thing that stops the build when a variant
+  arrives without a frozen shape.
+- **U10's tests are a suite of their own** (`tests/seams.rs`), not
+  additions to `tests/integration.rs` as the scope line read: the seams
+  need four files' worth of setup and `integration.rs` was already at 316
+  lines against a 500-line soft budget.
+- **R-M1-2's tripwire needed a bounded stop.** `ServerChild::shutdown`
+  waited out the rig's 60 s patience and asserted, which turns one wedge
+  into a minute of silence per repetition and — worse — leaves the wedged
+  server holding the socket for the next one. The tripwire uses a new
+  `shutdown_within`, which kills what it gave up on and carries every
+  thread's run state and wait channel out in the failure message.
+
 ---
 
 ## 6. Risks & findings

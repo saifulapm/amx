@@ -5,29 +5,54 @@
 //! frame reallocates from empty; drop `App`'s status cache and every repaint
 //! rebuilds the status line's `String`s.
 //!
-//! One process-global allocator per test binary, so this lives in its own
-//! file rather than sharing a binary with anything else in this crate. The
-//! runtime is single-threaded and the measured loop never awaits, so the
-//! in-process server's tasks cannot run — and cannot allocate — inside the
-//! measurement window.
+//! One allocator per test binary, so this lives in its own file rather than
+//! sharing a binary with anything else in this crate.
+//!
+//! The counter is **per thread**, and that is load-bearing. `App::repaint` is
+//! driven on this test's own thread, but the server it attaches to is a real
+//! one: the first attach seeds a workspace with a live pane, and a pane owns a
+//! pty reader and an `amx-vt-…` parser, both plain OS threads outside tokio's
+//! runtime. A process-global counter attributes their work — parsing whatever
+//! the seeded shell prints, whenever it happens to print it — to the eight
+//! repaints between the two reads, which on a loaded machine is often enough
+//! to redden a client that allocated nothing. Counting per thread measures the
+//! repaint and only the repaint, however busy the session behind it is.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
 mod support;
 
 use std::alloc::{GlobalAlloc, Layout as AllocLayout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell;
 
 struct CountingAlloc;
 
-static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    /// Allocations made by *this* thread.
+    ///
+    /// `const`-initialized and holding a type with no destructor, which is
+    /// what makes it safe to touch from inside the global allocator: there is
+    /// no lazy initialization to allocate for, no destructor to register, and
+    /// no post-teardown state to panic on.
+    static ALLOCS: cell::Cell<usize> = const { cell::Cell::new(0) };
+}
+
+/// Count one allocation against the calling thread.
+fn count() {
+    let _ = ALLOCS.try_with(|allocs| allocs.set(allocs.get() + 1));
+}
+
+/// How many allocations the calling thread has made.
+fn allocs() -> usize {
+    ALLOCS.try_with(cell::Cell::get).unwrap_or(0)
+}
 
 // SAFETY: every method forwards to the system allocator with the layout it
 // was given and returns its result unchanged; the counter is the only
 // addition.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: AllocLayout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        count();
         unsafe { System.alloc(layout) }
     }
 
@@ -36,12 +61,12 @@ unsafe impl GlobalAlloc for CountingAlloc {
     }
 
     unsafe fn alloc_zeroed(&self, layout: AllocLayout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        count();
         unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: AllocLayout, new_size: usize) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        count();
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -119,11 +144,11 @@ async fn repaint_does_not_allocate_after_the_first_frame() {
         "the warm-up must have painted something"
     );
 
-    let before = ALLOCS.load(Ordering::Relaxed);
+    let before = allocs();
     for _ in 0..8 {
         app.repaint();
     }
-    let after = ALLOCS.load(Ordering::Relaxed);
+    let after = allocs();
 
     assert_eq!(
         after, before,

@@ -284,15 +284,51 @@ impl ServerChild {
     }
 
     /// Ask the server to exit and wait for it, asserting a clean code.
-    pub fn shutdown(mut self) {
-        signal_term(self.child.id());
-        let deadline = Instant::now() + PATIENCE;
+    pub fn shutdown(self) {
+        if let Err(stuck) = self.shutdown_within(PATIENCE) {
+            panic!("{stuck}");
+        }
+    }
+
+    /// Ask the server to exit and answer, within `budget`, whether it did.
+    ///
+    /// The bounded form the shutdown tripwire needs (R-M1-2). A wedge in the
+    /// `JoinSet` drain is a server that took the signal and never finished
+    /// joining, and a test that waits out [`PATIENCE`] and then asserts turns
+    /// one wedge into a minute of silence per repetition. So this returns
+    /// instead of asserting, and — the part that matters — it *kills what it
+    /// gave up on*: a wedged server left running would hold its socket, its
+    /// state directory and its panes' children against the next repetition,
+    /// and one hang would become a suite that hangs.
+    ///
+    /// The error carries what every thread of the wedged process was doing at
+    /// the moment the budget expired, because that is the observation nobody
+    /// has yet managed to make about this flake.
+    pub fn shutdown_within(mut self, budget: Duration) -> Result<(), String> {
+        let pid = self.child.id();
+        signal_term(pid);
+        let deadline = Instant::now() + budget;
         loop {
             if let Some(status) = self.child.try_wait().expect("wait for the server") {
-                assert!(status.success(), "the server exited uncleanly: {status:?}");
-                return;
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("the server exited uncleanly: {status:?}"))
+                };
             }
-            assert!(Instant::now() < deadline, "the server ignored SIGTERM");
+            if Instant::now() >= deadline {
+                let stuck = crate::platform::thread_states(pid);
+                // Consuming `self` is not enough: `Drop` kills, but only once
+                // this value is dropped, and the caller is owed a live process
+                // table in the message it is about to print.
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                return Err(format!(
+                    "the server did not finish shutting down within {budget:?} of SIGTERM \
+                     — the drain wedge (R-M1-2) is what this looks like; it has been \
+                     SIGKILLed so the suite can go on.\n{stuck}"
+                ));
+            }
             std::thread::sleep(TICK);
         }
     }

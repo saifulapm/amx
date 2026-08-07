@@ -6,6 +6,11 @@
 //! is a *failure*, never the green path — and this suite enforces that shape
 //! mechanically, because a convention nothing checks is a convention on its
 //! way out.
+//!
+//! The second guard here is the same idea one milestone up: a *seam* — a
+//! method that landed in the shared table before its implementation — is
+//! allowed to exist only while its milestone is being built, and the way that
+//! stops being permanent is a test that fails once the milestone ships.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
@@ -25,26 +30,31 @@ fn no_test_depends_on_wall_clock_sleep() {
     // The suites: no sleeping at all, under any name. Waiting is done through
     // the support crate's condition-driven helpers, and observation windows
     // (the flood test) tick an interval instead of napping blind.
+    //
+    // Recursive, because suites grew module directories — `persistence/`,
+    // `seams/` — and a scan of the package root alone had quietly stopped
+    // covering most of the rig's test code. `support/` is walked separately
+    // below under its own, looser rule.
     let mut suites = 0;
-    for entry in fs::read_dir(root).expect("read the package root") {
-        let path = entry.expect("a directory entry").path();
+    for path in rust_files(root) {
+        if path.starts_with(root.join("support")) {
+            continue;
+        }
         // This file is exempt for one reason only: the acceptance-test name
         // itself contains the forbidden token.
         if path.file_name().is_some_and(|name| name == "hygiene.rs") {
             continue;
         }
-        if path.extension().is_some_and(|ext| ext == "rs") {
-            let text = fs::read_to_string(&path).expect("read the suite");
-            assert!(
-                !text.contains(&needle),
-                "{} calls {needle}; wait on a condition instead (rig::wait_until, \
-                 Terminal::wait_output, or an interval tick)",
-                path.display()
-            );
-            suites += 1;
-        }
+        let text = fs::read_to_string(&path).expect("read the suite");
+        assert!(
+            !text.contains(&needle),
+            "{} calls {needle}; wait on a condition instead (rig::wait_until, \
+             Terminal::wait_output, or an interval tick)",
+            path.display()
+        );
+        suites += 1;
     }
-    assert!(suites >= 3, "the scan found too few suites to be believed");
+    assert!(suites >= 10, "the scan found too few suites to be believed");
 
     // The support crate: the poll tick inside its deadline loops is the one
     // place a nap is allowed, and every such line names TICK so a bare
@@ -121,6 +131,50 @@ fn crate_tests_wait_on_conditions_not_wall_clock() {
     assert!(
         suites >= 10,
         "the crates scan found too few suites ({suites}) to be believed"
+    );
+}
+
+/// The milestone guard: no method in the table is answered by a stub.
+///
+/// `dispatch/mod.rs` explains the mechanic — a row that lands before its
+/// wiring is answered through a `seam` helper rather than
+/// `METHOD_NOT_FOUND`, because telling a client a method is unknown tells it
+/// to stop offering it. The helper is deliberately temporary: U01 introduced
+/// it with M1's two new rows, U06 and U07 closed them, and it retired with
+/// the list. This test is what keeps it retired between milestones — the next
+/// contracts task reintroduces both the helper and this test's exemption
+/// together, so a seam can never quietly outlive the milestone that opened it.
+#[test]
+fn no_control_method_is_answered_by_a_seam_stub() {
+    // `<workspace>/tests/../crates`: the shipped code, not the suites, since a
+    // test harness may legitimately name the concept.
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates");
+    // A call or a definition, not the word: `seam` is the tree's ordinary
+    // noun for a trait boundary (`platform.rs`, `persist/io.rs`) and banning
+    // the word would ban the vocabulary.
+    let call = "seam(";
+
+    let mut found = Vec::new();
+    for krate in fs::read_dir(&crates).expect("read crates/") {
+        let src = krate.expect("a directory entry").path().join("src");
+        if !src.is_dir() {
+            continue;
+        }
+        for path in rust_files(&src) {
+            let text = fs::read_to_string(&path).expect("read a source file");
+            for (n, line) in text.lines().enumerate() {
+                // Prose says "the seam (`Pty`, `Ipc`)"; code says `seam(…)`.
+                if line.contains(call) && !line.trim_start().starts_with("//") {
+                    found.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "a dispatch seam outlived its milestone — every method in the table \
+         must have a handler by the milestone's integration task:\n{}",
+        found.join("\n")
     );
 }
 

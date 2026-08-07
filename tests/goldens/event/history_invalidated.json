@@ -1,0 +1,9 @@
+{
+  "seq": 41,
+  "event": {
+    "event": "history_invalidated",
+    "pane": "00000000-0000-0000-0000-0000000000a1",
+    "from_row": 2,
+    "cause": "width_reflow"
+  }
+}

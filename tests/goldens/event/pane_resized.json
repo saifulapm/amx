@@ -1,0 +1,10 @@
+{
+  "seq": 41,
+  "event": {
+    "event": "pane_resized",
+    "pane": "00000000-0000-0000-0000-0000000000a1",
+    "rows": 24,
+    "cols": 80,
+    "generation": 1
+  }
+}

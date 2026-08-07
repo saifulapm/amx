@@ -1,0 +1,10 @@
+{
+  "seq": 41,
+  "event": {
+    "event": "session_restored",
+    "workspaces": 2,
+    "panes": 4,
+    "lost": 1,
+    "degraded": 1
+  }
+}

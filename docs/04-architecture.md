@@ -286,7 +286,9 @@ from the registry.
   cwd/argv/**label**/agent identity/session refs, keyed by UUID. Written
   atomic tmp+rename **+ fsync of file and directory**. Version field with an
   N/N−1 read window.
-- **Scrollback sidecar per pane** (`history/<pane-uuid>.ansi`), linked by UUID
+- **Scrollback sidecar per pane** (`history/<pane-uuid>.rows`, not `.ansi`:
+  history is served as unstyled text rows, so the file holds packed rows and
+  not a replay stream — see R-M1-1), linked by UUID
   — no positional zipping, desync is structurally impossible. Opt-in, as in
   herdr (secrets), wiped independently.
 - Client presentation state (status-line options, picker history) lives
