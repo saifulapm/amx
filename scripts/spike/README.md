@@ -19,8 +19,13 @@ scripts/spike/wedge.py --list                                    # the suites it
 scripts/spike/wedge.py --out /var/tmp/wedge --minutes 45         # loop the suites
 scripts/spike/wedge.py --out /var/tmp/wedge --minutes 55 \
     --suites session_cli --storm-cycles 400                      # ~600 stops a minute
+scripts/spike/wedge.py --out /var/tmp/wedge --suites field --minutes 90   # where the bodies were
 scripts/spike/wedge.py --out /var/tmp/wedge --iterations 300 --keep  # stop at the first, alive
 ```
+
+`--suites field` is the four suites the seven wedged servers found on this
+machine actually came from, which is where the next hunt for the *unfound* path
+of the note's §4 should start.
 
 What makes a wedge detectable without asking a human: every harness in the tree
 signals its server and waits (`Env::drop` runs `amx session stop`, which

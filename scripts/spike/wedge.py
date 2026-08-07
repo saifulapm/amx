@@ -60,11 +60,19 @@ REPO = Path(__file__).resolve().parents[2]
 SUITES = {
     "session_cli": "T17: daemonize, bind race, detach, session stop",
     "seams": "the persist/core shutdown seam and its repetition tripwire",
+    "integration": "typed bytes, resize, reattach — where two corpses came from",
     "firstrun": "first attach seeds a workspace and a shell behind it",
-    "agents": "the fifth actor: hub, trackers, attention queue",
     "adversarial": "floods, kills and other unkind shutdowns",
+    "hook": "the live hook path, driving a real terminal",
+    "agents": "the fifth actor: hub, trackers, attention queue",
     "persistence": "sidecar writes racing the final capture",
 }
+
+# The suites the seven wedges found on this machine actually came from, by
+# session name: `typed` and `outlives` (integration), `firstrun`, `kill9`
+# (adversarial) and `hook-live` (hook). Worth a flag of its own, because the
+# next hunt should start where the last one's bodies were.
+FIELD_SUITES = "integration,firstrun,adversarial,hook"
 
 # How long after a suite exits its leaked processes are looked for. The suites
 # themselves already waited out `session stop`'s 10 s, so this is only slack
@@ -441,7 +449,7 @@ def main() -> int:
     parser.add_argument(
         "--suites",
         default="session_cli,seams",
-        help=f"comma-separated suite names; one of {', '.join(SUITES)}",
+        help=f"comma-separated suite names, or 'field'; one of {', '.join(SUITES)}",
     )
     parser.add_argument(
         "--storm-cycles",
@@ -462,7 +470,8 @@ def main() -> int:
     if args.iterations == 0 and args.minutes == 0.0:
         parser.error("give --iterations or --minutes")
 
-    names = [name.strip() for name in args.suites.split(",") if name.strip()]
+    suites = FIELD_SUITES if args.suites == "field" else args.suites
+    names = [name.strip() for name in suites.split(",") if name.strip()]
     unknown = [name for name in names if name not in SUITES]
     if unknown:
         parser.error(f"unknown suite(s): {', '.join(unknown)}")
