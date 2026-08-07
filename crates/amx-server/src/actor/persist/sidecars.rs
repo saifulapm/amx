@@ -90,6 +90,16 @@ impl Sidecars {
         }
     }
 
+    /// Forget which panes have been dumped, without forgetting their windows.
+    ///
+    /// What a wipe leaves behind: the sidecars are gone, so every pane is due
+    /// again if history is ever turned back on, but the committed windows are
+    /// still whatever the bus said they were — those are facts about the panes,
+    /// and no config edit changes them.
+    pub(super) fn forget_dumps(&mut self) {
+        self.dumped.clear();
+    }
+
     /// Dump every pane whose history moved since last time; count them.
     ///
     /// `panes` is empty whenever `[persist] history` is off — `Core` only clones
