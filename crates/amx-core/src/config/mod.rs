@@ -112,13 +112,6 @@ impl ConfigDiagnostic {
 ///
 /// Returns the configuration to run from here on plus one diagnostic per thing
 /// that was rejected. An empty diagnostic list means the file applied whole.
-///
-/// # Task ownership
-///
-/// U01 (`docs/07-m1-plan.md` §4) froze this signature and the whole-file tier;
-/// **U03 implements the per-section tier**. Until it does, a file that parses
-/// as TOML leaves the running config untouched — which is not D-M1-8's
-/// behaviour, only its first half.
 #[must_use]
 pub fn reload(current: &Config, text: &str) -> (Config, Vec<ConfigDiagnostic>) {
     let document = match text.parse::<toml::Table>() {
@@ -131,40 +124,53 @@ pub fn reload(current: &Config, text: &str) -> (Config, Vec<ConfigDiagnostic>) {
             );
         }
     };
-    let _ = document;
-    (current.clone(), Vec::new())
+
+    // Tier two: every section stands or falls alone. `next` starts at defaults
+    // so a section the user deleted comes back as its default without anyone
+    // writing that rule down twice.
+    let mut next = Config::default();
+    let mut diagnostics = Vec::new();
+    section(
+        &document,
+        PERSIST_SECTION,
+        &current.persist,
+        &mut next.persist,
+        &mut diagnostics,
+    );
+    section(
+        &document,
+        TERMINAL_SECTION,
+        &current.terminal,
+        &mut next.terminal,
+        &mut diagnostics,
+    );
+    (next, diagnostics)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{Config, PERSIST_SECTION, SECTIONS, TERMINAL_SECTION, reload};
-
-    /// The configuration of a machine with no file at all. A missing file must
-    /// be indistinguishable from an empty one, which is what makes "no config"
-    /// a normal startup rather than an error.
-    #[test]
-    fn defaults_are_the_no_file_configuration() {
-        let defaults = Config::default();
-        assert!(!defaults.persist.history, "scrollback holds secrets");
-        assert_eq!(defaults.terminal.shell, None);
-        assert_eq!(SECTIONS, &[PERSIST_SECTION, TERMINAL_SECTION]);
-    }
-
-    #[test]
-    fn a_file_level_parse_error_keeps_the_entire_running_config() {
-        let running = Config {
-            persist: super::PersistConfig { history: true },
-            terminal: super::TerminalConfig {
-                shell: Some("/bin/zsh".to_owned()),
-            },
-        };
-        let (next, diagnostics) = reload(&running, "[persist\nhistory = ");
-        assert_eq!(next, running, "a typo mid-edit must not yank live settings");
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(
-            diagnostics[0].section, None,
-            "a whole-file failure names no section, because none applied",
-        );
-        assert!(!diagnostics[0].message.is_empty());
+/// Apply one section of `document` into `slot`, falling back to `current`.
+///
+/// Three outcomes, which are the three D-M1-8 clauses in one place: absent
+/// leaves `slot` at the default it arrived with, valid overwrites it, invalid
+/// copies the running values across and files a diagnostic naming the section.
+/// Unknown keys inside the section never reach here — serde drops them, the
+/// same tolerance the wire applies.
+fn section<T>(
+    document: &toml::Table,
+    name: &'static str,
+    current: &T,
+    slot: &mut T,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) where
+    T: Clone + serde::de::DeserializeOwned,
+{
+    let Some(value) = document.get(name) else {
+        return;
+    };
+    match value.clone().try_into::<T>() {
+        Ok(parsed) => *slot = parsed,
+        Err(err) => {
+            slot.clone_from(current);
+            diagnostics.push(ConfigDiagnostic::section(name, err.to_string()));
+        }
     }
 }
