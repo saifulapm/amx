@@ -14,7 +14,13 @@ use std::time::{Duration, Instant};
 use crate::term::{Terminal, open_pty, termios_of};
 
 /// How long a test waits for something to happen before failing.
-pub const PATIENCE: Duration = Duration::from_secs(10);
+///
+/// Generous on purpose: every wait here is condition-based, so a green run
+/// never pays this — only a genuine hang does. Shared CI runners (macOS
+/// especially) stretch a debug-build attach + shell spawn + typed round trip
+/// well past what a dev box suggests, and a deadline exists to catch hangs,
+/// not to benchmark the runner.
+pub const PATIENCE: Duration = Duration::from_secs(60);
 
 /// How long a poll loop waits between looks at its condition.
 pub const TICK: Duration = Duration::from_millis(5);
