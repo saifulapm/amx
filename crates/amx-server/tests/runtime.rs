@@ -4,8 +4,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
 use std::path::PathBuf;
-use std::time::Duration;
 use std::sync::Arc;
+use std::time::Duration;
 
 use amx_core::{Bus, Ctx, Level, Scheduled, SessionName, ShortNumber};
 use amx_proto::control::workspace;

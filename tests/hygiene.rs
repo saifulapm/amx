@@ -379,7 +379,11 @@ async fn a_harness_terminal_does_not_leak_into_the_processes_it_spawns() {
     let env = Env::new("cloex");
     let server = env.server();
     let theirs = rig::platform::pty_masters(server.pid()).unwrap_or_default();
-    let shared: Vec<u32> = theirs.iter().copied().filter(|i| mine.contains(i)).collect();
+    let shared: Vec<u32> = theirs
+        .iter()
+        .copied()
+        .filter(|i| mine.contains(i))
+        .collect();
     server.shutdown();
     assert!(
         shared.is_empty(),
@@ -394,11 +398,8 @@ async fn a_harness_terminal_does_not_leak_into_the_processes_it_spawns() {
 fn index_of(pty: &rig::term::Pty) -> u32 {
     use std::os::fd::AsRawFd as _;
 
-    let info = fs::read_to_string(format!(
-        "/proc/self/fdinfo/{}",
-        pty.master.as_raw_fd()
-    ))
-    .expect("read this descriptor's info");
+    let info = fs::read_to_string(format!("/proc/self/fdinfo/{}", pty.master.as_raw_fd()))
+        .expect("read this descriptor's info");
     info.lines()
         .find_map(|line| line.strip_prefix("tty-index:"))
         .and_then(|value| value.trim().parse().ok())
