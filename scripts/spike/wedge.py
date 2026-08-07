@@ -510,6 +510,17 @@ def main() -> int:
     tmp_root: Path = args.tmp_root / f"amx-wedge-{os.getpid()}"
     tmp_root.mkdir(parents=True, exist_ok=True)
 
+    # A `SIGTERM` to an unattended run must still reach the `finally` below:
+    # Python's default disposition exits without unwinding, which leaves one
+    # busy loop per core running until somebody notices the machine is at load
+    # 50. Raising `KeyboardInterrupt` puts a signal on the same path as a
+    # `ctrl+c`, which the loop already handles.
+    def stop(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+
     load = Load(args.load, None if args.no_fsync_load else tmp_root / "fsync")
     load.start()
     print(
