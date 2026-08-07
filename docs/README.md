@@ -16,6 +16,7 @@ herdr's structural weaknesses.
 | [04-architecture.md](04-architecture.md) | The amx design: process model, event bus, protocol, agent layer, persistence |
 | [05-roadmap.md](05-roadmap.md) | Milestones and build order |
 | [06-m0-plan.md](06-m0-plan.md) | M0 execution plan: crate/module map, shared contracts, task DAG, waves, risks |
+| [07-m1-plan.md](07-m1-plan.md) | M1 execution plan: durability — fsynced snapshot, restore + loss report, Persist actor, config hot reload, crash suite |
 
 ## TL;DR
 
