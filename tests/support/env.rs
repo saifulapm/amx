@@ -286,6 +286,11 @@ impl Output {
 /// This is the one place the harness waits: a condition and a deadline, so a
 /// test can only ever be slow when the thing it waits for is slow — expiry is
 /// a failure, never a green path.
+///
+/// This wait reads nothing. While a [`crate::term::Terminal`] is attached,
+/// wait on it instead ([`crate::term::Terminal::wait_until`]): a client
+/// nobody drains wedges on darwin's shallow pty queue, and input already
+/// typed stops taking effect while this loop watches for its consequences.
 pub fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
     let deadline = Instant::now() + PATIENCE;
     while !cond() {

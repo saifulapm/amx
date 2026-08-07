@@ -59,11 +59,16 @@ async fn kill_dash_9_the_client_then_reattach_yields_an_identical_grid() {
 
     // Give the session something to lose — a process started by typing into
     // the seeded shell — and the grid something no blank frame fakes. `read`
-    // keeps the shell, and the marker in its argv, alive.
+    // keeps the shell, and the marker in its argv, alive. The command spells
+    // its own output `he\ld` so the pty echo of the typed line cannot satisfy
+    // a wait for `held` — only the child running proves anything, and the
+    // wait must keep draining `first` while it polls: blind, it wedges the
+    // client on darwin's shallow pty queue before the typed line finishes
+    // arriving (see `Terminal::try_wait_until`).
     let marker = marker("kill9");
-    first.type_line(&format!("sh -c 'echo held; read _held' {marker}"));
+    first.type_line(&format!("sh -c 'echo he\\ld; read _' {marker}"));
     first.wait_output("the child's output to render", |seen| shows(seen, "held"));
-    wait_until("the typed process appears", || {
+    first.wait_until("the typed process appears", || {
         processes_with_arg(&marker) == 1
     });
     let before = first.wait_settled();
