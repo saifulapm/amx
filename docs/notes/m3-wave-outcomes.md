@@ -71,4 +71,19 @@ reach the `cancel` arm of its own `select!` — is already closed:
 mid-report send fails rather than waits (`actor/core/mod.rs:380-385`, with the
 comment saying exactly that). Whatever the drain wedge is, it is not that.
 W02 changes nothing on that path: reports still flow, only the second publish
-is gone.
+is gone. W01 confirmed it from the other side and its finding is
+[m3-shutdown-wedge.md](m3-shutdown-wedge.md): the wedge was a connection whose
+handshake watched no cancellation token, not a pane at all.
+
+**W02 and W01 merge clean and green, checked rather than assumed.** The two
+branches share `tests/hygiene.rs` — W01 pins its CLOEXEC fix there, W02 the
+pane-publisher rule — and the additions do not touch each other. Merging
+`worktree-w01-wedge` into `worktree-w02-publisher` needs no conflict
+resolution, and `scripts/ci.sh` on the merged tree exits 0 (648 tests). W01's
+`Runtime::spawn` rename reaches no file W02 edits.
+
+**Sequential fills inherited from W01, repeated here so the ledger carries
+them.** `conn/mod.rs` is W08's file and W01 has landed fifteen lines on it (the
+handshake under cancellation); `session/serve.rs` is W06's and now carries the
+task names. Both are declared in W01's note — whoever picks up W08 or W06 is
+filling beside a change, not discovering one.
