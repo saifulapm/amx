@@ -169,7 +169,11 @@ impl Core {
             }
         }
         self.workspace_shorts.insert(id, saved_ws.short);
-        self.next_workspace_short = self.next_workspace_short.max(saved_ws.short.get() + 1);
+        // Saturating, because the number comes from a file: a snapshot naming
+        // `u32::MAX` must not make the next create panic in debug.
+        self.next_workspace_short = self
+            .next_workspace_short
+            .max(saved_ws.short.get().saturating_add(1));
 
         let mut restored = Vec::with_capacity(members.len());
         for pane in members {
@@ -214,7 +218,10 @@ impl Core {
             workspace: id,
             pane: self.state.workspace(id).and_then(|ws| ws.focus()),
         });
-        u32::try_from(restored.len()).ok()
+        // `None` is reserved for "this workspace was pruned", so a count that
+        // will not fit saturates rather than reporting a loss that never
+        // happened.
+        Some(u32::try_from(restored.len()).unwrap_or(u32::MAX))
     }
 
     /// Respawn one pane. `false` means it was pruned from the layout.
@@ -275,7 +282,9 @@ impl Core {
                 match saved.map(|saved| saved.short) {
                     Some(short) => {
                         self.pane_shorts.insert(pane, short);
-                        self.next_pane_short = self.next_pane_short.max(short.get() + 1);
+                        // Saturating, for the reason the workspace's is.
+                        self.next_pane_short =
+                            self.next_pane_short.max(short.get().saturating_add(1));
                     }
                     None => {
                         let _ = self.next_pane_short(pane);
