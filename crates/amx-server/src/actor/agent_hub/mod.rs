@@ -13,8 +13,8 @@
 //!   shutdown discipline forbids.
 //! - **Publishes** `agent_status`, `agent_identified`, `attention_enqueued` and
 //!   `attention_dequeued`, and is their only publisher (04 §2's one-publisher
-//!   rule; pane events already break it, R-M2-3, and these do not get to make
-//!   it worse).
+//!   rule, read per event kind — the pane actor owns the pane-thread kinds and
+//!   `Core` the rest, `docs/09-m3-plan.md` D-M3-2).
 //! - **Times** off one wheel, armed only while a deadline exists. There is no
 //!   idle tick anywhere in this module: a session of idle agents costs zero
 //!   wakeups (03 §5), unlike herdr's permanent 300–500 ms scan.

@@ -15,7 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use amx_core::{
-    Bus, Ctx, Delivery, Event, GridGeneration, PaneId, Scheduled, SessionName, Subscription,
+    Bus, Ctx, Delivery, Event, GridGeneration, InvalidationCause, PaneId, RowId, RowRange,
+    Scheduled, SessionName, Subscription,
 };
 use amx_proto::control::{pane, workspace};
 use amx_server::actor::core::Core;
@@ -123,6 +124,65 @@ impl Harness {
             .expect("core answered")
             .expect("split succeeds")
             .pane
+    }
+
+    /// Split a pane off `from` running `script` under `/bin/sh`.
+    async fn split_running(&self, from: PaneId, script: &str) -> PaneId {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(CoreCommand::Pane(PaneCall::Split {
+                params: pane::SplitParams {
+                    pane: from,
+                    direction: pane::SplitDirection::Vertical,
+                    command: Some(vec!["/bin/sh".into(), "-c".into(), script.into()]),
+                    cwd: Some(PathBuf::from("/")),
+                },
+                reply,
+            }))
+            .await
+            .expect("core mailbox is open");
+        answer
+            .await
+            .expect("core answered")
+            .expect("split succeeds")
+            .pane
+    }
+
+    /// The history window `session.state` answers with for `pane`.
+    async fn history_window(&self, pane: PaneId) -> (RowId, RowId) {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(CoreCommand::Session(
+                amx_server::actor::SessionCall::State {
+                    params: amx_proto::control::session::StateParams::default(),
+                    reply,
+                },
+            ))
+            .await
+            .expect("core mailbox is open");
+        let state = answer.await.expect("core answered").expect("state answers");
+        let row = state
+            .panes
+            .iter()
+            .find(|row| row.pane == pane)
+            .expect("the pane is in the state tree");
+        (row.history_head, row.history_floor)
+    }
+
+    /// Close `pane` through the public verb, which hangs its terminal up.
+    async fn close(&self, pane: PaneId) {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(CoreCommand::Pane(PaneCall::Close {
+                params: pane::CloseParams { pane },
+                reply,
+            }))
+            .await
+            .expect("core mailbox is open");
+        answer
+            .await
+            .expect("core answered")
+            .expect("close succeeds");
     }
 
     /// The live plumbing of `pane`, over the running loop.
@@ -323,4 +383,282 @@ async fn core_run_joins_every_pane_task_before_returning() {
         core.pane_handle(root).is_none(),
         "no pane host survives the drain"
     );
+}
+
+// ------------------------------------------------- one publisher per event kind
+
+/// How long the bus must stay quiet before a transition counts as announced
+/// once and only once.
+///
+/// The duplicate this pins against arrived *behind* the pane actor's own
+/// publish — the actor publishes, then reports, then `Core` folds — so a test
+/// that stopped reading at the first envelope would have passed against the
+/// bug. It stops reading at silence instead.
+const QUIET: Duration = Duration::from_millis(500);
+
+/// A pane whose whole life is the transitions D-M3-2 names: it titles itself,
+/// fills the grid past its 24 rows so scrollback commits, and exits.
+const FOUR_TRANSITIONS: &str = concat!(
+    r"printf '\033]0;one-publisher\007'; ",
+    r#"i=0; while [ $i -lt 80 ]; do echo "row $i"; i=$((i+1)); done; "#,
+    "sleep 600",
+);
+
+/// The title [`FOUR_TRANSITIONS`] sets.
+const TITLE: &str = "one-publisher";
+
+/// `docs/09-m3-plan.md` D-M3-2: every transition owes exactly one sequence
+/// number, and for a pane-thread fact the publisher is the pane actor.
+///
+/// Until this landed, seven pane event kinds were published by the pane actor
+/// *and* six of them republished by `Core` from the report that followed, so a
+/// title change or an exit burned two sequence numbers. That was tolerable
+/// while every consumer read the bus at-least-once; the M3 reconnect-resync
+/// makes sequence numbers a continuity artifact that crosses process
+/// generations, and a duplicate halves the replay window exactly when a
+/// reconnect storm is spending it.
+///
+/// Driven through a real pane and a real `Core` on the real actor loop,
+/// because the duplicate only existed where the two met — either half alone
+/// publishes once and looks correct.
+#[tokio::test]
+async fn a_pane_transition_publishes_exactly_one_event() {
+    let harness = Harness::start("one-publisher", 64);
+    let root = harness.seed_workspace().await;
+    harness.settle().await;
+
+    let mut events = harness.ctx.bus.subscribe();
+    let pane = harness.split_running(root, FOUR_TRANSITIONS).await;
+    // Read the bus continuously from here on, in two phases with no pause
+    // between them: the title and the commits arrive while the pane is alive,
+    // and the exit only once it is closed. A script that exited on its own
+    // reached EOF before the parser's first frame boundary and committed no
+    // scrollback at all.
+    let mut seen = collect_until(&mut events, |seen| {
+        commits(seen, pane)
+            .iter()
+            .any(|range| range.last.get() >= 40)
+    })
+    .await;
+    harness.close(pane).await;
+    seen.extend(collect_until_quiet_after_exit(&mut events, pane).await);
+
+    let titles = seen
+        .iter()
+        .filter(|event| match event {
+            Event::PaneTitle { pane: p, title } => *p == pane && title == TITLE,
+            _ => false,
+        })
+        .count();
+    assert_eq!(
+        titles, 1,
+        "one title change, one announcement; the bus carried {titles} of them:\n{seen:#?}"
+    );
+
+    let exits = seen
+        .iter()
+        .filter(|event| matches!(event, Event::PaneExited { pane: p, .. } if *p == pane))
+        .count();
+    assert_eq!(
+        exits, 1,
+        "a child exits once; the bus carried {exits} announcements of it:\n{seen:#?}"
+    );
+
+    // Commits are the kind that comes in a stream rather than once, so the
+    // claim is about *distinctness*: the pane commits each range once, and a
+    // republisher shows up as the same range announced twice.
+    let committed = commits(&seen, pane);
+    assert!(
+        !committed.is_empty(),
+        "80 lines through a 24-row grid must commit scrollback:\n{seen:#?}"
+    );
+    let mut distinct = committed.clone();
+    distinct.sort_by_key(|range| (range.first, range.last));
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        committed.len(),
+        "a committed range was announced more than once: {committed:?}"
+    );
+
+    harness.ctx.cancel.cancel();
+    let _ = harness.task.await;
+}
+
+/// The other half of the rule, stated where it is exact: a report is a mailbox
+/// message, and folding one publishes nothing.
+///
+/// Damage is why the rule is per *kind* rather than "`Core` publishes
+/// everything": damage reports reach `Core` by `try_send` and are droppable
+/// under saturation, so a `Core` that owned the publish could starve
+/// `pane.wait_output` on a busy session. It is also why damage cannot be
+/// counted the way a title can — the drops are deliberate — so every kind is
+/// driven straight into the mailbox here, where the count is exactly zero.
+///
+/// The reports are addressed to a pane id no actor backs, which is what makes
+/// the count *exactly* zero rather than nearly: `Core` folds a report by pane
+/// id and never asks whether the pane is live, so any event naming this id can
+/// only have come from the fold. Addressing them to a running pane instead
+/// races that pane's own first frame, which is a legitimate `PaneDamage` from
+/// the legitimate publisher.
+///
+/// The folds are asserted in the same breath, against a pane that *is* in the
+/// layout so `session.state` answers for it — deleting the folds along with
+/// the publishes would be the easy way to make this test pass and would break
+/// that answer.
+#[tokio::test]
+async fn a_pane_report_folds_without_publishing() {
+    let harness = Harness::start("reports-are-not-events", 64);
+    let root = harness.seed_workspace().await;
+    let folded = harness.split_silent(root).await;
+    let unbacked = PaneId::new_v4();
+    harness.settle().await;
+
+    let mut events = harness.ctx.bus.subscribe();
+    for pane in [unbacked, folded] {
+        for report in reports() {
+            harness
+                .tx
+                .send(CoreCommand::PaneReport { pane, report })
+                .await
+                .expect("core mailbox is open");
+        }
+    }
+
+    // The window moved: commit put the head one past row 9, eviction raised
+    // the floor to 3, invalidation pulled the head back to row 7.
+    let (head, floor) = harness.history_window(folded).await;
+    assert_eq!(
+        (head, floor),
+        (RowId::from_raw(7), RowId::from_raw(3)),
+        "the folds beside the deleted publishes have to stay"
+    );
+
+    let stray: Vec<Event> = drain_quiet(&mut events)
+        .await
+        .into_iter()
+        .filter(|event| names(event, unbacked))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "folding a pane report published {} event(s) about a pane no actor \
+         backs; reports are mailbox messages and the pane actor already \
+         announced every one of these:\n{stray:#?}",
+        stray.len()
+    );
+
+    harness.ctx.cancel.cancel();
+    let _ = harness.task.await;
+}
+
+/// One of every report a `PaneHost` can send, with values chosen so the folds
+/// they feed are distinguishable from each other.
+fn reports() -> Vec<PaneReport> {
+    vec![
+        PaneReport::Damage {
+            generation: GridGeneration::FIRST,
+        },
+        PaneReport::Committed {
+            range: RowRange::new(RowId::from_raw(0), RowId::from_raw(9)),
+            hashes: Vec::new(),
+        },
+        PaneReport::Evicted {
+            oldest_row: RowId::from_raw(3),
+        },
+        PaneReport::Invalidated {
+            from_row: RowId::from_raw(7),
+            cause: InvalidationCause::Clear,
+        },
+        PaneReport::Title("not session state".to_owned()),
+        PaneReport::Bell,
+        PaneReport::Exited { status: Some(0) },
+    ]
+}
+
+/// Whether `event` is one of the seven pane kinds and is about `pane`.
+fn names(event: &Event, pane: PaneId) -> bool {
+    match event {
+        Event::PaneDamage { pane: p, .. }
+        | Event::PaneTitle { pane: p, .. }
+        | Event::PaneResized { pane: p, .. }
+        | Event::HistoryCommitted { pane: p, .. }
+        | Event::HistoryInvalidated { pane: p, .. }
+        | Event::HistoryEvicted { pane: p, .. }
+        | Event::PaneExited { pane: p, .. } => *p == pane,
+        _ => false,
+    }
+}
+
+/// The ranges `pane` announced as committed, in the order they arrived.
+fn commits(seen: &[Event], pane: PaneId) -> Vec<RowRange> {
+    seen.iter()
+        .filter_map(|event| match event {
+            Event::HistoryCommitted { pane: p, range } if *p == pane => Some(*range),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Read the bus into a vector until `enough` is satisfied by what has arrived.
+async fn collect_until(
+    events: &mut Subscription,
+    mut enough: impl FnMut(&[Event]) -> bool,
+) -> Vec<Event> {
+    let deadline = Instant::now() + PATIENCE;
+    let mut seen = Vec::new();
+    while !enough(&seen) {
+        let delivery = tokio::time::timeout_at(deadline, events.recv())
+            .await
+            .unwrap_or_else(|_| panic!("the bus went quiet too early:\n{seen:#?}"))
+            .expect("the bus is open");
+        match delivery {
+            Delivery::Event(envelope) => seen.push(envelope.event),
+            Delivery::Gap { from, to } => panic!("the test fell behind the bus: {from}..={to}"),
+        }
+    }
+    seen
+}
+
+/// Every event the bus carries until `pane` has exited and the bus has been
+/// quiet for [`QUIET`].
+async fn collect_until_quiet_after_exit(events: &mut Subscription, pane: PaneId) -> Vec<Event> {
+    let deadline = Instant::now() + PATIENCE;
+    let mut seen = Vec::new();
+    let mut exited = false;
+    loop {
+        match tokio::time::timeout(QUIET, events.recv()).await {
+            Ok(Some(Delivery::Event(envelope))) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "the bus never went quiet after the exit:\n{seen:#?}"
+                );
+                exited |=
+                    matches!(&envelope.event, Event::PaneExited { pane: p, .. } if *p == pane);
+                seen.push(envelope.event);
+            }
+            Ok(Some(Delivery::Gap { from, to })) => {
+                panic!("the test fell behind the bus: {from}..={to}")
+            }
+            Ok(None) => return seen,
+            Err(_) => {
+                assert!(exited, "the pane never exited; the bus carried:\n{seen:#?}");
+                return seen;
+            }
+        }
+    }
+}
+
+/// Whatever the subscription holds once it has been quiet for a beat.
+async fn drain_quiet(events: &mut Subscription) -> Vec<Event> {
+    let mut seen = Vec::new();
+    while let Ok(delivery) = tokio::time::timeout(QUIET, events.recv()).await {
+        match delivery {
+            Some(Delivery::Event(envelope)) => seen.push(envelope.event),
+            Some(Delivery::Gap { from, to }) => {
+                panic!("the test fell behind the bus: {from}..={to}")
+            }
+            None => break,
+        }
+    }
+    seen
 }
