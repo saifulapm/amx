@@ -1,4 +1,4 @@
-//! The `Persist` actor's mailbox: what anything says to persistence.
+//! The `Persist` actor and the mailbox anything says to persistence through.
 //!
 //! The fourth actor of 04 §2's table — "debounced snapshot capture, fsynced
 //! writes, restore". Almost nothing talks to it: dirtiness is *observed* off
@@ -6,18 +6,31 @@
 //! persistence" call sites and forgetting to publish is already impossible.
 //! What is left is this mailbox, and it has exactly two messages.
 //!
-//! # Task ownership
-//!
-//! U01 froze the mailbox and the handle; **U05** grows the actor loop here
-//! (`docs/07-m1-plan.md` §2 and §4): the bus subscription, the 500 ms-quiet /
-//! 5 s-cap debounce, the capture request through the ordinary [`CoreHandle`],
-//! `spawn_blocking` writes, sidecar dumps, and the shutdown drain.
+//! Split by responsibility: this file is the vocabulary — the mailbox, the
+//! handle, the capture a save is built from — [`actor`] is the loop that
+//! consumes them, and [`sidecars`] is the per-pane scrollback bookkeeping that
+//! decides which panes a save has anything new to write for.
+
+mod actor;
+mod sidecars;
 
 use amx_core::PaneId;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{MailboxError, PaneHandle};
 use crate::persist::{PersistError, Snapshot};
+
+pub use actor::{Persist, PersistReport, QUIET_WINDOW, STALENESS_CAP};
+
+/// Depth of the `Persist` actor's mailbox.
+///
+/// Small on purpose. Almost nothing is sent here — a `Flush` from a test or the
+/// crash suite, one final capture from `Core` on the way down — so a deep
+/// mailbox would only buy the ability to queue saves nobody asked for. What
+/// depth there is exists so `Core`'s non-blocking shutdown push
+/// ([`PersistHandle::try_send`]) has somewhere to land even if a save is in
+/// flight.
+pub const PERSIST_MAILBOX: usize = 16;
 
 /// What the `Persist` actor is asked to do.
 #[derive(Debug)]
