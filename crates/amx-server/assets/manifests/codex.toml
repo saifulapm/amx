@@ -1,0 +1,92 @@
+# Codex CLI's screen manifest.
+#
+# Written against screens captured from Codex CLI 0.147.0 on 2026-08-07 — the
+# version `docs/notes/hook-coverage.md` measured — with the same fixtures and
+# the same test discipline as the `claude` manifest beside it.
+#
+# Tier 2 carries more here than it does for Claude Code, for two measured
+# reasons (V01 §4): Codex emits no hook at all until the user's first prompt,
+# so a pane holding an idle Codex has no hook-borne state whatsoever; and its
+# hooks stay inert until a human accepts an interactive, hash-pinned trust
+# prompt, so a correctly installed integration can be silent for an entire
+# session. These rules are what a pane's status is made of in the meantime.
+
+id = "codex"
+version = "2026.08.07"
+
+# The window title is `⠋ <dir>` while a turn runs and `<dir>` when it does not.
+# Measured on 0.147.0, and it is the *earliest* working signal this UI gives:
+# the title spinner starts about two seconds before the screen paints anything
+# at all about the turn.
+#
+# As with Claude Code there is no title idle rule. An absent spinner is not a
+# sighting of anything, and a rule that read one would assert idle for every
+# gap between two frames of an animation.
+[[rule]]
+name = "title_spinner_working"
+state = "working"
+priority = 1100
+region = "title"
+regex = ['^[\x{2800}-\x{28FF}]']
+
+# The approval dialog, quoted from the capture:
+#
+#   Would you like to run the following command?
+#   Environment: local
+#   $ echo probe > …
+#   › 1. Yes, proceed (y)
+#     2. Yes, and don't ask again for commands that start with `…` (p)
+#     3. No, and tell Codex what to do differently (esc)
+#   Press enter to confirm or esc to cancel
+#
+# Its third option *is* Esc — "No" and "cancel" are one action here, not two —
+# and V01 measured both emitting nothing. So this rule is the whole of what
+# holds `Blocked` while the dialog is up, and the whole of what releases it
+# when the dialog goes.
+[[rule]]
+name = "approval_dialog"
+state = "blocked"
+priority = 900
+region = "bottom_non_empty_lines(12)"
+contains = ["would you like to run the following command?"]
+any = [
+  { line_regex = ['^\s*›?\s*1\.\s*Yes'] },
+  { contains = ["press enter to confirm"] },
+]
+
+# The turn's own status line: `• Working (0s • esc to interrupt)`.
+#
+# There is deliberately no `not` guard on `■ Conversation interrupted` here,
+# though the obvious reading of herdr's manifest suggests one. The capture is
+# why: a screen with a live `Working (…)` line *and* a previous turn's
+# interrupt marker still on it is an ordinary sight, because the marker is
+# transcript text and the status line is not. A guard against it would blank
+# the working state of every turn that followed an interrupted one.
+[[rule]]
+name = "working_status_line"
+state = "working"
+priority = 800
+region = "bottom_non_empty_lines(6)"
+line_regex = ['^\s*[•◦]\s+Working \(\d+s[^)]*esc to interrupt\)']
+
+# The composer, `› …`, which sits at the foot of every screen this UI paints
+# except the approval dialog's. Guarded against the two screens where it is
+# present but does not mean idle: a running turn (the status line above it) and
+# the dialog (whose own `› 1. Yes, proceed (y)` line would otherwise match).
+#
+# `visible_idle`: this is the composer itself, so fusion may take the idle
+# without waiting out the confirmation window (D-M2-6). It is also the rule
+# that ends V01's edge case 13 — a denied Codex approval, after which *nothing*
+# arrives, not even a `Stop` — long before the staleness deadline would.
+[[rule]]
+name = "composer_idle"
+state = "idle"
+priority = 200
+region = "bottom_non_empty_lines(4)"
+visible_idle = true
+line_regex = ['^›(\s|$)']
+not = [
+  { contains = ["esc to interrupt"] },
+  { contains = ["would you like to run the following command?"] },
+  { contains = ["press enter to confirm"] },
+]
