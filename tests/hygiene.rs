@@ -151,18 +151,20 @@ fn crate_tests_wait_on_conditions_not_wall_clock() {
 /// construction) applied to the dispatch table itself.
 ///
 /// A task drops off this list when it lands: **V12** closed the four
-/// pane-driving rows of §4 and removed itself here in the same commit, which is
-/// the bookkeeping that makes the count below mean something.
-const SEAM_OWNERS: &[&str] = &["V06", "V08", "V09", "V11", "V13"];
+/// pane-driving rows of §4 and removed itself here in the same commit, and
+/// **V09** did the same for `agent.report`, which is the bookkeeping that makes
+/// the count below mean something.
+const SEAM_OWNERS: &[&str] = &["V06", "V08", "V11", "V13"];
 
 /// How many dispatch seams are still open.
 ///
 /// V02 opened twelve, one per row of §4's table; V12 closed four
-/// (`pane.send_text`, `pane.send_keys`, `pane.run`, `pane.read`). The count is
-/// here rather than only in the plan so that closing a seam without deleting
-/// its call site, or opening a thirteenth, fails a test instead of passing a
-/// review — and so that a wave task landing has to say so here.
-const SEAM_COUNT: usize = 8;
+/// (`pane.send_text`, `pane.send_keys`, `pane.run`, `pane.read`) and V09 a
+/// fifth (`agent.report`). The count is here rather than only in the plan so
+/// that closing a seam without deleting its call site, or opening a
+/// thirteenth, fails a test instead of passing a review — and so that a wave
+/// task landing has to say so here.
+const SEAM_COUNT: usize = 7;
 
 /// The milestone guard: every dispatch seam names the task that closes it.
 ///

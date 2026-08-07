@@ -11,34 +11,83 @@
 //!
 //! | Handler | Filled by | Wave |
 //! |---|---|---|
-//! | [`report`] | V09 — `amx _hook` and report ingestion | 4 |
+//! | [`report`] | **V09 — landed** | 4 |
 //! | [`next`] | V08 — the `AgentHub` actor | 4 |
 //! | [`explain`] | V06 — the tier-2 manifest engine | 2 (sequential fill) |
 //! | [`start`] | V13 — agent verbs and addressing | 5 |
 //! | [`prompt`] | V13 — agent verbs and addressing | 5 |
 
+use amx_core::Seq;
 use amx_proto::control::{Method, agent};
 use amx_proto::rpc::RpcError;
+use tokio::sync::oneshot;
 
 use super::{Router, seam};
+use crate::actor::AgentCommand;
 
 /// `agent.report`: one hook invocation from `amx _hook`.
 ///
-/// **V09** fills this. The shape of the fill is fixed by D-M2-4 and by V08's
-/// mailbox: decode, hand the report to the [`AgentHandle`](crate::actor::AgentHandle)
-/// with `try_send`, and ack. Nothing is filtered here — the emitter forwards
+/// **V09 landed this.** The shape is D-M2-4's and V08's mailbox's: decode, hand
+/// the report to the [`AgentHandle`](crate::actor::AgentHandle) with
+/// `try_send`, and ack. Nothing is filtered here — the emitter forwards
 /// everything it is installed for and the fusion machine owns the policy, so
 /// changing what a `SubagentStop` means is shipping a binary rather than
 /// reinstalling hooks on every machine.
 ///
-/// A token mismatch is not an error reply: it is `accepted: false`, dropped and
-/// counted by the hub. A hook must never break or slow a turn.
+/// `try_send` and not `send`, unlike every other handler that talks to an
+/// actor: a hook must never break *or slow* a turn, and the emitter is holding
+/// its 500 ms budget open across this call. A hub whose 64-deep mailbox is
+/// full is a hub that will not act on this report in time to matter anyway, so
+/// the report is dropped and said to be dropped rather than parked behind a
+/// backlog of stale status.
+///
+/// **Nothing here is an error reply.** A token mismatch, a full mailbox, a hub
+/// that is not assembled, a hub that is shutting down: all of them are
+/// `accepted: false`, which is exactly what the field means — the report did
+/// not reach a tracked pane. An `RpcError` would tell the emitter something it
+/// has no way to act on and no permission to print.
 pub(super) async fn report(
     router: &mut Router,
     params: Box<agent::ReportParams>,
 ) -> Result<agent::ReportReply, RpcError> {
-    let _ = (router, params);
-    seam(Method::AgentReport, "V09")
+    // Cloned out of the router so the borrow ends here: the `unclaimed` paths
+    // below need the router back to read the bus head.
+    let Some(hub) = router.agent().cloned() else {
+        return Ok(unclaimed(router.head().await?));
+    };
+
+    let (tx, rx) = oneshot::channel();
+    let pane = params.pane;
+    let token = params.token.clone();
+    let handed = hub.try_send(AgentCommand::HookReport {
+        pane,
+        token,
+        report: params,
+        reply: tx,
+    });
+    if handed.is_err() {
+        return Ok(unclaimed(router.head().await?));
+    }
+
+    match rx.await {
+        Ok(reply) => reply,
+        // The hub dropped the reply channel, which on this path means it is
+        // gone: cancelled, draining its own mailbox to closure and answering
+        // nothing (`docs/08-m2-plan.md` §3's shutdown discipline). The report
+        // reached no tracked pane, and saying so is the whole answer.
+        Err(_) => Ok(unclaimed(router.head().await?)),
+    }
+}
+
+/// The ack for a report that reached the session but no tracked pane.
+///
+/// The `seq` is the bus head, read the ordinary way, so a report run by hand
+/// still tells its caller where the session's event stream stands.
+const fn unclaimed(seq: Seq) -> agent::ReportReply {
+    agent::ReportReply {
+        accepted: false,
+        seq,
+    }
 }
 
 /// `agent.start`: spawn an agent in a new pane and wait for it to be ready.
