@@ -42,6 +42,11 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # which `serde_json`'s own `Value` cannot do without reordering the tree.
 serde = { workspace = true }
 serde_json = { workspace = true }
+# `amx update apply` verifies the asset it downloaded before it renames one
+# byte of it over the running binary. The alternatives are hand-rolled SHA-256
+# and parsing `sha256sum`/`shasum` output across platforms; both are worse on
+# correctness grounds, and herdr made the same call (R-M3-8).
+sha2 = { workspace = true }
 
 # Test-only: the CLI acceptance tests drive the real binary against a real
 # terminal, and `tcgetattr`/`tcsetattr` refuse anything that is not a tty.
