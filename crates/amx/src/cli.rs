@@ -32,6 +32,9 @@ pub const PARAMS: &str = "params";
 /// The `--json` argument's id, carried by `session report` and `events`.
 pub const JSON: &str = "json";
 
+/// The `--after-seq` argument's id, carried by `events`.
+pub const AFTER_SEQ: &str = "after-seq";
+
 /// The whole `amx` command tree.
 #[must_use]
 pub fn cli() -> Command {
@@ -240,16 +243,35 @@ fn skill() -> Command {
 ///
 /// `events.subscribe` is a real method row and stays generated; this adds the
 /// long-lived consumer 04 §8 promises — "any program can `amx events --json`".
-/// **V11** fills it, and its help text is where the gap-resync contract is
+/// **V11** filled it, and its help text is where the gap-resync contract is
 /// documented for the humans who write those programs: a `gap` delivery means
 /// re-query `session.state` and resume from the seq it carries.
 fn events_stream(group: Command) -> Command {
-    group.subcommand_required(false).arg(
-        Arg::new(JSON)
-            .long("json")
-            .action(ArgAction::SetTrue)
-            .help("Print each delivery as one line of NDJSON, including `gap`"),
-    )
+    group
+        .subcommand_required(false)
+        .long_about(
+            "Subscribe to the session's event stream and print one delivery per line.\n\n\
+             Every line is either an event envelope or a `gap`. A gap is not an \
+             error and must not be skipped: it means this consumer fell behind \
+             the server's replay buffer, and the events it names are gone. The \
+             recovery is fixed — re-query `amx session state`, which carries the \
+             bus sequence it was captured at, and resume from there with \
+             `--after-seq`. A consumer that ignores gaps silently misses \
+             transitions, which is the one failure the event bus is designed to \
+             make impossible to have unknowingly.",
+        )
+        .arg(
+            Arg::new(JSON)
+                .long("json")
+                .action(ArgAction::SetTrue)
+                .help("Print each delivery as one line of NDJSON, including `gap`"),
+        )
+        .arg(
+            Arg::new(AFTER_SEQ)
+                .long("after-seq")
+                .value_name("SEQ")
+                .help("Resume after this bus sequence, as `session.state` reported it"),
+        )
 }
 
 /// The parameters argument a generated method command carries.
