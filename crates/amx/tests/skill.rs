@@ -3,11 +3,12 @@
 //! Both artifacts exist to be *used by something outside amx*, which is why
 //! neither is tested by reading the source it was written from:
 //!
-//! - The skill is checked as the file `amx skill install` actually wrote, and
-//!   every command it names is resolved against
-//!   [`SPECS`](amx_proto::control::SPECS). A skill is a set of promises about a
-//!   CLI; a renamed method has to break here, in a test, rather than in an
-//!   agent's hands three weeks later.
+//! - The skill is checked as the file `amx skill install` actually wrote: every
+//!   command it names is resolved against [`SPECS`](amx_proto::control::SPECS),
+//!   and every flag it writes after one against the tree the binary parses. A
+//!   skill is a set of promises about a CLI; a renamed method or a flag nobody
+//!   added has to break here, in a test, rather than in an agent's hands three
+//!   weeks later.
 //! - The notifier is run — the real `examples/notify.sh`, over a real
 //!   `amx events --json`, against a real session, with a stub `notify-send`
 //!   first on `$PATH`. 04 §8's claim is that "any program can `amx events
@@ -119,7 +120,7 @@ fn skill_install_writes_the_asset_and_is_idempotent() {
 }
 
 #[test]
-fn skill_content_names_only_verbs_that_exist_in_specs() {
+fn skill_content_names_only_verbs_and_flags_that_exist() {
     let env = Env::new("skill-verbs");
     let dir = TempDir::new("skill-verbs-target");
     env.run(&[
@@ -131,12 +132,26 @@ fn skill_content_names_only_verbs_that_exist_in_specs() {
     .ok();
     let text = std::fs::read_to_string(dir.path().join("SKILL.md")).expect("the asset landed");
 
-    let named = commands(&text);
+    let invocations = invocations(&text);
+    let mut named: Vec<Vec<String>> = Vec::new();
+    for (path, _) in &invocations {
+        if !named.contains(path) {
+            named.push(path.clone());
+        }
+    }
     assert!(
         named.len() >= 10,
         "the extractor found only {} commands in the skill, which is fewer than \
          it teaches — it has stopped reading the file it is guarding: {named:?}",
         named.len()
+    );
+    let flagged = invocations
+        .iter()
+        .filter(|(_, flags)| !flags.is_empty())
+        .count();
+    assert!(
+        flagged >= 6,
+        "and flags on only {flagged} of them, which is fewer still"
     );
 
     let known: BTreeSet<Vec<&str>> = SPECS.iter().map(|spec| spec.cli.to_vec()).collect();
@@ -149,7 +164,7 @@ fn skill_content_names_only_verbs_that_exist_in_specs() {
         // one, and it still has to exist in the tree the binary parses.
         assert!(
             NON_WIRE.contains(&segments[0]) && segments.len() == 1
-                || NON_WIRE.contains(&segments[0]) && subcommand_exists(&segments),
+                || NON_WIRE.contains(&segments[0]) && command_at(&segments).is_some(),
             "the skill names `amx {}`, which is neither a method row nor one of \
              the non-wire verbs {NON_WIRE:?}",
             segments.join(" "),
@@ -177,14 +192,35 @@ fn skill_content_names_only_verbs_that_exist_in_specs() {
             must.join(" ")
         );
     }
+
+    // And every flag it writes after a verb is one that verb parses. `--params`
+    // reaches every row, the typed flags reach the rows that grew them, and
+    // `--session` is global — a skill teaching anything else sends an agent to
+    // a usage error.
+    let global = long_flags(&amx::cli::cli());
+    for (path, flags) in &invocations {
+        let segments: Vec<&str> = path.iter().map(String::as_str).collect();
+        let Some(command) = command_at(&segments) else {
+            continue; // a path the loop above has already refused
+        };
+        let carried = long_flags(&command);
+        for flag in flags {
+            assert!(
+                carried.contains(flag) || global.contains(flag),
+                "the skill teaches `amx {} {flag}`, which that verb does not take",
+                segments.join(" ")
+            );
+        }
+    }
 }
 
-/// Every `amx …` command the skill names, from its code spans and blocks.
+/// Every `amx …` invocation the skill names: its verb path, and the long flags
+/// written after it.
 ///
 /// Prose is not scanned: the file talks *about* amx in sentences, and a test
 /// that read those would be checking English. What it checks is the thing a
 /// reader would copy — anything in backticks or a fenced block.
-fn commands(text: &str) -> Vec<Vec<String>> {
+fn invocations(text: &str) -> Vec<(Vec<String>, Vec<String>)> {
     let mut chunks = Vec::new();
     let mut fenced = false;
     for line in text.lines() {
@@ -205,7 +241,8 @@ fn commands(text: &str) -> Vec<Vec<String>> {
             if *word != "amx" {
                 continue;
             }
-            let path: Vec<String> = words[n + 1..]
+            let rest = &words[n + 1..];
+            let path: Vec<String> = rest
                 .iter()
                 .take_while(|next| {
                     // A verb, not a flag and not the JSON after one: lowercase
@@ -218,24 +255,46 @@ fn commands(text: &str) -> Vec<Vec<String>> {
                 .take(2)
                 .map(|segment| (*segment).to_owned())
                 .collect();
-            if !path.is_empty() && !found.contains(&path) {
-                found.push(path);
+            // Flags belong to this invocation until the next one starts. A
+            // value that merely looks like a flag (`--model` inside an argv
+            // after `--`) is not one, so the scan stops at a bare `--`.
+            let flags: Vec<String> = rest
+                .iter()
+                .take_while(|next| **next != "amx" && **next != "--")
+                .filter(|next| {
+                    next.strip_prefix("--").is_some_and(|name| {
+                        !name.is_empty()
+                            && name
+                                .chars()
+                                .all(|c| c.is_ascii_lowercase() || c == '-' || c.is_ascii_digit())
+                    })
+                })
+                .map(|flag| (*flag).to_owned())
+                .collect();
+            if !path.is_empty() {
+                found.push((path, flags));
             }
         }
     }
     found
 }
 
-/// Whether the binary's own command tree has this path.
-fn subcommand_exists(segments: &[&str]) -> bool {
+/// The binary's own command at this path, if it has one.
+fn command_at(segments: &[&str]) -> Option<clap::Command> {
     let mut command = amx::cli::cli();
     for segment in segments {
-        match command.find_subcommand(segment) {
-            Some(found) => command = found.clone(),
-            None => return false,
-        }
+        command = command.find_subcommand(segment)?.clone();
     }
-    true
+    Some(command)
+}
+
+/// Every long flag a command carries, spelled as a user types it.
+fn long_flags(command: &clap::Command) -> BTreeSet<String> {
+    command
+        .get_arguments()
+        .filter_map(clap::Arg::get_long)
+        .map(|long| format!("--{long}"))
+        .collect()
 }
 
 // ------------------------------------------------------------------ notifier

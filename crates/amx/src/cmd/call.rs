@@ -17,6 +17,7 @@ use std::process::ExitCode;
 use amx_client::net::{self, Session};
 use amx_core::Env;
 use amx_proto::control::SPECS;
+use amx_proto::control::cli;
 use amx_server::session::probe::probe;
 use anyhow::Context as _;
 use clap::ArgMatches;
@@ -39,9 +40,12 @@ pub async fn run(
         .find(|spec| spec.cli == path.as_slice())
         .with_context(|| format!("no such command: {}", path.join(" ")))?;
 
+    // One or the other, never both: clap refuses the combination, so reaching
+    // the flag layer means `--params` was absent. A row with no flags and no
+    // `--params` sends the empty object, as it always has.
     let params: Value = match leaf.get_one::<String>(PARAMS) {
         Some(json) => serde_json::from_str(json).context("--params must be a JSON value")?,
-        None => Value::Object(serde_json::Map::new()),
+        None => cli::params_from_flags(method.method, leaf)?,
     };
 
     let reply = one_shot(env, root, method.wire, params).await?;

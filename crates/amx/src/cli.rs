@@ -3,8 +3,11 @@
 //! 04 §4 derives the CLI from the same method table as the wire names and the
 //! dispatch trait, "which fixes W6's four hand-synced lists". So the `ping`,
 //! `workspace …` and `pane …` subcommands are not written here — they are
-//! [`amx_proto::control::cli::method_commands`], and the only thing this module
-//! adds to them is the `--params` argument every wire call takes.
+//! [`amx_proto::control::cli::method_commands`], and they arrive with their
+//! parameters already on them: `--params '<JSON>'` on every row, plus the typed
+//! flags of [`amx_proto::control::cli::ROWS`] on the verbs a human drives. Both
+//! are built beside the payload types they translate into, which is what keeps
+//! a row's parameters coming from one place.
 //!
 //! What *is* written here is the set of verbs with nothing behind them on the
 //! wire: `attach`, `server` and `session …` are process lifecycle, not control
@@ -23,11 +26,10 @@
 
 use clap::{Arg, ArgAction, Command};
 
+pub use amx_proto::control::cli::PARAMS;
+
 /// The global `--session` argument's id.
 pub const SESSION: &str = "session";
-
-/// The `--params` argument's id, carried by every generated method command.
-pub const PARAMS: &str = "params";
 
 /// The `--json` argument's id, carried by `session report` and `events`.
 pub const JSON: &str = "json";
@@ -71,12 +73,6 @@ pub fn cli() -> Command {
         events_stream(generated.about("Subscribe to the session's event stream"))
     });
 
-    // Every leaf of the generated tree takes its parameters as one JSON object,
-    // so a method that grows a field needs no edit here. Typed flags per method
-    // are a later refinement of the same table, not a second source of truth.
-    for spec in amx_proto::control::SPECS {
-        root = add_params(root, spec.cli);
-    }
     root
 }
 
@@ -272,21 +268,4 @@ fn events_stream(group: Command) -> Command {
                 .value_name("SEQ")
                 .help("Resume after this bus sequence, as `session.state` reported it"),
         )
-}
-
-/// The parameters argument a generated method command carries.
-fn params_arg() -> Arg {
-    Arg::new(PARAMS)
-        .long("params")
-        .value_name("JSON")
-        .default_value("{}")
-        .help("The call's parameters, as one JSON object")
-}
-
-/// Add [`params_arg`] to the command at `path` within `cmd`.
-fn add_params(cmd: Command, path: &[&str]) -> Command {
-    match path.split_first() {
-        None => cmd.arg(params_arg()),
-        Some((head, rest)) => cmd.mut_subcommand(head, |sub| add_params(sub, rest)),
-    }
 }
