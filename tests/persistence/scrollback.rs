@@ -19,8 +19,8 @@ use rig::screen::render;
 use rig::{ALT_ENTER, Env, rasterize, shows, wait_until};
 
 use crate::fixtures::{
-    COLS, ROWS, focused_pane, history_dir, marker_shell, painted, sidecar_holds, sidecars,
-    snapshot_mentions,
+    COLS, ROWS, crash_durable, focused_pane, history_dir, history_files, marker_shell, painted,
+    restore_evidence, sidecar_holds, sidecars, snapshot_mentions,
 };
 
 // ---------------------------------------------------------------- sidecars
@@ -87,6 +87,7 @@ async fn sidecars_restore_scrollback_only_when_opted_in() {
     assert_eq!(term.wait(), Some(0));
 
     env.set_var("AMX_RIG_MARKS", "");
+    crash_durable(&env, root, EARLY_MARK);
     server.kill_dash_9();
     wait_until("the killed server's shells are reaped", || {
         processes_with_arg(shell.marker()) == 0
@@ -95,9 +96,11 @@ async fn sidecars_restore_scrollback_only_when_opted_in() {
     let server = env.server();
     let mut term = env.attach_on_tty(&[], ROWS, COLS);
     term.wait_for(ALT_ENTER);
-    term.wait_output("the replayed scrollback to render", |seen| {
-        shows(seen, EARLY_MARK)
-    });
+    term.wait_output_or(
+        "the replayed scrollback to render",
+        |seen| shows(seen, EARLY_MARK),
+        || restore_evidence(&env, root),
+    );
     assert!(
         !shows(term.output(), LIVE_MARK),
         "only history is persisted; the live grid at kill time is not:\n{}",
@@ -121,10 +124,13 @@ async fn sidecars_restore_scrollback_only_when_opted_in() {
     term.wait_until("the save lands", || {
         snapshot_mentions(&env, &root.to_string())
     });
+    // The whole directory, not just the committed sidecars: a staging file
+    // holds the same payload under a different name, and scrollback nobody
+    // opted into is a leak whichever name it is written under.
     assert!(
-        sidecars(&env).is_empty(),
+        history_files(&env).is_empty(),
         "scrollback holds secrets: nothing is written without opting in, but found {:?}",
-        sidecars(&env)
+        history_files(&env)
     );
     term.chord(b'd');
     assert_eq!(term.wait(), Some(0));
@@ -209,6 +215,7 @@ async fn scrollback_produced_after_the_session_settles_is_still_dumped() {
     // The power cut, and the proof that the dump is worth something: the
     // restored pane's shell is waiting on `read` and prints nothing, so a
     // marker on the screen can only have been replayed off the disk.
+    crash_durable(&env, root, EARLY_MARK);
     server.kill_dash_9();
     wait_until("the killed server's shells are reaped", || {
         processes_with_arg(shell.marker()) == 0
@@ -217,9 +224,11 @@ async fn scrollback_produced_after_the_session_settles_is_still_dumped() {
     let server = env.server();
     let mut term = env.attach_on_tty(&[], ROWS, COLS);
     term.wait_for(ALT_ENTER);
-    term.wait_output("the replayed scrollback to render", |seen| {
-        shows(seen, EARLY_MARK)
-    });
+    term.wait_output_or(
+        "the replayed scrollback to render",
+        |seen| shows(seen, EARLY_MARK),
+        || restore_evidence(&env, root),
+    );
     assert!(
         !shows(term.output(), LIVE_MARK),
         "only history is persisted; the live grid at kill time is not:\n{}",

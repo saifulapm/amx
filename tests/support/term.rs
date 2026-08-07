@@ -269,19 +269,38 @@ impl Terminal {
     }
 
     /// Read until `cond` holds over everything painted so far, or fail.
-    pub fn wait_output(&mut self, what: &str, mut cond: impl FnMut(&[u8]) -> bool) {
+    pub fn wait_output(&mut self, what: &str, cond: impl FnMut(&[u8]) -> bool) {
+        self.wait_output_or(what, cond, String::new);
+    }
+
+    /// [`Self::wait_output`], with a caller-supplied account of what was
+    /// observed *off the screen* joined to the failure.
+    ///
+    /// The sibling of [`Self::wait_until_or`], and it exists for the same
+    /// reason: a client that painted an empty frame and then went quiet looks
+    /// identical whatever starved it, and the bytes it did not write are no
+    /// evidence at all. What the server had on disk is.
+    pub fn wait_output_or(
+        &mut self,
+        what: &str,
+        mut cond: impl FnMut(&[u8]) -> bool,
+        mut seen: impl FnMut() -> String,
+    ) {
         let deadline = Instant::now() + PATIENCE;
         loop {
             self.drain();
             if cond(&self.seen) {
                 return;
             }
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for {what} ({} bytes seen):\n{}",
-                self.seen.len(),
-                String::from_utf8_lossy(&self.seen)
-            );
+            if Instant::now() >= deadline {
+                let observed = seen();
+                let sep = if observed.is_empty() { "" } else { "\n" };
+                panic!(
+                    "timed out waiting for {what} ({} bytes seen){sep}{observed}\nthe screen held:\n{}",
+                    self.seen.len(),
+                    crate::screen::render(&crate::screen::rasterize(&self.seen))
+                );
+            }
             std::thread::sleep(TICK);
         }
     }

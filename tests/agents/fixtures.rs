@@ -202,17 +202,41 @@ impl Rig {
             .unwrap_or_default()
     }
 
-    /// Ask the agent for permission and wait until the dialog is really up.
+    /// Ask the agent for permission and wait until the dialog is really up and
+    /// the pane is really in the queue.
     ///
-    /// Both halves, because they are two different facts arriving in a fixed
+    /// Three halves, because they are three different facts arriving in a fixed
     /// order: `PermissionRequest` enters `Blocked` 8–14 ms *before* the dialog
     /// paints (V01 §3 M3), so a test that only waited for the status would be
-    /// reading a screen from before the block. Every test that then asks what
-    /// the screen says needs the second wait.
+    /// reading a screen from before the block; and the hub's *enqueue* is a
+    /// third arrival again, so a caller that blocked two agents back to back on
+    /// the status alone was choosing the pane order and letting the runner
+    /// choose the queue order. On a loaded macOS runner it chose the other one.
+    ///
+    /// Waiting on the queue is what makes "block order" a fact this rig
+    /// established rather than one it hoped for — and it is the same queue the
+    /// assertions read, so nothing here waits on a proxy.
     pub async fn block(&mut self, target: &Agent) {
         self.drive(&target.name, agent::ASK).await;
         self.wait_status(target.pane, "blocked").await;
         self.wait_screen(target.pane, agent::BLOCKED_TEXT).await;
+        self.wait_queued(target.pane).await;
+    }
+
+    /// Wait until `pane` has reached the attention queue.
+    pub async fn wait_queued(&mut self, pane: PaneId) {
+        let deadline = Instant::now() + rig::PATIENCE;
+        loop {
+            let queue = self.attention().await;
+            if queue.contains(&pane) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "pane {pane} blocked but never reached the attention queue; it holds {queue:?}"
+            );
+            rig::env::tick().await;
+        }
     }
 
     /// Wait until `pane`'s status reads `want`, failing with what it read.

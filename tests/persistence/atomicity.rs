@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use rig::env::processes_with_arg;
 use rig::wire::result_of;
-use rig::{Env, PATIENCE, TICK, Wire, wait_until};
+use rig::{Env, PATIENCE, TICK, Wire, wait_until, wait_until_or};
 use serde_json::json;
 
 use crate::fixtures::{
@@ -101,11 +101,7 @@ async fn kill_dash_9_mid_write_always_leaves_a_restorable_snapshot() {
         "the snapshot kept its inode across a save; a durable write replaces \
          the file by rename, it never writes through the live one (D-M1-1)"
     );
-    assert!(
-        staging_files(&env).is_empty(),
-        "the next save left staging files behind: {:?}",
-        staging_files(&env)
-    );
+    wait_for_the_sweep(&env, "the save that landed on `swept`");
 
     // The storm. Every round grows the session — so the snapshot being written
     // grows, and with it the window a kill can land inside — then kills the
@@ -210,12 +206,24 @@ async fn kill_dash_9_mid_write_always_leaves_a_restorable_snapshot() {
     wait_until("the save after the storm lands", || {
         snapshot_mentions(&env, "after-the-storm")
     });
-    assert!(
-        staging_files(&env).is_empty(),
-        "the storm's staging files outlived the next save: {:?}",
-        staging_files(&env)
-    );
+    wait_for_the_sweep(&env, "the save after the storm");
     server.shutdown();
+}
+
+/// Wait for the state directory to hold no staging files.
+///
+/// The sweep is the *last* step of `write_atomic`, after the rename and after
+/// the directory fsync — so "the snapshot names my change" is true strictly
+/// before the litter is gone, and asserting on the litter the moment the
+/// snapshot moves is a race the writer wins only on a fast disk. It is a
+/// separate observation, so it gets its own wait: expiry is still the failure,
+/// which is what keeps a sweep that never runs red.
+fn wait_for_the_sweep(env: &Env, after: &str) {
+    wait_until_or(
+        &format!("{after} sweeps the staging files"),
+        || staging_files(env).is_empty(),
+        || format!("the state directory still holds {:?}", staging_files(env)),
+    );
 }
 
 // ------------------------------------------------ the debounce, from outside
