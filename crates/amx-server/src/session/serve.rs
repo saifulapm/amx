@@ -28,7 +28,7 @@ use crate::actor::agent_hub::AgentHub;
 use crate::actor::core::{Core, RestoreOptions};
 use crate::actor::gateway::{Gateway, GatewayError, GatewayReport};
 use crate::actor::persist::{PERSIST_MAILBOX, Persist};
-use crate::actor::{AGENT_MAILBOX, AgentHandle, CoreHandle, PersistHandle, StatusView};
+use crate::actor::{AGENT_MAILBOX, AgentHandle, CoreHandle, PersistHandle};
 use crate::config_rt::ConfigRuntime;
 use crate::platform::watch::watch_config;
 use crate::runtime::{Runtime, ShutdownReport};
@@ -91,7 +91,7 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     // Bound before anything is spawned: losing this race is the ordinary
     // outcome for the second `amx` of two started at once, and it must cost a
     // returned error rather than a set of actors that have to be torn down.
-    let gateway = Gateway::bind(ctx.clone(), CoreHandle::new(core_tx.clone()))?;
+    let mut gateway = Gateway::bind(ctx.clone(), CoreHandle::new(core_tx.clone()))?;
 
     let mut runtime = Runtime::new(ctx.clone());
     let mut core = Core::new(ctx.clone(), CoreHandle::new(core_tx.clone()));
@@ -111,16 +111,19 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     // too, so the `PaneCreated` events the restore publishes land in it.
     let (agent_tx, agent_rx) = mpsc::channel(AGENT_MAILBOX);
     let agent_events = ctx.bus.subscribe();
-    core.set_agent(AgentHandle::new(agent_tx));
-    // The hub is the view's only writer. Its readers are the long-poll calls
-    // (`wait`, `agent.prompt --wait`), which run on connection tasks and need a
-    // clone of it in the router — that half is V11's, with `conn/**`, and until
-    // it lands the view is written and read by nobody, which is the honest
-    // state of a wait path that does not exist yet.
+    core.set_agent(AgentHandle::new(agent_tx.clone()));
+    // The hub is the view's only writer, and **the gateway's view is the one it
+    // writes**. Its readers are the long-poll calls (`wait`, `agent.prompt
+    // --wait`) and the status reads behind `agent.start`'s readiness, all of
+    // which run on connection tasks and read the clone the gateway hands them.
+    // A hub given a `StatusView` of its own would be a session where every one
+    // of those waits watches a view nobody writes and times out (V17: the two
+    // halves existed, and this line is where they meet).
+    gateway.set_agent(AgentHandle::new(agent_tx));
     let hub = AgentHub::new(
         ctx.clone(),
         CoreHandle::new(core_tx.clone()),
-        StatusView::new(),
+        gateway.status_view(),
     );
     runtime.spawn(async move {
         let _agents = hub.run(agent_rx, agent_events).await;

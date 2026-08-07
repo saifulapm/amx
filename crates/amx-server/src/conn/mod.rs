@@ -34,7 +34,7 @@ use amx_proto::rpc::RpcError;
 use thiserror::Error;
 use tokio::net::UnixStream;
 
-use crate::actor::{CoreCommand, CoreHandle, SessionCall, StatusView};
+use crate::actor::{AgentHandle, CoreCommand, CoreHandle, SessionCall, StatusView};
 use crate::conn::reader::Reader;
 use crate::conn::writer::{OutboundError, WriteError};
 use crate::dispatch::Router;
@@ -107,10 +107,19 @@ pub async fn serve(
     ctx: Ctx,
     core: CoreHandle,
     status: StatusView,
+    agent: Option<AgentHandle>,
 ) -> Result<(), ConnError> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = Reader::new(read_half);
     let mut router = Router::new(core);
+    // Before the first call of any kind, including the `attach` seed below: a
+    // connection that could not reach the hub answers every `agent.*` row with
+    // a refusal, which is the truth for a session assembled without one and a
+    // lie for a session that has one. `None` reaches here only from a caller
+    // that built no hub — the in-process rigs, and a `Gateway` nobody told.
+    if let Some(agent) = agent {
+        router.attach_agent(agent);
+    }
 
     let hello = negotiate::read_hello(&mut reader).await?;
     // An attach to a session with no workspaces seeds its first one, and the

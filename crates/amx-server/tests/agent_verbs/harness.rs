@@ -1,16 +1,19 @@
 //! A session with a real `Core`, a real `AgentHub`, and a router wired to both.
 //!
 //! The suite drives [`amx_server::dispatch::handle`] rather than a socket, and
-//! that is a deliberate, temporary choice with a reason worth writing down.
-//! `agent.start` and `agent.prompt` need two things from their connection: the
-//! hub's mailbox (for the registry) and the [`StatusView`] the hub writes (for
-//! the readiness and prompt waits). Neither reaches a connection today —
-//! `Gateway::bind` mints a `StatusView` of its own that no hub ever writes, and
-//! `Router::attach_agent` has no call site outside this file — so a socket-level
-//! rig here would be testing the wiring gap rather than the verbs. The gap is
-//! nobody's file by construction, which makes it V17's ("the seams by
-//! exception", `docs/08-m2-plan.md` §6), and this harness wires exactly what
-//! V17 has to wire, so these tests keep passing when it does.
+//! that is a deliberate choice with a reason worth writing down. `agent.start`
+//! and `agent.prompt` need two things from their connection: the hub's mailbox
+//! (for the registry) and the [`StatusView`] the hub writes (for the readiness
+//! and prompt waits). When this file was written neither reached a connection —
+//! `Gateway::bind` minted a `StatusView` of its own that no hub ever wrote, and
+//! `Router::attach_agent` had no call site outside this file — so a
+//! socket-level rig here would have been testing the wiring gap rather than the
+//! verbs. The gap was nobody's file by construction, which made it V17's ("the
+//! seams by exception", `docs/08-m2-plan.md` §6); **V17 closed it**, in
+//! `session/serve.rs` and `actor/gateway.rs`, and `tests/agents.rs` is the
+//! suite that drives these verbs over a real socket now. This harness stays
+//! because it is the cheap place to test the verbs' own logic, and because it
+//! wires exactly what the serve path wires.
 //!
 //! Everything below the router is the shipped thing: a real `Core` spawning
 //! real children on real ptys, a real hub parsing a real registry override off

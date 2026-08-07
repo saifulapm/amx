@@ -29,7 +29,7 @@ use tokio::net::UnixListener;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::actor::{CoreHandle, StatusView};
+use crate::actor::{AgentHandle, CoreHandle, StatusView};
 use crate::conn;
 use crate::session::probe;
 
@@ -134,6 +134,7 @@ pub struct Gateway {
     listener: UnixListener,
     probe: GatewayProbe,
     status: StatusView,
+    agent: Option<AgentHandle>,
 }
 
 impl Gateway {
@@ -213,7 +214,28 @@ impl Gateway {
             listener,
             probe: GatewayProbe::default(),
             status: StatusView::new(),
+            agent: None,
         })
+    }
+
+    /// Hand every future connection the session's `AgentHub` mailbox.
+    ///
+    /// Called once, between the bind and the accept loop, because the hub
+    /// cannot exist before the bind: losing the bind race must cost a returned
+    /// error rather than a set of actors to tear down (`session/serve.rs`).
+    /// A gateway that is never told stays honest rather than broken — its
+    /// connections answer `agent.report` with `accepted: false` and every other
+    /// `agent.*` row with "this session has no agent hub", which is the true
+    /// state of a session assembled without one.
+    ///
+    /// The handle is dropped the moment the accept loop breaks, before the
+    /// connection tasks are joined. It is a live sender into a bounded mailbox,
+    /// and a cancelled hub drains its own mailbox *to closure* before it
+    /// returns (`docs/08-m2-plan.md` §3): a sender kept alive across the join
+    /// would be a mailbox that can never close, which is the shape the
+    /// undiagnosed drain wedge (R-M1-2) is made of.
+    pub fn set_agent(&mut self, agent: AgentHandle) {
+        self.agent = Some(agent);
     }
 
     /// Live connection accounting.
@@ -243,7 +265,7 @@ impl Gateway {
 
     /// Accept connections until the session is cancelled, then join every
     /// connection task and remove the socket.
-    pub async fn run(self) -> GatewayReport {
+    pub async fn run(mut self) -> GatewayReport {
         // Connections observe a child of the session token, so a fatal accept
         // error can stop the connections this gateway owns without cancelling
         // the whole session — and cancelling the session still stops them,
@@ -268,6 +290,7 @@ impl Gateway {
                             self.client_ctx(&clients),
                             self.core.clone(),
                             self.status.clone(),
+                            self.agent.clone(),
                             LiveGuard(Arc::clone(&self.probe.live)),
                         ));
                     }
@@ -283,6 +306,10 @@ impl Gateway {
         }
 
         clients.cancel();
+        // Before the join, never after: see [`set_agent`](Self::set_agent). The
+        // connection tasks hold their own clones and are being cancelled; this
+        // one belongs to a loop that has already stopped accepting.
+        self.agent = None;
         while let Some(joined) = tasks.join_next().await {
             account(&mut report, joined);
         }
@@ -308,10 +335,11 @@ async fn client_task(
     ctx: Ctx,
     core: CoreHandle,
     status: StatusView,
+    agent: Option<AgentHandle>,
     guard: LiveGuard,
 ) {
     let _guard = guard;
-    if let Err(err) = conn::serve(stream, ctx, core, status).await {
+    if let Err(err) = conn::serve(stream, ctx, core, status, agent).await {
         tracing::debug!(error = %err, "connection ended");
     }
 }
