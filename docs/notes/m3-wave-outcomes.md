@@ -93,9 +93,24 @@ wants to keep one running.
 **W02 and W01 merge clean and green, checked rather than assumed.** The two
 branches share `tests/hygiene.rs` — W01 pins its CLOEXEC fix there, W02 the
 pane-publisher rule — and the additions do not touch each other. Merging
-`worktree-w01-wedge` into `worktree-w02-publisher` needs no conflict
-resolution, and `scripts/ci.sh` on the merged tree exits 0 (648 tests). W01's
-`Runtime::spawn` rename reaches no file W02 edits.
+`origin/worktree-w01-wedge` (at `ee677f0`) into `worktree-w02-publisher` needs
+no conflict resolution, and `scripts/ci.sh` on the merged tree exits 0, 648
+tests, three runs. W01's `Runtime::spawn` rename reaches no file W02 edits.
+
+**A pre-existing test race the merge check surfaced, owned by neither branch.**
+`hook_exits_zero_and_fast_with_no_socket_no_env_or_dead_server`
+(`crates/amx/tests/hook.rs:476`) failed once during a full parallel CI run with
+`BrokenPipe`: the test writes its payload to the stdin of an `amx _hook` whose
+whole contract is to exit immediately, so a child that wins the race is the
+test's success condition and its `write_all` failure at the same time. Neither
+branch touches `_hook`, its code path, or the part of
+`crates/amx/tests/support/` it uses. Measured under 16–20 spinning hogs: 1
+failure in 115 runs on the merged tree, 0 in 50 on the untouched base — the
+difference is noise, not attribution, and the mechanism is visible in the test
+source. Recorded so the next person who sees it red does not go looking in the
+publisher change or the wedge fix. The repair, when someone owns that file, is
+to tolerate `BrokenPipe` on the payload write rather than to slow the emitter
+down.
 
 **Sequential fills inherited from W01, repeated here so the ledger carries
 them.** `conn/mod.rs` is W08's file and W01 has landed fifteen lines on it (the
