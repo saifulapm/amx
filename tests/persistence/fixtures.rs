@@ -151,6 +151,72 @@ pub fn sidecar_holds(env: &Env, text: &str) -> bool {
     })
 }
 
+/// Wait until a `kill -9` at this instant would leave a reboot everything it
+/// needs to replay `pane`'s scrollback: a snapshot that names the pane, and a
+/// sidecar that holds `mark`.
+///
+/// Both, and immediately before the kill, because a save writes them in the
+/// opposite order and may skip the second entirely. `Persist::save` dumps the
+/// scrollback first and then writes the snapshot *only if the session's shape
+/// changed*, so a sidecar appearing on disk is no evidence at all that the pane
+/// it belongs to is on disk yet. The gap is as wide as a snapshot's two fsyncs:
+/// measured under fsync load, the snapshot did not yet name the pane at the
+/// moment its sidecar appeared, in every run.
+///
+/// A reboot that lands in that gap finds no snapshot, seeds a fresh session,
+/// and replays nothing — a pane that renders empty forever with no restore loss
+/// to report, because nothing was lost: nothing had been saved.
+pub fn crash_durable(env: &Env, pane: PaneId, mark: &str) {
+    let named = || snapshot_mentions(env, &pane.to_string());
+    rig::wait_until_or(
+        "the reboot's evidence is all on disk: the snapshot names the pane and \
+         its sidecar holds the scrollback",
+        || named() && sidecar_holds(env, mark),
+        || {
+            format!(
+                "the snapshot {} the pane, and {}",
+                if named() { "names" } else { "does not name" },
+                sidecar_sizes(env)
+            )
+        },
+    );
+}
+
+/// What the state directory holds, for a failure that has to name a cause.
+///
+/// A client that painted an empty frame and went quiet looks the same whether
+/// the reboot found no snapshot, no sidecar or an empty one, and its own output
+/// cannot tell them apart. This can.
+pub fn restore_evidence(env: &Env, pane: PaneId) -> String {
+    format!(
+        "on disk: the snapshot {} the pane, {}; `session report` says: {}",
+        if snapshot_mentions(env, &pane.to_string()) {
+            "names"
+        } else {
+            "does not name"
+        },
+        sidecar_sizes(env),
+        env.run(&["session", "report"]).stdout.trim()
+    )
+}
+
+/// Every sidecar on disk with its size, which is what tells an empty dump from
+/// a missing one.
+fn sidecar_sizes(env: &Env) -> String {
+    let listed: Vec<String> = sidecars(env)
+        .iter()
+        .map(|path| {
+            let bytes = std::fs::metadata(path).map_or(0, |meta| meta.len());
+            format!("{} ({bytes} bytes)", path.display())
+        })
+        .collect();
+    if listed.is_empty() {
+        "the history directory holds no sidecars".to_owned()
+    } else {
+        format!("the history directory holds {}", listed.join(", "))
+    }
+}
+
 /// Complain, in full, that a snapshot is not a whole one.
 ///
 /// The torn-write check, and the only assertion in this suite that inspects
