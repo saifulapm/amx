@@ -73,7 +73,7 @@ empty.
 | **Esc during generation** | **—** | `esc-generation` |
 | **Esc during a running tool call** | **—** (no `PostToolUseFailure`, no `Stop`) | `esc-tool` |
 | Subagent turn (Task tool) | `PreToolUse{tool_name: Agent}` → `SubagentStart` → `SubagentStop` → `PostToolUse` → `PostToolBatch` → `Stop` | `subagent` |
-| …plus, after **almost every tool-using turn** | a second, anonymous `SubagentStop` **1.9–2.7 s after the parent's `Stop`** | 7 occurrences |
+| …plus, after **almost every tool-using turn** | a second, anonymous `SubagentStop` **1.9–3.0 s after the parent's `Stop`** | 6 occurrences |
 | Idle at the prompt for 60 s | `Notification{notification_type: idle_prompt}` | `idle-notification` |
 | `/clear` | `SessionEnd{reason: clear}` → `SessionStart{source: clear}` **with a new `session_id`** | `clear-command` |
 | `/compact` (enough history) | `PreCompact{trigger: manual}` → [24 s] → `SubagentStop` → `SessionStart{source: compact}` → `PostCompact{trigger: manual}`, **same `session_id`** | `compact-command` |
@@ -215,16 +215,28 @@ line to say *what* the agent is blocked on, not merely that it is.
   `PostToolBatch` +7.796 → `Stop` +8.934. Nested, in order, before the parent.
 - **`agent_id` is present on every subagent-scoped event and absent from every
   parent event**: across the whole run, all 44 `Stop` payloads lack an
-  `agent_id` key and all 8 `SubagentStop` payloads carry one. The bundle agrees — `Stop` and `SubagentStop` are built
-  by the same function, and `agent_id` is only added on the `SubagentStop`
-  branch.
+  `agent_id` key and all 8 `SubagentStop` payloads carry one. The bundle agrees:
+  `Stop` and `SubagentStop` are built by the same function, and `agent_id` is
+  only added on the `SubagentStop` branch.
 - **The hazard is confirmed and it is not rare.** A *second*, anonymous
   `SubagentStop` — `agent_type: ""`, an `agent_id` no `SubagentStart` ever
-  announced, an `agent_transcript_path` that does not exist on disk — arrives
-  **1.9–2.7 s after the parent's `Stop`** on essentially every tool-using turn.
-  Seven occurrences in this run (`tool-turn`, `deny-rule`, `tool-error`,
-  `subagent`, `resume-session`, `compact-command`, `esc-tool`). It never
-  appeared on a turn with no tool call.
+  announced, an `agent_transcript_path` that does not exist on disk — arrives a
+  couple of seconds **after the parent's `Stop`** on essentially every
+  tool-using turn:
+
+  | Scenario | after the parent's `Stop` |
+  |---|---|
+  | `subagent` | 1.90 s |
+  | `tool-turn` | 2.00 s |
+  | `deny-rule` | 2.07 s |
+  | `resume-session` | 2.21 s |
+  | `tool-error` | 3.04 s |
+  | `esc-tool` (first run, tool call refused by the agent's own policy) | 5.11 s |
+
+  It never appeared on a turn with no tool call (`clean-turn`, `clear-command`,
+  `session-end`, `fresh-trust`, `idle-notification` — none). An eighth
+  `SubagentStop`, 25 s into `/compact`, is the compaction worker: also anonymous,
+  but its role is legible from where it sits.
 
 This is exactly herdr's "falsely idled the parent" failure with the polarity
 that matters for amx: a pane that has already gone `Idle` gets a stop-shaped
