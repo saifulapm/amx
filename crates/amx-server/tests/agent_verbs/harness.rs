@@ -123,10 +123,10 @@ impl Rig {
         core.set_agent(AgentHandle::new(agent_tx.clone()));
 
         let hub = AgentHub::new(ctx.clone(), CoreHandle::new(core_tx.clone()), view.clone());
-        runtime.spawn(async move {
+        runtime.spawn("agent-hub", async move {
             let _agents = hub.run(agent_rx, agent_events).await;
         });
-        runtime.spawn(async move {
+        runtime.spawn("core", async move {
             let _core = core.run(core_rx, |_: &Scheduled| {}).await;
         });
 

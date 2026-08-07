@@ -70,12 +70,12 @@ impl Rig {
         let (core_tx, core_rx) = mpsc::channel(64);
         let mut core = Core::new(ctx.clone(), CoreHandle::new(core_tx.clone()));
         core.set_config(config_rx);
-        runtime.spawn(async move {
+        runtime.spawn("core", async move {
             let _ = core.run(core_rx, |_: &Scheduled| {}).await;
         });
         let gateway =
             Gateway::bind(ctx.clone(), CoreHandle::new(core_tx)).expect("bind the session socket");
-        runtime.spawn(async move {
+        runtime.spawn("gateway", async move {
             let _ = gateway.run().await;
         });
 

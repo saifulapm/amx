@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
 use std::path::PathBuf;
+use std::time::Duration;
 use std::sync::Arc;
 
 use amx_core::{Bus, Ctx, Level, Scheduled, SessionName, ShortNumber};
@@ -12,7 +13,7 @@ use amx_server::actor::CoreCommand;
 use amx_server::actor::CoreHandle;
 use amx_server::actor::WorkspaceCall;
 use amx_server::actor::core::Core;
-use amx_server::runtime::Runtime;
+use amx_server::runtime::{self as runtime, Runtime};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -46,7 +47,7 @@ async fn cancellation_token_shuts_every_task_down_and_join_set_reports_no_leaks(
 
     for _ in 0..3 {
         let cancel = runtime.ctx().cancel.clone();
-        runtime.spawn(async move {
+        runtime.spawn("idle", async move {
             cancel.cancelled().await;
         });
     }
@@ -64,7 +65,7 @@ async fn no_task_is_detached() {
 
     for _ in 0..5 {
         let cancel = runtime.ctx().cancel.clone();
-        runtime.spawn(async move {
+        runtime.spawn("idle", async move {
             cancel.cancelled().await;
         });
     }
@@ -81,6 +82,104 @@ async fn no_task_is_detached() {
     // track were tracked; the absence of a stray task is what the module
     // being the sole `tokio::spawn` call site in the crate guarantees.
     assert_eq!(report.joined, 5);
+}
+
+// ------------------------------------------------------------ the drain census
+
+#[tokio::test]
+async fn outstanding_names_every_task_the_set_still_holds() {
+    let ctx = test_ctx("outstanding");
+    let mut runtime = Runtime::new(ctx);
+    for name in ["core", "gateway", "persist"] {
+        let cancel = runtime.ctx().cancel.clone();
+        runtime.spawn(name, async move {
+            cancel.cancelled().await;
+        });
+    }
+    assert_eq!(
+        runtime.outstanding(),
+        vec!["core", "gateway", "persist"],
+        "an unjoined task is one the census must be able to name"
+    );
+    let report = runtime.shutdown().await;
+    assert_eq!(report.joined, 3);
+    assert_eq!(report.census_reports, 0, "a healthy drain says nothing");
+}
+
+/// How often the census watcher below looks for the file.
+const TICK: Duration = Duration::from_millis(5);
+
+/// A drain that overruns says which task it is waiting for, in the log and in
+/// the session directory.
+///
+/// The whole point of W01's instrumentation (`docs/notes/m3-shutdown-wedge.md`
+/// §5): a daemonized server's stderr is `/dev/null`, so the file under the
+/// session directory is the copy that survives to be read off a wedged
+/// process, and this is the proof it is really written and really names the
+/// culprit.
+///
+/// Nothing here waits on a clock. The straggler is released by the watcher
+/// that has *read* the census, so the test's length is one shortened census
+/// interval plus a scheduler hop, and a slow machine makes it slower rather
+/// than red.
+#[tokio::test]
+async fn a_drain_that_overruns_names_the_task_it_is_waiting_for() {
+    let dir = std::env::temp_dir().join(format!("amx-census-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create a runtime directory");
+    let mut ctx = test_ctx("census");
+    ctx.runtime_dir = dir.clone();
+
+    let mut runtime = Runtime::new(ctx);
+    runtime.set_census_interval(Duration::from_millis(50));
+    let cancel = runtime.ctx().cancel.clone();
+    runtime.spawn("prompt", async move {
+        cancel.cancelled().await;
+    });
+    // The straggler ignores the signal until the census has been observed,
+    // which is exactly the shape of the thing being watched for — and makes
+    // the observation, not a nap, the thing that ends it.
+    let (release, released) = oneshot::channel::<()>();
+    runtime.spawn("straggler", async move {
+        let _ = released.await;
+    });
+
+    let census = dir.join(runtime::CENSUS_FILE);
+    let watch = {
+        let census = census.clone();
+        tokio::spawn(async move {
+            // Read it while the drain is still stuck: the file is removed once
+            // the drain finishes, because by then it is a false statement.
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&census) {
+                    let _ = release.send(());
+                    return text;
+                }
+                tokio::time::sleep(TICK).await;
+            }
+        })
+    };
+
+    let report = runtime.shutdown().await;
+    let text = watch.await.expect("the census was written");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(report.joined, 2);
+    assert!(
+        report.census_reports >= 1,
+        "a drain held past its census interval reports at least once"
+    );
+    assert!(
+        text.contains("straggler"),
+        "the census names the task that had not returned: {text:?}"
+    );
+    assert!(
+        !text.contains("prompt"),
+        "and not the one that had already been joined: {text:?}"
+    );
+    assert!(
+        !census.exists(),
+        "a drain that finished takes its census with it"
+    );
 }
 
 #[test]
@@ -168,7 +267,7 @@ async fn core_actor_runs_under_the_runtime_and_answers_calls() {
         let _ = scheduled_tx.send(scheduled.level());
     };
 
-    runtime.spawn(async move {
+    runtime.spawn("core", async move {
         let _ = core.run(rx, sink).await;
     });
     assert_eq!(runtime.task_count(), 1);

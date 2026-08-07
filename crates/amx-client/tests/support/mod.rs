@@ -86,7 +86,7 @@ impl Server {
 
         let (core_tx, core_rx) = mpsc::channel(64);
         let core = Core::new(ctx.clone(), CoreHandle::new(core_tx.clone()));
-        runtime.spawn(async move {
+        runtime.spawn("core", async move {
             let _ = core.run(core_rx, |_: &Scheduled| {}).await;
         });
 
@@ -94,7 +94,7 @@ impl Server {
             Gateway::bind(ctx.clone(), CoreHandle::new(core_tx)).expect("bind the session socket");
         let probe = gateway.probe().clone();
         let (report_tx, report) = oneshot::channel();
-        runtime.spawn(async move {
+        runtime.spawn("gateway", async move {
             let _ = report_tx.send(gateway.run().await);
         });
 
