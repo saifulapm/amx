@@ -54,23 +54,40 @@ fn plain(program: &str, args: &[&str]) -> PtyCommand {
     }
 }
 
-/// The device number of a process's controlling terminal; 0 means it has none.
+/// A process's controlling terminal, or `None` when it has none.
 ///
 /// The comm field of `stat` is an arbitrary string in parentheses, so the
 /// fields after it are counted from the last `)` rather than from the front.
-fn controlling_terminal(process: ProcessId) -> i32 {
+#[cfg(target_os = "linux")]
+fn controlling_terminal(process: ProcessId) -> Option<String> {
     let stat = std::fs::read_to_string(format!("/proc/{}/stat", process.0)).expect("stat");
     let after_comm = &stat[stat.rfind(')').expect("comm") + 1..];
     // state, ppid, pgrp, session, tty_nr
-    after_comm
+    let tty_nr: i32 = after_comm
         .split_whitespace()
         .nth(4)
         .expect("tty_nr")
         .parse()
-        .expect("tty_nr")
+        .expect("tty_nr");
+    (tty_nr != 0).then(|| tty_nr.to_string())
+}
+
+/// A process's controlling terminal, or `None` when it has none.
+///
+/// darwin has no `/proc`; `ps -o tty=` reads the same field without
+/// entitlements, printing `??` for a process with no terminal.
+#[cfg(target_os = "macos")]
+fn controlling_terminal(process: ProcessId) -> Option<String> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "tty=", "-p", &process.0.to_string()])
+        .output()
+        .expect("run ps");
+    let tty = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (!tty.is_empty() && !tty.starts_with('?')).then_some(tty)
 }
 
 /// Every descriptor in this process that points at a terminal.
+#[cfg(target_os = "linux")]
 fn parent_pty_fds() -> Vec<String> {
     let Ok(entries) = std::fs::read_dir("/proc/self/fd") else {
         return Vec::new();
@@ -80,6 +97,34 @@ fn parent_pty_fds() -> Vec<String> {
         .filter_map(|entry| std::fs::read_link(entry.path()).ok())
         .map(|target| target.to_string_lossy().into_owned())
         .filter(|target| target.starts_with("/dev/pts/") || target == "/dev/ptmx")
+        .collect();
+    targets.sort();
+    targets
+}
+
+/// Every descriptor in this process that points at a terminal.
+///
+/// darwin's `/dev/fd` entries are not symlinks the way `/proc/self/fd`'s
+/// are, so each descriptor is named through `fcntl(F_GETPATH)` instead;
+/// its pty devices are `/dev/ptmx` masters and `/dev/ttys*` slaves. A
+/// descriptor closed between the listing and the naming drops out, which
+/// reads the same as it never having been listed.
+#[cfg(target_os = "macos")]
+fn parent_pty_fds() -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir("/dev/fd") else {
+        return Vec::new();
+    };
+    let mut targets: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<i32>().ok())
+        .filter_map(|fd| {
+            // SAFETY: the descriptor is only borrowed for the duration of
+            // the `F_GETPATH` call and nothing here closes or stores it.
+            let fd = unsafe { BorrowedFd::borrow_raw(fd) };
+            rustix::fs::getpath(fd).ok()
+        })
+        .map(|path| path.to_string_lossy().into_owned())
+        .filter(|target| target.starts_with("/dev/ttys") || target == "/dev/ptmx")
         .collect();
     targets.sort();
     targets
@@ -165,9 +210,8 @@ fn child_gets_the_pty_as_its_controlling_terminal() {
     // itself, so it would pass this test for a pty that handed it none.
     let mut session = UnixPty.spawn(&plain("cat", &[])).expect("spawn");
 
-    assert_ne!(
-        controlling_terminal(session.child()),
-        0,
+    assert!(
+        controlling_terminal(session.child()).is_some(),
         "the child should have a controlling terminal, not just the descriptors"
     );
     assert_eq!(
