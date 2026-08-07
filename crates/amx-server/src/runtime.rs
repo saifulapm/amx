@@ -215,6 +215,13 @@ impl Runtime {
         // is not reported, and nothing about the drain depends on the write.
         // A diagnostic that could fail a shutdown would be worse than no
         // diagnostic at all.
+        //
+        // Written inline rather than on the blocking pool, unlike every other
+        // write in the server. It is a few dozen bytes to the session's own
+        // directory, at most once every [`CENSUS_INTERVAL`], on a runtime that
+        // by construction has nothing left to schedule — and the one thing a
+        // wedge diagnostic must not do is depend on the pool it may be
+        // diagnosing.
         let _ = std::fs::write(
             self.ctx.runtime_dir.join(CENSUS_FILE),
             format!(
