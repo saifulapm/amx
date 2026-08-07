@@ -15,6 +15,67 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+/// The variables amx sets in every pane child's environment (D-M2-4).
+///
+/// Named here, beside [`PtyCommand`], because both ends of the identity chain
+/// read the same list: the server writes them at spawn, and `amx _hook` reads
+/// them back out of the environment a hook process inherited. A name spelled
+/// twice is a name that can be spelled differently twice.
+///
+/// V01 §3 M6 measured the inheritance the scheme rides on. The driver planted
+/// these six in an interactive *shell*, typed `claude` at it by hand, and all
+/// 185 hook invocations in the run carried all six verbatim — hook process,
+/// agent, shell, in that order up the `/proc` ancestry. So a hand-typed agent
+/// is attributed exactly like one `agent start` launched, and the degraded
+/// "identity by `session_id` plus process tree" branch the plan held in reserve
+/// is not needed.
+pub mod pane_env {
+    /// `AMX_ENV=1` — set in a pane child and nowhere else.
+    ///
+    /// The gate an agent skill checks before offering amx's verbs at all: its
+    /// presence is what distinguishes "running inside a pane" from "running in
+    /// the user's own terminal", and it is deliberately a marker rather than
+    /// data so nothing is tempted to parse it.
+    pub const MARKER: &str = "AMX_ENV";
+
+    /// The only value [`MARKER`] is ever set to.
+    pub const MARKER_VALUE: &str = "1";
+
+    /// `AMX_SESSION` — which named session this pane belongs to.
+    ///
+    /// The same variable a user sets to pick a session (`Env::session`), which
+    /// is the point: an `amx` command typed inside a pane addresses the server
+    /// that pane lives in, with no flag.
+    pub const SESSION: &str = "AMX_SESSION";
+
+    /// `AMX_SOCKET` — the absolute path of that session's socket.
+    ///
+    /// Carried explicitly rather than re-derived from `$XDG_RUNTIME_DIR`,
+    /// because a hook process inherits the *terminal's* environment and a
+    /// terminal's runtime dir may not be the server's.
+    pub const SOCKET: &str = "AMX_SOCKET";
+
+    /// `AMX_PANE_ID` — this pane's UUID.
+    pub const PANE: &str = "AMX_PANE_ID";
+
+    /// `AMX_WORKSPACE_ID` — the UUID of the workspace holding this pane.
+    ///
+    /// The pane's workspace *at spawn*. A pane moved between workspaces keeps
+    /// the value it started with; nothing reads it as authority (the server
+    /// resolves a pane's workspace from its own state), it is there so a script
+    /// inside a pane can name its neighbours.
+    pub const WORKSPACE: &str = "AMX_WORKSPACE_ID";
+
+    /// `AMX_HOOK_TOKEN` — the per-spawn value a hook report must carry back.
+    ///
+    /// See [`HookToken`](crate::agent::HookToken): a misattribution guard, not
+    /// a security boundary.
+    pub const TOKEN: &str = "AMX_HOOK_TOKEN";
+
+    /// Every name above, for a caller that wants to clear or inspect the set.
+    pub const ALL: [&str; 6] = [MARKER, SESSION, SOCKET, PANE, WORKSPACE, TOKEN];
+}
+
 /// A window size in character cells.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct WinSize {
@@ -144,6 +205,29 @@ pub trait ProcessTree: Send + Sync + 'static {
 
     /// The direct children of a process.
     fn children(&self, process: ProcessId) -> Result<Vec<ProcessId>, PlatformError>;
+
+    /// The argument vector a process was started with.
+    ///
+    /// In kernel order, `argv[0]` first, with nothing unquoted or re-split:
+    /// argv is data (D-M2-7), and this is the reading half of that promise.
+    /// Elements are [`OsString`] because a Unix argv is bytes — a token that is
+    /// not UTF-8 is still a token, and dropping it would silently shorten the
+    /// vector the identification walk reasons about.
+    ///
+    /// An empty vector is a legitimate `Ok`: a zombie and a kernel thread both
+    /// have no argv, and "this process has no argv" is an answer. A process
+    /// that exited between the call and the read, or one this user may not
+    /// inspect, is [`NotFound`](PlatformError::NotFound) — the caller's defined
+    /// fallback is [`exe`](Self::exe), then giving up.
+    fn argv(&self, process: ProcessId) -> Result<Vec<OsString>, PlatformError>;
+
+    /// The path of the executable a process is running.
+    ///
+    /// The corroborating half of [`argv`](Self::argv), and the reason both are
+    /// on the seam: `argv[0]` is whatever the parent chose to write there and
+    /// can say anything, while this is the file the kernel actually mapped.
+    /// Read when argv is unreadable or empty.
+    fn exe(&self, process: ProcessId) -> Result<PathBuf, PlatformError>;
 
     /// Whether the process still exists.
     fn is_alive(&self, process: ProcessId) -> bool;

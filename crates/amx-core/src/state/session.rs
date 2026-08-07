@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::agent::HookToken;
 use crate::effect::Effect;
 use crate::id::{PaneId, WorkspaceId};
 use crate::layout::{Direction, Layout, LayoutError, Rect};
@@ -370,6 +371,33 @@ impl SessionState {
             .get_mut(&pane)
             .ok_or(StateError::NoSuchPane(pane))?;
         p.set_cwd(cwd);
+        Ok(())
+    }
+
+    /// Record what `pane`'s process was spawned as, and the token its child's
+    /// environment carries.
+    ///
+    /// The counterpart of [`set_pane_cwd`](Self::set_pane_cwd) and pure
+    /// metadata in the same way: no layout operation reads either field and
+    /// nothing on screen is invalidated by writing them. Called once per spawn,
+    /// from the one path every pane's process starts through, which is what
+    /// makes "every pane child's environment carries `AMX_PANE_ID`" (D-M2-4)
+    /// true of every pane rather than of the ones somebody remembered.
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::NoSuchPane`] if `pane` is not in this session.
+    pub fn set_pane_spawn(
+        &mut self,
+        pane: PaneId,
+        argv: Vec<String>,
+        token: HookToken,
+    ) -> Result<(), StateError> {
+        let p = self
+            .panes
+            .get_mut(&pane)
+            .ok_or(StateError::NoSuchPane(pane))?;
+        p.set_spawn(argv, token);
         Ok(())
     }
 
