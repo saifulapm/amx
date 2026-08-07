@@ -7,49 +7,16 @@
 //! await that resolution (see the module doc on `super`). Swap and move never
 //! touch a pane's actor at all, which is what makes "never restarts the
 //! process" true by construction rather than by care.
+//!
+//! Opening the pty and starting the process is [`super::spawn`]'s, not this
+//! file's: V02 moved it out ahead of M2 (R-M2-5), and V07 grows it there.
 
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
-
-use amx_core::platform::{Pty, PtyCommand, WinSize};
-use amx_core::{Direction, Event, PaneId};
+use amx_core::{Direction, Event};
 use amx_proto::control::pane;
 use amx_proto::rpc::RpcError;
-use thiserror::Error;
-use tokio::sync::oneshot;
 
 use super::Core;
-use crate::actor::{PaneCommand, PaneHost, PaneHostConfig, PaneHostError, Reply};
-use crate::config_rt;
-use crate::platform::UnixPty;
-
-/// The grid every freshly spawned pane starts at.
-///
-/// M0 has no negotiated terminal size yet (that is the client's job, T13/T14);
-/// this is the traditional terminal default, matching
-/// [`amx_core::state::workspace::DEFAULT_AREA`].
-const DEFAULT_SIZE: WinSize = WinSize { rows: 24, cols: 80 };
-
-/// How long a split waits for the source pane to answer a foreground-cwd
-/// read before falling back to the recorded cwd.
-///
-/// The `Core` must never park on another actor indefinitely — a pane wedged
-/// behind a saturated mailbox would wedge the whole session with it — so the
-/// wait is bounded and the fallback (04 §7) is the same one an unreadable
-/// `/proc` takes.
-const FOREGROUND_CWD_TIMEOUT: Duration = Duration::from_millis(250);
-
-/// A pane's backing process could not be started.
-#[derive(Debug, Error)]
-pub(super) enum SpawnError {
-    /// The pty itself could not be opened or the command could not run.
-    #[error(transparent)]
-    Pty(#[from] amx_core::platform::PlatformError),
-    /// libghostty-vt or the pane actor's threads could not be started.
-    #[error(transparent)]
-    Host(#[from] PaneHostError),
-}
+use crate::actor::Reply;
 
 impl Core {
     /// The synchronous fallback [`super::Core::absorb`] uses for a split:
@@ -151,62 +118,6 @@ impl Core {
                 )));
             }
         }
-    }
-
-    /// The cwd a split with no explicit override should use: the source
-    /// pane's live foreground-process cwd if one can be read, falling back to
-    /// the source pane's own recorded cwd, and finally to this process's own
-    /// cwd if even that was never recorded (04 §7).
-    ///
-    /// The ask is `try_send` plus a bounded wait, never a blocking send: the
-    /// `Core` waiting for capacity on a pane's mailbox while that pane waits
-    /// for capacity on the `Core`'s is a deadlock with both mailboxes full,
-    /// and a cwd default is not worth wedging the session over.
-    async fn resolve_split_cwd(&self, source: PaneId) -> PathBuf {
-        if let Some(host) = self.panes.get(&source) {
-            let (tx, rx) = oneshot::channel();
-            if host
-                .handle()
-                .try_send(PaneCommand::ForegroundCwd(tx))
-                .is_ok()
-                && let Ok(Ok(Some(cwd))) = tokio::time::timeout(FOREGROUND_CWD_TIMEOUT, rx).await
-            {
-                return cwd;
-            }
-        }
-        self.state
-            .pane(source)
-            .and_then(|p| p.cwd())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
-    }
-
-    /// Open a pty and start a `PaneHost` for a freshly minted pane.
-    ///
-    /// `pub(super)` because a live `workspace.create` spawns its root pane's
-    /// shell through the same path a split uses — one spawn path, not two.
-    ///
-    /// The pane spawns at its projected cell size when a client has declared a
-    /// viewport (04 §3 — the active client drives sizes), and at the 24x80
-    /// default otherwise.
-    pub(super) fn spawn_pane(
-        &self,
-        pane: PaneId,
-        cwd: PathBuf,
-        command: Option<Vec<String>>,
-    ) -> Result<PaneHost, SpawnError> {
-        let size = self
-            .planned_size(pane)
-            .map_or(DEFAULT_SIZE, |(rows, cols)| WinSize { rows, cols });
-        // Read here, once per spawn: an edit to `[terminal] shell` reaches the
-        // next pane and no other, because a pane's process is never restarted
-        // for a configuration change (D-M1-8).
-        let shell = config_rt::shell(&self.config.borrow());
-        let session = UnixPty.spawn(&pty_command(shell, cwd, command, size))?;
-        let mut config = PaneHostConfig::new(pane, self.ctx.bus.clone(), size);
-        config.core = Some(self.handle.clone());
-        config.cancel = self.ctx.cancel.child_token();
-        Ok(PaneHost::spawn(config, session)?)
     }
 
     pub(super) fn handle_pane_zoom(
@@ -474,26 +385,5 @@ fn move_direction(direction: pane::MoveDirection) -> Direction {
         pane::MoveDirection::Down => Direction::Down,
         pane::MoveDirection::Up => Direction::Up,
         pane::MoveDirection::Right => Direction::Right,
-    }
-}
-
-/// Build the command a freshly spawned pane runs.
-fn pty_command(
-    shell: OsString,
-    cwd: PathBuf,
-    command: Option<Vec<String>>,
-    size: WinSize,
-) -> PtyCommand {
-    let mut argv = command.into_iter().flatten();
-    let (program, args) = match argv.next() {
-        Some(first) => (OsString::from(first), argv.map(OsString::from).collect()),
-        None => (shell, Vec::new()),
-    };
-    PtyCommand {
-        program,
-        args,
-        env: Vec::new(),
-        cwd: Some(cwd),
-        size,
     }
 }
