@@ -22,8 +22,11 @@
 //!   prefix.
 //! - **prefix** (one-shot): `w` enters navigate, a second `ctrl+a` sends the
 //!   literal byte to the pane, `x`/`v` split, `z` zooms, `d` detaches, `p`
-//!   opens the picker; any other key is swallowed and the mode falls back to
-//!   terminal. Closing a pane is navigate's `d`, deliberately not prefix's:
+//!   opens the picker, `a` jumps to the next agent waiting on the user (04 §7
+//!   lists `next-attention` among the prefix one-shots; 03: "One key jumps to
+//!   the next blocked agent"); any other key is swallowed and the mode falls
+//!   back to terminal. Closing a pane is navigate's `d`, deliberately not
+//!   prefix's:
 //!   the detach verb owns the prefix chord (04 §7 lists detach among the
 //!   prefix one-shots) and a destroy verb must not sit one key from it.
 //! - **navigate** (sticky): `hjkl` move focus, `HJKL` resize, `x`/`v` split,
@@ -107,6 +110,12 @@ pub enum Action {
     Detach,
     /// Prefix `p`: open the picker.
     Picker,
+    /// Prefix `a`: focus the head of the attention queue.
+    ///
+    /// One key for "handle the next one" is the point of the queue existing at
+    /// all (03), so this needs no focused pane and no non-empty workspace: the
+    /// server holds the queue and answers an empty one honestly.
+    NextAttention,
     /// A digit: jump focus to the n-th pane (1-based, layout order).
     Jump(u8),
 }
@@ -319,6 +328,10 @@ impl Input {
             }
             b'p' => {
                 out.push(Action::Picker);
+                Mode::Terminal
+            }
+            b'a' => {
+                out.push(Action::NextAttention);
                 Mode::Terminal
             }
             _ => Mode::Terminal,

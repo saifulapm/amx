@@ -8,11 +8,15 @@
 //! `input` dispatches through that module's key table.
 //!
 //! The module splits by responsibility: this file is the presentation core —
-//! model, layout, input consequences — [`wired`] is the live loop over the
-//! session socket (frames in, input and calls out), [`overlay`] is the picker
-//! and copy-mode surfaces drawn over the panes, and [`status`] is the status
-//! line and the cursor a repaint finishes with.
+//! model, layout, repaint — [`actions`] turns one decoded key into what leaves
+//! the client, [`wired`] is the live loop over the session socket (frames in,
+//! input and calls out), [`events`] is the state the server pushes and what it
+//! does to the model, [`overlay`] is the picker and copy-mode surfaces drawn
+//! over the panes, and [`status`] is the status line and the cursor a repaint
+//! finishes with.
 
+mod actions;
+mod events;
 mod overlay;
 mod status;
 mod wired;
@@ -22,16 +26,16 @@ use std::fmt;
 use std::io::Write;
 use std::os::fd::AsFd;
 
-use amx_core::{Direction, PaneId, Rect, RowRange, WorkspaceId};
-use amx_proto::control::{Call, pane as pane_proto};
+use amx_core::{PaneId, Rect, RowRange, WorkspaceId};
 
 use crate::cache::Scrollback;
-use crate::input::{self, Action, Input, InputEvent};
+use crate::input::{Input, InputEvent};
 use crate::model::{ClientModel, WorkspaceModel};
 use crate::net::{NetError, Session};
 use crate::render::{FrameWriter, chrome, grid};
 use crate::term::{TermError, TermSize, TerminalGuard};
 
+pub use events::Folded;
 pub use overlay::{CopyUi, PickTarget, PickerUi};
 
 /// Interaction mode the client is in (04 §7).
@@ -95,8 +99,15 @@ pub struct App<Fd: AsFd, W: Write> {
     picker: Option<PickerUi>,
     /// The live copy-mode engine while [`Mode::Copy`] is active.
     copy: Option<CopyUi>,
-    /// Bytes owed to the client's own terminal outside the frame (OSC 52).
+    /// Bytes owed to the client's own terminal outside the frame: OSC 52 from
+    /// copy mode, OSC 9 from an attention enqueue ([`events`]).
     emit: Vec<u8>,
+    /// Reused buffer for one round of server notifications, so folding events
+    /// allocates nothing steady-state (see [`events`]).
+    events: Vec<amx_proto::rpc::Notification>,
+    /// Reused buffer for the frame being read, shared by the live loop and
+    /// [`App::step_frame`] so neither allocates per frame.
+    frame: Vec<u8>,
     /// History ranges copy mode wants fetched, drained by the wired loop.
     wanted_history: Vec<(PaneId, RowRange)>,
     /// Something changed since the last flush; the wired loop repaints.
@@ -122,6 +133,12 @@ pub struct App<Fd: AsFd, W: Write> {
     /// How many full repaints this app has done. Exposed for tests; production
     /// callers have no need of it.
     pub repaints: u64,
+    /// How many times this app has re-read `session.state`.
+    ///
+    /// Exposed for the same reason [`Self::repaints`] is, and it earns its keep
+    /// twice over in M2: the difference between hearing an event and polling
+    /// for it is invisible in the rendered frame and exact in this counter.
+    pub resyncs: u64,
 }
 
 impl<Fd: AsFd, W: Write> App<Fd, W> {
@@ -144,6 +161,8 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             picker: None,
             copy: None,
             emit: Vec::new(),
+            events: Vec::new(),
+            frame: Vec::new(),
             wanted_history: Vec::new(),
             dirty: true,
             pane_rects: Vec::new(),
@@ -152,6 +171,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             input: Input::new(),
             status: status::StatusLine::default(),
             repaints: 0,
+            resyncs: 0,
         })
     }
 
@@ -252,151 +272,6 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// record per-pane mouse reporting on.
     pub fn input(&mut self) -> &mut Input {
         &mut self.input
-    }
-
-    /// Turn one decoded [`Action`] into its consequence: bytes to the pane,
-    /// a control call, or a local focus change.
-    fn apply_action(
-        &mut self,
-        action: Action,
-        bytes: &[u8],
-        sink: &mut impl FnMut(InputEvent<'_>),
-    ) {
-        // The two verbs that need no focused pane come first: a client must be
-        // able to leave (or reach the picker) even in an empty session.
-        match action {
-            Action::Detach => {
-                sink(InputEvent::Detach);
-                return;
-            }
-            Action::Picker => {
-                self.open_picker();
-                return;
-            }
-            _ => {}
-        }
-        let Some(ws) = self.model.focused_workspace_id() else {
-            return;
-        };
-        let Some(pane) = self.focused_pane() else {
-            return;
-        };
-        match action {
-            Action::Forward { start, end } => sink(InputEvent::Forward {
-                pane,
-                bytes: &bytes[start..end],
-            }),
-            Action::Mouse { start, end } => {
-                if self.input.mouse_enabled(pane) {
-                    sink(InputEvent::Forward {
-                        pane,
-                        bytes: &bytes[start..end],
-                    });
-                }
-            }
-            Action::CarriedMouse => {
-                if self.input.mouse_enabled(pane) {
-                    sink(InputEvent::Forward {
-                        pane,
-                        bytes: self.input.carried(),
-                    });
-                }
-            }
-            Action::CarriedBytes => sink(InputEvent::Forward {
-                pane,
-                bytes: self.input.carried(),
-            }),
-            Action::Focus(dir) => {
-                if let Some(next) = self.neighbour_of(pane, dir) {
-                    self.focus.insert(ws, next);
-                    self.repaint();
-                }
-                sink(InputEvent::Call(Call::PaneFocus(pane_proto::FocusParams {
-                    workspace: ws,
-                    direction: input::wire_direction(dir),
-                })));
-            }
-            // Deliberately no local layout change: the mirror is server truth
-            // with no mutable accessor, so the resize round-trips and the
-            // repaint follows the updated layout state (04 §3).
-            Action::Resize(dir) => sink(InputEvent::Call(Call::PaneResize(
-                pane_proto::ResizeParams {
-                    pane,
-                    direction: input::wire_direction(dir),
-                    delta: input::RESIZE_STEP,
-                },
-            ))),
-            Action::Split(direction) => {
-                sink(InputEvent::Call(Call::PaneSplit(pane_proto::SplitParams {
-                    pane,
-                    direction,
-                    command: None,
-                    cwd: None,
-                })))
-            }
-            Action::Swap(dir) => {
-                if let Some(with) = self.neighbour_of(pane, dir) {
-                    sink(InputEvent::Call(Call::PaneSwap(pane_proto::SwapParams {
-                        pane,
-                        with,
-                    })));
-                }
-            }
-            // Interim target until T15's picker chooses one (04 §7): the
-            // next workspace in id order, wrapping. No other workspace means
-            // nowhere to move to.
-            Action::MovePane => {
-                if let Some(to) = self.next_workspace(ws) {
-                    sink(InputEvent::Call(Call::PaneMove(pane_proto::MoveParams {
-                        pane,
-                        to,
-                    })));
-                }
-            }
-            Action::Close => sink(InputEvent::Call(Call::PaneClose(pane_proto::CloseParams {
-                pane,
-            }))),
-            Action::Zoom => sink(InputEvent::Call(Call::PaneZoom(pane_proto::ZoomParams {
-                pane,
-            }))),
-            // Handled above, before the focused-pane requirement.
-            Action::Detach | Action::Picker => {}
-            // Interim numbering until short numbers reach the client: n-th
-            // pane in layout order. Local-only — `pane.focus` speaks
-            // directions, and a direct set-focus core op does not exist yet.
-            Action::Jump(n) => {
-                let target = self
-                    .model
-                    .focused_workspace()
-                    .and_then(|w| w.layout.panes().get(usize::from(n) - 1).copied());
-                if let Some(target) = target
-                    && target != pane
-                {
-                    self.focus.insert(ws, target);
-                    self.repaint();
-                }
-            }
-        }
-    }
-
-    /// The focused workspace's geometric neighbour of `pane`, over the same
-    /// content area chrome tiles.
-    fn neighbour_of(&self, pane: PaneId, dir: Direction) -> Option<PaneId> {
-        let area = self.model.content_area();
-        self.model
-            .focused_workspace()?
-            .layout
-            .neighbour(area, pane, dir)
-    }
-
-    /// The workspace after `current` in id order, wrapping; `None` if it is
-    /// the only one.
-    fn next_workspace(&self, current: WorkspaceId) -> Option<WorkspaceId> {
-        self.model
-            .workspace_ids()
-            .filter(|&id| id > current)
-            .min()
-            .or_else(|| self.model.workspace_ids().filter(|&id| id != current).min())
     }
 
     /// Note that a resize happened; does not yet act on it.

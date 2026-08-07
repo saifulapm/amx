@@ -1,10 +1,11 @@
 //! The live client: the loop that joins the terminal to the session socket.
 //!
-//! On attach the client folds `session.state` into its model, binds a grid
-//! and a raw input stream for every visible pane, and declares its viewport
-//! so the server sizes those panes to this terminal (04 §3). From then on the
-//! loop has four inputs — server frames, stdin bytes, `SIGWINCH`, and the
-//! resize debounce — and one output: a repainted frame whenever any of them
+//! On attach the client folds `session.state` into its model, subscribes to the
+//! session's event bus from the sequence that snapshot was captured at, binds a
+//! grid and a raw input stream for every visible pane, and declares its
+//! viewport so the server sizes those panes to this terminal (04 §3). From then
+//! on the loop has four inputs — server frames, stdin bytes, `SIGWINCH`, and
+//! the resize debounce — and one output: a repainted frame whenever any of them
 //! changed something.
 //!
 //! Calls and their replies interleave with stream frames on one socket, so
@@ -12,21 +13,25 @@
 //! before looking for its reply. The loop stays single-tasked on purpose:
 //! nothing here needs concurrency beyond the select, and one task means the
 //! model needs no lock.
+//!
+//! Server-initiated notifications interleave with both, and what they *mean*
+//! lives next door in [`super::events`] — this file only makes sure every wake
+//! ends by draining them, including the wakes whose real work was a call, so an
+//! event that landed mid-call is folded as soon as the reply is in.
 
 use std::io::Write;
 use std::os::fd::AsFd;
 use std::path::Path;
 
-use amx_core::{PaneId, RowRange, WorkspaceId};
+use amx_core::PaneId;
 use amx_proto::ClientInfo;
-use amx_proto::control::{Call, Method, client as client_proto, session, stream as stream_proto};
+use amx_proto::control::{Call, Method, client as client_proto, stream as stream_proto};
 use amx_proto::stream::{RawDirection, RawPaneIo, StreamKind};
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
 
 use super::{App, AppError, RESIZE_DEBOUNCE};
 use crate::input::InputEvent;
-use crate::model::WorkspaceModel;
 use crate::net::Session;
 use crate::stream::{self, Applied};
 use crate::term::{Sigwinch, TerminalGuard};
@@ -51,7 +56,14 @@ enum OwnedEvent {
 impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// Connect to `socket`, negotiate, take `fd` into raw mode (writing the
     /// alt-screen sequence to `out`), fold the session's state into a fresh
-    /// model, bind streams for the visible panes, and declare the viewport.
+    /// model, subscribe to the event bus, bind streams for the visible panes,
+    /// and declare the viewport.
+    ///
+    /// The snapshot comes *before* the subscription and hands it its own
+    /// capture sequence, which is 04 §2's contract used exactly as written:
+    /// state as of `seq`, deliveries from `seq + 1`. Subscribing first would
+    /// replay transitions the snapshot already describes; subscribing later
+    /// without the sequence would lose the ones in between.
     pub async fn attach(
         socket: &Path,
         fd: Fd,
@@ -62,7 +74,8 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         let (session, _welcome) = Session::attach(stream, client, true, None).await?;
         let term = TerminalGuard::enter(fd, out)?;
         let mut app = Self::assemble(session, term)?;
-        app.sync_state().await?;
+        let seq = app.sync_state().await?;
+        app.subscribe_events(Some(seq)).await?;
         app.report_viewport().await?;
         Ok(app)
     }
@@ -76,7 +89,9 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         mut flush: impl FnMut(&[u8]) -> std::io::Result<()>,
     ) -> Result<(), AppError> {
         let mut input = [0_u8; 4096];
-        let mut frame = Vec::new();
+        // Taken, not borrowed back: `run` consumes the app, so the buffer it
+        // shares with `step_frame` has no second reader after this point.
+        let mut frame = std::mem::take(&mut self.frame);
         self.repaint();
         flush(self.writer.bytes()).map_err(AppError::from_io)?;
 
@@ -139,6 +154,10 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 Wake::Gone => break,
             }
 
+            // After every wake, not only after a frame: a control call made by
+            // the input arm reads frames of its own, and any notification that
+            // arrived behind its reply is sitting in the session's queue now.
+            self.drain_events().await?;
             self.fetch_wanted_history().await?;
             if self.dirty {
                 self.dirty = false;
@@ -151,6 +170,34 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             }
         }
         Ok(())
+    }
+
+    /// Read exactly one server frame, apply it, and fold whatever notifications
+    /// came with it.
+    ///
+    /// [`Self::run`]'s `Frame` arm, minus the select — for a caller that owns
+    /// its own loop, and for a test that wants to step the wire without a
+    /// terminal and a stdin behind it. It awaits until a frame arrives, so a
+    /// caller waits on the server rather than on a clock.
+    pub async fn step_frame(&mut self) -> Result<(), AppError> {
+        // Borrowed out and put back rather than allocated: a caller stepping
+        // the wire frame by frame is on the same hot path `run` is.
+        let mut frame = std::mem::take(&mut self.frame);
+        let header = self.session.read_frame_into(&mut frame).await;
+        let applied = header.map(|header| {
+            stream::apply(
+                &mut self.model,
+                &mut self.caches,
+                &self.bindings,
+                header,
+                &frame,
+            )
+        });
+        self.frame = frame;
+        if applied? != Applied::Nothing {
+            self.dirty = true;
+        }
+        self.drain_events().await
     }
 
     /// Feed stdin bytes through the modal layer and act on every consequence.
@@ -229,64 +276,8 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         Ok(())
     }
 
-    /// Fold a fresh `session.state` into the model and bind whatever the
-    /// focused workspace newly shows.
-    pub async fn sync_state(&mut self) -> Result<(), AppError> {
-        let value = self
-            .call(Method::SessionState.wire_name(), serde_json::json!({}))
-            .await?;
-        let state: session::StateReply =
-            serde_json::from_value(value).map_err(|_| AppError::BadState("session.state reply"))?;
-
-        let workspaces: Vec<WorkspaceId> = state.workspaces.iter().map(|ws| ws.workspace).collect();
-        self.model.retain_workspaces(|id| workspaces.contains(&id));
-        let panes: Vec<PaneId> = state.panes.iter().map(|pane| pane.pane).collect();
-        self.model.retain_panes(|id| panes.contains(&id));
-        self.caches.retain(|id, _| panes.contains(id));
-
-        for ws in &state.workspaces {
-            self.model.set_workspace(
-                ws.workspace,
-                WorkspaceModel {
-                    label: ws.label.clone(),
-                    layout: ws.layout.clone(),
-                },
-            );
-            if let Some(focus) = ws.focus {
-                self.focus.insert(ws.workspace, focus);
-            }
-        }
-        if let Some(focused) = state.focused_workspace {
-            self.model.focus_workspace(focused);
-        }
-        // Loss is state, not a log line (04 §6): the summary rides every
-        // snapshot, so the indicator survives a resync and clears itself the
-        // moment a server reports a clean start.
-        self.model.set_restore(state.restore);
-        for pane in &state.panes {
-            self.model.set_pane_label(pane.pane, pane.label.clone());
-            let cache = self.caches.entry(pane.pane).or_default();
-            let known = cache.head().get();
-            let head = pane.history_head.get();
-            if head < known {
-                cache.invalidate(pane.history_head);
-            } else if head > known {
-                cache.commit(RowRange::new(
-                    amx_core::RowId::from_raw(known),
-                    amx_core::RowId::from_raw(head - 1),
-                ));
-            }
-            cache.evict(pane.history_floor);
-        }
-
-        self.bind_visible().await?;
-        self.layout_dirty = true;
-        self.dirty = true;
-        Ok(())
-    }
-
     /// Bind a grid stream for every visible pane that has none yet.
-    async fn bind_visible(&mut self) -> Result<(), AppError> {
+    pub(super) async fn bind_visible(&mut self) -> Result<(), AppError> {
         let visible: Vec<PaneId> = self
             .model
             .focused_workspace()
@@ -437,12 +428,21 @@ fn mutates_layout(method: Method) -> bool {
         | Method::WorkspaceCreate
         | Method::WorkspaceRename
         | Method::WorkspaceKill
-        | Method::WorkspaceSwitch => true,
-        // M2's rows change a pane's *contents* or its agent's status, never
-        // the layout tree — `agent.start` is the one that mints a pane, and it
-        // does so through the same `pane.split` path, whose own event the
-        // client already hears. `agent.next` moves focus, but through Core's
-        // ordinary focus change, which arrives as `FocusChanged`.
+        | Method::WorkspaceSwitch
+        // `agent.next` moves the session's focus, and across workspaces when
+        // the head of the attention queue is in another one — which is the
+        // whole point of one key for "handle the next one" (03). The
+        // `FocusChanged` it publishes says which *pane*; it does not say that
+        // this terminal should change what it is showing, because the identical
+        // event is published when some other client switches workspace
+        // (`super::events` explains why that one is not followed). So the
+        // client that asked re-reads state, whose `focused_workspace` is the
+        // answer, and binds what the new workspace shows.
+        | Method::AgentNext => true,
+        // M2's other rows change a pane's *contents* or its agent's status,
+        // never the layout tree — `agent.start` is the one that mints a pane,
+        // and it does so through the same `pane.split` path, whose own event
+        // the client already hears.
         Method::Ping
         | Method::SessionState
         | Method::SessionReport
@@ -453,7 +453,6 @@ fn mutates_layout(method: Method) -> bool {
         | Method::AgentStart
         | Method::AgentPrompt
         | Method::AgentExplain
-        | Method::AgentNext
         | Method::Wait
         | Method::EventsSubscribe
         | Method::PaneSendText
