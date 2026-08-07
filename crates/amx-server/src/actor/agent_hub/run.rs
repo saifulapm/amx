@@ -124,6 +124,9 @@ impl AgentHub {
             AgentCommand::NextAttention { reply } => {
                 let _ = reply.send(Ok(self.next_attention()));
             }
+            AgentCommand::Stanza { kind, reply } => {
+                let _ = reply.send(self.stanza(&kind));
+            }
         }
     }
 

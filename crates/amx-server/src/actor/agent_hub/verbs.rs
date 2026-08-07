@@ -1,18 +1,21 @@
 //! What the question-shaped commands answer.
 //!
-//! Three of the hub's five mailbox variants ask something rather than tell it,
-//! and all three answer without leaving the actor: `agent.next` reads its own
+//! Four of the hub's six mailbox variants ask something rather than tell it,
+//! and all four answer without leaving the actor: `agent.next` reads its own
 //! queue and posts the focus onwards, `agent.explain` re-evaluates the pane's
-//! current frame, and a command that arrives after cancellation is refused from
-//! inside this module — no publish, no write, no sibling (R-M1-2).
+//! current frame, `agent.start`'s stanza lookup reads the registry the hub
+//! parsed at assembly, and a command that arrives after cancellation is refused
+//! from inside this module — no publish, no write, no sibling (R-M1-2).
 
 use amx_core::PaneId;
+use amx_core::agent::AgentKind;
 use amx_proto::control::agent as proto;
 use amx_proto::rpc::RpcError;
 use amx_vt::SnapshotRef;
 
 use super::{AgentHub, detect};
 use crate::actor::{AgentCall, AgentCommand, CoreCommand};
+use crate::agent::registry::AgentStanza;
 
 impl AgentHub {
     // -------------------------------------------------------------- the verbs
@@ -84,6 +87,34 @@ impl AgentHub {
         Ok(explanation.into_reply(pane, kind, Some(status)))
     }
 
+    /// What the registry says about one agent, by id or alias.
+    ///
+    /// The hub answers because the hub *has* the registry: parsed once at
+    /// assembly and merged with the user's override there (D-M2-2), which is
+    /// also the seam a suite plants a fake agent through. A refusal names the
+    /// agents this session does know, since the common way to reach it is a
+    /// typo or an override file that did not load.
+    pub(super) fn stanza(&self, kind: &AgentKind) -> Result<Box<AgentStanza>, RpcError> {
+        self.registry
+            .resolve(kind)
+            .map(|stanza| Box::new(stanza.clone()))
+            .ok_or_else(|| {
+                let known: Vec<&str> = self
+                    .registry
+                    .stanzas()
+                    .iter()
+                    .map(|stanza| stanza.id.as_str())
+                    .collect();
+                RpcError::new(
+                    RpcError::INVALID_PARAMS,
+                    format!(
+                        "no agent named `{kind}` in this session's registry; it has {}",
+                        known.join(", ")
+                    ),
+                )
+            })
+    }
+
     /// The frame `pane` last published, if it is still tracked.
     pub(super) fn frame(&self, pane: PaneId) -> Option<SnapshotRef> {
         self.panes.get(&pane).map(|tracked| tracked.frames.latest())
@@ -109,6 +140,13 @@ impl AgentHub {
                 // Not an empty reply: an empty queue and a queue nobody can be
                 // focused out of are different answers, and only one of them is
                 // true here.
+                let _ = reply.send(Err(shutting_down()));
+            }
+            AgentCommand::Stanza { reply, .. } => {
+                // The registry is still right here and answering would cost
+                // nothing — but the caller is an `agent.start` that is about to
+                // spawn a process into a session that is going away, and the
+                // honest answer to that is no.
                 let _ = reply.send(Err(shutting_down()));
             }
             AgentCommand::PaneStarted { .. } | AgentCommand::PaneClosed { .. } => {}
