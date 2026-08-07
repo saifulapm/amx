@@ -311,6 +311,15 @@ Cross-wave notes for the orchestrator:
   connection's *opening*, and nothing about it makes the epilogue worse.
 - **W02 shares nothing.** Reports still flow pane→`Core`; only `Core`'s
   republishes go.
+- **Two rig files crossed the soft module budget here, and W01 did not split
+  them.** `tests/support/env.rs` went 499 → 550 (the census reader and the
+  preserve path) and `crates/amx/tests/support/mod.rs` 476 → 509 (`CLOEXEC`).
+  Raised rather than done, per HACKING.md: both are harnesses three wave-1
+  tasks are about to work beside, and splitting a shared harness at a wave
+  boundary buys a line count and costs everyone a rebase. `ServerChild` is the
+  obvious seam in `env.rs` when somebody does take it — it is a self-contained
+  concept and about 110 lines. R-M3-7's list does not name either file; this is
+  a note to add to it, not a rule already broken.
 Three things seen under load during the spike and **not** chased, because none
 of them is the drain. They are recorded with their evidence so the next person
 does not have to rediscover them, and none is W01's to fix.
