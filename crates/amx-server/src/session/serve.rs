@@ -17,15 +17,16 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use amx_core::{Ctx, Scheduled};
+use amx_core::{Config, Ctx, Scheduled};
 use thiserror::Error;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::actor::CoreHandle;
 use crate::actor::core::{Core, RestoreOptions};
 use crate::actor::gateway::{Gateway, GatewayError, GatewayReport};
+use crate::actor::persist::{PERSIST_MAILBOX, Persist};
+use crate::actor::{CoreHandle, PersistHandle};
 use crate::config_rt::ConfigRuntime;
 use crate::platform::watch::watch_config;
 use crate::runtime::{Runtime, ShutdownReport};
@@ -91,12 +92,13 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     let gateway = Gateway::bind(ctx.clone(), CoreHandle::new(core_tx.clone()))?;
 
     let mut runtime = Runtime::new(ctx.clone());
-    let mut core = Core::new(ctx.clone(), CoreHandle::new(core_tx));
+    let mut core = Core::new(ctx.clone(), CoreHandle::new(core_tx.clone()));
     // Read before anything spawns a process: restore below is the session's
     // first pane spawn, and it must use the shell the user configured rather
     // than the one this server would have picked a moment earlier.
     let config = ConfigRuntime::load(&ctx);
     core.set_config(config.subscribe());
+    let persist_config = config.subscribe();
     spawn_config_watcher(&mut runtime, &ctx, config);
     // Between the bind and the accept loop (D-M1-9): the bind has claimed the
     // session, so this server is the one that owns its state, and the earliest
@@ -105,6 +107,20 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     // full loss report beats a refused start — which is why nothing here
     // returns an error.
     core.restore_from_disk(&RestoreOptions { home: home_dir() });
+
+    // Persistence is assembled after the restore it must not re-save: the
+    // subscription is taken here, so the events restore just published sit
+    // behind it and the actor opens on a clean "nothing dirty" slate
+    // (`docs/07-m1-plan.md` §2). `Core` learns where persistence listens for
+    // one message only — the final capture it pushes on its way down.
+    let (persist_tx, persist_rx) = mpsc::channel(PERSIST_MAILBOX);
+    core.set_persist(PersistHandle::new(persist_tx));
+    let events = ctx.bus.subscribe();
+    let persist = Persist::new(ctx.clone(), CoreHandle::new(core_tx), persist_config);
+    runtime.spawn(async move {
+        let _persist = persist.run(persist_rx, events).await;
+    });
+
     runtime.spawn(async move {
         // Output rides two paths out of a folded batch. Grid traffic flows
         // from each pane's published frames through the per-client grid
