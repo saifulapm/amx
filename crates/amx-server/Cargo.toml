@@ -25,6 +25,7 @@ rustix = { workspace = true, features = [
     "stdio",
     "termios",
 ] }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = [

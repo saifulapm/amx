@@ -96,6 +96,7 @@ dependencies = [
  "bytes",
  "libc",
  "rustix",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",
