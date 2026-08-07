@@ -83,9 +83,9 @@ async fn hook_report_with_valid_token_updates_status_and_publishes_once() {
         "the stanza's id, not the report's spelling of it",
     );
     // One transition, one event, and nothing else on the bus: the hub is the
-    // only publisher of agent events (04 §2's rule, which pane events already
-    // break and these do not get to make worse, R-M2-3). The block enqueues
-    // too, so the head moves by exactly the two events this transition owes.
+    // only publisher of agent events (04 §2's rule, read per event kind —
+    // `docs/09-m3-plan.md` D-M3-2). The block enqueues too, so the head moves
+    // by exactly the two events this transition owes.
     assert_eq!(
         rig.ctx.bus.head(),
         head + 2,
