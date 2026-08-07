@@ -173,10 +173,23 @@ async fn kill_dash_9_mid_write_always_leaves_a_restorable_snapshot() {
             state["restore"]["lost"], 0,
             "round {round} restarted onto a snapshot it could not use: {state}"
         );
-        assert!(
-            state["workspaces"].as_array().unwrap().len() >= 2,
-            "round {round} restored an emptied session: {state}"
-        );
+        // Whole-or-old, decided by where the kill landed. A kill inside the
+        // write (staging file on disk, rename not yet committed) *guarantees*
+        // the old snapshot — demanding this round's workspace there would
+        // assert against the very atomicity being proven. Only a kill that
+        // followed an observed commit guarantees the new one.
+        let restored = state["workspaces"].as_array().unwrap().len();
+        match landed {
+            Landed::MidWrite => assert!(
+                restored >= 1,
+                "round {round} lost even the old session to a mid-write kill: {state}"
+            ),
+            Landed::JustAfter | Landed::Elsewhere => assert!(
+                restored >= 2,
+                "round {round} restored an emptied session after a committed \
+                 save: {state}"
+            ),
+        }
     }
     // Where the kills landed is reported, not asserted: how often a spin can
     // see a staging file is a property of the filesystem under the state
