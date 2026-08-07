@@ -27,13 +27,15 @@
 //! for the `pane.*`/`workspace.*` verbs, [`spawn`] for opening a pty and
 //! starting the process behind a freshly minted pane, [`report`] for the fold
 //! over what pane actors report back, [`persist`] for the snapshot capture the
-//! `Persist` actor asks for, and [`restore`] for the startup rebuild that puts
-//! yesterday's session back.
+//! `Persist` actor asks for, [`restore`] for the startup rebuild that puts
+//! yesterday's session back, and [`resume`] for the half of that rebuild which
+//! puts each agent's *conversation* back (V15, D-M2-7).
 
 mod pane;
 mod persist;
 mod report;
 mod restore;
+mod resume;
 mod route;
 mod spawn;
 mod view;

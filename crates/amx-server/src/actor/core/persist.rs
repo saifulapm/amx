@@ -13,14 +13,18 @@
 //! state the session answers questions about (04 §6: queryable, never
 //! log-only) rather than anything the restore path keeps.
 
+use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
 
+use amx_core::PaneId;
+use amx_core::agent::{AgentKind, RefSource, StartSource};
 use amx_proto::control::session::{ReportReply, RestoreReport, RestoreSummary};
 use tokio::sync::oneshot;
 
 use super::Core;
 use crate::actor::{Capture, PaneCommand, Reply};
-use crate::persist::{PaneSnapshot, Snapshot, WorkspaceSnapshot};
+use crate::persist::{AgentSnapshot, PaneSnapshot, Snapshot, WorkspaceSnapshot};
 
 /// How long a whole capture waits for the foreground-cwd probes it started.
 ///
@@ -39,6 +43,16 @@ pub(super) struct Restored {
     pub(super) report: RestoreReport,
     /// Workspaces plus panes that came back, which the entries cannot say.
     pub(super) entities: u32,
+    /// The panes this restore typed a conversation back into, and which agent
+    /// it was.
+    ///
+    /// The one fact about how an agent got into a pane that only the restore
+    /// path knows: a resumed agent arrives in a respawned *shell* (D-M2-7's
+    /// type-in launch), so its pane's argv looks exactly like any other shell's
+    /// and [`Core::start_source`] would otherwise call it `detected`. Kept
+    /// beside the report because it has the same lifetime — for as long as this
+    /// server can be asked what its restore did.
+    pub(super) resumed: HashMap<PaneId, AgentKind>,
 }
 
 impl Core {
@@ -144,14 +158,14 @@ impl Core {
                     id: pane,
                     short: self.short_of_pane(pane),
                     label: state.and_then(|p| p.label().map(str::to_owned)),
-                    cwd: state.and_then(|p| p.cwd().map(std::path::Path::to_path_buf)),
+                    cwd: state.and_then(|p| p.cwd().map(Path::to_path_buf)),
                     // V07 records the spawn argv into pane state and **V15**
                     // captures both of these from `Core`'s agent mirror, which
                     // `AgentHub` fills with `try_send` during normal operation
                     // — which is exactly why the hub has nothing to flush on
                     // the way down (`docs/08-m2-plan.md` §3).
-                    argv: None,
-                    agent: None,
+                    argv: state.and_then(|p| p.argv().map(<[String]>::to_vec)),
+                    agent: self.captured_agent(pane),
                 });
             }
         }
@@ -165,6 +179,84 @@ impl Core {
             focused_workspace: self.state.active_workspace(),
             workspaces,
             panes,
+        }
+    }
+
+    /// What the snapshot remembers about `pane`'s agent, if it had one.
+    ///
+    /// Read out of `Core`'s mirror — the slow read model of
+    /// `docs/08-m2-plan.md` §3, which `AgentHub` fills with `try_send` during
+    /// normal operation. That is precisely why the hub's shutdown flushes
+    /// nothing: whatever it knew is already here by the time the final capture
+    /// runs.
+    ///
+    /// Only *durable* facts cross into the file. The mirror carries a live
+    /// status — `working`, its cause, its transition sequence, its queue
+    /// position — and none of it is written: restoring "this agent was working
+    /// yesterday" would be restoring a lie, and `crate::persist::AgentSnapshot`
+    /// has nowhere to put it (D-M2-7).
+    ///
+    /// The source is *derived* rather than mirrored, and it is not a guess:
+    /// `AgentHub` accepts a ref only from the hook path of the agent it claims
+    /// (D-M2-7's first gate), so a ref that reached the mirror under `kind`
+    /// came from `amx:<kind>` and from nowhere else. Writing it out is what
+    /// gives the second and third gates something to check on the way back in.
+    fn captured_agent(&self, pane: PaneId) -> Option<AgentSnapshot> {
+        let status = self.agent_status.get(&pane)?;
+        let kind = status.kind.clone()?;
+        Some(AgentSnapshot {
+            name: self
+                .state
+                .pane(pane)
+                .and_then(|p| p.label().map(str::to_owned)),
+            session_ref: status.session_ref.clone(),
+            source: status
+                .session_ref
+                .as_ref()
+                .map(|_| RefSource::for_agent(&kind)),
+            start_source: self.start_source(pane, &kind),
+            kind,
+        })
+    }
+
+    /// How the agent in `pane` got there, as far as `Core` can tell.
+    ///
+    /// Three answers and two sources for them. A pane this server's own restore
+    /// typed a conversation into is [`StartSource::Restored`], which is a fact
+    /// only [`Restored::resumed`] holds — the agent arrived in a respawned
+    /// shell, so nothing about the pane's process says so. Otherwise the pane's
+    /// recorded argv decides: a pane whose spawned program *is* the agent is
+    /// one amx launched, and a pane running something else with an agent
+    /// identified in it is one the agent was typed into.
+    ///
+    /// The argv comparison is against the stanza id rather than against the
+    /// stanza's `executables`, because `Core` holds no registry — the registry
+    /// is `AgentHub`'s, parsed once (D-M2-2), and asking it here would be the
+    /// sibling round trip §3 spends a whole section avoiding. The two agree for
+    /// every stanza whose id names its program, which is both shipped agents;
+    /// where they would not, this field is the looser answer, and it is a
+    /// record of how a pane came to be rather than anything restore branches
+    /// on — D-M2-7 types every agent back into a shell regardless.
+    fn start_source(&self, pane: PaneId, kind: &AgentKind) -> StartSource {
+        let resumed = self
+            .restore
+            .as_ref()
+            .and_then(|restored| restored.resumed.get(&pane));
+        if resumed == Some(kind) {
+            return StartSource::Restored;
+        }
+        let spawned_as_agent = self
+            .state
+            .pane(pane)
+            .and_then(|p| p.argv())
+            .and_then(<[String]>::first)
+            .map(Path::new)
+            .and_then(Path::file_name)
+            .is_some_and(|program| program == kind.as_str());
+        if spawned_as_agent {
+            StartSource::Started
+        } else {
+            StartSource::Detected
         }
     }
 

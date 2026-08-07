@@ -22,11 +22,16 @@
 //! | workspace loses every pane | prune the workspace | lost (workspace) |
 //! | sidecar unreadable or torn | skip the replay, keep the pane | degraded (pane) |
 //! | snapshot unreadable or newer than the window | start fresh | lost (session) |
+//! | a captured conversation cannot be resumed | restore a plain shell | degraded (pane) |
 //!
 //! Not one of those is a log line. 04 §6 requires restore loss to reach the
 //! status line and `amx session report` — "never log-only" — which is herdr's
 //! W8 in one sentence, and the reason the failure paths here end in a
 //! [`RestoreLoss`] rather than a `warn!`.
+//!
+//! The last row of that table is M2's, and it lives next door: [`super::resume`]
+//! plans each pane's conversation, claims it, and types it back into the shell
+//! this file respawns (V15, D-M2-7).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -38,7 +43,9 @@ use amx_proto::control::session::{
 
 use super::Core;
 use super::persist::Restored;
+use super::resume::{Restoring, load_registry};
 use crate::actor::{PaneCommand, PaneHandle};
+use crate::agent::resume::Reservations;
 use crate::persist::sidecar::SidecarRow;
 use crate::persist::{PaneSnapshot, PersistError, Snapshot, WorkspaceSnapshot, sidecar, snapshot};
 
@@ -87,7 +94,18 @@ impl Core {
     /// Must be called from inside a tokio runtime — it starts pane actors —
     /// and before [`Core::run`], which is where the serve path puts it.
     pub fn restore(&mut self, snapshot: Snapshot, opts: &RestoreOptions) -> RestoreSummary {
-        let mut report = RestoreReport::default();
+        let mut run = Restoring {
+            opts,
+            // Read here rather than borrowed from `AgentHub`: restore runs on
+            // an owned `Core` before any actor is serving, so there is nobody
+            // to ask (D-M1-9). The two loads are the same builtin plus the same
+            // override file, and collapsing them into one owner is a seam V17
+            // holds — noted rather than papered over.
+            registry: load_registry(&self.ctx.config_path),
+            reservations: Reservations::new(),
+            resumed: HashMap::new(),
+            report: RestoreReport::default(),
+        };
         let saved: HashMap<PaneId, PaneSnapshot> = snapshot
             .panes
             .into_iter()
@@ -96,16 +114,23 @@ impl Core {
 
         let (mut workspaces, mut panes) = (0_u32, 0_u32);
         for ws in snapshot.workspaces {
-            if let Some(restored) = self.restore_workspace(&ws, &saved, opts, &mut report) {
+            if let Some(restored) = self.restore_workspace(&ws, &saved, &mut run) {
                 workspaces += 1;
                 panes += restored;
             }
         }
         self.focus_restored(snapshot.focused_workspace);
 
+        let Restoring {
+            report, resumed, ..
+        } = run;
         let entities = workspaces + panes;
         let summary = report.summary(entities);
-        self.restore = Some(Restored { report, entities });
+        self.restore = Some(Restored {
+            report,
+            entities,
+            resumed,
+        });
         self.publish(Event::SessionRestored {
             workspaces,
             panes,
@@ -133,6 +158,7 @@ impl Core {
         self.restore = Some(Restored {
             report,
             entities: 0,
+            resumed: HashMap::new(),
         });
         self.publish(Event::SessionRestored {
             workspaces: 0,
@@ -149,8 +175,7 @@ impl Core {
         &mut self,
         saved_ws: &WorkspaceSnapshot,
         saved: &HashMap<PaneId, PaneSnapshot>,
-        opts: &RestoreOptions,
-        report: &mut RestoreReport,
+        run: &mut Restoring<'_>,
     ) -> Option<u32> {
         let id = saved_ws.id;
         let members = saved_ws.layout.panes();
@@ -162,7 +187,7 @@ impl Core {
         ) {
             Ok(effect) => self.effects.absorb(effect),
             Err(err) => {
-                report
+                run.report
                     .entries
                     .push(lost_workspace(saved_ws, err.to_string()));
                 return None;
@@ -177,7 +202,7 @@ impl Core {
 
         let mut restored = Vec::with_capacity(members.len());
         for pane in members {
-            if self.restore_pane(id, pane, saved.get(&pane), opts, report) {
+            if self.restore_pane(id, pane, saved.get(&pane), run) {
                 restored.push(pane);
             }
         }
@@ -188,7 +213,7 @@ impl Core {
                 self.effects.absorb(effect);
             }
             self.workspace_shorts.remove(&id);
-            report.entries.push(lost_workspace(
+            run.report.entries.push(lost_workspace(
                 saved_ws,
                 "no pane in this workspace could be restored".to_owned(),
             ));
@@ -230,21 +255,25 @@ impl Core {
         workspace: WorkspaceId,
         pane: PaneId,
         saved: Option<&PaneSnapshot>,
-        opts: &RestoreOptions,
-        report: &mut RestoreReport,
+        run: &mut Restoring<'_>,
     ) -> bool {
         let label = saved.and_then(|saved| saved.label.clone());
         let (cwd, vanished) = match saved.and_then(|saved| saved.cwd.clone()) {
             Some(saved_cwd) if saved_cwd.is_dir() => (saved_cwd, None),
-            Some(gone) => (opts.home.clone(), Some(gone)),
+            Some(gone) => (run.opts.home.clone(), Some(gone)),
             // A pane the snapshot never recorded a directory for is not a
             // loss: there was nothing to lose.
-            None => (opts.home.clone(), None),
+            None => (run.opts.home.clone(), None),
         };
+        // Before the spawn, not after: D-M2-7 reserves the conversation first
+        // so that a pane whose shell fails to start rolls the reservation back
+        // and leaves it free for a later pane in the same snapshot.
+        let claimed = self.claim_resume(workspace, pane, saved, run);
 
         match self.spawn_pane(pane, cwd.clone(), None) {
             Ok(host) => {
                 let handle = host.handle().clone();
+                let frames = host.frames();
                 self.panes.insert(pane, host);
                 // Both were just established: neither can fail.
                 let _ = self.state.set_pane_cwd(pane, cwd);
@@ -255,7 +284,7 @@ impl Core {
                 // entry for a pane that then failed to spawn would describe a
                 // respawn that never happened.
                 if let Some(gone) = vanished {
-                    report.entries.push(RestoreLoss {
+                    run.report.entries.push(RestoreLoss {
                         severity: RestoreSeverity::Degraded,
                         entity: RestoreEntity::Pane,
                         workspace: Some(workspace),
@@ -264,12 +293,12 @@ impl Core {
                         path: Some(gone),
                         reason: format!(
                             "saved directory is gone; respawned in {}",
-                            opts.home.display()
+                            run.opts.home.display()
                         ),
                     });
                 }
                 if saved.is_none() {
-                    report.entries.push(RestoreLoss {
+                    run.report.entries.push(RestoreLoss {
                         severity: RestoreSeverity::Degraded,
                         entity: RestoreEntity::Pane,
                         workspace: Some(workspace),
@@ -290,7 +319,11 @@ impl Core {
                         let _ = self.next_pane_short(pane);
                     }
                 }
-                self.replay_sidecar(workspace, pane, &handle, report);
+                self.replay_sidecar(workspace, pane, &handle, &mut run.report);
+                if let Some(planned) = claimed {
+                    self.launch_resume(pane, &handle, frames, &planned);
+                    run.resumed.insert(pane, planned.agent);
+                }
                 true
             }
             Err(err) => {
@@ -300,7 +333,13 @@ impl Core {
                 if let Ok(effect) = self.state.close(workspace, pane) {
                     self.effects.absorb(effect);
                 }
-                report.entries.push(RestoreLoss {
+                // The rollback half of D-M2-7's reservation: this pane never
+                // ran, so the conversation it had claimed goes back on the
+                // table for whichever pane names it next.
+                if let Some(planned) = claimed {
+                    run.reservations.release(&planned.key);
+                }
+                run.report.entries.push(RestoreLoss {
                     severity: RestoreSeverity::Lost,
                     entity: RestoreEntity::Pane,
                     workspace: Some(workspace),
