@@ -1,0 +1,87 @@
+# amx's agent registry — the only place an agent is defined (04 §5).
+#
+# Compiled into the binary with `include_str!` and parsed once at server start;
+# `$XDG_CONFIG_HOME/amx/agents.toml` may add agents or replace whole stanzas.
+# Every consumer — name lookup, labels, the resume planner, fusion's coverage
+# class and startup grace, the integration installer's event list, the tier-2
+# manifest binding — reads this file. If you find yourself writing an agent's
+# name anywhere else, that is W6 growing back (docs/02-herdr-critique.md).
+#
+# `coverage` and `hook_events` are **measured**, not chosen: they are copied
+# from docs/notes/hook-coverage.md, and crates/amx-server/tests/registry.rs
+# reads that document back as its fixture so the two cannot drift. Change one
+# only by re-running scripts/spike/ and changing the other.
+
+# Claude Code 2.1.224, measured 2026-08-07 (V01 §2, §3).
+[[agent]]
+id          = "claude"
+aliases     = ["claude-code"]
+label       = "Claude Code"
+executables = ["claude"]
+# Entry edges are complete, fast (median 26 ms) and precede the UI; every
+# exit-by-user is silent — Esc during generation, Esc during a tool call, a
+# dialog answered "No", a dialog cancelled with Esc all emit nothing at all.
+# V01 §1, §3 M1/M2.
+coverage    = "edges"
+start       = ["claude"]
+# `claude --resume <session_id>` round-trips the same conversation, and the
+# resume ref *is* the session id the hook payload carries (V01 §3 M8).
+resume      = ["claude", "--resume", "{ref}"]
+ref_kind    = "id"
+manifest    = "claude.toml"
+# Ready about 1.1 s after launch (V01 §6).
+startup_grace_ms = 3000
+# V01 §5. Deliberately not subscribed: `PostToolBatch` (fires for calls that
+# never ran), `PermissionDenied` (never fired once, on any deny path),
+# `PreCompact`/`PostCompact` (compaction moves neither the status nor the ref).
+# Each subscription costs a process spawn per occurrence.
+hook_events = [
+  "SessionStart",
+  "SessionEnd",
+  "UserPromptSubmit",
+  "Stop",
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PermissionRequest",
+  "SubagentStart",
+  "SubagentStop",
+  # The only positive signal that survives an Esc-interrupt, and it names which
+  # wait it is reporting: `permission_prompt` at 6 s, `idle_prompt` at 60 s.
+  "Notification",
+]
+
+# Codex CLI 0.147.0, measured 2026-08-07 (V01 §4).
+[[agent]]
+id          = "codex"
+aliases     = ["codex-cli"]
+label       = "Codex CLI"
+executables = ["codex"]
+# The same edge shape as Claude Code — and the same silence on every
+# user-initiated exit — but with two Codex-only caveats V10 and V13 must carry:
+# hooks are inert until a human accepts an interactive, hash-pinned trust
+# prompt, and `SessionStart` does not fire until the first prompt, so a pane
+# holding an idle Codex has no hook-borne identity at all. V01 §4.
+coverage    = "edges"
+start       = ["codex"]
+# `codex resume <id>`, session ids UUIDv7 (V01 §4).
+resume      = ["codex", "resume", "{ref}"]
+ref_kind    = "id"
+manifest    = "codex.toml"
+# Codex took 2.8–4.6 s to finish its startup gates in the spike's runs, against
+# Claude Code's 1.1 s — which is why this is a per-stanza field (V01 §6).
+startup_grace_ms = 5000
+# V01 §5. `Notification` is absent because Codex has no such event: a Codex pane
+# gets no delayed corroboration of a block or an idle, and the fusion machine
+# must not depend on the backstop Claude Code provides.
+hook_events = [
+  "SessionStart",
+  "SessionEnd",
+  "UserPromptSubmit",
+  "Stop",
+  "PreToolUse",
+  "PostToolUse",
+  "PermissionRequest",
+  "SubagentStart",
+  "SubagentStop",
+]
