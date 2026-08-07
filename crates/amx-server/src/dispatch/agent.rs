@@ -1,7 +1,7 @@
 //! `agent.*` handlers.
 //!
-//! Every one is a seam today. The bodies arrive in wave order and this file is
-//! edited **sequentially, never concurrently** — `docs/08-m2-plan.md` §6
+//! Two seams are left. The bodies arrive in wave order and this file is edited
+//! **sequentially, never concurrently** — `docs/08-m2-plan.md` §6
 //! resolves the one collision it would otherwise have: V08 and V09 both land in
 //! wave 4, so the file is assigned to V09 (the report arm) and V08's
 //! `agent.next` logic lives in `actor/agent_hub/` with the arm here calling
@@ -14,16 +14,35 @@
 //! | [`report`] | **V09 — landed** | 4 |
 //! | [`next`] | V08 — the `AgentHub` actor | 4 |
 //! | [`explain`] | V06 — the tier-2 manifest engine | 2 (sequential fill) |
-//! | [`start`] | V13 — agent verbs and addressing | 5 |
-//! | [`prompt`] | V13 — agent verbs and addressing | 5 |
+//! | [`start`] | **V13 — landed** | 5 |
+//! | [`prompt`] | **V13 — landed** | 5 |
+//!
+//! # Addressing
+//!
+//! Both of V13's verbs take their target the way D-M2-9 says every agent verb
+//! does — pane UUID, then a label unique among *agent* panes — and neither of
+//! them implements that rule: `agent/address.rs` does, for the pane-driving
+//! verbs too, so the two scopes are one function with one order and cannot
+//! learn to disagree about what a name means.
 
-use amx_core::Seq;
-use amx_proto::control::{Method, agent};
+mod lookup;
+
+use std::time::Duration;
+
+use amx_core::agent::{AgentKind, AgentSnapshot, AgentState};
+use amx_core::event::{StatePredicate, Waiter};
+use amx_core::{Event, PaneId, Seq};
+use amx_proto::control::{Method, agent, pane as pane_proto};
 use amx_proto::rpc::RpcError;
 use tokio::sync::oneshot;
 
+use self::lookup::{START_TIMEOUT_MS, anchor, session_state, stanza};
 use super::{Router, seam};
-use crate::actor::AgentCommand;
+use crate::actor::{AgentCommand, CoreCommand, PaneCall, StatusView};
+use crate::agent::address::{self, Scope};
+use crate::agent::fusion::IDENTITY_GRACE;
+use crate::agent::registry::AgentStanza;
+use crate::conn::events::{ConnEvents, Polled, bounded, cancelled, poll};
 
 /// `agent.report`: one hook invocation from `amx _hook`.
 ///
@@ -92,7 +111,7 @@ const fn unclaimed(seq: Seq) -> agent::ReportReply {
 
 /// `agent.start`: spawn an agent in a new pane and wait for it to be ready.
 ///
-/// **V13** fills this. Readiness is two facts and a deadline (04 §5's
+/// **V13 landed this.** Readiness is two facts and a deadline (04 §5's
 /// "readiness handshake with timeout, herdr semantics"): the identity tier
 /// confirms the agent binary owns the pane's foreground, *and* a status of
 /// `Idle` has been observed. On expiry, report the failure honestly and leave
@@ -102,27 +121,138 @@ const fn unclaimed(seq: Seq) -> agent::ReportReply {
 /// prompt, so a readiness that waited on a `SessionStart` would wait forever on
 /// an idle Codex. Readiness is tier-2 and tier-3 evidence, with hooks as a
 /// bonus.
+///
+/// The order below is the order the failures want. Everything that can be
+/// refused is refused *before* a process exists: an unknown agent, a name no
+/// resolver could give back, a workspace with nothing to split. After the
+/// spawn, the only remaining outcome is a readiness that did or did not land,
+/// and neither of them takes the pane away.
 pub(super) async fn start(
     router: &mut Router,
     params: agent::StartParams,
 ) -> Result<agent::StartReply, RpcError> {
-    let _ = (router, params);
-    seam(Method::AgentStart, "V13")
+    let events = router.events()?.clone();
+    let stanza = stanza(router, &params.kind).await?;
+    let state = session_state(router).await?;
+    address::check_new_name(&params.name, &state.panes)?;
+    let anchor = anchor(&state, params.workspace)?;
+
+    // The stanza's argv first, the caller's extras after: a registry that could
+    // be overridden *by* an argument would be a registry that decides nothing.
+    let mut command = stanza.start.clone();
+    command.extend(params.args);
+    let split = router
+        .call(|reply| {
+            CoreCommand::Pane(PaneCall::Split {
+                params: pane_proto::SplitParams {
+                    pane: anchor,
+                    direction: pane_proto::SplitDirection::Vertical,
+                    command: Some(command),
+                    // Absent means the split's own rule: the source pane's
+                    // foreground-process cwd (04 §7), which is the directory
+                    // the user is looking at and the one they meant.
+                    cwd: params.cwd,
+                },
+                reply,
+            })
+        })
+        .await?;
+
+    // The name *is* the label (D-M2-9), so this is not decoration: it is what
+    // makes the pane addressable by every later verb. `check_new_name` above
+    // already refused everything `rename_pane` could, which leaves only "the
+    // pane vanished between two calls" — reported with its id, since the pane
+    // is running either way and the caller has to be told which one it is.
+    router
+        .call(|reply| {
+            CoreCommand::Pane(PaneCall::Rename {
+                params: pane_proto::RenameParams {
+                    pane: split.pane,
+                    label: params.name.clone(),
+                },
+                reply,
+            })
+        })
+        .await
+        .map_err(|err| {
+            RpcError::new(
+                err.code,
+                format!(
+                    "agent started in pane {} but could not be named {:?}: {}",
+                    split.pane, params.name, err.message
+                ),
+            )
+        })?;
+
+    let readiness = ready(&events, split.pane, &stanza, params.timeout_ms).await?;
+    Ok(agent::StartReply {
+        pane: split.pane,
+        short: split.short,
+        readiness,
+        agent: events.status().get(split.pane),
+        seq: events.bus().head(),
+    })
 }
 
 /// `agent.prompt`: submit a prompt, optionally waiting for what happens next.
 ///
-/// **V13** fills this, riding V12's `pane.run` for the submission itself. The
-/// wait is a [`Waiter`](amx_core::event::Waiter) whose predicate requires the
-/// target status *and* a transition sequence later than the submit — a pane
-/// that was already blocked when the prompt was sent must not satisfy a
-/// `--wait blocked`.
+/// **V13 landed this**, riding V12's `pane.run` for the submission itself. The
+/// wait is a [`Waiter`] whose predicate requires the target status *and* a
+/// transition sequence later than the submit — a pane that was already blocked
+/// when the prompt was sent must not satisfy a `--wait blocked`.
+///
+/// The floor is read *before* the text is handed over, not after. Between the
+/// two there is a window in which the agent has already reacted, and a floor
+/// taken on the far side of it would sit above the very transition the caller
+/// asked to wait for — the wait would then run until its timeout with the
+/// answer already on screen.
 pub(super) async fn prompt(
     router: &mut Router,
     params: agent::PromptParams,
 ) -> Result<agent::PromptReply, RpcError> {
-    let _ = (router, params);
-    seam(Method::AgentPrompt, "V13")
+    let events = router.events()?.clone();
+    let state = session_state(router).await?;
+    let pane = address::resolve(&params.target, &state.panes, Scope::Agent)?;
+
+    let submitted_seq = events.bus().head();
+    super::pane::run(
+        router,
+        pane_proto::RunParams {
+            target: pane_proto::PaneTarget::from(pane),
+            text: params.text,
+        },
+    )
+    .await?;
+
+    let satisfied = match params.wait {
+        agent::PromptWait::None => true,
+        agent::PromptWait::Blocked => {
+            settled(
+                &events,
+                pane,
+                AgentState::Blocked,
+                submitted_seq,
+                params.timeout_ms,
+            )
+            .await?
+        }
+        agent::PromptWait::Idle => {
+            settled(
+                &events,
+                pane,
+                AgentState::Idle,
+                submitted_seq,
+                params.timeout_ms,
+            )
+            .await?
+        }
+    };
+    Ok(agent::PromptReply {
+        pane,
+        agent: events.status().get(pane),
+        satisfied,
+        submitted_seq,
+    })
 }
 
 /// `agent.explain`: how a pane's status was detected, rule by rule.
@@ -169,4 +299,148 @@ pub(super) async fn next(
 ) -> Result<agent::NextReply, RpcError> {
     let _ = (router, params);
     seam(Method::AgentNext, "V08")
+}
+
+/// Wait for a freshly spawned pane to be ready, or for the deadline.
+///
+/// Two things have to be true, and one thing has to have elapsed:
+///
+/// - the pane's status names **this** agent — identity, from the argv `Core`
+///   spawned, from the first hook report, or from the foreground-job probe;
+/// - that status is `Idle` — the agent is at its prompt rather than mid-turn;
+/// - and the stanza's startup grace has passed.
+///
+/// The grace is the part that is easy to leave out and wrong to. It is the
+/// window in which the fusion machine itself *refuses to read the screen*,
+/// because "a booting TUI's splash matches nonsense" — so an `Idle` observed
+/// inside it is the tracker's opening assumption and not evidence about
+/// anything. Answering "ready" from it would mean `agent start claude`
+/// returning a few milliseconds after the spawn, while Claude Code is still
+/// painting its banner, which is the readiness handshake in name only. V01 §6
+/// measured the two shipped agents far enough apart (1.1 s against 2.8–4.6 s)
+/// that the wait is per-stanza data rather than one constant.
+///
+/// A timeout is an answer, not an error: [`Readiness::TimedOut`] with the pane
+/// left running, which is herdr's semantics and the acceptance test
+/// `start_timeout_reports_failure_but_leaves_the_pane_running`.
+async fn ready(
+    events: &ConnEvents,
+    pane: PaneId,
+    stanza: &AgentStanza,
+    timeout_ms: Option<u64>,
+) -> Result<agent::Readiness, RpcError> {
+    let grace = stanza
+        .startup_grace_ms
+        .map_or(IDENTITY_GRACE, Duration::from_millis);
+    let settled = tokio::time::Instant::now() + grace;
+    let view = events.status().clone();
+    let kind = stanza.id.clone();
+    let handshake = async move {
+        // Not a poll interval: one deadline, the one the stanza states, after
+        // which the question is asked exactly once and then answered by events.
+        tokio::time::sleep_until(settled).await;
+        Waiter::new(events.bus(), IsReady { view, pane, kind })
+            .wait()
+            .await
+    };
+    match bounded(
+        handshake,
+        Some(timeout_ms.unwrap_or(START_TIMEOUT_MS)),
+        events.cancel(),
+    )
+    .await
+    {
+        Polled::Satisfied(Ok(_)) => Ok(agent::Readiness::Ready),
+        Polled::TimedOut => Ok(agent::Readiness::TimedOut),
+        Polled::Satisfied(Err(_)) | Polled::Cancelled => Err(cancelled()),
+    }
+}
+
+/// Wait for a pane's agent to reach `want` through a transition later than
+/// `floor`.
+async fn settled(
+    events: &ConnEvents,
+    pane: PaneId,
+    want: AgentState,
+    floor: Seq,
+    timeout_ms: Option<u64>,
+) -> Result<bool, RpcError> {
+    let waiter = Waiter::new(
+        events.bus(),
+        MovedTo {
+            view: events.status().clone(),
+            pane,
+            want,
+            floor,
+        },
+    );
+    match poll(waiter, timeout_ms, events.cancel()).await {
+        Polled::Satisfied(_) => Ok(true),
+        Polled::TimedOut => Ok(false),
+        Polled::Cancelled => Err(cancelled()),
+    }
+}
+
+// ------------------------------------------------------------- the predicates
+
+/// A pane is running the agent it was started for, and is at its prompt.
+struct IsReady {
+    view: StatusView,
+    pane: PaneId,
+    kind: AgentKind,
+}
+
+impl StatePredicate for IsReady {
+    type Output = AgentSnapshot;
+
+    fn evaluate(&mut self) -> Option<Self::Output> {
+        self.view
+            .get(self.pane)
+            .filter(|status| status.kind.as_ref() == Some(&self.kind))
+            .filter(|status| status.state == AgentState::Idle)
+    }
+
+    /// A filter only: a gap re-evaluates whatever this says, so returning
+    /// `false` can delay the answer and never change it.
+    fn interested(&self, event: &Event) -> bool {
+        match event {
+            Event::AgentStatus { pane, .. }
+            | Event::AgentIdentified { pane, .. }
+            | Event::PaneExited { pane, .. } => *pane == self.pane,
+            _ => false,
+        }
+    }
+}
+
+/// A pane's agent has reached a state *since* a given sequence.
+///
+/// The floor is the whole point (`AgentSnapshot::transition_seq`'s own
+/// documentation says so): without it, `agent prompt --wait blocked` sent to a
+/// pane that was already blocked returns instantly, having waited for nothing
+/// and reported the state it was asked to watch for a change out of.
+struct MovedTo {
+    view: StatusView,
+    pane: PaneId,
+    want: AgentState,
+    floor: Seq,
+}
+
+impl StatePredicate for MovedTo {
+    type Output = AgentSnapshot;
+
+    fn evaluate(&mut self) -> Option<Self::Output> {
+        self.view
+            .get(self.pane)
+            .filter(|status| status.state == self.want)
+            .filter(|status| status.transition_seq > self.floor)
+    }
+
+    fn interested(&self, event: &Event) -> bool {
+        match event {
+            Event::AgentStatus { pane, .. }
+            | Event::AgentIdentified { pane, .. }
+            | Event::PaneExited { pane, .. } => *pane == self.pane,
+            _ => false,
+        }
+    }
 }

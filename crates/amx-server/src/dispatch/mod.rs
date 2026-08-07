@@ -26,12 +26,12 @@
 //! `tests/hygiene.rs` that lets them exist — the two always move together, so a
 //! seam can never quietly outlive the milestone that opened it. Every call
 //! below names the task that closes it, and the hygiene suite reads those names
-//! back: **V06** `agent.explain`, **V08** `agent.next`, **V13**
-//! `agent.start`/`agent.prompt`. V09's `agent.report`, V12's four —
-//! `pane.send_text`/`send_keys`/`run`/`read` — and V11's three —
-//! `wait`/`pane.wait_output`/`events.subscribe` — are filled, and each left
-//! the list with the count in `tests/hygiene.rs`. V17 empties it again and
-//! deletes the helper, which is the milestone's exit check.
+//! back: **V06** `agent.explain` and **V08** `agent.next`. V09's
+//! `agent.report`, V12's four — `pane.send_text`/`send_keys`/`run`/`read` —
+//! V11's three — `wait`/`pane.wait_output`/`events.subscribe` — and V13's two —
+//! `agent.start`/`agent.prompt` — are filled, and each left the list with the
+//! count in `tests/hygiene.rs`. V17 empties it again and deletes the helper,
+//! which is the milestone's exit check.
 
 mod agent;
 mod events;

@@ -46,7 +46,10 @@
 //!
 //! V02 froze everything here. **V08** builds the actor behind it, assembles it
 //! in `session/serve.rs`, and is the only writer [`StatusView::commit`] ever
-//! has.
+//! has. **V13** added one mailbox variant, [`AgentCommand::Stanza`], for the
+//! reason its own documentation gives: `agent.start` needs the registry, the
+//! registry is parsed once and lives in the hub, and dispatch may not grow a
+//! second copy of it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock};
@@ -57,6 +60,7 @@ use amx_proto::control::agent as proto;
 use tokio::sync::mpsc;
 
 use super::{MailboxError, Reply, SnapshotFeed};
+use crate::agent::registry::AgentStanza;
 
 /// Depth of the `AgentHub`'s mailbox.
 ///
@@ -123,6 +127,25 @@ pub enum AgentCommand {
     NextAttention {
         /// Where the answer goes.
         reply: Reply<proto::NextReply>,
+    },
+    /// What the registry says about one agent, by id or alias.
+    ///
+    /// `agent.start` needs a stanza's `start` argv before it can spawn
+    /// anything, and dispatch runs on connection tasks where no registry lives.
+    /// It asks *here* rather than parsing its own, because D-M2-2's whole claim
+    /// is that `agents.toml` is parsed **once** and merged with the user's
+    /// override once: a second parse in dispatch would be a second answer to
+    /// "what is `claude`", it would miss the override V17's fake agents arrive
+    /// through, and it would be W6 wearing a new hat.
+    ///
+    /// Question-shaped, like [`Explain`](Self::Explain) and
+    /// [`NextAttention`](Self::NextAttention): answered from inside the actor,
+    /// touching no sibling, refused outright once the session is cancelled.
+    Stanza {
+        /// The id or alias to resolve.
+        kind: AgentKind,
+        /// Where the answer goes.
+        reply: Reply<Box<AgentStanza>>,
     },
 }
 
