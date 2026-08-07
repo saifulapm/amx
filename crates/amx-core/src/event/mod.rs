@@ -31,10 +31,12 @@ pub type Seq = u64;
 
 /// One state transition.
 ///
-/// `#[non_exhaustive]`: M0 builds three of the five actors in 04 §2, so
-/// persistence and agent transitions add variants later. Every consumer must
-/// therefore have a catch-all arm, and the skew harness asserts that an
-/// unhandled variant is a soft failure on the wire rather than a hard one.
+/// `#[non_exhaustive]`: M0 built three of the five actors in 04 §2, so
+/// persistence and agent transitions add variants later — M1 adds the first
+/// two of them without a protocol bump, which is what the attribute is for.
+/// Every consumer must therefore have a catch-all arm, and the skew harness
+/// asserts that an unhandled variant is a soft failure on the wire rather than
+/// a hard one.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -155,6 +157,35 @@ pub enum Event {
     ClientDetached {
         /// The client.
         client: ClientId,
+    },
+    /// A snapshot was applied at startup, with what it cost.
+    ///
+    /// Published exactly once, by the restore path, before the gateway accepts
+    /// its first connection (D-M1-9) — so a client that attaches and then
+    /// subscribes sees it in the replay buffer rather than missing it. The
+    /// counts summarize a report whose entries `session.report` serves whole:
+    /// 04 §6 requires restore loss to be queryable, never log-only.
+    SessionRestored {
+        /// Workspaces that came back.
+        workspaces: u32,
+        /// Panes that came back.
+        panes: u32,
+        /// Entities that could not be restored and were pruned.
+        lost: u32,
+        /// Entities restored with something missing (a cwd, a sidecar).
+        degraded: u32,
+    },
+    /// The config file was re-read and applied.
+    ///
+    /// Published on every reload, including one that changed nothing, so tests
+    /// and `amx events` consumers can wait on the reload rather than poll for
+    /// its effects. `rejected_sections` counts the sections that kept their
+    /// running values because the file's version of them did not parse
+    /// (D-M1-8); the sections are *named* in the reload's diagnostics, which
+    /// stay on the server side of the bus.
+    ConfigReloaded {
+        /// How many sections were rejected and kept their running values.
+        rejected_sections: u32,
     },
 }
 

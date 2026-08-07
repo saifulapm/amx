@@ -70,6 +70,7 @@ pub fn ctx_under(root: &Path) -> Ctx {
         socket: runtime_dir.join("sock"),
         runtime_dir,
         state_dir: root.join("state"),
+        config_path: root.join("config/amx/config.toml"),
         bus: Arc::new(Bus::new(64)),
         cancel: CancellationToken::new(),
     }
