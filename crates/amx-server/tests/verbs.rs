@@ -142,6 +142,7 @@ impl Harness {
 ///
 /// Independent of anything `Core` or a pane's actor reports: this reads
 /// `/proc` directly, the same ground truth T05's and T08's own tests read.
+#[cfg(target_os = "linux")]
 fn scan_proc_for_cwd(dir: &Path) -> Option<u32> {
     let dir = std::fs::canonicalize(dir).ok()?;
     for entry in std::fs::read_dir("/proc").ok()?.flatten() {
@@ -158,6 +159,29 @@ fn scan_proc_for_cwd(dir: &Path) -> Option<u32> {
         if std::fs::read_link(&link).ok().as_deref() == Some(dir.as_path()) {
             return Some(pid);
         }
+    }
+    None
+}
+
+/// The pid of the process whose cwd is exactly `dir`, if one exists right
+/// now.
+///
+/// darwin mounts no `/proc`; libproc is the OS's own answer to the same
+/// question, read here over this process's descendants — every pane these
+/// tests spawn lives under the test process, `Core` being in-process. Still
+/// independent of `Core`'s reports: nothing consulted here passed through
+/// the server's bookkeeping.
+#[cfg(target_os = "macos")]
+fn scan_proc_for_cwd(dir: &Path) -> Option<u32> {
+    use amx_core::platform::{ProcessId, ProcessTree as _};
+    let dir = std::fs::canonicalize(dir).ok()?;
+    let tree = amx_server::platform::UnixProcessTree;
+    let mut queue = vec![ProcessId(std::process::id())];
+    while let Some(next) = queue.pop() {
+        if tree.cwd(next).is_ok_and(|cwd| cwd == dir) {
+            return Some(next.0);
+        }
+        queue.extend(tree.children(next).unwrap_or_default());
     }
     None
 }
