@@ -128,12 +128,27 @@ pub fn inode_of(env: &Env) -> u64 {
     std::fs::metadata(env.state_dir().join(SNAPSHOT_NAME)).map_or(0, |meta| meta.ino())
 }
 
+/// The directory the scrollback sidecars live in.
+///
+/// Named rather than assumed absent-or-empty, because D-M1-6 makes the
+/// directory itself the thing that goes away when history is turned off.
+pub fn history_dir(env: &Env) -> PathBuf {
+    env.state_dir().join(HISTORY_DIR)
+}
+
 /// The scrollback sidecars on disk, by file name.
 pub fn sidecars(env: &Env) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(env.state_dir().join(HISTORY_DIR)) else {
+    let Ok(entries) = std::fs::read_dir(history_dir(env)) else {
         return Vec::new();
     };
     entries.flatten().map(|entry| entry.path()).collect()
+}
+
+/// Whether any sidecar on disk holds `text`.
+pub fn sidecar_holds(env: &Env, text: &str) -> bool {
+    sidecars(env).iter().any(|path| {
+        std::fs::read(path).is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains(text))
+    })
 }
 
 /// Complain, in full, that a snapshot is not a whole one.

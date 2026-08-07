@@ -144,6 +144,9 @@ async fn pane_damage_events_never_schedule_a_save() {
     let rig = Rig::under(&root).start();
 
     // Everything a busy pane produces, none of which is the session's shape.
+    // The committed rows are in the list on purpose: `[persist] history` is
+    // off on this rig, and a pane's scrollback moving is only worth a save to
+    // somebody who asked for it on disk.
     for n in 0..8 {
         rig.publish(Event::PaneDamage {
             pane: pane_id(n),
@@ -442,6 +445,54 @@ async fn sidecars_are_not_dumped_while_history_is_off() {
 
     let report = rig.stop().await;
     assert_eq!(report.dumps, 0);
+    assert_eq!(
+        report.saves, 1,
+        "the flush saved; the committed row scheduled nothing of its own",
+    );
+}
+
+/// The gap M1 shipped with, in one sentence: a session settles into a shape
+/// and then spends the rest of the day producing nothing but output, so
+/// scrollback that could only ride *structural* dirt to disk never rode
+/// anything at all. Every session is in this state almost all of the time,
+/// which is why the same claim is also made over the real binary
+/// (`tests/persistence/scrollback.rs`).
+#[tokio::test(start_paused = true)]
+async fn committed_scrollback_alone_schedules_a_save() {
+    let root = TempDir::new("late");
+    let pane = FakePane::serving(&[("scrolled off", false)]);
+    let rig = Rig::under(&root)
+        .history(true)
+        .answers(Answers::WithPanes(vec![(pane_id(0), pane.handle.clone())]))
+        .start();
+
+    // No structural event, ever. The session's shape is whatever it was.
+    let began = Instant::now();
+    rig.publish(Event::HistoryCommitted {
+        pane: pane_id(0),
+        range: RowRange::single(RowId::FIRST),
+    });
+    captures(&rig, 1).await;
+    assert_eq!(
+        began.elapsed(),
+        QUIET_WINDOW,
+        "scrollback arms the one debounce, not a schedule of its own",
+    );
+    assert_eq!(
+        rig.spy.seen().captures,
+        vec![true],
+        "the save it armed asks for the pane handles it needs",
+    );
+
+    let state_dir = rig.state_dir().to_path_buf();
+    let report = rig.stop().await;
+    assert_eq!(report.dumps, 1);
+    assert!(
+        sidecar::load(&state_dir, pane_id(0))
+            .expect("the sidecar reads back")
+            .is_some(),
+        "the pane's scrollback is on disk with nothing structural having happened",
+    );
 }
 
 // --------------------------------------------------------------- the shutdown

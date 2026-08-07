@@ -979,6 +979,21 @@ what this one learned rather than the shape it guessed at.
   additions to `tests/integration.rs` as the scope line read: the seams
   need four files' worth of setup and `integration.rs` was already at 316
   lines against a 500-line soft budget.
+- **Dirtiness is structural *for the snapshot*; scrollback dirties on its
+  own.** §2's dirty set and D-M1-7 both read as if structure were the only
+  thing that ever schedules a save, and U05 implemented them literally: a
+  `HistoryCommitted` moved the sidecar's window and nothing else. The two
+  decisions only agree while a session is still being built. A settled
+  session — one workspace, one pane, a shell running something — produces
+  history and nothing structural ever again, so its sidecars were never
+  written at all, and D-M1-6's "restore replays saved scrollback" held only
+  in tests whose scrollback happened to arrive during pane creation. History
+  that has outrun its own sidecar now arms the same debounce, and only when
+  `[persist] history` is on. D-M1-7's real rule was never "structure only"
+  but "nothing per-frame": commits arrive at most once per rendered frame, so
+  a pane under sustained output holds the quiet window open and lands on the
+  staleness cap instead — one save and one dump per five seconds, which is
+  the cadence D-M1-6 priced a full-pane dump against in the first place.
 - **R-M1-2's tripwire needed a bounded stop.** `ServerChild::shutdown`
   waited out the rig's 60 s patience and asserted, which turns one wedge
   into a minute of silence per repetition and — worse — leaves the wedged

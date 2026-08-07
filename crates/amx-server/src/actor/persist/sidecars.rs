@@ -45,22 +45,45 @@ pub(super) struct Sidecars {
 }
 
 impl Sidecars {
-    /// Fold one history event into the windows.
+    /// Fold one history event into the windows, and say whether that leaves a
+    /// pane owing a dump.
     ///
     /// Only the three history variants reach here; the caller has already
-    /// decided that structure is dirt and everything else is noise.
-    pub(super) fn observe(&mut self, event: &Event) {
-        match event {
+    /// decided that structure is dirt and everything else is noise. The answer
+    /// is what arms the debounce for scrollback: a session whose shape has
+    /// stopped changing still produces history, and a dump that waited for the
+    /// next structural change would wait for the rest of the session.
+    pub(super) fn observe(&mut self, event: &Event) -> bool {
+        let pane = match event {
             Event::HistoryCommitted { pane, range } => {
                 self.windows
                     .entry(*pane)
                     .and_modify(|window| window.last = range.last)
                     .or_insert(*range);
+                *pane
             }
-            Event::HistoryEvicted { pane, oldest_row } => self.evicted(*pane, *oldest_row),
-            Event::HistoryInvalidated { pane, from_row, .. } => self.invalidated(*pane, *from_row),
-            _ => {}
-        }
+            Event::HistoryEvicted { pane, oldest_row } => {
+                self.evicted(*pane, *oldest_row);
+                *pane
+            }
+            Event::HistoryInvalidated { pane, from_row, .. } => {
+                self.invalidated(*pane, *from_row);
+                *pane
+            }
+            _ => return false,
+        };
+        self.owed(pane).is_some()
+    }
+
+    /// The window `pane` is owed a dump at, or `None` when its sidecar already
+    /// describes its history.
+    ///
+    /// The one predicate: what arms the debounce and what a dump acts on are
+    /// the same question asked at two moments, and answering it twice in two
+    /// places is how a save gets armed for work that then does not happen.
+    fn owed(&self, pane: PaneId) -> Option<RowRange> {
+        let window = *self.windows.get(&pane)?;
+        (self.dumped.get(&pane) != Some(&window)).then_some(window)
     }
 
     /// The eviction floor advanced: the window shrinks from the front, or is
@@ -113,12 +136,9 @@ impl Sidecars {
     ) -> u64 {
         let mut dumps = 0;
         for (pane, handle) in panes {
-            let Some(window) = self.windows.get(pane).copied() else {
+            let Some(window) = self.owed(*pane) else {
                 continue;
             };
-            if self.dumped.get(pane) == Some(&window) {
-                continue;
-            }
             if dump_one(state_dir, syncs, *pane, handle, window).await {
                 self.dumped.insert(*pane, window);
                 dumps += 1;
