@@ -19,6 +19,23 @@
 //! hands non-control frames to the caller ([`Session::call_with`]) instead of
 //! failing on them.
 //!
+//! # Reading is cancel-safe
+//!
+//! [`Session::read_frame_into`] is one arm of the client loop's `select!`, and
+//! the other arms — a keystroke, a `SIGWINCH`, the resize debounce — win races
+//! against it routinely. Winning drops the read future, so **nothing a read has
+//! taken off the socket may live on that future's stack**: a half-read frame
+//! left there would be bytes the socket no longer has and the reader no longer
+//! holds, and the next read would take a payload byte for a channel byte. That
+//! is a desync the peer never caused, and one the unbound-channel refusal below
+//! would report as if it had.
+//!
+//! So the progress lives in the session ([`ReadState`], [`Session::pending`]):
+//! a cancelled read resumes exactly where it stopped, whichever buffer the next
+//! caller passes. The one place a read may be dropped without consequence is
+//! before its first byte, which is where a `select!` that never wins its race
+//! leaves it.
+//!
 //! # Notifications
 //!
 //! JSON-RPC notifications — id-less by definition — are the server→client event
@@ -63,6 +80,27 @@ const CHANNELS: usize = u8::MAX as usize + 1;
 /// the case the bound exists for. A resync costs one round trip; an unbounded
 /// queue costs the process.
 const MAX_PENDING_NOTIFICATIONS: usize = 1024;
+
+/// How far the frame currently being read has got.
+///
+/// The whole of a read's progress, held by the session rather than by the read
+/// future, so cancelling that future costs nothing but the poll.
+#[derive(Clone, Copy, Debug)]
+enum ReadState {
+    /// `got` bytes of the next frame's header have been read.
+    Header {
+        /// Header bytes in hand, `0..FRAME_HEADER_LEN`.
+        got: usize,
+    },
+    /// The header is decoded and its channel admitted; `got` payload bytes are
+    /// in [`Session::pending`].
+    Payload {
+        /// The decoded header.
+        header: FrameHeader,
+        /// Payload bytes in hand.
+        got: usize,
+    },
+}
 
 /// What one control frame turned out to be, decided once as it is read.
 ///
@@ -134,6 +172,16 @@ pub struct Session {
     next_id: u64,
     /// The frame cap per bound inbound channel; `None` means unbound.
     caps: Box<[Option<u32>; CHANNELS]>,
+    /// How far the frame being read has got.
+    reading: ReadState,
+    /// The header bytes read so far, for the [`ReadState::Header`] phase.
+    header: [u8; FRAME_HEADER_LEN],
+    /// The payload bytes read so far.
+    ///
+    /// Swapped with the caller's buffer once a frame is whole, so a steady
+    /// stream of frames trades two buffers back and forth rather than
+    /// allocating one per frame.
+    pending: Vec<u8>,
     /// What the frame just read turned out to be, when it was a control one.
     last_control: ControlFrame,
     /// Whether this session queues notifications for its caller at all.
@@ -170,6 +218,9 @@ impl Session {
             write,
             next_id: 1,
             caps: Box::new([None; CHANNELS]),
+            reading: ReadState::Header { got: 0 },
+            header: [0; FRAME_HEADER_LEN],
+            pending: Vec::new(),
             last_control: ControlFrame::default(),
             collecting: false,
             notifications: Vec::new(),
@@ -241,32 +292,65 @@ impl Session {
     /// The payload buffer is sized only after the length passes the cap for
     /// its channel: a peer declaring 4 GiB costs a rejection, not 4 GiB.
     ///
+    /// Cancel-safe, as the module header requires: every byte this has taken
+    /// off the socket is in the session, so dropping the future part way
+    /// through a frame loses nothing and the next call finishes that same
+    /// frame. Each step commits its progress before the next await, which is
+    /// the only place cancellation can land.
+    ///
     /// A control frame is decoded here and nowhere else: a notification joins
     /// the queue [`Session::take_notifications`] drains, and a reply is kept
     /// decoded for [`Session::call_with`] to match against its id.
     pub async fn read_frame_into(&mut self, buf: &mut Vec<u8>) -> Result<FrameHeader, NetError> {
-        let mut header = [0_u8; FRAME_HEADER_LEN];
-        // A zero-length read of the first byte is the one place a disconnect
-        // is not an error — the same distinction the server's reader draws
-        // between a clean disconnect and a torn frame.
-        let read = self.read.read(&mut header[..1]).await?;
-        if read == 0 {
-            return Err(NetError::Closed);
+        loop {
+            match self.reading {
+                ReadState::Header { got } if got < FRAME_HEADER_LEN => {
+                    let read = self.read.read(&mut self.header[got..]).await?;
+                    if read == 0 {
+                        // A zero-length read before the first byte is the one
+                        // place a disconnect is not an error — the same
+                        // distinction the server's reader draws between a
+                        // clean disconnect and a torn frame.
+                        return Err(if got == 0 {
+                            NetError::Closed
+                        } else {
+                            NetError::Io(io::Error::from(io::ErrorKind::UnexpectedEof))
+                        });
+                    }
+                    self.reading = ReadState::Header { got: got + read };
+                }
+                ReadState::Header { .. } => {
+                    let header = FrameHeader::decode(self.header)?;
+                    if !header.is_control() {
+                        let cap = self.caps[usize::from(header.channel)]
+                            .ok_or(NetError::UnboundChannel(header.channel))?;
+                        header.check_stream_len(cap)?;
+                    }
+                    self.pending.clear();
+                    self.pending.resize(header.payload_len(), 0);
+                    self.reading = ReadState::Payload { header, got: 0 };
+                }
+                ReadState::Payload { header, got } if got < header.payload_len() => {
+                    let read = self.read.read(&mut self.pending[got..]).await?;
+                    if read == 0 {
+                        return Err(NetError::Io(io::Error::from(io::ErrorKind::UnexpectedEof)));
+                    }
+                    self.reading = ReadState::Payload {
+                        header,
+                        got: got + read,
+                    };
+                }
+                ReadState::Payload { header, .. } => {
+                    self.reading = ReadState::Header { got: 0 };
+                    buf.clear();
+                    std::mem::swap(buf, &mut self.pending);
+                    if header.is_control() {
+                        self.last_control = self.absorb_control(buf);
+                    }
+                    return Ok(header);
+                }
+            }
         }
-        self.read.read_exact(&mut header[1..]).await?;
-        let header = FrameHeader::decode(header)?;
-        if !header.is_control() {
-            let cap = self.caps[usize::from(header.channel)]
-                .ok_or(NetError::UnboundChannel(header.channel))?;
-            header.check_stream_len(cap)?;
-        }
-        buf.clear();
-        buf.resize(header.payload_len(), 0);
-        self.read.read_exact(buf).await?;
-        if header.is_control() {
-            self.last_control = self.absorb_control(buf);
-        }
-        Ok(header)
     }
 
     /// Decide what a control frame is, queueing it if it is a notification.

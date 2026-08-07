@@ -107,6 +107,12 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             // Every arm resolves to a `Wake` without touching `self` beyond
             // the one disjoint field its future borrows, so the handling
             // below runs with the borrows already released.
+            //
+            // Every arm must also be cancel-safe, because every other arm
+            // routinely wins the race and drops it: a keystroke arriving mid
+            // frame cancels the read, and a read that had left its progress on
+            // the dropped future would resume in the middle of a payload. That
+            // is why `read_frame_into` keeps its progress in the session.
             let wake = tokio::select! {
                 read = stdin.read(&mut input) => match read {
                     Ok(n @ 1..) => Wake::Stdin(n),
