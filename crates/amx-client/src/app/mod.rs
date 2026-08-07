@@ -8,11 +8,13 @@
 //! `input` dispatches through that module's key table.
 //!
 //! The module splits by responsibility: this file is the presentation core —
-//! model, chrome, input consequences — [`wired`] is the live loop over the
-//! session socket (frames in, input and calls out), and [`overlay`] is the
-//! picker and copy-mode surfaces drawn over the panes.
+//! model, layout, input consequences — [`wired`] is the live loop over the
+//! session socket (frames in, input and calls out), [`overlay`] is the picker
+//! and copy-mode surfaces drawn over the panes, and [`status`] is the status
+//! line and the cursor a repaint finishes with.
 
 mod overlay;
+mod status;
 mod wired;
 
 use std::collections::HashMap;
@@ -114,13 +116,9 @@ pub struct App<Fd: AsFd, W: Write> {
     focus: HashMap<WorkspaceId, PaneId>,
     /// The modal byte machine behind [`Self::handle_input`].
     input: Input,
-    /// The rendered status line, rebuilt only when its inputs change so a
-    /// repaint of an unchanged status costs a comparison, not two `String`s.
-    status: String,
-    /// The workspace label [`Self::status`] was built from.
-    status_label: String,
-    /// The mode tag [`Self::status`] was built from.
-    status_mode: &'static str,
+    /// The rendered status line, cached against the inputs it was built from
+    /// (see [`status`]).
+    status: status::StatusLine,
     /// How many full repaints this app has done. Exposed for tests; production
     /// callers have no need of it.
     pub repaints: u64,
@@ -152,9 +150,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             layout_dirty: true,
             focus: HashMap::new(),
             input: Input::new(),
-            status: String::new(),
-            status_label: String::new(),
-            status_mode: "",
+            status: status::StatusLine::default(),
             repaints: 0,
         })
     }
@@ -460,70 +456,9 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             }
         }
         self.draw_overlays();
-        self.refresh_status();
-        chrome::status_line(
-            &mut self.writer,
-            self.model.term.h.saturating_sub(1),
-            self.model.term.w,
-            &self.status,
-        );
+        self.draw_status();
         self.place_cursor();
         self.repaints += 1;
-    }
-
-    /// Park the terminal cursor on the focused pane's cursor cell, when it is
-    /// visible; hide it otherwise so chrome never shows a stray block.
-    fn place_cursor(&mut self) {
-        if self.picker.is_some() || self.copy.is_some() {
-            self.writer.set_cursor_visible(false);
-            return;
-        }
-        let placed = (|| {
-            let ws = self.model.focused_workspace_id()?;
-            let pane = *self.focus.get(&ws)?;
-            let rect = self
-                .pane_rects
-                .iter()
-                .find(|(id, _)| *id == pane)
-                .map(|(_, rect)| *rect)?;
-            let inner = chrome::inset(rect);
-            let grid = self.model.pane(pane)?;
-            let cursor = grid.cursor();
-            (cursor.visible && cursor.row < inner.h && cursor.col < inner.w)
-                .then(|| (inner.y + cursor.row, inner.x + cursor.col))
-        })();
-        match placed {
-            Some((row, col)) => {
-                self.writer.move_to(row, col);
-                self.writer.set_cursor_visible(true);
-            }
-            None => self.writer.set_cursor_visible(false),
-        }
-    }
-
-    /// Rebuild the cached status line if the label or mode changed.
-    ///
-    /// Repainting is per-frame; a workspace label or mode change is not. The
-    /// comparison keeps `format!`-style `String` churn off the repaint path —
-    /// `repaint_does_not_allocate_after_the_first_frame` holds it there.
-    fn refresh_status(&mut self) {
-        let label = self
-            .model
-            .focused_workspace()
-            .and_then(|ws| ws.label.as_deref())
-            .unwrap_or("amx");
-        let mode = mode_tag(self.mode, self.picker.is_some());
-        if !self.status.is_empty() && self.status_label == label && self.status_mode == mode {
-            return;
-        }
-        self.status_label.clear();
-        self.status_label.push_str(label);
-        self.status_mode = mode;
-        self.status.clear();
-        self.status.push(' ');
-        self.status.push_str(label);
-        self.status.push_str(mode);
-        self.status.push(' ');
     }
 
     /// The bytes the last [`Self::repaint`] produced.
@@ -539,20 +474,6 @@ impl<Fd: AsFd, W: Write> fmt::Debug for App<Fd, W> {
             .field("mode", &self.mode)
             .field("repaints", &self.repaints)
             .finish_non_exhaustive()
-    }
-}
-
-/// The status line's mode suffix.
-const fn mode_tag(mode: Mode, picker: bool) -> &'static str {
-    if picker {
-        " PICK"
-    } else {
-        match mode {
-            Mode::Terminal => "",
-            Mode::Prefix => " PREFIX",
-            Mode::Navigate => " NAV",
-            Mode::Copy => " COPY",
-        }
     }
 }
 

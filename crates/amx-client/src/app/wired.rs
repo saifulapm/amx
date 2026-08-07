@@ -259,7 +259,12 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         if let Some(focused) = state.focused_workspace {
             self.model.focus_workspace(focused);
         }
+        // Loss is state, not a log line (04 §6): the summary rides every
+        // snapshot, so the indicator survives a resync and clears itself the
+        // moment a server reports a clean start.
+        self.model.set_restore(state.restore);
         for pane in &state.panes {
+            self.model.set_pane_label(pane.pane, pane.label.clone());
             let cache = self.caches.entry(pane.pane).or_default();
             let known = cache.head().get();
             let head = pane.history_head.get();

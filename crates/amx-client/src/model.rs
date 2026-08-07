@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 
 use amx_core::{GridGeneration, Layout, PaneId, Rect, WorkspaceId};
+use amx_proto::control::session::RestoreSummary;
 use amx_proto::stream::{Cursor, CursorShape, DamageRect};
 
 /// A cell's foreground or background color.
@@ -228,7 +229,18 @@ pub enum SizeAuthority {
 pub struct ClientModel {
     workspaces: HashMap<WorkspaceId, WorkspaceModel>,
     panes: HashMap<PaneId, PaneGrid>,
+    /// Each labelled pane's label, as `session.state` last reported it.
+    ///
+    /// Beside the grids rather than inside them: a [`PaneGrid`] is cells the
+    /// server sent, and a label is state the server holds — they arrive on
+    /// different paths and one can exist without the other.
+    pane_labels: HashMap<PaneId, String>,
     focus_workspace: Option<WorkspaceId>,
+    /// What the server's startup restore cost, if it performed one.
+    ///
+    /// Mirrored from `session.state` so the status line can render the
+    /// indicator 04 §6 requires without a second call.
+    restore: Option<RestoreSummary>,
     /// The client's own terminal size, chrome included.
     pub term: Rect,
 }
@@ -240,7 +252,9 @@ impl ClientModel {
         Self {
             workspaces: HashMap::new(),
             panes: HashMap::new(),
+            pane_labels: HashMap::new(),
             focus_workspace: None,
+            restore: None,
             term: Rect::new(0, 0, cols, rows),
         }
     }
@@ -295,9 +309,39 @@ impl ClientModel {
         self.panes.get(&pane)
     }
 
+    /// Record (or clear) a pane's label, as `session.state` reports it.
+    pub fn set_pane_label(&mut self, pane: PaneId, label: Option<String>) {
+        match label {
+            Some(label) => {
+                self.pane_labels.insert(pane, label);
+            }
+            None => {
+                self.pane_labels.remove(&pane);
+            }
+        }
+    }
+
+    /// A pane's label, if the server has given it one.
+    #[must_use]
+    pub fn pane_label(&self, pane: PaneId) -> Option<&str> {
+        self.pane_labels.get(&pane).map(String::as_str)
+    }
+
+    /// Record what the server's startup restore cost, or that it did none.
+    pub fn set_restore(&mut self, restore: Option<RestoreSummary>) {
+        self.restore = restore;
+    }
+
+    /// What the server's startup restore cost, if it performed one.
+    #[must_use]
+    pub const fn restore(&self) -> Option<RestoreSummary> {
+        self.restore
+    }
+
     /// Drop a pane's cached grid, e.g. after `pane.close`.
     pub fn remove_pane(&mut self, pane: PaneId) {
         self.panes.remove(&pane);
+        self.pane_labels.remove(&pane);
     }
 
     /// Drop a workspace the server no longer reports, moving focus off it.
@@ -319,9 +363,10 @@ impl ClientModel {
         }
     }
 
-    /// Keep only the pane grids `keep` admits.
+    /// Keep only the pane grids `keep` admits, labels with them.
     pub fn retain_panes(&mut self, keep: impl Fn(PaneId) -> bool) {
         self.panes.retain(|id, _| keep(*id));
+        self.pane_labels.retain(|id, _| keep(*id));
     }
 
     /// The content area chrome leaves for panes: the whole terminal minus one
