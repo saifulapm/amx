@@ -283,9 +283,31 @@ impl Persist {
             | Event::WorkspaceClosed { .. }
             | Event::FocusChanged { .. }
             | Event::LayoutChanged { .. } => self.mark_dirty(),
+            // Scrollback is the session's *other* durable half, and it moves
+            // on its own schedule: a session settles into a shape and then
+            // spends the rest of the day producing history. A dump that only
+            // rode structural dirt would therefore never happen in a real
+            // session — the pane that scrolls is usually the pane nothing is
+            // being done to. So history that has outrun its sidecar arms the
+            // debounce too, but only when someone opted in: with `[persist]
+            // history` off, `Core` hands back no pane handles and the save
+            // this armed would capture, dump nothing and write nothing.
+            //
+            // These arrive at most once per rendered frame, so a pane under
+            // sustained output holds the quiet window open and the save lands
+            // on [`STALENESS_CAP`] instead. That is the ceiling doing its job
+            // (D-M1-7): one save and one dump every five seconds, which is the
+            // cadence D-M1-6 priced a full-pane dump against.
             Event::HistoryCommitted { .. }
             | Event::HistoryEvicted { .. }
-            | Event::HistoryInvalidated { .. } => self.sidecars.observe(event),
+            | Event::HistoryInvalidated { .. } => {
+                // Folded first and unconditionally: a window is a fact about a
+                // pane, and no config toggle changes what its history did.
+                let owed = self.sidecars.observe(event);
+                if self.history && owed {
+                    self.mark_dirty();
+                }
+            }
             // Damage, titles, clients coming and going — and whatever a later
             // version of the enum adds. None of it is the session's shape, and
             // folding per-frame damage in would put the quiet window out of
