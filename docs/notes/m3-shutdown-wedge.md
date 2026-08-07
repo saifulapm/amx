@@ -323,9 +323,9 @@ Cross-wave notes for the orchestrator:
   obvious seam in `env.rs` when somebody does take it — it is a self-contained
   concept and about 110 lines. R-M3-7's list does not name either file; this is
   a note to add to it, not a rule already broken.
-Three things seen under load during the spike and **not** chased, because none
-of them is the drain. They are recorded with their evidence so the next person
-does not have to rediscover them, and none is W01's to fix.
+Four things seen under load and **not** chased, because none of them is the
+drain. They are recorded with their evidence so the next person does not have
+to rediscover them, and none is W01's to fix.
 
 - **`flow_control_urandom_pane…` has a load-sensitive threshold.** It asserts
   the server ingested more than 8 MiB during a fixed flood window; under
@@ -340,6 +340,17 @@ does not have to rediscover them, and none is W01's to fix.
   This one is *not* a test artefact: a client refusing a frame on a channel it
   has not bound is a stream-lifecycle race, and it belongs to whoever owns
   `stream.bind` next (W08 binds a `generation` onto exactly that path).
+- **The hook emitter's own success can break its test.**
+  `hook_exits_zero_and_fast_with_no_socket_no_env_or_dead_server` writes its
+  payload to the stdin of an `amx _hook` whose entire contract, on that path, is
+  to exit immediately — so a child that wins the race satisfies the assertion
+  and fails the `write_all(…).expect("write the payload")` that precedes it,
+  with `BrokenPipe`. Structural, and worse the faster the emitter gets, which
+  is the direction that code is supposed to move. Seen once in 115 runs under
+  16–20 hogs on the W02 branch (their measurement, not this spike's — the
+  mechanism is confirmed here by reading `hook.rs`'s `run_hook`, which is the
+  part worth trusting). The fix belongs to whoever owns that file and is to
+  tolerate `BrokenPipe` on the payload write, never to slow the emitter down.
 - **A server can be signalled before it can hear.** Seen once: a clean stop
   that ended in `SIGTERM`'s *default* disposition, killing the process outright
   with no drain, no final capture and the socket left behind. `Gateway::bind`
