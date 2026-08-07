@@ -160,6 +160,25 @@ impl Gateway {
             Ok(_) => {}
             Err(err) => return Err(probe_error(&ctx.socket, err)),
         }
+        // Whatever survived the probe still owns the path, and the refusal
+        // must be this code's, not `bind(2)`'s: Linux refuses a leftover
+        // entry with `EADDRINUSE`, but darwin's `bind(2)` follows a trailing
+        // symlink and would plant the socket at its target — a dangling
+        // symlink probes `Absent` (connect follows it to nothing) and would
+        // slip straight through to a mislocated bind. A racer that finished
+        // listening inside the window is reported running, same as losing
+        // the bind race below.
+        if fs::symlink_metadata(&ctx.socket).is_ok() {
+            return Err(match probe::probe(&ctx.socket) {
+                Ok(found) if found.is_running() => GatewayError::AlreadyRunning {
+                    path: ctx.socket.clone(),
+                },
+                _ => GatewayError::Bind {
+                    path: ctx.socket.clone(),
+                    source: io::Error::from(io::ErrorKind::AddrInUse),
+                },
+            });
+        }
         let listener = match UnixListener::bind(&ctx.socket) {
             Ok(listener) => listener,
             Err(source) if source.kind() == io::ErrorKind::AddrInUse => {

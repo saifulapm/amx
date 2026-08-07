@@ -37,9 +37,13 @@ async fn typed_bytes_reach_the_panes_child_process() {
 
     term.type_line(&format!("touch {}", hit.display()));
     // The echo discriminates: typed bytes that never render never reached the
-    // pty; an echoed line whose file never lands failed in the shell.
-    term.wait_output("the typed line to echo", |seen| shows(seen, "touch"));
-    rig::wait_until("the typed command's file to appear", || hit.is_file());
+    // pty; an echoed line whose file never lands failed in the shell. The
+    // needle is the line's *tail*: darwin's `/bin/sh` is bash 3.2, whose
+    // readline horizontally scrolls a line longer than the pane is wide (the
+    // deep `$TMPDIR` there guarantees that) and keeps only the tail on
+    // screen, where a wrapping display keeps the whole line.
+    term.wait_output("the typed line to echo", |seen| shows(seen, "typed-hit"));
+    term.wait_until("the typed command's file to appear", || hit.is_file());
 
     // And the round trip back: output produced by the child crosses the wire
     // into this client's screen. `printf` so the typed line itself cannot
@@ -74,13 +78,17 @@ async fn resize_delivers_sigwinch_and_the_child_sees_new_dimensions() {
     // at its prompt is shell-specific — bash runs it there, dash does not.
     // Non-interactive sh pins both down: one group, and a pending trap runs
     // at every command boundary, which the spin on `:` supplies immediately.
+    // `trap''-armed`: the quotes vanish in the shell, so the marker below can
+    // only come from the echo *executing* — the typed line's own rendering,
+    // wrapped or scrolled, never holds the contiguous marker and cannot
+    // satisfy the wait before the baseline `stty` has run.
     term.type_line(&format!(
         "sh -c 'trap \"stty size >> {f}\" WINCH; stty size > {f}; \
-         echo trap-armed; while :; do :; done'",
+         echo trap''-armed; while :; do :; done'",
         f = sizes.display()
     ));
     term.wait_output("the trap to arm", |seen| shows(seen, "trap-armed"));
-    rig::wait_until_or(
+    term.wait_until_or(
         "the baseline size to be recorded",
         || {
             std::fs::read_to_string(&sizes)
@@ -99,20 +107,33 @@ async fn resize_delivers_sigwinch_and_the_child_sees_new_dimensions() {
     // re-projects the layout, the pane's pty resizes, the child hears it.
     term.resize(30, 100);
     let grown = (30 - 1 - 2, 100 - 2);
-    rig::wait_until_or(
-        "the child to record the post-SIGWINCH size",
-        || {
-            std::fs::read_to_string(&sizes)
-                .is_ok_and(|s| s.contains(&format!("{} {}", grown.0, grown.1)))
-        },
-        || {
-            format!(
-                "wanted {:?}, the file holds {:?}",
-                format!("{} {}", grown.0, grown.1),
-                std::fs::read_to_string(&sizes)
-            )
-        },
-    );
+    let wanted = format!("{} {}", grown.0, grown.1);
+    if !term.try_wait_until(|| std::fs::read_to_string(&sizes).is_ok_and(|s| s.contains(&wanted))) {
+        // Discriminate where the resize died before failing. A SIGWINCH by
+        // hand to the trap's shell separates the halves the kernel fused: a
+        // trap that then records the grown size had a resized pty and a lost
+        // signal; the old size again means the pty never resized; silence
+        // means the trap's shell is gone. The server's own pane sizes then
+        // separate "the viewport never landed" from "the resize was
+        // commanded and lost below".
+        let before = std::fs::read_to_string(&sizes).unwrap_or_default();
+        let signalled = rig::env::signal_winch(&sizes.display().to_string());
+        let fired =
+            term.try_wait_until(|| std::fs::read_to_string(&sizes).unwrap_or_default() != before);
+        let after = std::fs::read_to_string(&sizes).unwrap_or_default();
+        let mut wire = Wire::connect(&env.socket()).await;
+        wire.hello(amx_proto::version::window()).await;
+        let state = wire.request("session.state", json!({})).await;
+        panic!(
+            "timed out waiting until the child records the post-SIGWINCH size: \
+             wanted {wanted:?}, the file held {before:?}; after SIGWINCH by hand \
+             to {signalled} trap shell(s) the trap {}, the file holds {after:?}; \
+             the server sizes its panes {}; the client painted:\n{}",
+            if fired { "fired" } else { "stayed silent" },
+            result_of(&state)["panes"],
+            render(&rig::rasterize(term.output())),
+        );
+    }
 
     term.chord(b'd');
     assert_eq!(term.wait(), Some(0));
@@ -273,8 +294,11 @@ async fn a_process_started_by_typing_outlives_every_client() {
     // external command would be exec'd over it.
     term.type_line(&format!("sh -c 'echo held; read _held' {marker}"));
     // The echo discriminates input loss from a process-table probe failure.
-    term.wait_output("the held marker to render", |seen| shows(seen, "held"));
-    rig::wait_until("the process to appear in the table", || {
+    // The needle is the marker at the line's *tail*, which bash 3.2 (darwin's
+    // `/bin/sh`) keeps on screen when readline horizontally scrolls a long
+    // line — "held" sits at the head, which scrolling hides.
+    term.wait_output("the typed line to echo", |seen| shows(seen, &marker));
+    term.wait_until("the process to appear in the table", || {
         processes_with_arg(&marker) >= 1
     });
 
