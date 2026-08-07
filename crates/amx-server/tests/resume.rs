@@ -143,8 +143,13 @@ fn recorder_shell(fx: &Fixture, bytes: usize) -> PathBuf {
 /// The prefix every recorded pane writes its input under.
 const RECORDING_PREFIX: &str = "typed.";
 
-/// Every recording that holds something, in no particular order.
-fn recordings(dir: &Path) -> Vec<String> {
+/// Every recording that holds a whole invocation, in no particular order.
+///
+/// `at_least` and not "non-empty": the child records a byte at a time, so a
+/// file that exists is a write in progress and a file of the expected length is
+/// a write that finished. Waiting on this predicate is what makes the assertion
+/// after it about the bytes rather than about the timing.
+fn recordings(dir: &Path, at_least: usize) -> Vec<String> {
     let mut found = Vec::new();
     for entry in std::fs::read_dir(dir).expect("read the fixture directory") {
         let path = entry.expect("a directory entry").path();
@@ -155,7 +160,7 @@ fn recordings(dir: &Path) -> Vec<String> {
             continue;
         }
         let bytes = std::fs::read(&path).unwrap_or_default();
-        if !bytes.is_empty() {
+        if bytes.len() >= at_least {
             found.push(String::from_utf8_lossy(&bytes).into_owned());
         }
     }
@@ -521,12 +526,12 @@ async fn two_panes_claiming_one_conversation_resume_once_second_restores_a_shell
 
     // And the count that matters is not the report's but the children's: one
     // pane was typed into, the other is sitting at a plain shell.
-    let dir = fx_dir.clone();
+    let (dir, want) = (fx_dir.clone(), expected.len());
     wait_until("one pane receives the resume invocation", async || {
-        !recordings(&dir).is_empty()
+        !recordings(&dir, want).is_empty()
     })
     .await;
-    assert_eq!(recordings(&fx_dir), vec![expected]);
+    assert_eq!(recordings(&fx_dir, want), vec![expected]);
 
     running.into_core().await;
 }
@@ -588,14 +593,14 @@ async fn failed_spawn_releases_the_reservation_for_a_later_pane() {
         degraded_reasons(&running).await.is_empty(),
         "the second pane claimed the conversation the first one gave back",
     );
-    let dir = fx_dir.clone();
+    let (dir, want) = (fx_dir.clone(), expected.len());
     wait_until(
         "the surviving pane receives the resume invocation",
-        async || !recordings(&dir).is_empty(),
+        async || !recordings(&dir, want).is_empty(),
     )
     .await;
     assert_eq!(
-        recordings(&fx_dir),
+        recordings(&fx_dir, want),
         vec![expected],
         "the conversation the doomed pane reserved was handed to the next one",
     );
@@ -641,13 +646,13 @@ async fn resume_types_the_command_after_first_damage_and_the_child_receives_it()
     assert!(summary.is_clean(), "the pane came back whole");
 
     let running = fx.start();
-    let dir = fx_dir.clone();
+    let (dir, want) = (fx_dir.clone(), expected.len());
     wait_until("the child receives the resume invocation", async || {
-        !recordings(&dir).is_empty()
+        !recordings(&dir, want).is_empty()
     })
     .await;
     assert_eq!(
-        recordings(&fx_dir),
+        recordings(&fx_dir, want),
         vec![expected],
         "the child received the planned argv, quoted once, and a submit",
     );
