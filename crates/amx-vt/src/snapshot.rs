@@ -32,6 +32,29 @@
 //! structure trivially copyable and serialisable for T09's damage encoder, and
 //! lets a row be refilled by clearing two `Vec`s that keep their capacity — so
 //! a steady-state frame allocates nothing.
+//!
+//! ## The text view
+//!
+//! [`Row::line`] serves that same arena as a `&str`, and [`Snapshot::tail`]
+//! walks the last rows of the grid. Together they are what screen detection and
+//! `pane.read` read: a borrow per row, no concatenation, no allocation on a
+//! path that runs once per damage batch.
+//!
+//! The arena is written to be exactly the row as painted, which costs one rule
+//! in [`copy_row`]: a cell holding no grapheme cluster contributes a single
+//! space, because that is what the renderer draws for it, and a rule matching
+//! `"foo   bar"` must not match a row where those two words sit in different
+//! columns. The exception is the second column of a wide character
+//! ([`CellWide::SpacerTail`]), whose cluster the *first* column already
+//! contributed. So a line is one `char` per printed character and not one per
+//! column, and a trailing run of blank columns is a trailing run of spaces —
+//! callers that do not want them use `line().trim_end()`.
+//!
+//! The view is the *visible grid*. amx's scrollback lives client-side (04 §3),
+//! so the server's snapshot is the live bottom of the terminal by construction,
+//! and a detector reading it can never be looking at a scrolled-away viewport —
+//! the anchoring problem herdr solves with a dedicated buffer does not exist
+//! here.
 
 use std::sync::Arc;
 
@@ -92,6 +115,26 @@ impl Row {
         self.text.get(start..end).unwrap_or_default()
     }
 
+    /// The row as painted, left to right, blank columns as spaces.
+    ///
+    /// A borrow of the row's own arena: calling this allocates nothing and
+    /// copies nothing, which is the property the detection path (one call per
+    /// row per damage batch) is built on.
+    ///
+    /// One printed character is one `char`, so a wide character counts once
+    /// even though it covers two columns, and a grapheme cluster with combining
+    /// marks counts once however many codepoints it carries. Blank columns are
+    /// spaces — including trailing ones, which `trim_end` removes.
+    #[must_use]
+    pub fn line(&self) -> &str {
+        // The arena only ever receives grapheme clusters the library encoded as
+        // UTF-8 and ASCII spaces this module pushes, so the check always
+        // succeeds. It is a check rather than an assumption because the bytes
+        // arrive across FFI, and a row that somehow failed it should read as
+        // empty, not abort a session.
+        std::str::from_utf8(&self.text).unwrap_or_default()
+    }
+
     /// Whether this row soft-wraps into the next.
     #[must_use]
     pub fn wrapped(&self) -> bool {
@@ -147,6 +190,17 @@ impl Snapshot {
     #[must_use]
     pub fn row(&self, index: u16) -> Option<&Row> {
         self.rows.get(index as usize)
+    }
+
+    /// The last `count` rows, top to bottom.
+    ///
+    /// Fewer if the grid is shorter; none if `count` is zero. The bottom of the
+    /// grid is the bottom of the *live* terminal — scrollback is client-side
+    /// (04 §3) and never enters a snapshot — so this is the region a screen
+    /// rule means by "the last few lines", with no anchoring to get wrong.
+    pub fn tail(&self, count: u16) -> impl DoubleEndedIterator<Item = &Row> + ExactSizeIterator {
+        let start = self.rows.len().saturating_sub(count as usize);
+        self.rows[start..].iter()
     }
 
     /// The indices of the rows that changed since the previous published
@@ -337,6 +391,17 @@ fn copy_row(row: &mut crate::render::Row<'_>, target: &mut Row) -> Result<()> {
     while let Some(cell) = cells.next_cell() {
         let start = target.text.len();
         let len = cell.text(&mut target.text)?;
+        let wide = cell.wide()?;
+        if len == 0 && wide != CellWide::SpacerTail {
+            // A column the application never wrote holds no cluster, and the
+            // renderer paints it blank. The arena carries that blank as a space
+            // so `Row::line` reads as the row looks; the cell's own `TextRef`
+            // stays empty, so the wire encoder still sends nothing for it and
+            // this is invisible to every other reader. A spacer tail is skipped
+            // because the wide cluster in the column before it already covers
+            // this one.
+            target.text.push(b' ');
+        }
         target.cells.push(Cell {
             text: TextRef {
                 // Both fits are structural: a row's text is bounded by
@@ -344,7 +409,7 @@ fn copy_row(row: &mut crate::render::Row<'_>, target: &mut Row) -> Result<()> {
                 start: u32::try_from(start).unwrap_or(u32::MAX),
                 len: u16::try_from(len).unwrap_or(u16::MAX),
             },
-            wide: cell.wide()?,
+            wide,
             foreground: cell.foreground()?,
             background: cell.background()?,
             style: if cell.has_styling()? {
