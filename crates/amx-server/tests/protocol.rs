@@ -120,42 +120,6 @@ async fn a_call_naming_a_pane_that_does_not_exist_is_a_reply_not_a_disconnect() 
     server.shutdown().await;
 }
 
-#[tokio::test]
-async fn an_unimplemented_row_answers_not_implemented_not_404() {
-    // The row is in the table both peers share, so reporting it as unknown
-    // would tell a client to stop offering it — the distinction
-    // `dispatch::NOT_IMPLEMENTED` exists for. U06 replaced `session.report`'s
-    // seam with the real thing; `pane.rename` is U07's, and until it lands
-    // this code is what a client sees.
-    let server = Server::start("seams").await;
-    let mut client = server.attach().await;
-
-    let pane = amx_core::PaneId::new_v4().to_string();
-    for (id, method, params) in [(1, "pane.rename", json!({ "pane": pane, "label": "editor" }))] {
-        let reply = client.request(id, method, params).await;
-        let RpcOutcome::Error(err) = &reply.outcome else {
-            panic!("{method} is a seam in this build, not an implemented method");
-        };
-        assert_eq!(
-            err.code,
-            amx_server::dispatch::NOT_IMPLEMENTED,
-            "{method} answered {}, not the seam code",
-            err.code
-        );
-        assert_ne!(
-            err.code,
-            RpcError::METHOD_NOT_FOUND,
-            "{method} is in the table; disowning it would tell the client to stop offering it"
-        );
-        assert!(err.message.contains(method), "{}", err.message);
-    }
-
-    // The connection survives both, like every other refusal here.
-    let reply = client.request(3, "ping", json!({})).await;
-    assert!(matches!(reply.outcome, RpcOutcome::Result(_)));
-
-    server.shutdown().await;
-}
 
 #[tokio::test]
 async fn bad_parameters_are_a_reply_not_a_disconnect() {

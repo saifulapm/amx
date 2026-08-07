@@ -18,15 +18,9 @@
 //! a build in that state answers with rather than `METHOD_NOT_FOUND` —
 //! reporting an unimplemented method as unknown would tell a client to stop
 //! offering it. T16 emptied the seam list for M0; U01 refilled it with M1's
-//! two new rows, each carrying the task that closes it, and U06 closed
-//! `session.report`:
-//!
-//! | Method | Filled by |
-//! |---|---|
-//! | `pane.rename` | U07 |
-//!
-//! When the last one lands, [`seam`] has no callers again — which is U10's
-//! `grep`-level acceptance check.
+//! two new rows, each carrying the task that closed it — U06 took
+//! `session.report`, U07 took `pane.rename` — and the list is empty again:
+//! [`seam`] has no callers, which is U10's `grep`-level acceptance check.
 
 mod pane;
 mod stream;
@@ -220,14 +214,11 @@ impl Dispatch for Router {
         pane::resize(self, params).await
     }
 
-    /// Seam owned by **U07** (`docs/07-m1-plan.md` §4), which routes it into
-    /// `dispatch::pane` once `Core`'s handler mutates state.
     async fn pane_rename(
         &mut self,
         params: pane_proto::RenameParams,
     ) -> Result<pane_proto::RenameReply, RpcError> {
-        let _ = params;
-        Err(seam("pane.rename"))
+        pane::rename(self, params).await
     }
 
     async fn session_state(

@@ -19,6 +19,9 @@ pub const SESSION: &str = "session";
 /// The `--params` argument's id, carried by every generated method command.
 pub const PARAMS: &str = "params";
 
+/// The `--json` argument's id, carried by `session report` alone.
+pub const JSON: &str = "json";
+
 /// The whole `amx` command tree.
 #[must_use]
 pub fn cli() -> Command {
@@ -86,6 +89,10 @@ fn server() -> Command {
 }
 
 /// The `amx session …` lifecycle verbs, added onto the generated group.
+///
+/// The generated `report` leaf is mutated rather than added: it is a real
+/// method-table row, and all it gains here is the `--json` escape hatch out of
+/// the human table `cmd::session` prints for it.
 fn session_lifecycle(group: Command) -> Command {
     let name = || {
         Arg::new("name")
@@ -93,6 +100,14 @@ fn session_lifecycle(group: Command) -> Command {
             .help("The session to act on [default: the selected session]")
     };
     group
+        .mut_subcommand("report", |report| {
+            report.arg(
+                Arg::new(JSON)
+                    .long("json")
+                    .action(ArgAction::SetTrue)
+                    .help("Print the reply as JSON instead of a table"),
+            )
+        })
         .subcommand_required(true)
         .arg_required_else_help(true)
         .subcommand(Command::new("list").about("List the sessions with a server running"))

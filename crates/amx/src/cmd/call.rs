@@ -44,6 +44,28 @@ pub async fn run(
         None => Value::Object(serde_json::Map::new()),
     };
 
+    let reply = one_shot(env, root, method.wire, params).await?;
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&reply).context("format the reply")?
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Make one control call against the session `root` selects, and hand back its
+/// raw reply.
+///
+/// The connect-probe-negotiate preamble every one-shot verb shares, factored
+/// out so a verb that formats its own reply (`amx session report`) reaches the
+/// session exactly the way the generated ones do — including refusing to start
+/// a server, which is the rule stated above.
+pub async fn one_shot(
+    env: &Env,
+    root: &ArgMatches,
+    wire: &str,
+    params: Value,
+) -> anyhow::Result<Value> {
     let ctx = ctx_of(env, root, None)?;
     anyhow::ensure!(
         probe(&ctx.socket)
@@ -59,16 +81,10 @@ pub async fn run(
     let (mut session, _welcome) = Session::attach(stream, client_info(), false, None)
         .await
         .context("negotiate with the session")?;
-    let reply = session
-        .call(method.wire, params)
+    session
+        .call(wire, params)
         .await
-        .with_context(|| format!("call {}", method.wire))?;
-
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&reply).context("format the reply")?
-    );
-    Ok(ExitCode::SUCCESS)
+        .with_context(|| format!("call {wire}"))
 }
 
 /// The full CLI path the user typed, and the matches of its last segment.
