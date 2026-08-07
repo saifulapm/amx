@@ -18,7 +18,9 @@ use amx_server::session::probe::{Probe, probe};
 use rig::env::processes_with_arg;
 use rig::screen::render;
 use rig::wire::{split_running, workspace_with_root};
-use rig::{ALT_ENTER, ALT_LEAVE, Env, Screen, Wire, rasterize, result_of, shows, wait_until};
+use rig::{
+    ALT_ENTER, ALT_LEAVE, Env, PATIENCE, Screen, Wire, rasterize, result_of, shows, wait_until,
+};
 use serde_json::json;
 
 const ROWS: u16 = 24;
@@ -178,6 +180,13 @@ async fn reattach_from_a_second_terminal_while_the_first_is_live() {
 /// that it does not scale with the flood.
 const RSS_GROWTH_BOUND: u64 = 64 * 1024 * 1024;
 
+/// How much of the flood must have reached the server before its steady memory
+/// is worth asserting anything about.
+///
+/// A quantity, not a rate: the observation loop waits for it rather than
+/// hoping three seconds bought it.
+const FLOOD_INGEST: u64 = 8 * 1024 * 1024;
+
 #[tokio::test]
 async fn flow_control_urandom_pane_with_stalled_client_bounds_memory_and_preserves_grids() {
     let env = Env::new("flood");
@@ -225,13 +234,30 @@ async fn flow_control_urandom_pane_with_stalled_client_bounds_memory_and_preserv
     // keeps running. The interval is a sampling cadence, not a wait — every
     // tick re-checks real state, and the control connection must answer with
     // monotonic sequence numbers the entire time.
+    //
+    // Two things end the loop, and neither is a clock alone: three seconds of
+    // observation, *and* the megabytes that make the bound mean something. A
+    // fixed window would turn the second into a claim about throughput — these
+    // suites run in parallel under `cargo test --workspace`, and a flood given
+    // a third of a core delivers a third of the bytes in the same three
+    // seconds. A slow machine takes longer here and proves exactly the same
+    // pair of facts; only a flood that never arrives fails, at the deadline.
     let mut ticker = tokio::time::interval(Duration::from_millis(50));
     let start = Instant::now();
     let ingested_before = server.read_bytes();
+    // Where the kernel keeps no io accounting the number does not exist, so
+    // the observation window is all there is; say so out loud rather than
+    // failing on a probe gap.
+    let accounted = ingested_before.is_some();
+    if !accounted {
+        eprintln!("io accounting unavailable on this platform; ingestion bound not checked");
+    }
+    let deadline = Instant::now() + PATIENCE;
     let mut baseline_rss = None;
     let mut peak: u64 = 0;
     let mut last_seq = 0_u64;
-    while start.elapsed() < Duration::from_secs(3) {
+    let mut ingested = 0_u64;
+    loop {
         ticker.tick().await;
         let rss = server.rss_bytes();
         if start.elapsed() >= Duration::from_secs(1) {
@@ -255,21 +281,23 @@ async fn flow_control_urandom_pane_with_stalled_client_bounds_memory_and_preserv
             1,
             "the flood must keep running"
         );
-    }
 
-    // The bound above means nothing unless the flood really flowed: the
-    // server must have read megabytes off the pane's pty while its memory
-    // stood still. Where the kernel keeps no io accounting the number does
-    // not exist; say so out loud instead of failing on a probe gap.
-    match (ingested_before, server.read_bytes()) {
-        (Some(before), Some(after)) => {
-            let ingested = after.saturating_sub(before);
-            assert!(
-                ingested > 8 * 1024 * 1024,
-                "the server ingested only {ingested} bytes; the flood never reached it"
-            );
+        // The bound above means nothing unless the flood really flowed: the
+        // server must have read megabytes off the pane's pty while its memory
+        // stood still.
+        if let (Some(before), Some(after)) = (ingested_before, server.read_bytes()) {
+            ingested = after.saturating_sub(before);
         }
-        _ => eprintln!("io accounting unavailable on this platform; ingestion bound not checked"),
+        let flowed = !accounted || ingested > FLOOD_INGEST;
+        if start.elapsed() >= Duration::from_secs(3) && flowed {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "after {:?} the server had ingested {ingested} bytes of the flood, \
+             short of {FLOOD_INGEST}; the flood never reached it",
+            start.elapsed()
+        );
     }
 
     // The stalled client was neither disconnected nor corrupted: every reply
