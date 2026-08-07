@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0",
+  "method": "event",
+  "params": {
+    "delivery": "gap",
+    "from": 72,
+    "to": 96
+  }
+}

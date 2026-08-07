@@ -1,0 +1,19 @@
+{
+  "reply": {
+    "line": "test result: ok. 41 passed; 0 failed",
+    "matched": true,
+    "pane": "00000000-0000-0000-0000-0000000000a1",
+    "row": 118,
+    "seq": 70
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "pane.wait_output",
+    "params": {
+      "regex": "^test result: ok",
+      "target": "00000000-0000-0000-0000-0000000000a1",
+      "timeout_ms": 300000
+    }
+  }
+}

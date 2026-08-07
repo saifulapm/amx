@@ -21,6 +21,7 @@
 //! schema`, so it is not generated here yet; [`SPECS`] is the table it will be
 //! generated from.
 
+pub mod agent;
 #[cfg(feature = "cli")]
 pub mod cli;
 pub mod client;
@@ -28,6 +29,7 @@ pub mod pane;
 pub mod session;
 pub mod stream;
 mod table;
+pub mod wait;
 pub mod workspace;
 
 use serde::{Deserialize, Serialize};
@@ -217,5 +219,130 @@ method_table! {
         reply: client::ViewportReply,
         cli: ["client", "viewport"],
         about: "Declare this client's terminal size and visible panes",
+    }
+
+    /// One agent hook invocation, forwarded by `amx _hook`.
+    ///
+    /// Boxed, like `PersistCommand::Snapshot`: a hook payload is much the
+    /// largest thing on the table — it carries a session id, a transcript
+    /// path, a tool name and a subagent scope — and [`Call`]'s size is set by
+    /// its biggest variant, which every other call would then pay for.
+    AgentReport {
+        wire: "agent.report",
+        handler: agent_report,
+        params: Box<agent::ReportParams>,
+        reply: agent::ReportReply,
+        cli: ["agent", "report"],
+        about: "Report one agent hook event (used by `amx _hook`)",
+    }
+
+    /// Start a named agent in a new pane and wait for it to be ready.
+    AgentStart {
+        wire: "agent.start",
+        handler: agent_start,
+        params: agent::StartParams,
+        reply: agent::StartReply,
+        cli: ["agent", "start"],
+        about: "Start a named agent in a new pane, ready for input",
+    }
+
+    /// Submit a prompt to an agent, optionally waiting for what it does next.
+    AgentPrompt {
+        wire: "agent.prompt",
+        handler: agent_prompt,
+        params: agent::PromptParams,
+        reply: agent::PromptReply,
+        cli: ["agent", "prompt"],
+        about: "Send a prompt to an agent, optionally waiting for it to finish",
+    }
+
+    /// Report how a pane's status was detected, rule by rule.
+    AgentExplain {
+        wire: "agent.explain",
+        handler: agent_explain,
+        params: agent::ExplainParams,
+        reply: agent::ExplainReply,
+        cli: ["agent", "explain"],
+        about: "Explain how a pane's agent status was detected",
+    }
+
+    /// Focus the head of the attention queue.
+    AgentNext {
+        wire: "agent.next",
+        handler: agent_next,
+        params: agent::NextParams,
+        reply: agent::NextReply,
+        cli: ["agent", "next"],
+        about: "Focus the agent at the head of the attention queue",
+    }
+
+    /// Wait for a pane's agent status, or for its process to end.
+    Wait {
+        wire: "wait",
+        handler: wait,
+        params: wait::WaitParams,
+        reply: wait::WaitReply,
+        cli: ["wait"],
+        about: "Wait until a pane's agent is blocked or idle, or its process exits",
+    }
+
+    /// Subscribe this connection to the event bus.
+    EventsSubscribe {
+        wire: "events.subscribe",
+        handler: events_subscribe,
+        params: wait::SubscribeParams,
+        reply: wait::SubscribeReply,
+        cli: ["events", "subscribe"],
+        about: "Stream bus events on this connection as notifications",
+    }
+
+    /// Write text into a pane's process, verbatim.
+    PaneSendText {
+        wire: "pane.send_text",
+        handler: pane_send_text,
+        params: pane::SendTextParams,
+        reply: pane::SendTextReply,
+        cli: ["pane", "send-text"],
+        about: "Write text into a pane's process, verbatim",
+    }
+
+    /// Encode and send key combos to a pane's process.
+    PaneSendKeys {
+        wire: "pane.send_keys",
+        handler: pane_send_keys,
+        params: pane::SendKeysParams,
+        reply: pane::SendKeysReply,
+        cli: ["pane", "send-keys"],
+        about: "Send key combos (`ctrl+h`, `f1`, …) to a pane's process",
+    }
+
+    /// Type a line into a pane and submit it, bracketed-paste aware.
+    PaneRun {
+        wire: "pane.run",
+        handler: pane_run,
+        params: pane::RunParams,
+        reply: pane::RunReply,
+        cli: ["pane", "run"],
+        about: "Type a line into a pane and submit it",
+    }
+
+    /// Read a pane's visible grid as text.
+    PaneRead {
+        wire: "pane.read",
+        handler: pane_read,
+        params: pane::ReadParams,
+        reply: pane::ReadReply,
+        cli: ["pane", "read"],
+        about: "Read a pane's visible screen as text",
+    }
+
+    /// Wait for a pattern to appear on a pane's screen.
+    PaneWaitOutput {
+        wire: "pane.wait_output",
+        handler: pane_wait_output,
+        params: wait::WaitOutputParams,
+        reply: wait::WaitOutputReply,
+        cli: ["pane", "wait-output"],
+        about: "Wait for text or a regex to appear on a pane's screen",
     }
 }

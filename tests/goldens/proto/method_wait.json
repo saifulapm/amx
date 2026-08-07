@@ -1,0 +1,28 @@
+{
+  "reply": {
+    "agent": {
+      "attention": 0,
+      "cause": "hook",
+      "kind": "claude",
+      "session_ref": {
+        "kind": "id",
+        "value": "c9a3c73b-b184-4871-8e98-79b46b87b635"
+      },
+      "state": "blocked",
+      "transition_seq": 51
+    },
+    "pane": "00000000-0000-0000-0000-0000000000a1",
+    "satisfied": true,
+    "seq": 64
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "wait",
+    "params": {
+      "target": "dev",
+      "timeout_ms": 60000,
+      "until": "blocked"
+    }
+  }
+}

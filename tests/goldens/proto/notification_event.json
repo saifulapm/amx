@@ -1,0 +1,15 @@
+{
+  "jsonrpc": "2.0",
+  "method": "event",
+  "params": {
+    "delivery": "event",
+    "event": {
+      "cause": "hook",
+      "event": "agent_status",
+      "from": "working",
+      "pane": "00000000-0000-0000-0000-0000000000a1",
+      "to": "blocked"
+    },
+    "seq": 71
+  }
+}

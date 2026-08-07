@@ -335,6 +335,12 @@ fn protocol_goldens_cover_every_control_method_and_stream_message() {
         "hello",
         "hello_first_attach",
         "notification",
+        // The `events.subscribe` delivery envelope, and the `gap` that rides
+        // the same method — frozen separately because a consumer that handled
+        // only the first would silently skip the one message that tells it it
+        // missed something (04 §2).
+        "notification_event",
+        "notification_event_gap",
         "response_error",
         "response_ok",
         "welcome",

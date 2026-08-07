@@ -1,9 +1,74 @@
 //! `pane.*` payloads.
+//!
+//! M0 and M1's layout verbs take a [`PaneId`] outright, because a client that
+//! has just been handed a session tree knows one. M2's *driving* verbs — 04
+//! §8's `send-text`, `send-keys`, `run`, `read`, `wait-output` — take a
+//! [`PaneTarget`] instead, because the things that use them are scripts, tests
+//! and agents, for which "the pane called `build`" is the address a human wrote
+//! down. See [`PaneTarget`] for what that resolves to.
+//!
+//! # Task ownership
+//!
+//! V02 froze the shapes. **V12** fills `pane.send_text`, `pane.send_keys`,
+//! `pane.run` and `pane.read`; `pane.wait_output`'s payloads live in
+//! [`wait`](super::wait) with the other two long-polls, and V11 fills it.
 
 use std::path::PathBuf;
 
 use amx_core::{PaneId, Seq, ShortNumber, WorkspaceId};
 use serde::{Deserialize, Serialize};
+
+/// A pane named by UUID or by label.
+///
+/// D-M2-9: "every agent verb resolves its target as pane-UUID-or-label, where
+/// a label match must be unique among *agent* panes (ambiguity is an error
+/// naming the candidates)". The same wire shape serves the pane-driving verbs
+/// with the wider resolver — any pane, not only agent panes — because the
+/// alternative is two identical string types whose only difference is which
+/// function is allowed to read them.
+///
+/// A bare string on the wire. Resolution is the server's (V13's
+/// `agent/address.rs`), and its order is fixed: a UUID first, then a label
+/// match that must be unique. That order is what stops a pane labelled with
+/// another pane's UUID from shadowing it.
+///
+/// Five identical Claude panes are only orchestratable if they have names
+/// (04 §5), and in amx the name is the pane's label — the one M1 already
+/// persists, renames and shows in the picker.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PaneTarget(String);
+
+impl PaneTarget {
+    /// Adopt a target as the caller wrote it.
+    ///
+    /// Total on purpose: an unresolvable target is an error the *server*
+    /// reports, naming the candidates it found, because only the server knows
+    /// what panes exist. Refusing to build one here would only move the same
+    /// failure earlier and make it less informative.
+    #[must_use]
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    /// The target, as written.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<PaneId> for PaneTarget {
+    fn from(pane: PaneId) -> Self {
+        Self(pane.to_string())
+    }
+}
+
+impl std::fmt::Display for PaneTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// Which way a split cuts the pane it is applied to.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
@@ -207,5 +272,115 @@ pub struct CloseParams {
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct CloseReply {
     /// The bus sequence at which the pane was gone.
+    pub seq: Seq,
+}
+
+/// Parameters of `pane.send_text`.
+///
+/// The rawest of the driving verbs: the bytes go to the child verbatim, with no
+/// bracketing and no submit. `pane.run` is the one that wraps and submits.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SendTextParams {
+    /// Which pane.
+    pub target: PaneTarget,
+    /// The text, delivered to the child's pty unchanged.
+    pub text: String,
+}
+
+/// Reply to `pane.send_text`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SendTextReply {
+    /// The pane written to.
+    pub pane: PaneId,
+    /// The bus head at reply time.
+    pub seq: Seq,
+}
+
+/// Parameters of `pane.send_keys`.
+///
+/// The key-combo grammar of 04 §8: `ctrl+h`, `f1`, `enter`, `alt+shift+tab`,
+/// and a bare character for itself. Carried as strings on the wire and parsed
+/// server-side, for two reasons — the encoding depends on the pane's kitty
+/// keyboard flags, which the *parser thread* owns and not the connection; and a
+/// grammar frozen into wire types could not grow a key without a protocol bump.
+///
+/// A combo this build cannot parse is `INVALID_PARAMS` naming the offending
+/// element, never a silently dropped keystroke.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SendKeysParams {
+    /// Which pane.
+    pub target: PaneTarget,
+    /// The combos, in order.
+    pub keys: Vec<String>,
+}
+
+/// Reply to `pane.send_keys`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SendKeysReply {
+    /// The pane written to.
+    pub pane: PaneId,
+    /// How many combos were encoded and sent.
+    pub keys: u32,
+    /// The bus head at reply time.
+    pub seq: Seq,
+}
+
+/// Parameters of `pane.run`.
+///
+/// 04 §8's "bracketed-paste-aware atomic text+submit": the text is wrapped in
+/// paste markers **only when the application in the pane enabled paste mode**,
+/// then submitted. Sending the markers to an application that did not ask for
+/// them types `[200~` into it, which is the failure this verb exists to avoid.
+///
+/// Load-bearing well past its own row: `agent.prompt` rides it, and so does the
+/// resume path, which types a planned argv into a restored shell so the
+/// invocation lands in the user's own history (D-M2-7).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RunParams {
+    /// Which pane.
+    pub target: PaneTarget,
+    /// The text to type and submit.
+    pub text: String,
+}
+
+/// Reply to `pane.run`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RunReply {
+    /// The pane it went to.
+    pub pane: PaneId,
+    /// Whether the text was bracketed, which is a fact about the application in
+    /// the pane and worth reporting rather than inferring.
+    pub bracketed: bool,
+    /// The bus head at reply time.
+    pub seq: Seq,
+}
+
+/// Parameters of `pane.read`.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ReadParams {
+    /// Which pane.
+    pub target: PaneTarget,
+    /// How many rows from the bottom. Absent reads the whole visible grid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<u16>,
+}
+
+/// Reply to `pane.read`: the visible grid, as text.
+///
+/// **The visible grid**, which in amx is by construction the live bottom:
+/// scrollback and scroll position are client-side (04 §3), so the server's
+/// published snapshot cannot be a scrolled view. herdr had to anchor its
+/// detection buffer to the scrollback bottom and regression-test that a
+/// scrolled viewport never moved it; here there is nothing to anchor.
+///
+/// Scrollback proper is `pane.history`, which serves stable row ids over a
+/// bound binary stream.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ReadReply {
+    /// The pane read.
+    pub pane: PaneId,
+    /// The rows, top to bottom, unstyled.
+    pub rows: Vec<String>,
+    /// The bus sequence the grid was read at.
     pub seq: Seq,
 }

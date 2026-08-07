@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+use amx_core::agent::{AgentKind, AgentSnapshot, AgentState, StatusCause};
 use amx_core::{GridGeneration, PaneId, RowId, SessionId, ShortNumber};
 use amx_proto::control::{Call, Method, SPECS, pane, session};
 use amx_proto::error::NegotiationError;
@@ -175,8 +176,24 @@ fn method_table_generates_matching_names_variants_and_specs() {
         assert_eq!(spec.wire, method.wire_name());
         assert_eq!(Method::from_wire_name(spec.wire), Some(*method));
 
-        // The wire name and the CLI path are the same table row seen twice.
-        assert_eq!(spec.cli.join("."), spec.wire);
+        // The wire name and the CLI path are the same table row seen twice,
+        // through one mechanical transform: wire names are snake_case
+        // (`pane.send_text`, as `docs/08-m2-plan.md` §4 tables them) and CLI
+        // paths are kebab-case (`amx pane send-text`, as 04 §8 writes them).
+        // Nothing else may differ — a row whose CLI path is not its wire name
+        // with the separators swapped is two names for one method, which is
+        // the W6 hand-syncing this table exists to delete.
+        assert_eq!(spec.cli.join(".").replace('-', "_"), spec.wire);
+        assert!(
+            !spec.wire.contains('-'),
+            "{} spells its wire name in kebab-case",
+            spec.wire,
+        );
+        assert!(
+            !spec.cli.iter().any(|seg| seg.contains('_')),
+            "{} spells its CLI path in snake_case",
+            spec.wire,
+        );
 
         // Serde names come from the same row, so they cannot drift from it.
         let json = serde_json::to_string(method).unwrap();
@@ -244,15 +261,18 @@ fn method_table_generates_the_clap_tree() {
 fn method_table_generates_matching_serde_names_dispatch_and_clap_tree() {
     // The M0 verb surface: ping + session.state + workspace{create,rename,
     // kill,switch} + pane{split,zoom,swap,move,close,focus,resize,history} +
-    // stream.bind + client.viewport; plus M1's pane.rename and session.report.
-    assert_eq!(Method::ALL.len(), 18);
+    // stream.bind + client.viewport; plus M1's pane.rename and session.report;
+    // plus M2's twelve (`docs/08-m2-plan.md` §4): agent{report,start,prompt,
+    // explain,next} + wait + events.subscribe + pane{send_text,send_keys,run,
+    // read,wait_output}.
+    assert_eq!(Method::ALL.len(), 18 + 12);
     assert_eq!(Method::ALL.len(), SPECS.len());
 
     for method in Method::ALL {
         let spec = method.spec();
         assert_eq!(spec.wire, method.wire_name());
         assert_eq!(Method::from_wire_name(spec.wire), Some(*method));
-        assert_eq!(spec.cli.join("."), spec.wire);
+        assert_eq!(spec.cli.join(".").replace('-', "_"), spec.wire);
 
         let json = serde_json::to_string(method).unwrap();
         assert_eq!(json, format!("\"{}\"", spec.wire));
@@ -370,7 +390,16 @@ fn state_reply_with_restore_summary_round_trips_and_omits_when_none() {
             cols: 80,
             history_head: RowId::from_raw(0),
             history_floor: RowId::from_raw(0),
+            agent: Some(AgentSnapshot {
+                kind: Some(AgentKind::new("claude").unwrap()),
+                state: AgentState::Blocked,
+                cause: StatusCause::Hook,
+                transition_seq: 8,
+                attention: Some(0),
+                session_ref: None,
+            }),
         }],
+        attention: vec![pane],
         restore: Some(session::RestoreSummary {
             restored: 4,
             lost: 1,
@@ -381,19 +410,26 @@ fn state_reply_with_restore_summary_round_trips_and_omits_when_none() {
     let json = serde_json::to_value(&reply).unwrap();
     assert_eq!(json["restore"]["lost"], 1);
     assert_eq!(json["panes"][0]["label"], "editor");
+    assert_eq!(json["panes"][0]["agent"]["state"], "blocked");
+    assert_eq!(json["attention"][0], serde_json::json!(pane));
     assert_eq!(
         serde_json::from_value::<session::StateReply>(json).unwrap(),
         reply
     );
 
-    // Absent, not null: both additions are optional, so a server that never
-    // restored anything and a pane with no label produce exactly the bytes a
-    // pre-M1 peer already knows how to read (R-M1-8).
+    // Absent, not null: every addition is optional, so a server that never
+    // restored anything, a pane with no label and a session with no agents
+    // produce exactly the bytes a pre-M1 peer already knows how to read
+    // (R-M1-8, which M2's two fields ride).
     reply.restore = None;
     reply.panes[0].label = None;
+    reply.panes[0].agent = None;
+    reply.attention.clear();
     let json = serde_json::to_value(&reply).unwrap();
     assert!(json.get("restore").is_none(), "{json}");
     assert!(json["panes"][0].get("label").is_none(), "{json}");
+    assert!(json["panes"][0].get("agent").is_none(), "{json}");
+    assert!(json.get("attention").is_none(), "{json}");
 
     // And the same tolerance the other way: a summary from a newer amx with a
     // field this build never heard of still decodes.

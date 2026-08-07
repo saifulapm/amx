@@ -1,0 +1,22 @@
+{
+  "reply": {
+    "accepted": true,
+    "seq": 60
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "agent.report",
+    "params": {
+      "agent": "claude",
+      "event": "PermissionRequest",
+      "pane": "00000000-0000-0000-0000-0000000000a1",
+      "seq": 1754524800123456789,
+      "session_id": "c9a3c73b-b184-4871-8e98-79b46b87b635",
+      "source": "amx:claude",
+      "token": "b7f0c1a4d9e25638",
+      "tool": "Bash",
+      "transcript_path": "/home/s/.claude/projects/amx/c9a3c73b.jsonl"
+    }
+  }
+}
