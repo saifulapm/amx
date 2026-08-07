@@ -37,9 +37,12 @@
 //! # Task ownership
 //!
 //! **V07** filled the `AMX_*` injection, the argv recording and the token mint.
-//! The handoff to `AgentHub` — building a `SpawnedIdentity` out of the pane's
-//! recorded argv and token and `try_send`ing it as `PaneStarted` — is the
-//! `Core`↔hub seam, and belongs to whoever wires the two together (V08/V17).
+//! **V08** closed the handoff to `AgentHub` at the foot of [`Core::spawn_pane`]
+//! — one `SpawnedIdentity` out of the argv and token recorded a line earlier,
+//! `try_send` as `PaneStarted`, with the pane's frames cloned from the host
+//! that has just started. It is here rather than in the three callers for the
+//! reason the module opens with: one spawn path means a promise made here is
+//! true of every pane, not of the ones somebody remembered.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -53,7 +56,9 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use super::Core;
-use crate::actor::{PaneCommand, PaneHost, PaneHostConfig, PaneHostError};
+use crate::actor::{
+    AgentCommand, PaneCommand, PaneHost, PaneHostConfig, PaneHostError, SpawnedIdentity,
+};
 use crate::config_rt;
 use crate::platform::UnixPty;
 
@@ -149,17 +154,35 @@ impl Core {
         // pane remembers the shell a split with no command actually ran and not
         // the `None` it was asked for. Lossy only for a shell path that is not
         // UTF-8, which is the same lossiness `session.state` already has.
-        let _ = self.state.set_pane_spawn(
-            pane,
-            argv.iter()
-                .map(|word| word.to_string_lossy().into_owned())
-                .collect(),
-            token,
-        );
+        let recorded: Vec<String> = argv
+            .iter()
+            .map(|word| word.to_string_lossy().into_owned())
+            .collect();
+        let _ = self
+            .state
+            .set_pane_spawn(pane, recorded.clone(), token.clone());
         let mut config = PaneHostConfig::new(pane, self.ctx.bus.clone(), size);
         config.core = Some(self.handle.clone());
         config.cancel = self.ctx.cancel.child_token();
-        Ok(PaneHost::spawn(config, session)?)
+        let host = PaneHost::spawn(config, session)?;
+        // The hub is *handed* the feed and never asks for one: `Core` owns the
+        // hosts and is the only place a feed can be cloned from, and a hub that
+        // asked would be making the sibling request its shutdown forbids
+        // (`docs/08-m2-plan.md` §3).
+        self.tell_agent(AgentCommand::PaneStarted {
+            pane,
+            frames: host.frames(),
+            spawn: SpawnedIdentity {
+                argv: recorded,
+                token,
+                // Nothing here asked for an agent by name: `agent start` is
+                // V13's, and it names one by spawning through this same path
+                // with the stanza's argv. Until then identity is earned, from
+                // the argv above or from the first hook report to arrive.
+                requested: None,
+            },
+        });
+        Ok(host)
     }
 }
 

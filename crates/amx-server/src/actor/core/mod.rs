@@ -53,7 +53,9 @@ use tokio::sync::{mpsc, watch};
 pub use self::persist::CAPTURE_PROBE_BUDGET;
 use self::persist::Restored;
 pub use self::restore::RestoreOptions;
-use crate::actor::{CoreCommand, CoreHandle, PaneHandle, PaneHost, PersistCommand, PersistHandle};
+use crate::actor::{
+    AgentHandle, CoreCommand, CoreHandle, PaneHandle, PaneHost, PersistCommand, PersistHandle,
+};
 
 /// Where a folded batch's output goes.
 ///
@@ -117,6 +119,16 @@ pub struct Core {
     /// can answer synchronously: `head` is one past the newest committed row,
     /// `floor` the oldest still fetchable.
     history: HashMap<PaneId, (RowId, RowId)>,
+    /// Each tracked pane's fused agent status, mirrored here by `AgentHub`.
+    ///
+    /// The slow read model of `docs/08-m2-plan.md` §3. `session.state`, the
+    /// status line and the final capture read *this*, never the hub — which is
+    /// what lets the hub's shutdown send nothing to anybody (R-M1-2): whatever
+    /// it knew is already here.
+    agent_status: HashMap<PaneId, amx_core::agent::AgentSnapshot>,
+    /// The attention queue in queue order, mirrored by `AgentHub` beside the
+    /// statuses (D-M2-8 — `session.state` *is* the query for the queue).
+    attention: Vec<PaneId>,
     /// The active client's declared terminal size (rows, cols), if any client
     /// has declared one. Last writer wins — the pane grid follows the
     /// most-recently-active client (04 §3).
@@ -136,6 +148,13 @@ pub struct Core {
     /// *observed* off the event bus, not pushed: `Core` has no "remember to
     /// tell persistence" call sites and never gains any.
     persist: Option<PersistHandle>,
+    /// `AgentHub`'s mailbox, when the session has one.
+    ///
+    /// Written to with `try_send` only, and only about pane lifecycle: `Core`
+    /// must never park on the hub, because the hub reads `Core`'s mirror
+    /// through this same actor and a `Core` waiting there while the hub waits
+    /// here is one half of a deadlock (`docs/08-m2-plan.md` §3).
+    agent: Option<AgentHandle>,
     /// What this server's startup restore cost, if it performed one.
     ///
     /// Held for the process's lifetime: `session.report` serves the entries
@@ -172,6 +191,9 @@ impl Core {
             panes: HashMap::new(),
             draining: Vec::new(),
             history: HashMap::new(),
+            agent_status: HashMap::new(),
+            attention: Vec::new(),
+            agent: None,
             viewport: None,
             pane_sizes: HashMap::new(),
             handle,
@@ -200,6 +222,16 @@ impl Core {
     /// not care about persistence gets.
     pub fn set_persist(&mut self, persist: PersistHandle) {
         self.persist = Some(persist);
+    }
+
+    /// Tell this `Core` where `AgentHub` is listening.
+    ///
+    /// The serve path calls this before the first pane is spawned, so that
+    /// every pane's `PaneStarted` reaches the hub — including the ones the
+    /// startup restore brings back. A `Core` that is never told simply tracks
+    /// no agents, which is what every test that does not care about them gets.
+    pub fn set_agent(&mut self, agent: AgentHandle) {
+        self.agent = Some(agent);
     }
 
     /// Change how long a capture waits for its foreground-cwd probes.

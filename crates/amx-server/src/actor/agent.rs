@@ -126,6 +126,50 @@ pub enum AgentCommand {
     },
 }
 
+/// What `AgentHub` tells the `Core`.
+///
+/// The other direction of the same conversation [`AgentCommand`] carries, and
+/// the slow half of `docs/08-m2-plan.md` §3's two read models: wait predicates
+/// read [`StatusView`] because they must see live state, while *chrome* and
+/// *persistence* read `Core`'s mirror, which this fills. Its mailbox lag is
+/// harmless precisely because nothing awaits on it.
+///
+/// Neither variant carries a reply channel, and that is the point: there is no
+/// shape here in which the hub waits on `Core`, which is what lets the shutdown
+/// discipline above hold. Sent with `try_send` and a dropped error — a lost
+/// mirror message costs a stale status line until the next transition, and a
+/// hub parked on a busy `Core` costs the session.
+///
+/// **V08** added it, with the actor that sends it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum AgentCall {
+    /// One pane's fused status, and the attention queue as it stands after it.
+    ///
+    /// `status` is `None` for a pane whose tracker retired — the same spelling
+    /// [`StatusUpdate::status`] uses, so the two read models agree about what a
+    /// dead pane is. The queue position is filled in on the snapshot before it
+    /// is sent, because `Core` answers `session.state` from this map directly
+    /// and has no queue of its own to derive one from.
+    Status {
+        /// The pane whose status changed.
+        pane: PaneId,
+        /// Its status now, or `None` to forget it.
+        status: Option<Box<AgentSnapshot>>,
+        /// The attention queue, in queue order.
+        attention: Vec<PaneId>,
+    },
+    /// Put the user in front of `pane`: switch to its workspace, focus it.
+    ///
+    /// `agent.next`'s second half (D-M2-8). The hub answers its caller with the
+    /// head of the queue immediately and sends this on its way; the client
+    /// learns focus moved from the `FocusChanged` event, exactly as it does for
+    /// every other focus change.
+    Focus {
+        /// The pane to focus.
+        pane: PaneId,
+    },
+}
+
 /// What `Core` knows about a pane's child at the moment it spawned it.
 ///
 /// The spawn-side half of D-M2-4's identity scheme. The probe-side half — the
