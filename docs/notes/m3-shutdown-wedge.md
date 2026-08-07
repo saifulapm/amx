@@ -311,12 +311,27 @@ Cross-wave notes for the orchestrator:
   connection's *opening*, and nothing about it makes the epilogue worse.
 - **W02 shares nothing.** Reports still flow pane→`Core`; only `Core`'s
   republishes go.
-- Two failures seen under load during the spike and **not** chased, because
-  neither is the drain: `flow_control_urandom_pane_with_stalled_client…` fails
-  about one run in eight under eight-way load with the client reporting
-  `frame on unbound channel`, and
-  `a_change_inside_the_debounce_window_survives_a_clean_stop` was seen once
-  exiting on `SIGTERM`'s default disposition — a server signalled in the
-  window between `Gateway::bind` (which is what makes the socket answer) and
-  `watch_signals` installing the handler. Both are real; both belong to
-  somebody, and it is not W01.
+Three things seen under load during the spike and **not** chased, because none
+of them is the drain. They are recorded with their evidence so the next person
+does not have to rediscover them, and none is W01's to fix.
+
+- **`flow_control_urandom_pane…` has a load-sensitive threshold.** It asserts
+  the server ingested more than 8 MiB during a fixed flood window; under
+  eight-way CPU load with three other suites running it lands just under —
+  `the server ingested only 7923383 bytes` — and did so on **every** round of
+  a 35-minute field run. The server is fine; the number is a machine-speed
+  constant in a test, which is the shape the rig's own wall-clock guard exists
+  to keep out. Worth turning into a bound on rate-over-observed-time, or into
+  a wait on the consequence.
+- **`frame on unbound channel` under the same flood**, three times in thirty
+  rounds, killing the client with a timed-out render rather than a threshold.
+  This one is *not* a test artefact: a client refusing a frame on a channel it
+  has not bound is a stream-lifecycle race, and it belongs to whoever owns
+  `stream.bind` next (W08 binds a `generation` onto exactly that path).
+- **A server can be signalled before it can hear.** Seen once: a clean stop
+  that ended in `SIGTERM`'s *default* disposition, killing the process outright
+  with no drain, no final capture and the socket left behind. `Gateway::bind`
+  is what makes the socket answer, and `watch_signals` is spawned several
+  statements later — so an `amx session stop` that arrives in that window is
+  fatal rather than graceful. Narrow, but real, and it is in `session/serve.rs`,
+  which W06 already owns.
