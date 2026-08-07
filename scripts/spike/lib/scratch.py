@@ -100,16 +100,62 @@ def settings(hook_cmd: str, log_path: str, events: list[str]) -> dict:
     return {
         "hooks": hooks,
         "permissions": {
-            # Read and a sleep are pre-approved so a tool call can run without a
-            # dialog (the Esc-during-a-tool-call scenario needs one).
-            "allow": ["Read", "Bash(sleep:*)"],
+            # Read and Bash are pre-approved so a tool call can run without a
+            # dialog (the Esc-during-a-tool-call scenario needs a long one).
+            # A bare `sleep` is refused by the tool's own policy on 2.1.224, so
+            # the long call is a wait loop, which that policy endorses.
+            "allow": ["Read", "Bash"],
             # An explicit ask rule is the only *deterministic* way to raise the
             # dialog: measured on 2.1.224, an unremarkable `echo` in the default
             # permission mode is approved without one.
             "ask": ["Bash(echo:*)", "Write"],
-            "deny": [],
+            # A rule-denied call, to find out whether PermissionDenied fires for
+            # anything at all once the human "no" has been measured silent.
+            "deny": ["Bash(whoami:*)"],
         },
     }
+
+
+# Codex 0.147.0's hook events, as its own TUI lists them. Same PascalCase names
+# as Claude Code, configured in $CODEX_HOME/hooks.json rather than settings.json.
+CODEX_EVENTS = [
+    "SessionStart",
+    "SessionEnd",
+    "UserPromptSubmit",
+    "Stop",
+    "PreToolUse",
+    "PostToolUse",
+    "PermissionRequest",
+    "PreCompact",
+    "PostCompact",
+    "SubagentStart",
+    "SubagentStop",
+]
+
+
+def build_codex_home(home: str, hook_cmd: str, log_path: str, borrow_auth: str = None) -> str:
+    """A throwaway CODEX_HOME whose hooks.json subscribes every event.
+
+    Credentials are *borrowed by symlink* from the real Codex home rather than
+    copied: the spike needs an authenticated agent, not a second copy of a
+    token, and nothing it writes touches the user's own configuration.
+    """
+    if os.path.exists(home):
+        shutil.rmtree(home)
+    os.makedirs(home)
+    cfg = {
+        "hooks": {
+            e: [{"hooks": [{"type": "command", "command": f"{hook_cmd} {e} {log_path}"}]}]
+            for e in CODEX_EVENTS
+        }
+    }
+    with open(os.path.join(home, "hooks.json"), "w") as f:
+        json.dump(cfg, f, indent=2)
+    auth = borrow_auth or os.path.expanduser("~/.codex/auth.json")
+    if os.path.exists(auth):
+        os.symlink(auth, os.path.join(home, "auth.json"))
+    open(os.path.join(home, "config.toml"), "w").close()
+    return home
 
 
 def build(root: str, hook_cmd: str, log_path: str, all_events: bool = False) -> str:
