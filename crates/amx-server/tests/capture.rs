@@ -14,181 +14,17 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
-use std::path::PathBuf;
 use std::time::Duration;
 
-use amx_core::{Ctx, Direction, Layout, PaneId, Scheduled, ShortNumber, WorkspaceId};
-use amx_server::actor::core::{Core, RestoreOptions};
-use amx_server::actor::{
-    Capture, CoreCommand, CoreHandle, PersistCommand, PersistHandle, SessionCall,
-};
-use amx_server::persist::{PaneSnapshot, Snapshot, VERSION, WorkspaceSnapshot};
-use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinHandle;
+use amx_core::{Layout, PaneId, WorkspaceId};
+use amx_server::actor::{PersistCommand, PersistHandle};
+use amx_server::persist::Snapshot;
+use tokio::sync::mpsc;
 
 mod support;
 
-use support::{PATIENCE, TICK, TempDir, ctx_under};
-
-/// A `Core` over a fresh temp tree, before its actor loop starts.
-///
-/// Restore runs on an owned `Core` — the serve path applies the snapshot
-/// between the bind and the accept loop, so there is no actor to talk to yet —
-/// which is why this hands out the `Core` itself rather than a mailbox.
-struct Fixture {
-    dir: TempDir,
-    ctx: Ctx,
-    tx: mpsc::Sender<CoreCommand>,
-    rx: mpsc::Receiver<CoreCommand>,
-    core: Core,
-}
-
-impl Fixture {
-    fn new(tag: &str) -> Self {
-        let dir = TempDir::new(tag);
-        let ctx = ctx_under(dir.path());
-        std::fs::create_dir_all(&ctx.state_dir).expect("create the state dir");
-        std::fs::create_dir_all(dir.path().join("home")).expect("create the home dir");
-        let (tx, rx) = mpsc::channel(64);
-        let core = Core::new(ctx.clone(), CoreHandle::new(tx.clone()));
-        Self {
-            dir,
-            ctx,
-            tx,
-            rx,
-            core,
-        }
-    }
-
-    /// The directory a vanished cwd degrades into.
-    fn home(&self) -> PathBuf {
-        self.dir.path().join("home")
-    }
-
-    fn opts(&self) -> RestoreOptions {
-        RestoreOptions { home: self.home() }
-    }
-
-    /// A directory under the fixture's tree, created.
-    fn dir_named(&self, name: &str) -> PathBuf {
-        let path = self.dir.path().join(name);
-        std::fs::create_dir_all(&path).expect("create the directory");
-        path
-    }
-
-    /// Start the actor loop over this `Core`.
-    fn start(self) -> Running {
-        let Self {
-            dir,
-            ctx,
-            tx,
-            rx,
-            core,
-        } = self;
-        let task = tokio::spawn(core.run(rx, |_: &Scheduled| {}));
-        Running {
-            _dir: dir,
-            ctx,
-            tx,
-            task,
-        }
-    }
-
-    /// Stop without ever running: cancels first, so `run` breaks straight to
-    /// its drain and joins every pane the restore spawned.
-    async fn drain(self) -> Core {
-        self.ctx.cancel.cancel();
-        self.core.run(self.rx, |_: &Scheduled| {}).await
-    }
-}
-
-/// A `Core` serving its mailbox.
-struct Running {
-    ctx: Ctx,
-    tx: mpsc::Sender<CoreCommand>,
-    task: JoinHandle<Core>,
-    _dir: TempDir,
-}
-
-impl Running {
-    /// A capture over the live path — the one that refreshes cwds.
-    async fn capture(&self) -> Capture {
-        let (reply, answer) = oneshot::channel();
-        self.tx
-            .send(CoreCommand::Session(SessionCall::Capture {
-                sidecars: false,
-                reply,
-            }))
-            .await
-            .expect("core mailbox is open");
-        answer.await.expect("core answered the capture")
-    }
-
-    /// Stop the loop and hand the `Core` back, panes joined.
-    async fn into_core(self) -> Core {
-        self.ctx.cancel.cancel();
-        self.task.await.expect("core task did not panic")
-    }
-}
-
-// ------------------------------------------------------------------ builders
-
-fn pane_row(id: PaneId, short: u32, label: Option<&str>, cwd: Option<PathBuf>) -> PaneSnapshot {
-    PaneSnapshot {
-        id,
-        short: ShortNumber::new(short),
-        label: label.map(str::to_owned),
-        cwd,
-    }
-}
-
-fn workspace_row(
-    id: WorkspaceId,
-    short: u32,
-    label: Option<&str>,
-    layout: Layout,
-    focus: Option<PaneId>,
-) -> WorkspaceSnapshot {
-    WorkspaceSnapshot {
-        id,
-        short: ShortNumber::new(short),
-        label: label.map(str::to_owned),
-        layout,
-        focus,
-    }
-}
-
-/// A layout of `panes`, split rightwards from the first.
-fn row_of(panes: &[PaneId]) -> Layout {
-    let mut layout = Layout::with_root(panes[0]);
-    for pair in panes.windows(2) {
-        layout
-            .split(pair[0], Direction::Right, pair[1], 0.5)
-            .expect("split the restored layout");
-    }
-    layout
-}
-
-fn snapshot_of(workspaces: Vec<WorkspaceSnapshot>, panes: Vec<PaneSnapshot>) -> Snapshot {
-    Snapshot {
-        version: VERSION,
-        focused_workspace: workspaces.first().map(|ws| ws.id),
-        workspaces,
-        panes,
-    }
-}
-
-/// Every entry of `severity` about `entity`.
-async fn wait_until(what: &str, mut cond: impl AsyncFnMut() -> bool) {
-    let deadline = tokio::time::Instant::now() + PATIENCE;
-    while !cond().await {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting until {what}"
-        );
-        tokio::time::sleep(TICK).await;
-    }
-}
+use support::PATIENCE;
+use support::restore_rig::{Fixture, pane_row, row_of, snapshot_of, wait_until, workspace_row};
 
 // ------------------------------------------------------------------- capture
 
@@ -350,5 +186,3 @@ async fn a_full_persistence_mailbox_never_wedges_the_core_drain() {
         .await
         .expect("the core drain finished with a full persistence mailbox");
 }
-
-// --------------------------------------------------------------- the bus

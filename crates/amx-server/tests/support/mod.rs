@@ -5,6 +5,8 @@
 #![allow(dead_code, reason = "each test binary uses a subset of the harness")]
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
+pub mod restore_rig;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -141,6 +143,17 @@ impl Server {
         let shutdown = self.runtime.shutdown().await;
         let gateway = self.report.await.expect("the gateway reported");
         (gateway, shutdown)
+    }
+}
+
+/// Connect to a session socket something else is serving.
+///
+/// [`Server`] assembles its own actors; a test that drives the real
+/// [`serve`](amx_server::session::serve::serve) path has a socket and no
+/// `Server`, and still wants the frame-level client.
+pub async fn connect_to(socket: &Path) -> Client {
+    Client {
+        stream: UnixStream::connect(socket).await.expect("connect"),
     }
 }
 
