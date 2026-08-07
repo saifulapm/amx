@@ -5,11 +5,15 @@ W01 of [09-m3-plan.md](../09-m3-plan.md) §2. The rare `SIGTERM`-immune hang in
 R-M2-6, R-M3-1) and gates M3's export path, because a handoff exporter's life
 ends in exactly that drain.
 
-**Outcome:** one mechanism found, reproduced deterministically, and fixed with a
-test that fails without the change. The corpse it produces is the field
-corpse, byte for byte. What is **not** established is that every field sighting
-was that same mechanism, and [§6](#6-what-this-means-for-the-export-path-w06)
-says plainly what W06 may rely on and what it may not.
+**Outcome, in one paragraph.** One mechanism found, reproduced on demand, and
+fixed with a test that fails without the change: a connection's handshake
+observed no cancellation token, so one silent peer could hold the drain open
+forever. The corpse it leaves is the field corpse, descriptor for descriptor.
+It is *not* the mechanism that produced the seven wedged servers found alive on
+this machine — the evidence rules that out, [§4](#what-this-does-not-settle-and-how-far-the-evidence-goes)
+says how — so a second, rarer path is still open, now narrowed to two lines of
+code and instrumented to announce itself. [§6](#6-what-this-means-for-the-export-path-w06)
+says what W06 may rely on and what it may not.
 
 Everything below was measured on this tree during the spike. Where a claim is a
 hypothesis it says so.
@@ -163,23 +167,34 @@ connects three ways of being silent (nothing, half a header, half a hello)
 beside a live session and asserts the stop completes; without the change it
 fails on every run, with the census in the failure message.
 
-### What this does not settle
+### What this does not settle, and how far the evidence goes
 
-The field corpses have **no peer**: the client that opened the stuck connection
-is gone, and a task parked in `read_hello` would have taken that as end-of-file
-and returned. So the prologue stall is not, by itself, an explanation for the
-seven found alive — unless the peer died while the task was awaiting `Core`
-rather than the socket, which is a real window and one this fix now closes too.
+The prologue stall needs a peer that is still *connected*. The seven found
+alive have none: `ss -x` reports each stuck connection's peer inode as `0`,
+which — checked against a socket pair built by hand — is what a closed peer
+reads as, where a live one shows its inode. And a peerless socket refuses
+every await in the prologue rather than parking on it: a read returns
+end-of-file immediately (`b""`), a write returns `EPIPE`. Both measured, not
+assumed.
 
-Stated as it stands: **a wedge with exactly the field's terminal state is
-diagnosed and closed; that every field sighting was this trigger is a
-hypothesis, not an observation.** The remaining suspects are the two joins in
-the connection's *epilogue* — `ConnEvents::shutdown` awaiting the event pump
-and the long polls, `ConnStreams::shutdown` awaiting the grid pumps. Every one
-of those futures does select on the connection's token, which is why nothing
-was found there by reading; 800 rounds of kill-the-client-then-stop-the-server
-under a flooding pane produced no wedge either. That is where the next
-occurrence should be looked for first, and the census will say so in one line.
+So the honest reading is sharper than "probably the same bug":
+
+- **A wedge with the field's exact terminal state is diagnosed and closed**, on
+  a trigger — a client that has connected but not yet finished saying hello —
+  that an upgrade produces in bulk (see [§6](#6-what-this-means-for-the-export-path-w06)).
+- **The seven found alive were stuck somewhere else**: with no peer, the
+  handshake cannot be where they were parked. What remains, in a connection
+  whose reader has already taken its end-of-file, is the epilogue —
+  `ConnEvents::shutdown` awaiting the event pump and the long polls, and
+  `ConnStreams::shutdown` awaiting the grid pumps.
+
+That second one is **an open bug this spike did not find**. Every future those
+two joins await does select on the connection's token, which is why reading
+turned nothing up; 800 rounds of kill-the-client-then-stop-the-server under a
+flooding pane produced no wedge either, and neither did ~18,000 storm cycles.
+It is rare in the way the original was rare. What has changed is that the next
+occurrence arrives with the census attached, and the search starts at those two
+joins instead of at the whole server.
 
 ---
 
@@ -219,11 +234,14 @@ retirement immediately before it. Three things follow.
    hello — the condition that reproduces the wedge every time. Before this
    change, `session.handoff` would have been rolling that die on every upgrade;
    `amx update apply`'s own reconnect-poll is one of the peers.
-2. **The watchdog of §2's outcome (b) is still load-bearing.** The field
-   trigger is not proven identical to the one fixed, so W06 keeps the bounded
-   post-commit drain: a deadline, the census logged, exit non-zero rather than
-   wedge silently. The census makes that watchdog's output actionable instead
-   of a bare timeout — it names the actor.
+2. **The watchdog of §2's outcome (b) is still load-bearing** — more clearly so
+   than if the field trigger had merely been unproven, because the evidence
+   says it was *not* this one. W06 keeps the bounded post-commit drain: a
+   deadline, the census logged, exit non-zero rather than wedge silently. The
+   census is what makes that watchdog's output actionable instead of a bare
+   timeout — it names the actor, and on this evidence the name to expect is
+   `gateway`, with `agent-hub` beside it whenever a connection is the one
+   holding on.
 3. **Quiesce-and-join may rely on the pane half.** Every wedged specimen had
    already finished every pane: no pty or parser threads, no wake pipes, its
    own master closed. Across seven corpses and every reproduction, the
@@ -283,8 +301,14 @@ Recorded so the next occurrence does not re-derive them.
 
 Cross-wave notes for the orchestrator:
 
-- **W08 shares `conn/mod.rs`.** The change is fifteen lines around the existing
-  prologue; W08's resume plumbing lands beside it, not on it.
+- **W08 shares `conn/mod.rs`, and inherits the open half of this.** The change
+  here is fifteen lines around the existing prologue; W08's resume plumbing
+  lands beside it, not on it. The unfound path of
+  [§4](#what-this-does-not-settle-and-how-far-the-evidence-goes) is in W08's
+  neighbourhood too — `ConnEvents::shutdown` and `ConnStreams::shutdown`, both
+  in `conn/` — so whoever picks W08 up is the natural owner of a second look,
+  with the census to point at it. It does not gate W08: the resync reads a
+  connection's *opening*, and nothing about it makes the epilogue worse.
 - **W02 shares nothing.** Reports still flow pane→`Core`; only `Core`'s
   republishes go.
 - Two failures seen under load during the spike and **not** chased, because
