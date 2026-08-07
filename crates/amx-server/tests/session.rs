@@ -472,6 +472,7 @@ async fn spawn_detached_starts_a_session_leader_with_null_stdio() {
     // `/bin/sh` — which applies the redirect to the shell's fd1 before running
     // the command. A command substitution's subshell inherits the shell's fds
     // without modifying them, and `$$` still names the shell inside it.
+    #[cfg(target_os = "linux")]
     let script = format!(
         "cut -d' ' -f6 /proc/$$/stat > {out}/sess; \
          echo $$ > {out}/pid; \
@@ -484,6 +485,23 @@ async fn spawn_detached_starts_a_session_leader_with_null_stdio() {
          echo done > {out}/ok",
         out = out.display()
     );
+    // darwin has no `/proc`, so the probes change shape: the fds are compared
+    // against `/dev/null` by identity (`-ef` stats through `/dev/fd/$n` to
+    // the underlying vnode), and the session id is read from *outside*, via
+    // `getsid(2)` on the pid the script wrote — which is why the script then
+    // holds itself alive: a session id can only be read off a live process.
+    #[cfg(target_os = "macos")]
+    let script = format!(
+        "echo $$ > {out}/pid; \
+         for n in 0 1 2; do \
+           if [ /dev/fd/$n -ef /dev/null ]; \
+           then echo /dev/null > {out}/fd$n; \
+           else echo not-null > {out}/fd$n; fi; \
+         done; \
+         echo done > {out}/ok; \
+         sleep 30",
+        out = out.display()
+    );
     let mut child = daemon::spawn_detached(
         Path::new("/bin/sh"),
         &[OsString::from("-c"), OsString::from(script)],
@@ -492,7 +510,6 @@ async fn spawn_detached_starts_a_session_leader_with_null_stdio() {
 
     let ok = out.join("ok");
     wait_until("the detached process ran", || ok.exists()).await;
-    let _ = child.wait();
 
     let read = |name: &str| {
         std::fs::read_to_string(out.join(name))
@@ -500,12 +517,31 @@ async fn spawn_detached_starts_a_session_leader_with_null_stdio() {
             .trim()
             .to_owned()
     };
-    assert_eq!(
-        read("sess"),
-        read("pid"),
-        "a daemon is a session leader: its terminal can close, hang up or \
-         interrupt its own foreground group and none of it reaches the server"
-    );
+    #[cfg(target_os = "linux")]
+    {
+        let _ = child.wait();
+        assert_eq!(
+            read("sess"),
+            read("pid"),
+            "a daemon is a session leader: its terminal can close, hang up or \
+             interrupt its own foreground group and none of it reaches the server"
+        );
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let pid: i32 = read("pid").parse().expect("the daemon's pid");
+        let daemon = rustix::process::Pid::from_raw(pid).expect("a live pid");
+        assert_eq!(
+            rustix::process::getsid(Some(daemon)).expect("session id"),
+            daemon,
+            "a daemon is a session leader: its terminal can close, hang up or \
+             interrupt its own foreground group and none of it reaches the server"
+        );
+        // The script held itself alive so the session id could be read off a
+        // live process; hang it up rather than leaving it to linger.
+        let _ = rustix::process::kill_process(daemon, rustix::process::Signal::TERM);
+        let _ = child.wait();
+    }
     for fd in ["fd0", "fd1", "fd2"] {
         assert_eq!(
             read(fd),
