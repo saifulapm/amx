@@ -10,9 +10,9 @@
 //! The second guard here is the same idea one milestone up: a *seam* — a
 //! method that landed in the shared table before its implementation — is
 //! allowed to exist only while its milestone is being built, and the way that
-//! stops being permanent is a test that fails once the milestone ships. M2's
-//! twelve are declared below with the task that closes each; V17 empties the
-//! list and deletes the helper together.
+//! stops being permanent is a test that fails once the milestone ships. M2
+//! opened twelve and V17 closed the last two, so the guard below is back in its
+//! resting state: no call sites, and no helper to make one from.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
@@ -136,47 +136,28 @@ fn crate_tests_wait_on_conditions_not_wall_clock() {
     );
 }
 
-/// The tasks allowed to own a dispatch seam while M2 is being built.
-///
-/// The exemption `dispatch/mod.rs` describes: U01 introduced the `seam` helper
-/// with M1's two rows, U06 and U07 closed them, and helper and exemption
-/// retired together. V02 reintroduces both, for M2's twelve rows, and V17
-/// deletes both again — which is what stops a seam from quietly outliving the
-/// milestone that opened it. An empty list here means the helper must be gone
-/// from the tree entirely.
-///
-/// The names are the wave tasks of `docs/08-m2-plan.md` §5. Every `seam(` call
-/// site must name one, so a seam nobody owns cannot be written — that is T19's
-/// and U01's lesson (exclusive file ownership leaves the *seams* unowned by
-/// construction) applied to the dispatch table itself.
-///
-/// A task drops off this list when it lands: **V12** closed the four
-/// pane-driving rows of §4, **V09** `agent.report`, **V11** the three long
-/// polls of the same table, and **V13** `agent.start`/`agent.prompt`, each
-/// removing itself here in the commit that filled them, which is the
-/// bookkeeping that makes the count below mean something.
-const SEAM_OWNERS: &[&str] = &["V06", "V08"];
-
-/// How many dispatch seams are still open.
-///
-/// V02 opened twelve, one per row of §4's table; V12 closed four
-/// (`pane.send_text`, `pane.send_keys`, `pane.run`, `pane.read`), V09 a fifth
-/// (`agent.report`), V11 three more (`wait`, `pane.wait_output`,
-/// `events.subscribe`) and V13 two more (`agent.start`, `agent.prompt`). The
-/// count is here rather than only in the plan so that closing a seam without
-/// deleting its call site, or opening a thirteenth, fails a test instead of
-/// passing a review — and so that a wave task landing has to say so here.
-const SEAM_COUNT: usize = 2;
-
-/// The milestone guard: every dispatch seam names the task that closes it.
+/// The milestone guard, in its resting state: **no dispatch seam exists.**
 ///
 /// A row that lands before its wiring is answered through a `seam` helper
 /// rather than `METHOD_NOT_FOUND`, because telling a client a method is unknown
-/// tells it to stop offering it. This test is what keeps that temporary: while
-/// [`SEAM_OWNERS`] is non-empty each call site must name a task from it, and
-/// when M2's integration task empties the list the helper has to go with it.
+/// tells it to stop offering it. The helper is therefore a milestone's tool,
+/// and this test is what keeps it one: while a milestone is being built the
+/// list of owning tasks is non-empty and every call site must name one; when
+/// the integration task closes the last row, the helper, the list and the
+/// exemption go together.
+///
+/// That has now happened twice. U01 introduced the helper with M1's two rows,
+/// U06 and U07 closed them, and both retired. V02 brought both back for M2's
+/// twelve; V12 closed four, V09 one, V11 three, V13 two, and **V17 closed
+/// `agent.explain` and `agent.next` and deleted the helper** — which is M2's
+/// exit check, stated in `dispatch/mod.rs` and enforced here.
+///
+/// So the assertion is now the empty one: no `seam(` call site, and no helper
+/// to make one from. A milestone that wants seams again writes the helper, and
+/// rewrites this test with its own owner list — the deliberate friction that
+/// stops a seam from quietly outliving the milestone that opened it.
 #[test]
-fn every_dispatch_seam_names_the_task_that_closes_it() {
+fn no_dispatch_seam_outlives_the_milestone_that_opened_it() {
     // `<workspace>/tests/../crates`: the shipped code, not the suites, since a
     // test harness may legitimately name the concept.
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates");
@@ -185,8 +166,87 @@ fn every_dispatch_seam_names_the_task_that_closes_it() {
     // the word would ban the vocabulary.
     let call = "seam(";
 
-    let mut unowned = Vec::new();
-    let mut owned = 0;
+    let mut found = Vec::new();
+    let mut scanned = 0;
+    for krate in fs::read_dir(&crates).expect("read crates/") {
+        let src = krate.expect("a directory entry").path().join("src");
+        if !src.is_dir() {
+            continue;
+        }
+        for path in rust_files(&src) {
+            scanned += 1;
+            let text = fs::read_to_string(&path).expect("read a source file");
+            for (n, line) in text.lines().enumerate() {
+                // Prose says "the seam (`Pty`, `Ipc`)"; code says `seam(…)`.
+                if !line.contains(call) || line.trim_start().starts_with("//") {
+                    continue;
+                }
+                found.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        found.is_empty(),
+        "M2's seam ledger is empty and the helper is deleted, so a `seam(…)` \
+         call site can only be a row that landed without wiring. Implement it, \
+         or reintroduce the helper *with* the owner list this test used to \
+         carry:\n{}",
+        found.join("\n")
+    );
+    assert!(
+        scanned >= 50,
+        "the crates scan read too few source files ({scanned}) to be believed"
+    );
+}
+
+/// The four agent events, by the name their variants carry in the tree.
+///
+/// Named rather than derived: this guard is about who may *construct* them, so
+/// it has to know the spelling, and a fifth variant added without being listed
+/// here is a fifth variant nothing guards.
+const AGENT_EVENTS: &[&str] = &[
+    "Event::AgentStatus",
+    "Event::AgentIdentified",
+    "Event::AttentionEnqueued",
+    "Event::AttentionDequeued",
+];
+
+/// R-M2-3: agent events have exactly one publisher, and it is the hub.
+///
+/// 04 §2 gives every transition one sequence number, which requires one
+/// publisher per transition. The tree already breaks that for *pane* events —
+/// the pane actor publishes seven kinds directly and `Core` republishes six of
+/// them, so every damage and title change gets two sequences today (R-M2-3
+/// records it for a dedicated cleanup with its own golden review). M2's job was
+/// not to fix that but to **not extend it**, and this is what holds M2 to it.
+///
+/// Two things are checked, because the rule has two halves:
+///
+/// - an agent event is **handed to a bus or an event list** — `publish(Event::…`
+///   or `push(Event::…` — in exactly one file, `actor/agent_hub/commit.rs`,
+///   where the fusion machine's effects become announcements;
+/// - the bus sees that list only through `StatusView::commit`, whose one caller
+///   is the hub — which is also what enforces §3's write-before-publish
+///   ordering, since the view write and the publish are one call.
+///
+/// Naming the *verbs* rather than the variants is what keeps this from
+/// flagging every consumer: a `match` arm reading `Event::AgentStatus { .. }`
+/// is a subscriber, and a rule that could not tell one from a publisher would
+/// have to be turned off the first time somebody wrote a second consumer.
+///
+/// The limit, stated rather than hidden: a publisher that binds an event to a
+/// local first (`let e = Event::AgentStatus { … }; bus.publish(e);`) slips
+/// past. This is a tripwire over a rule the tree is *known* to have broken once
+/// already for pane events — it exists to make the ordinary way of breaking it
+/// again fail a test, not to be a proof.
+#[test]
+fn agent_events_have_exactly_one_publisher() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates");
+    let verbs = ["publish(", "push("];
+
+    let mut announced = Vec::new();
+    let mut committers = Vec::new();
     for krate in fs::read_dir(&crates).expect("read crates/") {
         let src = krate.expect("a directory entry").path().join("src");
         if !src.is_dir() {
@@ -194,39 +254,61 @@ fn every_dispatch_seam_names_the_task_that_closes_it() {
         }
         for path in rust_files(&src) {
             let text = fs::read_to_string(&path).expect("read a source file");
+            let where_it_is = path.display().to_string();
             for (n, line) in text.lines().enumerate() {
-                // Prose says "the seam (`Pty`, `Ipc`)"; code says `seam(…)`.
-                if !line.contains(call) || line.trim_start().starts_with("//") {
+                let code = line.trim_start();
+                if code.starts_with("//") {
                     continue;
                 }
-                // The helper's own definition is not a seam.
-                if line.contains("fn seam") {
-                    continue;
+                let at = format!("{where_it_is}:{}: {}", n + 1, code);
+                let names_one = AGENT_EVENTS.iter().any(|event| line.contains(event));
+                if names_one && verbs.iter().any(|verb| line.contains(verb)) {
+                    announced.push(at.clone());
                 }
-                if SEAM_OWNERS.iter().any(|owner| line.contains(owner)) {
-                    owned += 1;
-                } else {
-                    unowned.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                // The server's own `.commit(` calls only: `commit` is an
+                // ordinary word and the client's row cache has three of its
+                // own. The type's definition carries the doctest that documents
+                // the ordering, and a doctest is prose that happens to compile
+                // rather than a publisher.
+                let server = where_it_is.contains("amx-server");
+                if server && line.contains(".commit(") && !where_it_is.ends_with("actor/agent.rs") {
+                    committers.push(at);
                 }
             }
         }
     }
 
+    let stray: Vec<&String> = announced
+        .iter()
+        .filter(|at| !at.contains("actor/agent_hub/commit.rs"))
+        .collect();
     assert!(
-        unowned.is_empty(),
-        "a dispatch seam names no task that closes it; every `seam(…)` call \
-         passes the owning task from {SEAM_OWNERS:?} as its second argument:\n{}",
-        unowned.join("\n")
+        stray.is_empty(),
+        "an agent event is announced outside the hub's commit path, which is \
+         a second publisher of a transition that owes exactly one sequence \
+         number (04 §2, R-M2-3):\n{stray:?}"
     );
     assert_eq!(
-        owned, SEAM_COUNT,
-        "M2 opened {SEAM_COUNT} seams (docs/08-m2-plan.md §4's twelve rows); \
-         found {owned}. Closing one means deleting its call site, and closing \
-         the last means deleting the helper and emptying SEAM_OWNERS.",
+        announced.len(),
+        AGENT_EVENTS.len(),
+        "one announcement per event variant, all of them in the hub; found \
+         {announced:?}"
     );
+
+    let outside: Vec<&String> = committers
+        .iter()
+        .filter(|at| !at.contains("actor/agent_hub/"))
+        .collect();
     assert!(
-        !SEAM_OWNERS.is_empty() || owned == 0,
-        "with no owners declared, no seam may exist at all",
+        outside.is_empty(),
+        "StatusView::commit is the only path to the bus for an agent event, \
+         and the hub is its only caller — a second one is a second publisher \
+         (R-M2-3):\n{outside:?}"
+    );
+    assert_eq!(
+        committers.len(),
+        1,
+        "exactly one commit call site, in the hub: {committers:?}"
     );
 }
 

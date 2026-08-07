@@ -691,3 +691,49 @@ timestamps, so any timing question can be re-asked offline), and
 Nothing in the harness touches the user's own configuration: the Claude scratch
 project is disposable, and the Codex run builds a throwaway `CODEX_HOME` that
 borrows credentials by symlink.
+
+---
+
+## 11. The M2 live smoke
+
+**Status: not yet run.** This is the outstanding half of M2's exit criterion.
+
+Why it exists, in one sentence from the M2 plan (R-M2-14): "the exit criterion
+is only as strong as fake-agent fidelity". `tests/agents.rs` drives five
+scripted agents through every transition §7 lists, over the real `amx` binary
+and the real socket — but the agents are shell scripts, and twice now a green
+suite has hidden a feature that did not work. So M2 does not exit on green
+tests. It exits on green tests **plus this checklist, run by hand against real
+Claude Code, with its date and versions written into the table below.**
+
+Each step names what would make it fail, because a checklist whose steps are
+only "do X" gets ticked without being read.
+
+| # | Step | Passes when | Fails as |
+|---|---|---|---|
+| 1 | `amx integration install claude` in a project, then `amx integration status` | reports `current`, and names the `amx` binary it wrote into the settings | `current` on an installation whose binary is gone — herdr's exact bug, which V10's status check exists to refuse |
+| 2 | `amx agent start a1 --kind claude` … through `a5`, five real sessions | each returns ready with the pane really at Claude Code's prompt, not mid-banner | a `ready` that arrives while the splash is still painting (§6's grace, and W-3 in the plan's wave outcomes) |
+| 3 | prompt `a1`, watch the status line | `working` within a frame or two of the keystroke | a status that lags the screen — the hook edge is not arriving |
+| 4 | **Esc during generation** on `a1` | settles `idle` inside about a second, from the screen alone | still `working` thirty seconds later: that is the staleness deadline doing tier 2's job, and the manifest has rotted |
+| 5 | **Esc during a tool call** on `a2` | same | same |
+| 6 | ask `a3` for a tool call that needs permission | `blocked` as the dialog paints, `⚑1` on the status line | a block the screen shows and the status line does not |
+| 7 | answer that dialog **"No"** | leaves `blocked`, `⚑` clears | stuck blocked: nothing fires on a deny, so this is tier 2 alone |
+| 8 | block `a4` and `a5` too, then press the `next-attention` chord repeatedly, answering each | focus walks the blocked set in block order, across workspaces | an order that is creation order, or a chord that lands on a pane already answered |
+| 9 | let one agent run a tool-using turn and sit for two seconds after it ends | stays `idle` | flips back to `working`: the anonymous `SubagentStop` (§3 M4) has revived the pane |
+| 10 | `amx agent explain a1` | names the rule that matched and reports the others with evidence | a matched rule that is not the one the screen shows |
+| 11 | `amx wait --until blocked` on a running agent, from a second terminal | returns the moment the dialog paints | returns late, or not at all |
+| 12 | `amx session stop`, then `amx` again | all five panes come back and each one's Claude Code resumes **its own** conversation, visible in its transcript | a pane that comes back as a bare shell, or two panes resuming the same conversation |
+| 13 | `examples/notify.sh` running against `amx events --json` throughout | one desktop notification per block | notifications for the wrong events, or none |
+
+Record the run here:
+
+| Date | amx | Claude Code | Platform | Steps that failed | Notes |
+|---|---|---|---|---|---|
+| — | — | — | — | — | not yet run |
+
+A step that fails is a finding, not a blocker to be argued around: write it in
+the row, and file it against the tier it belongs to. A manifest that has rotted
+against a weekly release is the *expected* failure of steps 4–7, and the fix is
+to re-record the fixtures under `crates/amx-server/tests/fixtures/manifest/`
+and change the rule — which is what §10's harness and that directory's README
+are for.

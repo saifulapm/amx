@@ -1,9 +1,9 @@
 //! `agent.*` handlers.
 //!
-//! Two seams are left. The bodies arrive in wave order and this file is edited
+//! No seams are left. The bodies arrived in wave order and this file was edited
 //! **sequentially, never concurrently** — `docs/08-m2-plan.md` §6
-//! resolves the one collision it would otherwise have: V08 and V09 both land in
-//! wave 4, so the file is assigned to V09 (the report arm) and V08's
+//! resolves the one collision it would otherwise have had: V08 and V09 both
+//! land in wave 4, so the file was assigned to V09 (the report arm) and V08's
 //! `agent.next` logic lives in `actor/agent_hub/` with the arm here calling
 //! through the [`AgentHandle`](crate::actor::AgentHandle) V02 already typed.
 //!
@@ -11,11 +11,11 @@
 //!
 //! | Handler | Filled by | Wave |
 //! |---|---|---|
-//! | [`report`] | **V09 — landed** | 4 |
-//! | [`next`] | V08 — the `AgentHub` actor | 4 |
-//! | [`explain`] | V06 — the tier-2 manifest engine | 2 (sequential fill) |
-//! | [`start`] | **V13 — landed** | 5 |
-//! | [`prompt`] | **V13 — landed** | 5 |
+//! | [`report`] | V09 | 4 |
+//! | [`next`] | V08 wrote the queue, V17 called it | 4 / 7 |
+//! | [`explain`] | V06 wrote the explanation, V17 called it | 2 / 7 |
+//! | [`start`] | V13 | 5 |
+//! | [`prompt`] | V13 | 5 |
 //!
 //! # Addressing
 //!
@@ -32,12 +32,12 @@ use std::time::Duration;
 use amx_core::agent::{AgentKind, AgentSnapshot, AgentState};
 use amx_core::event::{StatePredicate, Waiter};
 use amx_core::{Event, PaneId, Seq};
-use amx_proto::control::{Method, agent, pane as pane_proto};
+use amx_proto::control::{agent, pane as pane_proto};
 use amx_proto::rpc::RpcError;
 use tokio::sync::oneshot;
 
 use self::lookup::{START_TIMEOUT_MS, anchor, session_state, stanza};
-use super::{Router, seam};
+use super::Router;
 use crate::actor::{AgentCommand, CoreCommand, PaneCall, StatusView};
 use crate::agent::address::{self, Scope};
 use crate::agent::fusion::IDENTITY_GRACE;
@@ -265,40 +265,44 @@ pub(super) async fn prompt(
 /// [`Manifest::explain`](crate::agent::manifest::Manifest::explain): a compiled
 /// manifest plus one screen produces the whole reply bar the three fields only
 /// the hub knows, which [`Explanation::into_reply`](crate::agent::manifest::Explanation::into_reply)
-/// takes. What it could not land is *this arm*, because reaching a pane's
+/// takes. What it could not land was *this arm*, because reaching a pane's
 /// manifest, its frames and its fused status means `AgentCommand::Explain` and
-/// a hub to answer it, and the hub is V08's — a wave later. So the seam stays
-/// until the hub exists, and closing it is a mailbox round trip:
+/// a hub to answer it, and the hub was V08's — a wave later. **V17 joined the
+/// two**, which is one mailbox round trip.
 ///
-/// ```text
-/// let pane = router.resolve(params.target).await?;
-/// router.agent().send(AgentCommand::Explain { pane, reply }).await
-/// ```
-///
-/// The count in `tests/hygiene.rs` (`SEAM_COUNT`) is why this could not simply
-/// be deleted and left to V08 either: seams are counted, and the count and the
-/// call sites move together.
+/// The target resolves in [`Scope::AnyPane`], and it is the one agent verb that
+/// does. Every other one addresses something it is about to *drive*, where
+/// D-M2-9's "unique among agent panes" is the right narrowing; this one answers
+/// "why does amx not think this is an agent?", and a scope that refused to name
+/// an unidentified pane would refuse exactly the pane the question is about. A
+/// UUID resolves in either scope, so the difference is only ever about labels.
 pub(super) async fn explain(
     router: &mut Router,
     params: agent::ExplainParams,
 ) -> Result<agent::ExplainReply, RpcError> {
-    let _ = (router, params);
-    seam(Method::AgentExplain, "V06")
+    let hub = lookup::hub(router)?;
+    let state = session_state(router).await?;
+    let pane = address::resolve(&params.target, &state.panes, Scope::AnyPane)?;
+    lookup::ask(&hub, |reply| AgentCommand::Explain { pane, reply }).await
 }
 
 /// `agent.next`: focus the head of the attention queue.
 ///
-/// **V08** fills this — the arm calls through the `AgentHandle`, and the queue
-/// logic lives in `actor/agent_hub/` so that V08 never edits this file (§6's
-/// wave-4 resolution). An empty queue is an honest empty reply, never an error:
-/// a prefix key that raised an error dialog for "nothing is waiting" would be
-/// chrome, and 03 §4 has none.
+/// The queue logic lives in `actor/agent_hub/` — V08 wrote it there so that it
+/// never edited this file (§6's wave-4 resolution) and **V17 called it**. The
+/// arm is the handle round trip and nothing else: the hub reads its own queue,
+/// posts the focus to `Core` fire-and-forget, and answers.
+///
+/// An empty queue is an honest empty reply, never an error: a prefix key that
+/// raised an error dialog for "nothing is waiting" would be chrome, and 03 §4
+/// has none.
 pub(super) async fn next(
     router: &mut Router,
     params: agent::NextParams,
 ) -> Result<agent::NextReply, RpcError> {
-    let _ = (router, params);
-    seam(Method::AgentNext, "V08")
+    let agent::NextParams {} = params;
+    let hub = lookup::hub(router)?;
+    lookup::ask(&hub, |reply| AgentCommand::NextAttention { reply }).await
 }
 
 /// Wait for a freshly spawned pane to be ready, or for the deadline.

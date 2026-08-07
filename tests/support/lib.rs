@@ -7,6 +7,9 @@
 //! - [`env`] — an isolated machine per test: temp runtime and state roots,
 //!   the binary under test, process-level helpers. No test touches the
 //!   process environment; every root travels on the spawned command.
+//! - [`agent`] — scripted stand-in agents for M2's exit suite, planted through
+//!   the registry override the design calls the test seam. Its module docs say
+//!   which parts of an agent are real there and which stand in.
 //! - [`wire`] — a raw protocol client over the session socket. It speaks
 //!   frames, not a client API, so a suite can send half a frame or a method
 //!   from the future.
@@ -27,6 +30,7 @@
     reason = "test harness: failing loudly is the product"
 )]
 
+pub mod agent;
 pub mod env;
 pub mod golden;
 pub mod platform;
@@ -34,7 +38,8 @@ pub mod screen;
 pub mod term;
 pub mod wire;
 
-pub use env::{Env, Output, PATIENCE, ServerChild, TICK, TempDir, wait_until, wait_until_or};
+pub use agent::FakeAgents;
+pub use env::{Env, Output, PATIENCE, ServerChild, TICK, TempDir, tick, wait_until, wait_until_or};
 pub use golden::{check_bytes_golden, check_json_golden, goldens_dir};
 pub use screen::{Screen, rasterize, shows};
 pub use term::{ALT_ENTER, ALT_LEAVE, PREFIX, Terminal};

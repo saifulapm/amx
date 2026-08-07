@@ -10,10 +10,20 @@
 //!   the whole chain ran, because nothing else can have put it on disk.
 //! - **Repeating that never wedges.** A rare `SIGTERM`-immune hang in the
 //!   `JoinSet` drain has been seen under load and is not diagnosed (R-M1-2).
-//!   M1 adds a fourth actor to that drain, so the milestone owes evidence it
-//!   made the hang no more likely: [`repeated_clean_shutdowns_under_load_leave_no_hung_drain`]
-//!   is a canary, not a proof — a rare flake cannot be disproven by a bounded
-//!   loop, and this one is written to be *loud* rather than lucky.
+//!   M1 added a fourth actor to that drain and M2 a fifth, so each milestone
+//!   owes evidence it made the hang no more likely:
+//!   [`repeated_clean_shutdowns_under_load_leave_no_hung_drain`] is a canary,
+//!   not a proof — a rare flake cannot be disproven by a bounded loop, and this
+//!   one is written to be *loud* rather than lucky.
+//!
+//! **What M2 added to the canary's load** (R-M2-6). A canary that kept
+//! exercising M1's four actors while a fifth sat idle beside them would be a
+//! canary that had stopped tracking the thing it watches. So every cycle now
+//! also starts a scripted agent and blocks it, which leaves `AgentHub` at the
+//! signal with a live tracker, a compiled manifest, an entry in the attention
+//! queue and an **armed deadline** — the state its drain has to let go of. Its
+//! discipline is Persist's to the letter (receive-only after cancel, no sibling
+//! request, nothing to flush), and this is where that claim is put under load.
 //!
 //! The tripwire's own rule: it must never hang the suite it is protecting.
 //! Every stop runs under [`STOP_BUDGET`] rather than the rig's patience, and a
@@ -24,8 +34,11 @@
 
 use std::time::Duration;
 
+use amx_core::WorkspaceId;
+use rig::agent::{self, FakeAgents};
 use rig::env::processes_with_arg;
-use rig::{Env, wait_until};
+use rig::{Env, Wire, result_of, wait_until};
+use serde_json::json;
 
 use crate::fixtures::{
     connected, dir, marker_shell, rename, snapshot_mentions, split_in, workspace,
@@ -112,6 +125,11 @@ async fn repeated_clean_shutdowns_under_load_leave_no_hung_drain() {
     let shell = marker_shell("wedg", ":");
     let mut env = Env::new("wedg");
     env.set_var("SHELL", &shell.path());
+    // The fifth actor's load (R-M2-6): a scripted agent per cycle, so the hub
+    // is holding a tracker, a manifest, a queue entry and a timer when the
+    // signal lands.
+    let agents = FakeAgents::install(&mut env);
+    let _ = agents.program();
     // Sidecars on, so every cycle's stop has a `history/` dump to serialize
     // and a blocking-pool write to finish: the drain being watched is the one
     // with work in it, not an idle one.
@@ -125,11 +143,12 @@ async fn repeated_clean_shutdowns_under_load_leave_no_hung_drain() {
         // Load, in the sense the wedge was seen under: a session with panes,
         // structural churn dirtying the persistence debounce, and live shells
         // whose pty readers and parsers are threads the drain has to outlive.
-        let (_, root) = workspace(&mut wire, &format!("w{cycle}")).await;
+        let (space, root) = workspace(&mut wire, &format!("w{cycle}")).await;
         let first = split_in(&mut wire, root, &env.scratch()).await;
         let second = split_in(&mut wire, first, &env.scratch()).await;
         rename(&mut wire, first, &format!("first-{cycle}")).await;
         rename(&mut wire, second, &format!("second-{cycle}")).await;
+        blocked_agent(&mut wire, space, &format!("agent-{cycle}")).await;
         wait_until("the cycle's panes are all running", || {
             processes_with_arg(shell.marker()) >= 3
         });
@@ -158,5 +177,46 @@ async fn repeated_clean_shutdowns_under_load_leave_no_hung_drain() {
          R-M1-2 wedge, caught:\n\n{}",
         wedged.len(),
         wedged.join("\n\n")
+    );
+}
+
+/// Start a scripted agent in `space` and leave it blocked.
+///
+/// Blocked and not merely running: `Blocked` is the state that puts a pane on
+/// the attention queue *and* arms the staleness deadline, so the hub the signal
+/// arrives at has both a queue to abandon and a timer to drop. An agent sitting
+/// idle would leave the wheel disarmed, which is the easy case.
+///
+/// Failures here are assertions rather than skips: a cycle whose agent never
+/// blocked is a cycle that did not put the fifth actor under load, and a canary
+/// that quietly stopped watching is worse than no canary.
+async fn blocked_agent(wire: &mut Wire, space: WorkspaceId, name: &str) {
+    let started = wire
+        .request(
+            "agent.start",
+            json!({ "name": name, "kind": agent::KIND, "workspace": space }),
+        )
+        .await;
+    let pane = result_of(&started)["pane"]
+        .as_str()
+        .unwrap_or_else(|| panic!("agent.start answered {started:?}"))
+        .to_owned();
+    wire.request("pane.run", json!({ "target": pane, "text": agent::ASK }))
+        .await;
+
+    // The block, waited for on the wire rather than on a clock: `wait` is the
+    // verb a script would use, and its timeout is an answer this test refuses
+    // to accept.
+    let waited = wire
+        .request(
+            "wait",
+            json!({ "until": "blocked", "target": pane, "timeout_ms": 30_000 }),
+        )
+        .await;
+    assert_eq!(
+        result_of(&waited)["satisfied"],
+        true,
+        "the cycle's agent never blocked, so the hub is not under the load this \
+         canary is about: {waited:?}"
     );
 }
