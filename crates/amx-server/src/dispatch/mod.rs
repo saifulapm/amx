@@ -26,12 +26,12 @@
 //! `tests/hygiene.rs` that lets them exist — the two always move together, so a
 //! seam can never quietly outlive the milestone that opened it. Every call
 //! below names the task that closes it, and the hygiene suite reads those names
-//! back: **V06** `agent.explain`, **V08** `agent.next`, **V11**
-//! `wait`/`events.subscribe`/`pane.wait_output`, **V13**
-//! `agent.start`/`agent.prompt`. V12's four —
-//! `pane.send_text`/`send_keys`/`run`/`read` — and V09's `agent.report` are
-//! filled, and left the list with the count in `tests/hygiene.rs`. V17 empties
-//! it again and deletes the helper, which is the milestone's exit check.
+//! back: **V06** `agent.explain`, **V08** `agent.next`, **V13**
+//! `agent.start`/`agent.prompt`. V09's `agent.report`, V12's four —
+//! `pane.send_text`/`send_keys`/`run`/`read` — and V11's three —
+//! `wait`/`pane.wait_output`/`events.subscribe` — are filled, and each left
+//! the list with the count in `tests/hygiene.rs`. V17 empties it again and
+//! deletes the helper, which is the milestone's exit check.
 
 mod agent;
 mod events;
@@ -49,6 +49,7 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 
 use crate::actor::{AgentHandle, ClientCall, CoreCommand, CoreHandle, Reply, SessionCall};
+use crate::conn::events::ConnEvents;
 use crate::conn::streams::ConnStreams;
 
 /// The JSON-RPC code for a method this build knows but has not implemented.
@@ -99,6 +100,13 @@ pub struct Router {
     /// and no tracked pane, which is what `accepted: false` means — instead of
     /// failing a call an agent's hook cannot be told about anyway.
     agent: Option<AgentHandle>,
+    /// The connection's event subscription and the state its waits read.
+    ///
+    /// Present for the same reason and on the same terms as `streams`: `wait`,
+    /// `pane.wait_output` and `events.subscribe` are the only rows that need
+    /// the bus or the [`StatusView`](crate::actor::StatusView), and a `Router`
+    /// built without them still serves the rest of the table.
+    events: Option<ConnEvents>,
 }
 
 impl Router {
@@ -109,12 +117,18 @@ impl Router {
             core,
             streams: None,
             agent: None,
+            events: None,
         }
     }
 
     /// Adopt the connection's stream bindings.
     pub fn attach_streams(&mut self, streams: ConnStreams) {
         self.streams = Some(streams);
+    }
+
+    /// Adopt the connection's event state.
+    pub fn attach_events(&mut self, events: ConnEvents) {
+        self.events = Some(events);
     }
 
     /// The connection's stream bindings, if this router serves a connection.
@@ -138,6 +152,16 @@ impl Router {
     #[must_use]
     pub(crate) fn agent(&self) -> Option<&AgentHandle> {
         self.agent.as_ref()
+    }
+
+    /// The connection's event state, if this router serves a connection.
+    pub(crate) fn events(&self) -> Result<&ConnEvents, RpcError> {
+        self.events.as_ref().ok_or_else(|| {
+            RpcError::new(
+                RpcError::INTERNAL_ERROR,
+                "this router serves no connection, so it has no event stream",
+            )
+        })
     }
 
     /// The bus head, via the ordinary `ping` path.

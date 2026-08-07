@@ -19,10 +19,13 @@
 //! back door, so the identity in the welcome is the same identity every later
 //! reply carries.
 
+pub mod events;
 pub mod negotiate;
 pub mod reader;
 pub mod streams;
 pub mod writer;
+
+use std::sync::Arc;
 
 use amx_core::{ClientId, Ctx, Event};
 use amx_proto::control::{Dispatch, session};
@@ -31,7 +34,7 @@ use amx_proto::rpc::RpcError;
 use thiserror::Error;
 use tokio::net::UnixStream;
 
-use crate::actor::{CoreCommand, CoreHandle, SessionCall};
+use crate::actor::{CoreCommand, CoreHandle, SessionCall, StatusView};
 use crate::conn::reader::Reader;
 use crate::conn::writer::{OutboundError, WriteError};
 use crate::dispatch::Router;
@@ -92,7 +95,19 @@ impl ConnError {
 }
 
 /// Serve one connected client until it disconnects or the session shuts down.
-pub async fn serve(stream: UnixStream, ctx: Ctx, core: CoreHandle) -> Result<(), ConnError> {
+///
+/// `status` is the [`StatusView`] `AgentHub` writes and wait predicates read
+/// (`docs/08-m2-plan.md` §3). It arrives as a parameter rather than being
+/// fetched, for the same reason the hub is *handed* a `SnapshotFeed`: a
+/// connection asking an actor for shared state is a round trip it would then
+/// have to repeat on every evaluation, and a wait predicate has to read live
+/// state synchronously.
+pub async fn serve(
+    stream: UnixStream,
+    ctx: Ctx,
+    core: CoreHandle,
+    status: StatusView,
+) -> Result<(), ConnError> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = Reader::new(read_half);
     let mut router = Router::new(core);
@@ -137,15 +152,27 @@ pub async fn serve(stream: UnixStream, ctx: Ctx, core: CoreHandle) -> Result<(),
     let streams = streams::ConnStreams::new(outbound.clone(), ctx.cancel.child_token());
     reader.share_caps(streams.caps());
     router.attach_streams(streams.clone());
+    // So is the event subscription, and so are the long polls: cursors are
+    // per-connection state, which is why there is nothing to persist and
+    // nothing to leak (D-M2-5).
+    let events = events::ConnEvents::new(
+        Arc::clone(&ctx.bus),
+        status,
+        outbound.clone(),
+        ctx.cancel.child_token(),
+    );
+    router.attach_events(events.clone());
 
     let outcome = tokio::select! {
-        result = reader::run(&mut reader, &mut router, &streams, &outbound, &ctx.cancel) => result,
+        result = reader::run(&mut reader, &mut router, &streams, &events, &outbound, &ctx.cancel) => result,
         result = writer::run(write_half, queue, ctx.cancel.clone()) => {
             result.map(|_report| ()).map_err(ConnError::from)
         }
     };
 
-    // Joined before the detach is published: no pump outlives its connection.
+    // Joined before the detach is published: no pump and no long poll outlives
+    // its connection.
+    events.shutdown().await;
     streams.shutdown().await;
     ctx.bus.publish(Event::ClientDetached { client });
     tracing::debug!(%client, "client detached");
