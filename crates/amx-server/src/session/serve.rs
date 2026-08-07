@@ -125,7 +125,7 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
         CoreHandle::new(core_tx.clone()),
         gateway.status_view(),
     );
-    runtime.spawn(async move {
+    runtime.spawn("agent-hub", async move {
         let _agents = hub.run(agent_rx, agent_events).await;
     });
     // Between the bind and the accept loop (D-M1-9): the bind has claimed the
@@ -145,11 +145,11 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     core.set_persist(PersistHandle::new(persist_tx));
     let events = ctx.bus.subscribe();
     let persist = Persist::new(ctx.clone(), CoreHandle::new(core_tx), persist_config);
-    runtime.spawn(async move {
+    runtime.spawn("persist", async move {
         let _persist = persist.run(persist_rx, events).await;
     });
 
-    runtime.spawn(async move {
+    runtime.spawn("core", async move {
         // Output rides two paths out of a folded batch. Grid traffic flows
         // from each pane's published frames through the per-client grid
         // streams `stream.bind` spawns into each connection's priority
@@ -161,12 +161,12 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     });
 
     let (report_tx, report_rx) = oneshot::channel();
-    runtime.spawn(async move {
+    runtime.spawn("gateway", async move {
         let _ = report_tx.send(gateway.run().await);
     });
 
     if stop == StopOn::Signals {
-        runtime.spawn(watch_signals(ctx.cancel.clone()));
+        runtime.spawn("signals", watch_signals(ctx.cancel.clone()));
     }
 
     ctx.cancel.cancelled().await;
@@ -188,7 +188,7 @@ fn spawn_config_watcher(runtime: &mut Runtime, ctx: &Ctx, config: ConfigRuntime)
     match watch_config(ctx, ctx.cancel.clone()) {
         Ok(watcher) => {
             let bus = Arc::clone(&ctx.bus);
-            runtime.spawn(config.run(bus, watcher));
+            runtime.spawn("config-watch", config.run(bus, watcher));
         }
         Err(err) => {
             tracing::warn!(

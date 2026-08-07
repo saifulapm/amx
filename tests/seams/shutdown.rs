@@ -25,6 +25,19 @@
 //! discipline is Persist's to the letter (receive-only after cancel, no sibling
 //! request, nothing to flush), and this is where that claim is put under load.
 //!
+//! **What M3 added** (W01, `docs/09-m3-plan.md` §2). Two things the canary was
+//! missing, both of them conditions the wedge has only ever been seen under.
+//! First, a **client attached at the signal**: every sighting came out of the
+//! T17 CLI suite, where a real client is on a real terminal when the server is
+//! told to stop, and the gateway therefore has live connection tasks — with
+//! grid streams inside them — to close before its own task can return. The
+//! tripwire above signals a server nobody is looking at, which is the easy
+//! case. Second, **repetition on demand**: both loops read their cycle count
+//! from the environment ([`AMX_SHUTDOWN_CYCLES`], [`AMX_STORM_CYCLES`]) so the
+//! spike harness can ask for thousands of stops without CI paying for them.
+//! The defaults are what every commit runs; `scripts/spike/wedge.py` is what
+//! turns them up.
+//!
 //! The tripwire's own rule: it must never hang the suite it is protecting.
 //! Every stop runs under [`STOP_BUDGET`] rather than the rig's patience, and a
 //! server that overruns it is killed, reported with the state of every one of
@@ -37,11 +50,12 @@ use std::time::Duration;
 use amx_core::WorkspaceId;
 use rig::agent::{self, FakeAgents};
 use rig::env::processes_with_arg;
-use rig::{Env, Wire, result_of, wait_until};
+use rig::{ALT_ENTER, Env, Wire, result_of, wait_until};
 use serde_json::json;
 
 use crate::fixtures::{
-    connected, dir, marker_shell, rename, snapshot_mentions, split_in, workspace,
+    COLS, ROWS, connected, dir, focused_pane, marker_shell, rename, snapshot_mentions, split_in,
+    workspace,
 };
 
 /// How long one clean stop may take before it counts as wedged.
@@ -53,13 +67,41 @@ use crate::fixtures::{
 /// scheduler cannot redden it, short enough that ten wedges cost a minute.
 const STOP_BUDGET: Duration = Duration::from_secs(15);
 
-/// How many populate-and-stop cycles the tripwire runs.
+/// How many populate-and-stop cycles the tripwire runs by default.
 ///
 /// Bounded on purpose. The wedge is rare and a loop long enough to catch it
 /// reliably would be a loop too long to run on every commit; what this number
 /// buys is that M1's shutdown path is exercised end to end, repeatedly, with a
 /// live session behind it, on every CI run on both tier-1 platforms.
 const CYCLES: usize = 6;
+
+/// How many lean attach-and-stop cycles [`a_shutdown_storm_with_a_client_attached_never_wedges`]
+/// runs by default.
+///
+/// Higher than [`CYCLES`] because the cycle is cheaper: no agent to block, no
+/// save to wait out, so the wall clock per repetition is a server start and a
+/// client's first frame. Same bargain, more samples of the same drain.
+const STORM_CYCLES: usize = 20;
+
+/// Overrides [`CYCLES`]. Read by the spike harness, unset everywhere else.
+const AMX_SHUTDOWN_CYCLES: &str = "AMX_SHUTDOWN_CYCLES";
+
+/// Overrides [`STORM_CYCLES`]. See [`AMX_SHUTDOWN_CYCLES`].
+const AMX_STORM_CYCLES: &str = "AMX_STORM_CYCLES";
+
+/// How many cycles to run: `default`, unless `var` names another number.
+///
+/// A value that is not a number is a typo in a spike invocation, and running
+/// the default after one would waste the hours the invocation was asking for —
+/// so it fails loudly instead.
+fn cycles(var: &str, default: usize) -> usize {
+    match std::env::var(var) {
+        Ok(value) => value
+            .parse()
+            .unwrap_or_else(|_| panic!("${var} must be a number, not {value:?}")),
+        Err(_) => default,
+    }
+}
 
 // ------------------------------------------- the final capture on the way down
 
@@ -135,8 +177,9 @@ async fn repeated_clean_shutdowns_under_load_leave_no_hung_drain() {
     // with work in it, not an idle one.
     std::fs::write(env.config_path(), "[persist]\nhistory = true\n").expect("write the config");
 
+    let rounds = cycles(AMX_SHUTDOWN_CYCLES, CYCLES);
     let mut wedged = Vec::new();
-    for cycle in 0..CYCLES {
+    for cycle in 0..rounds {
         let server = env.server();
         let mut wire = connected(&env).await;
 
@@ -173,11 +216,130 @@ async fn repeated_clean_shutdowns_under_load_leave_no_hung_drain() {
 
     assert!(
         wedged.is_empty(),
-        "{} of {CYCLES} clean shutdowns did not finish draining — this is the \
+        "{} of {rounds} clean shutdowns did not finish draining — this is the \
          R-M1-2 wedge, caught:\n\n{}",
         wedged.len(),
         wedged.join("\n\n")
     );
+}
+
+// -------------------------------------------------------------------- the storm
+
+/// The same drain, signalled with a client still attached.
+///
+/// The distinction from the tripwire above is the gateway. Every sighting of
+/// the wedge came from a suite where a real client was attached to a real
+/// terminal at the moment the server was told to stop, so the gateway's own
+/// task had connections to cancel, drain and join before it could return —
+/// each of them holding a grid stream that reads a pane's published frames.
+/// The tripwire signals a server whose only wire connection has already been
+/// dropped, which is a strictly easier drain, and a canary that only ever runs
+/// the easy case is not watching the thing that broke.
+///
+/// A fresh session per cycle, unlike the tripwire: this loop is meant to be
+/// turned up to thousands of repetitions by the spike harness, and the
+/// tripwire's shared state directory makes each cycle restore everything the
+/// last one saved — pane count, and so cycle cost, growing without bound.
+/// Restore under repetition is the tripwire's business; raw stop count is
+/// this one's.
+#[tokio::test]
+async fn a_shutdown_storm_with_a_client_attached_never_wedges() {
+    let shell = marker_shell("strm", ":");
+    let rounds = cycles(AMX_STORM_CYCLES, STORM_CYCLES);
+    let mut wedged = Vec::new();
+
+    for cycle in 0..rounds {
+        let mut env = Env::new("strm");
+        env.set_var("SHELL", &shell.path());
+
+        let server = env.server();
+        // The client seeds the session's first workspace and the shell behind
+        // it, so this one process is both the load and the reason there is
+        // anything to shut down.
+        let mut term = env.attach_on_tty(&[], ROWS, COLS);
+        term.wait_for(ALT_ENTER);
+
+        // A second pane over a second connection: two connection tasks in the
+        // gateway, two panes in `Core`, at the signal.
+        let mut wire = connected(&env).await;
+        let root = focused_pane(&env).await;
+        let split = split_in(&mut wire, root, &env.scratch()).await;
+        wait_until("the cycle's panes are both running", || {
+            processes_with_arg(shell.marker()) >= 2
+        });
+
+        // Neither connection is dropped and the client is never detached: the
+        // gateway meets the signal with everything still open, which is the
+        // state the wedge was seen in.
+        if let Err(stuck) = server.shutdown_within(STOP_BUDGET) {
+            wedged.push(format!("cycle {cycle} (pane {split}): {stuck}"));
+        }
+        drop(wire);
+        // Dropping the terminal kills whatever is left of the client. What a
+        // client does when its server disappears is D-M3-7's subject, not this
+        // test's, and asserting it here would make a storm fail for a reason
+        // that has nothing to do with the drain.
+        drop(term);
+        wait_until("the stopped server's shells are reaped", || {
+            processes_with_arg(shell.marker()) == 0
+        });
+    }
+
+    assert!(
+        wedged.is_empty(),
+        "{} of {rounds} attached-client shutdowns did not finish draining — this \
+         is the R-M1-2 wedge, caught:\n\n{}",
+        wedged.len(),
+        wedged.join("\n\n")
+    );
+}
+
+// --------------------------------------------------------------- the wedge
+
+/// The drain wedge, reproduced and closed (W01, `docs/notes/m3-shutdown-wedge.md`).
+///
+/// A connection's handshake — the hello, the attach seed, the ping, the welcome
+/// — used to be the one stretch of its life that watched no cancellation token.
+/// A peer that connected and then went quiet held that task open for as long as
+/// it stayed connected, so the gateway's join never finished; and because the
+/// task still held an `AgentHandle`, the hub's mailbox could never close either,
+/// so its drain-to-closure never finished. Everything else — `Core`, the panes,
+/// `Persist`, the config watcher — completed and closed its descriptors, which
+/// is exactly what the six wedged servers found on this machine looked like:
+/// one listening socket, one accepted connection, nothing else left.
+///
+/// Not a race, once you know where to stand: this failed on every run before
+/// the fix and passes on every run after it. The three peers are the three ways
+/// to be silent, because `read_hello` cannot tell them apart and neither should
+/// the drain.
+#[tokio::test]
+async fn a_peer_that_never_finishes_saying_hello_does_not_wedge_the_drain() {
+    let shell = marker_shell("hush", ":");
+    let mut env = Env::new("hush");
+    env.set_var("SHELL", &shell.path());
+    let server = env.server();
+
+    // An ordinary session first, so the drain has real work beside the stalled
+    // connections and a wedge cannot be blamed on an empty server.
+    let mut live = connected(&env).await;
+    let (_, root) = workspace(&mut live, "w").await;
+    let _ = split_in(&mut live, root, &env.scratch()).await;
+
+    let _silent = Wire::connect(&env.socket()).await;
+    let mut half_header = Wire::connect(&env.socket()).await;
+    half_header.send_bytes(&[0]).await;
+    let mut half_hello = Wire::connect(&env.socket()).await;
+    half_hello.send_partial_frame(64, br#"{"proto""#).await;
+
+    // Every one of them still connected when the signal lands, which is the
+    // whole point: a peer that closes gives the reader an end of file and the
+    // task ends on its own.
+    if let Err(stuck) = server.shutdown_within(STOP_BUDGET) {
+        panic!("{stuck}");
+    }
+    wait_until("the stopped server's shells are reaped", || {
+        processes_with_arg(shell.marker()) == 0
+    });
 }
 
 /// Start a scripted agent in `space` and leave it blocked.

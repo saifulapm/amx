@@ -228,18 +228,27 @@ pub struct Pty {
 /// A freshly opened pty reports a 0x0 window, which starves every layout
 /// computation of any area to tile, so the size is set before anything is
 /// spawned onto it.
+///
+/// **Both halves are close-on-exec** (W01), for the reasons the rig's own
+/// `open_pty` states at length (`tests/support/term.rs`): without it this
+/// harness's terminals are inherited by every `amx` it spawns, and a server
+/// that seeded one pane is found holding six pty masters — which is how the
+/// shutdown wedge acquired an imaginary "the pane spawn repeated" symptom
+/// (`docs/notes/m3-shutdown-wedge.md` §3). The daemonized server the client
+/// starts inherits them too, so the leak survives the client.
 pub fn open_pty(rows: u16, cols: u16) -> Pty {
-    let master =
-        rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR | rustix::pty::OpenptFlags::NOCTTY)
-            .expect("openpt");
+    let master = open_master().expect("openpt");
     rustix::pty::grantpt(&master).expect("grantpt");
     rustix::pty::unlockpt(&master).expect("unlockpt");
     let name = rustix::pty::ptsname(&master, Vec::new()).expect("ptsname");
-    let slave = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(PathBuf::from(name.to_string_lossy().into_owned()))
-        .expect("open the pty slave");
+    let slave = File::from(
+        rustix::fs::open(
+            PathBuf::from(name.to_string_lossy().into_owned()),
+            rustix::fs::OFlags::RDWR | rustix::fs::OFlags::NOCTTY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .expect("open the pty slave"),
+    );
     // Sized through the slave, the way openpty(3) does it: the window lives on
     // the terminal, not on a descriptor, and the slave takes TIOCSWINSZ on
     // every platform where darwin's master refuses it until the slave is open.
@@ -252,6 +261,30 @@ pub fn open_pty(rows: u16, cols: u16) -> Pty {
         master: File::from(master),
         slave,
     }
+}
+
+/// The master descriptor, close-on-exec from its first instant where the
+/// platform allows it.
+///
+/// Linux takes the flag in `posix_openpt` itself; elsewhere it goes on with a
+/// second call, leaving the same narrow window the server's own
+/// `platform::pty::open_master` documents.
+#[cfg(target_os = "linux")]
+fn open_master() -> Result<std::os::fd::OwnedFd, rustix::io::Errno> {
+    rustix::pty::openpt(
+        rustix::pty::OpenptFlags::RDWR
+            | rustix::pty::OpenptFlags::NOCTTY
+            | rustix::pty::OpenptFlags::CLOEXEC,
+    )
+}
+
+/// See the Linux arm.
+#[cfg(not(target_os = "linux"))]
+fn open_master() -> Result<std::os::fd::OwnedFd, rustix::io::Errno> {
+    let master =
+        rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR | rustix::pty::OpenptFlags::NOCTTY)?;
+    rustix::io::fcntl_setfd(&master, rustix::io::FdFlags::CLOEXEC)?;
+    Ok(master)
 }
 
 fn set_size<Fd: std::os::fd::AsFd>(fd: Fd, rows: u16, cols: u16) {

@@ -121,31 +121,51 @@ pub async fn serve(
         router.attach_agent(agent);
     }
 
-    let hello = negotiate::read_hello(&mut reader).await?;
-    // An attach to a session with no workspaces seeds its first one, and the
-    // reply is awaited *before* the welcome is written: by the time the
-    // client can render anything there is a workspace with a live shell for
-    // it to show, never an empty session. A failed seed (no spawnable shell)
-    // is logged and the attach proceeds — the client gets the same empty
-    // session it would have seen before, not a refused connection.
-    if hello.attach {
-        let seeded = router
-            .call(|reply| CoreCommand::Session(SessionCall::Attached { reply }))
-            .await;
-        if let Err(err) = seeded {
-            tracing::warn!(error = %err.message, "could not seed the first workspace");
+    // The handshake races the session's shutdown, because on its own it watches
+    // nothing. `read_hello` waits on a peer that may never speak; the two
+    // `Core` calls and the welcome write wait on actors and a socket that may
+    // never answer. A connection parked anywhere in there when the session is
+    // cancelled is a connection the gateway then joins forever — and, because it
+    // still holds an `AgentHandle`, one that keeps the hub's mailbox from ever
+    // closing too. That is the drain wedge, in full: `session stop` on a server
+    // with one silent peer connected reproduces it every time
+    // (`docs/notes/m3-shutdown-wedge.md` §4). Everything after this point is
+    // already cancellation-aware, which is why the guard stops here.
+    let handshake = async {
+        let hello = negotiate::read_hello(&mut reader).await?;
+        // An attach to a session with no workspaces seeds its first one, and
+        // the reply is awaited *before* the welcome is written: by the time the
+        // client can render anything there is a workspace with a live shell for
+        // it to show, never an empty session. A failed seed (no spawnable
+        // shell) is logged and the attach proceeds — the client gets the same
+        // empty session it would have seen before, not a refused connection.
+        if hello.attach {
+            let seeded = router
+                .call(|reply| CoreCommand::Session(SessionCall::Attached { reply }))
+                .await;
+            if let Err(err) = seeded {
+                tracing::warn!(error = %err.message, "could not seed the first workspace");
+            }
         }
-    }
-    let identity = Dispatch::ping(&mut router, session::PingParams {})
-        .await
-        .map_err(ConnError::Core)?;
-    let welcome = hello.accept(
-        identity.server,
-        &negotiate::supported_features(),
-        identity.seq,
-        identity.session,
-    )?;
-    negotiate::write_welcome(&mut write_half, &welcome).await?;
+        let identity = Dispatch::ping(&mut router, session::PingParams {})
+            .await
+            .map_err(ConnError::Core)?;
+        let welcome = hello.accept(
+            identity.server,
+            &negotiate::supported_features(),
+            identity.seq,
+            identity.session,
+        )?;
+        negotiate::write_welcome(&mut write_half, &welcome).await?;
+        Ok::<_, ConnError>(welcome)
+    };
+    let welcome = tokio::select! {
+        // Not an error: nothing failed, the session is closing under a client
+        // that had not finished arriving. No `ClientAttached` was published, so
+        // there is no detach to publish either.
+        () = ctx.cancel.cancelled() => return Ok(()),
+        result = handshake => result?,
+    };
 
     // The gateway is the only authority on client lifecycle, so it is the one
     // publisher of these two transitions — the same "one publisher per
