@@ -1,0 +1,10 @@
+{
+  "seq": 41,
+  "event": {
+    "event": "agent_status",
+    "pane": "00000000-0000-0000-0000-0000000000a1",
+    "from": "working",
+    "to": "blocked",
+    "cause": "hook"
+  }
+}
