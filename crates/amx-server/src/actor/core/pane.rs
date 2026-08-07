@@ -392,12 +392,10 @@ impl Core {
 
     /// Give a pane a user-visible label.
     ///
-    /// The counterpart of `workspace.rename`, and the reason a snapshot can
-    /// bring a session back recognisable: an unlabelled pane is
-    /// indistinguishable from every other shell after a restart. The label
-    /// lives on the pane in [`SessionState`](amx_core::SessionState), rides
-    /// `session.state` to every client, and is captured into the snapshot from
-    /// there.
+    /// The counterpart of `workspace.rename`, and the reason a restored
+    /// session comes back recognisable rather than as a row of identical
+    /// shells: the label lives on the pane, rides `session.state` to every
+    /// client, and is captured into the snapshot from there.
     pub(super) fn handle_pane_rename(
         &mut self,
         params: pane::RenameParams,
@@ -409,9 +407,8 @@ impl Core {
         {
             Ok(effect) => {
                 // Renaming a pane to the label it already carries is a legal
-                // no-op with no transition to publish — the same rule focus
-                // and resize follow — and the reply still reports the sequence
-                // the label holds at.
+                // no-op with no transition to publish — the rule focus and
+                // resize follow — and the reply still reports where it holds.
                 let renamed = !matches!(effect, amx_core::Effect::Nothing);
                 self.effects.absorb(effect);
                 let seq = if renamed {

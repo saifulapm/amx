@@ -121,39 +121,35 @@ async fn a_call_naming_a_pane_that_does_not_exist_is_a_reply_not_a_disconnect() 
 }
 
 #[tokio::test]
-async fn pane_rename_and_session_report_answer_not_implemented_not_404() {
-    // Both rows are in the table both peers share, so reporting them as
-    // unknown would tell a client to stop offering them — the distinction
-    // `dispatch::NOT_IMPLEMENTED` exists for. U06 and U07 replace these
-    // answers with real ones; until then the code is what a client sees.
+async fn session_report_answers_not_implemented_not_404() {
+    // The row is in the table both peers share, so reporting it as unknown
+    // would tell a client to stop offering it — the distinction
+    // `dispatch::NOT_IMPLEMENTED` exists for. This covered `pane.rename` too
+    // until U07 implemented it (`tests/rename.rs` is what covers it now);
+    // U06 replaces this answer in the same way, and then the whole test goes.
     let server = Server::start("seams").await;
     let mut client = server.attach().await;
 
-    let pane = amx_core::PaneId::new_v4().to_string();
-    for (id, method, params) in [
-        (1, "pane.rename", json!({ "pane": pane, "label": "editor" })),
-        (2, "session.report", json!({})),
-    ] {
-        let reply = client.request(id, method, params).await;
-        let RpcOutcome::Error(err) = &reply.outcome else {
-            panic!("{method} is a seam in this build, not an implemented method");
-        };
-        assert_eq!(
-            err.code,
-            amx_server::dispatch::NOT_IMPLEMENTED,
-            "{method} answered {}, not the seam code",
-            err.code
-        );
-        assert_ne!(
-            err.code,
-            RpcError::METHOD_NOT_FOUND,
-            "{method} is in the table; disowning it would tell the client to stop offering it"
-        );
-        assert!(err.message.contains(method), "{}", err.message);
-    }
+    let method = "session.report";
+    let reply = client.request(1, method, json!({})).await;
+    let RpcOutcome::Error(err) = &reply.outcome else {
+        panic!("{method} is a seam in this build, not an implemented method");
+    };
+    assert_eq!(
+        err.code,
+        amx_server::dispatch::NOT_IMPLEMENTED,
+        "{method} answered {}, not the seam code",
+        err.code
+    );
+    assert_ne!(
+        err.code,
+        RpcError::METHOD_NOT_FOUND,
+        "{method} is in the table; disowning it would tell the client to stop offering it"
+    );
+    assert!(err.message.contains(method), "{}", err.message);
 
-    // The connection survives both, like every other refusal here.
-    let reply = client.request(3, "ping", json!({})).await;
+    // The connection survives it, like every other refusal here.
+    let reply = client.request(2, "ping", json!({})).await;
     assert!(matches!(reply.outcome, RpcOutcome::Result(_)));
 
     server.shutdown().await;
