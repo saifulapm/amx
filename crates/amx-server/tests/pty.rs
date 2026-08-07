@@ -446,6 +446,127 @@ fn partial_write_resumes_at_the_correct_offset() {
     thread.join().expect("actor thread");
 }
 
+/// The queue property `pane.run` rests on: a pair is two writes, in order.
+///
+/// One chunk is one `write()` to the terminal, so queueing the paste and its
+/// submitting `CR` as a pair is what puts a read boundary between them — the
+/// thing a paste-aware TUI needs in order to see the `CR` as a keypress rather
+/// than as trailing whitespace of the paste. The A/B against the concatenation
+/// is here because the byte stream is identical either way: the difference is
+/// entirely in how it is delivered, and only the write count can see it.
+///
+/// What this cannot test is the child's side. The failure that motivated the
+/// pairing is a live one, about 3% of turn-starting prompts against real
+/// Claude Code, and it depends on where the child's read boundaries fall — no
+/// CI assertion reaches it. The trials are in `docs/notes/m2-live-smoke.md`
+/// §8.2; this test pins the half that is deterministic.
+#[test]
+fn a_queued_pair_reaches_the_terminal_as_two_writes_in_order() {
+    const PASTE: &[u8] = b"\x1b[200~echo hi\x1b[201~";
+    const SUBMIT: &[u8] = b"\r";
+
+    let (session, mut far, writes) = FakeSession::pair(4096);
+    let (handle, thread) = fake_actor(
+        session,
+        Duration::from_millis(50),
+        Box::new(|_bytes, _responses| {}),
+    );
+
+    handle
+        .try_write_input_pair(Bytes::from_static(PASTE), Bytes::from_static(SUBMIT))
+        .expect("queue the pair");
+    let mut seen = vec![0u8; PASTE.len() + SUBMIT.len()];
+    far.read_exact(&mut seen).expect("the pair");
+    assert_eq!(
+        seen,
+        [PASTE, SUBMIT].concat(),
+        "the submit must follow the paste, and follow it immediately"
+    );
+    assert_eq!(
+        writes.load(Ordering::Relaxed),
+        2,
+        "a pair is two chunks, and one chunk is one write"
+    );
+
+    // The same bytes as one chunk: one write, which is what the live smoke
+    // measured losing the submit.
+    handle
+        .try_write_input(Bytes::from([PASTE, SUBMIT].concat()))
+        .expect("queue the concatenation");
+    far.read_exact(&mut seen).expect("the concatenation");
+    assert_eq!(
+        writes.load(Ordering::Relaxed),
+        3,
+        "concatenated, the same bytes are one write — the shape this replaced"
+    );
+
+    handle.shutdown();
+    thread.join().expect("actor thread");
+}
+
+/// Nothing of anyone else's can land between the halves of a pair.
+///
+/// The interloper is a second thread queueing into the same pane while pairs
+/// go in — which is not a hypothetical: a pane's input queue takes drives from
+/// the parser thread *and* the keystrokes a connection forwards, so "two
+/// chunks queued back to back" is a claim about two producers, not one.
+/// Reserving both slots bounds the capacity and nothing else; only placing
+/// both sends under the queue's ordering lock makes them adjacent. Without
+/// that lock this test fails, which is how the requirement was found.
+#[test]
+fn nothing_can_be_queued_between_the_halves_of_a_pair() {
+    const PASTE: &[u8] = b"\x1b[200~p\x1b[201~";
+    const ROUNDS: usize = 200;
+
+    let (session, mut far, _writes) = FakeSession::pair(4096);
+    let (handle, thread) = fake_actor(
+        session,
+        Duration::from_millis(50),
+        Box::new(|_bytes, _responses| {}),
+    );
+
+    // Drained while the writers run, so neither the socket nor the input queue
+    // backs up and starts refusing sends for reasons this test is not about.
+    let reader = thread::spawn(move || {
+        let mut stream = Vec::new();
+        while stream.iter().filter(|byte| **byte == b'\r').count() < ROUNDS {
+            let mut buf = [0u8; 512];
+            let read = far.read(&mut buf).expect("the stream");
+            assert_ne!(read, 0, "the terminal closed before the pairs arrived");
+            stream.extend_from_slice(&buf[..read]);
+        }
+        stream
+    });
+    let interloper = {
+        let handle = handle.clone();
+        thread::spawn(move || {
+            for _ in 0..ROUNDS * 4 {
+                let _ = handle.try_write_input(Bytes::from_static(b"X"));
+            }
+        })
+    };
+    for _ in 0..ROUNDS {
+        handle
+            .try_write_input_pair(Bytes::from_static(PASTE), Bytes::from_static(b"\r"))
+            .expect("queue the pair");
+    }
+    interloper.join().expect("interloper thread");
+    let stream = reader.join().expect("reader thread");
+
+    for (index, window) in stream.windows(PASTE.len() + 1).enumerate() {
+        if window.starts_with(PASTE) {
+            assert_eq!(
+                window[PASTE.len()],
+                b'\r',
+                "byte {index}: a paste was separated from its submit"
+            );
+        }
+    }
+
+    handle.shutdown();
+    thread.join().expect("actor thread");
+}
+
 #[test]
 fn wake_pipe_makes_a_queued_write_visible_without_waiting_for_idle_timeout() {
     // Long enough that a test which waited for it would fail instead of pass.

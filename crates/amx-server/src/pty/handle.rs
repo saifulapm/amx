@@ -101,6 +101,17 @@ pub(crate) enum Control {
 #[derive(Clone, Debug)]
 pub struct PtyActorHandle {
     input: mpsc::Sender<Bytes>,
+    /// Serializes the *placing* of input chunks, so a pair cannot be split.
+    ///
+    /// A pane has more than one producer for this queue — a drive on the
+    /// parser thread, and the connection forwarding a human's keystrokes — and
+    /// reserving two slots does not stop a third party's send from landing
+    /// between the two. Nothing else gives adjacency, so this does.
+    ///
+    /// Capacity is reserved outside the lock and the send inside it is a push
+    /// that cannot block, so the critical section is a few instructions and
+    /// never spans an await.
+    input_order: Arc<Mutex<()>>,
     control: sync_mpsc::Sender<Control>,
     wake: WakeWriter,
     controls: Arc<Mutex<SharedControls>>,
@@ -126,6 +137,7 @@ impl PtyActorHandle {
     ) -> Self {
         Self {
             input,
+            input_order: Arc::new(Mutex::new(())),
             control,
             wake,
             controls,
@@ -148,7 +160,10 @@ impl PtyActorHandle {
         if !self.accepting.load(Ordering::Acquire) {
             return Err(PtyActorError::NotAccepting);
         }
-        permit.send(bytes);
+        {
+            let _order = lock(&self.input_order);
+            permit.send(bytes);
+        }
         self.wake()
     }
 
@@ -157,11 +172,43 @@ impl PtyActorHandle {
         if !self.accepting.load(Ordering::Acquire) {
             return Err(PtyActorError::NotAccepting);
         }
-        match self.input.try_send(bytes) {
-            Ok(()) => self.wake(),
-            Err(mpsc::error::TrySendError::Full(_)) => Err(PtyActorError::QueueFull),
-            Err(mpsc::error::TrySendError::Closed(_)) => Err(PtyActorError::Gone),
+        // Reserve then send, rather than `try_send`, so the send is the part
+        // under `input_order` — same semantics, and one placing discipline.
+        let slot = self.input.try_reserve().map_err(reserve_error)?;
+        {
+            let _order = lock(&self.input_order);
+            slot.send(bytes);
         }
+        self.wake()
+    }
+
+    /// Queue two chunks back to back, without waiting for room.
+    ///
+    /// The queue is drained in order and one chunk is one `write()` to the
+    /// terminal, so this is how a caller asks for two *separate* writes that
+    /// still cannot be separated from each other. Both are placed under
+    /// `input_order`, which is the only thing that makes them adjacent:
+    /// reserving two slots bounds the capacity, not the interleaving, and this
+    /// queue has more than one producer.
+    ///
+    /// Both slots are reserved before either send, so a queue with room for
+    /// one chunk refuses the pair whole. Sending the first and failing the
+    /// second would leave the child holding half of something — for
+    /// `pane.run`, text with no submit, which is the exact state this pairing
+    /// exists to prevent.
+    pub fn try_write_input_pair(&self, first: Bytes, second: Bytes) -> Result<(), PtyActorError> {
+        if !self.accepting.load(Ordering::Acquire) {
+            return Err(PtyActorError::NotAccepting);
+        }
+        // `?` on the second reservation drops the first, handing its slot back.
+        let first_slot = self.input.try_reserve().map_err(reserve_error)?;
+        let second_slot = self.input.try_reserve().map_err(reserve_error)?;
+        {
+            let _order = lock(&self.input_order);
+            first_slot.send(first);
+            second_slot.send(second);
+        }
+        self.wake()
     }
 
     /// Hand the terminal a reply the parser produced out of band.
@@ -263,6 +310,14 @@ impl PtyActorHandle {
     /// Nudge the actor out of `poll()`.
     fn wake(&self) -> Result<(), PtyActorError> {
         self.wake.wake().map_err(PtyActorError::Io)
+    }
+}
+
+/// Why a slot could not be reserved, in the same terms a send failure uses.
+fn reserve_error(err: mpsc::error::TrySendError<()>) -> PtyActorError {
+    match err {
+        mpsc::error::TrySendError::Full(()) => PtyActorError::QueueFull,
+        mpsc::error::TrySendError::Closed(()) => PtyActorError::Gone,
     }
 }
 

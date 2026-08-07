@@ -341,6 +341,32 @@ async fn send_keys_grammar_encodes_ctrl_fn_and_kitty_aware_sequences() {
     rig.stop().await;
 }
 
+/// `pane.run`'s bytes are two chunks, and the submit is the second of them.
+///
+/// The child sees the same stream either way, which is why the assertion is
+/// here and not in the test below: what changed is that the `CR` is queued
+/// separately, so the terminal writes it separately and a paste-aware TUI gets
+/// a chance to read it as a keypress rather than as trailing whitespace of the
+/// paste. Why that matters is a field measurement, not a CI one — about 3% of
+/// turn-starting prompts lost their submit against real Claude Code with the
+/// concatenated form, 0 with two writes; the trials are in
+/// `docs/notes/m2-live-smoke.md` §8.2. The delivery half of the property is
+/// pinned in `tests/pty.rs`; this is the split itself.
+#[test]
+fn run_splits_its_text_from_its_submit() {
+    let [paste, submit] = amx_server::actor::pane_host::drive::run_chunks("echo hi", true);
+    assert_eq!(&paste[..], b"\x1b[200~echo hi\x1b[201~");
+    assert_eq!(&submit[..], b"\r");
+
+    let [plain, submit] = amx_server::actor::pane_host::drive::run_chunks("echo hi", false);
+    assert_eq!(&plain[..], b"echo hi");
+    assert_eq!(
+        &submit[..],
+        b"\r",
+        "an application that never enabled paste still gets its submit apart"
+    );
+}
+
 /// `pane.run` brackets only what asked to be bracketed, and always submits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_wraps_text_in_bracketed_paste_when_the_pane_enabled_it_and_submits() {

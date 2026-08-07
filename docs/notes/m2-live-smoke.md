@@ -434,7 +434,7 @@ $ amx pane split --params '{"pane":"a1ecc86d-…","direction":"horizontal"}'
 
 and the client's screen, two seconds later, holds three panes.
 
-### 8.2 Diagnosed, not fixed — `pane.run` loses about 3% of turn-starting submits
+### 8.2 `pane.run` loses about 3% of turn-starting submits — diagnosed here, fixed since
 
 `agent.prompt` types its text into Claude Code's input box and submits it with a
 trailing `CR`. Sometimes the `CR` does not take: the text sits in the box, no
@@ -481,6 +481,32 @@ Until then the honest statement of the surface is that `agent.prompt` reports
 that it *submitted*, not that the agent *received* — and `--wait` does not paper
 over it, since a wait on an unsubmitted prompt correctly times out rather than
 lying.
+
+**Postscript — the change was approved and made.** `pane.run` queues the paste
+and the `CR` as two chunks (`drive.rs`'s `run_chunks`, placed by
+`PtyActorHandle::try_write_input_pair`); 04 §8 now says "queue-order atomic"
+and names why a single `write()` is not used; 08 §6's outcomes carry it as W-8.
+What is pinned in CI is the deterministic half — a pair is two writes, in
+order, with nothing between them (`tests/pty.rs`) — and the tests point back
+here for the field evidence, because no CI assertion reaches a child's read
+boundaries.
+
+One correction to the reasoning above, found by writing that test. "The pane's
+input queue is ordered and single-writer" is not true of the queue, only of the
+drives on it: a connection forwarding an attached human's keystrokes writes to
+the same queue, and with the `CR` split off, its bytes *could* land between the
+text and the submit — the test caught exactly that on its third run. Queueing
+the pair now happens under an ordering lock in the handle, so the property is
+enforced rather than inherited. The conclusion holds; the premise needed one
+more mechanism than it claimed.
+
+**The `pane.run` arm was not re-measured.** Doing it honestly means the numbers
+above: paired trials in the hundreds, each one a real model turn against a
+logged-in Claude Code, on a harness §10 deliberately did not check in. That is
+neither a cheap re-run nor one to fake — a handful of green prompts would say
+nothing about a 3% tail. The measurement to book against the change is a fresh
+A/B on the next live smoke, at the same trial count, with a `pane.run` arm that
+should now read 0.
 
 ---
 
