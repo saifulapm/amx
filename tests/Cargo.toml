@@ -53,6 +53,10 @@ path = "persistence.rs"
 name = "seams"
 path = "seams.rs"
 
+[[test]]
+name = "agents"
+path = "agents.rs"
+
 [dependencies]
 amx-core = { workspace = true }
 amx-proto = { workspace = true }
