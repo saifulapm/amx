@@ -131,6 +131,46 @@ pub fn processes_with_arg(marker: &str) -> usize {
     }
 }
 
+/// The pids of live processes with `marker` in their argv.
+///
+/// The pid-returning sibling of [`processes_with_arg`], for a diagnosis that
+/// must *do* something to the matched processes — deliver a signal by hand —
+/// rather than count them.
+#[must_use]
+pub fn pids_with_arg(marker: &str) -> Vec<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        let entries =
+            std::fs::read_dir("/proc").expect("unsupported platform probe: /proc is not readable");
+        entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let pid: u32 = entry.file_name().to_string_lossy().parse().ok()?;
+                nul_separated(&entry.path().join("cmdline"))
+                    .iter()
+                    .any(|arg| arg.to_string_lossy().contains(marker))
+                    .then_some(pid)
+            })
+            .collect()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = Command::new("pgrep")
+            .args(["-f", marker])
+            .output()
+            .expect("run pgrep");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse().ok())
+            .collect()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = marker;
+        panic!("unsupported platform probe: pids_with_arg has no reader for this OS");
+    }
+}
+
 /// A `/proc` file of NUL-separated strings.
 #[cfg(target_os = "linux")]
 fn nul_separated(path: &std::path::Path) -> Vec<std::ffi::OsString> {

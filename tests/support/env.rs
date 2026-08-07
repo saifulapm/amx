@@ -321,6 +321,24 @@ pub fn processes_with_arg(marker: &str) -> usize {
     crate::platform::processes_with_arg(marker)
 }
 
+/// Send `SIGWINCH` by hand to every live process whose argv holds `marker`;
+/// the answer is how many were signalled.
+///
+/// A resize diagnostic, not a wait: when a `trap ... WINCH` never fired, the
+/// question is which half died — the winsize change, or the signal the kernel
+/// owes the terminal's foreground group for it. A hand-delivered signal that
+/// makes the trap record the *new* size convicts the lost signal; one that
+/// makes it re-record the old size convicts the resize itself.
+pub fn signal_winch(marker: &str) -> usize {
+    let pids = crate::platform::pids_with_arg(marker);
+    for &pid in &pids {
+        if let Some(pid) = rustix::process::Pid::from_raw(pid.cast_signed()) {
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::WINCH);
+        }
+    }
+    pids.len()
+}
+
 /// The `amx` binary this test run built.
 fn amx_bin() -> PathBuf {
     // target/debug/deps/<test>-<hash> -> target/debug/amx
