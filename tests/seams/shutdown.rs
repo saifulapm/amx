@@ -294,6 +294,54 @@ async fn a_shutdown_storm_with_a_client_attached_never_wedges() {
     );
 }
 
+// --------------------------------------------------------------- the wedge
+
+/// The drain wedge, reproduced and closed (W01, `docs/notes/m3-shutdown-wedge.md`).
+///
+/// A connection's handshake — the hello, the attach seed, the ping, the welcome
+/// — used to be the one stretch of its life that watched no cancellation token.
+/// A peer that connected and then went quiet held that task open for as long as
+/// it stayed connected, so the gateway's join never finished; and because the
+/// task still held an `AgentHandle`, the hub's mailbox could never close either,
+/// so its drain-to-closure never finished. Everything else — `Core`, the panes,
+/// `Persist`, the config watcher — completed and closed its descriptors, which
+/// is exactly what the six wedged servers found on this machine looked like:
+/// one listening socket, one accepted connection, nothing else left.
+///
+/// Not a race, once you know where to stand: this failed on every run before
+/// the fix and passes on every run after it. The three peers are the three ways
+/// to be silent, because `read_hello` cannot tell them apart and neither should
+/// the drain.
+#[tokio::test]
+async fn a_peer_that_never_finishes_saying_hello_does_not_wedge_the_drain() {
+    let shell = marker_shell("hush", ":");
+    let mut env = Env::new("hush");
+    env.set_var("SHELL", &shell.path());
+    let server = env.server();
+
+    // An ordinary session first, so the drain has real work beside the stalled
+    // connections and a wedge cannot be blamed on an empty server.
+    let mut live = connected(&env).await;
+    let (_, root) = workspace(&mut live, "w").await;
+    let _ = split_in(&mut live, root, &env.scratch()).await;
+
+    let _silent = Wire::connect(&env.socket()).await;
+    let mut half_header = Wire::connect(&env.socket()).await;
+    half_header.send_bytes(&[0]).await;
+    let mut half_hello = Wire::connect(&env.socket()).await;
+    half_hello.send_partial_frame(64, br#"{"proto""#).await;
+
+    // Every one of them still connected when the signal lands, which is the
+    // whole point: a peer that closes gives the reader an end of file and the
+    // task ends on its own.
+    if let Err(stuck) = server.shutdown_within(STOP_BUDGET) {
+        panic!("{stuck}");
+    }
+    wait_until("the stopped server's shells are reaped", || {
+        processes_with_arg(shell.marker()) == 0
+    });
+}
+
 /// Start a scripted agent in `space` and leave it blocked.
 ///
 /// Blocked and not merely running: `Blocked` is the state that puts a pane on

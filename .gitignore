@@ -6,3 +6,6 @@
 
 /target/
 **/*.rs.bk
+
+# python bytecode from the spike harnesses
+__pycache__/
