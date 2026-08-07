@@ -1,4 +1,4 @@
-//! `pane.*` handlers: split, zoom, swap, move, close.
+//! `pane.*` handlers: split, zoom, swap, move, rename, close.
 //!
 //! Split carries the value T16 exists for: [`Core::handle_split_live`]
 //! resolves the source pane's *foreground process* cwd (04 §7) before
@@ -392,21 +392,45 @@ impl Core {
 
     /// Give a pane a user-visible label.
     ///
-    /// **Stub — U07 fills this** (`docs/07-m1-plan.md` §4). Every piece below
-    /// the wire already exists and is unwired: `SessionState::rename_pane`
-    /// mutates and returns the effect, [`Event::PaneRenamed`] is the
-    /// transition to publish. U01 planted the routing arm in `core/mod.rs` and
-    /// this signature so U07 never reopens either.
+    /// The counterpart of `workspace.rename`, and the reason a snapshot can
+    /// bring a session back recognisable: an unlabelled pane is
+    /// indistinguishable from every other shell after a restart. The label
+    /// lives on the pane in [`SessionState`](amx_core::SessionState), rides
+    /// `session.state` to every client, and is captured into the snapshot from
+    /// there.
     pub(super) fn handle_pane_rename(
         &mut self,
         params: pane::RenameParams,
         reply: Reply<pane::RenameReply>,
     ) {
-        let _ = params;
-        let _ = reply.send(Err(RpcError::new(
-            crate::dispatch::NOT_IMPLEMENTED,
-            "pane.rename is not implemented yet",
-        )));
+        match self
+            .state
+            .rename_pane(params.pane, Some(params.label.clone()))
+        {
+            Ok(effect) => {
+                // Renaming a pane to the label it already carries is a legal
+                // no-op with no transition to publish — the same rule focus
+                // and resize follow — and the reply still reports the sequence
+                // the label holds at.
+                let renamed = !matches!(effect, amx_core::Effect::Nothing);
+                self.effects.absorb(effect);
+                let seq = if renamed {
+                    self.publish(Event::PaneRenamed {
+                        pane: params.pane,
+                        label: params.label,
+                    })
+                } else {
+                    self.ctx.bus.head()
+                };
+                let _ = reply.send(Ok(pane::RenameReply { seq }));
+            }
+            Err(err) => {
+                let _ = reply.send(Err(RpcError::new(
+                    RpcError::INVALID_PARAMS,
+                    err.to_string(),
+                )));
+            }
+        }
     }
 
     pub(super) fn handle_pane_close(

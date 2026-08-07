@@ -1,4 +1,4 @@
-//! `pane.*` dispatch: split, zoom, swap, move, close.
+//! `pane.*` dispatch: split, zoom, swap, move, rename, close.
 //!
 //! Every handler here is the same shape (04 §4): decode nothing further —
 //! that already happened — turn typed parameters into a [`CoreCommand`]
@@ -46,6 +46,15 @@ pub(super) async fn move_pane(
 ) -> Result<pane::MoveReply, RpcError> {
     router
         .call(|reply| CoreCommand::Pane(PaneCall::Move { params, reply }))
+        .await
+}
+
+pub(super) async fn rename(
+    router: &Router,
+    params: pane::RenameParams,
+) -> Result<pane::RenameReply, RpcError> {
+    router
+        .call(|reply| CoreCommand::Pane(PaneCall::Rename { params, reply }))
         .await
 }
 
