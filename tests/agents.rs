@@ -26,6 +26,15 @@
 //! - [`resume`] — hook-reported refs → the mirror → the snapshot → a restarted
 //!   session typing every conversation back.
 //!
+//! **Where the emitter is isolated.** Most transitions here have two witnesses
+//! — the scripted agent emits a hook *and* paints the matching screen, which is
+//! what a real agent does — so a status reaching `working` proves only that one
+//! of the two tiers worked. The `session_ref` is the exception and therefore
+//! the load-bearing assertion: a conversation id can only have come from a hook
+//! payload, through the shipped `amx _hook` binary, over the pane's own socket,
+//! into the hub, out through `Core`'s mirror and onto the wire. Every test that
+//! asserts one has proven that whole path end to end.
+//!
 //! # The exit test
 //!
 //! The scripted pass at the bottom of this file is `docs/05-roadmap.md`'s M2
