@@ -3,8 +3,8 @@
 //!
 //! > The full pane-driving surface is API + CLI: `pane send-text`,
 //! > `pane send-keys` (key-combo grammar: `ctrl+h`, `f1`, …), `pane run`
-//! > (bracketed-paste-aware atomic text+submit), `pane read` … the primitives
-//! > for driving ordinary terminals and tests (04 §8).
+//! > (bracketed-paste-aware queue-order-atomic text+submit), `pane read` …
+//! > the primitives for driving ordinary terminals and tests (04 §8).
 //!
 //! Three of the four are writes, and all three run here rather than on the
 //! connection that asked, for one reason each that turns out to be the same
@@ -45,6 +45,43 @@ pub const PASTE_END: &[u8] = b"\x1b[201~";
 /// What `pane.run` submits with: the byte `enter` encodes to.
 const SUBMIT: &[u8] = b"\r";
 
+/// The chunks `pane.run` queues, in order: the paste, then the submit.
+///
+/// **The submit is a chunk of its own on purpose — never appended to the
+/// paste.** A paste-aware TUI that finds a `CR` in the same read as the paste
+/// terminator can take it for trailing whitespace *of the paste* rather than
+/// for a keypress after it, and swallow the submit: the text lands in the
+/// input box and nothing is sent. Measured against real Claude Code at about
+/// 3% of turn-starting prompts, against 0 for a two-write path — the trials
+/// are in `docs/notes/m2-live-smoke.md` §8.2.
+///
+/// Splitting costs nothing that 04 §8's "atomic text+submit" needs. The pane's
+/// input queue is ordered and one chunk is one `write()`, so what the verb has
+/// to keep is that nothing lands *between* the two chunks — and that is what
+/// [`PtyActorHandle::try_write_input_pair`] is: both sends under the queue's
+/// ordering lock, which is stronger than this call site could arrange for
+/// itself, since a pane's queue also carries the keystrokes a connection
+/// forwards. Atomicity here is queue-order atomicity, which is the property,
+/// not single-`write()` atomicity, which was only ever how it was spelled.
+pub fn run_chunks(text: &str, bracketed: bool) -> [Bytes; 2] {
+    let mut paste = Vec::with_capacity(
+        text.len()
+            + if bracketed {
+                PASTE_START.len() + PASTE_END.len()
+            } else {
+                0
+            },
+    );
+    if bracketed {
+        paste.extend_from_slice(PASTE_START);
+    }
+    paste.extend_from_slice(text.as_bytes());
+    if bracketed {
+        paste.extend_from_slice(PASTE_END);
+    }
+    [Bytes::from(paste), Bytes::from_static(SUBMIT)]
+}
+
 /// What a driving verb asks the pane to put in front of its child.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Drive {
@@ -53,8 +90,9 @@ pub enum Drive {
     /// `pane.send_keys`: these combos, encoded against the pane's own modes.
     Keys(Vec<KeyStroke>),
     /// `pane.run`: this text, bracketed if the application asked for it, then
-    /// submitted — one atomic write, so nothing can land between the text and
-    /// its newline.
+    /// submitted — two chunks queued back to back, so nothing can land between
+    /// the text and its newline. See [`run_chunks`] for why the newline is a
+    /// chunk of its own rather than the tail of one write.
     Run(String),
 }
 
@@ -132,14 +170,13 @@ impl Driver {
                 // unbracketed paste is ordinary typing, a bracketed one sent to
                 // an application that never asked is visible garbage.
                 bracketed = terminal.mode(Mode::BRACKETED_PASTE).unwrap_or(false);
-                if bracketed {
-                    self.buffer.extend_from_slice(PASTE_START);
-                }
-                self.buffer.extend_from_slice(text.as_bytes());
-                if bracketed {
-                    self.buffer.extend_from_slice(PASTE_END);
-                }
-                self.buffer.extend_from_slice(SUBMIT);
+                let [paste, submit] = run_chunks(&text, bracketed);
+                let bytes = paste.len() + submit.len();
+                // Paired, not concatenated, and not two loose calls: the pair
+                // is what makes the submit its own `write()` while keeping it
+                // unseparable from the text. `run_chunks` has the why.
+                pty.try_write_input_pair(paste, submit)?;
+                return Ok(Driven { bytes, bracketed });
             }
         }
         let bytes = self.buffer.len();
