@@ -123,11 +123,11 @@ impl Core {
     /// Mint a workspace and spawn the shell behind its root pane, focused,
     /// rolling the state back if the spawn fails.
     ///
-    /// The shell is `$SHELL` (falling back to `/bin/sh`) via the same
-    /// [`Core::spawn_pane`] path a split takes; the root pane's cwd is this
-    /// process's own — a fresh workspace has no source pane to inherit a
-    /// foreground cwd from (04 §7) — and is recorded so later splits fall
-    /// back to it.
+    /// The shell is whichever [`config_rt::shell`](crate::config_rt::shell)
+    /// picks, spawned through the same [`Core::spawn_pane`] path a split
+    /// takes; the root pane's cwd is this process's own — a fresh workspace
+    /// has no source pane to inherit a foreground cwd from (04 §7) — and is
+    /// recorded so later splits fall back to it.
     fn open_workspace_live(&mut self) -> Result<WorkspaceId, RpcError> {
         let (ws, root, effect) = self.state.open_workspace();
         let _ = self.next_pane_short(root);

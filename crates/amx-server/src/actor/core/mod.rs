@@ -39,13 +39,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use amx_core::{
-    Ctx, EffectSet, Event, Level, PaneId, RowId, Scheduled, SessionId, SessionState, ShortNumber,
-    WorkspaceId,
+    Config, Ctx, EffectSet, Event, Level, PaneId, RowId, Scheduled, SessionId, SessionState,
+    ShortNumber, WorkspaceId,
 };
 use amx_proto::ServerInfo;
 use amx_proto::control::{client, session};
 use amx_proto::rpc::RpcError;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 pub use self::persist::CAPTURE_PROBE_BUDGET;
 use self::persist::Restored;
@@ -144,6 +144,10 @@ pub struct Core {
     restore: Option<Restored>,
     /// How long a capture waits for the foreground-cwd probes it started.
     capture_budget: Duration,
+    /// The user's live configuration, borrowed at the moment a pane is spawned
+    /// rather than cached — which is what makes `[terminal] shell` hot for new
+    /// panes without ever disturbing a running one (D-M1-8).
+    config: watch::Receiver<Config>,
 }
 
 impl Core {
@@ -174,7 +178,19 @@ impl Core {
             persist: None,
             restore: None,
             capture_budget: CAPTURE_PROBE_BUDGET,
+            // Defaults, with no sender to change them: a `Core` built without a
+            // config runtime runs as if the user had no `config.toml`.
+            config: watch::channel(Config::default()).1,
         }
+    }
+
+    /// Tell this `Core` where the running configuration is published.
+    ///
+    /// The serve path calls this before the first pane is spawned. A `Core`
+    /// that is never told reads the defaults forever, which is what every test
+    /// that does not care about configuration gets.
+    pub fn set_config(&mut self, config: watch::Receiver<Config>) {
+        self.config = config;
     }
 
     /// Tell this `Core` where persistence is listening.
