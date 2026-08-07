@@ -5,6 +5,7 @@
 //! correlation table and no reply that can arrive for a request nobody waits
 //! on — the same rule the tokio mailboxes follow.
 
+use std::os::fd::OwnedFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as sync_mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -45,6 +46,14 @@ pub enum PtyActorError {
     /// The actor released its terminal and will not act again.
     #[error("pty actor was released")]
     Released,
+    /// The terminal is still moving, so it cannot be handed over.
+    ///
+    /// Only [`PtyActorHandle::dup_fd`] answers with this: a descriptor taken
+    /// while the actor is still reading and writing would let the process
+    /// taking it over see a terminal whose state moves under it, which is the
+    /// whole reason [`State::Quiesced`] exists.
+    #[error("pty actor is not quiesced")]
+    NotQuiesced,
     /// The terminal itself reported the failure.
     #[error(transparent)]
     Platform(#[from] PlatformError),
@@ -92,6 +101,7 @@ pub(crate) enum Control {
     Resume(sync_mpsc::Sender<Result<(), PtyActorError>>),
     Release(sync_mpsc::Sender<Result<(), PtyActorError>>),
     ForegroundGroup(sync_mpsc::Sender<Result<ProcessId, PtyActorError>>),
+    DupFd(sync_mpsc::Sender<Result<OwnedFd, PtyActorError>>),
     Shutdown,
 }
 
@@ -270,6 +280,39 @@ impl PtyActorHandle {
             self.accepting.store(true, Ordering::Release);
         }
         result
+    }
+
+    /// Duplicate the terminal's master descriptor, for a quiesced actor only.
+    ///
+    /// The missing piece of the quiesce/release machinery (`docs/09-m3-plan.md`
+    /// D-M3-3): handoff needs the master fd *out*, and until now nothing could
+    /// take it — the actor owns its session until its thread drops it.
+    ///
+    /// Three properties, each deliberate:
+    ///
+    /// - **Answered on the actor thread**, like every other command that
+    ///   touches the terminal, so the descriptor leaves under the same
+    ///   serialization as reads and writes rather than beside it.
+    /// - **Quiesced only.** In [`State::Running`] the answer is
+    ///   [`PtyActorError::NotQuiesced`] and in [`State::Released`] it is
+    ///   [`PtyActorError::Released`]. A descriptor taken from a running actor
+    ///   would hand the receiver a terminal whose state moves under it.
+    /// - **`fcntl(F_DUPFD_CLOEXEC)`**, so the copy does not travel into
+    ///   anything this process later spawns. It is the same open file
+    ///   description either way — unix(7): an SCM_RIGHTS transfer is
+    ///   "semantically equivalent to `dup(2)` into the file descriptor table of
+    ///   another process" — so the pty stays alive exactly as long as some
+    ///   reference to it does, and the exporter dropping its own copies after
+    ///   the swap costs the child nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`PtyActorError::NotQuiesced`] or [`PtyActorError::Released`] for the
+    /// wrong state, [`PtyActorError::Io`] if the duplication itself fails, and
+    /// the usual [`Gone`](PtyActorError::Gone)/[`TimedOut`](PtyActorError::TimedOut)
+    /// if the actor cannot answer.
+    pub fn dup_fd(&self) -> Result<OwnedFd, PtyActorError> {
+        self.request(Control::DupFd, REPLY_TIMEOUT)?
     }
 
     /// Give up the terminal for good and stop the actor.
