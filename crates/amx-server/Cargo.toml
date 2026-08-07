@@ -48,4 +48,8 @@ tracing = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+# The fusion machine is pure data-in/data-out, so its acceptance is arbitrary
+# interleavings rather than scripted ones (D-M2-6). Already in the tree:
+# `amx-core` property-tests its own invariants with it.
+proptest = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

@@ -25,7 +25,9 @@
 //! 1. **Every exit-by-user is silent**, on both agents. Esc during generation,
 //!    Esc during a tool call, a permission dialog answered "No", and a dialog
 //!    cancelled with Esc all emit nothing at all. So an `edges` agent has no
-//!    hook exits, and [`ExitAuthority::from_hook`] refuses to hand it one.
+//!    hook exits, and
+//!    [`ExitAuthority::from_hook`](amx_core::agent::ExitAuthority::from_hook)
+//!    refuses to hand it one.
 //! 2. **`agent_id` is the subagent discriminator, and the hazard is the common
 //!    case.** An anonymous `SubagentStop` arrives 1.9–3.0 s *after* the
 //!    parent's `Stop` on essentially every tool-using turn. A machine that read
@@ -37,6 +39,19 @@
 //!    [`HookEvent`](amx_proto::control::agent::HookEvent) has no variant for
 //!    it. An arm no input reaches is an arm no test covers.
 //!
+//! # The three files
+//!
+//! | Module | What lives there |
+//! |---|---|
+//! | this one | the constants, the input and effect vocabulary, the deadlines |
+//! | [`edge`] | one hook report reduced to an edge, and the precedence table |
+//! | [`tracker`] | the transition function, which is the machine itself |
+//!
+//! The split is by responsibility, not by size: [`precedence`] is a pure
+//! function of the measurement and is read as a table, while [`Tracker::apply`]
+//! is the rulebook that decides what a table row is *allowed* to do to a pane
+//! that is already holding a state.
+//!
 //! # Task ownership
 //!
 //! V02 froze the vocabulary, the constants and the shape of the transition
@@ -46,12 +61,15 @@
 //! wedge a tracker with an unfired deadline, and never emit two status effects
 //! for one transition.
 
+pub mod edge;
+pub mod tracker;
+
 use std::time::Duration;
 
-use amx_core::agent::{
-    Activity, AgentKind, AgentState, CoverageClass, ExitAuthority, SessionRef, StatusCause,
-};
-use amx_proto::control::agent::{HookEvent, ReportParams};
+use amx_core::agent::{Activity, AgentKind, AgentState, SessionRef, StatusCause};
+
+pub use edge::{EdgeEffect, HookEdge, precedence};
+pub use tracker::Tracker;
 
 /// How many consecutive screen verdicts confirm an exit from a held state.
 ///
@@ -66,12 +84,23 @@ pub const CONFIRMATIONS: u32 = 3;
 /// V01 §6 keeps 100 ms and gives the reason in a ratio: hook dispatch has a
 /// median of 26 ms, so 100 ms is about 4× it and a hook edge always wins a race
 /// it should win.
+///
+/// The machine does not enforce it — it has no clock. `AgentHub`'s per-pane
+/// coalescing of `PaneDamage` does, and this is the number it coalesces to; it
+/// lives here because it is one half of the confirmation window's arithmetic
+/// (three verdicts at 100 ms fit inside [`CONFIRMATION_CAP`], which is what
+/// makes the cap a backstop rather than the usual path).
 pub const CONFIRMATION_SPACING: Duration = Duration::from_millis(100);
 
 /// The longest a confirmation hold may last before the verdict is taken anyway.
 ///
 /// It bounds the interrupt case — which V01 established is the *common* case,
 /// not an exotic one, since every user-initiated exit is silent.
+///
+/// Armed once, when a contradiction first appears, and *not* re-armed by the
+/// verdicts that follow it: the cap bounds the whole hold, not the gap between
+/// two evaluations. A pane whose damage stops arriving mid-hold — which is
+/// itself evidence the screen has settled — leaves the held state here.
 pub const CONFIRMATION_CAP: Duration = Duration::from_millis(700);
 
 /// How long a hook-asserted state survives with nothing corroborating it.
@@ -89,6 +118,12 @@ pub const CONFIRMATION_CAP: Duration = Duration::from_millis(700);
 /// It is also the only thing that ends V01's edge case 13: a Codex approval the
 /// user denied produces nothing further, ever, so a tracker waiting for `Stop`
 /// to leave `Blocked` waits forever.
+///
+/// Measured from the last thing that agreed with the state, not from the
+/// transition into it: a hook re-assertion, a screen verdict that concurs, and
+/// a `permission_prompt` notification each push it out again. A pane the screen
+/// keeps confirming as `Working` is never cleared for staleness; a pane nothing
+/// has said anything about for 30 s always is.
 pub const STALENESS: Duration = Duration::from_secs(30);
 
 /// The default grace before a freshly spawned pane's screen is believed.
@@ -100,99 +135,18 @@ pub const STALENESS: Duration = Duration::from_secs(30);
 /// exists and this is only the fallback.
 pub const IDENTITY_GRACE: Duration = Duration::from_secs(3);
 
-/// What a hook report reduces to once the machine has read it.
-///
-/// The reduction is the point: `amx _hook` forwards everything it is installed
-/// for, tagged, and *this* is where policy lives (D-M2-4). herdr baked the
-/// filtering into installed scripts, so changing policy meant reinstalling
-/// hooks on every machine; changing it here is shipping a binary.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct HookEdge {
-    /// The event, as the agent named it.
-    pub event: HookEvent,
-    /// Whether it was scoped to a subagent.
-    ///
-    /// The single most load-bearing field in the module. `true` means the
-    /// report carried an `agent_id`, which V01 §3 M4 measured as present on
-    /// every subagent-scoped event and absent from every parent one — 44
-    /// `Stop`s without, 8 `SubagentStop`s with.
-    pub subagent: bool,
-    /// The tool a `PreToolUse`/`PermissionRequest` names, when it names one.
-    pub tool: Option<String>,
-    /// `Notification`'s type: `permission_prompt` or `idle_prompt`.
-    pub notification: Option<String>,
-    /// The conversation this report identifies, when it carries one.
-    ///
-    /// Taken from **every** `SessionStart`, not just the first: V01 §3 M8
-    /// measured `/clear` minting a new session id inside one process, and the
-    /// `source` field is the only warning that the previous ref is now stale.
-    pub session_ref: Option<SessionRef>,
-}
-
-impl HookEdge {
-    /// Reduce one report to an edge.
-    ///
-    /// **V04 fills this.** Building the [`SessionRef`] needs the stanza's
-    /// `ref_kind`, so the caller supplies the kind rather than this guessing.
-    #[must_use]
-    pub fn from_report(report: &ReportParams) -> Self {
-        let _ = report;
-        todo!("V04: reduce a report to an edge, tagging subagent scope from its ReportScope")
-    }
-}
-
-/// What one hook edge is allowed to do to a tracker, given its coverage class.
-///
-/// The precedence table of 04 §5 and D-M2-6, as a value. Three outcomes and no
-/// fourth: an edge either enters a state now, asks to leave the held one, or
-/// changes nothing.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum EdgeEffect {
-    /// Apply this state immediately. Entry edges only, and only for a class
-    /// whose [`hook_entries_apply`](CoverageClass::hook_entries_apply).
-    Enter(AgentState),
-    /// This edge says the held state is over.
-    ///
-    /// Carries the [`ExitAuthority`] that makes it legal, which for every class
-    /// but [`CoverageClass::Full`] means this variant is unreachable — the
-    /// authority cannot be built. That is the type doing the work 04 §5's
-    /// prose does.
-    Leave(ExitAuthority),
-    /// Nothing: corroboration, a subagent's business, or an event this build
-    /// has never heard of.
-    Ignore,
-}
-
-/// What `edge` may do to a pane running an agent of class `class`.
-///
-/// **V04 fills this**, from the measured table. The shape it must produce, with
-/// the recording behind each row:
-///
-/// | Edge | `edges` class | Why |
-/// |---|---|---|
-/// | `UserPromptSubmit` | `Enter(Working)` | Fires on both agents, median 26 ms after the keystroke |
-/// | `PreToolUse` | `Enter(Working)` | Claude Code always; on Codex *conditional* (a plain file read produced only `PostToolUse`), so it corroborates there rather than driving |
-/// | `PostToolUse` | `Enter(Working)` | The turn continues after a tool returns |
-/// | `PermissionRequest` | `Enter(Blocked)` | Starts 8–14 ms *before* the dialog paints, so the entry is never late relative to the screen |
-/// | `Stop` | `Ignore` | An exit, and exits are screen-owned — see the module docs |
-/// | `SessionStart` | `Ignore` for state; carries the ref | Codex fires it only at the first prompt, so it says nothing about *doing* |
-/// | `Notification` | `Ignore` | A 6 s/60 s backstop, far too slow to drive a status line |
-/// | anything `subagent` | `Ignore` | Never touches the parent — not on entry, not on exit |
-///
-/// For [`CoverageClass::Identity`] and [`CoverageClass::None`] every row is
-/// `Ignore`: those classes' state is the screen's, entirely.
-#[must_use]
-pub fn precedence(class: CoverageClass, edge: &HookEdge) -> EdgeEffect {
-    let _ = (class, edge);
-    todo!("V04: the measured precedence table above")
-}
-
 /// One tier-2 evaluation's answer.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ScreenVerdict {
     /// The state the winning rule asserts, or `None` for a `skip_state_update`
     /// rule — herdr's assert-nothing third outcome, which freezes the previous
     /// state rather than contradicting it.
+    ///
+    /// `None` also carries [`Verdict::NoMatch`](super::manifest::Verdict::NoMatch),
+    /// and the two mean the same thing to the machine: tier 2 has no opinion
+    /// about this screen, which is not the same as an opinion that the pane is
+    /// idle. Neither confirms a held state nor contradicts it, so neither
+    /// touches the confirmation count.
     pub asserts: Option<AgentState>,
     /// The rule that won, for `agent.explain` and for the effect's provenance.
     pub rule: Option<String>,
@@ -210,6 +164,10 @@ pub struct ScreenVerdict {
 /// makes V04's property tests exhaustive — a machine that read a clock could
 /// only be tested at the speed the clock ran — and it is why the deadline wheel
 /// lives in `AgentHub` (V08), which is allowed to own a timer.
+///
+/// A deadline the tracker did not ask for is ignored on arrival: the hub owns
+/// the wheel, so a fire that races a [`Effect::Disarm`] is the hub's normal
+/// operation and not a state change.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Deadline {
     /// [`CONFIRMATION_CAP`] elapsed with a screen verdict pending.
@@ -252,6 +210,10 @@ pub enum Input {
 /// `StatusView` write plus a published event *in that order*, and the queue
 /// effects into the attention queue — but none of that ordering is this
 /// module's business, which is why it can be property-tested without one.
+///
+/// One input's effects come out in a fixed order — the status, then the queue,
+/// then the timers — so a test may compare a whole effect list rather than
+/// searching it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Effect {
     /// The pane moved. **At most one of these per input** — V04's
@@ -300,65 +262,4 @@ pub enum Effect {
         /// Which deadline.
         deadline: Deadline,
     },
-}
-
-/// One pane's status, and how much of it is believed.
-///
-/// 04 §5: "The per-pane status tracker is an explicit typed state machine —
-/// states and transitions as data, property-tested — not 400 lines of mutable
-/// locals (fixes W5's fragility)."
-///
-/// **V04 fills the fields and [`apply`](Self::apply).** The state it has to
-/// carry is fixed by D-M2-6: the identity, the current [`AgentState`], the
-/// provenance of that state (hook-asserted at instant *T* versus
-/// screen-confirmed *N* times), and the pending deadlines.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Tracker {
-    /// The agent identified in this pane, once one has been.
-    pub kind: Option<AgentKind>,
-    /// Its coverage class — [`CoverageClass::None`] until identity lands, which
-    /// is what keeps an unidentified pane on tier 3 alone.
-    pub coverage: CoverageClass,
-    /// What the pane is doing.
-    pub state: AgentState,
-    /// What put it there.
-    pub cause: StatusCause,
-}
-
-impl Tracker {
-    /// A tracker for a pane nothing is known about yet.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            kind: None,
-            coverage: CoverageClass::None,
-            state: AgentState::Quiet,
-            cause: StatusCause::Probe,
-        }
-    }
-
-    /// Apply one input; return what the hub should do about it.
-    ///
-    /// **V04 fills this.** The invariants its property tests pin, each a
-    /// sentence from 04 §5 or D-M2-6 turned into something a machine can check:
-    ///
-    /// - a subagent-scoped edge changes nothing, for any state, any class, any
-    ///   interleaving — the rule that keeps V01's anonymous `SubagentStop`,
-    ///   arriving two seconds after the parent's `Stop` on every tool turn,
-    ///   from reviving an idle pane;
-    /// - a held state is only left through an [`ExitAuthority`], so an `edges`
-    ///   agent's `Working` can only end at the screen or at the deadline;
-    /// - at most one [`Effect::Status`] per input;
-    /// - every armed deadline is eventually disarmed or fired — no input
-    ///   sequence leaves one pending against a state that has moved on.
-    pub fn apply(&mut self, input: Input) -> Vec<Effect> {
-        let _ = input;
-        todo!("V04: the transition function, per the tables above")
-    }
-}
-
-impl Default for Tracker {
-    fn default() -> Self {
-        Self::new()
-    }
 }
