@@ -9,10 +9,12 @@
 
 use std::path::PathBuf;
 
+use amx_core::agent::{AgentKind, RefKind, RefSource, SessionRef, StartSource};
 use amx_core::{Direction, Layout, PaneId, RowId, RowRange, ShortNumber, WorkspaceId};
 use amx_server::persist::{
-    HISTORY_DIR, PaneSnapshot, PersistError, READ_WINDOW, SIDECAR_MAGIC, SIDECAR_VERSION,
-    SNAPSHOT_NAME, SidecarHeader, Snapshot, VERSION, WorkspaceSnapshot, sidecar_name,
+    AgentSnapshot, HISTORY_DIR, PaneSnapshot, PersistError, READ_WINDOW, SIDECAR_MAGIC,
+    SIDECAR_VERSION, SNAPSHOT_NAME, SidecarHeader, Snapshot, VERSION, WorkspaceSnapshot,
+    sidecar_name,
 };
 
 fn pane_id() -> PaneId {
@@ -48,12 +50,31 @@ fn populated() -> Snapshot {
                 short: ShortNumber::new(1),
                 label: Some("editor".to_owned()),
                 cwd: Some(PathBuf::from("/home/s/amx")),
+                // M2's two additive fields, present on one pane and absent on
+                // the other, so the golden freezes both shapes at once: an
+                // agent pane carries them, a plain shell writes exactly the
+                // bytes M1 wrote (R-M1-8, and VERSION stays 1).
+                argv: Some(vec!["claude".to_owned()]),
+                agent: Some(AgentSnapshot {
+                    kind: AgentKind::new("claude").expect("a valid agent id"),
+                    name: Some("editor".to_owned()),
+                    session_ref: Some(
+                        SessionRef::new(RefKind::Id, "c9a3c73b-b184-4871-8e98-79b46b87b635")
+                            .expect("a valid session ref"),
+                    ),
+                    source: Some(RefSource::for_agent(
+                        &AgentKind::new("claude").expect("a valid agent id"),
+                    )),
+                    start_source: StartSource::Started,
+                }),
             },
             PaneSnapshot {
                 id: other_pane_id(),
                 short: ShortNumber::new(2),
                 label: None,
                 cwd: None,
+                argv: None,
+                agent: None,
             },
         ],
     }
@@ -178,4 +199,98 @@ fn a_sidecar_header_carries_the_pane_it_came_from() {
     // arrived under the wrong name is detectable rather than replayed into
     // somebody else's scrollback.
     assert_ne!(SidecarHeader::new(other_pane_id(), range), header);
+}
+
+#[test]
+fn pane_snapshot_with_agent_fields_reads_at_version_1() {
+    // R-M1-8's precedent, applied to M2's two fields: `argv` and `agent` are
+    // additive and optional under the unknown-field contract, so VERSION stays
+    // 1 and the read window stays {1}. No version-window machinery moves for a
+    // field addition — only the golden regenerates.
+    assert_eq!(VERSION, 1);
+    assert_eq!(READ_WINDOW, &[VERSION]);
+
+    let snapshot = populated();
+    let json = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(json["version"], 1);
+    assert_eq!(json["panes"][0]["argv"][0], "claude");
+    assert_eq!(json["panes"][0]["agent"]["kind"], "claude");
+    assert_eq!(json["panes"][0]["agent"]["source"], "amx:claude");
+    assert_eq!(json["panes"][0]["agent"]["start_source"], "started");
+
+    // Absent, not null, on a pane with no agent: a v1 writer that never saw an
+    // agent produces exactly the bytes M1 produced.
+    assert!(json["panes"][1].get("argv").is_none(), "{json}");
+    assert!(json["panes"][1].get("agent").is_none(), "{json}");
+
+    let decoded: Snapshot = serde_json::from_value(json).unwrap();
+    assert_eq!(decoded, snapshot);
+    decoded.check_version().expect("v1 reads at v1");
+
+    // A file written *before* M2 still reads: the fields default to absent.
+    let pre_m2 = serde_json::json!({
+        "version": 1,
+        "workspaces": [],
+        "panes": [{ "id": pane_id(), "short": 1, "cwd": "/home/s/amx" }],
+    });
+    let decoded: Snapshot = serde_json::from_value(pre_m2).unwrap();
+    assert!(decoded.panes[0].argv.is_none());
+    assert!(decoded.panes[0].agent.is_none());
+}
+
+#[test]
+fn a_hand_edited_agent_ref_does_not_survive_the_read() {
+    // D-M2-7's snapshot-read gate, and the reason the ref types deserialize
+    // through their own constructors: a `session.json` is user-editable, and a
+    // ref that reached V15's `plan()` unvalidated would put whatever it held
+    // into an argv. Each of these is a whole-file parse failure, so restore
+    // reports the loss and brings the pane back as a plain shell rather than
+    // acting on the bytes.
+    let hostile = [
+        // A relative path, which would resolve against whatever cwd the server
+        // happens to have.
+        serde_json::json!({ "kind": "path", "value": "../../.ssh/id_ed25519" }),
+        // Control characters, which a terminal would interpret if the ref were
+        // ever printed and an argv splitter might act on.
+        serde_json::json!({ "kind": "id", "value": "abc\u{001b}[2Jdef" }),
+        // Empty.
+        serde_json::json!({ "kind": "id", "value": "" }),
+    ];
+    for value in hostile {
+        let file = serde_json::json!({
+            "version": 1,
+            "workspaces": [],
+            "panes": [{
+                "id": pane_id(),
+                "short": 1,
+                "agent": {
+                    "kind": "claude",
+                    "session_ref": value,
+                    "start_source": "started",
+                },
+            }],
+        });
+        assert!(
+            serde_json::from_value::<Snapshot>(file).is_err(),
+            "a hand-edited ref of {value} must not parse",
+        );
+    }
+
+    // And a source that is not one of amx's own hook paths, which is the shape
+    // half of D-M2-7's allowlist. The other half — that the id names the same
+    // stanza the ref claims — needs the registry and is V15's, at plan time.
+    let foreign = serde_json::json!({
+        "version": 1,
+        "workspaces": [],
+        "panes": [{
+            "id": pane_id(),
+            "short": 1,
+            "agent": {
+                "kind": "claude",
+                "source": "herdr:claude",
+                "start_source": "started",
+            },
+        }],
+    });
+    assert!(serde_json::from_value::<Snapshot>(foreign).is_err());
 }

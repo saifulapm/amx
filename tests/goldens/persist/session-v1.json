@@ -29,7 +29,20 @@
       "id": "00000000-0000-0000-0000-0000000000a1",
       "short": 1,
       "label": "editor",
-      "cwd": "/home/s/amx"
+      "cwd": "/home/s/amx",
+      "argv": [
+        "claude"
+      ],
+      "agent": {
+        "kind": "claude",
+        "name": "editor",
+        "session_ref": {
+          "kind": "id",
+          "value": "c9a3c73b-b184-4871-8e98-79b46b87b635"
+        },
+        "source": "amx:claude",
+        "start_source": "started"
+      }
     },
     {
       "id": "00000000-0000-0000-0000-0000000000a2",

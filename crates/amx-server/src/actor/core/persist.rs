@@ -145,6 +145,13 @@ impl Core {
                     short: self.short_of_pane(pane),
                     label: state.and_then(|p| p.label().map(str::to_owned)),
                     cwd: state.and_then(|p| p.cwd().map(std::path::Path::to_path_buf)),
+                    // V07 records the spawn argv into pane state and **V15**
+                    // captures both of these from `Core`'s agent mirror, which
+                    // `AgentHub` fills with `try_send` during normal operation
+                    // — which is exactly why the hub has nothing to flush on
+                    // the way down (`docs/08-m2-plan.md` §3).
+                    argv: None,
+                    agent: None,
                 });
             }
         }

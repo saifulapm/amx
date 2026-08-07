@@ -14,10 +14,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use amx_core::agent::{AgentKind, RefKind, RefSource, SessionRef, StartSource};
 use amx_core::{Direction, Env, Layout, PaneId, ShortNumber, WorkspaceId};
 use amx_proto::stream::history::put_row;
 use amx_server::persist::io::Syncs;
-use amx_server::persist::{PaneSnapshot, Snapshot, VERSION, WorkspaceSnapshot};
+use amx_server::persist::{AgentSnapshot, PaneSnapshot, Snapshot, VERSION, WorkspaceSnapshot};
 
 /// One observed sync, with what the filesystem looked like at that moment.
 #[derive(Debug, PartialEq, Eq)]
@@ -158,12 +159,31 @@ pub fn populated() -> Snapshot {
                 short: ShortNumber::new(1),
                 label: Some("editor".to_owned()),
                 cwd: Some(PathBuf::from("/home/s/amx")),
+                // M2's two additive fields, present on one pane and absent on
+                // the other, so the golden freezes both shapes at once: an
+                // agent pane carries them, a plain shell writes exactly the
+                // bytes M1 wrote (R-M1-8, and VERSION stays 1).
+                argv: Some(vec!["claude".to_owned()]),
+                agent: Some(AgentSnapshot {
+                    kind: AgentKind::new("claude").expect("a valid agent id"),
+                    name: Some("editor".to_owned()),
+                    session_ref: Some(
+                        SessionRef::new(RefKind::Id, "c9a3c73b-b184-4871-8e98-79b46b87b635")
+                            .expect("a valid session ref"),
+                    ),
+                    source: Some(RefSource::for_agent(
+                        &AgentKind::new("claude").expect("a valid agent id"),
+                    )),
+                    start_source: StartSource::Started,
+                }),
             },
             PaneSnapshot {
                 id: other_pane_id(),
                 short: ShortNumber::new(2),
                 label: None,
                 cwd: None,
+                argv: None,
+                agent: None,
             },
         ],
     }

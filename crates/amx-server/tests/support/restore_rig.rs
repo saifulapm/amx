@@ -187,6 +187,8 @@ pub fn pane_row(id: PaneId, short: u32, label: Option<&str>, cwd: Option<PathBuf
         short: ShortNumber::new(short),
         label: label.map(str::to_owned),
         cwd,
+        argv: None,
+        agent: None,
     }
 }
 

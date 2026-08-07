@@ -103,6 +103,8 @@ pub fn snapshot_of(panes: usize) -> Snapshot {
                 short: ShortNumber::new(u32::try_from(n).unwrap() + 1),
                 label: None,
                 cwd: None,
+                argv: None,
+                agent: None,
             })
             .collect(),
     }
