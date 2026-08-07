@@ -189,6 +189,42 @@ pub enum Event {
     },
 }
 
+impl Event {
+    /// This event's wire tag — the `event` field serde writes.
+    ///
+    /// The match is exhaustive and lives *here*, in the crate that defines the
+    /// enum, because `#[non_exhaustive]` puts an exhaustive match out of reach
+    /// of every other crate including the test crates. That makes this the one
+    /// place a new variant stops the build until it says what it is called,
+    /// which is what the envelope goldens
+    /// (`crates/amx-core/tests/event_goldens.rs`) hang their coverage on: a
+    /// variant that reaches the bus without a frozen shape would otherwise
+    /// reach M2's `amx events --json` the same way.
+    #[must_use]
+    pub const fn tag(&self) -> &'static str {
+        match *self {
+            Self::PaneCreated { .. } => "pane_created",
+            Self::PaneExited { .. } => "pane_exited",
+            Self::PaneResized { .. } => "pane_resized",
+            Self::PaneDamage { .. } => "pane_damage",
+            Self::PaneRenamed { .. } => "pane_renamed",
+            Self::PaneTitle { .. } => "pane_title",
+            Self::HistoryCommitted { .. } => "history_committed",
+            Self::HistoryInvalidated { .. } => "history_invalidated",
+            Self::HistoryEvicted { .. } => "history_evicted",
+            Self::WorkspaceCreated { .. } => "workspace_created",
+            Self::WorkspaceRenamed { .. } => "workspace_renamed",
+            Self::WorkspaceClosed { .. } => "workspace_closed",
+            Self::FocusChanged { .. } => "focus_changed",
+            Self::LayoutChanged { .. } => "layout_changed",
+            Self::ClientAttached { .. } => "client_attached",
+            Self::ClientDetached { .. } => "client_detached",
+            Self::SessionRestored { .. } => "session_restored",
+            Self::ConfigReloaded { .. } => "config_reloaded",
+        }
+    }
+}
+
 /// An [`Event`] with the sequence number it was published at.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Envelope {

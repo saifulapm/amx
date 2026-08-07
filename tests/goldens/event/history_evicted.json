@@ -1,0 +1,8 @@
+{
+  "seq": 41,
+  "event": {
+    "event": "history_evicted",
+    "pane": "00000000-0000-0000-0000-0000000000a1",
+    "oldest_row": 2
+  }
+}

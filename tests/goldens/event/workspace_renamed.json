@@ -1,0 +1,8 @@
+{
+  "seq": 41,
+  "event": {
+    "event": "workspace_renamed",
+    "workspace": "00000000-0000-0000-0000-0000000000b1",
+    "label": "build"
+  }
+}

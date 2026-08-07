@@ -1,0 +1,8 @@
+{
+  "seq": 41,
+  "event": {
+    "event": "pane_renamed",
+    "pane": "00000000-0000-0000-0000-0000000000a1",
+    "label": "editor"
+  }
+}
