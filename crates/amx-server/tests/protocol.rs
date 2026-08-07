@@ -120,7 +120,6 @@ async fn a_call_naming_a_pane_that_does_not_exist_is_a_reply_not_a_disconnect() 
     server.shutdown().await;
 }
 
-
 #[tokio::test]
 async fn bad_parameters_are_a_reply_not_a_disconnect() {
     let server = Server::start("badparams").await;
