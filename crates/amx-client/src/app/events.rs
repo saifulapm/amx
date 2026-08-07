@@ -49,6 +49,19 @@ use amx_proto::rpc::Notification;
 use super::{App, AppError};
 use crate::model::WorkspaceModel;
 
+/// Whether a state fold may change which workspace this terminal is showing.
+///
+/// The difference between "I moved" and "the session moved", which the two
+/// public spellings of the fold exist to keep apart.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Presentation {
+    /// Show whatever the session says is focused: an attach, or this client's
+    /// own `workspace.switch` / `agent.next`.
+    Adopt,
+    /// Keep showing what this terminal was showing.
+    Keep,
+}
+
 /// What folding one notification asks the loop to do next.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Folded {
@@ -85,15 +98,35 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         Ok(reply.seq)
     }
 
-    /// Fold a fresh `session.state` into the model and bind whatever the
-    /// focused workspace newly shows.
+    /// Fold a fresh `session.state` into the model, adopting the session's
+    /// focused workspace as this terminal's own.
+    ///
+    /// Right when this client is the reason state moved — it attached, or it
+    /// made a call that switched workspace — and wrong when some other
+    /// connection did (see [`resync_state`](Self::resync_state)).
     ///
     /// Returns the bus sequence the snapshot was captured at: 04 §2 puts one on
     /// every state-query reply precisely so a subscription can be anchored to
-    /// it, and [`App::attach`](super::App::attach) is what does the anchoring. A
-    /// consumer that saw a gap re-reads state and resumes from here without
-    /// racing new transitions.
+    /// it, and [`App::attach`](super::App::attach) is what does the anchoring.
     pub async fn sync_state(&mut self) -> Result<Seq, AppError> {
+        self.fold_state(Presentation::Adopt).await
+    }
+
+    /// Re-read state without touching what this terminal is showing.
+    ///
+    /// The recovery half of the same mechanism: a gap, or a structural event
+    /// from another connection, means the mirror is incomplete — not that this
+    /// client asked to look somewhere else. 04 §3 gives every client its own
+    /// presentation, and being yanked into another workspace because someone
+    /// else split a pane there is not one this terminal asked for
+    /// (`tests/adversarial.rs` pins it: "its screen owes the flood pane
+    /// nothing").
+    pub async fn resync_state(&mut self) -> Result<Seq, AppError> {
+        self.fold_state(Presentation::Keep).await
+    }
+
+    /// The one fold both spellings share.
+    async fn fold_state(&mut self, presentation: Presentation) -> Result<Seq, AppError> {
         self.resyncs += 1;
         let value = self
             .call(Method::SessionState.wire_name(), serde_json::json!({}))
@@ -119,7 +152,12 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 self.focus.insert(ws.workspace, focus);
             }
         }
-        if let Some(focused) = state.focused_workspace {
+        // A mirror that holds no workspace yet has nothing to preserve: the
+        // first fold of a fresh attach must land somewhere, whichever spelling
+        // asked for it.
+        if let Some(focused) = state.focused_workspace
+            && (presentation == Presentation::Adopt || self.model.focused_workspace_id().is_none())
+        {
             self.model.focus_workspace(focused);
         }
         // Loss is state, not a log line (04 §6): the summary rides every
@@ -175,7 +213,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         pending.clear();
         self.events = pending;
         if resync {
-            self.sync_state().await?;
+            self.resync_state().await?;
         }
         Ok(())
     }
