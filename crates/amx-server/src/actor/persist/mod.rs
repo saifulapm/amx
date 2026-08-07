@@ -12,6 +12,7 @@
 //! decides which panes a save has anything new to write for.
 
 mod actor;
+mod debounce;
 mod sidecars;
 
 use amx_core::PaneId;
@@ -20,7 +21,8 @@ use tokio::sync::{mpsc, oneshot};
 use super::{MailboxError, PaneHandle};
 use crate::persist::{PersistError, Snapshot};
 
-pub use actor::{Persist, PersistReport, QUIET_WINDOW, STALENESS_CAP};
+pub use actor::{Persist, PersistReport};
+pub use debounce::{QUIET_WINDOW, STALENESS_CAP};
 
 /// Depth of the `Persist` actor's mailbox.
 ///
