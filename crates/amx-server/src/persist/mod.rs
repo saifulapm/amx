@@ -21,10 +21,14 @@
 //!
 //! # Task ownership
 //!
-//! U01 froze the types here; **U02** adds `io.rs`, `snapshot.rs` and
-//! `sidecar.rs` beside them (`docs/07-m1-plan.md` §4) — the atomic writer, the
-//! reader that applies [`READ_WINDOW`], and the sidecar codec that packs rows
-//! through the wire's own `put_row`.
+//! U01 froze the types here; **U02** adds [`io`], [`snapshot`] and [`sidecar`]
+//! beside them (`docs/07-m1-plan.md` §4) — the atomic writer, the reader that
+//! applies [`READ_WINDOW`], and the sidecar codec that packs rows through the
+//! wire's own `put_row`.
+
+pub mod io;
+pub mod sidecar;
+pub mod snapshot;
 
 use std::path::PathBuf;
 
