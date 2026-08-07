@@ -17,6 +17,7 @@ herdr's structural weaknesses.
 | [05-roadmap.md](05-roadmap.md) | Milestones and build order |
 | [06-m0-plan.md](06-m0-plan.md) | M0 execution plan: crate/module map, shared contracts, task DAG, waves, risks |
 | [07-m1-plan.md](07-m1-plan.md) | M1 execution plan: durability — fsynced snapshot, restore + loss report, Persist actor, config hot reload, crash suite |
+| [08-m2-plan.md](08-m2-plan.md) | M2 execution plan: agents — hook-coverage spike, registry, fusion state machine, AgentHub, attention queue, waits, resume |
 
 ## TL;DR
 
