@@ -295,6 +295,53 @@ async fn next_attention_key_calls_agent_next_and_focus_follows() {
 }
 
 #[tokio::test]
+async fn a_pane_another_connection_created_reaches_this_screen() {
+    let (server, mut app, _master) = attached("evsp").await;
+    let pane = focused(&mut app);
+    assert_eq!(panes_shown(&mut app), vec![pane]);
+
+    // A second connection to the same session, splitting the pane this client
+    // is showing. This is `amx agent start` run from another terminal: it mints
+    // its pane through `pane.split`, and nothing about it passes through the
+    // attached client — which is why the client can only learn of it from the
+    // event.
+    let other_pty = support::open_pty();
+    let mut other = App::attach(server.socket(), other_pty.slave, Vec::new(), client_info())
+        .await
+        .expect("a second client on the same session");
+    other
+        .handle_bytes(&[PREFIX, b'v'])
+        .await
+        .expect("split from the other connection");
+    let split = other
+        .model()
+        .focused_workspace()
+        .expect("the other client's mirror")
+        .layout
+        .panes();
+    assert_eq!(split.len(), 2, "the split happened: {split:?}");
+
+    pump_until(&mut app, |app| panes_shown(app).len() == 2).await;
+    assert_eq!(
+        panes_shown(&mut app),
+        split,
+        "this client shows the same two panes the session holds"
+    );
+
+    drop(other);
+    drop(app);
+    server.shutdown().await;
+}
+
+/// The panes this client would paint, in layout order.
+fn panes_shown(app: &mut TestApp) -> Vec<PaneId> {
+    app.model()
+        .focused_workspace()
+        .map(|ws| ws.layout.panes())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
 async fn unknown_event_tags_are_ignored_not_fatal() {
     let (server, mut app, _master) = attached("evsk").await;
     let pane = focused(&mut app);

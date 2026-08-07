@@ -441,8 +441,8 @@ fn mutates_layout(method: Method) -> bool {
         | Method::AgentNext => true,
         // M2's other rows change a pane's *contents* or its agent's status,
         // never the layout tree — `agent.start` is the one that mints a pane,
-        // and it does so through the same `pane.split` path, whose own event
-        // the client already hears.
+        // and it does so through the same `pane.split` path, whose
+        // `pane_created` every client hears (`super::events`).
         Method::Ping
         | Method::SessionState
         | Method::SessionReport
