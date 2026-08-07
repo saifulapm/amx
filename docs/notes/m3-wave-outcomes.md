@@ -120,6 +120,19 @@ is meant to move. Confirmed by reading from the W01 side and carried in
 [m3-shutdown-wedge.md](m3-shutdown-wedge.md) §8 as well; that entry and this
 one are the same finding.
 
+**The drain census is an instrument, not a debug aid — do not simplify it
+away.** W01's `Runtime::spawn` now takes a `&'static str` name, and a drain
+that overruns `CENSUS_INTERVAL` writes what it is still holding to
+`CENSUS_FILE` under the session's runtime directory
+(`amx-server/src/runtime.rs`). This is the half of W01 that outlives the
+milestone, because the mechanism it left open is *not* diagnosable without it:
+W01 measured all seven wedged servers as showing thread state identical to a
+healthy idle one, and a native backtrace cannot name a parked async task. A
+future change that puts `Runtime::spawn` back to an unnamed `tokio::spawn`, or
+that drops the census as shutdown-path noise, removes the only instrument that
+will read the wedge when it next fires. Recorded at W01's request so W14 folds
+it forward rather than losing it between two notes.
+
 **Sequential fills inherited from W01, repeated here so the ledger carries
 them.** `conn/mod.rs` is W08's file and W01 has landed fifteen lines on it (the
 handshake under cancellation); `session/serve.rs` is W06's and now carries the
