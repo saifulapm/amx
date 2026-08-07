@@ -190,3 +190,70 @@ fn publish_is_allocation_free_after_warmup() {
         "publish allocated after warm-up: {before} -> {after}"
     );
 }
+
+// ------------------------------------------------- continuity across a swap
+
+/// D-M3-4: a successor's bus continues the exporter's sequence space.
+///
+/// The claim has three halves and each fails differently, so each is asserted:
+/// the head starts where the manifest said, the *first* event published takes
+/// the very next number (a bus that skipped one would put a permanent hole in
+/// a resuming client's stream), and a subscriber that resumes from the
+/// inherited head is caught up rather than gapped — because the events behind
+/// that head belonged to the process that is gone, and asking for what came
+/// *after* it is asking for nothing yet.
+#[tokio::test]
+async fn a_bus_born_at_seq_n_continues_gapless_from_n() {
+    const INHERITED: u64 = 4_096;
+
+    let bus = Bus::new_at(8, INHERITED);
+    assert_eq!(bus.head(), INHERITED, "the successor inherits the head");
+
+    // A client that saw `INHERITED` before the swap resumes after it, and the
+    // successor has nothing to tell it yet.
+    let mut resumed = bus.subscribe_after(INHERITED);
+    let mut fresh = bus.subscribe();
+    assert_eq!(fresh.subscribed_at(), INHERITED);
+
+    assert_eq!(bus.publish(pane_exited(1)), INHERITED + 1, "gapless from N");
+    assert_eq!(bus.publish(pane_exited(2)), INHERITED + 2);
+
+    for (which, sub) in [("resumed", &mut resumed), ("fresh", &mut fresh)] {
+        for expected in [INHERITED + 1, INHERITED + 2] {
+            match sub.recv().await.expect("the bus is live") {
+                Delivery::Event(envelope) => {
+                    assert_eq!(envelope.seq, expected, "{which} saw the wrong sequence")
+                }
+                gap => panic!("{which} was gapped across a swap it did not miss: {gap:?}"),
+            }
+        }
+    }
+
+    // And `new` is this with a head of zero — the property every other test in
+    // this file is written against, restated so the delegation cannot rot.
+    assert_eq!(Bus::new(8).head(), 0);
+}
+
+/// The replay ring starts empty however high the head is.
+///
+/// The other half of the contract: the successor cannot replay events it never
+/// published, so a client resuming from *before* the inherited head is told so
+/// with the ordinary gap rather than handed silence. That is the M0
+/// invalidation contract doing its job across a process boundary.
+#[tokio::test]
+async fn a_resume_from_before_the_inherited_head_is_a_gap_not_silence() {
+    const INHERITED: u64 = 4_096;
+
+    let bus = Bus::new_at(8, INHERITED);
+    let mut stale = bus.subscribe_after(INHERITED - 10);
+
+    assert_eq!(
+        stale.recv().await.expect("the bus is live"),
+        Delivery::Gap {
+            from: INHERITED - 9,
+            to: INHERITED,
+        },
+        "events from the exporter's process are gone, and saying so is the \
+         contract"
+    );
+}
