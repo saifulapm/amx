@@ -142,7 +142,22 @@ fn build_vendored(vendor_dir: &Path, source_dir: &Path) -> PathBuf {
         ));
     }
 
-    prefix.join("lib")
+    // The install prefix holds the shared library next to the archive, and
+    // that pairing must not reach the link search path: darwin's ld64 prefers
+    // a dylib over an archive found in the same directory, so a test binary
+    // that links the native library directly ends up wanting an
+    // `@rpath/libghostty-vt.dylib` nothing installs — GNU ld is only saved by
+    // the `-Bstatic` bracket rustc emits for it. A directory holding exactly
+    // the archive removes the choice on every platform.
+    let static_dir = prefix.join("lib-static");
+    fs::create_dir_all(&static_dir)
+        .unwrap_or_else(|err| fail(&format!("cannot create {}: {err}", static_dir.display())));
+    fs::copy(
+        prefix.join("lib").join("libghostty-vt.a"),
+        static_dir.join("libghostty-vt.a"),
+    )
+    .unwrap_or_else(|err| fail(&format!("cannot place the static library: {err}")));
+    static_dir
 }
 
 fn link(lib_dir: &Path) {
