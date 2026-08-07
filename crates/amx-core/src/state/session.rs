@@ -5,7 +5,7 @@
 //! so a handler that changes state and forgets to report it is a type error
 //! at the call site (04 §2, D2).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::effect::Effect;
 use crate::id::{PaneId, WorkspaceId};
@@ -77,6 +77,62 @@ impl SessionState {
         self.workspaces
             .insert(workspace, Workspace::with_root(workspace, pane));
         (workspace, pane, Effect::Layout)
+    }
+
+    /// Insert a workspace that already has an identity, a tree and a label.
+    ///
+    /// The one way into this tree that does not mint ids: a restore rebuilds
+    /// yesterday's session, and 04 §6 makes the UUIDs load-bearing — snapshot,
+    /// scrollback sidecar and short number all join on them, so a restore that
+    /// renumbered would desync every one of those. `open_workspace` is still
+    /// the only way to *create* a workspace; this is how one comes back.
+    ///
+    /// The panes of `layout` are registered in the flat index with no label and
+    /// no cwd; the caller layers those on through
+    /// [`rename_pane`](Self::rename_pane) and
+    /// [`set_pane_cwd`](Self::set_pane_cwd), the same handlers a live session
+    /// uses, so restored panes are indistinguishable from created ones
+    /// afterwards.
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::WorkspaceExists`] if `workspace` is already here,
+    /// [`LayoutError::AlreadyPresent`] if `layout` names a pane this session
+    /// already holds or names one twice, and [`LayoutError::NoSuchPane`] if
+    /// `focus` is not a leaf of `layout`. The tree is left untouched in every
+    /// one of those cases: a file that says something impossible must not be
+    /// half-applied.
+    pub fn adopt_workspace(
+        &mut self,
+        workspace: WorkspaceId,
+        label: Option<String>,
+        layout: Layout,
+        focus: Option<PaneId>,
+    ) -> Result<Effect, StateError> {
+        if self.workspaces.contains_key(&workspace) {
+            return Err(StateError::WorkspaceExists(workspace));
+        }
+        let panes = layout.panes();
+        let mut seen = BTreeSet::new();
+        for pane in &panes {
+            if self.panes.contains_key(pane) || !seen.insert(*pane) {
+                return Err(LayoutError::AlreadyPresent(*pane).into());
+            }
+        }
+        if let Some(focus) = focus
+            && !seen.contains(&focus)
+        {
+            return Err(LayoutError::NoSuchPane(focus).into());
+        }
+
+        for pane in panes {
+            self.panes.insert(pane, Pane::new(pane));
+        }
+        self.workspaces.insert(
+            workspace,
+            Workspace::adopted(workspace, label, layout, focus),
+        );
+        Ok(Effect::Full)
     }
 
     /// Split `target`, giving the new pane the slot `dir` names.
