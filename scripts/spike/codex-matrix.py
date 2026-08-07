@@ -127,18 +127,49 @@ def esc_generation(ctx, root):
     stop_agent(ctx)
 
 
+def esc_tool(ctx, root):
+    """M1 for Codex, unambiguously: Esc while a shell command is still running."""
+    release = os.path.join(root, "release-the-wait")
+    if os.path.exists(release):
+        os.remove(release)
+    start_agent(ctx, root, ctx.home, args="--sandbox danger-full-access "
+                                          "--ask-for-approval never")
+    p = ctx.pty
+    t = time.time()
+    ctx.prompt("Run this shell command and nothing else: "
+               f"until [ -f {release} ]; do sleep 2; done")
+    ctx.wait_hook("PreToolUse", timeout=180, after=t)
+    time.sleep(5.0)
+    ctx.mark("esc_pressed", ts=p.send(ESC))
+    time.sleep(6)
+    ctx.mark("esc_pressed_again", ts=p.send(ESC))
+    time.sleep(10)
+    ctx.mark("observation_window_closed")
+    open(release, "w").close()
+    time.sleep(3)
+    stop_agent(ctx)
+
+
 def approval_deny(ctx, root):
     """M2/M3 for Codex: a command the sandbox must ask about, answered 'no'."""
-    start_agent(ctx, root, ctx.home)
+    # `untrusted` escalates anything outside its trusted command set, which is
+    # the only way to make the approval dialog deterministic: measured on
+    # 0.147.0, the default policy ran an out-of-workspace write without asking.
+    start_agent(ctx, root, ctx.home, args="--ask-for-approval untrusted")
     p = ctx.pty
     t = time.time()
     ctx.prompt("Run the shell command: echo spike-codex-probe > /tmp/amx-spike-codex.txt")
-    hook = ctx.wait_hook("PermissionRequest", timeout=180, after=t, )
+    hook = ctx.wait_hook("PermissionRequest", timeout=180, after=t)
     ctx.mark("permission_request_seen", ts=hook["ts"])
     hit = p.find(UI["approval"], since=0)
     if hit:
         ctx.mark("approval_dialog_painted", ts=hit[1], text=hit[2].group(0)[:40])
     time.sleep(2.0)
+    # Measured on 0.147.0 the dialog is "1. Yes, proceed / 2. Yes, and don't ask
+    # again / 3. No, and tell Codex what to do differently (esc)". Two steps
+    # down, not one: one step lands on the *broadest* approval there is.
+    p.send(DOWN)
+    time.sleep(0.3)
     p.send(DOWN)
     time.sleep(0.5)
     ctx.mark("deny_confirmed", ts=p.send(ENTER))
@@ -149,7 +180,7 @@ def approval_deny(ctx, root):
 
 def approval_esc(ctx, root):
     """M2 for Codex: the same dialog, dismissed with Esc."""
-    start_agent(ctx, root, ctx.home)
+    start_agent(ctx, root, ctx.home, args="--ask-for-approval untrusted")
     p = ctx.pty
     t = time.time()
     ctx.prompt("Run the shell command: echo spike-codex-probe > /tmp/amx-spike-codex.txt")
@@ -212,6 +243,7 @@ SCENARIOS = {
     "clean-turn": clean_turn,
     "tool-turn": tool_turn,
     "esc-generation": esc_generation,
+    "esc-tool": esc_tool,
     "approval-deny": approval_deny,
     "approval-esc": approval_esc,
     "untrusted-hooks": untrusted_hooks,
