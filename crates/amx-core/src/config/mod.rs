@@ -30,12 +30,15 @@ pub const PERSIST_SECTION: &str = "persist";
 /// The `[terminal]` section's name, as it appears in the file.
 pub const TERMINAL_SECTION: &str = "terminal";
 
+/// The `[update]` section's name, as it appears in the file.
+pub const UPDATE_SECTION: &str = "update";
+
 /// Every section amx reads, in file order.
 ///
 /// M1 tables exactly the sections that have a consumer; a section nobody reads
 /// is a promise nobody keeps. Walked rather than repeated, so adding a section
 /// is adding a field plus a row here.
-pub const SECTIONS: &[&str] = &[PERSIST_SECTION, TERMINAL_SECTION];
+pub const SECTIONS: &[&str] = &[PERSIST_SECTION, TERMINAL_SECTION, UPDATE_SECTION];
 
 /// The whole configuration, one field per section.
 ///
@@ -49,6 +52,9 @@ pub struct Config {
     /// `[terminal]`.
     #[serde(default)]
     pub terminal: TerminalConfig,
+    /// `[update]`.
+    #[serde(default)]
+    pub update: UpdateConfig,
 }
 
 /// `[persist]`: what durability keeps beyond the snapshot itself.
@@ -73,6 +79,24 @@ pub struct TerminalConfig {
     /// nothing about a config reload may restart a live process.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
+}
+
+/// `[update]`: where `amx update` looks for a newer amx (D-M3-8).
+///
+/// One field, and it is an override rather than a value: the default channel is
+/// a fact about the binary — the releases of the repository it was built from —
+/// so it lives beside the code that fetches it and not in a file every user
+/// would have to write out to get the ordinary behavior. What belongs here is
+/// the *other* answer: a private mirror, an air-gapped path, a `file://` URL a
+/// test points at.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct UpdateConfig {
+    /// The channel manifest `amx update` reads, ahead of the built-in default.
+    ///
+    /// Consulted per invocation, like every other setting here: a session that
+    /// has been running for a week reads whatever the file says today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
 }
 
 /// One thing that went wrong while reloading, named by section.
@@ -142,6 +166,13 @@ pub fn reload(current: &Config, text: &str) -> (Config, Vec<ConfigDiagnostic>) {
         TERMINAL_SECTION,
         &current.terminal,
         &mut next.terminal,
+        &mut diagnostics,
+    );
+    section(
+        &document,
+        UPDATE_SECTION,
+        &current.update,
+        &mut next.update,
         &mut diagnostics,
     );
     (next, diagnostics)
