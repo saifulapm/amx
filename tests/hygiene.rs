@@ -30,26 +30,31 @@ fn no_test_depends_on_wall_clock_sleep() {
     // The suites: no sleeping at all, under any name. Waiting is done through
     // the support crate's condition-driven helpers, and observation windows
     // (the flood test) tick an interval instead of napping blind.
+    //
+    // Recursive, because suites grew module directories — `persistence/`,
+    // `seams/` — and a scan of the package root alone had quietly stopped
+    // covering most of the rig's test code. `support/` is walked separately
+    // below under its own, looser rule.
     let mut suites = 0;
-    for entry in fs::read_dir(root).expect("read the package root") {
-        let path = entry.expect("a directory entry").path();
+    for path in rust_files(root) {
+        if path.starts_with(root.join("support")) {
+            continue;
+        }
         // This file is exempt for one reason only: the acceptance-test name
         // itself contains the forbidden token.
         if path.file_name().is_some_and(|name| name == "hygiene.rs") {
             continue;
         }
-        if path.extension().is_some_and(|ext| ext == "rs") {
-            let text = fs::read_to_string(&path).expect("read the suite");
-            assert!(
-                !text.contains(&needle),
-                "{} calls {needle}; wait on a condition instead (rig::wait_until, \
-                 Terminal::wait_output, or an interval tick)",
-                path.display()
-            );
-            suites += 1;
-        }
+        let text = fs::read_to_string(&path).expect("read the suite");
+        assert!(
+            !text.contains(&needle),
+            "{} calls {needle}; wait on a condition instead (rig::wait_until, \
+             Terminal::wait_output, or an interval tick)",
+            path.display()
+        );
+        suites += 1;
     }
-    assert!(suites >= 3, "the scan found too few suites to be believed");
+    assert!(suites >= 10, "the scan found too few suites to be believed");
 
     // The support crate: the poll tick inside its deadline loops is the one
     // place a nap is allowed, and every such line names TICK so a bare
