@@ -143,6 +143,21 @@ async fn kill_dash_9_mid_write_always_leaves_a_restorable_snapshot() {
                 break;
             }
         }
+        if landed == Landed::Elsewhere {
+            // No save was observed inside the watch window — a loaded runner
+            // can schedule the debounce timer later than any aim. The
+            // post-restart assertions demand this round's growth, so they are
+            // only meaningful once it has reached disk: wait for the round's
+            // workspace label to appear in the snapshot (content, not bytes —
+            // a save may already have slipped in before `before` was taken),
+            // then kill. The aimed rounds keep their mid-write and
+            // just-after landings; this one degrades to a kill between
+            // saves, which the whole-or-old property must survive too.
+            let label = format!("round-{round}");
+            wait_until("the round's workspace reaches the snapshot", || {
+                String::from_utf8_lossy(&snapshot_bytes(&env)).contains(&label)
+            });
+        }
         landings.push(landed);
         server.kill_dash_9();
         assert_snapshot_is_whole(&env, &format!("after the kill in round {round}"));
