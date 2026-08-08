@@ -746,3 +746,117 @@ DR-10 loses its `amx-vt` shadow and its client-dirtiness clause here; the
 `agent/fusion` shadow is X06's and the row is not empty until both land. DR-16
 loses the error code and `attach --pane`'s reconnect; the bridged-client redial
 was declined by §4 before this task started and is untouched.
+---
+## X08 — DR-7 and DR-12
+
+### DR-7 is decided by deletion, and the decision needs a doc edit X08 cannot make
+
+`GridMessage::Scrolled` is gone: the variant, the tag, the codec arms, the
+golden and the client's decode arm. Tag 2 is **retired, not renumbered** — an
+older build is entitled to keep reading 3 as the cursor — and `decode` refuses
+it like any other unknown tag, pinned by
+`the_retired_scroll_tag_is_refused_rather_than_reused`
+(`amx-proto/src/stream/grid.rs`) and by
+`the_retired_scroll_notice_has_no_golden_and_no_decode` (`tests/protocol.rs`).
+The revisit condition is written where the variant used to be.
+
+The §5 entry offers emission or deletion and the register offers the same two.
+Three facts decided it, and the first is the one that matters:
+
+1. **The grid stream is structurally too narrow to be the scrollback cache's
+   commit channel.** A client binds a grid stream per pane of the *focused
+   workspace* (`amx-client/src/app/binds.rs:66-95`), so a commit notice riding
+   that stream never reaches it for a pane in any other workspace — and the user
+   can switch to that workspace and scroll back in that pane. Under D14's narrow
+   projection (X12) the bound set shrinks to one pane. `Event::HistoryCommitted`
+   (`amx-core/src/event/mod.rs:97-103`, published at
+   `actor/pane_host/actor.rs:302-306`) carries the same range for every pane on
+   the bus, with the bus's ordering, its typed `gap` and its resumable cursor.
+   The fact the cache depends on cannot ride the narrowest channel in the
+   protocol when it already rides the widest.
+2. **The hash — the one thing tag 2 carried that the bus does not — has no
+   reader and cannot get one without a change elsewhere.** The server's half is
+   sound and deliberate (`history/pack.rs:1-16`: the announced hash covers
+   exactly the bytes the row is served as), but the client decodes a served row
+   into a `String` and drops the packing (`amx-client/src/stream.rs`,
+   `apply_history`), so it holds nothing to compare a hash against. That is the
+   revisit condition, written in the file.
+3. **DR-7's stated harm is the golden**, and deletion removes it now:
+   `tests/goldens/stream/grid_scrolled.json` froze the bytes of a message no
+   encoder produced and no decoder was ever fed in production.
+
+**Hand-off — 04 §3 asserts the mechanism this deletes.** Its fourth
+scrollback-identity bullet (`docs/04-architecture.md:112-114`) says rows
+scrolling out "are announced on the pane's delta stream (id + content hash…)".
+After this task that is false, and stale prose in this repo is DR-15's disease.
+X08 owns no line in `docs/04-architecture.md` — X03 held it in wave 1 and has
+landed — so the edit is named here rather than made: the bullet should say the
+announcement is `history.committed` on the event bus, with the per-row hash
+recorded as the thing the delta-stream form would have added and the condition
+under which it comes back. The same paragraph's "content push for panes the
+client is actively scrolled back in" is also unbuilt and unrelated to DR-7.
+**X00**, since it owns the register and can grant the exception.
+
+**Hand-off — the client's committed head only moves on a `session.state`
+resync, and that is the real gap under heavy output.** `Event::HistoryCommitted`
+is published for every commit and the client folds nothing from it
+(`amx-client/src/app/events.rs`, `apply_event`'s catch-all); the only thing that
+advances `Scrollback::head` today is the per-pane `history_head` on a state
+resync (`events.rs:174-185`). So rows that scrolled out since the last resync
+read as `RowSlot::Unavailable` to copy mode — 04 §3's "racy", by a different
+route than the one it named. This predates X08 and is not created by it: the
+message being deleted was never emitted, so nothing regresses. The fold is three
+lines in `apply_event` and belongs to whoever owns `app/events.rs` — **X09** this
+wave, **X15**'s neighbourhood after that.
+
+**Recorded for whoever revisits: what emission would have cost.** It is not
+buildable inside X08's file scope, and not for a formality — the facts are not
+reachable from `damage/**`. Row identity lives entirely in `amx-server/src/history`
+(`amx-vt` has no `RowId`), the commits and their hashes leave the parser thread
+as `HostEvent::Committed` on the pane actor's event channel, and a reader's
+handle on a pane carries published frames and nothing else
+(`actor/pane_host/feed.rs`, `PaneWiring` at `actor/calls.rs:84-89`). Emission
+therefore needs a second fan-out from the parser thread to every bound grid
+stream — `pane_host/{parser,feed,mod}.rs`, all three X13's in wave 3 — plus
+`conn/streams.rs`, which is in no task's list. A `watch` slot beside the frame
+slot would be the shape: ranges are monotonic and `Scrollback::commit` only
+advances the head, so a stalled reader that misses an intermediate range loses
+the hashes for those rows and turns them into ordinary cache misses.
+
+**Minimum-to-compile edit in another task's file**, the X02→X06 pattern: one
+`Decoded::Scrolled { .. } => {}` match arm removed from
+`crates/amx-server/tests/flow_control/harness.rs` (X04's wave-1 file). Nothing
+else outside `amx-proto/src/stream/grid.rs`, `amx-client/src/stream.rs`,
+`amx-server/src/damage/**` and `tests/protocol.rs` was touched.
+
+**One inline test replaced rather than dropped.** The bound-before-allocation
+rule was pinned on the scroll notice's hash count; it is now pinned on the
+delta's rect count (`a_rect_count_the_payload_cannot_hold_is_refused_before_allocation`),
+which is the only count the grid decoder still sizes a `Vec` from.
+
+### DR-12: silence at the routing table, refusal at the reader
+
+Not a choice between the two — the two layers answer differently because only
+one of them can tell the cases apart, and that is written into
+`amx-client/src/stream.rs`'s module header. The reader refuses a channel this
+connection never bound (`net/read.rs:147-148`, `NetError::UnboundChannel`,
+deliberately not `is_transport` so no redial swallows it); by the time a header
+reaches `stream::apply` the reader has already vouched that the connection bound
+it, so what is left is a route this client let go of, and dropping the frame is
+the only answer that does not kill a live session over a frame that was correct
+when it was written.
+
+**Both ways to reach it are latent, and the note says so rather than claiming a
+live case.** `Bindings::forget_pane` has no caller yet, and nothing sends
+`RawDirection::FromPane` on the raw channels the client binds for output — so
+today no frame that the reader admits fails to route. The rule is stated and
+pinned now because both arrive with work already in this milestone's plan.
+
+**The named test the register says it lacks** is
+`crates/amx-client/tests/unbound_channel.rs`, a new suite (a new file contends
+with nobody). The flood half reproduces the shape the 3-in-30 failures actually
+had — the client's own read cancelled mid-frame, resuming out of step, so the
+payload byte `b'o'` was read as channel 111 — at 60 frames with *every* read
+cancelled at least once, rather than at whatever load happened to be running.
+`tests/reader.rs` keeps its two resume-point tests; this is the count they were
+missing.
