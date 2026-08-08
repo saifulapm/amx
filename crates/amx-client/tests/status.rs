@@ -234,6 +234,8 @@ async fn status_line_names_the_focused_panes_agent_state() {
             transition_seq: 12,
             attention: None,
             session_ref: None,
+            reason: None,
+            since: None,
         }),
     );
     app.repaint();

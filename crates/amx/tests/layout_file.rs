@@ -51,6 +51,7 @@ fn pane_row(pane: PaneId, label: &str, agent: Option<AgentSnapshot>) -> PaneStat
         history_head: RowId::FIRST,
         history_floor: RowId::FIRST,
         agent,
+        mouse: None,
     }
 }
 
@@ -71,6 +72,8 @@ fn agent_kinds_apply_but_session_refs_never_export() {
                 transition_seq: 11,
                 attention: None,
                 session_ref: Some(secret),
+                reason: None,
+                since: None,
             }),
         )],
     );

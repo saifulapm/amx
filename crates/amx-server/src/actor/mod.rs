@@ -36,7 +36,8 @@ pub use agent::{
     AGENT_MAILBOX, AgentCall, AgentCommand, AgentHandle, SpawnedIdentity, StatusUpdate, StatusView,
 };
 pub use calls::{
-    ClientCall, CoreCommand, PaneCall, PaneWiring, SessionCall, StreamCall, WorkspaceCall,
+    AgentQueryCall, ClientCall, CoreCommand, PaneCall, PaneWiring, SessionCall, StreamCall,
+    WorkspaceCall,
 };
 pub use pane_host::{
     Drive, DriveError, Driven, ExportError, KeyParseError, KeyStroke, PaneExport, PaneHost,

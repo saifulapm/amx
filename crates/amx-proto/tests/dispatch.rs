@@ -198,6 +198,7 @@ impl Dispatch for StubServer {
                 history_head: RowId::from_raw(3),
                 history_floor: RowId::from_raw(0),
                 agent: None,
+                mouse: None,
             }],
             attention: Vec::new(),
             restore: None,
@@ -300,6 +301,18 @@ impl Dispatch for StubServer {
             workspace: None,
             waiting: 0,
             seq: self.seq,
+        })
+    }
+
+    async fn agent_list(
+        &mut self,
+        _params: agent::ListParams,
+    ) -> Result<agent::ListReply, RpcError> {
+        Ok(agent::ListReply {
+            seq: self.seq,
+            now: 1_754_650_000_000,
+            attention: Vec::new(),
+            agents: Vec::new(),
         })
     }
 

@@ -164,6 +164,8 @@ impl Rig {
                     transition_seq: self.ctx.bus.head() + 1,
                     attention: None,
                     session_ref: None,
+                    reason: None,
+                    since: None,
                 }),
                 attention: if to.wants_attention() {
                     vec![pane]

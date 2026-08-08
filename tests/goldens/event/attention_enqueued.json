@@ -2,6 +2,13 @@
   "seq": 41,
   "event": {
     "event": "attention_enqueued",
-    "pane": "00000000-0000-0000-0000-0000000000a1"
+    "pane": "00000000-0000-0000-0000-0000000000a1",
+    "workspace": {
+      "id": "00000000-0000-0000-0000-0000000000b1",
+      "name": "api"
+    },
+    "name": "backend",
+    "reason": "permission_dialog",
+    "since": 1754650000000
   }
 }

@@ -6,7 +6,7 @@
 //! mirrors the method table's domains and grows when a *method* does.
 
 use amx_core::PaneId;
-use amx_proto::control::{client, pane, session, workspace};
+use amx_proto::control::{agent, client, pane, session, workspace};
 use tokio::sync::oneshot;
 
 use super::pane_host::SnapshotFeed;
@@ -40,8 +40,38 @@ pub enum CoreCommand {
     },
     /// Something `AgentHub` decided; see [`AgentCall`].
     Agent(AgentCall),
+    /// An `agent.*` call `Core` answers out of state it already holds.
+    AgentQuery(AgentQueryCall),
     /// Shut the session down.
     Shutdown,
+}
+
+/// `agent.*` calls answered from `Core`'s own state.
+///
+/// Distinct from [`AgentCall`], which travels the other way — the hub telling
+/// `Core` what it decided. This is the ordinary dispatch direction: a
+/// connection decodes a call and `Core` answers it.
+///
+/// It exists because `docs/11-m4-plan.md` D-M4-2 found every field D15's reply
+/// needs already inside one actor — the workspace labels, the pane labels, the
+/// hub's mirrored statuses, the attention queue, and the published snapshot
+/// each `last_line` is read off. Answering from `Core` therefore costs one
+/// mailbox round trip whatever the pane count, where a per-pane
+/// [`StreamCall::Wiring`] fan-out would have cost one *per pane* — 25 of them
+/// at the 25 agents the surface exists for.
+#[derive(Debug)]
+pub enum AgentQueryCall {
+    /// `agent.list`.
+    ///
+    /// **Answered by X10**, in `actor/core/agents.rs`. The variant is planted
+    /// here in wave 1 so the wave-3 task writes a body and touches no shared
+    /// vocabulary.
+    List {
+        /// Parameters.
+        params: agent::ListParams,
+        /// Where the reply goes.
+        reply: Reply<agent::ListReply>,
+    },
 }
 
 /// A live pane's plumbing, handed to the connection that binds a stream on it.

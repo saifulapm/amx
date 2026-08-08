@@ -1,0 +1,38 @@
+{
+  "reply": {
+    "agents": [
+      {
+        "kind": "claude",
+        "last_line": "Allow Bash(git push origin main)? (y/n)",
+        "name": "backend",
+        "pane": "00000000-0000-0000-0000-0000000000a1",
+        "reason": "permission_dialog",
+        "since": 1754650000000,
+        "status": "blocked",
+        "workspace": {
+          "id": "00000000-0000-0000-0000-0000000000b1",
+          "name": "api"
+        }
+      },
+      {
+        "last_line": "",
+        "pane": "00000000-0000-0000-0000-0000000000a2",
+        "status": "quiet",
+        "workspace": {
+          "id": "00000000-0000-0000-0000-0000000000b1"
+        }
+      }
+    ],
+    "attention": [
+      "00000000-0000-0000-0000-0000000000a1"
+    ],
+    "now": 1754650240000,
+    "seq": 71
+  },
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "agent.list",
+    "params": {}
+  }
+}

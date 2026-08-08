@@ -98,7 +98,12 @@ fn fixtures() -> Vec<(Method, Value)> {
             Method::AgentExplain,
             json(&agent::ExplainParams { target: target() }),
         ),
-        (Method::AgentNext, json(&agent::NextParams {})),
+        (
+            Method::AgentNext,
+            json(&agent::NextParams {
+                workspace: Some(WorkspaceId::new_v4()),
+            }),
+        ),
         (
             Method::PaneRun,
             json(&pane::RunParams {

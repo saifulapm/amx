@@ -7,12 +7,13 @@
 //! mechanically, because a convention nothing checks is a convention on its
 //! way out.
 //!
-//! The second guard here is the same idea one milestone up: a *seam* — a
-//! method that landed in the shared table before its implementation — is
-//! allowed to exist only while its milestone is being built, and the way that
-//! stops being permanent is a test that fails once the milestone ships. M2
-//! opened twelve and V17 closed the last two, so the guard below is back in its
-//! resting state: no call sites, and no helper to make one from.
+//! Beside it are the guards on who may *publish* an event, which is the same
+//! kind of rule about the shipped code rather than about the suites.
+//!
+//! The milestone's own two ledgers — the open dispatch seam, and the fields
+//! frozen ahead of their readers — live in [`ledgers`]. They are the only
+//! things in this package meant to be *deleted* rather than kept, so they sit
+//! in one file with one owner.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
@@ -20,6 +21,9 @@ use std::fs;
 use std::path::Path;
 
 use rig::Env;
+
+#[path = "hygiene/ledgers.rs"]
+mod ledgers;
 
 /// The forbidden token, assembled so this file does not match itself.
 fn needle() -> String {
@@ -135,72 +139,6 @@ fn crate_tests_wait_on_conditions_not_wall_clock() {
     assert!(
         suites >= 10,
         "the crates scan found too few suites ({suites}) to be believed"
-    );
-}
-
-/// The milestone guard, back in its resting state: **no dispatch seam exists.**
-///
-/// A row that lands before its wiring is answered through a `seam` helper
-/// rather than `METHOD_NOT_FOUND`, because telling a client a method is unknown
-/// tells it to stop offering it — and `amx update apply` exists to *find*
-/// `session.handoff` on the server it is upgrading. The helper is therefore a
-/// milestone's tool, and this test is what keeps it one: while a milestone is
-/// being built the list of owning tasks is non-empty and every call site must
-/// live in a file the list names; when the last row is answered, the helper,
-/// the list and this exemption go together.
-///
-/// That has now happened three times. U01 introduced the helper with M1's two
-/// rows, U06 and U07 closed them. V02 brought both back for M2's twelve; V12
-/// closed four, V09 one, V11 three, V13 two, and V17 closed `agent.explain` and
-/// `agent.next`. W03 reopened it for M3 with a ledger of one —
-/// `session.handoff` in `dispatch/session.rs`, owed by **W06** — and put the
-/// helper inside the module that owns the row rather than in `dispatch/mod.rs`,
-/// so closing the row deleted the helper by rewriting one file. **W06 wired the
-/// row**, one wave earlier than the plan expected the ledger to empty, so this
-/// is back to the empty assertion: no `seam(` call site, and no helper to make
-/// one from.
-#[test]
-fn no_dispatch_seam_outlives_the_milestone_that_opened_it() {
-    // `<workspace>/tests/../crates`: the shipped code, not the suites, since a
-    // test harness may legitimately name the concept.
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates");
-    // A call or a definition, not the word: `seam` is the tree's ordinary
-    // noun for a trait boundary (`platform.rs`, `persist/io.rs`) and banning
-    // the word would ban the vocabulary.
-    let call = "seam(";
-
-    let mut found = Vec::new();
-    let mut scanned = 0;
-    for krate in fs::read_dir(&crates).expect("read crates/") {
-        let src = krate.expect("a directory entry").path().join("src");
-        if !src.is_dir() {
-            continue;
-        }
-        for path in rust_files(&src) {
-            scanned += 1;
-            let text = fs::read_to_string(&path).expect("read a source file");
-            let where_it_is = path.display().to_string().replace('\\', "/");
-            for (n, line) in text.lines().enumerate() {
-                // Prose says "the seam (`Pty`, `Ipc`)"; code says `seam(…)`.
-                if !line.contains(call) || line.trim_start().starts_with("//") {
-                    continue;
-                }
-                found.push(format!("{where_it_is}:{}: {}", n + 1, line.trim()));
-            }
-        }
-    }
-
-    assert!(
-        found.is_empty(),
-        "M3's seam ledger is empty and the helper is deleted, so a `seam(…)` \
-         call site can only be a row that landed without wiring. Implement it, \
-         or reintroduce the helper *with* the owner list this test used to \
-         carry:\n{}",
-        found.join("\n")
-    );
-    assert!(
-        scanned >= 50,
-        "the crates scan read too few source files ({scanned}) to be believed"
     );
 }
 
@@ -499,7 +437,7 @@ fn index_of(_pty: &rig::term::Pty) -> u32 {
 }
 
 /// Every `.rs` file under `dir`, recursively.
-fn rust_files(dir: &Path) -> Vec<std::path::PathBuf> {
+pub(crate) fn rust_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut found = Vec::new();
     let entries = fs::read_dir(dir).expect("read a test directory");
     for entry in entries {

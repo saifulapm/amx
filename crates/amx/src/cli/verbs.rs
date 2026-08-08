@@ -1,200 +1,25 @@
-//! The clap tree: the generated table plus the verbs that have no wire method.
+//! The verbs with nothing behind them on the wire.
 //!
-//! 04 §4 derives the CLI from the same method table as the wire names and the
-//! dispatch trait, "which fixes W6's four hand-synced lists". So the `ping`,
-//! `workspace …` and `pane …` subcommands are not written here — they are
-//! [`amx_proto::control::cli::method_commands`], and they arrive with their
-//! parameters already on them: `--params '<JSON>'` on every row, plus the typed
-//! flags of [`amx_proto::control::cli::ROWS`] on the verbs a human drives. Both
-//! are built beside the payload types they translate into, which is what keeps
-//! a row's parameters coming from one place.
+//! Every subcommand here is a `Command` builder for something the method table
+//! does not carry: process lifecycle, hidden plumbing, and the public verbs
+//! that compose existing capabilities client-side. The trees that *shape* the
+//! root or a generated group stay in [`super`], because those change when the
+//! table does; these change when a verb does.
 //!
-//! What *is* written here is the set of verbs with nothing behind them on the
-//! wire: `attach`, `server` and `session …` are process lifecycle, not control
-//! calls, and a method table row for them would be a row no server could
-//! handle. M2 adds four more of the same kind — `_hook`, `integration`,
-//! `skill`, and the streaming half of `events` — and V02 plants all of them
-//! here rather than letting four wave tasks each edit this file. That is the
-//! U01 precedent: `cli.rs` is a file every milestone wants a line in, so its
-//! lines land once, in the contracts task.
-//!
-//! M3 adds six, planted by W03 on the same terms (`docs/09-m3-plan.md` §4):
-//! `update`, `work`, `layout` and `apply` are public verbs that compose
-//! existing capabilities client-side, and `_bridge` and `_handoff-caps` are
-//! hidden — one is a byte splice, the other a single exec that prints what a
-//! binary can be handed. `amx session handoff` needs no line here at all: it is
-//! a real method-table row, so the generated tree carries it, flags and all.
+//! Split out of [`super`] by X02 before M4's two new verbs pushed that file
+//! past the soft budget (`docs/11-m4-plan.md` R-M4-5). The move is mechanical:
+//! not a line of any tree below changed.
 //!
 //! # Task ownership
 //!
-//! The trees below are complete; the command modules behind them are stubs.
-//! **V09** fills `_hook`, **V10** `integration`, **V11** `events`, **V16**
-//! `skill`. For M3: **W10** fills `update`, **W11** `_bridge`, **W12** `work`,
-//! **W13** `layout` and `apply`, and **W06** `_handoff-caps` (the pre-flight
-//! probe its orchestrator runs).
+//! The trees are complete; the command modules behind them are stubs. **V09**
+//! fills `_hook`, **V10** `integration`, **V16** `skill`. For M3: **W10** fills
+//! `update`, **W11** `_bridge`, **W12** `work`, **W13** `layout` and `apply`,
+//! and **W06** `_handoff-caps`. For M4: **X16** fills `agents`, **X07** `keys`.
 
 use clap::{Arg, ArgAction, Command};
 
-pub use amx_proto::control::cli::PARAMS;
-
-/// The global `--session` argument's id.
-pub const SESSION: &str = "session";
-
-/// The `--json` argument's id, carried by `session report` and `events`.
-pub const JSON: &str = "json";
-
-/// The global `--remote` argument's id.
-///
-/// Declared for `--help` and never matched: [`crate::remote::split`] removes
-/// the flag from `argv` before this tree parses anything.
-pub const REMOTE: &str = "remote";
-
-/// The `--after-seq` argument's id, carried by `events`.
-pub const AFTER_SEQ: &str = "after-seq";
-
-/// The `--handoff-import` argument's id, carried by `server`.
-///
-/// Hidden surface (`docs/09-m3-plan.md` §4): an exporter spawns
-/// `amx server --handoff-import <socket>` and writes the handoff token to its
-/// stdin, and nobody types it. A flag on an existing verb rather than a
-/// routing arm, which is why W03 left it out and W07 adds it here.
-pub const HANDOFF_IMPORT: &str = "handoff-import";
-
-/// The whole `amx` command tree.
-#[must_use]
-pub fn cli() -> Command {
-    let mut root = Command::new("amx")
-        .about("A minimal, keyboard-only agent terminal multiplexer")
-        .version(env!("CARGO_PKG_VERSION"))
-        .subcommand_required(false)
-        .arg(
-            Arg::new(SESSION)
-                .long("session")
-                .short('s')
-                .global(true)
-                .value_name("NAME")
-                .help("The named session to use [env: AMX_SESSION] [default: default]"),
-        )
-        // Documentary, and deliberately so. `--remote` selects *which machine
-        // parses the rest of the command line*, so `remote::split` takes it off
-        // `argv` in `main` before clap ever sees it — clap will therefore never
-        // match this argument. It is declared anyway because a flag missing
-        // from `amx --help` is a flag nobody finds: W11 had to strip it and
-        // recorded the cost, and this is the line that pays it.
-        .arg(
-            Arg::new(REMOTE)
-                .long("remote")
-                .global(true)
-                .value_name("HOST")
-                .help("Attach to the session on HOST over ssh, through `amx _bridge`"),
-        )
-        .subcommand(attach())
-        .subcommand(server())
-        .subcommand(hook())
-        .subcommand(integration())
-        .subcommand(skill())
-        .subcommand(update())
-        .subcommand(work())
-        .subcommand(layout())
-        .subcommand(apply())
-        .subcommand(bridge())
-        .subcommand(handoff_caps())
-        .subcommands(amx_proto::control::cli::method_commands());
-
-    // The generated tree owns the `session` group (it carries `session.state`);
-    // the lifecycle verbs merge into it rather than shadowing it, so one
-    // `amx session …` namespace serves both.
-    root = root.mut_subcommand("session", |generated| {
-        session_lifecycle(generated.about("Session state and the lifecycle of running sessions"))
-    });
-
-    // Same shape for `events`, which the table owns through `events.subscribe`
-    // while the *streaming* verb 04 §8 promises — `amx events --json` — is a
-    // long-lived client, not a one-shot call.
-    root = root.mut_subcommand("events", |generated| {
-        events_stream(generated.about("Subscribe to the session's event stream"))
-    });
-
-    root
-}
-
-/// `amx attach` — this terminal, one session.
-fn attach() -> Command {
-    Command::new("attach")
-        .about("Attach this terminal to a session")
-        .arg(
-            Arg::new("pane")
-                .long("pane")
-                .value_name("TARGET")
-                .help("Attach full-screen to one pane, with no chrome"),
-        )
-        .arg(
-            Arg::new("takeover")
-                .long("takeover")
-                .action(ArgAction::SetTrue)
-                .requires("pane")
-                .help("Take size authority for the pane from other clients"),
-        )
-}
-
-/// `amx server` — the daemon entry point.
-fn server() -> Command {
-    Command::new("server")
-        .about("Run the session server in the foreground")
-        .long_about(
-            "Run the session server in the foreground.\n\n\
-             `amx` starts this for you, detached, when nothing answers on the \
-             session socket. Run it yourself to watch a session's logs, or \
-             under a service manager.",
-        )
-        .arg(
-            Arg::new(HANDOFF_IMPORT)
-                .long("handoff-import")
-                .value_name("SOCKET")
-                .hide(true)
-                .help("Take a running session over from the exporter on SOCKET"),
-        )
-}
-
-/// The `amx session …` lifecycle verbs, added onto the generated group.
-///
-/// The generated `report` leaf is mutated rather than added: it is a real
-/// method-table row, and all it gains here is the `--json` escape hatch out of
-/// the human table `cmd::session` prints for it.
-fn session_lifecycle(group: Command) -> Command {
-    let name = || {
-        Arg::new("name")
-            .value_name("NAME")
-            .help("The session to act on [default: the selected session]")
-    };
-    group
-        .mut_subcommand("report", |report| {
-            report.arg(
-                Arg::new(JSON)
-                    .long("json")
-                    .action(ArgAction::SetTrue)
-                    .help("Print the reply as JSON instead of a table"),
-            )
-        })
-        .subcommand_required(true)
-        .arg_required_else_help(true)
-        .subcommand(Command::new("list").about("List the sessions with a server running"))
-        .subcommand(
-            Command::new("attach")
-                .about("Attach this terminal to a named session")
-                .arg(name()),
-        )
-        .subcommand(
-            Command::new("stop")
-                .about("Shut a session's server down, leaving its state on disk")
-                .arg(name()),
-        )
-        .subcommand(
-            Command::new("delete")
-                .about("Remove a stopped session's runtime and state directories")
-                .arg(name()),
-        )
-}
+use super::JSON;
 
 /// `amx _hook <agent>` — the agent hook emitter (D-M2-4).
 ///
@@ -208,7 +33,7 @@ fn session_lifecycle(group: Command) -> Command {
 /// **V09** fills it. The contract it must keep: read one payload from stdin,
 /// issue one `agent.report`, and **exit 0 silently whatever happens**, under a
 /// total budget of about 500 ms. A hook must never break or slow a turn.
-fn hook() -> Command {
+pub(super) fn hook() -> Command {
     Command::new("_hook")
         .hide(true)
         .about("Forward one agent hook event to the session server")
@@ -235,7 +60,7 @@ fn hook() -> Command {
 /// all. And Codex gates hooks on an interactive, hash-pinned "trust these"
 /// prompt whose state this spike found no way to read, so `status` must report
 /// that it cannot see it rather than implying the hooks are live.
-fn integration() -> Command {
+pub(super) fn integration() -> Command {
     let agent = || {
         Arg::new("agent")
             .value_name("AGENT")
@@ -267,7 +92,7 @@ fn integration() -> Command {
 /// **V16** fills it: an asset written out of the binary that teaches an agent
 /// to drive amx, gated on the `AMX_ENV=1` and pane/workspace variables V07
 /// injects.
-fn skill() -> Command {
+pub(super) fn skill() -> Command {
     Command::new("skill")
         .about("Install the amx agent skill")
         .subcommand_required(true)
@@ -292,7 +117,7 @@ fn skill() -> Command {
 /// otherwise (R-M3-4). `apply` stages, verifies a sha256, renames atomically
 /// over the running exe — legal on unix; ETXTBSY guards writes, not renames —
 /// and then asks the running session for `session.handoff`.
-fn update() -> Command {
+pub(super) fn update() -> Command {
     Command::new("update")
         .about("Check for a newer amx, or install one without dropping a pane")
         .subcommand_required(true)
@@ -330,7 +155,7 @@ fn channel() -> Arg {
 /// collapses all three (agent, workspace, tree) and refuses a dirty tree
 /// without `--force`, which is the destructive-op caution M1's delete work set
 /// as policy.
-fn work() -> Command {
+pub(super) fn work() -> Command {
     Command::new("work")
         .about("Start a workspace on a git worktree, or take one down")
         .subcommand_required(false)
@@ -369,7 +194,7 @@ fn work() -> Command {
 /// `session.state` into TOML. Session refs are deliberately not exported — a
 /// layout is a shape, not a conversation — which is also why the pair with
 /// [`apply`] is one-way per invocation rather than a sync.
-fn layout() -> Command {
+pub(super) fn layout() -> Command {
     Command::new("layout")
         .about("Export this session's shape")
         .subcommand_required(true)
@@ -392,7 +217,7 @@ fn layout() -> Command {
 /// CLI surface spells it. It adds workspaces to the running session and
 /// suffixes names on collision; replacing a session is `session stop` plus
 /// this, two explicit steps.
-fn apply() -> Command {
+pub(super) fn apply() -> Command {
     Command::new("apply")
         .about("Build workspaces, splits and agents from a layout file")
         .arg(
@@ -409,7 +234,7 @@ fn apply() -> Command {
 /// the far side, as `ssh host exec amx _bridge`. **W11** fills it, and it is a
 /// splice and nothing more — resolve the session, connect, copy both ways, and
 /// exit with the connect error before the first protocol byte if there is one.
-fn bridge() -> Command {
+pub(super) fn bridge() -> Command {
     Command::new("_bridge")
         .hide(true)
         .about("Splice this process's stdio onto a session socket")
@@ -429,43 +254,60 @@ fn bridge() -> Command {
 /// everything and pays a full quiesce and rollback for a binary it could have
 /// rejected for free. **W06** fills it, since the orchestrator is the only
 /// caller and the windows it prints are the ones that orchestrator checks.
-fn handoff_caps() -> Command {
+pub(super) fn handoff_caps() -> Command {
     Command::new("_handoff-caps")
         .hide(true)
         .about("Print this binary's version and handoff/protocol windows as JSON")
 }
 
-/// The streaming half of `amx events`, added onto the generated group.
+/// `amx agents [--watch] [--json] [--workspace]` — D15 surface 3.
 ///
-/// `events.subscribe` is a real method row and stays generated; this adds the
-/// long-lived consumer 04 §8 promises — "any program can `amx events --json`".
-/// **V11** filled it, and its help text is where the gap-resync contract is
-/// documented for the humans who write those programs: a `gap` delivery means
-/// re-query `session.state` and resume from the seq it carries.
-fn events_stream(group: Command) -> Command {
-    group
-        .subcommand_required(false)
-        .long_about(
-            "Subscribe to the session's event stream and print one delivery per line.\n\n\
-             Every line is either an event envelope or a `gap`. A gap is not an \
-             error and must not be skipped: it means this consumer fell behind \
-             the server's replay buffer, and the events it names are gone. The \
-             recovery is fixed — re-query `amx session state`, which carries the \
-             bus sequence it was captured at, and resume from there with \
-             `--after-seq`. A consumer that ignores gaps silently misses \
-             transitions, which is the one failure the event bus is designed to \
-             make impossible to have unknowingly.",
+/// **X16** fills it. A top-level verb rather than a method-table row, and
+/// D-M4-11 is why there are two spellings: the table already generates
+/// `amx agent list` as the machine surface, and this is the same reply rendered
+/// for a person — with `--json` printing it verbatim so a consumer never has to
+/// know a human form exists.
+///
+/// The workflow it exists for is a phone SSH window with no client attached:
+/// `--watch` is the read-only mission-control screen, and it must work at 45
+/// columns.
+pub(super) fn agents() -> Command {
+    Command::new("agents")
+        .about("Show every agent's status, reason, age and last line")
+        .arg(
+            Arg::new("watch")
+                .long("watch")
+                .action(ArgAction::SetTrue)
+                .help("Keep the table live until `q`, redialling across a server swap"),
         )
         .arg(
             Arg::new(JSON)
                 .long("json")
                 .action(ArgAction::SetTrue)
-                .help("Print each delivery as one line of NDJSON, including `gap`"),
+                .help("Print the `agent.list` reply verbatim instead of a table"),
         )
         .arg(
-            Arg::new(AFTER_SEQ)
-                .long("after-seq")
-                .value_name("SEQ")
-                .help("Resume after this bus sequence, as `session.state` reported it"),
+            Arg::new("workspace")
+                .long("workspace")
+                .value_name("NAME")
+                .help("Scope either form to one workspace"),
+        )
+}
+
+/// `amx keys` — print the resolved keybinding table (04 §7).
+///
+/// **X07** fills it, along with the `[keys]` section it reads. It reaches no
+/// server: the bindings are resolved entirely client-side out of the config
+/// file, so this answers with no session running, which is also what makes it
+/// the thing to run when a rebound prefix has left you unable to reach the
+/// prefix layer.
+pub(super) fn keys() -> Command {
+    Command::new("keys")
+        .about("Print the resolved keybindings, and where each one came from")
+        .arg(
+            Arg::new(JSON)
+                .long("json")
+                .action(ArgAction::SetTrue)
+                .help("Print the resolved table as JSON instead of a table"),
         )
 }

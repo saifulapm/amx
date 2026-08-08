@@ -3,8 +3,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
 use amx_core::agent::{
-    Activity, AgentKind, AgentState, CoverageClass, ExitAuthority, HookToken, RefKind, RefSource,
-    SessionRef, StatusCause,
+    Activity, AgentKind, AgentSnapshot, AgentState, AgentWorkspace, CoverageClass, ExitAuthority,
+    HookToken, RefKind, RefSource, SessionRef, StatusCause,
 };
 use amx_core::event::{Delivery, Envelope, Event};
 use amx_core::{Effect, EffectSet, GridGeneration, Level, PaneId, Scheduled, WorkspaceId};
@@ -219,13 +219,142 @@ fn the_m2_event_variants_round_trip_and_tag_themselves() {
     assert_eq!(serde_json::from_value::<Event>(json).unwrap(), identified);
 
     for (event, tag) in [
-        (Event::AttentionEnqueued { pane }, "attention_enqueued"),
-        (Event::AttentionDequeued { pane }, "attention_dequeued"),
+        (
+            Event::AttentionEnqueued {
+                pane,
+                workspace: None,
+                name: None,
+                reason: None,
+                since: None,
+            },
+            "attention_enqueued",
+        ),
+        (
+            Event::AttentionDequeued {
+                pane,
+                workspace: None,
+                name: None,
+                reason: None,
+                since: None,
+            },
+            "attention_dequeued",
+        ),
     ] {
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["event"], tag);
         assert_eq!(serde_json::from_value::<Event>(json).unwrap(), event);
     }
+}
+
+/// D15's identity block rides the attention events additively, in both
+/// directions.
+///
+/// Two halves, and a field that satisfies only one of them strands a peer: a
+/// build that *sends* the block must be understood by one that has it, and a
+/// build that sends none must produce exactly the bytes M2 produced — the keys
+/// absent, not present-and-null.
+#[test]
+fn the_attention_identity_block_is_additive_in_both_directions() {
+    let pane = PaneId::new_v4();
+    let workspace = WorkspaceId::new_v4();
+
+    let bare = Event::AttentionEnqueued {
+        pane,
+        workspace: None,
+        name: None,
+        reason: None,
+        since: None,
+    };
+    let json = serde_json::to_value(&bare).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({ "event": "attention_enqueued", "pane": pane }),
+        "a hub that knows no names writes the bytes M2 wrote",
+    );
+
+    let named = Event::AttentionDequeued {
+        pane,
+        workspace: Some(AgentWorkspace {
+            id: workspace,
+            name: Some("api".to_owned()),
+        }),
+        name: Some("backend".to_owned()),
+        reason: Some("permission_dialog".to_owned()),
+        since: Some(1_754_650_000_000),
+    };
+    let json = serde_json::to_value(&named).unwrap();
+    assert_eq!(
+        json["workspace"],
+        serde_json::json!({ "id": workspace, "name": "api" })
+    );
+    assert_eq!(json["name"], "backend");
+    assert_eq!(
+        json["reason"], "permission_dialog",
+        "the reason is the detector's own name, not a taxonomy of amx's",
+    );
+    assert_eq!(json["since"], 1_754_650_000_000_u64);
+    assert_eq!(serde_json::from_value::<Event>(json).unwrap(), named);
+
+    // And an event from a build that has never heard of the block still
+    // decodes, to the absences that mean "this build did not say".
+    let older: Event =
+        serde_json::from_value(serde_json::json!({ "event": "attention_enqueued", "pane": pane }))
+            .unwrap();
+    assert_eq!(older, bare);
+
+    // A workspace with no label is the id alone, which is the other absence a
+    // renderer has to be ready for.
+    let anonymous = AgentWorkspace::unnamed(workspace);
+    assert_eq!(
+        serde_json::to_value(&anonymous).unwrap(),
+        serde_json::json!({ "id": workspace }),
+    );
+}
+
+/// D-M4-3 and D-M4-4 on the snapshot every surface reads.
+///
+/// `reason` and `since` are optional because their absence is a real state —
+/// a tier-3 `busy` that no named rule produced, and a status re-derived rather
+/// than observed entering — and a zero `since` would read as 1970.
+#[test]
+fn a_snapshot_carries_a_reason_and_an_entry_instant_or_says_it_has_neither() {
+    let unknown = AgentSnapshot::unidentified(7);
+    assert_eq!(
+        unknown.reason, None,
+        "no named rule produced a tier-3 quiet"
+    );
+    assert_eq!(unknown.since, None);
+    let json = serde_json::to_value(&unknown).unwrap();
+    assert!(json.get("reason").is_none(), "{json}");
+    assert!(json.get("since").is_none(), "{json}");
+
+    let blocked = AgentSnapshot {
+        kind: Some(AgentKind::new("claude").unwrap()),
+        state: AgentState::Blocked,
+        cause: StatusCause::Screen,
+        transition_seq: 51,
+        attention: Some(0),
+        session_ref: None,
+        reason: Some("permission_dialog".to_owned()),
+        since: Some(1_754_650_000_000),
+    };
+    let json = serde_json::to_value(&blocked).unwrap();
+    assert_eq!(json["reason"], "permission_dialog");
+    assert_eq!(json["since"], 1_754_650_000_000_u64);
+    assert_eq!(
+        serde_json::from_value::<AgentSnapshot>(json).unwrap(),
+        blocked
+    );
+
+    // A snapshot written by a build from before M4 still parses, which is what
+    // lets `since` ride the handoff manifest and the persisted session without
+    // a version of their own (R-M4-4).
+    let older: AgentSnapshot = serde_json::from_value(serde_json::json!({
+        "state": "idle", "cause": "hook", "transition_seq": 3
+    }))
+    .unwrap();
+    assert_eq!(older.reason, None);
+    assert_eq!(older.since, None);
 }
 
 #[test]

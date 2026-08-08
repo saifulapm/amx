@@ -2,6 +2,13 @@
   "seq": 41,
   "event": {
     "event": "attention_dequeued",
-    "pane": "00000000-0000-0000-0000-0000000000a1"
+    "pane": "00000000-0000-0000-0000-0000000000a1",
+    "workspace": {
+      "id": "00000000-0000-0000-0000-0000000000b1",
+      "name": "api"
+    },
+    "name": "backend",
+    "reason": "prompt_box_idle",
+    "since": 1754650000000
   }
 }

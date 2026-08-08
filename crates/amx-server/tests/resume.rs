@@ -99,6 +99,8 @@ fn mirrored(kind: &AgentKind, value: &str) -> amx_core::agent::AgentSnapshot {
         transition_seq: 1,
         attention: None,
         session_ref: Some(conversation(value)),
+        reason: None,
+        since: None,
     }
 }
 

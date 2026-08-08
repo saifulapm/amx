@@ -31,10 +31,14 @@
 //! `agent.explain` and `agent.next`, deleting the helper and the exemption in
 //! the same commit.
 //!
-//! **W03 reopens it for M3's one new row**, `session.handoff`, whose orchestrator
-//! is W06's. The helper lives in [`session`] this time rather than here, so the
-//! task that closes the row deletes the file, the helper and the exemption
-//! together — and the list of owners it is held to is in `tests/hygiene.rs`.
+//! **W03 reopened it for M3's one new row**, `session.handoff`, whose
+//! orchestrator was W06's; W06 wired the row and the helper went with it.
+//!
+//! **X02 reopens it for M4's one new row**, `agent.list`, owed by **X10**. The
+//! helper is in `actor/core/route.rs` this time, not in this tree: the arm here
+//! is finished — it routes the call to the `Core` that will answer it — and it
+//! is the *answer* that is owed, so the seam sits beside the arm the wave-3
+//! task replaces. `tests/hygiene.rs` holds the ledger either way.
 
 mod agent;
 mod events;
@@ -358,6 +362,13 @@ impl Dispatch for Router {
         params: agent_proto::NextParams,
     ) -> Result<agent_proto::NextReply, RpcError> {
         agent::next(self, params).await
+    }
+
+    async fn agent_list(
+        &mut self,
+        params: agent_proto::ListParams,
+    ) -> Result<agent_proto::ListReply, RpcError> {
+        agent::list(self, params).await
     }
 
     async fn wait(

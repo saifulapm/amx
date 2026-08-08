@@ -287,14 +287,14 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             Event::AgentIdentified { pane, ref kind } => {
                 folded(self.model.apply_agent_identified(pane, kind.clone(), seq))
             }
-            Event::AttentionEnqueued { pane } => {
+            Event::AttentionEnqueued { pane, .. } => {
                 if !self.model.enqueue_attention(pane) {
                     return Folded::Nothing;
                 }
                 self.notify_attention(pane);
                 Folded::Applied
             }
-            Event::AttentionDequeued { pane } => folded(self.model.dequeue_attention(pane)),
+            Event::AttentionDequeued { pane, .. } => folded(self.model.dequeue_attention(pane)),
             // Focus is server state and every client hears every move of it:
             // a `pane.focus` from this client or another, a `workspace.switch`,
             // an `agent.next`, a restore. Which pane is focused *in* a

@@ -44,6 +44,32 @@ fn client_info() -> ClientInfo {
     }
 }
 
+/// One attention event, with the identity block D15 added and X06 fills.
+///
+/// A helper rather than a literal at each publish: what this suite asserts is
+/// what the client's *model* does with a queue change, and the names ride the
+/// event for a notifier's benefit rather than this client's.
+fn enqueued(pane: PaneId) -> Event {
+    Event::AttentionEnqueued {
+        pane,
+        workspace: None,
+        name: None,
+        reason: None,
+        since: None,
+    }
+}
+
+/// The other half of [`enqueued`].
+fn dequeued(pane: PaneId) -> Event {
+    Event::AttentionDequeued {
+        pane,
+        workspace: None,
+        name: None,
+        reason: None,
+        since: None,
+    }
+}
+
 /// Attach to a real session, subscribed, with the seeded workspace folded.
 ///
 /// The pty master comes back with the app: the slave moved into the terminal
@@ -174,7 +200,7 @@ async fn enqueue_notification_emits_osc_9_into_the_host_terminal() {
     let pane = focused(&mut app);
     app.model().set_pane_label(pane, Some("dev".to_owned()));
 
-    server.ctx.bus.publish(Event::AttentionEnqueued { pane });
+    server.ctx.bus.publish(enqueued(pane));
     pump_until(&mut app, |app| !app.emitted().is_empty()).await;
 
     let emitted = String::from_utf8(app.emitted().to_vec()).expect("the escape is valid utf-8");
@@ -193,9 +219,9 @@ async fn enqueue_notification_emits_osc_9_into_the_host_terminal() {
     // duplicate enqueue — which is what the overlap after a resync produces —
     // notifies not at all.
     let written = app.emitted().len();
-    server.ctx.bus.publish(Event::AttentionDequeued { pane });
-    server.ctx.bus.publish(Event::AttentionEnqueued { pane });
-    server.ctx.bus.publish(Event::AttentionEnqueued { pane });
+    server.ctx.bus.publish(dequeued(pane));
+    server.ctx.bus.publish(enqueued(pane));
+    server.ctx.bus.publish(enqueued(pane));
     // A marker behind the three: deliveries are ordered, so folding this one
     // proves the three before it were folded too.
     server.ctx.bus.publish(Event::AgentStatus {

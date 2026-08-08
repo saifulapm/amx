@@ -14,7 +14,7 @@ pub mod wait;
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{AgentKind, AgentState, StatusCause};
+use crate::agent::{AgentKind, AgentState, AgentWorkspace, EpochMillis, StatusCause};
 use crate::id::{ClientId, GridGeneration, PaneId, WorkspaceId};
 use crate::scrollback::{InvalidationCause, RowId, RowRange};
 
@@ -234,17 +234,59 @@ pub enum Event {
     /// (D-M2-8). This is the event the reference notifier filters on and the
     /// one the client turns into an OSC 9/99 to its host terminal — the one
     /// built-in notify path (03 §4).
+    ///
+    /// # The identity block
+    ///
+    /// The four optional fields below this pane's id are what let a notifier
+    /// say "api/backend blocked (permission\_dialog)" from the event alone
+    /// (`docs/10-attention-surfaces.md` §D15). They are folded off this bus by
+    /// the same actor that publishes the event, never asked of a sibling
+    /// (`docs/11-m4-plan.md` D-M4-6), which is why each of them is optional:
+    /// a label the hub has not seen is absent, not invented.
+    ///
+    /// Additive on the wire under the R-M1-8 terms — a consumer built before M4
+    /// reads the `pane` it always read and drops the rest.
     AttentionEnqueued {
         /// The pane now wanting attention.
         pane: PaneId,
+        /// The workspace it belongs to, and that workspace's label.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<AgentWorkspace>,
+        /// The agent's name, which is the pane's label (D-M2-9).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// What asserted the block, by its own name — see
+        /// [`AgentSnapshot::reason`](crate::agent::AgentSnapshot::reason).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// When the pane entered `blocked`, in epoch milliseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<EpochMillis>,
     },
     /// A pane left the attention queue.
     ///
     /// On leaving `blocked` *or* on pane exit: a queue that kept a dead pane's
     /// entry would send `next-attention` to a pane that is not there.
+    ///
+    /// Carries the same identity block as
+    /// [`AttentionEnqueued`](Self::AttentionEnqueued), on the same terms: a
+    /// notifier that announced an agent has to be able to say which one stopped
+    /// waiting without holding its own map of every pane it has ever seen.
     AttentionDequeued {
         /// The pane that no longer wants attention.
         pane: PaneId,
+        /// The workspace it belongs to, and that workspace's label.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<AgentWorkspace>,
+        /// The agent's name, which is the pane's label (D-M2-9).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// What the pane's status was asserted by when it left the queue.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// When the pane entered the state it left the queue in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<EpochMillis>,
     },
 }
 

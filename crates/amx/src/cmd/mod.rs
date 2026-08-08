@@ -11,7 +11,12 @@
 //! [`handoff_caps`]. Each of those modules is a stub that names its owner and
 //! refuses; the arms below are what make the refusal reachable, so the task
 //! that fills one writes a body and touches nothing else.
+//!
+//! M4's two are planted by X02: **X16** fills [`agents`], **X07** [`keys`].
+//! Neither is a method-table row — `agents` renders one for a person and
+//! `keys` reads configuration and talks to no server at all.
 
+pub mod agents;
 pub mod apply;
 pub mod attach;
 pub mod bridge;
@@ -21,6 +26,7 @@ pub mod events;
 pub mod handoff_caps;
 pub mod hook;
 pub mod integration;
+pub mod keys;
 pub mod layout;
 pub mod server;
 pub mod session;
@@ -65,6 +71,10 @@ pub async fn dispatch(env: &Env, matches: &ArgMatches) -> anyhow::Result<ExitCod
         Some(("layout", sub)) => layout::run(env, matches, sub).await,
         Some(("apply", sub)) => apply::run(env, matches, sub).await,
         Some(("_bridge", sub)) => bridge::run(env, matches, sub).await,
+        // M4's two. `agents` renders `agent.list` for a person; `keys` prints
+        // the resolved keybinding table and reaches no server at all.
+        Some(("agents", sub)) => agents::run(env, matches, sub).await,
+        Some(("keys", sub)) => keys::run(env, matches, sub).await,
         // No session and no environment: it answers about the binary it is,
         // and an exporter runs it before deciding whether to touch anything.
         Some(("_handoff-caps", _)) => handoff_caps::run().await,

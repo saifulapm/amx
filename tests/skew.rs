@@ -23,6 +23,9 @@ use rig::wire::error_of;
 use rig::{Env, Wire, result_of};
 use serde_json::{Value, json};
 
+#[path = "skew/rows.rs"]
+mod rows;
+
 /// One row of the skew table: a peer window against the current server.
 struct Row {
     /// What the row proves.
@@ -94,6 +97,10 @@ fn sample_params(method: Method) -> Value {
         Method::AgentPrompt => json!({ "target": bogus_pane, "text": "hello" }),
         Method::AgentExplain => json!({ "target": bogus_pane }),
         Method::AgentNext => json!({}),
+        // M4's one. Scoped at a workspace that does not exist, so the row has
+        // to route and answer without an agent, a pane or a workspace behind
+        // it — the point of a skew row is that the *table* routes.
+        Method::AgentList => json!({ "workspace": bogus_workspace }),
         // Every long-poll gets a timeout, because a skew row that waited
         // indefinitely for a status no pane will ever reach would hang the
         // harness rather than fail it.
@@ -116,153 +123,6 @@ fn sample_params(method: Method) -> Value {
             "timeout_ms": 1,
         }),
     }
-}
-
-/// The twelve rows M2 added, by wire name.
-///
-/// Named rather than derived so the harness states what it is covering: a
-/// thirteenth row would compile (the exhaustive match above is what catches
-/// that) but would not be claimed here, and the assertion below counts.
-/// The code a dispatch seam answers with while its wiring is being built.
-///
-/// `-32000`, inside JSON-RPC 2.0's implementation-defined server error range.
-/// Deliberately a literal rather than an import: the assertions below have to
-/// keep meaning what they mean across the milestones where nothing in the tree
-/// defines it at all. V17 deleted M2's helper and W03 wrote M3's, in
-/// `dispatch/session.rs`, for `session.handoff` alone.
-///
-/// Two tests read it, in opposite directions:
-/// [`skew_calls_every_m2_row_and_none_is_method_not_found`] asserts no M2 row
-/// answers it — that ledger is closed and stays closed — and
-/// [`method_golden_and_skew_arm_cover_session_handoff`] asserts M3's one row
-/// *does*, until W06 lands.
-const RETIRED_SEAM: i32 = -32000;
-
-const M2_ROWS: &[&str] = &[
-    "agent.report",
-    "agent.start",
-    "agent.prompt",
-    "agent.explain",
-    "agent.next",
-    "wait",
-    "events.subscribe",
-    "pane.send_text",
-    "pane.send_keys",
-    "pane.run",
-    "pane.read",
-    "pane.wait_output",
-];
-
-#[tokio::test]
-async fn skew_calls_every_m2_row_and_none_is_method_not_found() {
-    let env = Env::new("skew-m2");
-    let server = env.server();
-    let mut wire = Wire::connect(&env.socket()).await;
-    wire.hello((PROTO_MIN, PROTO_MAX)).await;
-
-    for name in M2_ROWS {
-        let method = Method::from_wire_name(name)
-            .unwrap_or_else(|| panic!("{name} is not in this build's method table"));
-        let reply = wire
-            .request(method.wire_name(), sample_params(method))
-            .await;
-        // Two codes are forbidden, and the second one only since V17.
-        //
-        // `METHOD_NOT_FOUND` would tell a client this build does not have the
-        // method its own table lists, and would let a row land in the table
-        // with no handler at all — the failure this harness exists to catch.
-        //
-        // `NOT_IMPLEMENTED` (-32000) was the *permitted* answer while M2 was
-        // being built: a tabled row whose wiring had not landed answered
-        // through the `seam` helper rather than disowning itself. V17 closed
-        // the last two seams and deleted the helper, so nothing in the tree can
-        // produce this code any more — and asserting that here is the wire-side
-        // half of the ledger `tests/hygiene.rs` keeps at the source level. A row
-        // that starts answering it again has been un-implemented.
-        if let amx_proto::RpcOutcome::Error(err) = &reply.outcome {
-            assert_ne!(
-                err.code,
-                RpcError::METHOD_NOT_FOUND,
-                "the server disowned its own method {name}",
-            );
-            assert_ne!(
-                err.code, RETIRED_SEAM,
-                "{name} answers the retired seam code; M2's ledger is empty and \
-                 every row of docs/08-m2-plan.md §4 owes real behavior",
-            );
-        }
-    }
-
-    // And the connection survived all twelve.
-    let alive = wire.request("ping", json!({})).await;
-    assert!(result_of(&alive)["seq"].is_u64());
-
-    assert_eq!(
-        M2_ROWS.len(),
-        12,
-        "docs/08-m2-plan.md §4 tables twelve rows; this list must be all of them",
-    );
-
-    drop(server);
-}
-
-/// M3's one row, over the wire, on a connection that survives it.
-///
-/// The other half of the goldens law of `docs/09-m3-plan.md` §4: a method
-/// golden freezes the *shape*, and this freezes that the shape is reachable —
-/// the table routes `session.handoff`, the server owns it, and asking for one
-/// leaves the session exactly as it was.
-///
-/// W03 wrote this against the seam code, which was the *permitted* answer for a
-/// tabled row without wiring: `METHOD_NOT_FOUND` would tell a client to stop
-/// offering the method that `amx update apply` exists to find. **W06 wired the
-/// row**, so the answer is now behavior — a staged binary that does not exist
-/// is refused, by name, with the session untouched (D-M3-6 point 2), and the
-/// seam code has become forbidden here the way it already was for M2's twelve.
-#[tokio::test]
-async fn method_golden_and_skew_arm_cover_session_handoff() {
-    let env = Env::new("skew-handoff");
-    let mut server = env.server();
-    let mut wire = Wire::connect(&env.socket()).await;
-    wire.hello((PROTO_MIN, PROTO_MAX)).await;
-
-    let method = Method::from_wire_name("session.handoff")
-        .expect("session.handoff is in this build's method table");
-    let reply = wire
-        .request(method.wire_name(), sample_params(method))
-        .await;
-    if let amx_proto::RpcOutcome::Error(err) = &reply.outcome {
-        assert_ne!(
-            err.code,
-            RpcError::METHOD_NOT_FOUND,
-            "the server disowned its own method: {err:?}",
-        );
-        panic!(
-            "a staged binary this session may not be handed to is a reply, not \
-             a failed call: {err:?}"
-        );
-    }
-    let refused = result_of(&reply);
-    assert_eq!(
-        refused["accepted"],
-        json!(false),
-        "the sample names a binary that does not exist: {refused}",
-    );
-    let reason = refused["reason"]
-        .as_str()
-        .expect("a refusal carries its reason");
-    assert!(
-        reason.contains("amx-from-a-version-that-was-never-built"),
-        "a refusal names the binary it refused: {reason}",
-    );
-    assert!(refused["seq"].is_u64());
-
-    // And the session it was asked to leave is still the session it was.
-    let alive = wire.request("ping", json!({})).await;
-    assert!(result_of(&alive)["seq"].is_u64());
-    assert!(server.alive(), "a refused handoff started nothing");
-
-    drop(server);
 }
 
 #[tokio::test]

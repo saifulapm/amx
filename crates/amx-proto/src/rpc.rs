@@ -170,6 +170,21 @@ impl RpcError {
     /// (D-M3-7); one that does not sees an ordinary error, exactly as every
     /// client did before the code existed.
     pub const WAIT_ABANDONED: i32 = -32000;
+    /// The session cannot act on this right now; ask again.
+    ///
+    /// The second code of amx's own, in the same −32000..=−32099 range and for
+    /// the same reason as the first: it is not a failure. A mutating verb
+    /// refused because the session is quiesced mid-handoff was asked correctly
+    /// and would succeed a moment later, and answering it with
+    /// [`INVALID_PARAMS`](Self::INVALID_PARAMS) told the caller it had asked
+    /// wrong — so every CLI path that could have retried instead reported a
+    /// user error (DR-16).
+    ///
+    /// A client that recognises this code waits and asks again; one that does
+    /// not sees an ordinary error, exactly as every client did before the code
+    /// existed. That is the whole of the compatibility story, and it is why the
+    /// code is additive rather than a protocol bump.
+    pub const RETRIABLE: i32 = -32001;
 
     /// An error with a code and message and no data.
     #[must_use]

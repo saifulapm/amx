@@ -173,3 +173,122 @@ box — rather than argued.
 
 **DR-11's watch has its first entry.** Two `session stop`s, both exit 0, no
 `drain-census` file and no census log line either time (m4-live-smoke §1.7).
+---
+## X02 — M4 contracts
+
+### Hand-offs, in the order the later waves meet them
+
+**X05 still owes `actor/core/agents.rs` and its `pub mod agents;` line.** §5's
+declared hand-off stands unchanged and X02 did not pre-empt it: the module and
+its declaration ride X05's commit, because X05 owns `core/mod.rs` whole this
+wave. Nothing X02 landed depends on the file existing, and X10 is its filler.
+
+**X10 owes one arm in `actor/core/route.rs`, not in `dispatch/agent/`.** The
+plan put the `agent.list` seam stub in `dispatch/agent.rs`; it is one file over
+from there, and the reason is worth stating because it changes what X10 edits.
+The dispatch arm is *finished* — it routes the call to the `Core` that D-M4-2
+puts the answer in — so the whole path (table, decode, mailbox, reply channel)
+is exercised from wave 1 and only the answer is owed. The refusal therefore
+lives beside the arm that replaces it, in `Core::absorb`. `route.rs` is in no
+wave-1 or wave-3 task's file list, so this is a declared sequential edit rather
+than a contested one; `tests/hygiene.rs`'s `SEAM_LEDGER` names the file and the
+owner.
+
+**X17 reads `NextParams.workspace`, and the flag is already built.** The field
+is on the wire *and* on the generated CLI leaf — `amx agent next --workspace
+<UUID>` parses today, because `amx-proto`'s flag rows are the only place a
+typed flag can live and the coverage test in `crates/amx-proto/tests/flags.rs`
+demands a fully-populated fixture for every flagged row. X17's §5 entry says
+"`crates/amx/src/cmd/**` for the CLI flag"; there is nothing left to do there.
+The handler currently destructures the field and ignores it
+(`dispatch/agent/mod.rs`), which is the one line X17 replaces.
+
+**X06 inherits four empty fields on two events, not two.** `Event::Attention*`
+grew `workspace`, `name`, `reason` and `since` as flat optional fields rather
+than a nested block, because D15 lists `pane` inside the same identity block and
+`pane` was already flat. The construction sites in
+`actor/agent_hub/commit.rs` and the `AgentSnapshot` in `agent_hub/mod.rs` carry
+`None` with a comment naming X06; those are minimum-to-compile edits in X06's
+wave-2 files, made sequentially in wave 1.
+
+**X09 inherits two one-line edits in `amx-client/src/app/`.** The declared arm
+in `wired.rs`'s exhaustive `Method` match, plus `actions.rs`, whose
+`NextParams {}` literal no longer compiles. Both are wave-1 minimums in a
+wave-2 file, as §5 anticipated for the first of them.
+
+**X12/X13 inherit `mouse: None` in `core/view.rs`.** One line, with the fold
+X13 owes named beside it. `view.rs` is X05's file this wave; the line is the
+minimum `PaneState.mouse` costs and could not wait.
+
+### Divergences from §5
+
+**The seam code moved from `-32000` to `-32099`.** M1, M2 and M3 all spelled an
+unwired row's refusal `-32000`, which was free while amx had no permanent code
+in JSON-RPC's implementation-defined range. It is not free now:
+`RpcError::WAIT_ABANDONED` is `-32000` and a client that recognises it *redials
+and asks the same question again*, so an unwired row answering that number puts
+a caller in a loop. The permanent codes fill the range from the top and the
+temporary one takes the bottom. `tests/skew.rs`'s constant moved with it.
+
+**`agent.list` is `--params`-only, with no flag row.** D-M4-11 makes it the
+machine surface and `amx agents` the human one, and `flags.rs`'s own law is that
+"which verbs got flags" is a product decision named literally rather than
+derived. So `amx agent list --params '{"workspace":"…"}'` is the machine
+spelling and `amx agents --workspace api` is X16's.
+
+**`workspace` parameters are `WorkspaceId`, not a name-or-id target.** Both
+`ListParams.workspace` and `NextParams.workspace` take an id, like every other
+`workspace` parameter on the table. A label is resolved by whoever holds
+`session.state`, which the CLI already does; a `WorkspaceTarget` would have put
+a second resolver in the server for a namespace that has exactly one method of
+resolution today. X16's `--workspace api` therefore resolves client-side.
+
+**Four splits, not six, plus two the plan did not name.** §5 lists six budget
+splits. `crates/amx/src/cli.rs` (→ `cli/{mod,verbs}.rs`),
+`amx-proto/src/control/agent.rs` (→ `agent/{mod,hook,verbs,list}.rs`),
+`amx-server/src/agent/fusion/tracker.rs` (→ `tracker/{mod,inputs}.rs`) and
+`amx-server/src/actor/pane_host/parser.rs` (→ `parser/{mod,frames}.rs`) landed
+as listed. `amx-server/src/dispatch/agent.rs` split into
+`dispatch/agent/{mod,waits}.rs` and `amx-server/src/actor/pane_host/mod.rs` into
+`pane_host/{mod,config,feed}.rs` — also as listed. Every move is mechanical: no
+behaviour changed, and the only edits inside the moved code are visibility
+(`fn` → `pub(super) fn`) and imports.
+
+**Three suites split too, and five left over the soft budget on purpose.**
+`amx-proto/tests/additive.rs`, `tests/hygiene.rs` and `tests/skew.rs` each
+crossed 500 lines under this task's own additions and were split by
+responsibility — M3's additive fields from M4's, the wall-clock guards from the
+milestone ledgers, the negotiation harness from the per-milestone row ledgers.
+The ledgers file is the one X00 walks, which is also why it is one file.
+
+Five suites this task touched stay over: `handoff_import/harness.rs` (699),
+`resume.rs` (689), `dispatch.rs` (572), `flags.rs` (513) and `wire.rs` (506).
+Every one of them was over before X02 and every one took a two-to-five-line
+fixture fix — a new `AgentSnapshot` field, a `PaneState` field, a stub trait
+method. Splitting another task's suite to absorb three lines is churn in a file
+somebody else is about to edit, so they were left alone. `check-module-size.sh`
+is green either way: the soft budget warns, it does not fail.
+
+**`amx-core/src/lib.rs` did not gain re-exports, deliberately.** The new types —
+`AgentWorkspace`, `EpochMillis`, `ClientConfig`, `KeysConfig`,
+`DEFAULT_NARROW_COLS`, and the two section-name constants — are public at their
+module paths (`amx_core::agent::…`, `amx_core::config::…`) and every consumer in
+this tree reaches them there. `lib.rs` is in no wave-1 task's file list, and a
+convenience re-export is not worth an unowned edit. Whoever next owns that file
+may add them.
+
+### Two things the next waves should not re-litigate
+
+**`reason` is a `String`, not an enum.** D-M4-3's decision, implemented
+literally: the field carries the detector's own identifier — the winning
+manifest rule's name, or the hook event's — and nothing translates it. A new
+manifest rule is self-describing on the wire the day it is written. The
+`method_agent_list` and `method_session_state` goldens both carry
+`permission_dialog`, which is the *shipped* rule name from
+`crates/amx-server/assets/manifests/claude.toml`, so a golden reader sees a real
+value rather than an invented vocabulary.
+
+**`since` is `Option`, and the absence is load-bearing.** A pane whose status
+was re-derived rather than observed entering has no entry edge to report, and a
+zero would render as 1970. R-M4-4's honest fallback ("since this server started
+tracking it") is X06's to choose; the type does not force a lie either way.

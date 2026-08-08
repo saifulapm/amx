@@ -472,6 +472,8 @@ pub fn agent(pane: PaneId, state: AgentState, attention: Option<u32>) -> AgentEn
             transition_seq: 7,
             attention,
             session_ref: None,
+            reason: None,
+            since: None,
         },
     }
 }

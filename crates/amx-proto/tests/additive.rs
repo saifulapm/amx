@@ -1,5 +1,6 @@
 //! M3's additive fields, and the both-directions tolerance that lets them ride
-//! protocol v1 (R-M1-8, `docs/09-m3-plan.md` §4).
+//! protocol v1 (R-M1-8, `docs/09-m3-plan.md` §4). M4's are in [`m4`], under the
+//! same rule.
 //!
 //! "Additive, no version bump" is a claim with two halves, and a field that
 //! only satisfies one of them strands a peer:
@@ -18,6 +19,9 @@ use amx_core::GridGeneration;
 use amx_proto::control::{Call, Method, session, stream, workspace};
 use amx_proto::stream::StreamKind;
 use serde_json::json;
+
+#[path = "additive/m4.rs"]
+mod m4;
 
 fn pane() -> amx_core::PaneId {
     "00000000-0000-0000-0000-0000000000a1".parse().unwrap()
@@ -263,6 +267,7 @@ fn a_pane_state_cwd_reads_at_v1_and_without_it_still_parses() {
         history_head: amx_core::RowId::from_raw(0),
         history_floor: amx_core::RowId::from_raw(0),
         agent: None,
+        mouse: None,
     };
     let bytes = serde_json::to_value(&row).expect("encode");
     assert_eq!(bytes["cwd"], json!("/home/s/amx"));
