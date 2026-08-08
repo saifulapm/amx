@@ -183,14 +183,46 @@ pub fn spawn_on_tty(command: &mut Command, args: &[&str], rows: u16, cols: u16) 
     // Captured before the child exists, so "restored" can be compared
     // against this terminal's own attributes rather than a fresh pty's.
     let initial = termios_of(&pty.slave);
-    let child = command
+    command
         .args(args)
         .stdin(Stdio::from(pty.slave.try_clone().expect("dup")))
         .stdout(Stdio::from(pty.slave.try_clone().expect("dup")))
-        .stderr(Stdio::from(pty.slave.try_clone().expect("dup")))
-        .spawn()
-        .expect("spawn amx on a tty");
+        .stderr(Stdio::from(pty.slave.try_clone().expect("dup")));
+    let child = past_busy("spawn amx on a tty", || command.spawn());
     Terminal::new(pty, child, initial)
+}
+
+/// Do `attempt` until the kernel stops saying the program is busy.
+///
+/// **Not defensive noise — do not delete it.** `cargo test` runs this binary's
+/// tests on threads of one process, and a spawn is a `fork` followed by an
+/// `exec`. Between those two the child holds a copy of *every* descriptor the
+/// process had open, including a write descriptor another thread is using to
+/// plant a binary of its own ([`super::rig::Rig::plant`], or cargo relinking
+/// `target/debug/amx` underneath a running suite). The kernel refuses to
+/// execute a file anybody holds open for writing, so the *other* thread's later
+/// `exec` fails with `ETXTBSY` — and, when the fork's child is a long-lived
+/// server, keeps failing for as long as that server lives.
+///
+/// Copying rather than hard-linking the plant does not close this: the race is
+/// about who holds a descriptor, not about which inode. W06 hit the same thing
+/// in `crates/amx-server/tests/handoff_export/rig.rs` and answered it the same
+/// way, and this is the other half of its note.
+pub fn past_busy<T>(what: &str, mut attempt: impl FnMut() -> std::io::Result<T>) -> T {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        match attempt() {
+            Ok(done) => return done,
+            Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                assert!(
+                    Instant::now() < deadline,
+                    "could not {what}: the program stayed busy for {PATIENCE:?}",
+                );
+                std::thread::sleep(TICK);
+            }
+            Err(err) => panic!("could not {what}: {err}"),
+        }
+    }
 }
 
 /// What a finished `amx` invocation did.
