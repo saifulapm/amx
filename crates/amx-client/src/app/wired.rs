@@ -410,6 +410,11 @@ fn mutates_layout(method: Method) -> bool {
         | Method::PaneRun
         | Method::PaneRead
         | Method::PaneWaitOutput
+        // A read-only projection: `agent.list` answers a question and moves
+        // nothing, so the mirror has nothing to re-sync. X02 planted the arm
+        // because the match is exhaustive over the table; X14 and X16 are the
+        // readers.
+        | Method::AgentList
         // The successor's `pane_created` and `layout_changed` are what a
         // reconnecting client folds; the call that asked for the swap does not
         // survive long enough to re-read anything.

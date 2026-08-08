@@ -52,7 +52,10 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             // change reaches this one by. Nothing is moved locally here.
             Action::NextAttention => {
                 sink(InputEvent::Call(Call::AgentNext(
-                    amx_proto::control::agent::NextParams {},
+                    // Unscoped: the prefix key cycles the whole queue, and the
+                    // workspace-scoped variant D15 asks for is a neighbouring
+                    // key X14 binds (X17 reads the scope server-side).
+                    amx_proto::control::agent::NextParams { workspace: None },
                 )));
                 return;
             }

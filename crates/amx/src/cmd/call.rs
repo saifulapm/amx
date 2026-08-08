@@ -290,6 +290,7 @@ const fn reissuable(method: Method) -> bool {
         | Method::SessionReport
         | Method::AgentReport
         | Method::AgentExplain
+        | Method::AgentList
         | Method::PaneRead
         // State predicates (04 §2). The reason the CLI needs no server-side
         // wait persistence at all: a transition that fired while nothing was
