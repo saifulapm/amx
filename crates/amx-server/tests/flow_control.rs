@@ -154,9 +154,19 @@ async fn server_memory_is_bounded_under_a_stalled_client() {
     let wire = Wire::new(TINY_PIPE);
     let mut stream = grid_stream(&pane, KeyframePolicy::default());
 
+    // Watched until the pane has published enough frames for the ratio below to
+    // mean something, not for a fixed three seconds (DR-19). A window is a
+    // claim about the machine — a flood given a sixth of a core publishes a
+    // sixth of the frames in the same three seconds, and this suite runs under
+    // `cargo test --workspace` beside everything else. Counting *publications*
+    // and not loop turns is the other half: the old `absorbed > 100` counted
+    // how often the test itself got scheduled, which is a fact about the runner
+    // and not about the flood.
+    const PUBLICATIONS: usize = 100;
+    let mut published = 0_usize;
     let mut peak = 0;
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline {
+    let deadline = Instant::now() + PATIENCE;
+    while published <= PUBLICATIONS {
         sample(&feed, &mut [(&mut stream, &wire.out)]);
         peak = peak.max(stream.accounted_bytes(&wire.out));
         assert!(
@@ -164,14 +174,21 @@ async fn server_memory_is_bounded_under_a_stalled_client() {
             "accounted bytes reached {peak}, over the {MEMORY_BOUND} byte bound: {:?}",
             stream.stats()
         );
-        let _ = tokio::time::timeout(Duration::from_millis(5), feed.changed()).await;
+        assert!(
+            Instant::now() < deadline,
+            "the pane published {published} frames in {:?}: {:?}",
+            PATIENCE,
+            stream.stats()
+        );
+        if tokio::time::timeout(Duration::from_millis(5), feed.changed())
+            .await
+            .unwrap_or(false)
+        {
+            published += 1;
+        }
     }
 
     let stats = stream.stats();
-    assert!(
-        stats.absorbed > 100,
-        "the flood should have produced many frames: {stats:?}"
-    );
     assert!(
         stats.frames() * 20 < stats.absorbed,
         "a client that never reads is sent only what the writer took before it \
@@ -195,9 +212,10 @@ async fn no_client_grid_is_corrupted_after_coalescing() {
     let pane = Pane::controlled().await;
     let feed = pane.feed();
     let mut wire = Wire::new(TINY_PIPE);
-    // Thirty milliseconds a frame into a 512 byte pipe: the client is reading,
-    // and losing badly.
-    let mut frames = wire.reader(Duration::from_millis(30));
+    // One frame taken for every four published, into a 512 byte pipe: the
+    // client is reading, and losing badly — by construction rather than by
+    // being handed a sleep and hoped to lose the race (DR-19).
+    let (mut frames, pace) = wire.paced();
     let mut stream = grid_stream(&pane, KeyframePolicy::default());
     let mut reference = ReferenceGrid::default();
 
@@ -205,6 +223,9 @@ async fn no_client_grid_is_corrupted_after_coalescing() {
     for round in 0..60 {
         pane.write(scroll_burst(round)).await;
         step(&pane, &feed, &mut [(&mut stream, &wire.out)]).await;
+        if round % 4 == 0 {
+            pace.allow(1);
+        }
         frames.drain_into(&mut reference);
     }
     assert!(
@@ -212,6 +233,10 @@ async fn no_client_grid_is_corrupted_after_coalescing() {
         "the run must actually have coalesced: {:?}",
         stream.stats()
     );
+    // The client stops being slow here: everything below is about what a
+    // caught-up grid holds, and a reader still rationing frames would never let
+    // it catch up.
+    pace.release();
 
     // Then a quiet stretch of in-place changes, which is where deltas live.
     // This half is the one that would catch a corrupt grid: a delta applied on
@@ -294,7 +319,7 @@ async fn threshold_crossing_emits_a_keyframe_not_a_delta() {
     let pane = Pane::controlled().await;
     let feed = pane.feed();
     let mut wire = Wire::new(ROOMY_PIPE);
-    let frames = wire.reader(Duration::ZERO);
+    let frames = wire.reader();
     // Half the grid: twelve of twenty-four rows.
     let mut stream = grid_stream(&pane, KeyframePolicy::new(50));
 
@@ -357,7 +382,7 @@ async fn resync_request_emits_a_keyframe() {
     let pane = Pane::controlled().await;
     let feed = pane.feed();
     let mut wire = Wire::new(ROOMY_PIPE);
-    let frames = wire.reader(Duration::ZERO);
+    let frames = wire.reader();
     let mut stream = grid_stream(&pane, KeyframePolicy::default());
 
     pane.write(b"resync me\r".as_slice()).await;
@@ -409,15 +434,19 @@ async fn two_clients_at_different_speeds_each_stay_consistent() {
     let feed = pane.feed();
 
     let mut quick = Wire::new(ROOMY_PIPE);
-    let mut quick_frames = quick.reader(Duration::ZERO);
+    let mut quick_frames = quick.reader();
     let mut quick_stream = grid_stream(&pane, KeyframePolicy::default());
     let mut quick_grid = ReferenceGrid::default();
 
     let mut slow = Wire::new(TINY_PIPE);
-    let mut slow_frames = slow.reader(Duration::from_millis(20));
+    let (mut slow_frames, slow_pace) = slow.paced();
     let mut slow_stream = grid_stream(&pane, KeyframePolicy::default());
     let mut slow_grid = ReferenceGrid::default();
 
+    // "Slower" is a ration — one frame off the wire for every four published —
+    // and not a nap the round has to outlast. Under `cargo test --workspace` on
+    // a busy core the round is the slower clock, both clients keep up, and the
+    // difference this test is named for stops existing (DR-19).
     for round in 0..60 {
         pane.write(scroll_burst(round)).await;
         step(
@@ -429,6 +458,9 @@ async fn two_clients_at_different_speeds_each_stay_consistent() {
             ],
         )
         .await;
+        if round % 4 == 0 {
+            slow_pace.allow(1);
+        }
         quick_frames.drain_into(&mut quick_grid);
         slow_frames.drain_into(&mut slow_grid);
     }
@@ -444,6 +476,10 @@ async fn two_clients_at_different_speeds_each_stay_consistent() {
         "the slow client should have coalesced: {:?}",
         slow_stream.stats()
     );
+    // Both clients drain freely from here: the claim below is that two very
+    // different histories end on one grid, which needs the slow one to finish
+    // its history.
+    slow_pace.release();
 
     let catch_up = Instant::now() + PATIENCE;
     let settled = loop {
@@ -489,7 +525,7 @@ async fn pump_drives_a_stream_and_answers_flow_control() {
     // the flow-control mailbox all have to work together unattended.
     let pane = Pane::start("printf 'pumped through\\n'; sleep 60");
     let mut wire = Wire::new(ROOMY_PIPE);
-    let mut frames = wire.reader(Duration::ZERO);
+    let mut frames = wire.reader();
     let stream = grid_stream(&pane, KeyframePolicy::default());
     let (flow, signals) = mpsc::channel(4);
     let cancel = CancellationToken::new();
@@ -539,7 +575,7 @@ async fn pump_drives_a_stream_and_answers_flow_control() {
 async fn a_paused_stream_with_pending_damage_sleeps_until_a_flow_signal() {
     let pane = Pane::controlled().await;
     let mut wire = Wire::new(ROOMY_PIPE);
-    let mut frames = wire.reader(Duration::ZERO);
+    let mut frames = wire.reader();
     let stream = grid_stream(&pane, KeyframePolicy::default());
     let (flow, signals) = mpsc::channel(4);
     let cancel = CancellationToken::new();
