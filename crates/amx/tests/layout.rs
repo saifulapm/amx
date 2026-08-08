@@ -145,6 +145,54 @@ fn export_apply_export_round_trips_modulo_ids() {
 }
 
 #[test]
+fn a_pane_cwd_survives_export_and_apply() {
+    let (source, mut source_server) = empty_session("cwd-a");
+    source
+        .run(&["workspace", "create", "--params", r#"{"label":"dev"}"#])
+        .ok();
+    let root = pane_ids(&source).first().expect("a root pane").clone();
+    // A directory that exists on every machine and is nobody's default, so a
+    // file that carries it carries something the server was told rather than
+    // something it fell back to.
+    let where_it_runs = "/usr";
+    source
+        .run(&[
+            "pane",
+            "split",
+            "--params",
+            &format!(r#"{{"pane":"{root}","direction":"vertical","cwd":"{where_it_runs}"}}"#),
+        ])
+        .ok();
+
+    let exported = source.run(&["layout", "export"]).ok().to_owned();
+    assert!(
+        exported.contains(&format!(r#"cwd = "{where_it_runs}""#)),
+        "the export writes the cwd `session.state` now carries:\n{exported}",
+    );
+
+    // And it comes back: apply hands the cwd to the split it makes, so the
+    // second session's state answers what the first one's did.
+    let path = source.socket().with_file_name("cwd.toml");
+    std::fs::write(&path, &exported).expect("write the exported layout");
+    let (target, mut target_server) = empty_session("cwd-b");
+    let applied = target.run(&["apply", path.to_str().expect("utf-8 path")]);
+    assert_eq!(applied.code, Some(0), "apply failed: {applied:?}");
+
+    let landed: Vec<String> = state(&target)
+        .panes
+        .iter()
+        .filter_map(|pane| pane.cwd.as_ref().map(|cwd| cwd.display().to_string()))
+        .collect();
+    assert!(
+        landed.iter().any(|cwd| cwd == where_it_runs),
+        "a pane came back where the file put it: {landed:?}",
+    );
+
+    let _ = source_server.kill();
+    let _ = target_server.kill();
+}
+
+#[test]
 fn apply_builds_the_bsp_by_splits_in_deterministic_order() {
     // A tree whose two halves are both split, so the order is observable: the
     // root's cut, then everything inside its first half, then everything
@@ -221,12 +269,24 @@ direction = \"horizontal\"
     std::fs::write(&path, text).expect("write the fixture");
     let applied = env.run(&["apply", path.to_str().expect("utf-8 path")]);
     assert_eq!(applied.code, Some(0), "apply failed: {applied:?}");
+    // Compared without the `cwd` lines, and only those: a file that names no
+    // cwd gets whatever the server's own is, so the export carries a directory
+    // this fixture never asked for and could not have named. Shape, labels and
+    // ratios — everything the fixture *does* say — are compared verbatim.
     assert_eq!(
-        env.run(&["layout", "export"]).ok(),
-        file.to_string(),
+        without_cwd(env.run(&["layout", "export"]).ok()),
+        without_cwd(&file.to_string()),
         "the session apply built is the session the file describes"
     );
     let _ = server.kill();
+}
+
+/// A layout file with its `cwd` lines taken out.
+fn without_cwd(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.starts_with("cwd = "))
+        .map(|line| format!("{line}\n"))
+        .collect()
 }
 
 #[test]

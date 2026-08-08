@@ -79,6 +79,13 @@ impl Core {
                         .state
                         .pane(pane)
                         .and_then(|pane| pane.label().map(str::to_owned)),
+                    // The same cwd the snapshot writes, from the same place:
+                    // stored state, refreshed by the persist capture's
+                    // foreground probe. `amx layout export` is what reads it.
+                    cwd: self
+                        .state
+                        .pane(pane)
+                        .and_then(|pane| pane.cwd().map(std::path::Path::to_path_buf)),
                     rows,
                     cols,
                     history_head: head,

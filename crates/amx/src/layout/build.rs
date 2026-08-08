@@ -422,10 +422,11 @@ fn leaf_spec(state: &StateReply, pane: PaneId, split: Option<SplitSpec>) -> Pane
         agent: row
             .and_then(|row| row.agent.as_ref())
             .and_then(|agent| agent.kind.clone()),
-        // `session.state` does not carry a pane's cwd, so an export cannot
-        // either; the key exists for files people write. See this module's
-        // entry in `docs/notes/m3-wave-outcomes.md`.
-        cwd: None,
+        // The cwd the server last recorded for the pane's process. W13 wrote
+        // `None` here because `session.state` carried no such field — the
+        // fourth of D-M3-11's five, missing; W14 added it, and this is the
+        // caller it was added for.
+        cwd: row.and_then(|row| row.cwd.clone()),
     }
 }
 

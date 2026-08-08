@@ -244,3 +244,44 @@ fn a_handoff_reply_carries_acceptance_and_a_reason_only_when_refused() {
         serde_json::from_value(json!({ "binary": "/tmp/amx" })).expect("decode");
     assert_eq!(params.timeout_ms, None);
 }
+
+/// D-M3-11: `session.state`'s pane rows grow an optional `cwd`, and a row
+/// without one is byte-for-byte the row M0 froze.
+///
+/// The reader is `amx layout export`, which wrote no `cwd` at all until this
+/// field existed — D-M3-11 says the reply "already carries … cwds" and four of
+/// its five were there.
+#[test]
+fn a_pane_state_cwd_reads_at_v1_and_without_it_still_parses() {
+    let row = session::PaneState {
+        pane: pane(),
+        short: amx_core::ShortNumber::FIRST,
+        label: None,
+        cwd: Some("/home/s/amx".into()),
+        rows: 24,
+        cols: 80,
+        history_head: amx_core::RowId::from_raw(0),
+        history_floor: amx_core::RowId::from_raw(0),
+        agent: None,
+    };
+    let bytes = serde_json::to_value(&row).expect("encode");
+    assert_eq!(bytes["cwd"], json!("/home/s/amx"));
+    let round_tripped: session::PaneState = serde_json::from_value(bytes).expect("decode");
+    assert_eq!(round_tripped, row);
+
+    // A pane the server has recorded no cwd for produces the bytes it always
+    // produced: the key is absent, not null.
+    let bare = serde_json::to_value(session::PaneState { cwd: None, ..row }).expect("encode");
+    assert!(
+        bare.get("cwd").is_none(),
+        "an unset cwd is a key nobody sees: {bare}",
+    );
+
+    // And a row from a build that has never heard of the field still decodes.
+    let older: session::PaneState = serde_json::from_value(json!({
+        "pane": pane(), "short": 1, "rows": 24, "cols": 80,
+        "history_head": 0, "history_floor": 0
+    }))
+    .expect("decode");
+    assert_eq!(older.cwd, None);
+}

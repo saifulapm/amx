@@ -73,6 +73,21 @@ pub struct PaneState {
     /// exactly the bytes it always did (R-M1-8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Where the pane's process was last known to be.
+    ///
+    /// Additive and optional under the same R-M1-8 terms as the label above and
+    /// the agent below: absent on the wire when the server has recorded none,
+    /// so a peer built before this field reads exactly the bytes it always did.
+    ///
+    /// The value `Core` holds — the spawn cwd, refreshed by the foreground-cwd
+    /// probe the persist capture runs — and not a fresh reading: `session.state`
+    /// answers synchronously from stored state, and a reply that asked five
+    /// parser threads a question would be a reply that can hang.
+    ///
+    /// D-M3-11 asserts the reply carries cwds and it did not; `amx layout
+    /// export` is the caller that needed it, and wrote none until this landed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
     /// The pane grid's current rows.
     pub rows: u16,
     /// The pane grid's current columns.
