@@ -322,6 +322,62 @@ async fn attach_pane_renders_full_screen_with_no_chrome() {
 }
 
 #[tokio::test]
+async fn attach_pane_resolves_a_short_number_against_the_running_session() {
+    // X05 landed the parse and the server-side resolution order and recorded
+    // that the ten lines between them — `resolve_pane` asking `session.state`
+    // and handing a pane id to the one-pane client — had no test on either
+    // side of the socket. This is those ten lines, over a real one.
+    let env = Env::new("shortpane");
+    let mut server = env.spawn(&["server"]);
+    wait_until("the server binds", || {
+        probe(&env.socket()).expect("probe").is_running()
+    });
+    env.run(&["workspace", "create", "--params", r#"{"focus":true}"#])
+        .ok();
+    let state: serde_json::Value =
+        serde_json::from_str(env.run(&["session", "state"]).ok()).expect("state is JSON");
+    let pane = &state["panes"][0];
+    let short = pane["short"].as_u64().expect("the pane has a short number");
+    assert_eq!(short, 1, "the first pane of a fresh session is 1 (04 §6)");
+
+    let mut viewport = env.spawn_on_tty(&["attach", "--pane", &short.to_string()], ROWS, COLS);
+    viewport.wait_for(ALT_ENTER);
+    // The bottom row painted: the number resolved to a pane and that pane is
+    // on screen, which is the difference between "the parse worked" and "the
+    // attach worked".
+    viewport.wait_for(format!("\x1b[{ROWS};1H").as_bytes());
+    viewport.chord(b'q');
+    assert_eq!(viewport.wait(), Some(0), "prefix+q detaches a viewport");
+    for glyph in BORDER_GLYPHS {
+        assert!(
+            !window(viewport.output(), glyph.as_bytes()),
+            "a one-pane viewport draws no border, and {glyph} is one"
+        );
+    }
+
+    // A number no pane in this session holds is refused by number, before the
+    // terminal is touched — the same promise the UUID form makes.
+    let mut absent = env.spawn_on_tty(&["attach", "--pane", "99"], ROWS, COLS);
+    assert_eq!(
+        absent.wait(),
+        Some(1),
+        "an unheld number is a failed attach"
+    );
+    assert!(
+        window(absent.output(), b"numbered 99"),
+        "the refusal names the number: {:?}",
+        String::from_utf8_lossy(absent.output())
+    );
+    assert!(
+        !window(absent.output(), ALT_ENTER),
+        "a refused attach never touches the terminal"
+    );
+
+    let _ = server.kill();
+    let _ = server.wait();
+}
+
+#[tokio::test]
 async fn attaching_a_pipe_is_refused_before_a_server_is_started() {
     let env = Env::new("notty");
     let refused = env.run(&[]);

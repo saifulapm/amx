@@ -14,6 +14,7 @@
 
 pub mod app;
 pub mod cache;
+pub mod config;
 pub mod copy;
 pub mod input;
 pub mod model;

@@ -142,6 +142,19 @@ impl Env {
         spawn_on_tty(&mut self.command(), args, rows, cols)
     }
 
+    /// Write this environment's `config.toml`.
+    ///
+    /// The roots are already pinned away from the developer's own
+    /// ([`roots_on`] and its note), so this writes where every command in this
+    /// environment reads and nowhere else.
+    pub fn config(&self, text: &str) -> PathBuf {
+        let path = self.dir.path().join("config/amx/config.toml");
+        std::fs::create_dir_all(path.parent().expect("a directory"))
+            .expect("create the config root");
+        std::fs::write(&path, text).expect("write config.toml");
+        path
+    }
+
     /// Stop this environment's server, if one is running.
     pub fn stop(&self) {
         let _ = self.run(&["session", "stop"]);

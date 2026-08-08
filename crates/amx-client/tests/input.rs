@@ -302,6 +302,96 @@ async fn chrome_never_interprets_a_mouse_event() {
     fx.server.shutdown().await;
 }
 
+/// The bindings a `config.toml` body resolves to.
+///
+/// The whole path from file text to a running machine, rather than a
+/// hand-built table: a resolution that is right and a machine that runs it are
+/// two claims, and X07's own suite (`tests/config.rs`) makes the first.
+fn bindings(text: &str) -> amx_client::config::Bindings {
+    let (parsed, whole_file) = amx_core::config::reload(&amx_core::Config::default(), text);
+    assert!(whole_file.is_empty(), "{whole_file:?}");
+    let (settings, rejected) = amx_client::config::resolve(&parsed);
+    assert!(rejected.is_empty(), "{rejected:?}");
+    settings.bindings
+}
+
+#[tokio::test]
+async fn a_rebound_prefix_intercepts_and_the_shipped_one_goes_to_the_pane() {
+    let mut fx = fixture("rebind").await;
+    let app = &mut fx.app;
+    let left = fx.left;
+    app.input()
+        .set_bindings(bindings("[keys]\nprefix = \"ctrl+t\"\n"));
+
+    // The old prefix is an ordinary byte now, and forwards inside its run
+    // rather than splitting it.
+    let evs = drive(app, b"a\x01b");
+    assert_eq!(
+        evs,
+        vec![Ev::Fwd(left, b"a\x01b".to_vec())],
+        "the shipped prefix goes to the pane like any other byte"
+    );
+    assert_eq!(app.mode(), Mode::Terminal);
+
+    // And the new one opens the layer, over the table the file did not touch.
+    let evs = drive(app, b"\x14");
+    assert!(
+        evs.is_empty(),
+        "the prefix byte itself never forwards: {evs:?}"
+    );
+    assert_eq!(app.mode(), Mode::Prefix);
+    let evs = drive(app, b"z");
+    assert_eq!(
+        evs,
+        vec![Ev::Call(Call::PaneZoom(pane_proto::ZoomParams {
+            pane: left
+        }))]
+    );
+    assert_eq!(app.mode(), Mode::Terminal);
+
+    // The escape moved with the prefix: twice sends the new prefix byte, and
+    // nothing at all is special about the old one any more.
+    let evs = drive(app, b"\x14\x14");
+    assert_eq!(evs, vec![Ev::Fwd(left, vec![0x14])]);
+    assert_eq!(app.mode(), Mode::Terminal);
+
+    fx.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_bound_key_runs_its_action_and_the_shipped_key_still_runs_its_own() {
+    let mut fx = fixture("bound").await;
+    let app = &mut fx.app;
+    app.input()
+        .set_bindings(bindings("[keys.bind]\nn = \"next-attention\"\n"));
+
+    // `prefix n` is the row the file added...
+    let evs = drive(app, &[PREFIX, b'n']);
+    assert_eq!(
+        evs,
+        vec![Ev::Call(Call::AgentNext(
+            amx_proto::control::agent::NextParams { workspace: None }
+        ))],
+        "the bound key runs the action it names"
+    );
+    // ...and `prefix a`, which the file did not mention, still runs it too: a
+    // bind adds a way in, it does not take the old one away.
+    let evs = drive(app, &[PREFIX, b'a']);
+    assert_eq!(
+        evs,
+        vec![Ev::Call(Call::AgentNext(
+            amx_proto::control::agent::NextParams { workspace: None }
+        ))]
+    );
+
+    // A key nothing bound is still swallowed with the mode rather than leaked.
+    let evs = drive(app, &[PREFIX, b'Q']);
+    assert!(evs.is_empty(), "{evs:?}");
+    assert_eq!(app.mode(), Mode::Terminal);
+
+    fx.server.shutdown().await;
+}
+
 #[tokio::test]
 async fn split_keys_reach_the_server_as_one_method_call_each() {
     let mut fx = fixture("split-keys").await;

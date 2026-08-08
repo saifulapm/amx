@@ -4,8 +4,19 @@
 //! that enabled mouse reporting and otherwise swallows them; chrome never
 //! interprets one. That takes recognising the report — and nothing else: this
 //! is not a mouse *decoder*, it never extracts a button or a coordinate, it
-//! only finds the report's extent so the bytes can be forwarded verbatim or
+//! only finds the report's extent so the bytes can be handed on whole or
 //! dropped whole.
+//!
+//! **Not byte-for-byte, whatever the older wording here said.** A report's
+//! coordinates are viewport-absolute and the application in a pane reads them
+//! as pane-local, and amx's panes are never at the viewport origin: the content
+//! area is the terminal minus a status line and every pane is inset one cell
+//! for its border (`amx-client/src/model/mod.rs:364`,
+//! `amx-server/src/actor/core/view.rs:225`, `view.rs:37-45`). X01 watched tmux
+//! rewrite row 20 to row 7 for a pane at `top=13` for exactly this reason
+//! (`docs/notes/m4-mouse-path.md`). Translating the offset — or declining to,
+//! and saying so — is X13's decision and X13's code. What is settled here is
+//! only that this module does not read the numbers.
 //!
 //! A report can be split across two reads. [`scan`] reports a split as
 //! [`Scan::Partial`] only once the unambiguous `ESC [ <` introducer is fully

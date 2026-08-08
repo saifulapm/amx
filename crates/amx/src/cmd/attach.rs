@@ -189,8 +189,26 @@ pub fn client_info() -> ClientInfo {
 }
 
 /// The ordinary client: chrome, layout, every visible pane, live.
+///
+/// The configuration is read *before* the terminal is touched, for the reason
+/// [`run`] checks the terminal first: everything this function can refuse it
+/// refuses while a person can still read the refusal. Nothing here does refuse
+/// — a `[keys]` row this build cannot resolve is a diagnostic and the shipped
+/// binding (D-M1-8's leniency, one level below where the config module can
+/// enforce it) — but the diagnostics are logged here rather than printed,
+/// because the next thing this function does is enter the alternate screen.
+/// `amx keys` is where a person reads them.
 async fn full(ctx: &Ctx) -> anyhow::Result<ExitCode> {
-    let app = App::attach(
+    let (settings, diagnostics) = amx_client::config::load(&ctx.config_path);
+    for entry in &diagnostics {
+        tracing::warn!(
+            section = entry.section.unwrap_or("<file>"),
+            error = %entry.message,
+            "the config file was not applied whole; run `amx keys` to see what took effect",
+        );
+    }
+
+    let mut app = App::attach(
         &ctx.socket,
         std::io::stdin(),
         std::io::stdout(),
@@ -198,6 +216,7 @@ async fn full(ctx: &Ctx) -> anyhow::Result<ExitCode> {
     )
     .await
     .context("attach to the session")?;
+    app.input().set_bindings(settings.bindings);
 
     let mut out = std::io::stdout();
     let sigwinch = Sigwinch::install().context("watch for terminal resizes")?;
