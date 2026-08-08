@@ -27,14 +27,18 @@ pub enum Color {
 
 /// The SGR-ish attributes carried on one cell.
 ///
-/// A minimal stand-in for the server's real per-cell attribute set. The wire
-/// type that would carry it end to end
-/// (`amx_proto::stream::grid::GridMessage`'s `Cells`) has no encode/decode
-/// yet — both bodies are still `todo!()`, and no per-cell byte layout is
-/// defined anywhere in the tree — so there is nothing to decode against today.
-/// This is only as rich as the blit path and the SGR differ need to prove
-/// themselves against; reconciling it with the server's real cell model is
-/// follow-up work for whichever task lands that codec.
+/// A reduced projection of the server's per-cell attribute set. The wire
+/// carries ten attributes on `amx_proto::stream::CellStyle` — bold, italic,
+/// faint, blink, inverse, invisible, strikethrough, overline, the underline
+/// *style* and its colour (`amx-proto/src/stream/cell.rs:123-144`) — and the
+/// decode keeps four of them plus the two colours
+/// (`amx-client/src/stream.rs:244-251`), collapsing the underline style to a
+/// boolean and dropping the rest. The frame writer emits the same four
+/// (`render/mod.rs:89-100`).
+///
+/// So "the client renders the server's cells" is, today, a claim about six of
+/// ten attributes. Widening this to the wire's full set is follow-up work; it
+/// is a change to this struct, the decode and the frame writer together.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Attrs {
     /// Foreground color.
