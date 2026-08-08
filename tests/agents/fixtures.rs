@@ -128,6 +128,19 @@ impl Rig {
         // an agent that has actually *painted*, so waiting for the paint is
         // the precondition rather than something to assert around.
         self.wait_screen(pane, agent::IDLE_TEXT).await;
+        // And the *second* read model has to have caught up, because that is
+        // the one every assertion below reads. Readiness is answered from the
+        // hub's `StatusView`; `session.state`'s `agent` block is `Core`'s
+        // mirror of it, filled by an un-awaited `try_send`
+        // (`docs/08-m2-plan.md` §3). A reply of `ready` therefore says nothing
+        // about whether the pane is an agent *on the wire* yet — a state read
+        // taken straight after one comes back carrying the label and no `agent`
+        // at all, which is `Null` where a kind was expected rather than a
+        // timeout that says so.
+        self.wait_pane_state("the state tree names the pane's agent", pane, |entry| {
+            entry["agent"]["kind"].is_string()
+        })
+        .await;
         Agent {
             name: name.to_owned(),
             pane,
@@ -137,15 +150,34 @@ impl Rig {
 
     /// Wait until a pane's visible grid shows `needle`.
     pub async fn wait_screen(&mut self, pane: PaneId, needle: &str) {
+        self.wait_screen_all(pane, std::slice::from_ref(&needle))
+            .await;
+    }
+
+    /// Wait until a pane's visible grid shows **every** one of `needles`.
+    ///
+    /// The plural is what a multi-line paint needs, and it is not politeness. A
+    /// pane's frames are published per parsed chunk, so a block of lines can
+    /// reach the grid — and a reader — a few lines at a time; a wait that
+    /// stopped at the first line would return on a screen that is still being
+    /// written. What the caller wants is not "the pane painted something", it is
+    /// "the region the next assertion reads is whole", and only the caller knows
+    /// which lines make it whole.
+    pub async fn wait_screen_all(&mut self, pane: PaneId, needles: &[&str]) {
         let deadline = Instant::now() + rig::PATIENCE;
         loop {
             let screen = self.screen(pane).await;
-            if screen.iter().any(|row| row.contains(needle)) {
+            let missing: Vec<&str> = needles
+                .iter()
+                .copied()
+                .filter(|needle| !screen.iter().any(|row| row.contains(needle)))
+                .collect();
+            if missing.is_empty() {
                 return;
             }
             assert!(
                 Instant::now() < deadline,
-                "pane {pane} never painted {needle:?}; its screen is:\n{}",
+                "pane {pane} never painted {missing:?}; its screen is:\n{}",
                 screen.join("\n")
             );
             rig::env::tick().await;
@@ -229,10 +261,23 @@ impl Rig {
     /// Waiting on the queue is what makes "block order" a fact this rig
     /// established rather than one it hoped for — and it is the same queue the
     /// assertions read, so nothing here waits on a proxy.
+    ///
+    /// The screen wait names **both** of the dialog's anchors, and that is the
+    /// difference between "the dialog is really up" and "the dialog has
+    /// started". `permission_dialog` needs the question and one of the option
+    /// lines under it, and the two do not have to arrive in one frame; a wait
+    /// that stopped at [`agent::BLOCKED_TEXT`] would hand `agent explain` a
+    /// half-painted region in which *no* rule matches — the question is there,
+    /// so `prompt_box_idle`'s `not` clause refuses it too — and the reply says
+    /// `matched: null` about a pane that is, by every other measure, blocked.
     pub async fn block(&mut self, target: &Agent) {
         self.drive(&target.name, agent::ASK).await;
         self.wait_status(target.pane, "blocked").await;
-        self.wait_screen(target.pane, agent::BLOCKED_TEXT).await;
+        self.wait_screen_all(
+            target.pane,
+            &[agent::BLOCKED_TEXT, agent::BLOCKED_TAIL_TEXT],
+        )
+        .await;
         self.wait_queued(target.pane).await;
     }
 
@@ -264,6 +309,33 @@ impl Rig {
                 Instant::now() < deadline,
                 "pane {pane} never reached {want}; it reads {seen:?} and its screen is:\n{}",
                 self.screen(pane).await.join("\n")
+            );
+            rig::env::tick().await;
+        }
+    }
+
+    /// Wait until a predicate over one pane's state entry holds, and answer
+    /// with the entry.
+    ///
+    /// The per-pane sibling of [`Rig::wait_state`], and the failure names the
+    /// entry it last read: a pane whose `agent` block has not been mirrored yet
+    /// and a pane that never had one are the same `Null` to an assertion, and
+    /// only the entry tells them apart.
+    pub async fn wait_pane_state(
+        &mut self,
+        what: &str,
+        pane: PaneId,
+        mut done: impl FnMut(&Value) -> bool,
+    ) -> Value {
+        let deadline = Instant::now() + rig::PATIENCE;
+        loop {
+            let entry = self.pane_state(pane).await;
+            if done(&entry) {
+                return entry;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}; pane {pane} reads {entry}"
             );
             rig::env::tick().await;
         }

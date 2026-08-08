@@ -1766,3 +1766,175 @@ to a csh host, per above; fixing it properly means encoding the name across the
 wire rather than through the shell, which is an interface change and not this
 one. And the machine-to-machine smoke that found this is recorded separately in
 `m3-live-smoke.md`.
+
+## Settling the load-sensitive reads
+
+Four flakes landed in one day, all with the same shape: the test performs an
+action, then reads a state row or a screen region **once**, before the actor
+responsible has finished filling it in. One of the four turned out to be hiding
+a product bug behind a green suite, which is the reason this shape gets its own
+section rather than four separate fixes.
+
+The two owned here are `explain_names_the_matching_rule_and_reports_every_other_one`
+(`tests/agents/explain.rs`) and `agent_start_spawns_from_the_registry_labels_the_pane_and_returns_ready`
+(`crates/amx-server/tests/agent_verbs.rs`). Neither is reproducible by
+re-running: both pass in isolation and under an unloaded full run.
+
+### Two read models, and the one nobody waits on
+
+`agent.start` answers `ready` off `AgentHub`'s `StatusView` — the fast read
+model, the one a wait predicate holds directly. `session.state`'s per-pane
+`agent` block is a **different** model: `Core`'s mirror of that view, posted by
+`agent_hub/commit.rs`'s `mirror` with an un-awaited, droppable `try_send`, and
+folded in `core/report.rs`. `docs/08-m2-plan.md` §3 calls the mirror the slower
+path "whose mailbox lag is harmless because nothing awaits on it".
+
+Something does await on it. A state read taken straight after a `ready` reply
+comes back carrying the pane's label and **no `agent` field at all** — `Null`
+where a kind was expected. Reproduced 22 times in 320 constrained runs; the
+failure is exactly
+
+```
+assertion `left == right` failed:
+  {"cols":80,…,"label":"dev","pane":"077c40b0-…","rows":24,"short":2}
+  left: Null
+ right: "fake"
+```
+
+Note what is *not* in that entry.
+
+### The finding: `ready` does not mean addressable
+
+Two of the three sites this closed in `agent_verbs.rs` were not reading state
+for its own sake — they were addressing a pane **by name**, which is D-M2-9's
+whole argument for names. `address::resolve` in `Scope::Agent` admits a pane
+only if its *mirrored* status carries a kind, and it resolves against
+`session.state`. So:
+
+```
+agent.start  name=dev  ->  readiness: ready, pane: <uuid>
+agent.prompt target=dev ->  "dev" names 1 panes and no agent is running in it
+```
+
+That is a product looseness, not a test bug. `agent.start` returns evidence
+drawn from one read model about a pane that the *other* read model — the one
+every subsequent verb addresses through — does not know about yet, and the
+reply carries nothing a caller could wait on. The `pane` field is the escape
+hatch (a UUID resolves in either scope, deliberately), but a script that uses
+the name it just chose is racing. Polling `session.state` is the only
+observation available, which is what the suites now do; closing it properly
+means either mirroring synchronously before the start reply is written, or
+giving the reply a sequence a caller can wait for. Neither is this change.
+
+The same ordering bites one tier further out. `AgentHub::absorb` publishes the
+status and attention *events on the bus* and only then calls `mirror`, so
+`crates/amx/tests/skill.rs`'s reference notifier — which reads the bus through
+`amx events --json` — learns of an enqueue strictly before `session.state` can
+report it. That test read the queue once, on the strength of the notification.
+
+### A frame is not a paint
+
+The second mechanism is the pane's own publication. `parser.rs`'s `publish`
+fills the snapshot slot **and then** tracks history, and it runs once per parsed
+chunk — so a block of lines can reach a reader a few lines at a time, and a
+reader that stopped at the first line is holding a screen that is still being
+written.
+
+`Rig::block` waited for `"Do you want to proceed?"` and called the dialog up.
+The shipped `permission_dialog` rule needs the question **and** one of the
+option lines under it, and `prompt_box_idle` has the question in its `not`
+clause — so on a half-painted dialog *no rule matches at all* and `agent
+explain` answers `matched: null` about a pane that is, by every other measure,
+blocked. The waiter was waiting for the wrong fact.
+
+This one does not reproduce on a box whose `/bin/sh` is bash: the paint arrives
+as a single 220-byte write and a single read, measured on the master side of a
+real pty. It was reproduced instead by splitting `paint_blocked` at exactly the
+line boundary the CI failure shows — 20 failures in 20 runs, with a
+`region_preview` that ends at the question and a `permission_dialog` verdict of
+"none of 3 alternatives hold", byte for byte the reported failure. With the
+wait naming both anchors: 0 in 20, and 0 in 12 full-suite runs still split.
+
+### What each site now waits on
+
+| Site | Waits on |
+|---|---|
+| `Rig::block` (`tests/agents/fixtures.rs`) | the region holding **both** anchors `permission_dialog` needs, not the first line of the dialog |
+| `Rig::start_agent` (same) | `session.state` naming the pane's agent, not the `ready` reply |
+| `resume.rs`, `agents.rs` `session_ref` reads | the conversation reaching the state tree — a later commit on the same mirror than the kind is |
+| `wait_pane_agent` (`agent_verbs/harness.rs`) | the same, and it answers with the entry so a caller has one read to reason about |
+| `start_timeout_reports_failure…` | the child's marker on the screen, not the dispatcher's own expired deadline |
+| `skill.rs`'s attention read | the state tree carrying the queue the bus already published |
+
+Every one of them fails with what it last saw. That is not decoration: a pane
+whose `agent` block has not been mirrored yet and a pane that never had one are
+the same `Null` to an assertion, and only the entry tells them apart.
+
+### Rates, on two cores or one
+
+Reproduction is by cpuset, not by repetition — `taskset` plus N copies of the
+whole test binary at once, which is the shape `cargo test --workspace` has on a
+small runner.
+
+| Suite | Constraint | Before | After |
+|---|---|---|---|
+| `agent_verbs` | `-c 0`, 8 copies × 8 threads, 320 runs | 22/320 | 0/320 |
+| `agents::explain` | `-c 0`, 8 copies × 8 threads, 160 runs | 0/160 | 0/160 |
+| `agents::explain`, dialog split at the line boundary | `-c 0-3`, 4 copies, 20 runs | 20/20 | 0/20 |
+| `agents` (whole suite), dialog split | `-c 0-3`, 3 copies, 12 runs | — | 0/12 |
+| `skill` | `-c 0`, 6 copies × 8 threads, 60 runs | 0/60 | 0/60 |
+
+The `agents` binary at `-c 0` with 6 or 8 copies also fails `resume::*`, but on
+`PATIENCE` expiry in `wait_snapshot_holds` — the persist debounce genuinely not
+landing inside sixty seconds under 8× oversubscription. That is the constraint
+being unreasonable, not a wait reading too early, and it is not touched here.
+
+### Examined and left alone
+
+The three test trees hold 71 reads of a state tree, a screen or a status that
+are *not* already inside a wait helper. Every one of those that sits
+immediately after a mutating call was traced to the code that fills the field.
+**Nine were changed**, across six files — two of them harness-level, so they
+settle every call site rather than one. The ones deliberately left:
+
+- **Reads of a synchronous reply.** `label`, `cwd` on split, `worktree`,
+  `restore` — `Core` mutates its own state and then answers, so one read is
+  right. `check_new_name` is in this group, which is why `agent.start`'s
+  duplicate-name refusal is *not* racy even though `Scope::Agent` addressing is.
+- **Reads whose precondition an earlier wait strictly implies.**
+  `edges.rs`'s interrupted-screen assertion: the status can only have reached
+  idle because `prompt_box_idle` matched, and that rule reads lines *below* the
+  text being asserted. Likewise `drive.rs` waiting on the last line of a block.
+- **`agent_hub.rs`'s spy reads.** `Rig::settle` is 32 `yield_now`s on a
+  current-thread runtime with the spy task on it, which is deterministic rather
+  than hopeful.
+
+### Left open
+
+Two sites are racy and have no barrier to wait on, so they are recorded rather
+than papered over:
+
+- **`handoff_exit.rs`'s `rows_before`.** `history_head`/`history_floor` are
+  `Core`'s fold of `HostEvent::Committed`, and `parser.rs`'s `publish` sends
+  those events *after* filling the snapshot slot — so `pane.read` showing the
+  sentinel does not mean the commits are in `Core`'s mailbox, and they arrive on
+  a different queue from the test's own `session.state` call. The assertion is
+  `rows_after.0 == rows_before.0`, so a stale-low `rows_before` fails it. There
+  is no observation that orders a pane's history commits against a state read;
+  the honest fixes are a barrier in the product or a claim that does not compare
+  two point reads. Not attempted here.
+- **The late-`SubagentStop` negatives** (`edges.rs`, `agents.rs`). Both comment
+  that the following call "cannot be answered before the report was handled,
+  since both cross the same connection to the same actors". They do not: the
+  hook rides a separately spawned `amx _hook` on its own connection. These only
+  ever fail *falsely green* — a lagging report cannot make a negative go red —
+  so they are not in this flake class, but the stated reasoning is wrong and the
+  coverage is weaker than it reads.
+
+**Budget watch.** The two harnesses that grew a wait went 445 → 518
+(`crates/amx-server/tests/agent_verbs/harness.rs`) and 443 → 514
+(`tests/agents/fixtures.rs`), both just over the soft budget. Not split: what
+was added is three wait helpers each sitting beside the reads they guard, and
+lifting them out would put a suite's waits in one file and the suite's model of
+the session in another. The next task to add a helper to either should expect
+to split the rig from the fake-agent plumbing rather than trim prose.

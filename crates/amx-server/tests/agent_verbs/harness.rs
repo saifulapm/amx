@@ -206,6 +206,79 @@ impl Rig {
             .collect()
     }
 
+    /// Wait until the pane's visible grid shows `needle`, and answer with it.
+    ///
+    /// A spawned child paints on its own schedule, so "the pane is running its
+    /// program" is a fact that arrives rather than one that is true when a verb
+    /// returns — and a verb that answered `timed_out` on its own deadline has
+    /// said nothing at all about the pty.
+    pub async fn wait_screen(&mut self, pane: PaneId, needle: &str) -> Vec<String> {
+        let deadline = tokio::time::Instant::now() + PATIENCE;
+        loop {
+            let screen = self.screen(pane).await;
+            if screen.iter().any(|row| row.contains(needle)) {
+                return screen;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "pane {pane} never painted {needle:?}; its screen is {screen:?}"
+            );
+            tokio::time::sleep(TICK).await;
+        }
+    }
+
+    /// Wait until `pane`'s entry in `session.state` carries an agent, and
+    /// answer with the entry.
+    ///
+    /// The barrier `agent.start` does not give a caller. Readiness is decided
+    /// against the hub's [`StatusView`] — the fast read model, which a wait
+    /// predicate holds directly — while `session.state`'s `agent` block is
+    /// `Core`'s **mirror** of that view, posted with an un-awaited `try_send`
+    /// (`docs/08-m2-plan.md` §3). So a `ready` reply says the agent is up; it
+    /// does not say the state tree knows yet, and the state tree is what both
+    /// `session.state` readers and `Scope::Agent` addressing consult. A read
+    /// taken straight after the reply comes back carrying the pane's label and
+    /// no `agent` at all.
+    ///
+    /// The entry, not a unit: a caller that waited and then read again would
+    /// have two reads to reason about instead of one.
+    pub async fn wait_pane_agent(&mut self, pane: PaneId) -> Value {
+        let deadline = tokio::time::Instant::now() + PATIENCE;
+        loop {
+            let entry = self.pane_state(pane).await;
+            if entry["agent"]["kind"].is_string() {
+                return entry;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "pane {pane} never reached the state tree as an agent; it reads {entry}"
+            );
+            tokio::time::sleep(TICK).await;
+        }
+    }
+
+    /// Start an agent by name and wait until that name can address it.
+    ///
+    /// The two halves a test means by "there is an agent called `name`": the
+    /// verb's own reply, and the state tree naming it — see
+    /// [`Rig::wait_pane_agent`] for why the second does not follow from the
+    /// first. Addressing by label resolves in `Scope::Agent`, which admits only
+    /// panes whose *mirrored* status carries a kind, so an `agent.prompt` sent
+    /// on the strength of the start reply alone is refused with "no agent is
+    /// running in it" — about the pane that start just brought up.
+    pub async fn start_agent(&mut self, name: &str, kind: &str) -> (Value, PaneId) {
+        let reply = self
+            .call("agent.start", json!({ "name": name, "kind": kind }))
+            .await;
+        let pane: PaneId = reply["pane"]
+            .as_str()
+            .unwrap_or_else(|| panic!("pane is a pane id: {reply}"))
+            .parse()
+            .expect("a pane id");
+        self.wait_pane_agent(pane).await;
+        (reply, pane)
+    }
+
     /// Wait until the pane's mirrored agent status reads `state`.
     ///
     /// A condition plus a deadline, never a nap: the deadline's expiry is the
