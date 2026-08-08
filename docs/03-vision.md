@@ -43,8 +43,18 @@ local-first, no platform ambitions — a sharp tool.
    (vim, htop) and otherwise ignored — with exactly one interpreted
    exception (D14): wheel events in a pane without mouse reporting scroll
    copy mode, because touch-scroll from a phone terminal arrives as wheel
-   events and scrollback must stay reachable there. No positional mouse
-   interpretation, ever. This is not a downgrade; it deletes
+   events and scrollback must stay reachable there. That exception is
+   **opt-in and off by default**: reaching a wheel event at all means asking
+   the host terminal for mouse tracking, and both emulators the spike measured
+   document the cost — an ordinary drag-select in the user's own terminal
+   becomes shift-drag — while the exception's whole point is panes that did
+   *not* ask for the mouse, so the request cannot be scoped to the ones that
+   did ([notes/m4-mouse-path.md](notes/m4-mouse-path.md) §5, outcome (b)). The
+   phone profile turns it on, where the people who need touch-scroll are the
+   people not selecting text with a mouse. No positional mouse
+   interpretation, ever — not under the exception either: the wheel parse
+   reads the button and never the column or row. This is not a downgrade; it
+   deletes
    herdr's hit-rect bookkeeping, ViewState coupling, drag state machines, and
    the entire mobile layout fork.
 2. **The UI is panes + one status line.** No sidebar, no cards, no dialogs
@@ -119,6 +129,14 @@ local-first, no platform ambitions — a sharp tool.
 - **Smart-client rendering** (see [04-architecture.md](04-architecture.md)):
   local scrolling of a locally-cached scrollback, instant chrome feedback,
   bandwidth proportional to visible pane damage — not full-screen UI frames.
+  **The trade, stated rather than implied:** scrolling and chrome are local,
+  but keystrokes still round-trip, and the p99 < 5 ms key→echo budget is a
+  local, round-trip budget (04 §4). Over SSH it becomes the link's round trip,
+  so typing feel is tmux-class — a smart client that speculates locally
+  (Superlogical's direction) will beat amx on exactly that, and amx accepts it:
+  predictive echo needs input sequencing in the protocol and stays a
+  capability-negotiated extension rather than v1 complexity every local user
+  pays for.
 
 ## The name
 
