@@ -49,6 +49,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::actor::StatusView;
+use crate::conn::resume::ConnResume;
 use crate::conn::writer::{OutFrame, Outbound};
 
 /// Whether a control method is a long poll and must not be served on the
@@ -84,24 +85,30 @@ pub struct ConnEvents {
     status: StatusView,
     outbound: Outbound,
     cancel: CancellationToken,
+    resume: ConnResume,
     tasks: Arc<Mutex<Tasks>>,
 }
 
 impl ConnEvents {
     /// Event state for one connection: deliveries go out through `outbound`,
     /// and everything spawned here stops with `cancel`.
+    ///
+    /// `resume` is what the hello presented; it is where a subscription that
+    /// names no sequence of its own starts.
     #[must_use]
     pub fn new(
         bus: Arc<Bus>,
         status: StatusView,
         outbound: Outbound,
         cancel: CancellationToken,
+        resume: ConnResume,
     ) -> Self {
         Self {
             bus,
             status,
             outbound,
             cancel,
+            resume,
             tasks: Arc::new(Mutex::new(Tasks::default())),
         }
     }
@@ -135,8 +142,16 @@ impl ConnEvents {
     /// Subscribing twice on one connection replaces the cursor rather than
     /// running two pumps into one writer: a second cursor would interleave two
     /// orderings on a channel whose whole value is that it has one.
+    ///
+    /// A caller that names no `after_seq` falls back to the `last_seq` its
+    /// hello resumed from, so a reattaching client is replayed the events it
+    /// missed without having to repeat itself (D-M3-7). The fallback is spent
+    /// once: a second bare subscription on the same connection means "from
+    /// here", not "rewind to where I reconnected and replay it all again". A
+    /// connection that presented no resume has nothing to fall back to and
+    /// subscribes from the head, exactly as it always did.
     pub fn subscribe(&self, after_seq: Option<Seq>) -> SubscribeReply {
-        let subscription = match after_seq {
+        let subscription = match after_seq.or_else(|| self.resume.take_after_seq()) {
             Some(seq) => self.bus.subscribe_after(seq),
             None => self.bus.subscribe(),
         };
