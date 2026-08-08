@@ -16,37 +16,37 @@
 //! of the four is how two views of one truth start disagreeing.
 //!
 //! The manifest cache lives here too, because binding one is a consequence of
-//! an [`Effect::Identified`] and of nothing else.
+//! a [`Directive::Identified`] and of nothing else.
 
 use std::sync::Arc;
 
-use amx_core::agent::{AgentKind, AgentSnapshot};
+use amx_core::agent::{AgentKind, AgentSnapshot, EpochMillis};
 use amx_core::{Event, PaneId};
 use tokio::time::Instant;
 
 use super::{AgentHub, Tracked, load_manifest};
 use crate::actor::{AgentCall, CoreCommand, StatusUpdate};
-use crate::agent::fusion::{Effect, Input};
+use crate::agent::fusion::{Directive, Input};
 use crate::agent::manifest::Manifest;
 
 impl AgentHub {
-    // ------------------------------------------------------------ the effects
+    // --------------------------------------------------------- the directives
 
     /// Apply one input to `pane`'s tracker, if it has one.
-    pub(super) fn apply(&mut self, pane: PaneId, input: Input) -> Vec<Effect> {
+    pub(super) fn apply(&mut self, pane: PaneId, input: Input) -> Vec<Directive> {
         self.panes
             .get_mut(&pane)
             .map(|tracked| tracked.tracker.apply(input))
             .unwrap_or_default()
     }
 
-    /// Fold `effects` into the queue, the wheel and both read models.
+    /// Fold `directives` into the queue, the wheel and both read models.
     ///
     /// The one place a `StatusView` write or an agent event happens, which is
     /// what makes the ordering §3 fixes a property of the module rather than of
     /// each call site.
-    pub(super) fn absorb(&mut self, pane: PaneId, effects: &[Effect]) {
-        if effects.is_empty() {
+    pub(super) fn absorb(&mut self, pane: PaneId, directives: &[Directive]) {
+        if directives.is_empty() {
             return;
         }
         let now = Instant::now();
@@ -60,73 +60,82 @@ impl AgentHub {
         let mut refreshed = false;
 
         if let Some(tracked) = self.panes.get_mut(&pane) {
-            for effect in effects {
-                match effect {
-                    Effect::Arm { deadline, after } => {
+            for directive in directives {
+                match directive {
+                    Directive::Arm { deadline, after } => {
                         tracked.deadlines.insert(*deadline, now + *after);
                     }
-                    Effect::Disarm { deadline } => {
+                    Directive::Disarm { deadline } => {
                         tracked.deadlines.remove(deadline);
                     }
-                    Effect::Ref { session_ref } => {
+                    Directive::Ref { session_ref } => {
                         tracked.session_ref = Some(session_ref.clone());
                         refreshed = true;
                     }
-                    Effect::Status { .. } => {
+                    Directive::Status { .. } => {
                         tracked.transition_seq = seq;
+                        // The wall-clock half of the same edge, read once for
+                        // the whole fold. D-M4-4: absolute epoch milliseconds,
+                        // so `amx agents --json` and an external consumer get
+                        // the instant, and no surface ever renders an age
+                        // against a clock that is not the one that stamped it.
+                        tracked.since = wall_clock();
                         moved = true;
                     }
-                    Effect::Identified { kind } => identified = Some(kind.clone()),
-                    Effect::Enqueue | Effect::Dequeue => {}
+                    Directive::Identified { kind } => identified = Some(kind.clone()),
+                    Directive::Enqueue | Directive::Dequeue => {}
                 }
             }
         }
 
+        // Assembled once, from state the fold above has already settled, and
+        // used by whichever of the two queue arms runs: D15 wants an
+        // `attention_enqueued` a notifier can render straight
+        // (`api/backend blocked (permission_dialog)`) without a follow-up call,
+        // and the dequeue that clears it says the same thing about the pane it
+        // is about.
+        let identity = self.identity(pane);
+
         // The queue and the events, in the fixed order the machine emits them:
         // the status, then the queue, then the timers.
         let mut events = Vec::new();
-        for effect in effects {
-            match effect {
-                Effect::Status { from, to, cause } => events.push(Event::AgentStatus {
+        for directive in directives {
+            match directive {
+                Directive::Status { from, to, cause } => events.push(Event::AgentStatus {
                     pane,
                     from: *from,
                     to: *to,
                     cause: *cause,
                 }),
-                Effect::Identified { kind } => events.push(Event::AgentIdentified {
+                Directive::Identified { kind } => events.push(Event::AgentIdentified {
                     pane,
                     kind: kind.clone(),
                 }),
-                // The identity block is X06's: this hub keeps no names mirror
-                // yet, and a label it has not seen is absent rather than
-                // invented (`docs/11-m4-plan.md` D-M4-6). X02 froze the shape
-                // and left the fields empty, which is exactly what a consumer
-                // built before M4 reads.
-                Effect::Enqueue => {
+                Directive::Enqueue => {
                     self.attention.retain(|queued| *queued != pane);
                     self.attention.push(pane);
                     events.push(Event::AttentionEnqueued {
                         pane,
-                        workspace: None,
-                        name: None,
-                        reason: None,
-                        since: None,
+                        workspace: identity.workspace.clone(),
+                        name: identity.name.clone(),
+                        reason: identity.reason.clone(),
+                        since: identity.since,
                     });
                 }
-                Effect::Dequeue => {
+                Directive::Dequeue => {
                     let before = self.attention.len();
                     self.attention.retain(|queued| *queued != pane);
                     if self.attention.len() != before {
                         events.push(Event::AttentionDequeued {
                             pane,
-                            workspace: None,
-                            name: None,
-                            reason: None,
-                            since: None,
+                            workspace: identity.workspace.clone(),
+                            name: identity.name.clone(),
+                            reason: identity.reason.clone(),
+                            since: identity.since,
                         });
                     }
                 }
-                Effect::Ref { .. } | Effect::Arm { .. } | Effect::Disarm { .. } => {}
+                Directive::Ref { .. } | Directive::Arm { .. } | Directive::Disarm { .. } => {}
             }
         }
 
@@ -140,7 +149,7 @@ impl AgentHub {
             return;
         }
         if moved {
-            self.probe.bump(&self.probe.0.transitions);
+            self.probe.counted_transition();
         }
         let retired = self
             .panes
@@ -253,4 +262,25 @@ impl AgentHub {
             self.bind_manifest(pane, &kind);
         }
     }
+}
+
+/// Now, in epoch milliseconds — the units D-M4-4 fixed for
+/// [`AgentSnapshot::since`](amx_core::agent::AgentSnapshot::since).
+///
+/// The one wall clock in this actor, and it is read *only* to stamp a
+/// transition. Everything the hub decides — spacing, confirmation caps,
+/// staleness — runs off [`tokio::time::Instant`], which a test can pause; this
+/// is the value a person is shown, and there is no monotonic spelling of "4m
+/// ago" that survives being carried to another machine.
+///
+/// A clock set before 1970 is the only way [`SystemTime::duration_since`] can
+/// fail, and the answer to it is the one an absent `since` already means:
+/// nobody can say when this happened. A zero would say 1970 and be believed.
+///
+/// [`SystemTime::duration_since`]: std::time::SystemTime::duration_since
+fn wall_clock() -> Option<EpochMillis> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|since| EpochMillis::try_from(since.as_millis()).ok())
 }

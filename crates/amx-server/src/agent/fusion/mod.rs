@@ -13,7 +13,7 @@
 //! > - Subagent-scoped events never override the parent turn's state.
 //!
 //! Everything here is data in, data out: a [`Tracker`] takes an [`Input`] and
-//! returns [`Effect`]s. No clocks, no I/O, no tokio — deadlines *arrive* as
+//! returns [`Directive`]s. No clocks, no I/O, no tokio — deadlines *arrive* as
 //! inputs, which is what lets V04 property-test arbitrary interleavings
 //! exhaustively rather than at whatever speed a wall clock happened to run.
 //!
@@ -43,7 +43,7 @@
 //!
 //! | Module | What lives there |
 //! |---|---|
-//! | this one | the constants, the input and effect vocabulary, the deadlines |
+//! | this one | the constants, the input and directive vocabulary, the timers |
 //! | [`edge`] | one hook report reduced to an edge, and the precedence table |
 //! | [`tracker`] | the transition function, which is the machine itself |
 //!
@@ -58,8 +58,8 @@
 //! function. **V04** fills [`Tracker::apply`] and [`precedence`], and its
 //! property tests are as much the deliverable as the machine: arbitrary
 //! interleavings must never revive an idle pane from a subagent event, never
-//! wedge a tracker with an unfired deadline, and never emit two status effects
-//! for one transition.
+//! wedge a tracker with an unfired deadline, and never emit two status
+//! directives for one transition.
 
 pub mod edge;
 pub mod tracker;
@@ -148,7 +148,8 @@ pub struct ScreenVerdict {
     /// idle. Neither confirms a held state nor contradicts it, so neither
     /// touches the confirmation count.
     pub asserts: Option<AgentState>,
-    /// The rule that won, for `agent.explain` and for the effect's provenance.
+    /// The rule that won, for `agent.explain` and for the provenance the
+    /// directive carries.
     pub rule: Option<String>,
     /// Whether the winning rule is flagged `visible_idle`.
     ///
@@ -166,7 +167,7 @@ pub struct ScreenVerdict {
 /// lives in `AgentHub` (V08), which is allowed to own a timer.
 ///
 /// A deadline the tracker did not ask for is ignored on arrival: the hub owns
-/// the wheel, so a fire that races a [`Effect::Disarm`] is the hub's normal
+/// the wheel, so a fire that races a [`Directive::Disarm`] is the hub's normal
 /// operation and not a state change.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Deadline {
@@ -206,16 +207,24 @@ pub enum Input {
 
 /// What the tracker asks the hub to do about a transition.
 ///
+/// Named `Directive` and not `Effect`, which is what it was called until DR-10:
+/// three unrelated enums of that name shadowed each other — the render
+/// dirtiness [`amx_core::Effect`] (04 §2's "every message handler returns an
+/// `Effect` value"), `amx_vt::callbacks`' parser-thread one, and this. The
+/// dirtiness type is the one 04 names, so it keeps the name; this one is
+/// renamed for what it is, an instruction the machine hands the hub. (The vt
+/// shadow is X09's, split by file ownership.)
+///
 /// Data, like the inputs. `AgentHub` turns [`Status`](Self::Status) into a
 /// `StatusView` write plus a published event *in that order*, and the queue
-/// effects into the attention queue — but none of that ordering is this
+/// directives into the attention queue — but none of that ordering is this
 /// module's business, which is why it can be property-tested without one.
 ///
-/// One input's effects come out in a fixed order — the status, then the queue,
-/// then the timers — so a test may compare a whole effect list rather than
+/// One input's directives come out in a fixed order — the status, then the
+/// queue, then the timers — so a test may compare a whole list rather than
 /// searching it.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Effect {
+pub enum Directive {
     /// The pane moved. **At most one of these per input** — V04's
     /// `every_transition_emits_exactly_one_status_effect` is the property.
     Status {

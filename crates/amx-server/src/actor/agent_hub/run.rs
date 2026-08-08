@@ -143,12 +143,12 @@ impl AgentHub {
         report: &proto::ReportParams,
     ) -> bool {
         let Some(stanza) = self.claimed(report) else {
-            self.probe.bump(&self.probe.0.dropped);
+            self.probe.counted_drop();
             return false;
         };
         let (kind, ref_kind) = (stanza.id.clone(), stanza.ref_kind);
         if !self.token_matches(pane, token) {
-            self.probe.bump(&self.probe.0.dropped);
+            self.probe.counted_drop();
             return false;
         }
         // A `claude` typed into a shell by hand is identified by exactly this:
@@ -163,9 +163,9 @@ impl AgentHub {
             self.identify(pane, &kind);
         }
         let edge = HookEdge::from_report(report, ref_kind);
-        let effects = self.apply(pane, Input::Hook(edge));
-        self.absorb(pane, &effects);
-        self.probe.bump(&self.probe.0.reports);
+        let directives = self.apply(pane, Input::Hook(edge));
+        self.absorb(pane, &directives);
+        self.probe.counted_report();
         true
     }
 
@@ -196,6 +196,30 @@ impl AgentHub {
             Event::PaneCreated { pane, workspace } => {
                 self.workspaces.insert(pane, workspace);
             }
+            // The names mirror (D-M4-6), folded off the bus beside the pairing
+            // above and never asked of `Core`. Three arms and one map is the
+            // whole of what an identity-bearing `attention_enqueued` costs,
+            // and it is the same shape `PaneCreated` already had: the hub
+            // learns a fact by watching it be published, not by requesting it.
+            //
+            // A rename is the only way a label reaches this actor, which is
+            // also why it is enough — a cold restore replays one for every
+            // label it brings back (`actor/core/restore.rs:284,295`), and
+            // `workspace.create` publishes one for a label given at creation.
+            // The live handoff, which publishes nothing at all, seeds the map
+            // through `inherit` instead.
+            Event::PaneRenamed { pane, label } => {
+                self.names.name_pane(pane, label);
+            }
+            Event::WorkspaceRenamed { workspace, label } => {
+                self.names.name_workspace(workspace, label);
+            }
+            // A workspace that is gone cannot be named again, and its entry
+            // would outlive every pane that could have quoted it. Panes are
+            // dropped by `retire`, which runs after the dequeue it publishes.
+            Event::WorkspaceClosed { workspace } => {
+                self.names.forget_workspace(workspace);
+            }
             // A user editing a rule to fix a wrong detection sees it take
             // effect without restarting the session (R-M2-13). The registry is
             // deliberately *not* re-read: a stanza's coverage class and grace
@@ -210,8 +234,8 @@ impl AgentHub {
     /// Fire everything the wheel owes at this instant.
     fn fire(&mut self) {
         let now = Instant::now();
-        self.probe.bump(&self.probe.0.wakeups);
-        // Collected before anything is applied: a deadline's effects can arm
+        self.probe.counted_wakeup();
+        // Collected before anything is applied: a deadline's directives can arm
         // another deadline, and a wheel that walked its own mutations would
         // fire the new one in the same turn it was asked for.
         let fired: Vec<(amx_core::PaneId, Deadline)> = self
@@ -230,8 +254,8 @@ impl AgentHub {
             if let Some(tracked) = self.panes.get_mut(&pane) {
                 tracked.deadlines.remove(&deadline);
             }
-            let effects = self.apply(pane, Input::Deadline(deadline));
-            self.absorb(pane, &effects);
+            let directives = self.apply(pane, Input::Deadline(deadline));
+            self.absorb(pane, &directives);
         }
         self.evaluate_due(now);
     }

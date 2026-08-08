@@ -97,9 +97,9 @@ impl AgentHub {
                 visible_idle: false,
             },
         };
-        self.probe.bump(&self.probe.0.evaluations);
-        let effects = self.apply(pane, Input::Screen(verdict));
-        self.absorb(pane, &effects);
+        self.probe.counted_evaluation();
+        let directives = self.apply(pane, Input::Screen(verdict));
+        self.absorb(pane, &directives);
     }
 
     /// Evaluate every tracked pane that owes one at `now`.

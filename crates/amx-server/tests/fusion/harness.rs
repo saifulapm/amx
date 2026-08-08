@@ -14,7 +14,7 @@ use amx_core::agent::{
 };
 use amx_proto::control::agent::{HookEvent, ReportParams, ReportScope};
 use amx_server::agent::fusion::edge::{IDLE_PROMPT, PERMISSION_PROMPT};
-use amx_server::agent::fusion::{Deadline, Effect, HookEdge, Input, ScreenVerdict, Tracker};
+use amx_server::agent::fusion::{Deadline, Directive, HookEdge, Input, ScreenVerdict, Tracker};
 use proptest::prelude::*;
 
 /// Every deadline, for the invariants that must hold over all three.
@@ -78,6 +78,19 @@ pub fn screen(state: AgentState) -> Input {
     })
 }
 
+/// A tier-2 evaluation asserting `state`, from a rule spelled `rule`.
+///
+/// The name matters to the `reason` scenarios and to nothing else, which is why
+/// [`screen`] does not take one: a scenario about confirmation counts should
+/// not have to name a rule to say what it means.
+pub fn named_screen(state: AgentState, rule: &str) -> Input {
+    Input::Screen(ScreenVerdict {
+        asserts: Some(state),
+        rule: Some(rule.to_owned()),
+        visible_idle: false,
+    })
+}
+
 /// A tier-2 evaluation asserting `state` from a rule flagged `visible_idle` —
 /// the prompt box is actually painted.
 pub fn visible_idle(state: AgentState) -> Input {
@@ -107,7 +120,7 @@ pub fn no_match() -> Input {
 }
 
 /// Feed a whole scenario, returning every effect it produced in order.
-pub fn drive(tracker: &mut Tracker, script: impl IntoIterator<Item = Input>) -> Vec<Effect> {
+pub fn drive(tracker: &mut Tracker, script: impl IntoIterator<Item = Input>) -> Vec<Directive> {
     script
         .into_iter()
         .flat_map(|input| tracker.apply(input))
@@ -118,9 +131,9 @@ pub fn drive(tracker: &mut Tracker, script: impl IntoIterator<Item = Input>) -> 
 ///
 /// Panics if there is more than one, which is the contract every scenario
 /// leans on and the proptest states outright.
-pub fn status(effects: &[Effect]) -> Option<(Option<AgentState>, AgentState, StatusCause)> {
+pub fn status(effects: &[Directive]) -> Option<(Option<AgentState>, AgentState, StatusCause)> {
     let mut found = effects.iter().filter_map(|effect| match effect {
-        Effect::Status { from, to, cause } => Some((*from, *to, *cause)),
+        Directive::Status { from, to, cause } => Some((*from, *to, *cause)),
         _ => None,
     });
     let first = found.next();
@@ -254,7 +267,7 @@ pub fn script() -> impl Strategy<Value = Vec<Input>> {
 /// The identification's own effects come back with it, because the hub applied
 /// them too — a property that replays the effect stream has to start from the
 /// same place the hub did, grace timer and all.
-pub fn any_tracker() -> impl Strategy<Value = (Tracker, Vec<Effect>)> {
+pub fn any_tracker() -> impl Strategy<Value = (Tracker, Vec<Directive>)> {
     (any_class(), prop_oneof![Just(0_u64), Just(3_000_u64)]).prop_map(|(class, grace)| {
         let mut tracker = Tracker::new();
         let effects = tracker.identify(claude(), class, Duration::from_millis(grace));

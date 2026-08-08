@@ -23,8 +23,8 @@ use amx_core::agent::{Activity, AgentState, CoverageClass, RefKind, SessionRef, 
 use amx_proto::control::agent::{HookEvent, ReportScope};
 use amx_server::agent::fusion::edge::{IDLE_PROMPT, PERMISSION_PROMPT, precedence};
 use amx_server::agent::fusion::{
-    CONFIRMATION_CAP, CONFIRMATIONS, Deadline, EdgeEffect, Effect, HookEdge, IDENTITY_GRACE, Input,
-    STALENESS, Tracker,
+    CONFIRMATION_CAP, CONFIRMATIONS, Deadline, Directive, EdgeEffect, HookEdge, IDENTITY_GRACE,
+    Input, STALENESS, Tracker,
 };
 
 // A test crate root's module directory is `tests/`, so both of this suite's
@@ -33,6 +33,8 @@ use amx_server::agent::fusion::{
 mod harness;
 #[path = "fusion/properties.rs"]
 mod properties;
+#[path = "fusion/reason.rs"]
+mod reason;
 
 use harness::{
     agent, claude, drive, edge, hold, hook, no_match, notification, report, screen, session,
@@ -59,7 +61,7 @@ fn hook_entry_edges_apply_instantly_for_edges_class() {
             StatusCause::Hook
         ))
     );
-    assert!(effects.contains(&Effect::Arm {
+    assert!(effects.contains(&Directive::Arm {
         deadline: Deadline::Staleness,
         after: STALENESS,
     }));
@@ -71,7 +73,7 @@ fn hook_entry_edges_apply_instantly_for_edges_class() {
     assert_eq!(status(&effects), None);
     assert_eq!(
         effects,
-        vec![Effect::Arm {
+        vec![Directive::Arm {
             deadline: Deadline::Staleness,
             after: STALENESS,
         }]
@@ -88,7 +90,7 @@ fn hook_entry_edges_apply_instantly_for_edges_class() {
             StatusCause::Hook
         ))
     );
-    assert!(effects.contains(&Effect::Enqueue));
+    assert!(effects.contains(&Directive::Enqueue));
 
     // The tool ran, so the answer was yes: back to working, off the queue.
     let effects = tracker.apply(hook(HookEvent::PostToolUse));
@@ -100,7 +102,7 @@ fn hook_entry_edges_apply_instantly_for_edges_class() {
             StatusCause::Hook
         ))
     );
-    assert!(effects.contains(&Effect::Dequeue));
+    assert!(effects.contains(&Directive::Dequeue));
 
     // And the one edge that does *not* apply: `Stop` fires when a turn ends by
     // itself, but exits are screen-owned for an `edges` agent, because the
@@ -127,7 +129,7 @@ fn esc_interrupt_with_no_hook_event_settles_idle_via_screen_confirmations() {
     assert_eq!(status(&first), None, "one verdict is not a confirmation");
     assert_eq!(
         first,
-        vec![Effect::Arm {
+        vec![Directive::Arm {
             deadline: Deadline::Confirmation,
             after: CONFIRMATION_CAP,
         }]
@@ -151,15 +153,15 @@ fn esc_interrupt_with_no_hook_event_settles_idle_via_screen_confirmations() {
     assert_eq!(
         third,
         vec![
-            Effect::Status {
+            Directive::Status {
                 from: Some(AgentState::Working),
                 to: AgentState::Idle,
                 cause: StatusCause::Screen,
             },
-            Effect::Disarm {
+            Directive::Disarm {
                 deadline: Deadline::Confirmation,
             },
-            Effect::Disarm {
+            Directive::Disarm {
                 deadline: Deadline::Staleness,
             },
         ],
@@ -181,12 +183,12 @@ fn dialog_cancel_with_no_hook_event_unblocks_within_the_confirmation_cap() {
     let mut tracker = agent(CoverageClass::Edges);
     let blocked = tracker.apply(hook(HookEvent::PermissionRequest));
     assert_eq!(tracker.state, AgentState::Blocked);
-    assert!(blocked.contains(&Effect::Enqueue));
+    assert!(blocked.contains(&Directive::Enqueue));
 
     let pending = tracker.apply(screen(AgentState::Idle));
     assert_eq!(
         pending,
-        vec![Effect::Arm {
+        vec![Directive::Arm {
             deadline: Deadline::Confirmation,
             after: CONFIRMATION_CAP,
         }]
@@ -204,7 +206,7 @@ fn dialog_cancel_with_no_hook_event_unblocks_within_the_confirmation_cap() {
             StatusCause::Screen
         ))
     );
-    assert!(capped.contains(&Effect::Dequeue));
+    assert!(capped.contains(&Directive::Dequeue));
     assert!(!tracker.is_armed(Deadline::Confirmation));
     assert!(!tracker.is_armed(Deadline::Staleness));
 }
@@ -243,7 +245,7 @@ fn visible_idle_bypasses_the_confirmation_hold() {
 fn staleness_deadline_clears_a_hook_held_state_with_no_screen_coverage() {
     let mut tracker = agent(CoverageClass::Edges);
     let blocked = tracker.apply(hook(HookEvent::PermissionRequest));
-    assert!(blocked.contains(&Effect::Arm {
+    assert!(blocked.contains(&Directive::Arm {
         deadline: Deadline::Staleness,
         after: STALENESS,
     }));
@@ -259,7 +261,7 @@ fn staleness_deadline_clears_a_hook_held_state_with_no_screen_coverage() {
             StatusCause::Staleness
         ))
     );
-    assert!(effects.contains(&Effect::Dequeue));
+    assert!(effects.contains(&Directive::Dequeue));
     assert!(!tracker.is_armed(Deadline::Staleness));
 
     // A screen verdict that agrees with a held state pushes the deadline out,
@@ -267,7 +269,7 @@ fn staleness_deadline_clears_a_hook_held_state_with_no_screen_coverage() {
     tracker.apply(hook(HookEvent::UserPromptSubmit));
     assert_eq!(
         tracker.apply(screen(AgentState::Working)),
-        vec![Effect::Arm {
+        vec![Directive::Arm {
             deadline: Deadline::Staleness,
             after: STALENESS,
         }]
@@ -443,7 +445,7 @@ fn a_permission_notification_corroborates_a_block_and_an_idle_one_never_exits() 
     assert_eq!(status(&effects), None);
     assert_eq!(
         effects,
-        vec![Effect::Arm {
+        vec![Directive::Arm {
             deadline: Deadline::Staleness,
             after: STALENESS,
         }]
@@ -475,8 +477,8 @@ fn identification_reads_the_probe_and_holds_the_screen_for_the_startup_grace() {
     );
 
     let effects = tracker.identify(claude(), CoverageClass::Edges, IDENTITY_GRACE);
-    assert!(effects.contains(&Effect::Identified { kind: claude() }));
-    assert!(effects.contains(&Effect::Arm {
+    assert!(effects.contains(&Directive::Identified { kind: claude() }));
+    assert!(effects.contains(&Directive::Arm {
         deadline: Deadline::IdentityGrace,
         after: IDENTITY_GRACE,
     }));
@@ -527,7 +529,7 @@ fn a_new_session_id_replaces_the_ref_and_a_repeat_of_it_does_not() {
     let effects = tracker.apply(Input::Hook(HookEdge::from_report(&first, RefKind::Id)));
     assert_eq!(
         effects,
-        vec![Effect::Ref {
+        vec![Directive::Ref {
             session_ref: session("a8e2f3d1"),
         }]
     );
@@ -549,7 +551,7 @@ fn a_new_session_id_replaces_the_ref_and_a_repeat_of_it_does_not() {
     let effects = tracker.apply(Input::Hook(HookEdge::from_report(&cleared, RefKind::Id)));
     assert_eq!(
         effects,
-        vec![Effect::Ref {
+        vec![Directive::Ref {
             session_ref: session("c9a3c73b"),
         }]
     );
@@ -610,11 +612,11 @@ fn exit_publishes_once_dequeues_and_disarms_everything() {
             StatusCause::Exited
         ))
     );
-    assert!(effects.contains(&Effect::Dequeue));
-    assert!(effects.contains(&Effect::Disarm {
+    assert!(effects.contains(&Directive::Dequeue));
+    assert!(effects.contains(&Directive::Disarm {
         deadline: Deadline::Confirmation,
     }));
-    assert!(effects.contains(&Effect::Disarm {
+    assert!(effects.contains(&Directive::Disarm {
         deadline: Deadline::Staleness,
     }));
     assert!(tracker.is_exited());

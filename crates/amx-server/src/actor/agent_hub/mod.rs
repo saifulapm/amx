@@ -50,22 +50,27 @@
 //! | [`run`] | the loop, the mailbox, the bus, the wheel, the drain |
 //! | [`commit`] | one transition folded into the queue and both read models |
 //! | [`inherit`] | a predecessor's statuses, taken across a live upgrade |
+//! | [`names`] | the labels an attention event carries, and where from |
+//! | [`probe`] | the counters a test watches and the report a run returns |
 //! | [`detect`] | tier-2 scheduling and evaluation against the published frame |
 //! | [`verbs`] | what `agent.next`, `agent.explain` and a refusal answer |
 
 pub mod commit;
 pub mod detect;
 pub mod inherit;
+mod names;
+mod probe;
 pub mod run;
 pub mod verbs;
+
+pub use probe::{AgentProbe, AgentReport};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use amx_core::agent::{AgentKind, AgentSnapshot, HookToken, SessionRef};
+use amx_core::agent::{AgentKind, AgentSnapshot, EpochMillis, HookToken, SessionRef};
 use amx_core::{Ctx, PaneId, Seq, WorkspaceId};
 use amx_proto::control::agent as proto;
 use tokio::time::Instant;
@@ -86,94 +91,6 @@ use crate::agent::registry::{AgentStanza, Registry};
 /// on the config watcher's reload event, which is as far as M2 takes hot
 /// reloading (R-M2-13 — a remote catalog is M4's).
 pub const MANIFEST_DIR: &str = "manifests";
-
-/// What one run of the hub did.
-///
-/// Returned rather than logged, for the reason [`PersistReport`] is: "did that
-/// report actually land?" and "did a cancelled hub keep working?" are the
-/// questions the suite asks, and counting at the seam is how they get answered
-/// without reaching into a status line for the answer.
-///
-/// [`PersistReport`]: crate::actor::persist::PersistReport
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct AgentReport {
-    /// Hook reports accepted and applied.
-    pub reports: u64,
-    /// Hook reports dropped: a token that did not match the pane's, or a
-    /// source claiming an agent it was not installed for.
-    pub dropped: u64,
-    /// Tier-2 screen evaluations run.
-    pub evaluations: u64,
-    /// Times the deadline wheel fired.
-    pub wakeups: u64,
-    /// Status transitions published.
-    pub transitions: u64,
-    /// Panes still tracked when the hub stopped.
-    pub tracked: usize,
-}
-
-/// A live window onto a running hub's counters.
-///
-/// Cloneable and lock-free, the shape [`PaneProbe`](crate::actor::PaneProbe)
-/// uses: a test watches the hub work without having to stop it first, which is
-/// the only way to assert that a *cancelled* hub stopped working.
-#[derive(Clone, Debug, Default)]
-pub struct AgentProbe(Arc<Counters>);
-
-#[derive(Debug, Default)]
-struct Counters {
-    reports: AtomicU64,
-    dropped: AtomicU64,
-    evaluations: AtomicU64,
-    wakeups: AtomicU64,
-    transitions: AtomicU64,
-}
-
-impl AgentProbe {
-    /// A fresh set of counters.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Hook reports accepted and applied.
-    #[must_use]
-    pub fn reports(&self) -> u64 {
-        self.0.reports.load(Ordering::Relaxed)
-    }
-
-    /// Hook reports dropped for a bad token or a foreign source.
-    #[must_use]
-    pub fn dropped(&self) -> u64 {
-        self.0.dropped.load(Ordering::Relaxed)
-    }
-
-    /// Tier-2 screen evaluations run.
-    #[must_use]
-    pub fn evaluations(&self) -> u64 {
-        self.0.evaluations.load(Ordering::Relaxed)
-    }
-
-    /// Times the deadline wheel fired.
-    ///
-    /// The number `idle_session_arms_no_timer` is about: with nothing armed the
-    /// timer branch of the select is disabled, so this stays at zero however
-    /// long the session sits there.
-    #[must_use]
-    pub fn wakeups(&self) -> u64 {
-        self.0.wakeups.load(Ordering::Relaxed)
-    }
-
-    /// Status transitions published.
-    #[must_use]
-    pub fn transitions(&self) -> u64 {
-        self.0.transitions.load(Ordering::Relaxed)
-    }
-
-    fn bump(&self, counter: &AtomicU64) {
-        counter.fetch_add(1, Ordering::Relaxed);
-    }
-}
 
 /// One pane the hub is tracking.
 ///
@@ -202,6 +119,29 @@ struct Tracked {
     session_ref: Option<SessionRef>,
     /// The bus sequence of this pane's last status transition.
     transition_seq: Seq,
+    /// The wall clock at that same transition, in epoch milliseconds.
+    ///
+    /// The renderable half of [`transition_seq`](Self::transition_seq), stamped
+    /// here and not inside the fusion machine because the machine has no clock
+    /// and is not getting one: deadlines *arrive* as inputs, which is what lets
+    /// V04's property tests enumerate interleavings instead of running them.
+    /// `absorb` already reads a clock for the wheel, so the stamp costs one
+    /// more `SystemTime::now`.
+    ///
+    /// `None` until this hub has seen the pane move. D-M4-4's absolute instant
+    /// is only honest when somebody observed the edge, and there are exactly
+    /// two ways a pane has one: this process watched it happen, or a
+    /// predecessor did and handed it over on the handoff manifest. A **cold
+    /// restore**
+    /// gives neither — the persist snapshot deliberately carries no status
+    /// ("never a status, which dies with the process it described",
+    /// `crates/amx-server/src/persist/mod.rs:94`) — so a restored pane starts
+    /// with no `since` and takes one from its first real transition, rather
+    /// than reporting the restore as the moment an agent blocked. R-M4-4 asks
+    /// for that answer said out loud: this is it, and the fallback it offers
+    /// ("since this server started tracking it") is declined, because an age
+    /// counted from a restart is a number that looks measured and is not.
+    since: Option<EpochMillis>,
     /// When this pane was last evaluated, which is what the minimum spacing is
     /// measured from.
     last_eval: Option<Instant>,
@@ -225,6 +165,7 @@ impl Tracked {
             title: String::new(),
             session_ref: None,
             transition_seq: seq,
+            since: None,
             last_eval: None,
             eval_due: None,
             deadlines: HashMap::new(),
@@ -242,11 +183,13 @@ impl Tracked {
             // shifts everyone behind it must not leave a stale number here.
             attention: None,
             session_ref: self.session_ref.clone(),
-            // X06 retains the name of whatever last moved this pane and stamps
-            // the entry edge. X02 froze the fields; until then a consumer reads
-            // the absences that mean "this build did not say" (D-M4-3/4).
-            reason: None,
-            since: None,
+            // Both halves of the entry edge, and both of them somebody's
+            // observation rather than this line's invention: the name comes off
+            // the machine, which took it from the detector that won, and the
+            // instant comes off `absorb`, which stamped it when the transition
+            // was folded (D-M4-3, D-M4-4).
+            reason: self.tracker.reason.clone(),
+            since: self.since,
         }
     }
 
@@ -281,6 +224,8 @@ pub struct AgentHub {
     attention: Vec<PaneId>,
     /// Which workspace each pane was created in, for `agent.next`'s reply.
     workspaces: HashMap<PaneId, WorkspaceId>,
+    /// The labels the identity block on an attention event needs.
+    names: names::Names,
     probe: AgentProbe,
 }
 
@@ -307,6 +252,7 @@ impl AgentHub {
             inherited: HashMap::new(),
             attention: Vec::new(),
             workspaces: HashMap::new(),
+            names: names::Names::default(),
             probe: AgentProbe::new(),
         }
     }
@@ -376,17 +322,20 @@ impl AgentHub {
     ///
     /// A queue holding a dead pane would send `next-attention` somewhere that
     /// is not there, so the exit runs through the machine like any other input
-    /// and its `Dequeue` effect is honoured on the way out.
+    /// and its `Dequeue` directive is honoured on the way out.
     fn retire(&mut self, pane: PaneId) {
         if !self.panes.contains_key(&pane) {
             return;
         }
-        let effects = self.apply(pane, Input::Exited);
-        self.absorb(pane, &effects);
+        let directives = self.apply(pane, Input::Exited);
+        self.absorb(pane, &directives);
         // `absorb` drops an exited tracker; this catches the pane that was
         // already exited when the close arrived.
         self.panes.remove(&pane);
         self.workspaces.remove(&pane);
+        // After `absorb`, not before: the dequeue this exit publishes still
+        // names the pane a person would recognise.
+        self.names.forget_pane(pane);
     }
 
     /// Name `pane`'s agent and adopt its stanza's fusion parameters.

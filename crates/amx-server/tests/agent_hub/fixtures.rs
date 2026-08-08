@@ -26,6 +26,7 @@ use amx_core::agent::{AgentKind, HookToken, RefSource};
 use amx_core::platform::{PlatformError, ProcessId, PtySession, WinSize};
 use amx_core::{Bus, Ctx, Event, GridGeneration, PaneId, SessionName, WorkspaceId};
 use amx_proto::control::agent as proto;
+use amx_server::actor::agent_hub::inherit::InheritedPane;
 use amx_server::actor::agent_hub::{AgentHub, AgentProbe, AgentReport};
 use amx_server::actor::{
     AGENT_MAILBOX, AgentCall, AgentCommand, AgentHandle, CoreCommand, CoreHandle, PaneCommand,
@@ -261,6 +262,7 @@ pub async fn wait_for(mut condition: impl FnMut() -> bool, what: &str) {
 pub struct Builder {
     root: PathBuf,
     registry: Option<Registry>,
+    inherited: Option<(Vec<InheritedPane>, Vec<PaneId>)>,
 }
 
 impl Rig {
@@ -269,6 +271,7 @@ impl Rig {
         Builder {
             root: root.path().to_path_buf(),
             registry: None,
+            inherited: None,
         }
     }
 
@@ -360,6 +363,17 @@ impl Builder {
         self
     }
 
+    /// Seed the hub the way a live upgrade does, before it runs.
+    ///
+    /// The import path's own call, in the same order: `AgentHub::inherit`
+    /// before `run`, then a `PaneStarted` per pane once the hub is listening
+    /// (`session/import.rs` step 9, then `Core::announce_inherited`). It
+    /// publishes nothing, so it is the one path where labels arrive by hand.
+    pub fn inherit(mut self, panes: Vec<InheritedPane>, attention: Vec<PaneId>) -> Self {
+        self.inherited = Some((panes, attention));
+        self
+    }
+
     /// Spawn the hub and the stand-in `Core` behind it.
     pub fn start(self) -> Rig {
         let ctx = Ctx {
@@ -380,6 +394,9 @@ impl Builder {
         let mut hub = AgentHub::new(ctx.clone(), CoreHandle::new(core_tx), view.clone());
         if let Some(registry) = self.registry {
             hub = hub.with_registry(registry);
+        }
+        if let Some((panes, attention)) = self.inherited {
+            hub = hub.inherit(panes, attention);
         }
         let probe = hub.probe();
 

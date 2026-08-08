@@ -32,8 +32,12 @@ use amx_proto::control::agent::HookEvent;
 // A test crate root's module directory is `tests/`, so the fixtures need their
 // path spelled out to live beside their one suite rather than next to
 // everybody's.
+#[path = "agent_hub/facts.rs"]
+mod facts;
 #[path = "agent_hub/fixtures.rs"]
 mod fixtures;
+#[path = "agent_hub/stamps.rs"]
+mod stamps;
 mod support;
 
 use fixtures::{
