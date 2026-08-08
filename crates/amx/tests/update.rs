@@ -280,12 +280,28 @@ async fn apply_stages_then_renames_atomically_and_the_old_exe_keeps_running() {
     let version = newer();
     rig.channel(&rig.manifest("latest.json", &version, Some((&asset, &sha256))));
 
+    // The payload is a shell script, not an amx, so the handoff that now
+    // follows a successful install is *refused* — by the pre-flight, before a
+    // single pane is touched (D-M3-6 point 2). That is what makes this test
+    // still about the rename: the install lands, nothing swaps, and the
+    // process executing the replaced file is exactly where it was.
     let done = rig.run(&exe, &["update", "apply"]);
-    let out = done.ok();
+    assert_eq!(
+        done.code,
+        Some(1),
+        "an install whose successor cannot be handed the session is not a \
+         silent success: {done:?}"
+    );
+    let out = done.stdout.as_str();
     assert!(out.contains(&format!("sha256 {sha256} verified")), "{out}");
     assert!(
         out.contains(&format!("installed {version} at {}", exe.display())),
-        "{out}"
+        "the install itself succeeded and says so on stdout: {out}"
+    );
+    assert!(
+        done.stderr.contains("refused the handoff")
+            && done.stderr.contains("did not print handoff capabilities"),
+        "the refusal names what was wrong with the successor: {done:?}"
     );
 
     // The path now holds the new file, and it runs.
@@ -323,27 +339,69 @@ async fn apply_stages_then_renames_atomically_and_the_old_exe_keeps_running() {
     clippy::assertions_on_constants,
     reason = "the constant is the subject: this pins the dormant path dormant"
 )]
-fn apply_says_plainly_that_the_running_session_is_not_handed_over_yet() {
-    // The tripwire for W14: when `HANDOFF_AFTER_INSTALL` flips, this sentence
-    // stops being true and this test says so rather than letting a stale
-    // promise ship. Replace it then with the assertion that the successor
-    // answered.
+fn apply_hands_the_running_session_to_the_binary_it_installed() {
+    // W10's tripwire, discharged. It asserted the constant was `false` and that
+    // `apply` printed a sentence saying panes were still on the old binary;
+    // both halves went red the day W14 flipped it, which is what the tripwire
+    // was for — the sentence had to be *replaced* by an assertion that the
+    // successor answered, not merely deleted.
     assert!(
-        !amx::cmd::update::HANDOFF_AFTER_INSTALL,
-        "the handoff glue is live: W06 has landed, so this test owes W14 its \
-         other half"
+        amx::cmd::update::HANDOFF_AFTER_INSTALL,
+        "the handoff glue is dormant again; this test is asserting about a \
+         swap that cannot happen"
     );
 
-    let rig = Rig::new("dorm");
+    let mut rig = Rig::new("hand");
     let exe = rig.plant("bin/amx");
-    let (asset, sha256) = payload(&rig, "amx: the successor");
+    // The asset is a real amx, because the successor has to be one: it is
+    // exec'd as `<binary> _handoff-caps` and then as `<binary> --session <name>
+    // server --handoff-import <socket>`, and a shell script answers neither.
+    let asset = rig.plant("dist/amx");
+    let sha256 = sha256_of(&asset).expect("digest the asset");
     rig.channel(&rig.manifest("latest.json", &newer(), Some((&asset, &sha256))));
 
-    let out = rig.run(&exe, &["update", "apply"]).ok().to_owned();
+    let before = rig.serve(&exe);
+    let out = rig.run(&exe, &["update", "apply"]);
+    let text = out.ok().to_owned();
     assert!(
-        out.contains("the running session was not handed over"),
-        "a user with a new binary and old panes must be told: {out}"
+        text.contains("handoff accepted"),
+        "the install did not ask for the swap: {out:?}"
     );
+    assert!(
+        text.contains(&format!("session {} is now served by amx", rig.session)),
+        "the successor never answered: {out:?}"
+    );
+
+    // A different process, serving the same session, on the socket the caller
+    // was already talking to. That is the whole claim.
+    let after = answering_pid(&rig);
+    assert!(
+        after.is_some() && after != Some(before),
+        "the session is still served by the process that installed the binary \
+         (before {before}, after {after:?})"
+    );
+    let state = rig.run(&exe, &["session", "state"]);
+    assert_eq!(
+        state.code,
+        Some(0),
+        "the successor does not answer: {state:?}"
+    );
+
+    let stopped = rig.run(&exe, &["session", "stop"]);
+    assert_eq!(stopped.code, Some(0), "{stopped:?}");
+}
+
+/// The pid of whatever is answering the rig's session socket.
+///
+/// Peer credentials, which is the only thing that distinguishes a successor
+/// from its predecessor when both are built from the same tree.
+fn answering_pid(rig: &Rig) -> Option<u32> {
+    let socket = rig.socket();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime")
+        .block_on(async move { server_pid(&socket).await.ok().flatten() })
 }
 
 // --------------------------------------------------------- package managers
