@@ -1,4 +1,4 @@
-//! The pane grid stream: keyframes, deltas, scroll notices and cursor moves.
+//! The pane grid stream: keyframes, deltas and cursor moves.
 //!
 //! The byte layout, shared by the server's encoder and every decoder:
 //!
@@ -9,8 +9,7 @@
 //!             u32 cell byte count, rows            (every row, top to bottom)
 //! 1 delta  := u64 generation, u16 rect count, rects, cursor,
 //!             u32 cell byte count, rows      (the rects' rows, in rect order)
-//! 2 scroll := u64 first row id, u64 last row id, u32 count, u64 hash × count
-//! 3 cursor := cursor
+//! 3 cursor := cursor                             (2 is retired — see below)
 //!
 //! row      := u16 cell count, cells                  (cells per [`cell`])
 //! rect     := u16 row, u16 col, u16 rows, u16 cols
@@ -30,7 +29,7 @@
 //! little-endian byte slice, so the decoder allocates — once per frame, on the
 //! receiving side, where correctness is worth an allocation.
 
-use amx_core::{GridGeneration, RowHash, RowId, RowRange};
+use amx_core::GridGeneration;
 use bytes::BufMut;
 
 use super::cell::{self, PackedCell};
@@ -40,8 +39,23 @@ use super::codec::{CodecError, Reader, put_cursor, put_rect};
 pub const TAG_RESET: u8 = 0;
 /// An incremental update over a rect list.
 pub const TAG_DELTA: u8 = 1;
-/// Rows that left the live grid.
-pub const TAG_SCROLLED: u8 = 2;
+// Tag 2 was `scrolled`: rows leaving the live grid, announced with their ids
+// and content hashes. It was defined in M1, frozen in a golden and decoded by
+// the client, and nothing ever emitted it (DR-7). Retired rather than
+// renumbered — a build older than this one is entitled to keep reading 3 as
+// the cursor — and `decode` refuses it like any other unknown tag.
+//
+// It was never the only announcement of a commit: `Event::HistoryCommitted`
+// carries the same range on the event bus, with that bus's ordering, its typed
+// `gap` and its resumable cursor, and it reaches a client for *every* pane
+// rather than only for the panes it holds a grid stream for — which is the
+// smaller set, and smaller again under a narrow-viewport projection. What tag 2
+// added over the bus was the per-row hash.
+//
+// Revisit when a client keeps history rows as the packed bytes they were
+// served as, rather than as decoded text (`amx-client`'s `apply_history`): a
+// hash it can actually check against a cached row is the thing the bus does not
+// carry, and it is worth a message again the day something can check it.
 /// The cursor moved and nothing else did.
 pub const TAG_CURSOR: u8 = 3;
 
@@ -163,17 +177,6 @@ pub enum GridMessage<'a> {
         /// Cursor at send time.
         cursor: Cursor,
     },
-    /// Rows left the live grid and entered history with these ids.
-    ///
-    /// 04 §3: rows scrolling out are announced on the pane's delta stream with
-    /// their id and content hash, which is what makes scrolling up during heavy
-    /// output defined rather than racy.
-    Scrolled {
-        /// The rows that were committed, in order.
-        range: RowRange,
-        /// Content hash per row, parallel to `range`.
-        hashes: &'a [RowHash],
-    },
     /// Only the cursor moved.
     Cursor(Cursor),
 }
@@ -218,17 +221,6 @@ impl GridMessage<'_> {
                 }
                 put_cursor(cursor, out);
                 put_cells(cells, out);
-            }
-            Self::Scrolled { range, hashes } => {
-                out.put_u8(TAG_SCROLLED);
-                out.put_u64_le(range.first.get());
-                out.put_u64_le(range.last.get());
-                // One entry per row in the range, itself `u64`-bounded.
-                let count = u32::try_from(hashes.len()).unwrap_or(u32::MAX);
-                out.put_u32_le(count);
-                for hash in hashes.iter().take(count as usize) {
-                    out.put_u64_le(hash.get());
-                }
             }
             Self::Cursor(cursor) => {
                 out.put_u8(TAG_CURSOR);
@@ -279,14 +271,6 @@ pub enum Decoded {
         grid: Vec<DecodedRow>,
         /// The cursor at send time.
         cursor: Cursor,
-    },
-    /// Rows left the live grid and entered history.
-    Scrolled {
-        /// The rows that were committed.
-        range: RowRange,
-        /// One content hash per row in `range`; may be empty when the sender
-        /// did not hash.
-        hashes: Vec<RowHash>,
     },
     /// Only the cursor moved.
     Cursor(Cursor),
@@ -340,20 +324,6 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, CodecError> {
                 cursor,
             })
         }
-        TAG_SCROLLED => {
-            let first = RowId::from_raw(reader.u64()?);
-            let last = RowId::from_raw(reader.u64()?);
-            let count = reader.u32()? as usize;
-            reader.admits(count, size_of::<u64>())?;
-            let mut hashes = Vec::with_capacity(count);
-            for _ in 0..count {
-                hashes.push(RowHash::from_raw(reader.u64()?));
-            }
-            Ok(Decoded::Scrolled {
-                range: RowRange::new(first, last),
-                hashes,
-            })
-        }
         TAG_CURSOR => Ok(Decoded::Cursor(reader.cursor()?)),
         tag => Err(CodecError::UnknownTag { tag }),
     }
@@ -388,29 +358,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_scroll_notice_round_trips() {
-        let range = RowRange::new(RowId::from_raw(4), RowId::from_raw(6));
-        let hashes = [
-            RowHash::from_raw(11),
-            RowHash::from_raw(22),
-            RowHash::from_raw(33),
-        ];
-        let mut bytes = Vec::new();
-        GridMessage::Scrolled {
-            range,
-            hashes: &hashes,
-        }
-        .encode(&mut bytes);
-        assert_eq!(
-            decode(&bytes),
-            Ok(Decoded::Scrolled {
-                range,
-                hashes: hashes.to_vec(),
-            })
-        );
-    }
-
-    #[test]
     fn a_cursor_message_round_trips() {
         let cursor = Cursor {
             row: 2,
@@ -434,16 +381,30 @@ mod tests {
         assert!(matches!(decode(&[]), Err(CodecError::Truncated { .. })));
     }
 
+    /// The bound-before-allocation rule, at the one count the grid decoder
+    /// still sizes a `Vec` from. The retired scroll notice used to be where
+    /// this was pinned.
     #[test]
-    fn a_scroll_count_the_payload_cannot_hold_is_refused_before_allocation() {
-        let mut bytes = Vec::new();
-        bytes.push(TAG_SCROLLED);
-        bytes.extend_from_slice(&0_u64.to_le_bytes());
+    fn a_rect_count_the_payload_cannot_hold_is_refused_before_allocation() {
+        let mut bytes = vec![TAG_DELTA];
         bytes.extend_from_slice(&1_u64.to_le_bytes());
-        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        bytes.extend_from_slice(&u16::MAX.to_le_bytes());
         assert!(matches!(
             decode(&bytes),
             Err(CodecError::CountTooLarge { .. })
         ));
+    }
+
+    /// The retired scroll notice's tag stays retired: a peer that still speaks
+    /// it is answered like any other unknown tag, and 2 is not free for a later
+    /// variant to mean something else.
+    #[test]
+    fn the_retired_scroll_tag_is_refused_rather_than_reused() {
+        let mut bytes = vec![2];
+        // What tag 2 used to carry: a row range and a hash count.
+        bytes.extend_from_slice(&40_u64.to_le_bytes());
+        bytes.extend_from_slice(&41_u64.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        assert_eq!(decode(&bytes), Err(CodecError::UnknownTag { tag: 2 }));
     }
 }

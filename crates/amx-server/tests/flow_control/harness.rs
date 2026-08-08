@@ -456,7 +456,6 @@ impl ReferenceGrid {
                 self.deltas += 1;
             }
             Decoded::Cursor(cursor) => self.cursor = Some(cursor),
-            Decoded::Scrolled { .. } => {}
         }
     }
 

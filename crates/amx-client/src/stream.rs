@@ -7,6 +7,40 @@
 //! [`apply`] is the one place a stream frame becomes state — a grid message
 //! into the pane's cached [`PaneGrid`], a history chunk into its
 //! [`Scrollback`] — so the render loop deals in "what changed", never bytes.
+//!
+//! # A frame this table has no route for is dropped, and that is deliberate
+//!
+//! DR-12 leaves a frame on a channel nobody here knows two possible answers:
+//! the refusal that caught a desynchronised peer once
+//! (`docs/notes/frame-read-cancellation.md`), or silence. It gets **both, each
+//! at the layer that can tell the two cases apart.**
+//!
+//! A frame reaches this module only after [`crate::net::Session`] has admitted
+//! its channel: the reader looks the channel up in the caps table
+//! `Session::bind_channel` fills from every `stream.bind` reply, and a channel
+//! that was *never* bound is [`crate::net::NetError::UnboundChannel`] — fatal,
+//! and not a transport failure, so no redial can quietly swallow it.
+//! That is the check worth keeping, and it is kept where it can be made: only
+//! the reader knows the difference between "this connection never bound 111"
+//! and "this connection bound 111 and has since let it go".
+//!
+//! By the time [`apply`] sees a header, the second is the only thing left, and
+//! the honest answer to it is to drop the frame: [`Applied::Nothing`].
+//! Refusing here would kill a live session over a frame that was correct when
+//! it was written. Two ways to reach it are already built into the table —
+//! [`Bindings::forget_pane`] drops a closed pane's routes and leaves its
+//! channel burned, and a raw channel is bound to carry this client's keystrokes
+//! *out*, so an inbound frame on one has no route in by construction. Neither
+//! is produced by the current server — nothing calls
+//! [`Bindings::forget_pane`] yet and nothing sends `RawDirection::FromPane` —
+//! which is why the rule is stated here and pinned by
+//! `tests/unbound_channel.rs` rather than left to be rediscovered by whichever
+//! of the two arrives first.
+//!
+//! The same silence covers an undecodable payload on a bound channel, for the
+//! skew reason: a newer server may put a message on a grid stream that this
+//! build has no reading of, and skipping the frame while keeping the stream is
+//! what every other unknown-shape rule in amx already does.
 
 use std::collections::HashMap;
 
@@ -115,15 +149,18 @@ pub enum Applied {
         /// Whether this was the request's final chunk.
         done: bool,
     },
-    /// The frame was not for anything this client tracks.
+    /// The frame was not for anything this client tracks: a channel this
+    /// table has no route for, or a payload this build cannot read. Dropped,
+    /// for the reasons in the module header.
     Nothing,
 }
 
 /// Land one stream frame in the model.
 ///
-/// Undecodable frames and frames for unknown channels are dropped rather than
-/// fatal — a stale frame for an unbound stream is a defined protocol
-/// condition, not a broken session.
+/// Undecodable frames and frames for channels this table has no route for are
+/// dropped rather than fatal — a stale frame for a forgotten stream is a
+/// defined protocol condition, not a broken session, and the peer that really
+/// has lost its place was refused a layer down (see the module header).
 pub fn apply(
     model: &mut ClientModel,
     caches: &mut HashMap<PaneId, Scrollback>,
@@ -135,7 +172,7 @@ pub fn apply(
         let Ok(message) = decode(payload) else {
             return Applied::Nothing;
         };
-        apply_grid(model, caches, pane, message);
+        apply_grid(model, pane, message);
         return Applied::Grid(pane);
     }
     if let Some(&pane) = bindings.history.get(&header.channel) {
@@ -157,12 +194,12 @@ pub fn apply(
 }
 
 /// Apply one decoded grid message to the pane's cached grid.
-fn apply_grid(
-    model: &mut ClientModel,
-    caches: &mut HashMap<PaneId, Scrollback>,
-    pane: PaneId,
-    message: Decoded,
-) {
+///
+/// The grid stream reaches the live grid and nothing else. It used to reach the
+/// scrollback cache too, through the scroll notice DR-7 retired; the committed
+/// window now moves only where it is announced — `history.committed` on the
+/// event bus, and the per-pane `history_head` on `session.state`.
+fn apply_grid(model: &mut ClientModel, pane: PaneId, message: Decoded) {
     match message {
         Decoded::Reset {
             generation,
@@ -197,9 +234,6 @@ fn apply_grid(
                 }
             }
             target.apply_delta(generation, &rects, &cells, cursor);
-        }
-        Decoded::Scrolled { range, .. } => {
-            caches.entry(pane).or_default().commit(range);
         }
         Decoded::Cursor(cursor) => {
             model.pane_mut(pane, 0, 0).apply_cursor(cursor);
