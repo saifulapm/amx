@@ -308,10 +308,19 @@ pub async fn bounded<T>(
 }
 
 /// The error a long poll answers with when it was cut short.
+///
+/// [`RpcError::WAIT_ABANDONED`] rather than an internal error, and the
+/// difference is the whole of D-M3-7's "waits retry transparently across a
+/// handoff". A handoff cancels every connection, so a standing wait is cut
+/// short *by the swap itself* — and this reply frequently reaches the client
+/// before the socket does close, which is a well-formed answer rather than a
+/// transport failure. Read as a failure it kills a wait that was doing exactly
+/// what it was asked to; read by its code it is what it is, a question nobody
+/// answered, and the client re-asks it on the successor.
 #[must_use]
 pub fn cancelled() -> RpcError {
     RpcError::new(
-        RpcError::INTERNAL_ERROR,
+        RpcError::WAIT_ABANDONED,
         "the session is shutting down; the wait was abandoned",
     )
 }

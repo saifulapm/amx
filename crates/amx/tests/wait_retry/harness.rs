@@ -6,14 +6,25 @@
 //! those observable is most of its lines. The `#[path]` convention is
 //! `crates/amx-server/tests/flow_control.rs`'s.
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
+use std::sync::{Arc, Mutex};
 
 use amx_client::net::{self, Session};
+use amx_core::{PaneId, SessionId};
 use amx_proto::ClientInfo;
+use amx_proto::control::wait::WaitReply;
+use amx_proto::frame::{CONTROL_CHANNEL, FRAME_HEADER_LEN, FrameHeader};
+use amx_proto::hello::{Hello, ServerInfo};
+use amx_proto::rpc::{Request, Response, RpcError};
+use amx_server::conn::events::cancelled;
 use amx_server::session::probe::probe;
 use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::task::JoinHandle;
 
 use crate::support::{Env, Output, PATIENCE, wait_until};
 
@@ -260,6 +271,132 @@ impl Standing {
             stderr: read(&self.err),
         }
     }
+}
+
+/// A session socket that abandons the first `wait` it is asked and answers the
+/// next one.
+///
+/// The deterministic half of D-M3-7, and the reason it is not a handoff: an
+/// exporter cuts every standing wait short with
+/// [`RpcError::WAIT_ABANDONED`](amx_proto::RpcError::WAIT_ABANDONED) *and* then
+/// closes the socket, so which of the two a client observes is a race decided
+/// by how loaded the machine is. Here the reply always wins — the socket is
+/// well-behaved and stays open — so a client that treats an abandoned wait as a
+/// failure has nowhere to hide, on any machine, on every run.
+///
+/// The abandonment is [`cancelled`], the server's own constructor, so the
+/// fixture cannot drift from what a real session sends.
+pub struct Abandoning {
+    /// The params of every `wait` this socket was asked, in order.
+    asked: Arc<Mutex<Vec<Value>>>,
+    accepting: JoinHandle<()>,
+}
+
+impl Abandoning {
+    /// Bind `env`'s session socket and start answering on it.
+    ///
+    /// One [`SessionId`] across every connection: this stands in for a session
+    /// that changed processes, not for two different sessions.
+    pub fn listening(env: &Env, pane: PaneId) -> Self {
+        std::fs::create_dir_all(env.runtime_dir()).expect("the runtime directory");
+        let listener = UnixListener::bind(env.socket()).expect("bind the session socket");
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&asked);
+        let session = SessionId::new_v4();
+        let accepting = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(serve_wait(stream, Arc::clone(&seen), session, pane));
+            }
+        });
+        Self { asked, accepting }
+    }
+
+    /// The params of every `wait` it was asked, in order.
+    pub fn asked(&self) -> Vec<Value> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+impl Drop for Abandoning {
+    fn drop(&mut self) {
+        self.accepting.abort();
+    }
+}
+
+/// One connection: `Hello`/`Welcome`, then `wait` calls — the first abandoned,
+/// every later one answered.
+async fn serve_wait(
+    mut stream: UnixStream,
+    asked: Arc<Mutex<Vec<Value>>>,
+    session: SessionId,
+    pane: PaneId,
+) {
+    let Some(frame) = read_frame(&mut stream).await else {
+        return;
+    };
+    // The connect probe says hello and hangs up on the first answering byte, so
+    // a frame that is not a hello is not this socket's business.
+    let Ok(hello) = serde_json::from_slice::<Hello>(&frame) else {
+        return;
+    };
+    let welcome = hello
+        .accept(
+            ServerInfo {
+                name: "amx-abandoning-test".to_owned(),
+                version: "0".to_owned(),
+            },
+            &BTreeSet::new(),
+            1,
+            session,
+        )
+        .expect("negotiate");
+    write_frame(&mut stream, &serde_json::to_vec(&welcome).unwrap()).await;
+
+    while let Some(frame) = read_frame(&mut stream).await {
+        let Ok(request) = serde_json::from_slice::<Request>(&frame) else {
+            return;
+        };
+        let params = request.params.clone().unwrap_or(Value::Null);
+        let first = {
+            let mut asked = asked.lock().unwrap();
+            asked.push(params);
+            asked.len() == 1
+        };
+        let response = match (request.method.as_str(), first) {
+            ("wait", true) => Response::err(request.id, cancelled()),
+            ("wait", false) => Response::ok(
+                request.id,
+                serde_json::to_value(WaitReply {
+                    pane,
+                    satisfied: true,
+                    agent: None,
+                    status: Some(0),
+                    seq: 2,
+                })
+                .unwrap(),
+            ),
+            (method, _) => Response::err(request.id, RpcError::method_not_found(method)),
+        };
+        write_frame(&mut stream, &serde_json::to_vec(&response).unwrap()).await;
+    }
+}
+
+/// One control frame's payload, or `None` when the peer closed.
+async fn read_frame(stream: &mut UnixStream) -> Option<Vec<u8>> {
+    let mut header = [0_u8; FRAME_HEADER_LEN];
+    stream.read_exact(&mut header).await.ok()?;
+    let header = FrameHeader::decode(header).ok()?;
+    let mut payload = vec![0_u8; header.payload_len()];
+    stream.read_exact(&mut payload).await.ok()?;
+    Some(payload)
+}
+
+/// Write one control frame.
+async fn write_frame(stream: &mut UnixStream, payload: &[u8]) {
+    let len = u32::try_from(payload.len()).expect("a small frame");
+    let header = FrameHeader::new(len, CONTROL_CHANNEL);
+    let _ = stream.write_all(&header.encode()).await;
+    let _ = stream.write_all(payload).await;
 }
 
 pub fn read(path: &Path) -> String {

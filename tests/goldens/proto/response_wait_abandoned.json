@@ -1,0 +1,8 @@
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "error": {
+    "code": -32000,
+    "message": "the session is shutting down; the wait was abandoned"
+  }
+}

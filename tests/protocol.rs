@@ -342,6 +342,9 @@ fn protocol_goldens_cover_every_control_method_and_stream_message() {
         "notification_event",
         "notification_event_gap",
         "response_error",
+        // Frozen apart from the generic error envelope because the client
+        // branches on its code rather than reading its message (D-M3-7).
+        "response_wait_abandoned",
         "response_ok",
         "welcome",
     ] {

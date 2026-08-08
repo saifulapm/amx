@@ -21,6 +21,19 @@
 //! the command's answer: a broken pipe, and a wait that had been waiting for
 //! ten minutes lost. Now the failure is redialled and the call re-issued.
 //!
+//! **A swap ends a standing wait in two different ways, and both are the same
+//! event.** The socket can simply die under it; or the server can cut the wait
+//! short first and *say so* —
+//! [`RpcError::WAIT_ABANDONED`](amx_proto::RpcError::WAIT_ABANDONED), sent by
+//! the exporter as it quiesces, on a connection that is about to close but has
+//! not yet. Which of the two the client sees is a race between the reply and
+//! the socket, decided by how loaded the machine is; treating only the first as
+//! a reconnect made the milestone's own sentence — "waits keep waiting" — true
+//! on a fast machine and false on a slow one. So the abandoned-wait code is
+//! read as exactly what a dropped connection is: the session went away
+//! mid-call. It is a code and never a message, because a string is not a
+//! contract.
+//!
 //! Two rules keep the re-issue honest, and both are refusals:
 //!
 //! - **A call that was written is only re-issued when re-issuing it is asking
@@ -135,10 +148,9 @@ pub async fn one_shot(
     let mut last: Option<NetError> = None;
 
     loop {
-        let left = window.saturating_sub(started.elapsed());
         if attempts > 0 {
             let delay = backoff(attempts - 1);
-            if delay >= left {
+            if delay >= window.saturating_sub(started.elapsed()) {
                 return Err(gave_up(&ctx, started.elapsed(), last));
             }
             tokio::time::sleep(delay).await;
@@ -148,6 +160,9 @@ pub async fn one_shot(
         // The timeout the *re-issued* call carries is what is left of the one
         // the caller asked for. Without this a verb that lost three
         // connections would wait three times as long as it was told to.
+        // Measured after the backoff and not before it: time spent waiting to
+        // redial is the caller's time too.
+        let left = window.saturating_sub(started.elapsed());
         let attempt = attempt(&ctx, wire, &spend(&params, left)).await;
         match attempt {
             Ok(value) => return Ok(value),
@@ -173,8 +188,10 @@ pub async fn one_shot(
 
 /// How one attempt ended.
 enum Attempt {
-    /// The connection failed. `sent` says whether the request had been written
-    /// when it did, which is the whole of what makes re-issuing safe or not.
+    /// The session went away under the call — the connection failed, or it
+    /// answered that it was abandoning the call unanswered. `sent` says whether
+    /// the request had been written when it did, which is the whole of what
+    /// makes re-issuing safe or not.
     Lost { sent: bool, err: NetError },
     /// The server answered, and its answer was a refusal.
     Refused(NetError),
@@ -201,7 +218,10 @@ async fn attempt(ctx: &Ctx, wire: &str, params: &Value) -> Result<Value, Attempt
             }
         })?;
     session.call(wire, params.clone()).await.map_err(|err| {
-        if err.is_transport() {
+        // A wait the session abandoned is the session going away, not an
+        // answer: it says the question was dropped unanswered, which is the
+        // one refusal a redial can legitimately ask again.
+        if err.is_transport() || err.is_abandoned_wait() {
             Attempt::Lost { sent: true, err }
         } else {
             Attempt::Refused(err)
