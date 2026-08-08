@@ -18,6 +18,10 @@
 //! lives next door in [`super::events`] — this file only makes sure every wake
 //! ends by draining them, including the wakes whose real work was a call, so an
 //! event that landed mid-call is folded as soon as the reply is in.
+//!
+//! What the loop *asks the socket for* — the grid, raw and history streams, and
+//! the viewport declaration — lives in [`super::binds`], and what it does when
+//! the socket ends under it lives in [`super::reconnect`].
 
 use std::io::Write;
 use std::os::fd::AsFd;
@@ -25,8 +29,7 @@ use std::path::Path;
 
 use amx_core::PaneId;
 use amx_proto::ClientInfo;
-use amx_proto::control::{Call, Method, client as client_proto, stream as stream_proto};
-use amx_proto::stream::{RawDirection, RawPaneIo, StreamKind};
+use amx_proto::control::{Call, Method};
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
 
@@ -71,12 +74,23 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         client: ClientInfo,
     ) -> Result<Self, AppError> {
         let stream = crate::net::connect(socket).await?;
-        let (session, _welcome) = Session::attach(stream, client, true, None).await?;
+        let (session, welcome) = Session::attach(stream, client.clone(), true, None).await?;
         let term = TerminalGuard::enter(fd, out)?;
         let mut app = Self::assemble(session, term)?;
+        // Recorded before the first call: this is what makes the client
+        // redialable at all, and the `SessionId` here is what a later
+        // `Welcome` is compared against to tell "the session continued" from
+        // "a different server answers this path" (`super::reconnect`).
+        app.origin = Some(super::reconnect::Origin::new(
+            socket.to_path_buf(),
+            client,
+            welcome.session,
+        ));
+        app.consumed(welcome.seq);
         let seq = app.sync_state().await?;
         app.subscribe_events(Some(seq)).await?;
         app.report_viewport().await?;
+        app.consumed(seq);
         Ok(app)
     }
 
@@ -99,6 +113,10 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             enum Wake {
                 Stdin(usize),
                 Frame(amx_proto::FrameHeader),
+                /// The socket ended under the read. Not the end of the client:
+                /// a handoff retires the gateway and the successor binds the
+                /// same path a moment later (`super::reconnect`).
+                Lost(crate::net::NetError),
                 Winch,
                 Settle,
                 Gone,
@@ -122,7 +140,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 },
                 header = self.session.read_frame_into(&mut frame) => match header {
                     Ok(header) => Wake::Frame(header),
-                    Err(err) => return Err(err.into()),
+                    Err(err) => Wake::Lost(err),
                 },
                 signal = sigwinch.recv() => match signal {
                     Some(()) => Wake::Winch,
@@ -131,40 +149,64 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 () = tokio::time::sleep(RESIZE_DEBOUNCE), if resizing => Wake::Settle,
             };
 
-            match wake {
-                Wake::Stdin(n) => {
-                    // The borrow checker cannot split `input` from `self`
-                    // across the await inside; a copy of a keystroke is cheap.
-                    let bytes = input[..n].to_vec();
-                    if self.handle_bytes(&bytes).await? == Flow::Detach {
-                        break;
+            // The whole round is fallible in one place so a transport failure
+            // anywhere in it — the read, a call the input arm made, the drain
+            // behind that call — reaches the same recovery. A failure that is
+            // not the transport propagates out of `recover` unchanged.
+            let round: Result<Flow, AppError> = async {
+                match wake {
+                    Wake::Stdin(n) => {
+                        // The borrow checker cannot split `input` from `self`
+                        // across the await inside; a copy of a keystroke is
+                        // cheap.
+                        let bytes = input[..n].to_vec();
+                        if self.handle_bytes(&bytes).await? == Flow::Detach {
+                            return Ok(Flow::Detach);
+                        }
                     }
-                }
-                Wake::Frame(header) => {
-                    if stream::apply(
-                        &mut self.model,
-                        &mut self.caches,
-                        &self.bindings,
-                        header,
-                        &frame,
-                    ) != Applied::Nothing
-                    {
-                        self.dirty = true;
+                    Wake::Frame(header) => {
+                        if stream::apply(
+                            &mut self.model,
+                            &mut self.caches,
+                            &self.bindings,
+                            header,
+                            &frame,
+                        ) != Applied::Nothing
+                        {
+                            self.dirty = true;
+                        }
                     }
+                    Wake::Lost(err) => return Err(err.into()),
+                    Wake::Winch => {
+                        let size = self.term.size()?;
+                        self.note_resize(size);
+                    }
+                    Wake::Settle => self.settle_resize_wired().await?,
+                    Wake::Gone => return Ok(Flow::Detach),
                 }
-                Wake::Winch => {
-                    let size = self.term.size()?;
-                    self.note_resize(size);
+
+                // After every wake, not only after a frame: a control call made
+                // by the input arm reads frames of its own, and any
+                // notification that arrived behind its reply is sitting in the
+                // session's queue now.
+                self.drain_events().await?;
+                self.fetch_wanted_history().await?;
+                Ok(Flow::Continue)
+            }
+            .await;
+
+            match round {
+                Ok(Flow::Detach) => break,
+                Ok(Flow::Continue) => {}
+                Err(err) => {
+                    self.recover(err).await?;
+                    // The reattach left a repaint owed and the frame buffer
+                    // holding whatever the dead socket last handed over; the
+                    // next round reads the successor's first frame.
+                    frame.clear();
                 }
-                Wake::Settle => self.settle_resize_wired().await?,
-                Wake::Gone => break,
             }
 
-            // After every wake, not only after a frame: a control call made by
-            // the input arm reads frames of its own, and any notification that
-            // arrived behind its reply is sitting in the session's queue now.
-            self.drain_events().await?;
-            self.fetch_wanted_history().await?;
             if self.dirty {
                 self.dirty = false;
                 self.repaint();
@@ -175,6 +217,24 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Answer a failed round: reattach if it was the transport, propagate
+    /// otherwise.
+    ///
+    /// The two conditions are separate on purpose. A refused call, a frame this
+    /// build cannot read or a state reply it cannot decode would say the same
+    /// thing on a fresh connection, so retrying would only hide it; and a client
+    /// with no socket behind it (the ssh bridge's socketpair) has nowhere to
+    /// redial, so it keeps M2's behavior — the loop ends and the terminal comes
+    /// back.
+    async fn recover(&mut self, err: AppError) -> Result<(), AppError> {
+        let lost = matches!(&err, AppError::Net(net) if net.is_transport());
+        if !lost || !self.can_reconnect() {
+            return Err(err);
+        }
+        self.reconnect().await?;
         Ok(())
     }
 
@@ -256,96 +316,6 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         Ok(Flow::Continue)
     }
 
-    /// Write `bytes` into `pane`'s PTY over its bound raw stream, binding one
-    /// on first use.
-    async fn forward(&mut self, pane: PaneId, bytes: &[u8]) -> Result<(), AppError> {
-        let channel = match self.bindings.raw_channel(pane) {
-            Some(channel) => channel,
-            None => match self.bind(StreamKind::RawPaneIo { pane }).await? {
-                Some(reply) => {
-                    self.bindings.bind_raw(pane, reply.channel);
-                    reply.channel
-                }
-                // The pane is gone (or was never live); its input has nowhere
-                // to go, which is not this client's failure.
-                None => return Ok(()),
-            },
-        };
-        let mut payload = Vec::with_capacity(bytes.len() + 17);
-        RawPaneIo {
-            pane,
-            direction: RawDirection::ToPane,
-            bytes,
-        }
-        .encode(&mut payload);
-        self.session.write_stream(channel, &payload).await?;
-        Ok(())
-    }
-
-    /// Bind a grid stream for every visible pane that has none yet.
-    pub(super) async fn bind_visible(&mut self) -> Result<(), AppError> {
-        let visible: Vec<PaneId> = self
-            .model
-            .focused_workspace()
-            .map(|ws| ws.layout.panes())
-            .unwrap_or_default();
-        for pane in visible {
-            if self.bindings.has_grid(pane) {
-                continue;
-            }
-            if let Some(reply) = self.bind(StreamKind::PaneGrid { pane }).await? {
-                self.bindings.bind_grid(pane, reply.channel);
-            }
-        }
-        Ok(())
-    }
-
-    /// Bind one stream, recording its inbound cap.
-    ///
-    /// `Ok(None)` when the server refuses the bind itself (the pane died
-    /// between the state snapshot and now) — a race, not a failure.
-    async fn bind(
-        &mut self,
-        kind: StreamKind,
-    ) -> Result<Option<stream_proto::BindReply>, AppError> {
-        let params = serde_json::to_value(stream_proto::BindParams {
-            kind,
-            // A first bind on a fresh connection: there is no generation to
-            // claim. W09 sends the client's last-seen one when it re-binds
-            // after a reconnect (`docs/09-m3-plan.md` D-M3-7).
-            generation: None,
-        })
-        .map_err(|_| AppError::BadState("unencodable bind"))?;
-        let value = match self.call(Method::StreamBind.wire_name(), params).await {
-            Ok(value) => value,
-            Err(crate::net::NetError::Call(_)) => return Ok(None),
-            Err(err) => return Err(err.into()),
-        };
-        let reply: stream_proto::BindReply =
-            serde_json::from_value(value).map_err(|_| AppError::BadState("stream.bind reply"))?;
-        self.session.bind_channel(reply.channel, reply.max_frame);
-        Ok(Some(reply))
-    }
-
-    /// Declare this client's size and visible panes.
-    pub async fn report_viewport(&mut self) -> Result<(), AppError> {
-        let panes = self
-            .model
-            .focused_workspace()
-            .map(|ws| ws.layout.panes())
-            .unwrap_or_default();
-        let params = serde_json::to_value(client_proto::Viewport {
-            rows: self.model.term.h,
-            cols: self.model.term.w,
-            panes,
-        })
-        .map_err(|_| AppError::BadState("unencodable viewport"))?;
-        let _ = self
-            .call(Method::ClientViewport.wire_name(), params)
-            .await?;
-        Ok(())
-    }
-
     /// Act on the pending resize: repaint locally, then tell the server so it
     /// re-sizes the panes this client drives (04 §3 — active client rule).
     async fn settle_resize_wired(&mut self) -> Result<(), AppError> {
@@ -359,38 +329,6 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             // client cannot yet hear as an event.
             self.caches.clear();
             self.dirty = true;
-        }
-        Ok(())
-    }
-
-    /// Turn copy mode's cache misses into `pane.history` calls.
-    async fn fetch_wanted_history(&mut self) -> Result<(), AppError> {
-        if self.wanted_history.is_empty() {
-            return Ok(());
-        }
-        let wanted = std::mem::take(&mut self.wanted_history);
-        for (pane, range) in wanted {
-            if !self.bindings.has_history(pane) {
-                match self.bind(StreamKind::History { pane }).await? {
-                    Some(reply) => self.bindings.bind_history(pane, reply.channel),
-                    None => continue,
-                }
-            }
-            let params = serde_json::to_value(stream_proto::HistoryParams {
-                pane,
-                first: range.first,
-                last: range.last,
-                request: next_request(),
-            })
-            .map_err(|_| AppError::BadState("unencodable history request"))?;
-            match self.call(Method::PaneHistory.wire_name(), params).await {
-                // Chunks landed via `call`'s frame routing; repaint follows.
-                Ok(_) => self.dirty = true,
-                // A range the pane can no longer serve — evicted while the
-                // request was in flight. Copy mode renders it unavailable.
-                Err(crate::net::NetError::Call(_)) => {}
-                Err(err) => return Err(err.into()),
-            }
         }
         Ok(())
     }
@@ -477,11 +415,4 @@ fn mutates_layout(method: Method) -> bool {
         // survive long enough to re-read anything.
         | Method::SessionHandoff => false,
     }
-}
-
-/// A process-unique history request token.
-fn next_request() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed)
 }

@@ -1187,3 +1187,150 @@ branch gone is gone; kept as a plain workspace` beside the pane's own degradatio
 with the workspace back under its own id and no worktree block. Also smoked: no
 session running, no arguments, outside a repository, twice for one branch, and
 both no-branch `done` refusals.
+
+---
+
+## W09 — Client reconnect
+
+**Both halves of the resume claim are sent, and either alone would do.** W08's
+contract puts the generations in the hello (spent by the first bare re-bind) and
+also lets `stream.bind` name one explicitly, where "passing it on the call always
+wins". The client does both, and the redundancy was measured rather than
+assumed: neutering the bind parameter leaves
+`a_dropped_client_reattaches_with_resume_and_repaints_only_stale_panes` **green**
+(the hello answers the first bare bind), and neutering `App::vouched` leaves the
+keyframe half of it green too (the bind parameter answers that one). Only
+removing both turns it red. Kept anyway, and here is the case that needs the
+explicit one: the hello's block is spent *once per pane per connection*, so the
+second `bind_visible` for a pane on the same connection — which is what happens
+after `Bindings::forget_pane` and a pane re-entering the visible set — would open
+with a `First` keyframe if the call said nothing. Recorded because a reviewer
+looking for the single load-bearing line will not find one.
+
+**What the client is willing to swear to, and the one thing that revokes it.**
+`Resume.generations` asserts a *complete* grid, so `PaneGrid` gained the flag
+that makes the assertion checkable at all: `complete` is false for the blank grid
+the model mints as somewhere for a delta to land, and true only once a keyframe
+has filled it. The second half is `Session::torn` — the read state the
+cancel-safe reader already kept, asked a new question. A connection that died
+part way through a payload names the channel it died on, and the pane bound to
+that channel is dropped from the claim; a connection that died part way through a
+*header* names nothing, so the whole claim is dropped. That is the literal
+reading of "omit a pane whose stream was paused, stalled, or mid-delta at the
+disconnect", and it costs one keyframe in the case where it fires.
+
+**`agent.prompt --wait` is *not* re-issued once its request has been written, and
+the task list asked for it.** The divergence is deliberate: `agent.prompt`'s
+first act is `pane.run`, which types into a pane, and a connection that died
+after the request went out cannot say whether it typed. Re-issuing would be a
+second prompt into a live agent's conversation — a worse outcome than the error.
+So `cmd/call.rs` splits the failure in two. A failure *before* the request was
+written (connect, `Hello`) is retried for every method, because a verb connection
+mutates nothing by connecting and that is the ordinary shape of a verb typed
+while a swap is in flight; a failure *after* it was written is retried only for
+the reads and the state predicates (`reissuable`, an exhaustive match so a new
+table row cannot inherit an answer nobody chose). `wait`, `pane.wait_output` and
+`agent.prompt`'s connect half are covered; `agent.prompt`'s wait half, once
+submitted, is not.
+
+**Hand-off, and the thing that would close it:** D-M3-6 says input arriving
+during the frozen window "fails fast at the handle (`NotAccepting`) and is the
+caller's retry". It cannot be, today — `dispatch/pane.rs` maps `DriveError::
+NotAccepting` onto `RpcError::INVALID_PARAMS`, which is indistinguishable from a
+caller naming a pane that does not exist, and retrying on `INVALID_PARAMS` would
+retry genuine mistakes. A distinct code (or an error-data tag) meaning "the
+session is mid-swap and nothing happened" would make every mutating verb safely
+retriable, including `agent.prompt`. Server-side and out of W09's scope.
+
+**The redial window is the caller's own patience, not a constant.** A call
+carrying `timeout_ms` gets exactly that long in total, measured from the first
+attempt, and the re-issued call's `timeout_ms` is *reduced* by what has already
+been spent — so `amx wait --timeout 2s` is two seconds whether it took one
+connection or four, and `the_retry_gives_up_at_the_deadline_with_an_honest_error`
+runs in about two. Everything without a timeout of its own gets ten seconds,
+which is §3's five-second socket-free probe loop with room. This shape was chosen
+because the alternatives all needed surface W09 does not own: a `--reconnect`
+flag means editing `cli.rs` (W03's), a config field means editing `amx-core`'s
+config (nobody's, this milestone), and an environment variable means reading the
+environment outside `Env`, which T01's contract forbids.
+
+**`amx events --json` had to branch on `Welcome.session`, and that was not in the
+brief.** Found while testing the redial: a *cold restart* begins the sequence
+space again at zero, so a relay resuming from its old cursor (say 24) would sit
+silent until the new session reached 25 and then continue — silently skipping
+everything the new session published first. Which is precisely the failure the
+bus design exists to refuse. The relay therefore compares the `SessionId` it last
+spoke to, and on a change says so on stderr and resubscribes from the head. A
+*handoff* keeps both the id and the sequence, which is what makes resuming across
+one exact, and is what
+`events_json_resumes_from_its_cursor_or_reports_the_gap` drives — over a real
+`amx session handoff`, asserting the printed sequences are contiguous across the
+swap.
+
+**A bridged client cannot redial, and does not pretend to.** `App::assemble` is
+what `crates/amx/src/remote` builds a client from, and its connection is one end
+of a socketpair whose far end is an `ssh` child; redialling that means respawning
+ssh, which is the bridge's business. So the reconnect is keyed on an `Origin`
+that only `App::attach` records, and a client without one keeps M2's behavior
+exactly — a transport failure ends the loop. `a_bridged_client_has_nowhere_to_
+redial_and_says_so` pins it so nobody later turns it into a busy loop against a
+path that was never a path. **Hand-off to W14:** an ssh session that drops today
+still ends the client; making the bridge redial is a `remote/` change, not a
+client one.
+
+**`crates/amx/src/cmd/viewport.rs` does not reconnect.** The `amx attach --pane`
+client builds its own loop over a `Session` rather than running `App`, so none of
+this reaches it. It is nobody's file in wave 4 and the change is not mechanical
+(it has no model to resync). **Hand-off to W14**, or to whoever next owns that
+file.
+
+**W11's `amx --remote host <verb>` refusal is not made natural by any of this.**
+The refusal stands because a remote one-shot needs `cmd::call::one_shot` to work
+against a stream instead of a socket path. What changed is the shape of that
+function: it is now a loop over `attempt(&ctx, wire, &params)`, and `attempt` is
+the only thing that touches `ctx.socket`. A transport that hands back a
+negotiated `Session` instead would plug in there — but a bridged one-shot has no
+path to redial (see above), so it would want the loop bounded at one attempt, and
+that is a decision for whoever does it.
+
+**Files edited outside §5's list, all inside §6's "W09: `amx-client/src/**`,
+`cmd/{attach,call}.rs`, client tests".** `crates/amx/src/cmd/events.rs` — the
+`events` half of "reconnect-and-reissue for … `events`" lives there and §5's list
+named only `attach.rs`/`call.rs`; no wave-4 peer lists it.
+`amx-client/src/model/{grid,mod}.rs` and `src/stream.rs` — the completeness flag,
+the keyframe counter and the channel→pane lookup the claim is built from.
+`amx-client/tests/support/mod.rs` — `Server::control` (W06's `GatewayControl`,
+which is how a test takes a client's connection away without taking the panes
+with it) and `Server::usurp` (a second `Core` on the same path, the only way to
+produce a *different* `SessionId`). `crates/amx/src/cmd/attach.rs` is in the
+scope list and was **not** touched: `App::attach` records where to redial, and
+`App::run` does the redialling, so the caller needed no edit.
+
+**Budget: four splits, one of them not the one R-M3-7 predicted.**
+`app/wired.rs` was 487 and R-M3-7 named `app/reconnect.rs` in advance; that split
+happened and was not enough, because the loop also had to grow a fallible round
+and a recovery arm. So the stream surface came out too — `app/binds.rs`, the
+grid/raw/history binds and the viewport declaration — leaving `wired.rs` 418,
+`reconnect.rs` 356, `binds.rs` 188. `net.rs` went 481 → 529 on the `Torn` and
+`is_transport` additions and became `net/{mod,read}.rs` (353 + 206); the frame
+reader was already a section of its own in that file's header, so the seam was
+drawn rather than invented. `crates/amx/tests/wait_retry.rs` passed 500 and was
+split on the `#[path]` convention (285 + `wait_retry/harness.rs` 293) — that
+suite is four process-level tests over three long-lived children each, and the
+scaffolding was most of its lines.
+
+**An observed flake, in `amx-server`, not attributable here.**
+`crates/amx-server/tests/agent_verbs.rs` failed twice in about a dozen full runs
+(`agent_start_spawns_from_the_registry_labels_the_pane_and_returns_ready` once,
+`agent_prompt_submits_via_run_and_wait_blocked_returns_on_the_next_block` once),
+both inside the in-process dispatch harness. W09 changed no line of `amx-server`
+and `amx-server` does not depend on `amx-client`, so the binary that failed was
+compiled from unchanged sources. Recorded rather than explained.
+
+**Live smoke of the real binary, on 2026-08-08.** A real `amx attach` on a real
+40×120 pty, against a real server: `echo SMOKE-BEFORE` painted on its screen,
+then `amx session handoff --binary <the same build>` — accepted, exporter logs
+"the session has been handed over" — then `echo SMOKE-AFTER`. The client was
+never restarted and never touched. Its final frame holds **both** sentinels and
+2082 non-blank characters, which is the T19 lesson taken literally: a screen that
+demonstrably held content, compared against itself across a swap.

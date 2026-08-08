@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use amx_core::{Bus, Ctx, Scheduled, SessionName};
 use amx_server::actor::CoreHandle;
 use amx_server::actor::core::Core;
-use amx_server::actor::gateway::{Gateway, GatewayProbe, GatewayReport};
+use amx_server::actor::gateway::{Gateway, GatewayControl, GatewayProbe, GatewayReport};
 use amx_server::runtime::{Runtime, ShutdownReport};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -72,6 +72,10 @@ pub struct Server {
     pub ctx: Ctx,
     /// Live connection accounting.
     pub probe: GatewayProbe,
+    /// Retire and restore this session's socket — W06's handoff seam, and the
+    /// only way a test can take a client's connection away without taking the
+    /// panes behind it away too.
+    pub control: GatewayControl,
     runtime: Runtime,
     report: oneshot::Receiver<GatewayReport>,
     _dir: TempDir,
@@ -83,24 +87,11 @@ impl Server {
         let dir = TempDir::new(tag);
         let ctx = ctx_under(dir.path());
         let mut runtime = Runtime::new(ctx.clone());
-
-        let (core_tx, core_rx) = mpsc::channel(64);
-        let core = Core::new(ctx.clone(), CoreHandle::new(core_tx.clone()));
-        runtime.spawn("core", async move {
-            let _ = core.run(core_rx, |_: &Scheduled| {}).await;
-        });
-
-        let gateway =
-            Gateway::bind(ctx.clone(), CoreHandle::new(core_tx)).expect("bind the session socket");
-        let probe = gateway.probe().clone();
-        let (report_tx, report) = oneshot::channel();
-        runtime.spawn("gateway", async move {
-            let _ = report_tx.send(gateway.run().await);
-        });
-
+        let (probe, control, report) = serve(&mut runtime, &ctx);
         Self {
             ctx,
             probe,
+            control,
             runtime,
             report,
             _dir: dir,
@@ -112,12 +103,56 @@ impl Server {
         &self.ctx.socket
     }
 
+    /// Retire this session's socket and bind a **different** session on it.
+    ///
+    /// A fresh `Core` mints a fresh `SessionId` (`core/mod.rs`), so what a
+    /// client finds when it redials is a server that has never heard of it —
+    /// the other half of the `Welcome.session` branch, and the only half a
+    /// retire-and-restore cannot produce.
+    ///
+    /// The old `Core` is left running and unreachable rather than shut down:
+    /// what this models is the socket changing hands, and joining an actor tree
+    /// mid-test would be testing `Runtime::shutdown` instead.
+    pub async fn usurp(&mut self) {
+        self.control.retire().await.expect("retire the socket");
+        let (probe, control, report) = serve(&mut self.runtime, &self.ctx);
+        self.probe = probe;
+        self.control = control;
+        self.report = report;
+    }
+
     /// Cancel the session and join every task.
     pub async fn shutdown(self) -> (GatewayReport, ShutdownReport) {
         let shutdown = self.runtime.shutdown().await;
         let gateway = self.report.await.expect("the gateway reported");
         (gateway, shutdown)
     }
+}
+
+/// Spawn one `Core` and one `Gateway` on `ctx` into `runtime`.
+fn serve(
+    runtime: &mut Runtime,
+    ctx: &Ctx,
+) -> (
+    GatewayProbe,
+    GatewayControl,
+    oneshot::Receiver<GatewayReport>,
+) {
+    let (core_tx, core_rx) = mpsc::channel(64);
+    let core = Core::new(ctx.clone(), CoreHandle::new(core_tx.clone()));
+    runtime.spawn("core", async move {
+        let _ = core.run(core_rx, |_: &Scheduled| {}).await;
+    });
+
+    let gateway =
+        Gateway::bind(ctx.clone(), CoreHandle::new(core_tx)).expect("bind the session socket");
+    let probe = gateway.probe().clone();
+    let control = gateway.control();
+    let (report_tx, report) = oneshot::channel();
+    runtime.spawn("gateway", async move {
+        let _ = report_tx.send(gateway.run().await);
+    });
+    (probe, control, report)
 }
 
 /// A real pseudoterminal pair, opened with `rustix::pty`.
