@@ -27,7 +27,7 @@ use std::io::Write;
 use std::os::fd::AsFd;
 use std::path::Path;
 
-use amx_core::PaneId;
+use amx_core::{Effect, PaneId};
 use amx_proto::ClientInfo;
 use amx_proto::control::{Call, Method};
 use serde_json::Value;
@@ -165,16 +165,14 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                         }
                     }
                     Wake::Frame(header) => {
-                        if stream::apply(
+                        let applied = stream::apply(
                             &mut self.model,
                             &mut self.caches,
                             &self.bindings,
                             header,
                             &frame,
-                        ) != Applied::Nothing
-                        {
-                            self.dirty = true;
-                        }
+                        );
+                        self.absorb(effect_of(applied));
                     }
                     Wake::Lost(err) => return Err(err.into()),
                     Wake::Winch => {
@@ -207,14 +205,17 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 }
             }
 
-            if self.dirty {
-                self.dirty = false;
+            if self.frame_due() {
                 self.repaint();
                 flush(self.writer.bytes()).map_err(AppError::from_io)?;
-                if !self.emit.is_empty() {
-                    flush(&self.emit).map_err(AppError::from_io)?;
-                    self.emit.clear();
-                }
+            }
+            // Outside the frame, and outside the question of whether one was
+            // owed: OSC 52 and OSC 9 are bytes for the host terminal, not cells
+            // in this client's own picture, and a round that produced one
+            // without changing the screen still has to send it.
+            if !self.emit.is_empty() {
+                flush(&self.emit).map_err(AppError::from_io)?;
+                self.emit.clear();
             }
         }
         Ok(())
@@ -260,9 +261,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             )
         });
         self.frame = frame;
-        if applied? != Applied::Nothing {
-            self.dirty = true;
-        }
+        self.absorb(effect_of(applied?));
         self.drain_events().await
     }
 
@@ -280,14 +279,14 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 InputEvent::Detach => OwnedEvent::Detach,
             });
         });
-        self.dirty = true;
 
         // A picker that just opened lists whatever the model held — which,
         // with no event subscription in M0, may be stale. Re-sync and rebuild
         // it so a workspace another client created a moment ago is choosable.
         if !picker_was_open && self.picker_open() {
             self.sync_state().await?;
-            self.open_picker();
+            let effect = self.open_picker();
+            self.absorb(effect);
         }
 
         let mut resync = false;
@@ -328,7 +327,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             // conservative reading of the width-reflow invalidation this
             // client cannot yet hear as an event.
             self.caches.clear();
-            self.dirty = true;
+            self.absorb(Effect::Full);
         }
         Ok(())
     }
@@ -344,16 +343,29 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             model,
             caches,
             bindings,
-            dirty,
+            effects,
             ..
         } = self;
         session
             .call_with(method, params, |header, payload| {
-                if stream::apply(model, caches, bindings, header, payload) != Applied::Nothing {
-                    *dirty = true;
-                }
+                effects.absorb(effect_of(stream::apply(
+                    model, caches, bindings, header, payload,
+                )));
             })
             .await
+    }
+}
+
+/// What one applied stream frame invalidated.
+///
+/// The whole of the mapping, and the reason the client can tell an off-screen
+/// delta from an on-screen one: both kinds of frame name the pane they landed
+/// in — a grid delta and a history chunk alike, the second because copy mode
+/// draws that pane's cache in that pane's rect.
+const fn effect_of(applied: Applied) -> Effect {
+    match applied {
+        Applied::Grid(pane) | Applied::History { pane, .. } => Effect::PaneDamage(pane),
+        Applied::Nothing => Effect::Nothing,
     }
 }
 

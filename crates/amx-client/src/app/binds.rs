@@ -29,7 +29,7 @@
 use std::io::Write;
 use std::os::fd::AsFd;
 
-use amx_core::{GridGeneration, PaneId};
+use amx_core::{Effect, GridGeneration, PaneId};
 use amx_proto::control::{Method, client as client_proto, stream as stream_proto};
 use amx_proto::stream::{RawDirection, RawPaneIo, StreamKind};
 
@@ -168,8 +168,10 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             })
             .map_err(|_| AppError::BadState("unencodable history request"))?;
             match self.call(Method::PaneHistory.wire_name(), params).await {
-                // Chunks landed via `call`'s frame routing; repaint follows.
-                Ok(_) => self.dirty = true,
+                // Chunks landed via `call`'s frame routing, into this pane's
+                // scrollback cache — which is what copy mode is drawing over
+                // it, so the damage is the pane's.
+                Ok(_) => self.absorb(Effect::PaneDamage(pane)),
                 // A range the pane can no longer serve — evicted while the
                 // request was in flight. Copy mode renders it unavailable.
                 Err(crate::net::NetError::Call(_)) => {}

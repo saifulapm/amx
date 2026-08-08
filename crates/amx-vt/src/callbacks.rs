@@ -297,7 +297,11 @@ unsafe extern "C" fn title_changed(_terminal: sys::GhosttyTerminal, userdata: *m
 
 unsafe extern "C" fn pwd_changed(_terminal: sys::GhosttyTerminal, userdata: *mut c_void) {
     // SAFETY: the userdata is ours.
-    unsafe { with_effects(userdata, |effects| effects.events.push(TerminalEvent::PwdChanged)) };
+    unsafe {
+        with_effects(userdata, |effects| {
+            effects.events.push(TerminalEvent::PwdChanged)
+        })
+    };
 }
 
 unsafe extern "C" fn clipboard_write(

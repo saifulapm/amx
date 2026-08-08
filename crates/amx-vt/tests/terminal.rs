@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 //! The terminal handle: ownership, writes, and effect ordering.
 
-use amx_vt::{ClipboardLocation, Effect, Effects, Mode, Screen, Terminal, TerminalOptions};
+use amx_vt::{ClipboardLocation, Effects, Mode, Screen, Terminal, TerminalEvent, TerminalOptions};
 
 fn terminal(cols: u16, rows: u16) -> Terminal {
     Terminal::new(TerminalOptions {
@@ -93,7 +93,11 @@ fn effects_accumulate_in_order_and_the_buffer_is_reusable() {
     terminal.write(b"\x07\x1b]2;pane\x07\x07", &mut effects);
     assert_eq!(
         effects.events(),
-        [TerminalEvent::Bell, TerminalEvent::TitleChanged, TerminalEvent::Bell]
+        [
+            TerminalEvent::Bell,
+            TerminalEvent::TitleChanged,
+            TerminalEvent::Bell
+        ]
     );
     assert_eq!(terminal.title().expect("a title").as_deref(), Some("pane"));
 

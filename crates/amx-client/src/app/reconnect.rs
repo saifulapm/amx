@@ -64,7 +64,7 @@ use std::os::fd::AsFd;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use amx_core::{GridGeneration, PaneId, Seq, SessionId};
+use amx_core::{Effect, GridGeneration, PaneId, Seq, SessionId};
 use amx_proto::{ClientInfo, Resume, Welcome};
 
 use super::{App, AppError};
@@ -262,7 +262,9 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         let (session, welcome) = redial(&origin, resume).await?;
         self.session = session;
         self.reconnects += 1;
-        self.dirty = true;
+        // Everything: this terminal has been showing a frame drawn from a
+        // server that is gone, and what replaces it has yet to be folded.
+        self.absorb(Effect::Full);
 
         // Every stream binding died with the socket. The table is rebuilt from
         // nothing rather than trimmed, because channel numbers are the

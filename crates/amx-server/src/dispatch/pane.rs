@@ -298,10 +298,23 @@ const fn code_of(err: &DriveError) -> i32 {
     }
 }
 
+/// The pane's live plumbing: its mailbox and its published frames.
+async fn wiring(router: &Router, pane: PaneId) -> Result<PaneWiring, RpcError> {
+    router
+        .call(|reply| CoreCommand::Stream(StreamCall::Wiring { pane, reply }))
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DriveError, RpcError, code_of};
 
+    /// Inline because [`code_of`] is a pure helper and the sentences it picks
+    /// between have no other observation point: the only wire-reachable way to
+    /// quiesce a pane is a handoff, which retires the socket a moment later, so
+    /// a suite driving one would be racing the close rather than reading the
+    /// code. `crates/amx/tests/retriable.rs` proves the other end — that a
+    /// caller acts on the answer — against the real binary.
     #[test]
     fn a_quiesced_pane_is_retriable_and_a_full_queue_is_not() {
         assert_eq!(code_of(&DriveError::NotAccepting), RpcError::RETRIABLE);
@@ -312,11 +325,4 @@ mod tests {
             RpcError::INTERNAL_ERROR
         );
     }
-}
-
-/// The pane's live plumbing: its mailbox and its published frames.
-async fn wiring(router: &Router, pane: PaneId) -> Result<PaneWiring, RpcError> {
-    router
-        .call(|reply| CoreCommand::Stream(StreamCall::Wiring { pane, reply }))
-        .await
 }

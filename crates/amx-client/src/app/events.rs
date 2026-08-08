@@ -42,7 +42,7 @@
 use std::io::Write;
 use std::os::fd::AsFd;
 
-use amx_core::{Delivery, Event, PaneId, RowRange, Seq, WorkspaceId};
+use amx_core::{Delivery, Effect, Event, PaneId, RowRange, Seq, WorkspaceId};
 use amx_proto::control::{Method, session, wait as wait_proto};
 use amx_proto::rpc::Notification;
 
@@ -68,8 +68,13 @@ pub enum Folded {
     /// Nothing this build acts on: another method, a delivery it cannot name,
     /// or a transition it has no model for.
     Nothing,
-    /// The model changed; the next repaint shows it.
-    Applied,
+    /// The model changed, and what that invalidated.
+    ///
+    /// The [`Effect`] rides the verdict rather than being written to a flag on
+    /// the side, which is what makes an arm below that changes the model and
+    /// forgets to say so a value the compiler asks for rather than a write
+    /// nobody notices is missing (D2, DR-10).
+    Applied(Effect),
     /// The mirror can no longer be trusted to be complete: a gap, or a queue of
     /// notifications that overflowed, which is the same loss by another route.
     /// Re-read state.
@@ -186,8 +191,11 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         }
 
         self.bind_visible().await?;
-        self.layout_dirty = true;
-        self.dirty = true;
+        // A snapshot replaces the layout tree and every label on it, so the
+        // rects are recomputed whether or not the tree actually moved: a fold
+        // cannot tell, and the alternative is comparing two trees to save one
+        // `Vec` on a call that has just made a round trip.
+        self.absorb(Effect::Layout);
         Ok(state.seq)
     }
 
@@ -206,7 +214,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         for notification in &pending {
             match self.apply_notification(notification) {
                 Folded::Nothing => {}
-                Folded::Applied => self.dirty = true,
+                Folded::Applied(effect) => self.absorb(effect),
                 Folded::Resync => resync = true,
             }
         }
@@ -281,20 +289,31 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             // The notification rides `attention_enqueued` and not this, even
             // though a move into `blocked` implies one: the hub publishes both
             // and notifying from each would notify twice.
+            //
+            // `Effect::Full` and not this pane's damage: an agent's state and
+            // the attention count are drawn in the status line, which belongs
+            // to the frame and to no pane — a pane whose status moved while it
+            // was off screen still changes `⚑N`.
             Event::AgentStatus {
                 pane, to, cause, ..
-            } => folded(self.model.apply_agent_status(pane, to, cause, seq)),
-            Event::AgentIdentified { pane, ref kind } => {
-                folded(self.model.apply_agent_identified(pane, kind.clone(), seq))
-            }
+            } => folded(
+                self.model.apply_agent_status(pane, to, cause, seq),
+                Effect::Full,
+            ),
+            Event::AgentIdentified { pane, ref kind } => folded(
+                self.model.apply_agent_identified(pane, kind.clone(), seq),
+                Effect::Full,
+            ),
             Event::AttentionEnqueued { pane, .. } => {
                 if !self.model.enqueue_attention(pane) {
                     return Folded::Nothing;
                 }
                 self.notify_attention(pane);
-                Folded::Applied
+                Folded::Applied(Effect::Full)
             }
-            Event::AttentionDequeued { pane, .. } => folded(self.model.dequeue_attention(pane)),
+            Event::AttentionDequeued { pane, .. } => {
+                folded(self.model.dequeue_attention(pane), Effect::Full)
+            }
             // Focus is server state and every client hears every move of it:
             // a `pane.focus` from this client or another, a `workspace.switch`,
             // an `agent.next`, a restore. Which pane is focused *in* a
@@ -315,10 +334,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                     self.focus.insert(workspace, pane);
                 }
                 let showing = self.model.focused_workspace_id() == Some(workspace);
-                if showing {
-                    self.layout_dirty = true;
-                }
-                folded(showing)
+                folded(showing, Effect::Layout)
             }
             _ => Folded::Nothing,
         }
@@ -375,11 +391,11 @@ fn push_printable(out: &mut Vec<u8>, text: &str) {
     }
 }
 
-/// [`Folded::Applied`] when something actually moved, [`Folded::Nothing`] when
-/// the event described state the mirror already held.
-const fn folded(changed: bool) -> Folded {
+/// [`Folded::Applied`] with `effect` when something actually moved, and
+/// [`Folded::Nothing`] when the event described state the mirror already held.
+const fn folded(changed: bool, effect: Effect) -> Folded {
     if changed {
-        Folded::Applied
+        Folded::Applied(effect)
     } else {
         Folded::Nothing
     }
