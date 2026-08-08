@@ -325,9 +325,15 @@ impl Rig {
 
     /// Ask for the head of the attention queue.
     pub async fn next_attention(&self) -> proto::NextReply {
+        self.next_attention_in(None).await
+    }
+
+    /// Ask for the head of `workspace`'s share of the attention queue, or of
+    /// the whole queue when it is `None`.
+    pub async fn next_attention_in(&self, workspace: Option<WorkspaceId>) -> proto::NextReply {
         let (reply, answer) = oneshot::channel();
         self.agent
-            .send(AgentCommand::NextAttention { reply })
+            .send(AgentCommand::NextAttention { workspace, reply })
             .await
             .expect("the hub is running");
         answer
@@ -454,7 +460,12 @@ pub fn pane_id(n: usize) -> PaneId {
 
 /// The workspace the fixture events name.
 pub fn workspace_id() -> WorkspaceId {
-    "00000000-0000-0000-0000-0000000000b1"
+    workspace_id_n(1)
+}
+
+/// The `n`th workspace of the fixture session, stable across runs.
+pub fn workspace_id_n(n: usize) -> WorkspaceId {
+    format!("00000000-0000-0000-0000-0000000000b{n:x}")
         .parse()
         .expect("a valid workspace id")
 }
