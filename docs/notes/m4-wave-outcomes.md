@@ -127,7 +127,7 @@ point.
 
 ---
 
-## X00 — the wave-1 baseline smoke
+## X00 — the wave-1 baseline
 
 Full record in [m4-live-smoke.md](m4-live-smoke.md) §1. All six of §6's items
 hold. Three facts it measured need an owner outside X00's scope.
@@ -173,7 +173,9 @@ box — rather than argued.
 
 **DR-11's watch has its first entry.** Two `session stop`s, both exit 0, no
 `drain-census` file and no census log line either time (m4-live-smoke §1.7).
+
 ---
+
 ## X02 — M4 contracts
 
 ### Hand-offs, in the order the later waves meet them
@@ -292,7 +294,9 @@ value rather than an invented vocabulary.
 was re-derived rather than observed entering has no entry edge to report, and a
 zero would render as 1970. R-M4-4's honest fallback ("since this server started
 tracking it") is X06's to choose; the type does not force a lie either way.
+
 ---
+
 ## X04 — DR-19: the four recorded flakes
 
 **One of the four was already paid, and one clause of a second was.** R-M4-6's
@@ -370,7 +374,9 @@ that found the work already done. The register's `agent_verbs` clause should be
 struck as stale rather than as fixed here, with `aba0877` named; the flood
 clause is half-stale the same way, with `f09a87c` named for the window and X04
 for the quantity.
+
 ---
+
 ## X05 — ShortNumbers
 
 **A shipped test asserted the stand-in's behaviour, and was rewritten.**
@@ -433,7 +439,111 @@ planted empty and declared from `actor/core/mod.rs`, so X02 never touches that
 file. The declaration is `mod agents;` and not `pub mod agents;` as §5 spells
 it — every other module in `actor/core/` is private and reaches `Core` through
 `impl` blocks and `pub(super)` functions, and X10 needs nothing wider.
+
 ---
+
+## X00 — the wave-1 boundary
+
+Five task reports above, folded. The delta smoke is
+[m4-live-smoke.md](m4-live-smoke.md) §2; the register was struck in
+[design-review.md](design-review.md). What follows is only what a later wave
+would otherwise have to reconstruct from six sections.
+
+### The one integration break, and what it says about the ledger
+
+X02's `PaneState.mouse` met X05's new `crates/amx-server/tests/short_numbers.rs`
+fixture and the workspace did not compile; one line (`mouse: None`) fixed it in
+`6f4fb5d`. Full account in m4-live-smoke §2.6. The short version, because it is
+the first firing of seam 1 and the answer is not the obvious one:
+
+**The field ledger would not have caught it and is not the wrong tool for not
+having.** `FIELD_LEDGER` asserts a frozen field still exists where its row
+claims (`tests/hygiene/ledgers.rs:53-84`); that was true either side of the fix.
+And the break was a *compile* error in a test target, so no test in the package
+ran at all. `PaneState` is a plain struct, so `rustc` named every unfilled
+construction site at the first build — the correct instrument, and the ledger
+was never a substitute for it.
+
+**What is worth carrying is the plan-level shape.** X02 filled the field's other
+construction sites, two of them outside its own file list (`core/view.rs:98`,
+`crates/amx/tests/layout_file.rs:44`), and declared both above. It could not
+declare the tenth: X05 *created* that file in the same wave. §6's declared
+hand-offs enumerate files that exist at planning time. M4 freezes six additive
+fields and four are on structs built by literal in suites, so waves 2 and 3
+should expect the same one-line meeting at each merge and not read it as a task
+failing.
+
+### Plan amendments the wave produced, so no later task re-litigates them
+
+Each is reported above by the task that made it; collected here because each
+changes what a *later* task does, and §5's entry for that task still says the
+old thing.
+
+| Later task | §5 says | Wave 1 landed |
+|---|---|---|
+| **X10** | fills the seam stub in `dispatch/agent.rs` | the dispatch arm is finished; the refusal is in `actor/core/route.rs` and that is the file to edit (X02) |
+| **X17** | `crates/amx/src/cmd/**` for the CLI flag | the flag already parses end to end; the work is one handler line in `dispatch/agent/mod.rs` (X02) — and m4-live-smoke §2.4 measures the unscoped behaviour it replaces |
+| **X16** | `--workspace` scopes either form | `workspace` parameters are `WorkspaceId`, so `--workspace api` resolves the label client-side (X02) |
+| **X07** | — | `attach --pane <short>` has no suite test; the path is smoked in m4-live-smoke §2.5, and X07 owns `crates/amx/tests/**` (X05) |
+| **X20** | documents `[keys]` and the narrow threshold | an all-digits agent name is now refused, and that is user-visible naming behaviour worth a line (X05) |
+
+Two more, both cosmetic and both free for whoever next owns the file:
+`Core::next_*_short` should be `assign_*_short` (X05, files it does not own), and
+`amx-core/src/lib.rs` never gained re-exports for M4's new public types (X02, a
+file in no wave-1 list).
+
+### The seam ledger, at this boundary
+
+Not empty, and correctly so. One seam row (`route.rs`, X10) and six field rows,
+every one of whose readers is wave 2 or later. **X00 closes no row at this
+boundary.** The one thing the ledger could newly assert, it now does:
+
+**Landed here — §7 exit item 8 is mechanical.** X05 handed "no `todo!()` in
+`crates/*/src`" to X02-or-X00 and `tests/hygiene.rs` is X00's from wave 2, so it
+is a test rather than a sentence: `no_shipped_function_is_left_unfinished`, in a
+new `tests/hygiene/unfinished.rs` — a child module rather than a parent edit,
+because the parent was at 452 lines and adding it there put it 5 over the soft
+budget, which is R-M1-3's rule applied to the file the rule lives in. It scans
+`crates/*/src` and skips comment lines: the tree discusses unfinished bodies in
+prose (`agent/resume.rs:62`) and banning the discussion would ban the record.
+Verified to bite by restoring a `todo!()` to `amx-core/src/id.rs`, which failed
+the suite naming that line, before the mutation was reverted. It is the only
+thing X00 added to the code this boundary, and unlike the two ledgers beside it,
+it is meant to outlive M4.
+
+### Two register rows were already paid, which is now three
+
+R-M4-6 recorded one stale row (DR-17's `--help` clause) before the milestone
+started. Wave 1 found two more, both re-verified independently before the
+register was struck:
+
+- **DR-9's R3 clause** — `261e33b` corrected the herdr FFI description on
+  2026-08-06 and *is* an ancestor of `b727786`, the tree the register says it
+  re-verified against (X03).
+- **DR-19's `agent_verbs` clause** — `aba0877` fixed it, and it is **not** an
+  ancestor of `18c9261`; both branch from `08a4257`, so the register could not
+  have seen it. Its flood clause is half-stale for the opposite reason:
+  `f09a87c` replaced the fixed *window* and **is** an ancestor, so "fails under
+  8-way load every time" was recorded against a tree where it no longer did; the
+  fixed *quantity* was real and X04 changed it (X04).
+
+Three rows in twenty-one already paid for at scheduling time. The register is
+re-verified row by row before each is struck, which is the practice R-M4-6 asked
+for, and it has now earned its cost twice more.
+
+### Two flakes the register never named
+
+X04 found and fixed `no_client_grid_is_corrupted_after_coalescing` (16 failures
+in 16 runs under the pinned load) and
+`server_memory_is_bounded_under_a_stalled_client` beside the row's own
+`two_clients_at_different_speeds_each_stay_consistent` — same file, same
+mechanism, a wall clock standing in for a rate. **Recorded as found, not as work
+DR-19 asked for**: the register named one of the three, and a register that is
+struck for what it named would leave the other two looking like they were always
+green.
+
+---
+
 ## X07 — Client configuration, a configurable prefix, and `amx keys`
 
 ### The decision R-M4-14 left to this task
