@@ -55,10 +55,10 @@ runs on a real pseudoterminal at 200×50 and its bytes are read back.
 | 4 | no visible screen content lost | **holds, with one measured qualification** — a shell pane's grid is byte-identical across the swap; a Claude Code pane comes back with its own UI redrawn (§4.1) |
 | 5 | every conversation answers its remembered-word probe | **holds** — five of five, and three of three on the second run |
 | 6 | an interrupted upgrade aborts back to a working session | **holds for a pre-commit interruption** — and the literal "mid-restore" window is 24 ms wide on this machine, which no wall-clock kill can hit (§4.3) |
-| 7 | one SSH attach from a genuinely different machine | **not verified** — no second machine exists here. The loopback tier ran and passed (§5) |
+| 7 | one SSH attach from a genuinely different machine | **holds** — a second machine on the LAN, a different architecture and a non-POSIX login shell; the pane answered with a marker this machine cannot produce (§5) |
 
-One defect found and fixed, one bound measured, one step not verified. All three
-are below.
+Two defects found and fixed, one bound measured, one window that cannot be aimed
+at by hand. All of them are below.
 
 ---
 
@@ -277,12 +277,89 @@ window.
 
 ## 5. SSH
 
-**Not verified: an attach from a genuinely different machine.** There is one
-machine here. §7's third tier is explicitly not a CI resource and it was not a
-resource for this run either; nothing below stands in for it, and the roadmap's
-"attach to the home machine from a laptop over SSH" is **unproven end to end**.
+**Verified: an attach from a genuinely different machine.** A second machine was
+made available on 2026-08-08 and the roadmap's "attach to the home machine from
+a laptop over SSH" was run end to end. It is §7's third tier, the one that is
+explicitly not a CI resource, and it earned that status on the first attempt:
+reaching a rendered pane found a bug that made `--remote` unusable against a
+whole class of hosts, and neither tier below it could see it.
 
-What did run, on this machine:
+**The two machines.**
+
+- **Client** — this machine: Arch Linux 7.1.5, x86_64, amx built from the merged
+  M3 tree.
+- **Host** — a second physical machine on the LAN at `192.168.0.105`: Fedora
+  Linux Asahi Remix 44, aarch64 (Apple Silicon), 8 cores, login shell
+  `/usr/bin/fish`.
+
+That pair is worth more than "two machines": it is a different **architecture**
+and a **non-POSIX login shell**, and both mattered before any pane rendered.
+
+**Seeding refused, correctly and with the reason.** D-M3-9's rule, met against a
+live host rather than a fixture:
+
+```
+amx: cannot seed saiful@192.168.0.105: it is Linux aarch64 and this machine is
+Linux x86_64. The only amx available to install is the one running now, and it
+is built for Linux x86_64. Cross-platform seeding needs published binaries to
+download, and no release channel exists yet (R-M3-4) — install amx on
+saiful@192.168.0.105 the way you installed it here.
+```
+
+That is `a_missing_remote_amx_offers_seeding_only_on_matching_uname_and_refuses_cross_platform_with_the_reason`
+happening for real, with the `uname` pair read off the far side.
+
+**So the far side's binary was cross-compiled here — the first time amx has been
+built for a second architecture.** `crates/amx-vt/build.rs` already had
+`aarch64-unknown-linux-gnu` in its `zig_target` map, so the whole of it was a
+`zig cc -target aarch64-linux-gnu` wrapper on
+`CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER` and then
+`cargo build --release --target aarch64-unknown-linux-gnu -p amx`: a working
+12 MB aarch64 binary in 1m42s, first attempt. The vendored zig is what made a
+first cross-build a non-event.
+
+**The bug this criterion exists to find.** With that binary installed at
+`~/.local/bin/amx` on the host and answering `amx --version` → `amx 0.1.0`,
+`amx --remote` still said:
+
+```
+saiful@192.168.0.105 has no amx on PATH or in ~/.local/bin.
+  fish: Missing end to balance this if statement
+  if command -v amx >/dev/null 2>&1; then
+  ^^
+```
+
+`ssh host <command>` hands the command to the remote user's **login shell**, and
+W11's bridge script was POSIX `sh` syntax. Against fish it is a parse error, so
+the probe never ran and amx reported the opposite of the truth about the user's
+own machine — then offered to seed a host that already had it. `--remote` was
+unusable against any host whose login shell is fish, csh or tcsh. **Neither
+existing tier could see it**: the loopback sshd test runs as the same user on the
+same machine under a POSIX shell, and the bridge-as-child tier has no login shell
+at all. Fixed on `worktree-remote-login-shell` (merged) by making every command
+amx sends over ssh a single simple command — `/bin/sh -c '<script>'` — which fish
+executes happily because it is a plain command rather than syntax it must parse.
+The audit is in [m3-wave-outcomes.md](m3-wave-outcomes.md)'s "Remote login
+shells".
+
+**The attach, after the fix**, driven on a real 100×30 pseudoterminal:
+
+- `amx --remote saiful@192.168.0.105 --session livecheck` attached; the client's
+  chrome and a live pane rendered.
+- A command typed into the pane — `uname -m; hostname; echo MARKER-$(uname -m)`
+  — answered **`MARKER-aarch64`**, which this x86_64 machine cannot produce. The
+  shell is demonstrably on the far side.
+- Prefix-`d` detached; the client process exited **0**.
+- The session kept running on the host: `amx --session livecheck ping` answered,
+  and `session state` showed one workspace and one pane at 98×27 with
+  `"cwd": "/home/saiful"` — incidentally the `PaneState::cwd` field W14 added,
+  working over a real network.
+- **Re-attaching from the same laptop showed `MARKER-aarch64` still on screen**:
+  the grid survived the detach and the reconnect.
+- `amx --remote <host> session list` refuses by name, as W11 designed —
+  `--remote` attaches, it does not carry verbs.
+
+The loopback tier below it still runs, and it is the one CI has:
 
 ```
 $ AMX_TEST_SSHD=1 cargo test -p amx-rig --test remote_ssh
@@ -298,7 +375,14 @@ amx code in the path; what it cannot exercise is a network, a different kernel,
 a different amx build on the far side, or an ssh configuration nobody wrote for
 a test.
 
-**This is what needs a human.** One person, two machines, one `amx --remote`.
+All three of D-M3-9's tiers now have a run behind them, and the third one is no
+longer waiting on a human.
+
+**Still not proven.** The far side ran a binary cross-compiled on the near side
+from the same tree, so this is current-vs-current across two architectures, not
+two independently built or differently versioned amxes. And no handoff or
+`update apply` was exercised over the remote link — the upgrade evidence in this
+note is all local.
 
 ---
 
@@ -317,11 +401,11 @@ a test.
 | 9 | the old server exits cleanly | **pass** — exit 0, inside its drain |
 | 10 | an interrupted upgrade aborts back to a working session | **partial** — the pre-commit abort is verified with real agents; the mid-restore window is 24 ms and is CI's (§4.3) |
 | 11 | `amx session report` explains an aborted upgrade | **pass** — outcome, stage, binary and reason, in the human output |
-| 12 | one SSH attach from a genuinely different machine | **not verified** — no second machine; loopback ssh passed instead (§5) |
+| 12 | one SSH attach from a genuinely different machine | **pass** — Fedora Asahi Remix 44 aarch64 on the LAN, attached from this x86_64 machine, and a bug found on the way (§5) |
 
 | Date | amx | Successor | Claude Code | Platform | Steps not passed |
 |---|---|---|---|---|---|
-| 2026-08-08 | `59f6ed8` (0.1.0) | 0.1.1, same tree | 2.1.226 | Arch Linux 7.1.5 x86_64 | 10 partial, 12 not verified |
+| 2026-08-08 | `59f6ed8` (0.1.0) | 0.1.1, same tree | 2.1.226 | Arch Linux 7.1.5 x86_64 | 10 partial |
 
 ---
 
@@ -352,5 +436,9 @@ disposable is already a verb.
    quiet — anything else measures the agent's own repainting rather than the
    handoff (§4.1). A shell pane is the control.
 
-What would settle §5, which this machine could not: a second machine, and one
-`amx --remote`.
+§5 is the one part of this that no single machine can run. What it takes is a
+second machine, a binary it can execute — `cargo build --release --target
+<triple> -p amx` with `CARGO_TARGET_<TRIPLE>_LINKER` pointed at a
+`zig cc -target <target>` wrapper, since `crates/amx-vt/build.rs` already knows
+the target map — and one `amx --remote`. Choose a host whose login shell is not
+POSIX if there is one; that is what the run above was worth.
