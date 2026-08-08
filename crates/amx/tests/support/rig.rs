@@ -76,10 +76,13 @@ impl Rig {
         let path = self.root().join(rel);
         fs::create_dir_all(path.parent().expect("a directory")).expect("create the bin directory");
         let source = PathBuf::from(env!("CARGO_BIN_EXE_amx"));
-        // Same-filesystem is the cheap case and worth taking when it is there.
-        if fs::hard_link(&source, &path).is_err() {
-            fs::copy(&source, &path).expect("copy the binary under test");
-        }
+        // A copy and never a hard link, however cheap the link would be: a link
+        // hands the plant the build artifact's own inode, and then the two
+        // alias. `amx update apply` renames over a planted path, and cargo
+        // rewrites `target/debug/amx` whenever it relinks — and while that
+        // write is open, every concurrent spawn of a planted path fails with
+        // ETXTBSY. A few megabytes buys a plant that is nobody else's file.
+        fs::copy(&source, &path).expect("copy the binary under test");
         path
     }
 
