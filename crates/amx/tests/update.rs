@@ -16,7 +16,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 
 use amx::update::pm::{self, Install};
 use amx::update::verify::sha256_of;
@@ -24,82 +24,24 @@ use amx_server::session::probe::{Probe, probe, server_pid};
 
 mod support;
 
-use support::{TempDir, assert_sun_path_fits, wait_until};
+use support::{Rig, TempDir};
 
 /// The version this build is, which every manifest here is written against.
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 // ------------------------------------------------------------------ the rig
 
-/// A machine with its own roots, and somewhere to put binaries.
-struct Rig {
-    dir: TempDir,
-    session: String,
-    server: Option<Child>,
+/// The manifest half of the fixture, which is this suite's alone.
+///
+/// The rest — roots, planting a copy of the binary at an arbitrary path,
+/// running it, serving from it — lives in [`support::rig`], where W11 lifted it
+/// so the bridge and worktree suites could use it too.
+trait Manifests {
+    /// Write a manifest offering `version` of `asset`, and return its URL.
+    fn manifest(&self, name: &str, version: &str, asset: Option<(&Path, &str)>) -> String;
 }
 
-impl Rig {
-    fn new(tag: &str) -> Self {
-        let dir = TempDir::new(tag);
-        assert_sun_path_fits(dir.path(), tag);
-        for sub in ["run", "state", "config/amx"] {
-            fs::create_dir_all(dir.path().join(sub)).expect("create a root");
-        }
-        Self {
-            dir,
-            session: tag.to_owned(),
-            server: None,
-        }
-    }
-
-    fn root(&self) -> &Path {
-        self.dir.path()
-    }
-
-    /// This rig's session socket, once something binds it.
-    fn socket(&self) -> PathBuf {
-        self.root()
-            .join("run")
-            .join("amx")
-            .join(&self.session)
-            .join("sock")
-    }
-
-    /// Where `amx update apply` stages a download.
-    fn staging(&self) -> PathBuf {
-        self.root()
-            .join("state")
-            .join("amx")
-            .join(&self.session)
-            .join("update")
-    }
-
-    /// Put a working copy of the binary under test at `rel`.
-    ///
-    /// A copy and never a symlink: `current_exe()` resolves symlinks, so a
-    /// symlinked fixture would report the path in `target/debug` and every
-    /// package-manager shape would evaporate.
-    fn plant(&self, rel: &str) -> PathBuf {
-        let path = self.root().join(rel);
-        fs::create_dir_all(path.parent().expect("a directory")).expect("create the bin directory");
-        let source = PathBuf::from(env!("CARGO_BIN_EXE_amx"));
-        // Same-filesystem is the cheap case and worth taking when it is there.
-        if fs::hard_link(&source, &path).is_err() {
-            fs::copy(&source, &path).expect("copy the binary under test");
-        }
-        path
-    }
-
-    /// Write the config file, pointing the channel at `url`.
-    fn channel(&self, url: &str) {
-        fs::write(
-            self.root().join("config/amx/config.toml"),
-            format!("[update]\nchannel = \"{url}\"\n"),
-        )
-        .expect("write config.toml");
-    }
-
-    /// Write a manifest offering `version` of `asset`, and return its URL.
+impl Manifests for Rig {
     fn manifest(&self, name: &str, version: &str, asset: Option<(&Path, &str)>) -> String {
         let assets = match asset {
             Some((path, sha256)) => format!(
@@ -119,79 +61,6 @@ impl Rig {
         )
         .expect("write the manifest");
         format!("file://{}", path.display())
-    }
-
-    /// Run `exe` with this rig's roots.
-    fn run(&self, exe: &Path, args: &[&str]) -> Done {
-        let out = self
-            .command(exe)
-            .args(args)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run amx");
-        Done {
-            code: out.status.code(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        }
-    }
-
-    fn command(&self, exe: &Path) -> Command {
-        let mut command = Command::new(exe);
-        command
-            .env("XDG_RUNTIME_DIR", self.root().join("run"))
-            .env("XDG_STATE_HOME", self.root().join("state"))
-            .env("XDG_CONFIG_HOME", self.root().join("config"))
-            .env("HOME", self.root())
-            .env("AMX_SESSION", &self.session);
-        command
-    }
-
-    /// Start a server from `exe` and wait until it answers.
-    fn serve(&mut self, exe: &Path) -> u32 {
-        let child = self
-            .command(exe)
-            .arg("server")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn the server");
-        let pid = child.id();
-        self.server = Some(child);
-        wait_until("the server answers its socket", || {
-            probe(&self.socket()).is_ok_and(|state| state == Probe::Running)
-        });
-        pid
-    }
-}
-
-impl Drop for Rig {
-    fn drop(&mut self) {
-        if let Some(mut server) = self.server.take() {
-            let _ = server.kill();
-            let _ = server.wait();
-        }
-    }
-}
-
-/// What a finished invocation did.
-#[derive(Debug)]
-struct Done {
-    code: Option<i32>,
-    stdout: String,
-    stderr: String,
-}
-
-impl Done {
-    fn ok(&self) -> &str {
-        assert_eq!(self.code, Some(0), "amx failed: {self:#?}");
-        &self.stdout
-    }
-
-    fn failed(&self) -> &str {
-        assert_ne!(self.code, Some(0), "amx succeeded: {self:#?}");
-        &self.stderr
     }
 }
 
