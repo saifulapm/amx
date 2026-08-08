@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::support::{self, Client, TempDir, connect_to, ctx_under};
-use amx_core::agent::{AgentKind, AgentSnapshot, AgentState, StatusCause};
+use amx_core::agent::{AgentKind, AgentSnapshot, AgentState, HookToken, StatusCause};
 use amx_core::platform::{ProcessId, Pty, PtyCommand, WinSize};
 use amx_core::{Bus, Ctx, Delivery, Event, Layout, PaneId, Seq, SessionId, ShortNumber};
 use amx_proto::rpc::Notification;
@@ -292,6 +292,14 @@ impl Frozen {
         self.entry.pane
     }
 
+    /// Say which token this pane's child carries in its environment.
+    ///
+    /// `Core` fills this in as it assembles the manifest; here the exporter is
+    /// a script, so the test says it.
+    pub fn carry_token(&mut self, token: HookToken) {
+        self.entry.token = Some(token);
+    }
+
     /// Type at the child's terminal, from outside both servers.
     pub fn type_in(&self, bytes: &[u8]) {
         rustix::io::write(self.control.as_fd(), bytes).expect("write to the terminal");
@@ -442,6 +450,10 @@ pub fn manifest(
         exporter: "0.1.0".to_owned(),
         proto: amx_proto::version::window(),
         session,
+        // Filled by the tests that are about it: `None` is what an exporter
+        // from before the field sends, and it is checked exactly as it always
+        // was (`Manifest::check_session_identity`).
+        session_name: None,
         seq,
         state: Box::new(state),
         panes: panes.iter().map(|frozen| frozen.entry.clone()).collect(),

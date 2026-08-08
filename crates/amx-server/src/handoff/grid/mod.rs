@@ -98,11 +98,24 @@
 //! - **A cursor scrolled out of the viewport keeps only its visibility.** The
 //!   position is undefined in that state and is not replayed; amx keeps the
 //!   server's viewport pinned to the live bottom (04 §3), so it does not arise.
+//!
+//! # The three files
+//!
+//! This one is the grid: the pen, the run, and the four column classes above.
+//! [`replay`] is everything that goes *around* a grid — the paint prologue, the
+//! packed history rows, the modes and the cursor — and [`emit`] is the byte
+//! level both reach for. Split by responsibility on arrival at 601 lines rather
+//! than at the hard limit (R-M1-3); the directory needs no change to
+//! `handoff/mod.rs`, which is what W05 established when `protocol.rs` became
+//! `protocol/`.
 
-use amx_proto::stream::history::PackedRows;
-use amx_vt::{Cell, CellWide, Cursor, CursorStyle, Rgb, Row, Snapshot, Style, Underline};
+mod emit;
+mod replay;
 
-use super::manifest::PaneModes;
+use amx_vt::{Cell, CellWide, Rgb, Row, Snapshot, Style, Underline};
+
+use self::emit::{put_csi, put_cup, put_number};
+pub use self::replay::{put_cursor, put_modes, put_paint_prologue, put_rows_replay};
 
 /// Reset every SGR attribute to its default.
 const SGR_RESET: &[u8] = b"\x1b[0m";
@@ -451,151 +464,4 @@ fn put_color(out: &mut Vec<u8>, used: &mut usize, code: u32, color: Option<Rgb>)
         ],
         false,
     );
-}
-
-/// Append the cursor's shape, blink, visibility and position.
-///
-/// Emitted **after** the modes, not with the grid, and that ordering is not
-/// cosmetic: replaying DEC mode 6 homes the cursor, so a position written
-/// before the modes would be thrown away by the first origin-mode sequence that
-/// follows it.
-pub fn put_cursor(cursor: Cursor, out: &mut Vec<u8>) {
-    // DECSCUSR pairs shape with blink: odd blinks, even is steady. A hollow
-    // block is how an *unfocused* block renders rather than a shape anything
-    // can select, so it replays as the block it is.
-    let shape = match cursor.style {
-        CursorStyle::Block | CursorStyle::BlockHollow => 1,
-        CursorStyle::Underline => 3,
-        CursorStyle::Bar => 5,
-    };
-    put_csi_space_q(out, shape + u32::from(!cursor.blinking));
-    out.extend_from_slice(if cursor.visible {
-        b"\x1b[?25h".as_slice()
-    } else {
-        b"\x1b[?25l".as_slice()
-    });
-    if cursor.visible_in_viewport {
-        put_cup(out, usize::from(cursor.y), usize::from(cursor.x));
-    }
-}
-
-/// Append the modes that have to hold *while* a grid is painted.
-///
-/// Five of them, each because the paint would otherwise mean something else:
-/// wraparound off would drop the last column of every wrapped row, origin mode
-/// would make the cursor addressing relative, insert mode would push text
-/// sideways, synchronised output would hold the frames back, and grapheme
-/// clustering decides whether a combining mark joins the cell before it or
-/// takes one of its own — so that one is set to what the pane actually had
-/// rather than to a safe value.
-pub fn put_paint_prologue(modes: &PaneModes, out: &mut Vec<u8>) {
-    out.extend_from_slice(b"\x1b[?7h\x1b[?6l\x1b[4l\x1b[?2026l");
-    put_dec_mode(out, 2027, modes.is_set(2027, false));
-    if modes.alternate {
-        // The grid that was published is the active screen's, so the screen has
-        // to be selected before it is painted. The rest of the modes follow the
-        // paint; this one cannot.
-        out.extend_from_slice(b"\x1b[?1049h");
-    }
-}
-
-/// Append every carried mode, the kitty keyboard flags and the title.
-///
-/// Runs after the paint, which is what restores the modes the prologue forced.
-pub fn put_modes(modes: &PaneModes, out: &mut Vec<u8>) {
-    for mode in &modes.modes {
-        if mode.ansi {
-            put_csi(
-                out,
-                u32::from(mode.number),
-                if mode.on { b'h' } else { b'l' },
-            );
-        } else {
-            put_dec_mode(out, mode.number, mode.on);
-        }
-    }
-    out.extend_from_slice(b"\x1b[=");
-    put_number(out, u32::from(modes.kitty_flags));
-    out.extend_from_slice(b";1u");
-    if let Some(title) = &modes.title {
-        // OSC 2 with a string terminator rather than BEL: the title is
-        // arbitrary text and BEL would ring on a terminal that mis-parses it.
-        out.extend_from_slice(b"\x1b]2;");
-        out.extend_from_slice(title.as_bytes());
-        out.extend_from_slice(b"\x1b\\");
-    }
-}
-
-/// Turn packed history rows back into the bytes a terminal would have printed.
-///
-/// Soft-wrapped rows are joined into the logical line they came from and the
-/// line is terminated once, so the replay re-wraps at the pane's *current*
-/// width instead of at yesterday's — the same rule restore's sidecar replay
-/// follows (D-M1-6), for the same reason.
-pub fn put_rows_replay(packed: &[u8], out: &mut Vec<u8>) {
-    let mut wrapped = false;
-    for row in PackedRows::new(packed) {
-        let Ok(row) = row else { break };
-        out.extend_from_slice(row.text);
-        wrapped = row.wrapped;
-        if !wrapped {
-            out.extend_from_slice(b"\r\n");
-        }
-    }
-    if wrapped {
-        out.extend_from_slice(b"\r\n");
-    }
-}
-
-/// Append `CSI ? number h|l`.
-fn put_dec_mode(out: &mut Vec<u8>, number: u16, on: bool) {
-    out.extend_from_slice(b"\x1b[?");
-    put_number(out, u32::from(number));
-    out.push(if on { b'h' } else { b'l' });
-}
-
-/// Append `CSI row ; column H`, both one-based.
-fn put_cup(out: &mut Vec<u8>, row: usize, column: usize) {
-    out.extend_from_slice(b"\x1b[");
-    put_number(
-        out,
-        u32::try_from(row.saturating_add(1)).unwrap_or(u32::MAX),
-    );
-    out.push(b';');
-    put_number(
-        out,
-        u32::try_from(column.saturating_add(1)).unwrap_or(u32::MAX),
-    );
-    out.push(b'H');
-}
-
-/// Append `CSI value final`.
-fn put_csi(out: &mut Vec<u8>, value: u32, final_byte: u8) {
-    out.extend_from_slice(b"\x1b[");
-    put_number(out, value);
-    out.push(final_byte);
-}
-
-/// Append `CSI value SP q` — DECSCUSR, whose final byte takes an intermediate.
-fn put_csi_space_q(out: &mut Vec<u8>, value: u32) {
-    out.extend_from_slice(b"\x1b[");
-    put_number(out, value);
-    out.extend_from_slice(b" q");
-}
-
-/// Append a decimal number.
-fn put_number(out: &mut Vec<u8>, value: u32) {
-    let mut digits = [0u8; 10];
-    let mut at = digits.len();
-    let mut left = value;
-    loop {
-        at -= 1;
-        // `left % 10` is a single digit, so the sum is inside a byte.
-        digits[at] = b'0' + u8::try_from(left % 10).unwrap_or(0);
-        left /= 10;
-        if left == 0 {
-            break;
-        }
-    }
-    out.extend_from_slice(&digits[at..]);
 }

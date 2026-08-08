@@ -29,7 +29,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::Core;
 use crate::actor::{PaneCommand, PaneExport, Reply};
 use crate::handoff::export::{Caps, FrozenPane, Job, Ledger};
-use crate::handoff::manifest::{AgentEntry, Manifest, READ_WINDOW, VERSION};
+use crate::handoff::manifest::{AgentEntry, Manifest, READ_WINDOW, SessionIdentity, VERSION};
 use crate::handoff::protocol::Timeouts;
 
 /// What `Core` keeps about handing this session over.
@@ -222,7 +222,16 @@ impl Core {
         for pane in &frozen {
             match self.capture_pane(pane.pane).await {
                 Ok(export) => {
-                    panes.push(export.manifest);
+                    let mut entry = export.manifest;
+                    // The one field the parser thread cannot fill: the token
+                    // the child's environment carries lives in session state,
+                    // and it has to cross or the successor drops every hook
+                    // report from an agent that never restarted.
+                    entry.token = self
+                        .state
+                        .pane(pane.pane)
+                        .and_then(|state| state.hook_token().cloned());
+                    panes.push(entry);
                     masters.push(export.master);
                 }
                 Err(reason) => {
@@ -240,6 +249,10 @@ impl Core {
             exporter: env!("CARGO_PKG_VERSION").to_owned(),
             proto: amx_proto::version::window(),
             session: self.session_id,
+            // §3 step 6: which session this is, by the two names a process has
+            // for one. The successor refuses a manifest that is not about the
+            // session it derived for itself.
+            session_name: Some(SessionIdentity::of(&self.ctx)),
             seq: self.ctx.bus.head(),
             state: Box::new(self.capture_cheap()),
             panes,

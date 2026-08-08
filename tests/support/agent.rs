@@ -70,6 +70,26 @@ pub const SUBAGENT: &str = "subagent";
 /// The anonymous `SubagentStop` that lands 1.9–3.0 s after the parent's `Stop`
 /// on essentially every tool-using turn (V01 §7.5).
 pub const LATE_SUBAGENT: &str = "late";
+/// Paint a distinctively styled sentinel above the idle box: `sentinel <tag>`.
+///
+/// M3's exit criterion asks for "no visible screen content lost" across a live
+/// upgrade, and reads it strictly (§7 step 4): a *styled* sentinel — colours
+/// and attributes, not just text — painted in every pane, compared cell for
+/// cell either side of the swap. Bold, underlined, a 24-bit foreground and a
+/// 24-bit background, which is four different things the grid synthesizer has
+/// to put back and the widest SGR run a single cell can carry short of the
+/// parameter overflow W04 found.
+///
+/// It rides above a full idle box rather than replacing one, so a pane wearing
+/// a sentinel is still an idle agent as far as the shipped rules are concerned.
+pub const SENTINEL: &str = "sentinel";
+
+/// The text a [`SENTINEL`] paint puts on the screen, before its tag.
+pub const SENTINEL_TEXT: &str = "AMX-SENTINEL";
+
+/// The SGR parameters [`SENTINEL`] paints with, as the escape carries them.
+pub const SENTINEL_SGR: &str = "1;4;38;2;255;90;30;48;2;10;20;60";
+
 /// Leave, closing the pane.
 pub const QUIT: &str = "quit";
 
@@ -272,6 +292,16 @@ paint_idle() {
   ⏸ manual mode on · ? for shortcuts'
 }
 
+paint_sentinel() {
+    scroll
+    printf '\033[1;4;38;2;255;90;30;48;2;10;20;60mAMX-SENTINEL %s\033[0m\n' "$1"
+    printf '%s' '✻ Worked for 3s
+──────────────────────────────────────
+❯
+──────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts'
+}
+
 paint_interrupted() {
     scroll
     printf '%s' '● Bash(echo spike-permission-probe)
@@ -316,6 +346,9 @@ while read -r cmd rest; do
         # The anonymous one: an agent_id, an empty agent_type, and a transcript
         # path that does not exist (V01 §3 M4).
         hook SubagentStop ',"agent_id":"anon-1","agent_type":""'
+        ;;
+    sentinel)
+        paint_sentinel "$rest"
         ;;
     quit)
         exit 0

@@ -24,8 +24,10 @@ mod support;
 use std::os::fd::AsFd;
 use std::time::Duration;
 
-use amx_core::agent::AgentState;
-use amx_core::{Delivery, Event, SessionId};
+use amx_core::agent::{AgentKind, AgentState, HookToken, RefSource};
+use amx_core::{Delivery, Event, SessionId, SessionName};
+use amx_proto::control::agent as proto;
+use amx_server::handoff::manifest::SessionIdentity;
 use amx_server::handoff::protocol::{Ending, HandoffError, HandoffListener, Timeouts};
 use harness::{
     Frozen, Plan, Rig, SIZE, SLEEPER, Script, Watcher, agent, brisk, document, manifest, read_pane,
@@ -329,6 +331,67 @@ async fn strict_abort_on_missing_commit_serves_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_manifest_for_another_session_is_refused_before_a_descriptor_is_taken() {
+    let rig = Rig::new("wrng");
+    let mut frozen = Frozen::new(SLEEPER).await;
+    let mut carried = manifest(SessionId::new_v4(), 3, &[&frozen], Vec::new());
+    // The exporter is handing over a session this process is not. §3 step 6
+    // calls it session-dir identity; what it prevents is one session's panes
+    // being served behind another session's socket, which is what an upgrade of
+    // a *named* session did before the exporter learned to pass `--session`.
+    carried.session_name = Some(SessionIdentity {
+        session: SessionName::new("somebody-else").expect("a valid session name"),
+        socket: rig.ctx.socket.with_file_name("not-this-one"),
+    });
+    let listener = HandoffListener::bind(rig.handoff.clone()).expect("bind the handoff socket");
+    let exporter = spawn_exporter(Script {
+        listener,
+        token: rig.token.clone(),
+        timeouts: brisk(),
+        manifest: document(&carried),
+        masters: vec![
+            frozen
+                .master
+                .try_clone()
+                .expect("a descriptor to hand over"),
+        ],
+        held: None,
+        plan: Plan::Commit,
+    });
+    let socket = rig.ctx.socket.clone();
+    let failure = rig.start_import(brisk()).failure().await;
+
+    assert_eq!(
+        failure.ending(),
+        Ending::Abort,
+        "a manifest for another session is an abort: {failure}",
+    );
+    assert!(
+        failure.to_string().contains("somebody-else"),
+        "the refusal names the session it was handed: {failure}",
+    );
+    assert!(
+        !socket.exists(),
+        "it bound {} for a session it was not",
+        socket.display(),
+    );
+
+    // And the identity a successor *is* passes, which is what makes the check a
+    // check rather than a wall: the same comparison, both ways.
+    let mine = SessionIdentity::of(&rig.ctx);
+    let mut matching = carried.clone();
+    matching.session_name = Some(mine.clone());
+    assert!(matching.check_session_identity(&mine).is_ok());
+    // As does a manifest from an exporter that never carried the field.
+    matching.session_name = None;
+    assert!(matching.check_session_identity(&mine).is_ok());
+
+    let _ = exporter.await;
+    frozen.retire().await;
+    frozen.kill_child();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restored_agents_report_their_manifest_status_without_a_flap() {
     let rig = Rig::new("agnt");
     let mut first = Frozen::new(SLEEPER).await;
@@ -430,4 +493,75 @@ async fn restored_agents_report_their_manifest_status_without_a_flap() {
     successor.stop().await;
     first.kill_child();
     second.kill_child();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_inherited_agents_hook_reports_are_still_attributed_to_it() {
+    let rig = Rig::new("tokn");
+    let mut pane = Frozen::new(SLEEPER).await;
+    // The token this pane's child was spawned with. It lives in the child's
+    // environment and cannot be changed there, so a successor that minted a
+    // fresh one would drop every report the agent sends until it restarts.
+    let carried = HookToken::new("carried-across-the-swap");
+    pane.carry_token(carried.clone());
+    let agents = vec![agent(pane.pane(), AgentState::Idle, None)];
+    let carried_manifest = manifest(SessionId::new_v4(), 500, &[&pane], agents);
+    let listener = HandoffListener::bind(rig.handoff.clone()).expect("bind the handoff socket");
+    let exporter = spawn_exporter(Script {
+        listener,
+        token: rig.token.clone(),
+        timeouts: Timeouts::DEFAULT,
+        manifest: document(&carried_manifest),
+        masters: vec![pane.master.try_clone().expect("a descriptor to hand over")],
+        held: None,
+        plan: Plan::Commit,
+    });
+    let successor = rig.start_import(Timeouts::DEFAULT);
+    let mut client = successor.client().await;
+    let _ = client.hello(amx_proto::version::window()).await;
+    exporter
+        .await
+        .expect("the exporter thread ended")
+        .expect("the exporter walked every stage");
+
+    let claude = AgentKind::new("claude").expect("a valid agent kind");
+    let report = |token: &HookToken| {
+        let params = proto::ReportParams {
+            pane: pane.pane(),
+            token: token.clone(),
+            agent: claude.clone(),
+            source: RefSource::for_agent(&claude),
+            event: proto::HookEvent::PermissionRequest,
+            seq: 1,
+            scope: proto::ReportScope::Parent,
+            session_id: None,
+            transcript_path: None,
+            start_source: None,
+            tool: None,
+            notification: None,
+        };
+        serde_json::to_value(params).expect("the report serializes")
+    };
+
+    let accepted = client.request(7, "agent.report", report(&carried)).await;
+    assert_eq!(
+        support::result_of(&accepted)["accepted"],
+        json!(true),
+        "the successor knows the token the inherited child carries: {accepted:?}",
+    );
+
+    // The guard is still a guard: a report from somewhere else is still
+    // dropped, so what crossed is this pane's token and not a hole.
+    let stranger = client
+        .request(8, "agent.report", report(&HookToken::new("stranger")))
+        .await;
+    assert_eq!(
+        support::result_of(&stranger)["accepted"],
+        json!(false),
+        "a foreign token is still nobody's hook: {stranger:?}",
+    );
+
+    pane.retire().await;
+    successor.stop().await;
+    pane.kill_child();
 }

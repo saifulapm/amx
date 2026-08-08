@@ -203,6 +203,14 @@ impl Core {
                 .next_workspace_short
                 .max(saved.short.get().saturating_add(1));
         }
+        // The hook tokens, by pane. They ride the manifest's own pane entries
+        // rather than the snapshot's (the snapshot is a disk format and a cold
+        // restore mints fresh ones), so the two lists are joined here.
+        let tokens: BTreeMap<PaneId, &HookToken> = manifest
+            .panes
+            .iter()
+            .filter_map(|entry| entry.token.as_ref().map(|token| (entry.pane, token)))
+            .collect();
         for saved in &manifest.state.panes {
             if self.state.pane(saved.id).is_none() {
                 continue;
@@ -218,13 +226,17 @@ impl Core {
                 let _ = self.state.rename_pane(saved.id, Some(label));
             }
             // The argv the exporter recorded, kept so `session.state` and the
-            // successor's own captures answer what they answered before. The
-            // token beside it is *this* server's: the one the child's
-            // environment carries did not cross the manifest, which is a
-            // known gap, not a choice — see the module's hand-off note in
-            // `docs/notes/m3-wave-outcomes.md`.
+            // successor's own captures answer what they answered before — and
+            // beside it the token the child actually carries, which crossed on
+            // the manifest's pane entry. Minting one here instead would leave
+            // D-M2-4's misattribution guard dropping every hook report from an
+            // agent that never restarted. `mint_token` remains the fallback for
+            // a pane whose entry carried none.
             if let Some(argv) = saved.argv.clone() {
-                let _ = self.state.set_pane_spawn(saved.id, argv, mint_token());
+                let token = tokens
+                    .get(&saved.id)
+                    .map_or_else(mint_token, |token| (*token).clone());
+                let _ = self.state.set_pane_spawn(saved.id, argv, token);
             }
         }
         if let Some(workspace) = manifest.state.focused_workspace {
@@ -376,13 +388,17 @@ impl Core {
     }
 }
 
-/// A fresh hook token for an inherited pane.
+/// A fresh hook token for an inherited pane that carried none.
 ///
-/// The same 122 random bits [`spawn`](super::spawn) mints, and — until the
-/// token itself crosses the manifest — deliberately *not* the one the child's
-/// environment carries. The consequence is stated where it is felt: hook
-/// reports from an inherited agent are dropped by the misattribution guard
-/// (D-M2-4) until it restarts, and its status rides tier 2 alone.
+/// The same 122 random bits [`spawn`](super::spawn) mints. The ordinary case is
+/// no longer this one: a pane's token crosses on its
+/// [`PaneManifest`](crate::handoff::manifest::PaneManifest) entry and is adopted
+/// verbatim, because the child's environment holds the exporter's value and
+/// cannot be told otherwise. This is the fallback for a pane that never carried
+/// a token, or an entry from an exporter old enough not to have sent one —
+/// where the consequence is the one that used to be universal: the
+/// misattribution guard (D-M2-4) drops that pane's hook reports until its agent
+/// restarts, and its status rides tier 2 alone.
 fn mint_token() -> HookToken {
     HookToken::new(Uuid::new_v4().simple().to_string())
 }

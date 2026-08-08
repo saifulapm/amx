@@ -22,7 +22,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-use super::env::{Output, TempDir, assert_sun_path_fits, roots_on, spawn_on_tty, wait_until};
+use super::env::{
+    Output, TempDir, assert_sun_path_fits, past_busy, roots_on, spawn_on_tty, wait_until,
+};
 use super::tty::Terminal;
 
 /// A machine with its own roots, and somewhere to put binaries.
@@ -103,13 +105,13 @@ impl Rig {
     }
 
     /// Run `exe` with this rig's roots.
+    ///
+    /// Past `ETXTBSY`, like every other exec of a planted binary in this
+    /// harness — [`past_busy`] names the race.
     pub fn run(&self, exe: &Path, args: &[&str]) -> Output {
-        let out = self
-            .command(exe)
-            .args(args)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run amx");
+        let mut command = self.command(exe);
+        command.args(args).stdin(Stdio::null());
+        let out = past_busy("run amx", || command.output());
         Output::of(&out)
     }
 
@@ -119,15 +121,19 @@ impl Rig {
     }
 
     /// Start a server from `exe` and wait until it answers.
+    ///
+    /// The exec is retried past `ETXTBSY` ([`past_busy`]): this is the call the
+    /// race was caught on, because a server is the long-lived child whose
+    /// inherited write descriptor keeps somebody else's plant unexecutable for
+    /// as long as it runs.
     pub fn serve(&mut self, exe: &Path) -> u32 {
-        let child = self
-            .command(exe)
+        let mut command = self.command(exe);
+        command
             .arg("server")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn the server");
+            .stderr(Stdio::null());
+        let child = past_busy("spawn the server", || command.spawn());
         let pid = child.id();
         self.server = Some(child);
         let socket = self.socket();

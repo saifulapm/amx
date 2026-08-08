@@ -29,6 +29,7 @@ pub mod daemon;
 pub mod import;
 pub mod probe;
 pub mod registry;
+pub mod scaffold;
 pub mod serve;
 
 pub use daemon::{DaemonError, READY_POLL, READY_TIMEOUT, await_ready, spawn_detached};

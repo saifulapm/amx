@@ -18,6 +18,7 @@
           "transition_seq": 51
         },
         "cols": 39,
+        "cwd": "/home/s/amx",
         "history_floor": 4,
         "history_head": 120,
         "label": "editor",

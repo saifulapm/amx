@@ -49,14 +49,35 @@
 //! through the eviction floor the successor resumes at: ids are never reused,
 //! so a client that cached them keeps them and simply cannot refetch, which is
 //! the M0 invalidation contract doing exactly its job.
+//!
+//! # The three files
+//!
+//! This one is the manifest and its pane entries, in both directions.
+//! [`history`] is the scrollback half — the budget, what it drops, and the two
+//! functions that read and trim it — [`modes`] is the terminal-mode inventory
+//! with the reasons four classes do not cross, and [`base64`] is the encoding
+//! the one binary field rides in. Split by responsibility on arrival rather
+//! than at the hard limit (R-M1-3); the directory needs no change to
+//! `handoff/mod.rs`, which is what W05 established when `protocol.rs` became
+//! `protocol/`.
 
-use amx_core::agent::AgentSnapshot;
+mod base64;
+mod history;
+mod modes;
+
+use std::path::PathBuf;
+
+use amx_core::agent::{AgentSnapshot, HookToken};
 use amx_core::platform::{ProcessId, WinSize};
-use amx_core::{GridGeneration, PaneId, RowId, RowRange, Seq, SessionId};
-use amx_vt::{Mode, Screen, Snapshot as GridSnapshot, Terminal};
+use amx_core::{Ctx, GridGeneration, PaneId, RowId, Seq, SessionId, SessionName};
+use amx_vt::{Snapshot as GridSnapshot, Terminal};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use self::base64::decode;
+use self::history::capture_history;
+pub use self::history::{MAX_ROW_BYTES, MAX_ROWS, PaneHistory};
+pub use self::modes::{ModeState, PaneModes};
 use super::grid;
 use crate::history::HistoryTracker;
 use crate::persist::Snapshot;
@@ -69,65 +90,6 @@ pub const VERSION: u32 = 1;
 /// The N/N−1 window the handoff surface skews on, separately from the control
 /// protocol. At v1 there is no predecessor, so the window is just `{1}`.
 pub const READ_WINDOW: &[u32] = &[VERSION];
-
-/// How many scrollback rows one pane carries.
-pub const MAX_ROWS: u64 = 500;
-
-/// How many bytes of packed scrollback one pane carries.
-///
-/// Measured against the packed bytes, which is what the budget in D-M3-4 means
-/// and what the transport pays for once they are encoded.
-pub const MAX_ROW_BYTES: usize = 256 * 1024;
-
-/// The terminal modes a pane carries across a handoff.
-///
-/// Every mode the vendored library knows (`terminal/modes.zig`) except four
-/// classes, each excluded for a reason rather than an oversight:
-///
-/// - **132-column (3)** and **enable-mode-3 (40)** resize the grid, and the
-///   successor's pane is built at the size the manifest already states;
-/// - **left-and-right margins (69)** installs a scrolling region, which the C
-///   API gives no way to read back — carrying the switch without the region
-///   would be worse than carrying neither;
-/// - **the screen switches (47, 1047, 1048, 1049)** are the alternate screen
-///   itself, which [`PaneModes::alternate`] carries and the paint prologue
-///   applies before the grid rather than after it.
-const CARRIED_MODES: &[(u16, bool)] = &[
-    (2, true),
-    (4, true),
-    (12, true),
-    (20, true),
-    (1, false),
-    (4, false),
-    (5, false),
-    (6, false),
-    (7, false),
-    (8, false),
-    (9, false),
-    (12, false),
-    (25, false),
-    (45, false),
-    (66, false),
-    (67, false),
-    (1000, false),
-    (1002, false),
-    (1003, false),
-    (1004, false),
-    (1005, false),
-    (1006, false),
-    (1007, false),
-    (1015, false),
-    (1016, false),
-    (1035, false),
-    (1036, false),
-    (1039, false),
-    (1045, false),
-    (2004, false),
-    (2026, false),
-    (2027, false),
-    (2031, false),
-    (2048, false),
-];
 
 /// A manifest could not be built, read, or applied.
 #[derive(Debug, Error)]
@@ -149,6 +111,14 @@ pub enum ManifestError {
     /// A carried payload is not the shape it says it is.
     #[error("malformed manifest payload: {0}")]
     Malformed(String),
+    /// The manifest is about a session this process is not (§3 step 6).
+    #[error("the manifest hands over session {theirs}, and this process is {ours}")]
+    WrongSession {
+        /// The session the exporter is handing over.
+        theirs: SessionIdentity,
+        /// The session this process derived for itself.
+        ours: SessionIdentity,
+    },
 }
 
 /// One session, frozen, as the successor receives it.
@@ -168,6 +138,23 @@ pub struct Manifest {
     /// "different server": `Welcome.session` is the only place the swap is
     /// visible at all.
     pub session: SessionId,
+    /// The session's *name* and socket, which the successor must already be.
+    ///
+    /// §3 step 6's "session dir identity", which W07 could not check because
+    /// nothing carried it. It is not decoration: a server started as `amx
+    /// --session live server` selects its session from a flag, not from its
+    /// environment, and a successor spawned without that flag derives `default`
+    /// — so an upgrade of a named session used to unlink `live`'s socket, bind
+    /// `default`'s, and leave the panes under a name nobody could reach.
+    /// Observed against the real binary on 2026-08-08, fixed at the spawn
+    /// ([`super::super::export::StagedBinary`]) and refused here, so a future
+    /// way of losing it is a message rather than a vanished session.
+    ///
+    /// Additive and optional: a manifest from an exporter that never sent it
+    /// is checked as it always was, which is the same both-directions rule
+    /// every other field on this surface follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<SessionIdentity>,
     /// The bus head the successor's sequence numbers continue from.
     pub seq: Seq,
     /// The session as persistence would have written it, captured in memory.
@@ -198,6 +185,59 @@ impl Manifest {
             found: self.version,
         })
     }
+
+    /// Check that this manifest is about the session `ctx` describes
+    /// (§3 step 6).
+    ///
+    /// Equality, not a window: a successor either *is* this session or it is
+    /// somebody else, and there is no partial answer. Both facts are compared
+    /// because they can disagree independently — the name is what the process
+    /// was told and the socket is what it derived from it, and a mismatched
+    /// runtime root produces the second without the first.
+    ///
+    /// # Errors
+    ///
+    /// [`ManifestError::WrongSession`] when either differs. A manifest that
+    /// carries no identity at all passes, which is what makes the field
+    /// additive: an older exporter is checked exactly as it always was.
+    pub fn check_session_identity(&self, ours: &SessionIdentity) -> Result<(), ManifestError> {
+        let Some(theirs) = &self.session_name else {
+            return Ok(());
+        };
+        if theirs == ours {
+            return Ok(());
+        }
+        Err(ManifestError::WrongSession {
+            theirs: theirs.clone(),
+            ours: ours.clone(),
+        })
+    }
+}
+
+/// Which session a manifest is about, by the two names a process has for one.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SessionIdentity {
+    /// The session name, as `--session` or `AMX_SESSION` spells it.
+    pub session: SessionName,
+    /// The socket that name resolves to under this machine's roots.
+    pub socket: PathBuf,
+}
+
+impl SessionIdentity {
+    /// The session `ctx` describes.
+    #[must_use]
+    pub fn of(ctx: &Ctx) -> Self {
+        Self {
+            session: ctx.session.clone(),
+            socket: ctx.socket.clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for SessionIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} at {}", self.session, self.socket.display())
+    }
 }
 
 /// One pane's agent state, carried rather than re-derived (R-M3-13).
@@ -208,110 +248,6 @@ pub struct AgentEntry {
     /// Its kind, state, cause, transition sequence and attention rank.
     pub agent: AgentSnapshot,
 }
-
-/// One terminal mode and whether it was on.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct ModeState {
-    /// The mode number, as the VT specifications spell it.
-    pub number: u16,
-    /// Whether it is an ANSI mode rather than a DEC private one.
-    pub ansi: bool,
-    /// Whether it was set.
-    pub on: bool,
-}
-
-/// A pane's modes, keyboard flags and title.
-#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
-pub struct PaneModes {
-    /// Whether the alternate screen was the active one.
-    ///
-    /// Separate from [`modes`](Self::modes) because it decides *which screen*
-    /// the carried grid describes, so it is applied before the paint and not
-    /// with the rest.
-    pub alternate: bool,
-    /// Every carried mode, in [`CARRIED_MODES`] order.
-    pub modes: Vec<ModeState>,
-    /// The Kitty keyboard flags the application asked for.
-    pub kitty_flags: u8,
-    /// The title set by OSC 0 or OSC 2, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-}
-
-impl PaneModes {
-    /// Read every carried mode off a terminal.
-    ///
-    /// A mode this build of the library does not know is left out rather than
-    /// guessed at: the successor runs the same library, so a mode neither side
-    /// knows is a mode neither side has.
-    fn capture(terminal: &Terminal) -> Result<Self, ManifestError> {
-        let mut modes = Vec::with_capacity(CARRIED_MODES.len());
-        for &(number, ansi) in CARRIED_MODES {
-            let mode = if ansi {
-                Mode::ansi(number)
-            } else {
-                Mode::dec(number)
-            };
-            if let Ok(on) = terminal.mode(mode) {
-                modes.push(ModeState { number, ansi, on });
-            }
-        }
-        let screen = terminal.active_screen().map_err(terminal_error)?;
-        Ok(Self {
-            alternate: screen == Screen::Alternate,
-            modes,
-            kitty_flags: terminal
-                .kitty_keyboard_flags()
-                .map_err(terminal_error)?
-                .bits(),
-            title: terminal.title().map_err(terminal_error)?,
-        })
-    }
-
-    /// Whether a carried mode was set, or `missing` if it was not carried.
-    #[must_use]
-    pub fn is_set(&self, number: u16, missing: bool) -> bool {
-        self.modes
-            .iter()
-            .find(|mode| mode.number == number && !mode.ansi)
-            .map_or(missing, |mode| mode.on)
-    }
-}
-
-/// The scrollback one pane carries, and what fell off the bottom.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct PaneHistory {
-    /// One past the newest committed row, which the successor continues from.
-    pub head: RowId,
-    /// The oldest row the *exporter* could still serve.
-    ///
-    /// Kept for the audit trail. The successor's own floor is derived from what
-    /// actually landed in its scrollback, which is never older than this and is
-    /// usually newer.
-    pub floor: RowId,
-    /// The first row id the carried rows start at.
-    pub first: RowId,
-    /// How many rows are carried.
-    pub count: u64,
-    /// The packed rows, base64 of the M1 sidecar packing.
-    pub packed: String,
-    /// Whether either budget dropped rows off the oldest end.
-    pub truncated: bool,
-    /// How many rows the budget dropped, oldest first.
-    pub dropped: u64,
-}
-
-impl PaneHistory {
-    /// The carried rows, back in the M1 packing they were read out as.
-    ///
-    /// # Errors
-    ///
-    /// [`ManifestError::Malformed`] if the payload is not base64.
-    pub fn rows(&self) -> Result<Vec<u8>, ManifestError> {
-        decode(&self.packed)
-    }
-}
-
 /// One pane, frozen.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct PaneManifest {
@@ -348,6 +284,28 @@ pub struct PaneManifest {
     pub cursor: String,
     /// The scrollback, and what the budget dropped.
     pub history: PaneHistory,
+    /// The hook token this pane's child carries in its environment.
+    ///
+    /// A handoff keeps the *same* children, and a child's `AMX_HOOK_TOKEN` was
+    /// written into its environment at spawn and cannot be changed afterwards —
+    /// so a successor that minted a fresh one would drop every hook report the
+    /// inherited agent sends (D-M2-4's misattribution guard), leaving its status
+    /// on tier 2 alone across the upgrade. The token therefore crosses.
+    ///
+    /// It rides *here*, on the manifest, rather than on the persist
+    /// `PaneSnapshot` beside the argv it belongs with: the snapshot is written
+    /// to `session.json`, and a cold restore respawns the child with a freshly
+    /// minted token — so a persisted one would be a dead secret on disk that
+    /// nothing ever reads. This one crosses a 0600 socket to a process that
+    /// needs it and is never written anywhere.
+    ///
+    /// Optional because [`PaneManifest::capture`] runs on the parser thread,
+    /// which does not know it; `Core` fills it in from its own state as the
+    /// manifest is assembled. `None` is a pane that never carried a token
+    /// (never spawned through `Core::spawn`) or an entry from an exporter old
+    /// enough not to have had this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<HookToken>,
 }
 
 impl PaneManifest {
@@ -386,6 +344,9 @@ impl PaneManifest {
             grid: String::from_utf8_lossy(&grid_bytes).into_owned(),
             cursor: String::from_utf8_lossy(&cursor_bytes).into_owned(),
             history: capture_history(terminal, tracker)?,
+            // Filled by `Core` on the way past: the token lives in session
+            // state, and this thread owns a terminal rather than a session.
+            token: None,
         })
     }
 
@@ -476,117 +437,6 @@ pub struct PaneSeed {
     pub modes: Vec<u8>,
 }
 
-/// Read the newest rows the budget allows, oldest dropped first.
-fn capture_history(
-    terminal: &Terminal,
-    tracker: &mut HistoryTracker,
-) -> Result<PaneHistory, ManifestError> {
-    let head = tracker.head();
-    let floor = tracker.oldest_row().0;
-    let mut carried = PaneHistory {
-        head,
-        floor,
-        first: head,
-        count: 0,
-        packed: String::new(),
-        truncated: false,
-        dropped: 0,
-    };
-    let Some(committed) = tracker.committed() else {
-        return Ok(carried);
-    };
-    let wanted = head
-        .get()
-        .saturating_sub(MAX_ROWS)
-        .max(committed.first.get());
-    carried.dropped = wanted - committed.first.get();
-    let range = RowRange::new(RowId::from_raw(wanted), committed.last);
-    let served = tracker
-        .read(terminal, range)
-        .map_err(|err| ManifestError::History(err.to_string()))?;
-    let (at, dropped) = trim_oldest(&served.rows, MAX_ROW_BYTES);
-    carried.dropped += dropped;
-    carried.first = RowId::from_raw(wanted + dropped);
-    carried.count = head.get().saturating_sub(carried.first.get());
-    carried.truncated = carried.dropped > 0;
-    carried.packed = encode(&served.rows[at..]);
-    Ok(carried)
-}
-
-/// Where to start reading a packed run so that it fits in `cap`, and how many
-/// rows that drops off the oldest end.
-fn trim_oldest(packed: &[u8], cap: usize) -> (usize, u64) {
-    let mut at = 0usize;
-    let mut dropped = 0u64;
-    while packed.len() - at > cap {
-        // The packing is self-delimiting: a `u32` length, the text, one flag
-        // byte. A run that does not parse is one this process wrote, so a
-        // short read can only mean the budget already reached the end.
-        let Some(head) = packed.get(at..at + 4) else {
-            break;
-        };
-        let Ok(length) = <[u8; 4]>::try_from(head) else {
-            break;
-        };
-        let step = 4 + u32::from_le_bytes(length) as usize + 1;
-        if at + step > packed.len() {
-            break;
-        }
-        at += step;
-        dropped += 1;
-    }
-    (at, dropped)
-}
-
-fn terminal_error(err: amx_vt::Error) -> ManifestError {
+pub(super) fn terminal_error(err: amx_vt::Error) -> ManifestError {
     ManifestError::Terminal(err.to_string())
-}
-
-/// The standard base64 alphabet.
-const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-/// Encode bytes for a JSON string field.
-///
-/// Hand-rolled because the packed rows are the one binary field in an otherwise
-/// textual manifest, and a base64 crate is a dependency the tree does not need
-/// for forty lines (HACKING.md's "prefer std, keep the tree lean").
-fn encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let mut block = [0u8; 3];
-        block[..chunk.len()].copy_from_slice(chunk);
-        let packed = (u32::from(block[0]) << 16) | (u32::from(block[1]) << 8) | u32::from(block[2]);
-        for slot in 0..4 {
-            if slot <= chunk.len() {
-                let index = (packed >> (18 - slot * 6)) & 0x3F;
-                out.push(char::from(ALPHABET[index as usize]));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
-/// Decode what [`encode`] produced.
-fn decode(text: &str) -> Result<Vec<u8>, ManifestError> {
-    let mut out = Vec::with_capacity(text.len() / 4 * 3);
-    let mut block = 0u32;
-    let mut filled = 0u32;
-    for byte in text.bytes().filter(|byte| *byte != b'=') {
-        let Some(index) = ALPHABET.iter().position(|slot| *slot == byte) else {
-            return Err(ManifestError::Malformed(format!(
-                "base64 character {byte:#04x}"
-            )));
-        };
-        // The index came from a 64-entry table, so it is six bits.
-        block = (block << 6) | u32::try_from(index).unwrap_or(0);
-        filled += 6;
-        if filled >= 8 {
-            filled -= 8;
-            // Shifted down to a single byte by the line above.
-            out.push(u8::try_from((block >> filled) & 0xFF).unwrap_or(0));
-        }
-    }
-    Ok(out)
 }

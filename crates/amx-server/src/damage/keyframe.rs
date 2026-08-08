@@ -4,7 +4,7 @@
 //! the server sends a **keyframe** (`grid.reset` + full visible grid). Keyframes
 //! exist in protocol v1 so overflow recovery is skew-compatible forever."
 //!
-//! There are exactly five ways a delta stops being applicable, and naming them
+//! There are exactly six ways a delta stops being applicable, and naming them
 //! is most of the design:
 //!
 //! - the client has no grid yet ([`KeyframeReason::First`]);
@@ -13,6 +13,8 @@
 //! - the grid generation moved, which is the same statement in protocol terms
 //!   and is what a reconnect with a stale `Resume` produces
 //!   ([`KeyframeReason::Generation`]);
+//! - the client resumed and its cells cannot be certified
+//!   ([`KeyframeReason::Resumed`]);
 //! - the client asked, because it knows its copy is untrustworthy
 //!   ([`KeyframeReason::Resync`]);
 //! - or the accumulated set has grown to most of the grid
@@ -36,6 +38,31 @@ pub enum KeyframeReason {
     Resize,
     /// The pane's grid generation is not the one the client last saw.
     Generation,
+    /// The client re-bound a pane it holds cells for, and the server cannot
+    /// certify them.
+    ///
+    /// W08 opened such a bind **delta-only**, on the reading that a matching
+    /// generation means the client's grid is current. It does not, and the
+    /// module documentation of `conn/resume.rs` said so in the same breath: the
+    /// generation moves on resize and reset only, so agreement means the
+    /// *geometry* still matches. Between a client's last applied delta and its
+    /// re-bind the pane can paint as much as it likes, and a delta-only open
+    /// then leaves that client looking at a screen that is wrong forever — no
+    /// error, no repaint, no way for anybody to notice.
+    ///
+    /// M3's exit suite found it exactly where it is most reachable: a live
+    /// upgrade resumes every pane at the commit, and a client's reconnect lands
+    /// *after* whatever the pane painted in the meantime.
+    ///
+    /// So a resumed grid bind repaints, which is what 04 §6 asks for in as many
+    /// words ("keyframes for stale grids") — every grid is stale unless
+    /// something proves otherwise, and nothing on this wire can. What *would*
+    /// prove it is named in `docs/notes/m3-wave-outcomes.md` under W14: the
+    /// missed `pane_damage` events a resuming client is already replayed say
+    /// exactly which panes moved, so a client that drained its event replay
+    /// before binding could vouch for the rest. That is a client change, and
+    /// this is the server refusing to guess in the meantime.
+    Resumed,
     /// The client sent [`FlowControl::Resync`](amx_proto::stream::FlowControl::Resync).
     Resync,
     /// Accumulated damage crossed [`KeyframePolicy::damage_percent`].
@@ -50,6 +77,7 @@ impl KeyframeReason {
             Self::First => "first",
             Self::Resize => "resize",
             Self::Generation => "generation",
+            Self::Resumed => "resumed",
             Self::Resync => "resync",
             Self::Threshold => "threshold",
         }

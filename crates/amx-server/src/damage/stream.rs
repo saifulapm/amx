@@ -95,8 +95,10 @@ pub struct GridStreamConfig {
     ///
     /// `None` is a fresh bind and opens with a [`KeyframeReason::First`]
     /// keyframe, which is what every bind did before this field existed. Equal
-    /// to `live` opens delta-only. Anything else is stale, and opens with a
-    /// [`KeyframeReason::Generation`] keyframe.
+    /// to `live` opens with a [`KeyframeReason::Resumed`] keyframe — see that
+    /// variant for why a matching generation is not evidence the client's cells
+    /// are current. Anything else is stale in protocol terms too, and opens
+    /// with a [`KeyframeReason::Generation`] keyframe.
     pub resume: Option<GridGeneration>,
 }
 
@@ -128,7 +130,7 @@ impl GridStreamConfig {
     /// makes a keyframe unnecessary.
     fn opening_keyframe(&self) -> Option<KeyframeReason> {
         match self.resume {
-            Some(held) if held == self.live => None,
+            Some(held) if held == self.live => Some(KeyframeReason::Resumed),
             Some(_) => Some(KeyframeReason::Generation),
             None => Some(KeyframeReason::First),
         }
@@ -149,12 +151,6 @@ pub struct GridStream {
     generation: GridGeneration,
     /// Set while a keyframe is owed, with the reason it is owed.
     keyframe: Option<KeyframeReason>,
-    /// Set on a stream that opened delta-only and has not yet seen a frame.
-    ///
-    /// The client's cells *are* this stream's starting state, so the first
-    /// publication is adopted rather than treated as news; see
-    /// [`Self::absorb`].
-    resumed: bool,
     paused: bool,
     /// Publication counter of the last snapshot folded in.
     seen: Option<u64>,
@@ -167,11 +163,12 @@ impl GridStream {
     /// Start a stream that owes its client whatever its config says it owes.
     ///
     /// A fresh bind owes a [`First`](KeyframeReason::First) keyframe, as every
-    /// bind has since M0. A re-bind presenting the generation the pane is
-    /// already at owes nothing — it opens delta-only, and the first
-    /// publication is adopted rather than repainted. A re-bind presenting any
-    /// other generation owes a [`Generation`](KeyframeReason::Generation)
-    /// keyframe, which is 04 §6's "keyframes for stale grids".
+    /// bind has since M0. A re-bind owes one too — a
+    /// [`Resumed`](KeyframeReason::Resumed) keyframe when the generation
+    /// matches and a [`Generation`](KeyframeReason::Generation) one when it
+    /// does not — because a generation says the geometry matches and says
+    /// nothing about whether the client's cells are current. 04 §6 asks for
+    /// exactly this: "keyframes for stale grids".
     ///
     /// # Errors
     ///
@@ -193,7 +190,6 @@ impl GridStream {
             encoder: Encoder::new(),
             generation: config.live,
             keyframe,
-            resumed: keyframe.is_none(),
             paused: false,
             seen: None,
             cursor: None,
@@ -266,26 +262,6 @@ impl GridStream {
     /// contained. Nothing is read out of the snapshot's cells here — that
     /// happens in [`Self::flush`], at send time.
     pub fn absorb(&mut self, snapshot: &Snapshot, generation: GridGeneration) {
-        if self.resumed {
-            self.resumed = false;
-            // The first frame a delta-only stream sees is the grid its client
-            // is already looking at, so it seeds the shape and the publication
-            // counter and marks nothing: reshaping from zero would read as a
-            // resize and a whole-grid mark would cross the keyframe threshold,
-            // both of which would repaint a screen that is already right. If
-            // the generation moved between the bind and this frame the client
-            // is stale after all, and the ordinary path below says so.
-            if generation == self.generation {
-                self.dirty.reshape(snapshot.rows(), snapshot.cols());
-                self.seen = Some(snapshot.generation());
-                self.stats.absorbed += 1;
-                return;
-            }
-            // Recorded before the reshape below can claim the reason: the
-            // generation is why this client's cells stopped being usable, and
-            // the resize is only how.
-            self.need(KeyframeReason::Generation);
-        }
         if self.dirty.reshape(snapshot.rows(), snapshot.cols()) {
             self.need(KeyframeReason::Resize);
         }

@@ -342,6 +342,60 @@ async fn a_peer_that_never_finishes_saying_hello_does_not_wedge_the_drain() {
     });
 }
 
+#[tokio::test]
+async fn a_signal_that_arrives_while_the_server_assembles_is_still_a_clean_stop() {
+    let shell = marker_shell("earl", ":");
+    let mut env = Env::new("earl");
+    env.set_var("SHELL", &shell.path());
+
+    // A session with enough panes that restoring it takes real time: every one
+    // is a fork and an exec on the successor's side, and the whole point is to
+    // signal the server while it is doing them.
+    let server = env.server();
+    let mut wire = connected(&env).await;
+    let (_, root) = workspace(&mut wire, "w").await;
+    let mut panes = vec![root];
+    for _ in 0..PANES_TO_RESTORE {
+        let from = *panes.last().expect("a pane to split");
+        panes.push(split_in(&mut wire, from, &env.scratch()).await);
+    }
+    rename(&mut wire, root, "seeded").await;
+    drop(wire);
+    server.shutdown();
+    wait_until("the seeded session is on disk", || {
+        snapshot_mentions(&env, "seeded")
+    });
+
+    // The signal, aimed at a server that has bound its socket and is still
+    // restoring. Before W14 the signal watch was installed *after* the restore
+    // — so `SIGTERM` reached a process with no handler, took its default
+    // disposition, and killed it outright: no drain, no final capture, and the
+    // socket file left behind for the next `amx` to trip over. W01 saw it once
+    // and could not place it; this is where it was.
+    let restarting = env.server_while_it_assembles();
+    if let Err(stuck) = restarting.shutdown_within(STOP_BUDGET) {
+        panic!("{stuck}");
+    }
+    assert!(
+        !env.socket().exists(),
+        "the signalled server left {} behind, which is what dying to the \
+         default disposition looks like",
+        env.socket().display(),
+    );
+    wait_until("the stopped server's shells are reaped", || {
+        processes_with_arg(shell.marker()) == 0
+    });
+}
+
+/// How many panes the early-signal test seeds.
+///
+/// Sixty because that is what makes the failure deterministic rather than
+/// occasional: the restore is the part of the assembly with real work in it,
+/// and the test's whole method is to signal while it is happening. At four
+/// panes a server whose handler is installed late survives, because the
+/// restore finishes before the signal lands.
+const PANES_TO_RESTORE: usize = 60;
+
 /// Start a scripted agent in `space` and leave it blocked.
 ///
 /// Blocked and not merely running: `Blocked` is the state that puts a pane on

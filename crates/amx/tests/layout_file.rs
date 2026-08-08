@@ -45,6 +45,7 @@ fn pane_row(pane: PaneId, label: &str, agent: Option<AgentSnapshot>) -> PaneStat
         pane,
         short: ShortNumber::FIRST,
         label: Some(label.to_owned()),
+        cwd: None,
         rows: 24,
         cols: 80,
         history_head: RowId::FIRST,

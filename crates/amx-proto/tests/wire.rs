@@ -387,6 +387,7 @@ fn state_reply_with_restore_summary_round_trips_and_omits_when_none() {
             pane,
             short: ShortNumber::FIRST,
             label: Some("editor".to_owned()),
+            cwd: None,
             rows: 24,
             cols: 80,
             history_head: RowId::from_raw(0),

@@ -10,6 +10,13 @@ pub struct CreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Whether to focus the new workspace.
+    ///
+    /// Honoured by the create itself, which publishes the same `FocusChanged`
+    /// a `workspace.switch` would — so a caller that wants to land in what it
+    /// just made says so once instead of making two calls with a window
+    /// between them. Absent means `false`: a workspace created by a tool in
+    /// the background does not steal the screen from whoever is at the
+    /// keyboard.
     #[serde(default)]
     pub focus: bool,
     /// The git worktree this workspace belongs to, if `amx work` is the caller

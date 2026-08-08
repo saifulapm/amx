@@ -83,6 +83,24 @@ impl Core {
                 });
             }
         }
+        // The field M0 froze and nothing read until W12 found out the hard way:
+        // `amx work` asked for a focused workspace, got an unfocused one, and
+        // the next `amx work done` with no branch had nothing to resolve. It is
+        // read here rather than deleted from the row because callers already
+        // send it meaning what it says, and a documented parameter that does
+        // nothing is worse than one that does.
+        //
+        // After the label, so a status line reading the focus change already
+        // has the name; the switch's own `FocusChanged` is the last word.
+        if params.focus
+            && let Ok(effect) = self.state.switch_workspace(ws)
+        {
+            self.effects.absorb(effect);
+            seq = self.publish(Event::FocusChanged {
+                workspace: ws,
+                pane: self.state.workspace(ws).and_then(|ws| ws.focus()),
+            });
+        }
         let short = self.next_workspace_short(ws);
         let _ = reply.send(Ok(workspace::CreateReply {
             workspace: ws,

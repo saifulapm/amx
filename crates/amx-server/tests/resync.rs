@@ -153,7 +153,7 @@ async fn a_resume_beyond_the_ring_opens_with_a_gap_never_a_silent_skip() {
 // ------------------------------------------------------------- the grid half
 
 #[tokio::test]
-async fn a_bind_with_the_current_generation_sends_no_keyframe() {
+async fn a_bind_with_the_current_generation_repaints_and_says_which_reason() {
     let server = Server::start("rcur").await;
     let mut client = server.attach_rendering().await;
     let pane = sole_pane(&mut client).await;
@@ -164,23 +164,39 @@ async fn a_bind_with_the_current_generation_sends_no_keyframe() {
     let first = bind_grid(&mut client, 10, pane, None).await;
     let generation = settle_at(&mut client, first.channel).await;
 
-    // The second bind presents exactly that generation. The client is not
-    // stale, so it is owed no full grid.
+    // The second bind presents exactly that generation — and is repainted
+    // anyway. W08 opened this delta-only, on the reading that a matching
+    // generation means the client's cells are current. It does not: the
+    // generation moves on resize and reset only, so what agrees is the
+    // *geometry*, and the pane can paint as much as it likes between a
+    // client's last applied delta and its re-bind. W14's exit suite found the
+    // consequence where it is most reachable — a live upgrade resumes every
+    // pane at the commit and a reconnect lands after whatever they painted —
+    // and the failure mode is a client looking at a wrong screen forever, with
+    // no error and no repaint. 04 §6 asks for "keyframes for stale grids", and
+    // without evidence to the contrary every grid is stale.
     let second = bind_grid(&mut client, 11, pane, Some(generation)).await;
     let opened = frames_on(&mut client, second.channel, SILENCE).await;
 
-    assert!(
-        !opened.is_empty(),
-        "the resumed stream must be live, not merely quiet: it owes the cursor \
-         even when it owes no cells"
+    let Some(Decoded::Reset {
+        generation: sent, ..
+    }) = opened.first()
+    else {
+        panic!("a resumed bind must open with a keyframe, and got {opened:?}");
+    };
+    assert_eq!(
+        *sent, generation,
+        "the keyframe carries the generation the client already agreed on"
     );
-    for message in &opened {
-        assert!(
-            !matches!(message, Decoded::Reset { .. }),
-            "a bind at the pane's current generation must open delta-only, and \
-             this one sent a keyframe: {message:?}"
-        );
-    }
+
+    // The reason still distinguishes the two, which is what the generation is
+    // now worth: a matching one says the client had *a* grid for this geometry,
+    // a stale one says it did not.
+    assert_eq!(
+        opening_keyframe(pane, generation, Some(generation)),
+        Some(KeyframeReason::Resumed),
+        "a matching generation is a resume, not a stale grid"
+    );
 
     server.shutdown().await;
 }
@@ -228,8 +244,8 @@ async fn a_bind_with_a_stale_generation_opens_with_keyframe_reason_generation() 
     );
     assert_eq!(
         opening_keyframe(pane, generation, Some(generation)),
-        None,
-        "the current generation owes none"
+        Some(KeyframeReason::Resumed),
+        "a matching generation owes a repaint too, for a different reason"
     );
     assert_eq!(
         opening_keyframe(pane, generation, None),
@@ -266,21 +282,35 @@ async fn a_generation_presented_in_the_hello_is_spent_by_the_first_rebind() {
         )
         .await;
 
+    // The hello's generation is the default for the first re-bind, and what it
+    // buys is the keyframe's *reason* rather than its absence (see
+    // `a_bind_with_the_current_generation_repaints_and_says_which_reason`).
+    // Both binds repaint; only the first one is a resume.
     let first = bind_grid(&mut resumed, 20, pane, None).await;
     let opened = frames_on(&mut resumed, first.channel, SILENCE).await;
     assert!(
-        !opened.is_empty() && !opened.iter().any(|m| matches!(m, Decoded::Reset { .. })),
-        "the hello's generation is the default for the first re-bind, so it \
-         opens delta-only: {opened:?}"
+        matches!(opened.first(), Some(Decoded::Reset { .. })),
+        "a re-bind opens with a keyframe: {opened:?}"
+    );
+    assert_eq!(
+        opening_keyframe(pane, generation, Some(generation)),
+        Some(KeyframeReason::Resumed),
+        "the hello's generation made this a resume"
     );
 
     // And it is spent. A second bind naming no generation is a client asking
-    // for the grid afresh, not repeating a claim it already cashed in.
+    // for the grid afresh, not repeating a claim it already cashed in — which
+    // now shows in the reason a *fresh* bind owes.
     let second = bind_grid(&mut resumed, 21, pane, None).await;
     let again = frames_on(&mut resumed, second.channel, SILENCE).await;
     assert!(
         matches!(again.first(), Some(Decoded::Reset { .. })),
         "a second bind with no generation must open with a keyframe: {again:?}"
+    );
+    assert_eq!(
+        opening_keyframe(pane, generation, None),
+        Some(KeyframeReason::First),
+        "with the claim spent, a bare bind is a first attach again"
     );
 
     server.shutdown().await;

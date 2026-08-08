@@ -306,6 +306,10 @@ fn control_goldens_match() {
                     pane: pane_id(),
                     short: ShortNumber::new(1),
                     label: Some("editor".into()),
+                    // D-M3-11's cwd, frozen with a value rather than as `None`:
+                    // `amx layout export` is the reader, and a shape nothing
+                    // ever populates is a shape nobody has read.
+                    cwd: Some("/home/s/amx".into()),
                     rows: 22,
                     cols: 39,
                     history_head: RowId::from_raw(120),
@@ -323,6 +327,7 @@ fn control_goldens_match() {
                     pane: other_pane_id(),
                     short: ShortNumber::new(2),
                     label: None,
+                    cwd: None,
                     rows: 22,
                     cols: 40,
                     history_head: RowId::from_raw(0),

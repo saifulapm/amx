@@ -57,6 +57,12 @@ path = "seams.rs"
 name = "agents"
 path = "agents.rs"
 
+# W14's exit criterion (`docs/09-m3-plan.md` §7): a real upgrade under real
+# load, over the real binary.
+[[test]]
+name = "handoff_exit"
+path = "handoff_exit.rs"
+
 # Tier 2 of D-M3-9: the bridge over a real ssh connection. Gated on
 # `AMX_TEST_SSHD` and Linux-only (R-M3-6); it skips with its reason elsewhere.
 [[test]]

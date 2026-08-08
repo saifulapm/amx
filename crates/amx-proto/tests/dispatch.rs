@@ -192,6 +192,7 @@ impl Dispatch for StubServer {
                 pane,
                 short: ShortNumber::FIRST,
                 label: None,
+                cwd: None,
                 rows: 24,
                 cols: 80,
                 history_head: RowId::from_raw(3),
