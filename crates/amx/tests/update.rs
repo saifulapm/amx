@@ -158,6 +158,39 @@ fn check_against_a_file_url_manifest_reports_newer_older_equal() {
 }
 
 #[test]
+fn check_takes_a_channel_of_its_own_and_it_beats_the_configured_one() {
+    let rig = Rig::new("chch");
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_amx"));
+    let asset = rig.root().join("amx-next");
+    fs::write(&asset, b"not downloaded by check").expect("write an asset");
+    let sha256 = sha256_of(&asset).expect("digest");
+
+    // The configured channel says there is nothing newer; the one named on the
+    // command line says there is. `--channel` was on `apply` only until W14,
+    // which left the *read-only* verb unable to look anywhere but the config
+    // file — backwards, since looking elsewhere is the half that risks nothing.
+    rig.channel(&rig.manifest("configured.json", CURRENT, Some((&asset, &sha256))));
+    let newer = newer();
+    let elsewhere = rig.manifest("elsewhere.json", &newer, Some((&asset, &sha256)));
+
+    let out = rig
+        .run(&exe, &["update", "check", "--channel", &elsewhere])
+        .ok()
+        .to_owned();
+    assert!(out.contains(&elsewhere), "it says which channel it read: {out}");
+    assert!(out.contains(&format!("{newer} is available")), "{out}");
+
+    // Without the flag the configured channel still wins, so the argument is
+    // an override and not a new default.
+    let out = rig.run(&exe, &["update", "check"]).ok().to_owned();
+    assert!(
+        out.contains(&format!("{CURRENT} is the newest published version")),
+        "{out}"
+    );
+    assert!(!rig.staging().exists(), "check staged something");
+}
+
+#[test]
 fn no_published_manifest_is_reported_plainly_not_as_an_error_crash() {
     let rig = Rig::new("nopub");
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_amx"));

@@ -43,6 +43,12 @@ pub const SESSION: &str = "session";
 /// The `--json` argument's id, carried by `session report` and `events`.
 pub const JSON: &str = "json";
 
+/// The global `--remote` argument's id.
+///
+/// Declared for `--help` and never matched: [`crate::remote::split`] removes
+/// the flag from `argv` before this tree parses anything.
+pub const REMOTE: &str = "remote";
+
 /// The `--after-seq` argument's id, carried by `events`.
 pub const AFTER_SEQ: &str = "after-seq";
 
@@ -68,6 +74,19 @@ pub fn cli() -> Command {
                 .global(true)
                 .value_name("NAME")
                 .help("The named session to use [env: AMX_SESSION] [default: default]"),
+        )
+        // Documentary, and deliberately so. `--remote` selects *which machine
+        // parses the rest of the command line*, so `remote::split` takes it off
+        // `argv` in `main` before clap ever sees it — clap will therefore never
+        // match this argument. It is declared anyway because a flag missing
+        // from `amx --help` is a flag nobody finds: W11 had to strip it and
+        // recorded the cost, and this is the line that pays it.
+        .arg(
+            Arg::new(REMOTE)
+                .long("remote")
+                .global(true)
+                .value_name("HOST")
+                .help("Attach to the session on HOST over ssh, through `amx _bridge`"),
         )
         .subcommand(attach())
         .subcommand(server())
@@ -278,17 +297,28 @@ fn update() -> Command {
         .about("Check for a newer amx, or install one without dropping a pane")
         .subcommand_required(true)
         .arg_required_else_help(true)
-        .subcommand(Command::new("check").about("Report whether a newer amx is published"))
+        .subcommand(
+            Command::new("check")
+                .about("Report whether a newer amx is published")
+                // Symmetric with `apply` on purpose: W03's tree put `--channel`
+                // on the writing verb only, which left the read-only one unable
+                // to look anywhere but the configured channel — exactly
+                // backwards, since checking somewhere else is the cheap half.
+                .arg(channel()),
+        )
         .subcommand(
             Command::new("apply")
                 .about("Install the newest amx and hand the running session over to it")
-                .arg(
-                    Arg::new("channel")
-                        .long("channel")
-                        .value_name("URL")
-                        .help("The channel manifest to read [default: the configured channel]"),
-                ),
+                .arg(channel()),
         )
+}
+
+/// `--channel <URL>`, on both update verbs.
+fn channel() -> Arg {
+    Arg::new("channel")
+        .long("channel")
+        .value_name("URL")
+        .help("The channel manifest to read [default: the configured channel]")
 }
 
 /// `amx work <branch> [--kind]` / `amx work done [branch]` — worktrees

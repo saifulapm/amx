@@ -52,7 +52,7 @@ use crate::update::{fetch, install, pm};
 /// and is typechecked on every build; W14 flips this to `true`.
 pub const HANDOFF_AFTER_INSTALL: bool = false;
 
-/// The clap id of `apply --channel`.
+/// The clap id of `--channel`, which both verbs take.
 const CHANNEL: &str = "channel";
 
 /// How long `apply` waits for the successor to answer, once a handoff is
@@ -75,7 +75,7 @@ const RECONNECT_TICK: Duration = Duration::from_millis(100);
 pub async fn run(env: &Env, root: &ArgMatches, sub: &ArgMatches) -> anyhow::Result<ExitCode> {
     let ctx = ctx_of(env, root, None)?;
     match sub.subcommand() {
-        Some(("check", _)) => check(&ctx).await,
+        Some(("check", args)) => check(&ctx, args).await,
         Some(("apply", args)) => apply(env, root, &ctx, args).await,
         _ => bail!("`amx update` needs a verb: `check` or `apply`"),
     }
@@ -84,10 +84,10 @@ pub async fn run(env: &Env, root: &ArgMatches, sub: &ArgMatches) -> anyhow::Resu
 // ------------------------------------------------------------------- check
 
 /// Report what the channel has, and say so plainly when it has nothing.
-async fn check(ctx: &Ctx) -> anyhow::Result<ExitCode> {
+async fn check(ctx: &Ctx, args: &ArgMatches) -> anyhow::Result<ExitCode> {
     let exe = current_exe()?;
     let install = pm::classify(&exe);
-    let channel = channel_of(ctx, None)?;
+    let channel = channel_of(ctx, args.get_one::<String>(CHANNEL).map(String::as_str))?;
     let running = current();
 
     println!("amx {running} at {}", exe.display());

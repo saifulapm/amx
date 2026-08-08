@@ -380,6 +380,27 @@ fn remote_takes_a_host_and_refuses_a_second_one() {
 }
 
 #[test]
+fn remote_is_documented_in_help_even_though_clap_never_matches_it() {
+    let rig = Rig::new("rhlp");
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_amx"));
+
+    let done = rig.run(&exe, &["--help"]);
+    let out = done.ok();
+    assert!(
+        out.contains("--remote <HOST>"),
+        "a flag missing from --help is a flag nobody finds: {done:?}",
+    );
+
+    // And it is still stripped before clap parses, which is what makes the
+    // declaration documentary: a `--remote` that reached the tree would make
+    // `amx --remote box attach` an attach on *this* machine.
+    let (remote, rest) =
+        amx::remote::split(["amx", "--remote", "box", "attach"]).expect("one host parses");
+    assert_eq!(remote.expect("a host").host(), "box");
+    assert_eq!(rest, ["amx", "attach"]);
+}
+
+#[test]
 fn a_remote_verb_says_which_machine_it_would_have_run_on() {
     let rig = Rig::new("rvrb");
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_amx"));
