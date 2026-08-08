@@ -4,9 +4,11 @@ A minimal, keyboard-only terminal multiplexer for coding agents: a background
 server owns your terminals, so agents survive disconnects and client crashes —
 and the whole interface is panes plus one status line.
 
-Early days: this is the M0 milestone — a daily-drivable multiplexer core.
-Agent-native features (status detection, attention queue, session resume)
-arrive in the next milestones. The full design lives in [docs/](docs/).
+Milestones M0–M3 have landed: the daily-drivable multiplexer core, durable
+sessions (fsynced snapshots, restore with a loss report), the agent layer
+(status detection, attention queue, session resume), and continuity & reach
+(live binary-upgrade handoff, SSH remoting, worktree-native spawning,
+declarative layouts). The full design lives in [docs/](docs/).
 
 ## Build
 

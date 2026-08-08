@@ -242,6 +242,7 @@ clearing one project's queue never yanks focus across projects.
 | D14 narrow policy + wheel → copy mode + phone profile docs | ~3–5 days |
 | Scoped `next-attention` | ~0.5 day |
 
-Roughly two weeks total. Depends on nothing in the fix register except that
-history delivery (DR-2) makes peek's copy-mode scrolling real; peek of the
-live grid works without it.
+Roughly two weeks total. As of the M3 merge this depends on nothing open in
+the fix register: the `Cells` codec (DR-1) and history delivery (DR-2) both
+landed, so peek renders real styled grids and copy-mode scrolling over
+fetched history works from day one.
