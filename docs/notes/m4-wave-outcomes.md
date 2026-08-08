@@ -124,3 +124,52 @@ giving `Attrs` a `faint` field and mapping it in `stream.rs`, which failed the
 suite; the mutation was reverted. **X18** widens exactly this projection and
 will have to update the test and the comment in the same change, which is the
 point.
+
+---
+
+## X00 — the wave-1 baseline smoke
+
+Full record in [m4-live-smoke.md](m4-live-smoke.md) §1. All six of §6's items
+hold. Three facts it measured need an owner outside X00's scope.
+
+**Hand-off to X10, X14 and X16 — D15's table costs 161 ms today.** Assembling
+it the only way that currently exists — one `session.state` plus one `pane.read`
+per pane — takes 161 ms for 25 agents, against 8 ms for the state read alone
+(m4-live-smoke §1.4). That is the number `agent.list` has to beat, and it is
+also the arithmetic behind R-M4-7: a surface refreshing per pane at 4 Hz with 25
+agents would spend most of a core on it. The three `last_line` strings the run
+recorded are the literal values X10's extraction has to reproduce for those
+panes.
+
+**Hand-off to X12 — a pane whose slot insets to zero keeps a departed client's
+size.** Observed: with a 45-column client holding size authority over a
+five-pane workspace, four panes resized to 21/9/4/1 columns and the fifth stayed
+at the 47×10 the 200-column client had given it. That is deliberate and
+documented — "a pane squeezed out of visible space keeps its last size: a 0x0
+PTY starves the process for nothing"
+(`crates/amx-server/src/actor/core/view.rs:192-198`) — so it is not a defect to
+fix. It is a case D-M4-7's single-pane sizing rule has to answer, because a
+viewport declaring one pane leaves every other pane in the layout in exactly
+this state, and X12 is where that is decided rather than inherited.
+
+**Hand-off to X16 — a cold restart is announced on stderr and is invisible on
+stdout.** `amx events --json` survived a server restart in the run: it redialled,
+resubscribed and kept printing, which is the contract `--watch` is meant to
+package. But the sequence space begins again at a cold restart, and the relay
+says so on *stderr* (`crates/amx/src/cmd/events.rs:144-147`) while stdout goes
+straight from seq 1093 to seq 122 with nothing between. It is correctly not a
+`gap` — a gap is loss, and nothing was lost — and no change is proposed here.
+X16 reads its own stream, so X16 is where the question of whether a full-screen
+`--watch` needs more than that gets answered.
+
+**Confirmed rather than diverged, for the two tasks that build on it.** Seam 4's
+two halves are as D-M4-7 describes them, checked against source during the run:
+the client declares `Viewport { rows, cols, panes }` with every pane of the
+focused workspace (`crates/amx-client/src/app/binds.rs:131-147`), and
+`handle_viewport` reads `rows` and `cols` and never `panes`
+(`crates/amx-server/src/actor/core/view.rs:144-157`). The letterbox that follows
+is measured in m4-live-smoke §1.3 — a 21×17 grid centred inside a 98×47 pane
+box — rather than argued.
+
+**DR-11's watch has its first entry.** Two `session stop`s, both exit 0, no
+`drain-census` file and no census log line either time (m4-live-smoke §1.7).
