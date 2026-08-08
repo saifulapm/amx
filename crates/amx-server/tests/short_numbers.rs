@@ -60,6 +60,7 @@ fn pane_state(pane: PaneId, short: u32, label: Option<&str>, agent: bool) -> ses
         cwd: None,
         rows: 24,
         cols: 80,
+        mouse: None,
         history_head: RowId::from_raw(0),
         history_floor: RowId::from_raw(0),
         agent: agent.then(|| AgentSnapshot {
