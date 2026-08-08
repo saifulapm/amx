@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use amx_core::PaneId;
-use amx_proto::control::stream::BindReply;
+use amx_proto::control::stream::{BindParams, BindReply};
 use amx_proto::frame::DEFAULT_STREAM_FRAME;
 use amx_proto::rpc::RpcError;
 use amx_proto::stream::{FlowControl, StreamId, StreamKind};
@@ -33,6 +33,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::reader::StreamCaps;
+use super::resume::ConnResume;
 use super::writer::Outbound;
 use crate::actor::{PaneHandle, PaneWiring};
 use crate::damage::{GridStream, GridStreamConfig, pump};
@@ -81,13 +82,17 @@ pub struct ConnStreams {
     bindings: Arc<Mutex<Bindings>>,
     outbound: Outbound,
     cancel: CancellationToken,
+    resume: ConnResume,
 }
 
 impl ConnStreams {
     /// Stream state for one connection: frames go out through `outbound`,
     /// and every pump this state spawns stops with `cancel`.
+    ///
+    /// `resume` is what the hello presented, and supplies the generation for a
+    /// grid bind that names none of its own.
     #[must_use]
-    pub fn new(outbound: Outbound, cancel: CancellationToken) -> Self {
+    pub fn new(outbound: Outbound, cancel: CancellationToken, resume: ConnResume) -> Self {
         Self {
             caps: Arc::new(Mutex::new(StreamCaps::default())),
             bindings: Arc::new(Mutex::new(Bindings {
@@ -96,6 +101,7 @@ impl ConnStreams {
             })),
             outbound,
             cancel,
+            resume,
         }
     }
 
@@ -113,19 +119,31 @@ impl ConnStreams {
 
     /// Bind one stream, wiring whatever its kind needs.
     ///
+    /// A grid bind is where the reconnect story lands: the generation the
+    /// client presents — on the call, or failing that in the hello's resume
+    /// block — is compared with the pane's live one, and the stream opens
+    /// delta-only or with a keyframe accordingly (D-M3-7). The comparison is
+    /// made here, at bind time, because this is the only moment at which the
+    /// live generation and the client's claim are both in hand.
+    ///
     /// # Errors
     ///
     /// A typed refusal for the reserved graphics kind, for a connection that
     /// has exhausted its channel bytes, and for a pump that cannot start.
-    pub fn bind(&self, kind: StreamKind, wiring: &PaneWiring) -> Result<BindReply, RpcError> {
+    pub fn bind(&self, params: BindParams, wiring: &PaneWiring) -> Result<BindReply, RpcError> {
         let stream = self.allocate()?;
         // `allocate` only returns ids with a channel byte.
         let Some(channel) = stream.channel() else {
             return Err(no_channels());
         };
-        match kind {
+        match params.kind {
             StreamKind::PaneGrid { pane } => {
-                let grid = GridStream::new(GridStreamConfig::new(pane, stream))
+                let held = params
+                    .generation
+                    .or_else(|| self.resume.take_generation(pane));
+                let config =
+                    GridStreamConfig::new(pane, stream).resuming(wiring.frames.generation(), held);
+                let grid = GridStream::new(config)
                     .map_err(|err| RpcError::new(RpcError::INTERNAL_ERROR, err.to_string()))?;
                 let (flow_tx, flow_rx) = mpsc::channel(FLOW_DEPTH);
                 self.lock_bindings().flows.insert(stream, flow_tx);
