@@ -196,6 +196,30 @@ impl AgentHub {
             Event::PaneCreated { pane, workspace } => {
                 self.workspaces.insert(pane, workspace);
             }
+            // The names mirror (D-M4-6), folded off the bus beside the pairing
+            // above and never asked of `Core`. Two arms and one map is the
+            // whole of what an identity-bearing `attention_enqueued` costs,
+            // and it is the same shape `PaneCreated` already had: the hub
+            // learns a fact by watching it be published, not by requesting it.
+            //
+            // A rename is the only way a label reaches this actor, which is
+            // also why it is enough — a cold restore replays one for every
+            // label it brings back (`actor/core/restore.rs:284,295`), and
+            // `workspace.create` publishes one for a label given at creation.
+            // The live handoff, which publishes nothing at all, seeds the map
+            // through `inherit` instead.
+            Event::PaneRenamed { pane, label } => {
+                self.names.panes.insert(pane, label);
+            }
+            Event::WorkspaceRenamed { workspace, label } => {
+                self.names.workspaces.insert(workspace, label);
+            }
+            // A workspace that is gone cannot be named again, and its entry
+            // would outlive every pane that could have quoted it. Panes are
+            // dropped by `retire`, which runs after the dequeue it publishes.
+            Event::WorkspaceClosed { workspace } => {
+                self.names.workspaces.remove(&workspace);
+            }
             // A user editing a rule to fix a wrong detection sees it take
             // effect without restarting the session (R-M2-13). The registry is
             // deliberately *not* re-read: a stanza's coverage class and grace

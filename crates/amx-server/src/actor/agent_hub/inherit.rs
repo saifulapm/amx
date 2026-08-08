@@ -36,6 +36,16 @@ pub struct InheritedPane {
     pub pane: PaneId,
     /// The workspace holding it, if the manifest's layout still names one.
     pub workspace: Option<WorkspaceId>,
+    /// Its label, which is the agent's name (D-M2-9).
+    ///
+    /// Here for the same reason [`workspace`](Self::workspace) is: the hub
+    /// learns labels from `PaneRenamed`, an import publishes none, and a label
+    /// that only arrived by rename event would be absent for every pane that
+    /// crossed an upgrade — R-M4-4's warning, which is why this is load-bearing
+    /// rather than a convenience. The exporter's own layout knows it.
+    pub label: Option<String>,
+    /// Its workspace's label, on the same terms.
+    pub workspace_label: Option<String>,
     /// Its agent status, or `None` for a pane the exporter tracked no agent in.
     pub status: Option<AgentSnapshot>,
 }
@@ -59,6 +69,12 @@ impl AgentHub {
         for pane in panes {
             if let Some(workspace) = pane.workspace {
                 self.workspaces.insert(pane.pane, workspace);
+                if let Some(label) = pane.workspace_label {
+                    self.names.workspaces.insert(workspace, label);
+                }
+            }
+            if let Some(label) = pane.label {
+                self.names.panes.insert(pane.pane, label);
             }
             let Some(status) = pane.status else { continue };
             // The fast read model, written now: a `wait --until blocked` that
@@ -104,6 +120,12 @@ impl AgentHub {
         });
         let mut tracked = Tracked::new(frames, spawn, carried.transition_seq);
         tracked.session_ref = carried.session_ref.clone();
+        // The exporter's instant, not this process's. An agent blocked all
+        // night reads as blocked all night after an upgrade; re-stamping here
+        // would tell the user it had been waiting four seconds, which is the
+        // half of R-M4-4 the handoff can answer exactly because the manifest
+        // carries `AgentSnapshot`s whole.
+        tracked.since = carried.since;
         let directives = tracked.tracker.adopt(carried, coverage, grace);
         self.panes.insert(pane, tracked);
         // Normally a consequence of `Directive::Identified`, which an adoption

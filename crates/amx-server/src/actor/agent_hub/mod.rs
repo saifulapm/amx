@@ -65,7 +65,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use amx_core::agent::{AgentKind, AgentSnapshot, HookToken, SessionRef};
+use amx_core::agent::{
+    AgentKind, AgentSnapshot, AgentWorkspace, EpochMillis, HookToken, SessionRef,
+};
 use amx_core::{Ctx, PaneId, Seq, WorkspaceId};
 use amx_proto::control::agent as proto;
 use tokio::time::Instant;
@@ -202,6 +204,28 @@ struct Tracked {
     session_ref: Option<SessionRef>,
     /// The bus sequence of this pane's last status transition.
     transition_seq: Seq,
+    /// The wall clock at that same transition, in epoch milliseconds.
+    ///
+    /// The renderable half of [`transition_seq`](Self::transition_seq), stamped
+    /// here and not inside the fusion machine because the machine has no clock
+    /// and is not getting one: deadlines *arrive* as inputs, which is what lets
+    /// V04's property tests enumerate interleavings instead of running them.
+    /// `absorb` already reads a clock for the wheel, so the stamp costs one more
+    /// `SystemTime::now`.
+    ///
+    /// `None` until this hub has seen the pane move. D-M4-4's absolute instant
+    /// is only honest when somebody observed the edge, and there are exactly two
+    /// ways a pane has one: this process watched it happen, or a predecessor did
+    /// and handed the value over on the handoff manifest. A **cold restore**
+    /// gives neither — the persist snapshot deliberately carries no status
+    /// ("never a status, which dies with the process it described",
+    /// `crates/amx-server/src/persist/mod.rs:94`) — so a restored pane starts
+    /// with no `since` and takes one from its first real transition, rather than
+    /// reporting the restore as the moment an agent became blocked. R-M4-4 asks
+    /// for that answer said out loud: this is it, and the fallback it offers
+    /// ("since this server started tracking it") is declined, because an age
+    /// counted from a restart is a number that looks measured and is not.
+    since: Option<EpochMillis>,
     /// When this pane was last evaluated, which is what the minimum spacing is
     /// measured from.
     last_eval: Option<Instant>,
@@ -225,6 +249,7 @@ impl Tracked {
             title: String::new(),
             session_ref: None,
             transition_seq: seq,
+            since: None,
             last_eval: None,
             eval_due: None,
             deadlines: HashMap::new(),
@@ -242,11 +267,13 @@ impl Tracked {
             // shifts everyone behind it must not leave a stale number here.
             attention: None,
             session_ref: self.session_ref.clone(),
-            // X06 retains the name of whatever last moved this pane and stamps
-            // the entry edge. X02 froze the fields; until then a consumer reads
-            // the absences that mean "this build did not say" (D-M4-3/4).
-            reason: None,
-            since: None,
+            // Both halves of the entry edge, and both of them somebody's
+            // observation rather than this line's invention: the name comes off
+            // the machine, which took it from the detector that won, and the
+            // instant comes off `absorb`, which stamped it when the transition
+            // was folded (D-M4-3, D-M4-4).
+            reason: self.tracker.reason.clone(),
+            since: self.since,
         }
     }
 
@@ -281,7 +308,61 @@ pub struct AgentHub {
     attention: Vec<PaneId>,
     /// Which workspace each pane was created in, for `agent.next`'s reply.
     workspaces: HashMap<PaneId, WorkspaceId>,
+    /// The labels the identity block on an attention event needs.
+    names: Names,
     probe: AgentProbe,
+}
+
+/// Pane and workspace labels, as this hub last saw them.
+///
+/// D-M4-6's names mirror. D15 requires `attention_enqueued` to carry
+/// `workspace{id,name}` and `name` so a notifier can render
+/// `api/backend blocked (permission_dialog)` with no follow-up call, and the
+/// hub is the events' only publisher — but it holds an argv and a title, and
+/// nothing a person named.
+///
+/// It does not *ask* for them. Parking on a sibling is what its shutdown
+/// discipline forbids ([`AgentHub`]'s module docs), and it does not have to:
+/// every label in a live session reaches this actor on the bus it already
+/// reads. `workspace.create` publishes `WorkspaceRenamed` for a label given at
+/// creation (`actor/core/workspace.rs:80`), `pane.rename` and
+/// `workspace.rename` publish one each, and a **cold restore replays both** for
+/// every label it brings back (`actor/core/restore.rs:284,295`) — which is what
+/// R-M4-4 warns is load-bearing, checked rather than assumed.
+///
+/// The one path that publishes nothing at all is the live handoff, by design
+/// ("the swap is invisible on the bus", `docs/09-m3-plan.md` §4), so an import
+/// seeds this map explicitly through
+/// [`InheritedPane`](super::agent_hub::inherit::InheritedPane) instead.
+///
+/// What it cannot promise: a rename lost inside a bus [`Gap`] leaves the old
+/// label here until the next one. The identity block is optional for exactly
+/// this class of reason, and a stale label on a notification is the cost of not
+/// asking a draining sibling for one.
+///
+/// [`Gap`]: amx_core::Delivery::Gap
+#[derive(Debug, Default)]
+struct Names {
+    /// Pane labels, which are the agent names D-M2-9 defines.
+    panes: HashMap<PaneId, String>,
+    /// Workspace labels.
+    workspaces: HashMap<WorkspaceId, String>,
+}
+
+/// One pane, said the way a notifier would say it.
+///
+/// The four optional fields `Event::AttentionEnqueued` and
+/// `AttentionDequeued` grew in X02, assembled in one place so the two arms that
+/// build those events cannot disagree about what "the identity block" means.
+pub(super) struct Identity {
+    /// The workspace and its label.
+    pub workspace: Option<AgentWorkspace>,
+    /// The pane's label — the agent's name (D-M2-9).
+    pub name: Option<String>,
+    /// What named the pane's current state, if a detector did.
+    pub reason: Option<String>,
+    /// When it entered that state.
+    pub since: Option<EpochMillis>,
 }
 
 impl AgentHub {
@@ -307,6 +388,7 @@ impl AgentHub {
             inherited: HashMap::new(),
             attention: Vec::new(),
             workspaces: HashMap::new(),
+            names: Names::default(),
             probe: AgentProbe::new(),
         }
     }
@@ -376,17 +458,44 @@ impl AgentHub {
     ///
     /// A queue holding a dead pane would send `next-attention` somewhere that
     /// is not there, so the exit runs through the machine like any other input
-    /// and its `Dequeue` effect is honoured on the way out.
+    /// and its `Dequeue` directive is honoured on the way out.
     fn retire(&mut self, pane: PaneId) {
         if !self.panes.contains_key(&pane) {
             return;
         }
-        let effects = self.apply(pane, Input::Exited);
-        self.absorb(pane, &effects);
+        let directives = self.apply(pane, Input::Exited);
+        self.absorb(pane, &directives);
         // `absorb` drops an exited tracker; this catches the pane that was
         // already exited when the close arrived.
         self.panes.remove(&pane);
         self.workspaces.remove(&pane);
+        // After `absorb`, not before: the dequeue this exit publishes still
+        // names the pane a person would recognise.
+        self.names.panes.remove(&pane);
+    }
+
+    /// The identity block D15 puts on an attention event.
+    ///
+    /// Every field is what this hub already holds, and every one of them is
+    /// optional because a fact it has not been told is *absent* — never
+    /// invented and never asked of a sibling (D-M4-6).
+    ///
+    /// `reason` and `since` describe the pane's state **as it is now**, which
+    /// is the state the event is announcing: on an enqueue that is what blocked
+    /// it, and on a dequeue it is what ended the block. Read after the
+    /// directives are folded, so the tracker has already moved.
+    pub(super) fn identity(&self, pane: PaneId) -> Identity {
+        let workspace = self.workspaces.get(&pane).map(|id| AgentWorkspace {
+            id: *id,
+            name: self.names.workspaces.get(id).cloned(),
+        });
+        let tracked = self.panes.get(&pane);
+        Identity {
+            workspace,
+            name: self.names.panes.get(&pane).cloned(),
+            reason: tracked.and_then(|tracked| tracked.tracker.reason.clone()),
+            since: tracked.and_then(|tracked| tracked.since),
+        }
     }
 
     /// Name `pane`'s agent and adopt its stanza's fusion parameters.

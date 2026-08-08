@@ -209,6 +209,25 @@ pub async fn import(ctx: Ctx, opts: ImportOptions) -> Result<ServeReport, Import
         .map(|(pane, workspace)| InheritedPane {
             pane: *pane,
             workspace: *workspace,
+            // The labels the hub would have learned from `PaneRenamed` and
+            // `WorkspaceRenamed` in a live session, and which this path
+            // publishes none of — the swap is invisible on the bus (§4). They
+            // are read off the state the manifest carries, which is the same
+            // place the layout the panes were just adopted into came from.
+            label: manifest
+                .state
+                .panes
+                .iter()
+                .find(|saved| saved.id == *pane)
+                .and_then(|saved| saved.label.clone()),
+            workspace_label: workspace.and_then(|workspace| {
+                manifest
+                    .state
+                    .workspaces
+                    .iter()
+                    .find(|saved| saved.id == workspace)
+                    .and_then(|saved| saved.label.clone())
+            }),
             status: manifest
                 .agents
                 .iter()

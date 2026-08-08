@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use amx_core::agent::{AgentKind, AgentSnapshot};
+use amx_core::agent::{AgentKind, AgentSnapshot, EpochMillis};
 use amx_core::{Event, PaneId};
 use tokio::time::Instant;
 
@@ -74,6 +74,12 @@ impl AgentHub {
                     }
                     Directive::Status { .. } => {
                         tracked.transition_seq = seq;
+                        // The wall-clock half of the same edge, read once for
+                        // the whole fold. D-M4-4: absolute epoch milliseconds,
+                        // so `amx agents --json` and an external consumer get
+                        // the instant, and no surface ever renders an age
+                        // against a clock that is not the one that stamped it.
+                        tracked.since = wall_clock();
                         moved = true;
                     }
                     Directive::Identified { kind } => identified = Some(kind.clone()),
@@ -81,6 +87,14 @@ impl AgentHub {
                 }
             }
         }
+
+        // Assembled once, from state the fold above has already settled, and
+        // used by whichever of the two queue arms runs: D15 wants an
+        // `attention_enqueued` a notifier can render straight
+        // (`api/backend blocked (permission_dialog)`) without a follow-up call,
+        // and a dequeue carries the same block so the notification it clears
+        // can be matched to the one it clears.
+        let identity = self.identity(pane);
 
         // The queue and the events, in the fixed order the machine emits them:
         // the status, then the queue, then the timers.
@@ -97,20 +111,15 @@ impl AgentHub {
                     pane,
                     kind: kind.clone(),
                 }),
-                // The identity block is X06's: this hub keeps no names mirror
-                // yet, and a label it has not seen is absent rather than
-                // invented (`docs/11-m4-plan.md` D-M4-6). X02 froze the shape
-                // and left the fields empty, which is exactly what a consumer
-                // built before M4 reads.
                 Directive::Enqueue => {
                     self.attention.retain(|queued| *queued != pane);
                     self.attention.push(pane);
                     events.push(Event::AttentionEnqueued {
                         pane,
-                        workspace: None,
-                        name: None,
-                        reason: None,
-                        since: None,
+                        workspace: identity.workspace.clone(),
+                        name: identity.name.clone(),
+                        reason: identity.reason.clone(),
+                        since: identity.since,
                     });
                 }
                 Directive::Dequeue => {
@@ -119,10 +128,10 @@ impl AgentHub {
                     if self.attention.len() != before {
                         events.push(Event::AttentionDequeued {
                             pane,
-                            workspace: None,
-                            name: None,
-                            reason: None,
-                            since: None,
+                            workspace: identity.workspace.clone(),
+                            name: identity.name.clone(),
+                            reason: identity.reason.clone(),
+                            since: identity.since,
                         });
                     }
                 }
@@ -253,4 +262,25 @@ impl AgentHub {
             self.bind_manifest(pane, &kind);
         }
     }
+}
+
+/// Now, in epoch milliseconds — the units D-M4-4 fixed for
+/// [`AgentSnapshot::since`](amx_core::agent::AgentSnapshot::since).
+///
+/// The one wall clock in this actor, and it is read *only* to stamp a
+/// transition. Everything the hub decides — spacing, confirmation caps,
+/// staleness — runs off [`tokio::time::Instant`], which a test can pause; this
+/// is the value a person is shown, and there is no monotonic spelling of "4m
+/// ago" that survives being carried to another machine.
+///
+/// A clock set before 1970 is the only way [`SystemTime::duration_since`] can
+/// fail, and the answer to it is the one an absent `since` already means:
+/// nobody can say when this happened. A zero would say 1970 and be believed.
+///
+/// [`SystemTime::duration_since`]: std::time::SystemTime::duration_since
+fn wall_clock() -> Option<EpochMillis> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|since| EpochMillis::try_from(since.as_millis()).ok())
 }
