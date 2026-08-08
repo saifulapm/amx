@@ -33,12 +33,20 @@ pub const TERMINAL_SECTION: &str = "terminal";
 /// The `[update]` section's name, as it appears in the file.
 pub const UPDATE_SECTION: &str = "update";
 
+/// The `[work]` section's name, as it appears in the file.
+pub const WORK_SECTION: &str = "work";
+
 /// Every section amx reads, in file order.
 ///
 /// M1 tables exactly the sections that have a consumer; a section nobody reads
 /// is a promise nobody keeps. Walked rather than repeated, so adding a section
 /// is adding a field plus a row here.
-pub const SECTIONS: &[&str] = &[PERSIST_SECTION, TERMINAL_SECTION, UPDATE_SECTION];
+pub const SECTIONS: &[&str] = &[
+    PERSIST_SECTION,
+    TERMINAL_SECTION,
+    UPDATE_SECTION,
+    WORK_SECTION,
+];
 
 /// The whole configuration, one field per section.
 ///
@@ -55,6 +63,9 @@ pub struct Config {
     /// `[update]`.
     #[serde(default)]
     pub update: UpdateConfig,
+    /// `[work]`.
+    #[serde(default)]
+    pub work: WorkConfig,
 }
 
 /// `[persist]`: what durability keeps beyond the snapshot itself.
@@ -97,6 +108,30 @@ pub struct UpdateConfig {
     /// has been running for a week reads whatever the file says today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
+}
+
+/// `[work]`: where `amx work <branch>` puts the worktree it adds (D-M3-10).
+///
+/// One field, and an override rather than a value, on the same reasoning
+/// [`UpdateConfig`] gives: the default template is a fact about the design — a
+/// *sibling* of the repository, so repo-internal tooling never walks into a
+/// nested checkout — and a user who is happy with it should not have to write
+/// it out to get it.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct WorkConfig {
+    /// The path template a new worktree is placed at, ahead of the built-in
+    /// default.
+    ///
+    /// Read per invocation, like every other setting here, and never consulted
+    /// again afterwards: the path a workspace's worktree actually sits at is
+    /// remembered on the workspace itself, so editing this template does not
+    /// move a tree that already exists. What it does change is where the *next*
+    /// `amx work` puts one — and `amx work done` recomputes the template to
+    /// check the tree it is about to remove is the one this template would have
+    /// derived, which is the pin that keeps a destructive verb off a
+    /// user-supplied path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
 }
 
 /// One thing that went wrong while reloading, named by section.
@@ -173,6 +208,13 @@ pub fn reload(current: &Config, text: &str) -> (Config, Vec<ConfigDiagnostic>) {
         UPDATE_SECTION,
         &current.update,
         &mut next.update,
+        &mut diagnostics,
+    );
+    section(
+        &document,
+        WORK_SECTION,
+        &current.work,
+        &mut next.work,
         &mut diagnostics,
     );
     (next, diagnostics)

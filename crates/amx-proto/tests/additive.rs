@@ -15,7 +15,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
 use amx_core::GridGeneration;
-use amx_proto::control::{Call, Method, session, stream};
+use amx_proto::control::{Call, Method, session, stream, workspace};
 use amx_proto::stream::StreamKind;
 use serde_json::json;
 
@@ -118,6 +118,52 @@ fn the_session_report_handoff_row_is_additive_in_both_directions() {
     let older: session::ReportReply =
         serde_json::from_value(json!({ "seq": 9, "report": { "entries": [] } })).expect("decode");
     assert_eq!(older.handoff, None);
+}
+
+/// D-M3-10: `workspace.create` grows an optional `worktree` block, and a create
+/// without one is byte-for-byte the call M0 froze.
+///
+/// The block is how `amx work <branch>` tells the server both facts it needs at
+/// once — the membership `done` and restore read back, and the directory the new
+/// workspace's shell opens in. Every other caller sends no worktree, which is
+/// why the direction that matters most here is the *absent* one.
+#[test]
+fn workspace_create_with_a_worktree_reads_at_v1_and_without_it_still_parses() {
+    let plain = workspace::CreateParams {
+        label: Some("scratch".to_owned()),
+        focus: true,
+        worktree: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&plain).expect("encode"),
+        json!({ "label": "scratch", "focus": true }),
+        "a create with no worktree writes the bytes M0 wrote",
+    );
+
+    let on_a_tree = workspace::CreateParams {
+        label: Some("feat".to_owned()),
+        focus: true,
+        worktree: Some(amx_core::Worktree {
+            repo: "/src/amx".into(),
+            branch: "feat".to_owned(),
+            path: "/src/amx--feat".into(),
+        }),
+    };
+    let encoded = serde_json::to_value(&on_a_tree).expect("encode");
+    assert_eq!(
+        encoded["worktree"],
+        json!({ "repo": "/src/amx", "branch": "feat", "path": "/src/amx--feat" }),
+        "the block rides as the three fields `amx work done` and restore join on",
+    );
+    let round_tripped: workspace::CreateParams = serde_json::from_value(encoded).expect("decode");
+    assert_eq!(round_tripped, on_a_tree);
+
+    // A create from a build that has never heard of the field still decodes,
+    // to the `None` that means "an ordinary workspace".
+    let older: workspace::CreateParams =
+        serde_json::from_value(json!({ "focus": false })).expect("decode");
+    assert_eq!(older.worktree, None);
+    assert_eq!(older, workspace::CreateParams::default());
 }
 
 /// The stages are ordered as the protocol runs, so "it got at least as far as

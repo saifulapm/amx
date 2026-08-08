@@ -25,7 +25,9 @@ pub use agent::{
     Activity, AgentKind, AgentSnapshot, AgentState, CoverageClass, ExitAuthority, HookToken,
     RefKind, RefSource, SessionRef, StartSource, StatusCause,
 };
-pub use config::{Config, ConfigDiagnostic, PersistConfig, TerminalConfig, UpdateConfig};
+pub use config::{
+    Config, ConfigDiagnostic, PersistConfig, TerminalConfig, UpdateConfig, WorkConfig,
+};
 pub use ctx::{Ctx, Env, SessionName};
 pub use effect::{Effect, EffectSet, Level, Scheduled};
 pub use error::{CtxError, IdParseError, SessionNameError};
