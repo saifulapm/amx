@@ -802,7 +802,7 @@ resync, and that is the real gap under heavy output.** `Event::HistoryCommitted`
 is published for every commit and the client folds nothing from it
 (`amx-client/src/app/events.rs`, `apply_event`'s catch-all); the only thing that
 advances `Scrollback::head` today is the per-pane `history_head` on a state
-resync (`events.rs:174-185`). So rows that scrolled out since the last resync
+resync (`events.rs:179-190`). So rows that scrolled out since the last resync
 read as `RowSlot::Unavailable` to copy mode — 04 §3's "racy", by a different
 route than the one it named. This predates X08 and is not created by it: the
 message being deleted was never emitted, so nothing regresses. The fold is three
