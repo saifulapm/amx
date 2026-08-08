@@ -18,17 +18,22 @@
 //!
 //! Mode keys (04 §7):
 //!
-//! - **terminal** (default): bytes go to the focused pane; `ctrl+a` enters
-//!   prefix.
-//! - **prefix** (one-shot): `w` enters navigate, a second `ctrl+a` sends the
-//!   literal byte to the pane, `x`/`v` split, `z` zooms, `d` detaches, `p`
-//!   opens the picker, `a` jumps to the next agent waiting on the user (04 §7
-//!   lists `next-attention` among the prefix one-shots; 03: "One key jumps to
-//!   the next blocked agent"); any other key is swallowed and the mode falls
-//!   back to terminal. Closing a pane is navigate's `d`, deliberately not
-//!   prefix's:
-//!   the detach verb owns the prefix chord (04 §7 lists detach among the
-//!   prefix one-shots) and a destroy verb must not sit one key from it.
+//! - **terminal** (default): bytes go to the focused pane; the prefix key
+//!   (`ctrl+a` as shipped) enters prefix.
+//! - **prefix** (one-shot): `w` enters navigate, a second press of the prefix
+//!   sends the literal byte to the pane, `x`/`v` split, `z` zooms, `d`
+//!   detaches, `p` opens the picker, `a` jumps to the next agent waiting on
+//!   the user (04 §7 lists `next-attention` among the prefix one-shots; 03:
+//!   "One key jumps to the next blocked agent"); any other key is swallowed
+//!   and the mode falls back to terminal. Closing a pane is navigate's `d`,
+//!   deliberately not prefix's: the detach verb owns the prefix chord (04 §7
+//!   lists detach among the prefix one-shots) and a destroy verb must not sit
+//!   one key from it.
+//!
+//!   The prefix key and this table are **data**, not literals: they are
+//!   [`crate::config::Bindings`], resolved out of `[keys]` and handed to the
+//!   machine by whoever built it. The list above is what an empty
+//!   configuration resolves to.
 //! - **navigate** (sticky): `hjkl` move focus, `HJKL` resize, `x`/`v` split,
 //!   `s`+direction swaps with the neighbour, `m` moves the pane to another
 //!   workspace, `d` closes, digits jump to the n-th pane, `c` enters copy
@@ -40,9 +45,15 @@
 //!   same table the engine reads and the two cannot drift.
 //!
 //! SGR mouse reports are recognised in every mode and never interpreted:
-//! in terminal mode they are forwarded verbatim iff the focused pane enabled
+//! in terminal mode they are forwarded to the focused pane iff it enabled
 //! mouse reporting, in every other mode they are dropped whole — chrome
 //! neither acts on a click nor mistakes a report's bytes for mode keys (D9).
+//! *Forwarded*, not *relayed unchanged*: a report's coordinates are viewport
+//! absolute and a pane's application reads them as pane-local, so the two
+//! differ by the pane's origin and X01's spike measured tmux rewriting them
+//! for exactly that reason (`docs/notes/m4-mouse-path.md`). What amx does
+//! about the offset is X13's; this machine's job stops at recognising the
+//! report's extent.
 
 mod mouse;
 
@@ -53,9 +64,14 @@ use amx_proto::control::Call;
 use amx_proto::control::pane::{MoveDirection, SplitDirection};
 
 use crate::app::Mode;
+use crate::config::{Bindings, PrefixAction};
 
-/// The prefix key, `ctrl+a` (04 §7; configurable once config lands in M1).
-pub const PREFIX: u8 = 0x01;
+/// The prefix key amx ships, `ctrl+a` (04 §7).
+///
+/// The *shipped* one: what a client with no `[keys] prefix` runs. The prefix a
+/// given machine is running is [`Input::prefix`], because since M4 it is
+/// configuration rather than a constant (D-M4-8).
+pub const PREFIX: u8 = crate::config::SHIPPED_PREFIX;
 
 /// `Esc`.
 const ESC: u8 = 0x1b;
@@ -151,6 +167,12 @@ pub enum InputEvent<'a> {
 /// The input state machine's own state: what survives between reads.
 #[derive(Debug, Default)]
 pub struct Input {
+    /// The prefix key and the prefix table this machine runs on.
+    ///
+    /// [`Default`] is what amx ships, so a machine nobody configured and a
+    /// machine whose user has no `[keys]` section behave identically without
+    /// anyone writing that rule down twice.
+    bindings: Bindings,
     /// `s` was pressed in navigate; the next direction key names the swap.
     pending_swap: bool,
     /// Panes that enabled mouse reporting, per the server's pane state.
@@ -170,6 +192,30 @@ impl Input {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Run on `bindings` from here on.
+    ///
+    /// Called once, before the loop starts, by whoever read the configuration
+    /// — `amx attach` in the shipped client. It is deliberately not a
+    /// constructor argument: `App` builds its own machine, and threading a
+    /// table through every `App` constructor to reach one field would put
+    /// configuration in the middle of code that has no business knowing there
+    /// is a file.
+    pub fn set_bindings(&mut self, bindings: Bindings) {
+        self.bindings = bindings;
+    }
+
+    /// The bindings this machine is running.
+    #[must_use]
+    pub const fn bindings(&self) -> &Bindings {
+        &self.bindings
+    }
+
+    /// The byte that opens the prefix layer on this machine.
+    #[must_use]
+    pub const fn prefix(&self) -> u8 {
+        self.bindings.prefix()
     }
 
     /// Record whether `pane` has mouse reporting enabled.
@@ -242,16 +288,17 @@ impl Input {
                     mouse::Scan::Not => {}
                 }
             }
-            let consumed = mode != Mode::Terminal || b == PREFIX;
+            let prefix = self.bindings.prefix();
+            let consumed = mode != Mode::Terminal || b == prefix;
             mode = match mode {
-                Mode::Terminal if b == PREFIX => {
+                Mode::Terminal if b == prefix => {
                     if run < i {
                         out.push(Action::forward(run, i));
                     }
                     Mode::Prefix
                 }
                 Mode::Terminal => Mode::Terminal,
-                Mode::Prefix => Self::prefix_key(b, i, out),
+                Mode::Prefix => self.prefix_key(b, i, out),
                 Mode::Navigate => self.navigate_key(b, out),
                 Mode::Copy => crate::copy::mode_after(b),
             };
@@ -301,41 +348,34 @@ impl Input {
         }
     }
 
-    /// One-shot prefix commands. `at` is the key's own position, so the
-    /// literal-prefix escape (`ctrl+a` twice) can forward the byte in place.
-    fn prefix_key(b: u8, at: usize, out: &mut Vec<Action>) -> Mode {
-        match b {
-            PREFIX => {
-                out.push(Action::forward(at, at + 1));
-                Mode::Terminal
-            }
-            b'w' => Mode::Navigate,
-            b'x' => {
-                out.push(Action::Split(SplitDirection::Horizontal));
-                Mode::Terminal
-            }
-            b'v' => {
-                out.push(Action::Split(SplitDirection::Vertical));
-                Mode::Terminal
-            }
-            b'z' => {
-                out.push(Action::Zoom);
-                Mode::Terminal
-            }
-            b'd' => {
-                out.push(Action::Detach);
-                Mode::Terminal
-            }
-            b'p' => {
-                out.push(Action::Picker);
-                Mode::Terminal
-            }
-            b'a' => {
-                out.push(Action::NextAttention);
-                Mode::Terminal
-            }
-            _ => Mode::Terminal,
+    /// One-shot prefix commands, looked up in the resolved table.
+    ///
+    /// `at` is the key's own position, so [`PrefixAction::Literal`] — the
+    /// binding the prefix key always carries, which is the prefix-twice escape
+    /// — can forward the byte in place without copying it.
+    ///
+    /// A key the table does not name is swallowed with the mode, exactly as an
+    /// unknown key always was: a prefix layer that leaked its misses to the
+    /// pane would make every typo a keystroke in a shell.
+    fn prefix_key(&self, b: u8, at: usize, out: &mut Vec<Action>) -> Mode {
+        let Some(action) = self.bindings.action(b) else {
+            return Mode::Terminal;
+        };
+        // Exhaustive rather than a lookup with a fallback: a verb added to
+        // `PrefixAction` and not to this match does not compile, which is the
+        // only thing standing between "the action is in the table" and "the
+        // action happens".
+        match action {
+            PrefixAction::Navigate => return Mode::Navigate,
+            PrefixAction::Literal => out.push(Action::forward(at, at + 1)),
+            PrefixAction::SplitHorizontal => out.push(Action::Split(SplitDirection::Horizontal)),
+            PrefixAction::SplitVertical => out.push(Action::Split(SplitDirection::Vertical)),
+            PrefixAction::Zoom => out.push(Action::Zoom),
+            PrefixAction::Detach => out.push(Action::Detach),
+            PrefixAction::Picker => out.push(Action::Picker),
+            PrefixAction::NextAttention => out.push(Action::NextAttention),
         }
+        Mode::Terminal
     }
 
     /// The sticky navigate layer.
