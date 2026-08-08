@@ -78,6 +78,19 @@ pub fn screen(state: AgentState) -> Input {
     })
 }
 
+/// A tier-2 evaluation asserting `state`, from a rule spelled `rule`.
+///
+/// The name matters to the `reason` scenarios and to nothing else, which is why
+/// [`screen`] does not take one: a scenario about confirmation counts should
+/// not have to name a rule to say what it means.
+pub fn named_screen(state: AgentState, rule: &str) -> Input {
+    Input::Screen(ScreenVerdict {
+        asserts: Some(state),
+        rule: Some(rule.to_owned()),
+        visible_idle: false,
+    })
+}
+
 /// A tier-2 evaluation asserting `state` from a rule flagged `visible_idle` —
 /// the prompt box is actually painted.
 pub fn visible_idle(state: AgentState) -> Input {

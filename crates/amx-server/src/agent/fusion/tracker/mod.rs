@@ -31,10 +31,14 @@ mod inputs;
 use super::{Deadline, Directive, IDENTITY_GRACE, Input, STALENESS};
 
 /// A screen verdict that contradicts the held state, and how often it has.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct Pending {
     /// What the screen keeps asserting instead.
     state: AgentState,
+    /// The rule asserting it, carried so the transition this hold commits to
+    /// can name the detector that won — including when it is the cap that
+    /// commits it rather than the third verdict (D-M4-3).
+    rule: Option<String>,
     /// How many consecutive evaluations have asserted it, capped at
     /// [`CONFIRMATIONS`] — the next one commits.
     seen: u32,
@@ -100,6 +104,25 @@ pub struct Tracker {
     pub state: AgentState,
     /// What put it there.
     pub cause: StatusCause,
+    /// The *name* of what put it there, when a named detector did.
+    ///
+    /// D-M4-3's decision, held here rather than derived: the winning manifest
+    /// rule's name for a screen-owned state, the hook event's own name for a
+    /// hook-asserted one, and `None` for everything nothing named — a tier-3
+    /// `busy`/`quiet`, a staleness exit, a pane whose process ended. It is the
+    /// detector's identifier and never a translation of it, so a manifest rule
+    /// added tomorrow is self-describing on the wire the day it is written.
+    ///
+    /// Beside [`cause`](Self::cause) and not instead of it: `cause` says
+    /// *which tier or which exit* moved the pane, which is a closed vocabulary
+    /// the machine reasons about; this says which rule of that tier, which is
+    /// an open one it only carries.
+    ///
+    /// It moves with [`state`](Self::state) and only with it. A re-assertion
+    /// of the state the pane already holds corroborates it without moving it,
+    /// so the name of whatever moved it *first* stands — which is what makes
+    /// this and the hub's `since` stamp describe the same edge.
+    pub reason: Option<String>,
     /// How long after identification this agent's screen is worth reading.
     ///
     /// Set from the stanza's `startup_grace_ms` by [`identify`](Self::identify);
@@ -128,6 +151,7 @@ impl Tracker {
             coverage: CoverageClass::None,
             state: AgentState::Quiet,
             cause: StatusCause::Probe,
+            reason: None,
             grace: IDENTITY_GRACE,
             session_ref: None,
             pending: None,
@@ -189,6 +213,11 @@ impl Tracker {
         self.grace = grace;
         self.state = carried.state;
         self.cause = carried.cause;
+        // Carried, not re-derived, for the same reason the state is: the
+        // exporter's detector named this status and no evaluation in this
+        // process has happened yet. A successor that started it at `None`
+        // would blank a `reason` a client is already rendering.
+        self.reason = carried.reason.clone();
         self.session_ref = carried.session_ref.clone();
         self.reported = true;
         let mut directives = Vec::new();
@@ -206,11 +235,8 @@ impl Tracker {
 
     /// The state a screen contradiction is accumulating towards, if one is.
     #[must_use]
-    pub const fn pending(&self) -> Option<AgentState> {
-        match self.pending {
-            Some(pending) => Some(pending.state),
-            None => None,
-        }
+    pub fn pending(&self) -> Option<AgentState> {
+        self.pending.as_ref().map(|pending| pending.state)
     }
 
     /// Whether the hub should be holding a timer for `deadline` right now.
@@ -254,48 +280,65 @@ impl Tracker {
         }
         directives
     }
-    /// An entry edge asserts `state`.
+    /// An entry edge named `reason` asserts `state`.
     pub(super) fn enter(
         &mut self,
         state: AgentState,
         cause: StatusCause,
+        reason: Option<String>,
         directives: &mut Vec<Directive>,
     ) {
         if state == self.state {
             // Re-asserted, not moved. The pane is corroborated: whatever
             // contradiction the screen was accumulating is stale, and the
-            // staleness clock starts again.
+            // staleness clock starts again. The reason is *not* replaced —
+            // this edge did not move the pane, so it is not what moved it, and
+            // the hub's `since` stamp is held for the same reason.
             self.clear_pending(directives);
             if state.is_held() {
                 self.arm(Deadline::Staleness, STALENESS, directives);
             }
             return;
         }
-        self.transition(state, cause, directives);
+        self.transition(state, cause, reason, directives);
     }
 
-    /// A hook says the held state is over — [`CoverageClass::Full`] only, since
-    /// nothing else can build the authority.
-    pub(super) fn leave(&mut self, authority: ExitAuthority, directives: &mut Vec<Directive>) {
+    /// A hook named `reason` says the held state is over —
+    /// [`CoverageClass::Full`] only, since nothing else can build the
+    /// authority.
+    pub(super) fn leave(
+        &mut self,
+        authority: ExitAuthority,
+        reason: Option<String>,
+        directives: &mut Vec<Directive>,
+    ) {
         if !self.state.is_held() {
             return;
         }
-        self.transition(AgentState::Idle, authority.cause(), directives);
+        self.transition(AgentState::Idle, authority.cause(), reason, directives);
     }
 
     /// Move the pane, and emit the one status directive that says so.
     ///
     /// The fixed directive order lives here: the status, then the queue, then the
     /// timers.
+    ///
+    /// `reason` is the *name* of whatever moved it, and it is a parameter
+    /// rather than a field the arms set for themselves so that a new way of
+    /// moving a pane has to answer the question. `None` is a real answer —
+    /// staleness and tier 3 have no detector to name — and the type says so
+    /// rather than leaving a stale predecessor's name in place.
     pub(super) fn transition(
         &mut self,
         to: AgentState,
         cause: StatusCause,
+        reason: Option<String>,
         directives: &mut Vec<Directive>,
     ) {
         let from = self.state;
         self.state = to;
         self.cause = cause;
+        self.reason = reason;
         directives.push(Directive::Status {
             from: self.reported.then_some(from),
             to,

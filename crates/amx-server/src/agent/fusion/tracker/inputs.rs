@@ -31,9 +31,13 @@ impl Tracker {
                 session_ref: session_ref.clone(),
             });
         }
+        // The hook's own name for itself, which is what D-M4-3 puts on the
+        // wire: `PermissionRequest` and not a `permission` this module would
+        // have had to invent and then maintain per agent.
+        let named = || Some(edge.event.as_str().to_owned());
         match precedence(self.coverage, edge) {
-            EdgeEffect::Enter(state) => self.enter(state, StatusCause::Hook, directives),
-            EdgeEffect::Leave(authority) => self.leave(authority, directives),
+            EdgeEffect::Enter(state) => self.enter(state, StatusCause::Hook, named(), directives),
+            EdgeEffect::Leave(authority) => self.leave(authority, named(), directives),
             // The one thing an ignored edge may still do: agree with what the
             // pane already believes. V01 §3 M5 measured a `permission_prompt`
             // notification 6.0 s into an unanswered dialog, which is a free
@@ -78,21 +82,36 @@ impl Tracker {
         // a `visible_idle` rule means the prompt box is actually painted, which
         // is herdr's flicker fix kept as data.
         if !self.state.is_held() || verdict.visible_idle {
-            self.transition(asserts, StatusCause::Screen, directives);
+            self.transition(
+                asserts,
+                StatusCause::Screen,
+                verdict.rule.clone(),
+                directives,
+            );
             return;
         }
-        let restart = !matches!(self.pending, Some(pending) if pending.state == asserts);
+        let restart = !matches!(&self.pending, Some(pending) if pending.state == asserts);
         let seen = if restart {
             1
         } else {
-            self.pending.map_or(1, |pending| pending.seen + 1)
+            self.pending.as_ref().map_or(1, |pending| pending.seen + 1)
         };
         if seen >= CONFIRMATIONS {
-            self.transition(asserts, ExitAuthority::from_screen().cause(), directives);
+            self.transition(
+                asserts,
+                ExitAuthority::from_screen().cause(),
+                verdict.rule.clone(),
+                directives,
+            );
             return;
         }
         self.pending = Some(Pending {
             state: asserts,
+            // The latest verdict's rule, not the first hold's: three
+            // consecutive verdicts agreeing on a state need not have come from
+            // one rule, and the honest name for the transition is the rule that
+            // was still asserting it when it committed.
+            rule: verdict.rule.clone(),
             seen,
         });
         // Armed once, at the head of the hold: the cap bounds the whole
@@ -117,11 +136,17 @@ impl Tracker {
         // best first reading there is: output arriving is a turn in progress,
         // silence is a prompt waiting. Both are corrected within a confirmation
         // window by the first hook edge or screen verdict that disagrees.
+        //
+        // No reason rides with it: tier 3 has no detector to name. It saw
+        // output or silence on a pty, which is the whole of what it knows, and
+        // `cause: probe` already says so in the closed vocabulary.
         match self.state {
             AgentState::Busy => {
-                self.transition(AgentState::Working, StatusCause::Probe, directives)
+                self.transition(AgentState::Working, StatusCause::Probe, None, directives)
             }
-            AgentState::Quiet => self.transition(AgentState::Idle, StatusCause::Probe, directives),
+            AgentState::Quiet => {
+                self.transition(AgentState::Idle, StatusCause::Probe, None, directives)
+            }
             _ => {}
         }
     }
@@ -138,7 +163,7 @@ impl Tracker {
         }
         let state = AgentState::from(activity);
         if state != self.state {
-            self.transition(state, StatusCause::Probe, directives);
+            self.transition(state, StatusCause::Probe, None, directives);
         }
     }
 
@@ -152,20 +177,28 @@ impl Tracker {
         match deadline {
             // The screen may be believed from here on; nothing else changes.
             Deadline::IdentityGrace => {}
+            // The screen's answer, taken at the cap instead of at the third
+            // verdict, so it is named by the rule that was asserting it.
             Deadline::Confirmation => {
                 if let Some(pending) = self.pending.take() {
                     self.transition(
                         pending.state,
                         ExitAuthority::from_screen().cause(),
+                        pending.rule,
                         directives,
                     );
                 }
             }
+            // Nothing named this one: it is 04 §5's third exit, taken because
+            // *no* detector said anything for 30 s. `cause: stale` is the whole
+            // of the answer, and a reason here would be a detector's name on a
+            // transition no detector caused.
             Deadline::Staleness => {
                 if self.state.is_held() {
                     self.transition(
                         AgentState::Idle,
                         ExitAuthority::from_staleness().cause(),
+                        None,
                         directives,
                     );
                 }
@@ -180,6 +213,9 @@ impl Tracker {
         self.pending = None;
         self.state = AgentState::Quiet;
         self.cause = StatusCause::Exited;
+        // The process ending is not a detection, and the last rule that named
+        // this pane named a state it is no longer in.
+        self.reason = None;
         directives.push(Directive::Status {
             from: self.reported.then_some(from),
             to: AgentState::Quiet,

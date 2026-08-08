@@ -33,6 +33,8 @@ use amx_server::agent::fusion::{
 mod harness;
 #[path = "fusion/properties.rs"]
 mod properties;
+#[path = "fusion/reason.rs"]
+mod reason;
 
 use harness::{
     agent, claude, drive, edge, hold, hook, no_match, notification, report, screen, session,
