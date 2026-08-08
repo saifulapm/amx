@@ -266,18 +266,36 @@ async fn drive(router: &Router, pane: PaneId, what: Drive) -> Result<Driven, Rpc
         .map_err(|_| RpcError::new(RpcError::INTERNAL_ERROR, "the pane is gone"))?;
     rx.await
         .map_err(|_| RpcError::new(RpcError::INTERNAL_ERROR, "the pane dropped the write"))?
-        .map_err(|err| {
-            let code = match err {
-                // A full queue is the child's back-pressure reaching the
-                // caller, and a pane not taking input is one mid-quiesce:
-                // neither is a broken session, so both are reported the way a
-                // refused history range is — a caller-level failure worth
-                // retrying rather than an internal one.
-                DriveError::Full | DriveError::NotAccepting => RpcError::INVALID_PARAMS,
-                DriveError::Gone | DriveError::Encode(_) => RpcError::INTERNAL_ERROR,
-            };
-            RpcError::new(code, err.to_string())
-        })
+        .map_err(|err| RpcError::new(code_of(&err), err.to_string()))
+}
+
+/// The RPC code a refused drive answers with.
+///
+/// The three answers are three different sentences, and DR-16 is the record of
+/// what it cost to spell two of them the same way:
+///
+/// - [`NotAccepting`](DriveError::NotAccepting) is the session holding still —
+///   a pane quiesced for a handoff, which comes back. The caller asked
+///   correctly and the drive did not happen, so it is
+///   [`RETRIABLE`](RpcError::RETRIABLE): every mutating verb becomes
+///   retriable across a swap, `agent.prompt` included, and a caller that has
+///   never heard of the code sees an ordinary error exactly as it did before.
+///   `INVALID_PARAMS` told it the opposite — that it had asked wrong — so
+///   every CLI path that could have waited a moment reported a user error
+///   instead.
+/// - [`Full`](DriveError::Full) is *not* the same sentence, and is deliberately
+///   left where it was. A full input queue is the child not reading: a caller
+///   that retried on it would spin against a process that may never read
+///   again, and the queue's depth is a fact about what was asked for as much as
+///   about when.
+/// - [`Gone`](DriveError::Gone) and [`Encode`](DriveError::Encode) are the
+///   session failing, which no amount of asking again repairs.
+const fn code_of(err: &DriveError) -> i32 {
+    match err {
+        DriveError::NotAccepting => RpcError::RETRIABLE,
+        DriveError::Full => RpcError::INVALID_PARAMS,
+        DriveError::Gone | DriveError::Encode(_) => RpcError::INTERNAL_ERROR,
+    }
 }
 
 /// The pane's live plumbing: its mailbox and its published frames.
@@ -285,4 +303,26 @@ async fn wiring(router: &Router, pane: PaneId) -> Result<PaneWiring, RpcError> {
     router
         .call(|reply| CoreCommand::Stream(StreamCall::Wiring { pane, reply }))
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DriveError, RpcError, code_of};
+
+    /// Inline because [`code_of`] is a pure helper and the sentences it picks
+    /// between have no other observation point: the only wire-reachable way to
+    /// quiesce a pane is a handoff, which retires the socket a moment later, so
+    /// a suite driving one would be racing the close rather than reading the
+    /// code. `crates/amx/tests/retriable.rs` proves the other end — that a
+    /// caller acts on the answer — against the real binary.
+    #[test]
+    fn a_quiesced_pane_is_retriable_and_a_full_queue_is_not() {
+        assert_eq!(code_of(&DriveError::NotAccepting), RpcError::RETRIABLE);
+        assert_eq!(code_of(&DriveError::Full), RpcError::INVALID_PARAMS);
+        assert_eq!(code_of(&DriveError::Gone), RpcError::INTERNAL_ERROR);
+        assert_eq!(
+            code_of(&DriveError::Encode(String::new())),
+            RpcError::INTERNAL_ERROR
+        );
+    }
 }

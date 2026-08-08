@@ -636,3 +636,113 @@ itself.
 state.** `reason` there names what ended the block, not what caused it, and
 `since` is the new state's entry edge. A notifier matching a clear to its
 notification should key on `pane`.
+---
+## X09 — one `Effect` client-side, and a retriable refusal
+
+### Hand-offs, in the order the later waves meet them
+
+**X15 — the peek will not paint until it widens `App::showing`.** This is the
+one thing in this entry that will break a later task silently if it is not
+read. `App::frame_due` (`amx-client/src/app/mod.rs`) answers "is a frame owed"
+by asking, for `Effect::PaneDamage`, whether the damaged pane is one this
+terminal is drawing — and `showing` reads exactly one thing: the *focused
+workspace's* layout. A peek binds a pane outside that workspace on purpose
+(§5's own note: "a bind for a non-focused pane is served today"), so its
+keyframe and every delta after it fold as damage to a pane `showing` says no
+to, and the peek region would stay blank rather than repainting stalely. The
+fix is one line inside `showing` — a peeked pane is drawn, so it is shown —
+and X15 owns `app/peek.rs`, which is where the answer belongs.
+
+**X12 — the same function, and the opposite direction is optional.** Under the
+narrow policy the client draws *one* pane of a workspace whose other panes are
+still bound, so `showing` becomes wider than what is on screen: some damage
+will owe a frame that changes nothing. That is the safe side of the trade — a
+repaint too many is correct, a repaint too few is a frozen screen — so
+narrowing it is an opportunity for X12 and not a requirement, and X09 did not
+take it because the projection it would have to ask does not exist yet.
+
+**X11, X14, X15 — there is no dirtiness flag left to set.** Every handler in
+`amx-client/src/app/` returns an `amx_core::Effect` and the entry points fold
+it (`App::absorb`); `Folded::Applied` carries the effect the fold produced
+rather than being a bare "yes". A new surface reports `Effect::Full` for a
+chrome change, `Effect::Layout` when the rects move, and
+`Effect::PaneDamage(pane)` for cells inside one pane — and a handler that
+changes the screen and returns `Effect::Nothing` is a `#[must_use]` value
+thrown away at the call site rather than a write nobody made. D-M4-9's whole
+point: four new surfaces, none of them converting anything.
+
+**X07 and X13 — `handle_input` no longer implies a repaint.** It used to: the
+wired loop set `dirty` after every byte run, whatever the bytes did. Now a byte
+that only reaches a pane reports nothing and the pane's own echo is what
+repaints, while a mode change reports `Effect::Full` because the status line
+renders the mode. A key added to the prefix table that changes chrome without
+reporting it will be decoded, acted on, and not drawn.
+
+**X06 — the `agent/fusion` rename is still yours.** X09 took DR-10's other
+shadow: `amx_vt::Effect` is now `amx_vt::TerminalEvent`, which is what it
+always was — something the terminal reported, not a render level.
+
+### Divergences from §5
+
+**One file taken outside the entry's scope: `crates/amx/src/cmd/call.rs`.** The
+entry lists `crates/amx/src/cmd/viewport.rs` and "CLI tests", and its acceptance
+says "every CLI path that can retry does". There is exactly one such path and it
+is not `viewport.rs`: `cmd::call::one_shot` is the redial loop every generated
+verb and every hand-written one goes through, so the reader of
+`RpcError::RETRIABLE` has no other home and the clause could not have been met
+inside the listed files. It is uncontested in wave 2 — X07 owns
+`cmd/{keys,attach}.rs`, and X17's `crates/amx/src/cmd/**` is wave 3, sequential
+— but it is an edit outside the entry and is named here rather than assumed.
+The change is six lines: a retriable refusal is `Attempt::Lost { sent: false }`,
+which is what makes it re-issuable for the verbs `reissuable` refuses, `agent.
+prompt` included.
+
+**`DriveError::Full` deliberately keeps `INVALID_PARAMS`.** §3 names
+`NotAccepting` and only `NotAccepting`, and the two are not the same sentence:
+a quiesced pane comes back on its own, while a full input queue is a child that
+is not reading and may never read again. Retrying the second would spin. The
+comment that grouped them is now the doc on `dispatch::pane::code_of`, with the
+split argued rather than inherited.
+
+**The RETRIABLE mapping has no over-the-socket test, and the reason is a race.**
+The only wire-reachable way to quiesce a pane is `session.handoff`, which
+retires the socket a moment later and thaws the panes if it aborts — so a suite
+that asked a quiesced pane for anything would be racing the close, which is the
+shape `wait_retry.rs` already refused for abandoned waits. What landed instead
+is an inline test of the pure mapping (`dispatch/pane.rs`, the one place the
+code is chosen) plus `crates/amx/tests/retriable.rs`, which drives the *real
+binary* against a stub session that refuses `pane.send_text` once with `-32001`
+and answers the second ask. The two ends are covered; the middle is a handoff
+away and is X00's smoke to see, not a unit test's.
+
+**A behaviour change the entry does not name: a repaint can now be skipped.**
+Adopting `Effect` was the entry's ask, and adopting it without reading the pane
+id would have been two booleans in a better type. Stream bindings are per
+connection and are never pruned, so a grid stream opened while a workspace was
+on screen keeps delivering after the client has switched away — and every one
+of those deltas used to repaint a screen the pane could not appear on.
+`frame_due` is the reader, `crates/amx-client/tests/effects.rs` is the pair of
+tests (suppressed off screen, still owed on screen), and the hand-off to X15
+above is the cost of having it.
+
+**`reconnect::dial_until` is public now.** The redial loop and its deadline were
+private to the full client's `App`; `amx attach --pane` needed the same loop and
+the same `ReconnectPolicy`, and a second copy would have been a second answer to
+"how long may a swap take". Inside `app/**`, so inside the entry's scope, but
+named because three wave-3/4 tasks live in that directory.
+
+**Three new test files, two of them in a directory X07 owns this wave.**
+`crates/amx-client/tests/effects.rs` is X09's own. `crates/amx/tests/retriable.rs`
+and `crates/amx/tests/attach_pane_swap.rs` are new files under
+`crates/amx/tests/**`, which §5 gives X07: new files rather than edits, so
+nothing X07 writes can conflict, but the second one *includes*
+`wait_retry/harness.rs` by `#[path]` rather than copying its session-on-its-own-
+machine rig. That harness now compiles into two test binaries — whoever edits it
+next should know it has a second reader.
+
+### What this task did not close
+
+DR-10 loses its `amx-vt` shadow and its client-dirtiness clause here; the
+`agent/fusion` shadow is X06's and the row is not empty until both land. DR-16
+loses the error code and `attach --pane`'s reconnect; the bridged-client redial
+was declined by §4 before this task started and is untouched.

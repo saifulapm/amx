@@ -20,7 +20,7 @@
 use std::io::Write;
 use std::os::fd::AsFd;
 
-use amx_core::{Direction, PaneId, WorkspaceId};
+use amx_core::{Direction, Effect, PaneId, WorkspaceId};
 use amx_proto::control::{Call, pane as pane_proto};
 
 use super::App;
@@ -29,24 +29,28 @@ use crate::input::{self, Action, InputEvent};
 impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// Turn one decoded [`Action`] into its consequence: bytes to the pane,
     /// a control call, or a local focus change.
+    ///
+    /// The returned [`Effect`] is what the action changed *on this screen*, and
+    /// most actions change nothing there. A forwarded byte comes back as the
+    /// pane's own damage; a split or a resize comes back as the layout the
+    /// server answers with. What is local — the focus this terminal records —
+    /// is what reports.
+    #[must_use]
     pub(super) fn apply_action(
         &mut self,
         action: Action,
         bytes: &[u8],
         sink: &mut impl FnMut(InputEvent<'_>),
-    ) {
+    ) -> Effect {
         // The three verbs that need no focused pane come first: a client must
         // be able to leave, reach the picker, or jump to whichever agent is
         // waiting, even from an empty session.
         match action {
             Action::Detach => {
                 sink(InputEvent::Detach);
-                return;
+                return Effect::Nothing;
             }
-            Action::Picker => {
-                self.open_picker();
-                return;
-            }
+            Action::Picker => return self.open_picker(),
             // Focus moves server-side and comes back as `FocusChanged`, which
             // `app::events` folds — the same path every other client's focus
             // change reaches this one by. Nothing is moved locally here.
@@ -57,21 +61,24 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                     // key X14 binds (X17 reads the scope server-side).
                     amx_proto::control::agent::NextParams { workspace: None },
                 )));
-                return;
+                return Effect::Nothing;
             }
             _ => {}
         }
         let Some(ws) = self.model.focused_workspace_id() else {
-            return;
+            return Effect::Nothing;
         };
         let Some(pane) = self.focused_pane() else {
-            return;
+            return Effect::Nothing;
         };
         match action {
-            Action::Forward { start, end } => sink(InputEvent::Forward {
-                pane,
-                bytes: &bytes[start..end],
-            }),
+            Action::Forward { start, end } => {
+                sink(InputEvent::Forward {
+                    pane,
+                    bytes: &bytes[start..end],
+                });
+                Effect::Nothing
+            }
             Action::Mouse { start, end } => {
                 if self.input.mouse_enabled(pane) {
                     sink(InputEvent::Forward {
@@ -79,6 +86,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                         bytes: &bytes[start..end],
                     });
                 }
+                Effect::Nothing
             }
             Action::CarriedMouse => {
                 if self.input.mouse_enabled(pane) {
@@ -87,38 +95,56 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                         bytes: self.input.carried(),
                     });
                 }
+                Effect::Nothing
             }
-            Action::CarriedBytes => sink(InputEvent::Forward {
-                pane,
-                bytes: self.input.carried(),
-            }),
+            Action::CarriedBytes => {
+                sink(InputEvent::Forward {
+                    pane,
+                    bytes: self.input.carried(),
+                });
+                Effect::Nothing
+            }
             Action::Focus(dir) => {
-                if let Some(next) = self.neighbour_of(pane, dir) {
+                let next = self.neighbour_of(pane, dir);
+                if let Some(next) = next {
                     self.focus.insert(ws, next);
-                    self.repaint();
                 }
                 sink(InputEvent::Call(Call::PaneFocus(pane_proto::FocusParams {
                     workspace: ws,
                     direction: input::wire_direction(dir),
                 })));
+                // The status line names the focused pane and the cursor is
+                // parked in it, so a focus that moved is a chrome change even
+                // though no rect did.
+                if next.is_some() {
+                    Effect::Full
+                } else {
+                    Effect::Nothing
+                }
             }
             // Deliberately no local layout change: the mirror is server truth
             // with no mutable accessor, so the resize round-trips and the
-            // repaint follows the updated layout state (04 §3).
-            Action::Resize(dir) => sink(InputEvent::Call(Call::PaneResize(
-                pane_proto::ResizeParams {
-                    pane,
-                    direction: input::wire_direction(dir),
-                    delta: input::RESIZE_STEP,
-                },
-            ))),
+            // repaint follows the updated layout state (04 §3). Every verb
+            // below is that shape, which is why every one of them reports
+            // nothing: what they change arrives as a state fold.
+            Action::Resize(dir) => {
+                sink(InputEvent::Call(Call::PaneResize(
+                    pane_proto::ResizeParams {
+                        pane,
+                        direction: input::wire_direction(dir),
+                        delta: input::RESIZE_STEP,
+                    },
+                )));
+                Effect::Nothing
+            }
             Action::Split(direction) => {
                 sink(InputEvent::Call(Call::PaneSplit(pane_proto::SplitParams {
                     pane,
                     direction,
                     command: None,
                     cwd: None,
-                })))
+                })));
+                Effect::Nothing
             }
             Action::Swap(dir) => {
                 if let Some(with) = self.neighbour_of(pane, dir) {
@@ -127,6 +153,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                         with,
                     })));
                 }
+                Effect::Nothing
             }
             // Interim target until T15's picker chooses one (04 §7): the
             // next workspace in id order, wrapping. No other workspace means
@@ -138,15 +165,22 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                         to,
                     })));
                 }
+                Effect::Nothing
             }
-            Action::Close => sink(InputEvent::Call(Call::PaneClose(pane_proto::CloseParams {
-                pane,
-            }))),
-            Action::Zoom => sink(InputEvent::Call(Call::PaneZoom(pane_proto::ZoomParams {
-                pane,
-            }))),
+            Action::Close => {
+                sink(InputEvent::Call(Call::PaneClose(pane_proto::CloseParams {
+                    pane,
+                })));
+                Effect::Nothing
+            }
+            Action::Zoom => {
+                sink(InputEvent::Call(Call::PaneZoom(pane_proto::ZoomParams {
+                    pane,
+                })));
+                Effect::Nothing
+            }
             // Handled above, before the focused-pane requirement.
-            Action::Detach | Action::Picker | Action::NextAttention => {}
+            Action::Detach | Action::Picker | Action::NextAttention => Effect::Nothing,
             // Interim numbering until short numbers reach the client: n-th
             // pane in layout order. Local-only — `pane.focus` speaks
             // directions, and a direct set-focus core op does not exist yet.
@@ -159,8 +193,9 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                     && target != pane
                 {
                     self.focus.insert(ws, target);
-                    self.repaint();
+                    return Effect::Full;
                 }
+                Effect::Nothing
             }
         }
     }

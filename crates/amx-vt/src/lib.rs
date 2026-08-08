@@ -55,7 +55,7 @@ pub mod snapshot;
 pub mod sys;
 pub mod terminal;
 
-pub use callbacks::{ClipboardContent, DeviceAttributes, Effect, Effects, QueryAnswers};
+pub use callbacks::{ClipboardContent, DeviceAttributes, Effects, QueryAnswers, TerminalEvent};
 pub use enums::{
     CellContent, CellWide, ClipboardLocation, ClipboardWriteResult, ColorScheme, CursorStyle,
     Dirty, PointSpace, RowSemanticPrompt, Screen, StyleColor, Underline,

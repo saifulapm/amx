@@ -11,7 +11,7 @@
 use std::io::Write;
 use std::os::fd::AsFd;
 
-use amx_core::{PaneId, RowId, WorkspaceId};
+use amx_core::{Effect, PaneId, RowId, WorkspaceId};
 use amx_proto::control::pane::SplitDirection;
 use amx_proto::control::{Call, workspace as workspace_proto};
 
@@ -57,7 +57,12 @@ const PICKER_ROWS: u16 = 8;
 
 impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// Open the picker over workspaces, panes and commands.
-    pub(super) fn open_picker(&mut self) {
+    ///
+    /// Every surface in this file reports [`Effect::Full`] and none of them
+    /// reports less: an overlay is drawn over the panes and taken away again,
+    /// so what it invalidates is the frame rather than any pane in it.
+    #[must_use]
+    pub(super) fn open_picker(&mut self) -> Effect {
         let mut items = Vec::new();
         let mut targets = Vec::new();
         let mut ids: Vec<WorkspaceId> = self.model.workspace_ids().collect();
@@ -100,14 +105,19 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             picker: Picker::new(items),
             targets,
         });
-        self.dirty = true;
+        Effect::Full
     }
 
     /// Route bytes to the open picker.
-    pub(super) fn picker_input(&mut self, bytes: &[u8], sink: &mut impl FnMut(InputEvent<'_>)) {
+    #[must_use]
+    pub(super) fn picker_input(
+        &mut self,
+        bytes: &[u8],
+        sink: &mut impl FnMut(InputEvent<'_>),
+    ) -> Effect {
         for &byte in bytes {
             let Some(ui) = self.picker.as_mut() else {
-                return;
+                return Effect::Full;
             };
             match ui.picker.key(byte) {
                 PickerEvent::Continue => {}
@@ -120,7 +130,6 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                     match target {
                         Some(PickTarget::Workspace(id)) => {
                             self.model.focus_workspace(id);
-                            self.layout_dirty = true;
                             sink(InputEvent::Call(Call::WorkspaceSwitch(
                                 workspace_proto::SwitchParams { workspace: id },
                             )));
@@ -131,19 +140,24 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                             }
                         }
                         Some(PickTarget::Command(action)) => {
-                            self.apply_action(action, &[], sink);
+                            // Folded into this call's own `Full` rather than
+                            // returned: the picker closing already invalidates
+                            // the frame, and nothing an action can report is
+                            // stronger than that.
+                            let _ = self.apply_action(action, &[], sink);
                         }
                         None => {}
                     }
                 }
             }
         }
-        self.dirty = true;
+        Effect::Full
     }
 
     /// Enter copy mode over the focused pane's cache, or fall straight back
     /// to terminal mode when there is no history to browse.
-    pub(super) fn enter_copy(&mut self) {
+    #[must_use]
+    pub(super) fn enter_copy(&mut self) -> Effect {
         let opened = (|| {
             let pane = self.focused_pane()?;
             let height = self.copy_height(pane);
@@ -158,15 +172,16 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             }
             None => self.mode = Mode::Terminal,
         }
-        self.dirty = true;
+        Effect::Full
     }
 
     /// Route bytes to the copy engine, mirroring the machine's `mode_after`.
-    pub(super) fn copy_input(&mut self, bytes: &[u8]) {
+    #[must_use]
+    pub(super) fn copy_input(&mut self, bytes: &[u8]) -> Effect {
         for &byte in bytes {
             let Some(mut ui) = self.copy.take() else {
                 self.mode = Mode::Terminal;
-                return;
+                return Effect::Full;
             };
             let cache = self.caches.entry(ui.pane).or_default();
             match ui.engine.key(byte, cache) {
@@ -181,7 +196,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 }
             }
         }
-        self.dirty = true;
+        Effect::Full
     }
 
     /// Queue the viewport's cache misses for the wired loop to fetch.

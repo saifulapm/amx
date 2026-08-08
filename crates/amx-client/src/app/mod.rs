@@ -16,6 +16,17 @@
 //! under it, [`overlay`] is the picker and copy-mode surfaces drawn over the
 //! panes, and [`status`] is the status line and the cursor a repaint finishes
 //! with.
+//!
+//! # Dirtiness is a value (D2)
+//!
+//! Every handler in this module returns an [`Effect`] and the loop folds it
+//! into [`App::effects`], which is 04 §2's rule applied on this side of the
+//! socket for the first time: "there are no mutable `needs_render` flags to
+//! keep in sync — forgetting is a type error, not a stale frame". Until M4 the
+//! client kept two booleans instead — the exact shape D2 exists to prevent
+//! (DR-10) — and the cost was not only the risk: a boolean cannot say *what*
+//! changed, so a grid delta from a pane in a workspace this terminal is not
+//! drawing repainted it anyway. [`App::frame_due`] is what the fold buys.
 
 mod actions;
 mod binds;
@@ -30,7 +41,9 @@ use std::fmt;
 use std::io::Write;
 use std::os::fd::AsFd;
 
-use amx_core::{PaneId, Rect, RowRange, Seq, SessionId, WorkspaceId};
+use amx_core::{
+    Effect, EffectSet, Level, PaneId, Rect, RowRange, Scheduled, Seq, SessionId, WorkspaceId,
+};
 
 use crate::cache::Scrollback;
 use crate::input::{Input, InputEvent};
@@ -127,16 +140,25 @@ pub struct App<Fd: AsFd, W: Write> {
     frame: Vec<u8>,
     /// History ranges copy mode wants fetched, drained by the wired loop.
     wanted_history: Vec<(PaneId, RowRange)>,
-    /// Something changed since the last flush; the wired loop repaints.
-    dirty: bool,
+    /// What this client owes its terminal, folded since the last frame.
+    ///
+    /// The module doc has the argument; the shape is the server's, because it
+    /// is the same type: handlers return an [`Effect`], the loop absorbs, and
+    /// [`App::repaint`] drains one batch per frame.
+    effects: EffectSet,
+    /// The batch the current repaint is drawing.
+    ///
+    /// Kept across frames rather than made per frame: `EffectSet::drain_into`
+    /// clears both buffers without freeing them, so a steady state of
+    /// fold-a-batch / repaint / repeat allocates nothing.
+    scheduled: Scheduled,
     /// The last computed pane layout, kept across frames so an unchanged
     /// layout costs zero allocation on repaint: `amx_core::Layout::rects`
     /// builds a fresh `Vec` every call (it lives in `amx-core`, out of this
-    /// crate's scope), so `repaint` only calls it when `layout_dirty` says
-    /// the tree or the content area actually moved, and every other frame
-    /// just re-reads this buffer.
+    /// crate's scope), so `repaint` only calls it when the drained batch
+    /// reached [`Level::Layout`] — the tree or the content area actually moved
+    /// — and every other frame just re-reads this buffer.
     pane_rects: Vec<(PaneId, Rect)>,
-    layout_dirty: bool,
     /// The focused pane per workspace — client presentation state (04 §3),
     /// used to address input at a pane and to seed navigate's `from`. The
     /// server's own focus (T07's ops) stays canonical for session semantics:
@@ -179,7 +201,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// from pieces they control.
     pub fn assemble(session: Session, term: TerminalGuard<Fd, W>) -> Result<Self, AppError> {
         let size = term.size()?;
-        Ok(Self {
+        let mut app = Self {
             session,
             term,
             model: ClientModel::new(size.rows, size.cols),
@@ -194,9 +216,12 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             events: Vec::new(),
             frame: Vec::new(),
             wanted_history: Vec::new(),
-            dirty: true,
+            // Sized for the panes one batch can name, which is the panes one
+            // screen shows: a fold that never grows past its capacity never
+            // allocates on the damage path.
+            effects: EffectSet::with_capacity(8),
+            scheduled: Scheduled::new(),
             pane_rects: Vec::new(),
-            layout_dirty: true,
             focus: HashMap::new(),
             input: Input::new(),
             status: status::StatusLine::default(),
@@ -205,7 +230,50 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             origin: None,
             cursor: 0,
             reconnects: 0,
-        })
+        };
+        // A client that has drawn nothing owes its terminal everything.
+        app.absorb(Effect::Full);
+        Ok(app)
+    }
+
+    /// Fold one effect into what the next frame owes.
+    ///
+    /// The one place dirtiness is recorded, and the reason no handler in this
+    /// module writes a flag: absorbing is the *only* way to say something
+    /// changed, so a handler that says nothing is a handler whose return value
+    /// was thrown away at the call site rather than a write nobody made.
+    pub(super) fn absorb(&mut self, effect: Effect) {
+        self.effects.absorb(effect);
+    }
+
+    /// Whether the next [`repaint`](Self::repaint) would put something new on
+    /// this terminal.
+    ///
+    /// What the fold buys over the boolean it replaced. Pane damage names its
+    /// pane, and a pane this terminal is not drawing owes it no frame: stream
+    /// bindings are per *connection*, not per workspace, so a grid stream bound
+    /// while a workspace was on screen keeps delivering after this client has
+    /// switched away from it, and every one of those deltas used to repaint a
+    /// screen they could not appear on. Anything at [`Level::Layout`] or above
+    /// is owed unconditionally — the chrome, the status line and the rects are
+    /// not any pane's.
+    ///
+    /// Exposed for the same reason [`Self::repaints`] is: what a client decided
+    /// not to draw is invisible in the frame and exact here.
+    #[must_use]
+    pub fn frame_due(&self) -> bool {
+        match self.effects.level() {
+            Level::Nothing => false,
+            Level::PaneDamage => self.effects.panes().iter().any(|&pane| self.showing(pane)),
+            Level::Layout | Level::Full => true,
+        }
+    }
+
+    /// Whether `pane` is in the workspace this terminal is drawing.
+    fn showing(&self, pane: PaneId) -> bool {
+        self.model
+            .focused_workspace()
+            .is_some_and(|ws| ws.layout.contains(pane))
     }
 
     /// Forget everything that only meant something to the server that is gone.
@@ -224,8 +292,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         self.mode = Mode::default();
         self.pane_rects.clear();
         self.wanted_history.clear();
-        self.layout_dirty = true;
-        self.dirty = true;
+        self.absorb(Effect::Full);
         if let Some(origin) = self.origin.as_mut() {
             origin.adopt(session);
         }
@@ -272,7 +339,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         // Adopting is a test seam: the adopted mirror is what the test wants
         // rendered, ahead of whatever the live attach already folded.
         self.model.focus_workspace(id);
-        self.layout_dirty = true;
+        self.absorb(Effect::Layout);
     }
 
     /// Feed raw terminal bytes through the modal input layer (04 §7).
@@ -288,23 +355,35 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// keeps the two from silently diverging.
     pub fn handle_input(&mut self, bytes: &[u8], sink: &mut impl FnMut(InputEvent<'_>)) {
         if self.picker.is_some() {
-            self.picker_input(bytes, sink);
+            let effect = self.picker_input(bytes, sink);
+            self.absorb(effect);
             return;
         }
         if self.mode == Mode::Copy {
-            self.copy_input(bytes);
+            let effect = self.copy_input(bytes);
+            self.absorb(effect);
             return;
         }
+        let entered = self.mode;
         let mut actions = self.input.take_scratch();
         self.mode = self.input.feed(self.mode, bytes, &mut actions);
         for &action in &actions {
-            self.apply_action(action, bytes, sink);
+            let effect = self.apply_action(action, bytes, sink);
+            self.absorb(effect);
         }
         self.input.put_scratch(actions);
         if self.mode == Mode::Copy {
             // Navigate's `c` was consumed by the machine; the engine opens
             // here, over the focused pane's cache, or not at all.
-            self.enter_copy();
+            let effect = self.enter_copy();
+            self.absorb(effect);
+        }
+        // Last, because `enter_copy` can put the mode back: the status line
+        // renders the mode (`status::mode_tag`), so crossing into or out of one
+        // is a chrome change however little else the keys did. A byte that only
+        // went to a pane is not — its echo comes back as that pane's damage.
+        if self.mode != entered {
+            self.absorb(Effect::Full);
         }
     }
 
@@ -359,7 +438,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             return false;
         };
         self.model.term = Rect::new(0, 0, size.cols, size.rows);
-        self.layout_dirty = true;
+        self.absorb(Effect::Layout);
         report(size);
         self.repaint();
         true
@@ -367,17 +446,23 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
 
     /// Redraw everything: chrome and every visible pane's grid.
     ///
+    /// Drains one batch of folded effects and draws it. The frame itself is
+    /// always whole — this client emits absolute cursor moves into a buffer it
+    /// rebuilds per frame, and there is no partial-frame path to take — so what
+    /// the batch decides is the *layout*: recomputing the rects is the one
+    /// thing a repaint can skip, and [`Level::Layout`] is when it must not.
+    ///
     /// Allocation-free once the layout has settled: the only thing that can
     /// grow a buffer here is [`FrameWriter`]'s own `Vec<u8>` reaching a new
     /// high-water mark, which happens at most once per distinct frame size.
     pub fn repaint(&mut self) {
+        self.effects.drain_into(&mut self.scheduled);
         self.writer.begin_frame();
-        if self.layout_dirty {
+        if self.scheduled.level() >= Level::Layout {
             let content = self.model.content_area();
             let rects = self.model.pane_rects(content);
             self.pane_rects.clear();
             self.pane_rects.extend_from_slice(&rects);
-            self.layout_dirty = false;
         }
         for &(pane, rect) in &self.pane_rects {
             chrome::draw_border(&mut self.writer, rect);

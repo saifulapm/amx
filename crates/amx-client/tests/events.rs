@@ -23,7 +23,9 @@ use amx_client::app::{App, Folded};
 use amx_client::input::{InputEvent, PREFIX};
 use amx_client::model::WorkspaceModel;
 use amx_core::agent::{AgentState, StatusCause};
-use amx_core::{Delivery, Direction, Envelope, Event, Layout as BspLayout, PaneId, WorkspaceId};
+use amx_core::{
+    Delivery, Direction, Effect, Envelope, Event, Layout as BspLayout, PaneId, WorkspaceId,
+};
 use amx_proto::ClientInfo;
 use amx_proto::control::{Call, Method};
 use amx_proto::rpc::Notification;
@@ -290,7 +292,10 @@ async fn next_attention_key_calls_agent_next_and_focus_follows() {
             pane: Some(there),
         },
     ));
-    assert_eq!(folded, Folded::Applied);
+    // The effect rides the verdict (D2): focus moving inside the workspace this
+    // terminal is drawing invalidates the chrome and the rects it is drawn
+    // against, and says so rather than setting a flag on the side.
+    assert_eq!(folded, Folded::Applied(Effect::Layout));
     assert_eq!(
         app.focused_pane(),
         Some(there),

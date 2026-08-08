@@ -44,7 +44,7 @@ use crate::sys;
 #[derive(Debug, Default)]
 pub struct Effects {
     replies: Vec<u8>,
-    events: Vec<Effect>,
+    events: Vec<TerminalEvent>,
 }
 
 impl Effects {
@@ -67,7 +67,7 @@ impl Effects {
 
     /// Side effects that are not pty writes, in the order they occurred.
     #[must_use]
-    pub fn events(&self) -> &[Effect] {
+    pub fn events(&self) -> &[TerminalEvent] {
         &self.events
     }
 
@@ -85,9 +85,15 @@ impl Effects {
 }
 
 /// A side effect a VT sequence asked for that is not a pty write.
+///
+/// Named for what it *is* — something the terminal reported — rather than for
+/// the `Effect` it used to be called. That name was one of three unrelated
+/// enums spelling it (`amx_core::Effect` is render dirtiness, the agent
+/// tracker's is a status transition), and three types with one name in one
+/// workspace is a reading hazard rather than a coincidence (DR-10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum Effect {
+pub enum TerminalEvent {
     /// A BEL (0x07) was received.
     Bell,
     /// OSC 0 or OSC 2 changed the title; read it with
@@ -276,7 +282,7 @@ unsafe extern "C" fn write_pty(
 
 unsafe extern "C" fn bell(_terminal: sys::GhosttyTerminal, userdata: *mut c_void) {
     // SAFETY: the userdata is ours.
-    unsafe { with_effects(userdata, |effects| effects.events.push(Effect::Bell)) };
+    unsafe { with_effects(userdata, |effects| effects.events.push(TerminalEvent::Bell)) };
 }
 
 unsafe extern "C" fn title_changed(_terminal: sys::GhosttyTerminal, userdata: *mut c_void) {
@@ -284,14 +290,18 @@ unsafe extern "C" fn title_changed(_terminal: sys::GhosttyTerminal, userdata: *m
     // would be a call back into the terminal from inside a callback.
     unsafe {
         with_effects(userdata, |effects| {
-            effects.events.push(Effect::TitleChanged)
+            effects.events.push(TerminalEvent::TitleChanged)
         })
     };
 }
 
 unsafe extern "C" fn pwd_changed(_terminal: sys::GhosttyTerminal, userdata: *mut c_void) {
     // SAFETY: the userdata is ours.
-    unsafe { with_effects(userdata, |effects| effects.events.push(Effect::PwdChanged)) };
+    unsafe {
+        with_effects(userdata, |effects| {
+            effects.events.push(TerminalEvent::PwdChanged)
+        })
+    };
 }
 
 unsafe extern "C" fn clipboard_write(
@@ -323,7 +333,7 @@ unsafe extern "C" fn clipboard_write(
                 .collect();
             effects
                 .events
-                .push(Effect::ClipboardWrite { location, contents });
+                .push(TerminalEvent::ClipboardWrite { location, contents });
         });
     }
     ClipboardWriteResult::Success.to_sys()
