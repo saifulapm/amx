@@ -19,6 +19,8 @@ herdr's structural weaknesses.
 | [07-m1-plan.md](07-m1-plan.md) | M1 execution plan: durability — fsynced snapshot, restore + loss report, Persist actor, config hot reload, crash suite |
 | [08-m2-plan.md](08-m2-plan.md) | M2 execution plan: agents — hook-coverage spike, registry, fusion state machine, AgentHub, attention queue, waits, resume |
 | [09-m3-plan.md](09-m3-plan.md) | M3 execution plan: continuity & reach — wedge spike, SCM_RIGHTS handoff, reconnect-resync, self-update, SSH bridge, worktrees, layouts |
+| [10-attention-surfaces.md](10-attention-surfaces.md) | D14/D15 design: attention at 25-agent scale (agent.list, agents view with live peek, status-line breakdown, `amx agents`) and small screens (narrow-viewport projection, wheel → copy-mode) |
+| [notes/design-review.md](notes/design-review.md) | 2026-08 full-design review: findings register DR-1…DR-14 with priorities and effort |
 
 ## TL;DR
 

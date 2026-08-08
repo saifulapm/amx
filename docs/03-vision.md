@@ -40,7 +40,11 @@ local-first, no platform ambitions — a sharp tool.
    kakoune-inspired). There is *no chrome mouse UI* — no clickable tabs, no
    drag-resize, no right-click menus, no scrollbars to grab, no hover states.
    Mouse events are forwarded to applications that request mouse reporting
-   (vim, htop) and otherwise ignored. This is not a downgrade; it deletes
+   (vim, htop) and otherwise ignored — with exactly one interpreted
+   exception (D14): wheel events in a pane without mouse reporting scroll
+   copy mode, because touch-scroll from a phone terminal arrives as wheel
+   events and scrollback must stay reachable there. No positional mouse
+   interpretation, ever. This is not a downgrade; it deletes
    herdr's hit-rect bookkeeping, ViewState coupling, drag state machines, and
    the entire mobile layout fork.
 2. **The UI is panes + one status line.** No sidebar, no cards, no dialogs

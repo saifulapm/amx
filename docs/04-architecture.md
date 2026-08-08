@@ -430,3 +430,5 @@ repos — not a crawler, a registry format, and a consent dialog.
 | D11 | Unix-first behind platform traits | inline cfg-forked Windows |
 | D12 | Size budgets (generated code exempt) + protocol goldens + skew CI from M0 | 10k-line files, inline test inflation |
 | D13 | Two-tier tree: workspaces → panes; tabs flattened into workspaces | workspace → tabs → layout |
+| D14 | Narrow-viewport single-pane projection + compact status line; wheel-only mouse concession (wheel → copy-mode scroll in panes without mouse reporting); touch clients are separate protocol consumers, never TUI chrome — [10-attention-surfaces.md](10-attention-surfaces.md) | amends D9's letter; herdr's mobile layout fork stays deleted |
+| D15 | Attention surfaces: `agent.list` + identity-bearing attention events, per-workspace status-line breakdown, agents view as the picker's one extension (live detail line + peek region), `amx agents` CLI, workspace-scoped `next-attention`; queue ordering stays global, grouping is display-only; no generated summaries, no launcher, no filter syntax in core — [10-attention-surfaces.md](10-attention-surfaces.md) | extends the status line and picker (03 §2) |
