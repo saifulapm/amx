@@ -262,21 +262,15 @@ impl Core {
     /// Re-establish a workspace's git worktree membership, or degrade the
     /// workspace to a plain one and say so (D-M3-10).
     ///
-    /// The snapshot records where `amx work` put the checkout; between two runs
-    /// of the server that directory can be gone — `git worktree remove` run by
-    /// hand, a cleaned-out scratch disk, an `rm -rf`. The workspace itself is
-    /// still perfectly good, so nothing is pruned: what is lost is the
-    /// *association*, and losing it silently would leave `amx work done`
-    /// pointing a destructive verb at a path that is not there.
+    /// Degraded, not lost, on D-M1-9's own distinction: every pane, the layout
+    /// and the label all come back, and what is missing is the *association* —
+    /// which is exactly why it may not be dropped quietly, since `amx work done`
+    /// reads it to decide what to delete.
     ///
-    /// Degraded rather than lost, on D-M1-9's own distinction: every pane comes
-    /// back, the layout comes back, the label comes back. One field does not.
-    ///
-    /// A directory that exists is adopted without asking git anything. Whether
-    /// it is still a *registered* worktree of that repository is a question for
-    /// the verb that acts on it — `amx work done` re-derives the path and checks
-    /// the repository's own list before it removes anything — and answering it
-    /// here would mean the server running git on the startup path, which
+    /// A directory that is there is adopted without asking git anything. Whether
+    /// it is still a *registered* worktree is the acting verb's question — `amx
+    /// work done` re-derives the path and reads the repository's own list — and
+    /// answering it here would put git on the server's startup path, which
     /// D-M3-10 keeps in the CLI.
     fn restore_worktree(&mut self, saved_ws: &WorkspaceSnapshot, run: &mut Restoring<'_>) {
         let Some(worktree) = saved_ws.worktree.clone() else {
