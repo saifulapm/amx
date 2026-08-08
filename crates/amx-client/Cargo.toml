@@ -33,7 +33,10 @@ unicode-width = { workspace = true }
 # Test-only: the T13 acceptance suite drives a real amx-server over a real
 # socket, and the raw-mode restoration tests need a real pty rather than a
 # regular file (`tcgetattr`/`tcsetattr` require a tty). Neither is a runtime
-# dependency of the client itself.
+# dependency of the client itself. `bytes` is here for the same reason:
+# `GridMessage::encode` is generic over `BufMut`, so a test that builds a real
+# grid frame needs the trait in scope — the client itself never encodes one.
 [dev-dependencies]
 amx-server = { workspace = true }
+bytes = { workspace = true }
 rustix = { workspace = true, features = ["pty", "process", "std", "termios"] }

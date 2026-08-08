@@ -38,6 +38,7 @@ dependencies = [
  "amx-core",
  "amx-proto",
  "amx-server",
+ "bytes",
  "rustix",
  "serde_json",
  "thiserror",

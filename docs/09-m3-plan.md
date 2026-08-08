@@ -1132,9 +1132,18 @@ not, four times proven.
    Claude Code comes back with the *agent's* UI redrawn, because it redraws on a
    size announcement and the commit resizes every pane. Nothing is lost; the
    criterion has to name which half is amx's.
-3. **The SSH clause needs a second machine and did not get one.** The loopback
-   tier passed and is not a substitute. This is the milestone's one unverified
-   exit clause.
+3. **The SSH clause got its second machine, late, and it earned its tier.** It
+   was written up as the milestone's one unverified exit clause, and then on
+   2026-08-08 a second physical machine — Fedora Asahi Remix, aarch64, fish
+   login shell — became available and the clause was run end to end
+   ([m3-live-smoke §5](notes/m3-live-smoke.md)). It found a bug on the first
+   attempt that no tier below it could see: every command amx sent over ssh was
+   POSIX `sh` syntax handed to the remote user's *login* shell, so `--remote`
+   was unusable against any host running fish, csh or tcsh. The loopback tier
+   was not a substitute, exactly as this clause said. Two residuals stayed open
+   and are DR-20's: the far side ran a binary cross-built here from the same
+   tree rather than an independently versioned one, and no handoff or
+   `update apply` has crossed the remote link.
 
 ---
 

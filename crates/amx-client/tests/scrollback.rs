@@ -1,12 +1,20 @@
 //! T15 acceptance: the scrollback cache and copy mode over it.
 //!
 //! These tests drive the cache and the copy-mode engine directly with decoded
-//! state — commits, fills, invalidations, evictions — because no wire path
-//! delivers any of it yet (`HistoryChunk`'s codec is `todo!()` and no control
-//! method requests a range): the same stand-in shape every other suite in
-//! this crate documents. The seam test at the bottom is the exception — it
-//! drives the real modal input machine through `App` against a real server,
-//! proving copy mode is entered from navigate and consumes its keys.
+//! state — commits, fills, invalidations, evictions — because that is the
+//! level the cache's own rules live at, not because the delivery path is
+//! missing. It is not: `pane.history` requests a range
+//! (`amx-proto/src/control/mod.rs:221`), the server chunks it
+//! (`amx-server/src/history/range.rs:92`), `HistoryChunk` encodes and decodes
+//! (`amx-proto/src/stream/history.rs:52,75`), and the client asks
+//! (`app/binds.rs:151`), pumps (`app/wired.rs:193`) and commits into this cache
+//! (`stream.rs:141-155`). What no test in this crate covers is that path end
+//! to end over a socket; the server's half is covered by
+//! `crates/amx-server/tests/history.rs`.
+//!
+//! The seam test at the bottom drives the real modal input machine through
+//! `App` against a real server, proving copy mode is entered from navigate and
+//! consumes its keys.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 

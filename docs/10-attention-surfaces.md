@@ -24,11 +24,11 @@ and what it deliberately rejects, is called out inline below.
 
 ## D14 — small screens, and the wheel
 
-### Narrow-viewport policy (client-side only)
+### Narrow-viewport policy
 
 Below `client.narrow_cols` (config, default 60 columns), the client switches
-its *own projection* — the server, other clients, and pane grids are
-untouched (04 §3 already gives every client an independent view):
+its *own projection*, and declares what that projection is showing (04 §3
+already gives every client an independent view — see the amendment below):
 
 - **Single-pane projection**: the focused pane fills the viewport (the
   degenerate one-pane layout `amx attach --pane` already renders). Pane
@@ -39,7 +39,43 @@ untouched (04 §3 already gives every client an independent view):
 - **Picker and agents view render full-screen** instead of as an overlay
   region; peek (D15) replaces the list rather than sharing the screen.
 
-No new mechanism anywhere above: it is a rendering policy keyed on width.
+**Amendment (M4 research, D-M4-7 / R-M4-2): this is not client-side only, and
+"the server and pane grids are untouched" cannot hold.** As first written this
+section said the server, other clients and pane grids were untouched. Read
+against the tree, that produces the opposite of the phone case it exists for:
+
+- `Core` holds one viewport, `Option<(u16, u16)>`
+  (`amx-server/src/actor/core/mod.rs:140`), set from the declaring client's rows
+  and cols alone — `handle_viewport` (`actor/core/view.rs:144-157`) reads
+  `params.rows` and `params.cols` and nothing else.
+- `reconcile_pane_sizes` (`actor/core/view.rs:184-221`) projects the **whole
+  layout** into that viewport and resizes every pane's PTY to its slot's
+  interior.
+- `client::Viewport.panes` — documented as "Panes visible in this client's
+  projection … The server sends grid traffic for these panes and no others"
+  (`amx-proto/src/control/client.rs:22-24`) — has no server-side reader
+  anywhere.
+
+So a 60-column client showing one pane full-screen would still declare a
+60-column viewport against a two-pane layout, and the server would size that
+pane to roughly 28 columns. The client would letterbox a 28-column grid inside
+60 columns of terminal: correct by 04 §3's letterbox rule, and useless.
+
+**The amended policy:** the narrow client declares what it is actually
+showing — `Viewport{rows, cols, panes: [the one pane]}` — and the server's
+projection gains one rule: *a viewport declaring a single pane sizes that pane
+to the whole content area*, rather than to its slot in a layout the declaring
+client is not drawing. That is also how `Viewport.panes` finally gets the reader
+it was frozen with (R-M4-14).
+
+What does **not** change: the pane grid still follows the most-recently-active
+client (04 §3, and `core/mod.rs:138-139` says so in the field's own comment), so
+a phone attaching to a session a desktop is also watching does resize its panes.
+That trade is 04's and is not made worse here. Nothing in 04 is contradicted:
+§3 already gives the server the client's projection as the definition of
+visibility.
+
+Above the projection change, it is a rendering policy keyed on width.
 
 ### The wheel exception
 
@@ -49,21 +85,78 @@ application requested mouse reporting, SGR events are forwarded unchanged
 local cache; wheel-down at the live edge exits copy mode.** Nothing else —
 no clicks, no taps, no drag, no hit-rects, ever. On a phone terminal,
 touch-scroll arrives as wheel events, so this one concession is what makes
-scrollback reachable by touch; on a desktop it is the concession every trial
-user reaches for in the first minute.
+scrollback reachable by touch.
+
+**Amendment (the M4 spike, outcome (b)): it ships opt-in, off by default.** As
+first written this section added "on a desktop it is the concession every trial
+user reaches for in the first minute", which assumed the wheel was free. It is
+not. Receiving a wheel event means asking the host terminal for mouse tracking,
+and both emulators the spike measured document what that costs in their own
+manuals: with an application holding the mouse, ordinary drag-select becomes
+shift-drag (foot's `selection-override-modifiers`, alacritty's `Shift`
+suppression). The cost is paid all the time rather than where it buys
+something, because the exception exists precisely for panes that did *not* ask
+for the mouse — so the request cannot be scoped to the panes that did, which is
+what a multiplexer mirroring a pane's own request can do and this cannot.
+`mouse.enabled` therefore defaults **off**, and the phone profile is where it is
+turned on. Evidence, measured rather than assumed:
+[notes/m4-mouse-path.md](notes/m4-mouse-path.md) §2.2, §2.3 and §5, including
+the one hypothesis that note labels as still unobserved.
+
+**And what the exception buys is smaller than this section assumed.** DEC mode
+`1007` (alternate scroll) is *set by default* in both emulators the spike
+measured, observed over DECRQM before amx asked for anything, and amx runs on
+the alternate screen (`ALT_SCREEN_ENTER`, `amx-client/src/term.rs:21`). So a
+wheel turn over a running `amx attach` already produces cursor-up/cursor-down
+keys that the client forwards to the focused pane. "The wheel does nothing" was
+never true. The exception buys an **unambiguous** wheel — scroll that reaches
+scrollback rather than whatever the focused application does with arrow keys —
+not a wheel that works at all. It is a smaller prize, bought at the cost above,
+which is the whole reason the default moved.
 
 This amends 03 §Design principles 1 ("otherwise ignored" → "otherwise only
-wheel events are interpreted, as copy-mode scroll") and the letter of D9. The
+wheel events are interpreted, as copy-mode scroll, and only when the user turns
+mouse tracking on") and the letter of D9. The
 fence stays: any *positional* mouse interpretation (anything requiring a
 hit-rect) remains out, permanently.
 
 ### Modifier-hostile keyboards
 
-Phone keyboards make `ctrl+a` awkward. No new mechanism: keybindings are
-already config data and clients may bring local bindings at handshake. Ship a
-documented `[keys]` phone profile example (alternative prefix, e.g. a
-function key or double-tap sequence the user's terminal app can emit) in the
-config docs. Documentation work, not code.
+Phone keyboards make `ctrl+a` awkward. The deliverable is unchanged: a
+documented `[keys]` phone profile example (alternative prefix, e.g. a function
+key or double-tap sequence the user's terminal app can emit) in the config
+docs.
+
+**Amendment (M4 research, D-M4-8 / R-M4-3): the profile is code before it is
+documentation.** As first written this section said "No new mechanism:
+keybindings are already config data and clients may bring local bindings at
+handshake … Documentation work, not code." Every clause of that is false in the
+tree:
+
+- The prefix key is a constant, not config: `pub const PREFIX: u8 = 0x01;`, and
+  its own comment says "configurable once config lands in M1"
+  (`amx-client/src/input/mod.rs:57-58`). M1, M2 and M3 landed and it did not.
+- The prefix table is a `match` on byte literals
+  (`amx-client/src/input/mod.rs:306-337`), not data.
+- There is no `[keys]` section. `config::SECTIONS`
+  (`amx-core/src/config/mod.rs:44-49`) is `persist`, `terminal`, `update`,
+  `work` — and that module's own rule is that "a section nobody reads is a
+  promise nobody keeps" (`config/mod.rs:41-43`).
+- `amx-client` reads no configuration at all: the crate contains no reference to
+  `Config`.
+- `client::Keybindings::{Server, Local}`
+  (`amx-proto/src/control/client.rs:40-46`) has no reader anywhere in the tree —
+  it is one of the frozen-ahead-of-a-reader fields R-M4-14 collects.
+
+**The amendment:** M4 builds the minimum the profile needs and no more — a
+`[client]` section (the narrow threshold this doc already assumes) and a
+`[keys]` section carrying the prefix key and the prefix table's bindings, read
+client-side through the `Ctx.config_path` the CLI already builds
+(`amx-core/src/ctx.rs:199`), plus `amx keys` to print the resolved table, which
+04 §7 promises. No dependency enters the tree: `amx-core` already carries `toml`
+and `amx-client` already depends on `amx-core`. 04 §7 is not contradicted — it
+specified exactly this mechanism, and it was never built. The documentation then
+describes something that exists.
 
 ### The tier-3 fence
 

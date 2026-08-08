@@ -45,10 +45,13 @@ detached, everything joined):
 | `Persist` | debounced snapshot capture, fsynced writes, restore |
 | `AgentHub` | agent registry, hook-report ingestion, status fusion, attention queue |
 
-**The event bus** is the spine: a broadcast bus with per-subscriber cursors
-over a bounded replay buffer. Every state transition (`pane.created`,
+**The event bus** is the spine: one publish point read by per-subscriber
+cursors over a bounded replay ring. Every state transition (`pane.created`,
 `agent.status{working→blocked}`, `pane.exited`, …) is one typed event with a
-monotonic sequence number.
+monotonic sequence number. "Broadcast" here names the fan-out, not a
+`tokio::sync::broadcast` channel — that primitive is not used anywhere in the
+tree, because a subscriber that falls behind it learns only *how many* messages
+it lost, and the gap contract below hands it the sequence range instead.
 
 **The wait/gap contract** (loss must be visible *and* recoverable):
 
@@ -361,7 +364,20 @@ inside the CLI across the reconnect.
   design leans on.
 - No chrome mouse handling. `mouse_forward = true` (default) forwards SGR
   events to applications that enabled mouse reporting; amx itself never
-  interprets them.
+  interprets them **as chrome input** — no hit-rects, no drag states, nothing
+  on screen means anything to a pointer.
+  - **Forwarding is not byte-verbatim, and cannot be.** A report's coordinates
+    are viewport-absolute; the application in a pane reads them as pane-local,
+    and amx's panes are never at the origin — the content area is the terminal
+    minus a status line (`amx-server/src/actor/core/view.rs:224-226`,
+    `amx-client/src/model/mod.rs:362-368`) and every pane is inset one cell for
+    its border (`view.rs:40-45`). Relaying a report to the pane under it
+    therefore means subtracting the pane's origin, which is coordinate
+    arithmetic and not interpretation: amx still assigns no *meaning* to a
+    position. The same translation is what tmux does. This paragraph records
+    the constraint; where the subtraction happens is an implementation
+    decision, and until it does, the honest description of the path is that it
+    is untranslated.
 
 ## 8. Extensions: the API is the plugin system (fixes W7)
 
@@ -417,7 +433,7 @@ repos — not a crawler, a registry format, and a consent dialog.
 
 | # | Decision | Replaces (herdr) |
 |---|---|---|
-| D1 | Actors + broadcast event bus; waits are state predicates with gap-resync | 100 ms polling, Mutex<Vec> ring |
+| D1 | Actors + a cursor-over-replay-ring event bus with typed gaps; waits are state predicates with gap-resync | 100 ms polling over a 512-entry seq-numbered ring behind a `Mutex`, with no per-subscriber cursor and no gap signal |
 | D2 | Structural `Effect` render dirtiness | 94-site manual flags |
 | D3 | One socket, JSON-RPC control + bound binary streams, capability negotiation, N/N−1 window, v1 flow control (coalesced damage, keyframes, channel priority) | 3 surfaces, strict version equality |
 | D4 | Smart client: state + pane deltas + local scrollback cache with an explicit invalidation contract | server-rendered full-TUI frames |
@@ -425,10 +441,10 @@ repos — not a crawler, a registry format, and a consent dialog.
 | D6 | Single generated agent registry | ~10 hand-synced match sites |
 | D7 | UUID-keyed fsynced snapshot + per-pane history sidecars + restore report | positional workspace/tab zip, no fsync, log-only loss |
 | D8 | API-only extensions, user-supervised | unsandboxed auto-run plugin processes |
-| D9 | Keyboard-only chrome; mouse forwarded, never interpreted | hit-rects, drag states, mobile fork |
+| D9 | Keyboard-only chrome; mouse forwarded (coordinates translated to the pane's frame, never given meaning) | hit-rects, drag states, mobile fork |
 | D10 | No monolithic mode; one runtime | `--no-session` dual loop |
 | D11 | Unix-first behind platform traits | inline cfg-forked Windows |
 | D12 | Size budgets (generated code exempt) + protocol goldens + skew CI from M0 | 10k-line files, inline test inflation |
 | D13 | Two-tier tree: workspaces → panes; tabs flattened into workspaces | workspace → tabs → layout |
-| D14 | Narrow-viewport single-pane projection + compact status line; wheel-only mouse concession (wheel → copy-mode scroll in panes without mouse reporting); touch clients are separate protocol consumers, never TUI chrome — [10-attention-surfaces.md](10-attention-surfaces.md) | amends D9's letter; herdr's mobile layout fork stays deleted |
+| D14 | Narrow-viewport single-pane projection, declared to the server so the shown pane is sized to the whole viewport, + compact status line; wheel-only mouse concession, opt-in and off by default (wheel → copy-mode scroll in panes without mouse reporting); touch clients are separate protocol consumers, never TUI chrome — [10-attention-surfaces.md](10-attention-surfaces.md) | amends D9's letter; herdr's mobile layout fork stays deleted |
 | D15 | Attention surfaces: `agent.list` + identity-bearing attention events, per-workspace status-line breakdown, agents view as the picker's one extension (live detail line + peek region), `amx agents` CLI, workspace-scoped `next-attention`; queue ordering stays global, grouping is display-only; no generated summaries, no launcher, no filter syntax in core — [10-attention-surfaces.md](10-attention-surfaces.md) | extends the status line and picker (03 §2) |
