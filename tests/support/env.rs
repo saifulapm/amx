@@ -106,6 +106,17 @@ impl Env {
         }
     }
 
+    /// This environment's `$HOME`, and the root every other path hangs off.
+    ///
+    /// Named because a suite sometimes has to write into the home of the
+    /// process under test — `~/.ssh/config` for the loopback-ssh suite, which
+    /// is the only way to hand ssh a port, a key and a host alias without a
+    /// flag amx would have to grow to pass through.
+    #[must_use]
+    pub fn home(&self) -> &Path {
+        self.dir.path()
+    }
+
     /// A scratch directory panes and tests can exchange files through.
     #[must_use]
     pub fn scratch(&self) -> PathBuf {
