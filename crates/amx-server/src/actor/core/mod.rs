@@ -31,6 +31,8 @@
 //! yesterday's session back, and [`resume`] for the half of that rebuild which
 //! puts each agent's *conversation* back (V15, D-M2-7).
 
+mod handoff;
+mod import;
 mod pane;
 mod persist;
 mod report;
@@ -52,6 +54,7 @@ use amx_proto::ServerInfo;
 use amx_proto::rpc::RpcError;
 use tokio::sync::{mpsc, watch};
 
+pub use self::import::{AdoptError, Adopted};
 pub use self::persist::CAPTURE_PROBE_BUDGET;
 use self::persist::Restored;
 pub use self::restore::RestoreOptions;
@@ -157,6 +160,11 @@ pub struct Core {
     /// through this same actor and a `Core` waiting there while the hub waits
     /// here is one half of a deadlock (`docs/08-m2-plan.md` §3).
     agent: Option<AgentHandle>,
+    /// What this session keeps about handing itself over (`docs/09-m3-plan.md`
+    /// §3): the commit fence the final capture reads, the in-flight flag that
+    /// refuses a second handoff, the last attempt `session.report` answers
+    /// with, and where a frozen session is sent.
+    handoff: self::handoff::HandoffSeat,
     /// What this server's startup restore cost, if it performed one.
     ///
     /// Held for the process's lifetime: `session.report` serves the entries
@@ -200,6 +208,7 @@ impl Core {
             pane_sizes: HashMap::new(),
             handle,
             persist: None,
+            handoff: self::handoff::HandoffSeat::default(),
             restore: None,
             capture_budget: CAPTURE_PROBE_BUDGET,
             // Defaults, with no sender to change them: a `Core` built without a
@@ -274,6 +283,25 @@ impl Core {
     #[must_use]
     pub const fn session_id(&self) -> SessionId {
         self.session_id
+    }
+
+    /// Continue an existing session's identity instead of minting a new one.
+    ///
+    /// The inheritance a live upgrade turns on (`docs/09-m3-plan.md` D-M3-5).
+    /// A reconnecting client branches on `Welcome.session`: the same id means
+    /// "this is the session I was talking to, my caches and my last seq still
+    /// mean something", a different one means "a different server, drop
+    /// everything". A successor that minted a fresh id would therefore tell
+    /// every client to throw away exactly the state the handoff went to the
+    /// trouble of carrying across.
+    ///
+    /// Only the import assembly calls this, and only before [`Core::run`]:
+    /// changing a live session's identity mid-flight would be the same lie in
+    /// the other direction.
+    #[must_use]
+    pub const fn with_session_id(mut self, session_id: SessionId) -> Self {
+        self.session_id = session_id;
+        self
     }
 
     fn server_info(&self) -> ServerInfo {
@@ -394,7 +422,18 @@ impl Core {
     /// wedge `Core`'s own drain (`docs/07-m1-plan.md` §2, R-M1-2). A push that
     /// does not fit costs the last few seconds of changes, which the debounced
     /// save has already bounded.
+    ///
+    /// Fenced after a handoff commits (R-M3-10, D-M3-6 point 5). Past the
+    /// commit the snapshot on disk is the successor's, and this dying view of
+    /// the session would overwrite it with panes the successor has already
+    /// resumed and a layout it may already have changed — a split brain amx
+    /// closes rather than outraces. Any future change to this path must keep
+    /// the fence; `no_final_snapshot_is_written_after_commit` is the pin.
     fn push_final_capture(&self) {
+        if self.handoff_fenced() {
+            tracing::info!("the successor owns the snapshot; not writing a final capture");
+            return;
+        }
         let Some(persist) = &self.persist else { return };
         let _ = persist.try_send(PersistCommand::Snapshot(Box::new(self.capture_cheap())));
     }

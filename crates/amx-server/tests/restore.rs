@@ -117,6 +117,7 @@ async fn a_new_workspace_after_a_restore_takes_the_next_free_short() {
                 params: amx_proto::control::workspace::CreateParams {
                     label: None,
                     focus: false,
+                    worktree: None,
                 },
                 reply,
             })

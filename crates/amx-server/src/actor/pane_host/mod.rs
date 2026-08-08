@@ -36,6 +36,7 @@
 
 mod actor;
 pub mod drive;
+mod export;
 pub mod keys;
 mod mailbox;
 mod parser;
@@ -61,10 +62,12 @@ use self::actor::{Actor, Mailboxes};
 use self::mailbox::{HostEvent, ParserCommand, Scratch};
 use self::parser::{Parser, ParserParts};
 use crate::actor::{CoreHandle, PaneCommand, PaneHandle};
+use crate::handoff::manifest::PaneSeed;
 use crate::platform::UnixProcessTree;
 use crate::pty::{PtyActor, PtyActorConfig, PtyActorError, PtyActorHandle};
 
 pub use self::drive::{Drive, DriveError, Driven};
+pub use self::export::{ExportError, PaneExport, PaneResume};
 pub use self::keys::{KeyParseError, KeyStroke};
 pub use self::probe::PaneProbe;
 
@@ -103,6 +106,14 @@ pub struct PaneHostConfig {
     pub cancel: CancellationToken,
     /// Counters for the threading invariants.
     pub probe: PaneProbe,
+    /// What an inherited pane is rebuilt from (D-M3-4), absent for a fresh one.
+    ///
+    /// Present exactly when the pty session handed to
+    /// [`PaneHost::spawn`] is one that crossed a handoff: the seed carries the
+    /// bytes that put the screen and the scrollback back, and the three
+    /// counters — row-id head, grid generation, frame counter — a successor
+    /// continues rather than restarts.
+    pub seed: Option<PaneSeed>,
 }
 
 impl PaneHostConfig {
@@ -120,6 +131,7 @@ impl PaneHostConfig {
             process_tree: Arc::new(UnixProcessTree),
             cancel: CancellationToken::new(),
             probe: PaneProbe::new(),
+            seed: None,
         }
     }
 }
@@ -181,6 +193,7 @@ impl PaneHost {
             process_tree,
             cancel,
             probe,
+            seed,
         } = config;
 
         let terminal = Terminal::new(TerminalOptions {
@@ -189,10 +202,21 @@ impl PaneHost {
             max_scrollback,
         })?;
         let render = RenderState::new()?;
-        let snapshots = Snapshots::new(size.cols, size.rows);
+        // Both counters continue where the exporter left them. The frame
+        // counter is a reader's "have I seen this?"; the grid generation is 04
+        // §4's delta contract. Restarting either at zero on a successor is what
+        // `Snapshots::new_at` and this seeding exist to prevent.
+        let snapshots = match &seed {
+            Some(seed) => Snapshots::new_at(size.cols, size.rows, seed.frame),
+            None => Snapshots::new(size.cols, size.rows),
+        };
+        let first = seed
+            .as_ref()
+            .map_or(GridGeneration::FIRST, |seed| seed.generation);
 
-        let generation = Arc::new(AtomicU64::new(GridGeneration::FIRST.get()));
-        let (published, frames) = watch::channel((snapshots.latest(), GridGeneration::FIRST));
+        let child = session.child();
+        let generation = Arc::new(AtomicU64::new(first.get()));
+        let (published, frames) = watch::channel((snapshots.latest(), first));
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (commands_tx, commands_rx) = mpsc::channel(mailbox.max(1));
         let (parser_tx, parser_rx) = sync_mpsc::channel();
@@ -202,6 +226,8 @@ impl PaneHost {
         let (pty, pty_thread) = PtyActor::spawn(pty_config)?;
 
         let parser = Parser::new(ParserParts {
+            pane,
+            child,
             terminal,
             render,
             snapshots,
@@ -213,6 +239,7 @@ impl PaneHost {
             frame_interval,
             size,
             generation: Arc::clone(&generation),
+            seed,
         });
         let parser_thread = std::thread::Builder::new()
             .name(format!("amx-vt-{}", short(pane)))
@@ -284,6 +311,48 @@ impl PaneHost {
         self.pty.shutdown();
     }
 
+    /// Hold the pane's terminal still, once everything queued has been written.
+    ///
+    /// The state a handoff captures in (D-M3-3): the terminal is still owned
+    /// and still open, but nothing is read from it or written to it, so it
+    /// cannot move under the process taking it over. Input queued afterwards
+    /// stays queued and is written by [`PaneHost::resume`] — a quiesce that
+    /// dropped a keystroke would be a data-loss bug wearing a state machine's
+    /// clothes.
+    ///
+    /// Bypasses the command mailbox like [`PaneHost::kill`], and blocks for as
+    /// long as the drain takes: call it off the runtime's threads.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the pty actor answers, including
+    /// [`PtyActorError::TimedOut`] for a drain that never finished.
+    pub fn quiesce(&self) -> Result<(), PtyActorError> {
+        self.pty.quiesce()
+    }
+
+    /// Undo a [`PaneHost::quiesce`], writing whatever queued behind it.
+    ///
+    /// # Errors
+    ///
+    /// As [`PaneHost::quiesce`].
+    pub fn resume(&self) -> Result<(), PtyActorError> {
+        self.pty.resume()
+    }
+
+    /// The pty actor's own mailbox, for the export path's freeze and thaw.
+    ///
+    /// [`quiesce`](Self::quiesce) and [`resume`](Self::resume) both block, so
+    /// the handoff runs them on the blocking pool — and a `PaneHost` cannot go
+    /// there, because `Core` is still serving with it. The handle can: cloning
+    /// it gives another way to reach the same actor, not another actor. W06's
+    /// orchestrator is the only caller, and it holds one per frozen pane so
+    /// that an abort can unfreeze the session without queueing behind `Core`.
+    #[must_use]
+    pub fn pty(&self) -> &PtyActorHandle {
+        &self.pty
+    }
+
     /// Ask the pane to stop and wait for it, threads included.
     ///
     /// # Errors
@@ -298,6 +367,20 @@ impl PaneHost {
     #[must_use]
     pub fn into_task(self) -> JoinHandle<()> {
         self.task
+    }
+
+    /// The one capability a caller keeps after giving the pane away.
+    ///
+    /// The import assembly's need, and nobody else's (`docs/09-m3-plan.md` §3
+    /// step 14): an inherited pane is quiesced *before* it is handed to `Core`,
+    /// and the thing that un-quiesces it happens minutes of protocol later,
+    /// after `Core` already owns the host. Narrow on purpose — it can resume a
+    /// pane and do nothing else — because the reason `PaneHost` keeps its pty
+    /// handle private is that quiescing, releasing and duplicating a terminal
+    /// belong to whoever owns the pane.
+    #[must_use]
+    pub fn resumer(&self) -> PaneResume {
+        PaneResume::new(self.pane, self.pty.clone())
     }
 }
 

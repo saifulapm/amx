@@ -75,10 +75,6 @@ impl Core {
                 *floor = (*floor).max(oldest_row);
                 *head = (*head).max(*floor);
             }
-            // A title is the pane's own fact end to end. `Core` answers no
-            // question about it — no state row carries one — so with the
-            // publish gone there is nothing left for this arm to do.
-            PaneReport::Title(_) => {}
             // `Event` has no bell variant (T01's frozen enum): a bell is not
             // session state, so there is nothing to fold and nothing to
             // publish. Flagged in T09's report rather than added there —

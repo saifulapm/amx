@@ -7,9 +7,9 @@
 //! what [`super::Core::absorb`] uses when no Tokio runtime is in scope to
 //! start a `PaneHost` under.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use amx_core::{Event, WorkspaceId};
+use amx_core::{Event, WorkspaceId, Worktree};
 use amx_proto::control::workspace;
 use amx_proto::rpc::RpcError;
 
@@ -26,6 +26,10 @@ impl Core {
         params: workspace::CreateParams,
         reply: Reply<workspace::CreateReply>,
     ) {
+        if let Err(err) = check_worktree(params.worktree.as_ref()) {
+            let _ = reply.send(Err(err));
+            return;
+        }
         let (ws, pane, effect) = self.state.open_workspace();
         let _ = self.next_pane_short(pane);
         self.effects.absorb(effect);
@@ -40,7 +44,15 @@ impl Core {
         params: workspace::CreateParams,
         reply: Reply<workspace::CreateReply>,
     ) {
-        match self.open_workspace_live() {
+        if let Err(err) = check_worktree(params.worktree.as_ref()) {
+            let _ = reply.send(Err(err));
+            return;
+        }
+        // The worktree block is where this workspace's shell opens (D-M3-10):
+        // `amx work` has just checked a branch out there, and a root pane in the
+        // server's own directory would make the membership decorative.
+        let root_cwd = params.worktree.as_ref().map(|tree| tree.path.clone());
+        match self.open_workspace_live(root_cwd) {
             Ok(ws) => self.finish_workspace_create(ws, params, reply),
             Err(err) => {
                 let _ = reply.send(Err(err));
@@ -49,7 +61,7 @@ impl Core {
     }
 
     /// The tail both create shapes share: the event, the optional label, the
-    /// reply.
+    /// worktree membership, the reply.
     fn finish_workspace_create(
         &mut self,
         ws: WorkspaceId,
@@ -57,6 +69,10 @@ impl Core {
         reply: Reply<workspace::CreateReply>,
     ) {
         let mut seq = self.publish(Event::WorkspaceCreated { workspace: ws });
+        if let Some(worktree) = params.worktree {
+            // Freshly created: the workspace is there to record it on.
+            let _ = self.state.set_worktree(ws, Some(worktree));
+        }
         if let Some(label) = params.label {
             // Freshly created: renaming it cannot fail.
             if let Ok(rename_effect) = self.state.rename_workspace(ws, Some(label.clone())) {
@@ -66,6 +82,24 @@ impl Core {
                     label,
                 });
             }
+        }
+        // The field M0 froze and nothing read until W12 found out the hard way:
+        // `amx work` asked for a focused workspace, got an unfocused one, and
+        // the next `amx work done` with no branch had nothing to resolve. It is
+        // read here rather than deleted from the row because callers already
+        // send it meaning what it says, and a documented parameter that does
+        // nothing is worse than one that does.
+        //
+        // After the label, so a status line reading the focus change already
+        // has the name; the switch's own `FocusChanged` is the last word.
+        if params.focus
+            && let Ok(effect) = self.state.switch_workspace(ws)
+        {
+            self.effects.absorb(effect);
+            seq = self.publish(Event::FocusChanged {
+                workspace: ws,
+                pane: self.state.workspace(ws).and_then(|ws| ws.focus()),
+            });
         }
         let short = self.next_workspace_short(ws);
         let _ = reply.send(Ok(workspace::CreateReply {
@@ -99,7 +133,7 @@ impl Core {
             return Ok(());
         }
         let ws = if spawn {
-            self.open_workspace_live()?
+            self.open_workspace_live(None)?
         } else {
             let (ws, pane, effect) = self.state.open_workspace();
             let _ = self.next_pane_short(pane);
@@ -125,13 +159,16 @@ impl Core {
     ///
     /// The shell is whichever [`config_rt::shell`](crate::config_rt::shell)
     /// picks, spawned through the same [`Core::spawn_pane`] path a split
-    /// takes; the root pane's cwd is this process's own — a fresh workspace
-    /// has no source pane to inherit a foreground cwd from (04 §7) — and is
-    /// recorded so later splits fall back to it.
-    fn open_workspace_live(&mut self) -> Result<WorkspaceId, RpcError> {
+    /// takes; the root pane's cwd is `cwd`, or this process's own when the
+    /// caller named none — a fresh workspace has no source pane to inherit a
+    /// foreground cwd from (04 §7) — and is recorded so later splits fall back
+    /// to it.
+    fn open_workspace_live(&mut self, cwd: Option<PathBuf>) -> Result<WorkspaceId, RpcError> {
         let (ws, root, effect) = self.state.open_workspace();
         let _ = self.next_pane_short(root);
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let cwd = cwd
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("/"));
         match self.spawn_pane(root, cwd.clone(), None) {
             Ok(host) => {
                 self.panes.insert(root, host);
@@ -227,4 +264,45 @@ impl Core {
             }
         }
     }
+}
+
+/// Refuse a worktree block that does not describe a directory on this machine.
+///
+/// The server learns no git (D-M3-10) and this is not it learning any: it is the
+/// one thing the server can check about a path it is asked to remember, and
+/// checking it here is what keeps `amx work done` and restore honest later.
+/// Membership recorded for a path that was never there would send a destructive
+/// verb at a directory nobody chose, and restore would report a loss that never
+/// happened.
+///
+/// Absolute, because both later readers join on the path as a value: the block
+/// is compared against a freshly derived path by `amx work done` and stat'd by
+/// restore, and a relative path would be resolved against whichever process was
+/// asking.
+fn check_worktree(worktree: Option<&Worktree>) -> Result<(), RpcError> {
+    let Some(tree) = worktree else {
+        return Ok(());
+    };
+    let refuse = |what: &str, path: &Path| {
+        Err(RpcError::new(
+            RpcError::INVALID_PARAMS,
+            format!("worktree {what}: {}", path.display()),
+        ))
+    };
+    if !tree.repo.is_absolute() {
+        return refuse("repository path is not absolute", &tree.repo);
+    }
+    if !tree.path.is_absolute() {
+        return refuse("path is not absolute", &tree.path);
+    }
+    if tree.branch.trim().is_empty() {
+        return Err(RpcError::new(
+            RpcError::INVALID_PARAMS,
+            "worktree block names no branch".to_owned(),
+        ));
+    }
+    if !tree.path.is_dir() {
+        return refuse("is not a directory", &tree.path);
+    }
+    Ok(())
 }

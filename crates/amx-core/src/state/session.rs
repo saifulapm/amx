@@ -13,7 +13,7 @@ use crate::id::{PaneId, WorkspaceId};
 use crate::layout::{Direction, Layout, LayoutError, Rect};
 use crate::state::error::StateError;
 use crate::state::pane::Pane;
-use crate::state::workspace::Workspace;
+use crate::state::workspace::{Workspace, Worktree};
 
 /// Where a pane being moved into a workspace lands.
 enum Placement {
@@ -388,6 +388,24 @@ impl SessionState {
         }
         ws.set_label(label);
         Ok(Effect::Layout)
+    }
+
+    /// Record — or clear — the git worktree `workspace` was created for.
+    ///
+    /// Pure metadata, like [`set_pane_cwd`](Self::set_pane_cwd) below, so there
+    /// is no [`Effect`] to report; [`Worktree`] says what the block is for and
+    /// why clearing one is as ordinary as setting it.
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::NoSuchWorkspace`] if `workspace` is not in this session.
+    pub fn set_worktree(
+        &mut self,
+        workspace: WorkspaceId,
+        worktree: Option<Worktree>,
+    ) -> Result<(), StateError> {
+        self.workspace_mut(workspace)?.set_worktree(worktree);
+        Ok(())
     }
 
     /// Record the directory `pane`'s process was started in.

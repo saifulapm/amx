@@ -147,6 +147,12 @@ fn control_goldens_match() {
         Call::WorkspaceCreate(workspace::CreateParams {
             label: Some("scratch".into()),
             focus: true,
+            // Absent, deliberately, and that is what keeps this golden's bytes
+            // the ones M0 froze: the worktree block D-M3-10 adds is additive and
+            // optional, so an ordinary create — every create in the tree but
+            // `amx work`'s — encodes exactly as it always did. The field's own
+            // two directions are pinned in `additive.rs`.
+            worktree: None,
         }),
         workspace::CreateReply {
             workspace: workspace_id(),
@@ -286,12 +292,24 @@ fn control_goldens_match() {
                 label: Some("dev".into()),
                 layout,
                 focus: Some(other_pane_id()),
+                // D-M3-10's membership block, frozen with a value rather than
+                // as `None`: a shape nothing ever populates is a shape nobody
+                // has read.
+                worktree: Some(amx_core::Worktree {
+                    repo: "/home/s/amx".into(),
+                    branch: "reflow-fix".into(),
+                    path: "/home/s/amx--reflow-fix".into(),
+                }),
             }],
             panes: vec![
                 session::PaneState {
                     pane: pane_id(),
                     short: ShortNumber::new(1),
                     label: Some("editor".into()),
+                    // D-M3-11's cwd, frozen with a value rather than as `None`:
+                    // `amx layout export` is the reader, and a shape nothing
+                    // ever populates is a shape nobody has read.
+                    cwd: Some("/home/s/amx".into()),
                     rows: 22,
                     cols: 39,
                     history_head: RowId::from_raw(120),
@@ -309,6 +327,7 @@ fn control_goldens_match() {
                     pane: other_pane_id(),
                     short: ShortNumber::new(2),
                     label: None,
+                    cwd: None,
                     rows: 22,
                     cols: 40,
                     history_head: RowId::from_raw(0),
@@ -352,6 +371,29 @@ fn control_goldens_match() {
                     },
                 ],
             },
+            // The row a refused or aborted upgrade leaves behind (D-M3-8). An
+            // abort is the interesting shape: the session is still serving, so
+            // this is what the caller reads after reconnecting to the *same*
+            // server it asked to leave.
+            handoff: Some(session::HandoffAttempt {
+                outcome: session::HandoffOutcome::Aborted,
+                stage: session::HandoffStage::Restore,
+                binary: "/home/s/.local/state/amx/staged/amx".into(),
+                reason: Some("the importer exited before reporting restored".into()),
+            }),
+        },
+    );
+
+    call_golden(
+        "method_session_handoff",
+        Call::SessionHandoff(session::HandoffParams {
+            binary: "/home/s/.local/state/amx/staged/amx".into(),
+            timeout_ms: Some(30_000),
+        }),
+        session::HandoffReply {
+            accepted: true,
+            reason: None,
+            seq: 57,
         },
     );
 
@@ -359,6 +401,11 @@ fn control_goldens_match() {
         "method_stream_bind",
         Call::StreamBind(stream::BindParams {
             kind: StreamKind::PaneGrid { pane: pane_id() },
+            // A re-bind after a reconnect claims what this client last saw, so
+            // the server can answer delta-only or with a `Generation` keyframe
+            // (D-M3-7). A first bind omits the field entirely, which is the
+            // shape `method_pane_history` beside this one still freezes.
+            generation: Some(amx_core::GridGeneration::from_raw(4)),
         }),
         stream::BindReply {
             stream: StreamId::new(1),

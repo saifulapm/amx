@@ -146,6 +146,15 @@ impl ClientModel {
         self.panes.get(&pane)
     }
 
+    /// Every cached grid, with the pane it belongs to.
+    ///
+    /// In no particular order: the one caller that walks them all is the
+    /// reattach deciding which generations it can present
+    /// ([`crate::app::reconnect`]), and a claim is a set, not a sequence.
+    pub fn panes(&self) -> impl Iterator<Item = (PaneId, &PaneGrid)> {
+        self.panes.iter().map(|(&pane, grid)| (pane, grid))
+    }
+
     /// Record (or clear) a pane's label, as `session.state` reports it.
     pub fn set_pane_label(&mut self, pane: PaneId, label: Option<String>) {
         match label {

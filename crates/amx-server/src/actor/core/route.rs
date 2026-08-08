@@ -59,6 +59,22 @@ impl Core {
             CoreCommand::Session(SessionCall::Report { params: _, reply }) => {
                 self.handle_report(reply);
             }
+            // Freezing a session needs a Tokio runtime — the quiesce goes to
+            // the blocking pool and every pane's capture is a mailbox round
+            // trip — so `absorb` refuses rather than half-doing it, the same
+            // shape as the `_no_spawn` handlers beside it. Reaching `absorb`
+            // directly is a test driving `Core` with no runtime under it, and
+            // a handoff is not a thing such a `Core` can do.
+            CoreCommand::Session(SessionCall::Handoff { params, reply, .. }) => {
+                let _ = reply.send(Ok(session::HandoffReply {
+                    accepted: false,
+                    reason: Some(format!(
+                        "this session is not running an actor loop, so it cannot be handed to {}",
+                        params.binary.display()
+                    )),
+                    seq: self.ctx.bus.head(),
+                }));
+            }
             CoreCommand::Workspace(WorkspaceCall::Create { params, reply }) => {
                 self.handle_workspace_create_no_spawn(params, reply);
             }
@@ -145,6 +161,18 @@ impl Core {
             // happen inside `absorb`. Same split as a create or a split.
             CoreCommand::Session(SessionCall::Capture { sidecars, reply }) => {
                 self.handle_capture_live(sidecars, reply).await;
+                false
+            }
+            // §3 step 4 in one mailbox turn: quiesce every pane, capture each
+            // one on its parser thread, and hand the frozen session to the
+            // orchestrator. `Core` is stalled for exactly that turn, which is
+            // the window the session is held still in anyway.
+            CoreCommand::Session(SessionCall::Handoff {
+                params,
+                preflight,
+                reply,
+            }) => {
+                self.handle_handoff_live(params, preflight, reply).await;
                 false
             }
             cmd => {

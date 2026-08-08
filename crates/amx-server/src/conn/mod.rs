@@ -18,10 +18,15 @@
 //! Step 2 goes through the ordinary `ping` mailbox call rather than a private
 //! back door, so the identity in the welcome is the same identity every later
 //! reply carries.
+//!
+//! The hello's [`Resume`](amx_proto::Resume) block outlives the handshake: it
+//! is connection state from step 1 onwards, and [`resume`] documents what a
+//! client asserts by sending one and what the connection owes it in return.
 
 pub mod events;
 pub mod negotiate;
 pub mod reader;
+pub mod resume;
 pub mod streams;
 pub mod writer;
 
@@ -36,6 +41,7 @@ use tokio::net::UnixStream;
 
 use crate::actor::{AgentHandle, CoreCommand, CoreHandle, SessionCall, StatusView};
 use crate::conn::reader::Reader;
+use crate::conn::resume::ConnResume;
 use crate::conn::writer::{OutboundError, WriteError};
 use crate::dispatch::Router;
 
@@ -157,9 +163,9 @@ pub async fn serve(
             identity.session,
         )?;
         negotiate::write_welcome(&mut write_half, &welcome).await?;
-        Ok::<_, ConnError>(welcome)
+        Ok::<_, ConnError>((welcome, ConnResume::from_hello(hello.resume.as_ref())))
     };
-    let welcome = tokio::select! {
+    let (welcome, resume) = tokio::select! {
         // Not an error: nothing failed, the session is closing under a client
         // that had not finished arriving. No `ClientAttached` was published, so
         // there is no detach to publish either.
@@ -173,12 +179,20 @@ pub async fn serve(
     // events (04 §2).
     let client = ClientId::new_v4();
     ctx.bus.publish(Event::ClientAttached { client });
-    tracing::debug!(%client, proto = welcome.proto, "client attached");
+    tracing::debug!(
+        %client,
+        proto = welcome.proto,
+        resuming = resume.is_resume(),
+        "client attached"
+    );
 
     let (outbound, queue) = writer::channel();
     // Stream bindings are connection state: the pumps spawned for bound grid
     // streams write into this connection's priority writer and die with it.
-    let streams = streams::ConnStreams::new(outbound.clone(), ctx.cancel.child_token());
+    // They read the resume block for the same reason the event subscription
+    // does — the generations it carries are per-pane defaults for a re-bind.
+    let streams =
+        streams::ConnStreams::new(outbound.clone(), ctx.cancel.child_token(), resume.clone());
     reader.share_caps(streams.caps());
     router.attach_streams(streams.clone());
     // So is the event subscription, and so are the long polls: cursors are
@@ -189,6 +203,7 @@ pub async fn serve(
         status,
         outbound.clone(),
         ctx.cancel.child_token(),
+        resume,
     );
     router.attach_events(events.clone());
 

@@ -69,6 +69,16 @@ impl Core {
     /// [`Core::absorb`](super::Core::absorb): stored state only, no probes.
     /// [`Core::handle_capture_live`] is what the running actor uses.
     pub(super) fn handle_capture(&mut self, sidecars: bool, reply: oneshot::Sender<Capture>) {
+        if self.handoff_fenced() {
+            // R-M3-10, the same fence as the final push and for the same
+            // reason: past the commit the snapshot on disk is the successor's.
+            // Dropping the channel is what `Persist` reads as "`Core` cannot
+            // be reached", which is a save that does not happen — the honest
+            // outcome, and the only one that cannot race the successor's own
+            // first write.
+            drop(reply);
+            return;
+        }
         let capture = Capture {
             snapshot: Box::new(self.capture_cheap()),
             panes: if sidecars {
@@ -151,6 +161,9 @@ impl Core {
                 label: ws.label().map(str::to_owned),
                 layout: ws.layout().clone(),
                 focus: ws.focus(),
+                // Pass-through, verbatim: the block is membership the CLI
+                // recorded, and nothing here reads or validates it (D-M3-10).
+                worktree: ws.worktree().cloned(),
             });
             for pane in ws.layout().panes() {
                 let state = self.state.pane(pane);
@@ -271,6 +284,12 @@ impl Core {
                 .as_ref()
                 .map(|restored| restored.report.clone())
                 .unwrap_or_default(),
+            // Read from the ledger the export orchestrator writes rather than
+            // from `Core`'s own state: the connection that asked for a handoff
+            // is disconnected by the gateway's retirement long before the
+            // attempt has an outcome, so the outcome is observed by
+            // reconnecting and asking this (D-M3-8).
+            handoff: self.handoff_attempt(),
         }));
     }
 

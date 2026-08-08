@@ -64,12 +64,32 @@ impl Bus {
     /// instead of the events it missed.
     #[must_use]
     pub fn new(replay_capacity: usize) -> Self {
+        Self::new_at(replay_capacity, 0)
+    }
+
+    /// A bus that continues the sequence space from `head`.
+    ///
+    /// The continuity half of a live upgrade (04 §6, `docs/09-m3-plan.md`
+    /// D-M3-4): the handoff manifest carries the exporter's bus head, and the
+    /// successor's bus starts there so `Welcome.seq` stays monotonic across the
+    /// process swap and a client resuming from a sequence it saw before the
+    /// swap is asking about the same events afterwards. The first event
+    /// published here is `head + 1` — gapless from the exporter's last one,
+    /// which is what makes "the swap is invisible on the bus" (§4) literally
+    /// true rather than nearly true.
+    ///
+    /// The replay buffer starts empty regardless: the events behind `head`
+    /// belonged to a process that is gone, and a subscriber asking for them
+    /// gets the ordinary [`Gap`](crate::event::Delivery::Gap) rather than
+    /// silence. `Bus::new(capacity)` is this with a head of zero.
+    #[must_use]
+    pub fn new_at(replay_capacity: usize, head: Seq) -> Self {
         let (changed_tx, _rx) = watch::channel(());
         Self {
             replay_capacity,
             shared: Arc::new(Shared {
                 state: Mutex::new(State {
-                    head: 0,
+                    head,
                     buffer: VecDeque::with_capacity(replay_capacity),
                 }),
             }),

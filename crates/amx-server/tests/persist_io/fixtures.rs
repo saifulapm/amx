@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use amx_core::agent::{AgentKind, RefKind, RefSource, SessionRef, StartSource};
-use amx_core::{Direction, Env, Layout, PaneId, ShortNumber, WorkspaceId};
+use amx_core::{Direction, Env, Layout, PaneId, ShortNumber, WorkspaceId, Worktree};
 use amx_proto::stream::history::put_row;
 use amx_server::persist::io::Syncs;
 use amx_server::persist::{AgentSnapshot, PaneSnapshot, Snapshot, VERSION, WorkspaceSnapshot};
@@ -152,6 +152,14 @@ pub fn populated() -> Snapshot {
             label: Some("build".to_owned()),
             layout,
             focus: Some(other_pane_id()),
+            // M3's additive block (D-M3-10), on the same R-M1-8 terms as the
+            // pane fields below: a workspace `amx work` created carries it, one
+            // created by hand writes exactly the bytes M1 wrote.
+            worktree: Some(Worktree {
+                repo: PathBuf::from("/home/s/amx"),
+                branch: "reflow-fix".to_owned(),
+                path: PathBuf::from("/home/s/amx--reflow-fix"),
+            }),
         }],
         panes: vec![
             PaneSnapshot {

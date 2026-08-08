@@ -26,11 +26,14 @@
 //! sessions with no mutex (04 §2, fixes W9).
 
 pub mod daemon;
+pub mod import;
 pub mod probe;
 pub mod registry;
+pub mod scaffold;
 pub mod serve;
 
 pub use daemon::{DaemonError, READY_POLL, READY_TIMEOUT, await_ready, spawn_detached};
+pub use import::{ImportFailed, ImportOptions, import};
 pub use probe::{Probe, ProbeError, clear_if_stale, probe};
 pub use registry::{DeleteError, ListError, Running, StopError, StopOutcome, runtime_root};
 pub use serve::{CORE_MAILBOX, ServeError, ServeReport, StopOn, serve};

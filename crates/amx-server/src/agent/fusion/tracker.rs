@@ -162,6 +162,44 @@ impl Tracker {
         self.apply(Input::Identified { kind })
     }
 
+    /// Continue a status a predecessor server established, across a handoff.
+    ///
+    /// R-M3-13: agent status is *carried*, not re-derived. Letting tier 2
+    /// rebuild it after a live upgrade would cost a visible
+    /// nothing-then-blocked flap on every blocked agent, and would lose the
+    /// attention queue's order — which is block time, and is not recoverable
+    /// from a screen.
+    ///
+    /// Two deliberate differences from a tracker that reached the same status
+    /// by itself. It has already **reported**: the first transition after the
+    /// swap says what it moved *from*, because the client watching it was told
+    /// the earlier value by the exporter. And no identity grace is armed: the
+    /// grace exists so a booting TUI's splash is not read as evidence, and an
+    /// inherited agent booted on somebody else's clock long ago.
+    ///
+    /// Returns the effects the hub owes the wheel — a held state still needs
+    /// its staleness deadline, or a block that ends during the swap would be
+    /// held forever.
+    pub fn adopt(
+        &mut self,
+        carried: &amx_core::agent::AgentSnapshot,
+        coverage: CoverageClass,
+        grace: Duration,
+    ) -> Vec<Effect> {
+        self.kind = carried.kind.clone();
+        self.coverage = coverage;
+        self.grace = grace;
+        self.state = carried.state;
+        self.cause = carried.cause;
+        self.session_ref = carried.session_ref.clone();
+        self.reported = true;
+        let mut effects = Vec::new();
+        if self.state.is_held() {
+            self.arm(Deadline::Staleness, STALENESS, &mut effects);
+        }
+        effects
+    }
+
     /// The conversation this pane can be resumed into, as the last hook said.
     #[must_use]
     pub const fn session_ref(&self) -> Option<&SessionRef> {

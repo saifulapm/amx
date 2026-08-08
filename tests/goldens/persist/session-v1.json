@@ -21,7 +21,12 @@
         },
         "zoomed": null
       },
-      "focus": "00000000-0000-0000-0000-0000000000a2"
+      "focus": "00000000-0000-0000-0000-0000000000a2",
+      "worktree": {
+        "repo": "/home/s/amx",
+        "branch": "reflow-fix",
+        "path": "/home/s/amx--reflow-fix"
+      }
     }
   ],
   "panes": [

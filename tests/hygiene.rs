@@ -138,26 +138,27 @@ fn crate_tests_wait_on_conditions_not_wall_clock() {
     );
 }
 
-/// The milestone guard, in its resting state: **no dispatch seam exists.**
+/// The milestone guard, back in its resting state: **no dispatch seam exists.**
 ///
 /// A row that lands before its wiring is answered through a `seam` helper
 /// rather than `METHOD_NOT_FOUND`, because telling a client a method is unknown
-/// tells it to stop offering it. The helper is therefore a milestone's tool,
-/// and this test is what keeps it one: while a milestone is being built the
-/// list of owning tasks is non-empty and every call site must name one; when
-/// the integration task closes the last row, the helper, the list and the
-/// exemption go together.
+/// tells it to stop offering it — and `amx update apply` exists to *find*
+/// `session.handoff` on the server it is upgrading. The helper is therefore a
+/// milestone's tool, and this test is what keeps it one: while a milestone is
+/// being built the list of owning tasks is non-empty and every call site must
+/// live in a file the list names; when the last row is answered, the helper,
+/// the list and this exemption go together.
 ///
-/// That has now happened twice. U01 introduced the helper with M1's two rows,
-/// U06 and U07 closed them, and both retired. V02 brought both back for M2's
-/// twelve; V12 closed four, V09 one, V11 three, V13 two, and **V17 closed
-/// `agent.explain` and `agent.next` and deleted the helper** — which is M2's
-/// exit check, stated in `dispatch/mod.rs` and enforced here.
-///
-/// So the assertion is now the empty one: no `seam(` call site, and no helper
-/// to make one from. A milestone that wants seams again writes the helper, and
-/// rewrites this test with its own owner list — the deliberate friction that
-/// stops a seam from quietly outliving the milestone that opened it.
+/// That has now happened three times. U01 introduced the helper with M1's two
+/// rows, U06 and U07 closed them. V02 brought both back for M2's twelve; V12
+/// closed four, V09 one, V11 three, V13 two, and V17 closed `agent.explain` and
+/// `agent.next`. W03 reopened it for M3 with a ledger of one —
+/// `session.handoff` in `dispatch/session.rs`, owed by **W06** — and put the
+/// helper inside the module that owns the row rather than in `dispatch/mod.rs`,
+/// so closing the row deleted the helper by rewriting one file. **W06 wired the
+/// row**, one wave earlier than the plan expected the ledger to empty, so this
+/// is back to the empty assertion: no `seam(` call site, and no helper to make
+/// one from.
 #[test]
 fn no_dispatch_seam_outlives_the_milestone_that_opened_it() {
     // `<workspace>/tests/../crates`: the shipped code, not the suites, since a
@@ -178,19 +179,20 @@ fn no_dispatch_seam_outlives_the_milestone_that_opened_it() {
         for path in rust_files(&src) {
             scanned += 1;
             let text = fs::read_to_string(&path).expect("read a source file");
+            let where_it_is = path.display().to_string().replace('\\', "/");
             for (n, line) in text.lines().enumerate() {
                 // Prose says "the seam (`Pty`, `Ipc`)"; code says `seam(…)`.
                 if !line.contains(call) || line.trim_start().starts_with("//") {
                     continue;
                 }
-                found.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                found.push(format!("{where_it_is}:{}: {}", n + 1, line.trim()));
             }
         }
     }
 
     assert!(
         found.is_empty(),
-        "M2's seam ledger is empty and the helper is deleted, so a `seam(…)` \
+        "M3's seam ledger is empty and the helper is deleted, so a `seam(…)` \
          call site can only be a row that landed without wiring. Implement it, \
          or reintroduce the helper *with* the owner list this test used to \
          carry:\n{}",
@@ -307,9 +309,20 @@ fn agent_events_have_exactly_one_publisher() {
                 // ordinary word and the client's row cache has three of its
                 // own. The type's definition carries the doctest that documents
                 // the ordering, and a doctest is prose that happens to compile
-                // rather than a publisher.
+                // rather than a publisher. `Exporter::commit` is §3 step 13 —
+                // ownership of a whole session transferring to a successor
+                // process — and shares nothing with this one but the English
+                // word.
+                //
+                // The exemption is the *receiver*, not the directory. W06 wrote
+                // it as "any file under `handoff/`", which is wider than the
+                // fact it covers: the import half of that module seeds agent
+                // statuses, and a `StatusView::commit` appearing there is
+                // exactly the second publisher this test exists to catch.
                 let server = where_it_is.contains("amx-server");
-                if server && line.contains(".commit(") && !where_it_is.ends_with("actor/agent.rs") {
+                let another_verb =
+                    where_it_is.ends_with("actor/agent.rs") || code.contains("exporter.commit(");
+                if server && line.contains(".commit(") && !another_verb {
                     committers.push(format!("{where_it_is}:{}: {code}", n + 1));
                 }
             }

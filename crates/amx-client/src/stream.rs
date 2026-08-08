@@ -71,6 +71,16 @@ impl Bindings {
         self.raw.get(&pane).copied()
     }
 
+    /// The pane a grid channel carries, if anything bound it.
+    ///
+    /// The reverse of [`Bindings::bind_grid`], for the one caller that starts
+    /// from a channel: a reattach asking which pane's cells a torn frame
+    /// belonged to ([`crate::net::Torn`]).
+    #[must_use]
+    pub fn grid_pane(&self, channel: u8) -> Option<PaneId> {
+        self.grid.get(&channel).copied()
+    }
+
     /// Whether `pane` already has a history stream bound.
     #[must_use]
     pub fn has_history(&self, pane: PaneId) -> bool {

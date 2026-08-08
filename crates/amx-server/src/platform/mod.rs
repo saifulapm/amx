@@ -13,4 +13,4 @@ pub mod pty;
 pub mod watch;
 
 pub use process::UnixProcessTree;
-pub use pty::{UnixPty, UnixPtySession};
+pub use pty::{InheritedPtySession, PtyGate, UnixPty, UnixPtySession};

@@ -153,6 +153,21 @@ impl Dispatch for StubServer {
         Ok(session::ReportReply {
             seq: self.seq,
             report: session::RestoreReport::default(),
+            handoff: None,
+        })
+    }
+
+    async fn session_handoff(
+        &mut self,
+        params: session::HandoffParams,
+    ) -> Result<session::HandoffReply, RpcError> {
+        // The stub refuses, which is a defined answer and the one shape a
+        // caller must handle: acceptance is not completion, and a refusal is
+        // the only outcome that arrives on this connection at all.
+        Ok(session::HandoffReply {
+            accepted: false,
+            reason: Some(format!("{} is not a staged amx", params.binary.display())),
+            seq: self.seq,
         })
     }
 
@@ -171,11 +186,13 @@ impl Dispatch for StubServer {
                 label: Some("dev".into()),
                 layout: Layout::with_root(pane),
                 focus: Some(pane),
+                worktree: None,
             }],
             panes: vec![session::PaneState {
                 pane,
                 short: ShortNumber::FIRST,
                 label: None,
+                cwd: None,
                 rows: 24,
                 cols: 80,
                 history_head: RowId::from_raw(3),
@@ -488,6 +505,7 @@ fn dispatch_routes_the_rest_of_the_m0_verb_surface() {
             kind: StreamKind::PaneGrid {
                 pane: PaneId::new_v4(),
             },
+            generation: None,
         }),
     ))
     .unwrap();

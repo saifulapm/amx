@@ -205,6 +205,7 @@ pub fn workspace_row(
         label: label.map(str::to_owned),
         layout,
         focus,
+        worktree: None,
     }
 }
 

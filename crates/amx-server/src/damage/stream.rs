@@ -88,10 +88,23 @@ pub struct GridStreamConfig {
     pub max_frame: u32,
     /// When a delta gives way to a keyframe.
     pub policy: KeyframePolicy,
+    /// The pane's live grid generation at bind time.
+    pub live: GridGeneration,
+    /// The generation the client says it already holds for the pane, when the
+    /// bind is a re-bind after a reconnect (`docs/09-m3-plan.md` D-M3-7).
+    ///
+    /// `None` is a fresh bind and opens with a [`KeyframeReason::First`]
+    /// keyframe, which is what every bind did before this field existed. Equal
+    /// to `live` opens with a [`KeyframeReason::Resumed`] keyframe — see that
+    /// variant for why a matching generation is not evidence the client's cells
+    /// are current. Anything else is stale in protocol terms too, and opens
+    /// with a [`KeyframeReason::Generation`] keyframe.
+    pub resume: Option<GridGeneration>,
 }
 
 impl GridStreamConfig {
-    /// A config at the default frame cap and keyframe policy.
+    /// A config at the default frame cap and keyframe policy, for a fresh
+    /// bind of a pane whose generation nobody has looked up.
     #[must_use]
     pub fn new(pane: PaneId, stream: StreamId) -> Self {
         Self {
@@ -99,6 +112,27 @@ impl GridStreamConfig {
             stream,
             max_frame: amx_proto::frame::DEFAULT_STREAM_FRAME,
             policy: KeyframePolicy::default(),
+            live: GridGeneration::FIRST,
+            resume: None,
+        }
+    }
+
+    /// The same config for a client re-binding a pane it already holds cells
+    /// for at `held`, against the pane's `live` generation.
+    #[must_use]
+    pub fn resuming(mut self, live: GridGeneration, held: Option<GridGeneration>) -> Self {
+        self.live = live;
+        self.resume = held;
+        self
+    }
+
+    /// Why this stream opens as it does: `None` when the client's generation
+    /// makes a keyframe unnecessary.
+    fn opening_keyframe(&self) -> Option<KeyframeReason> {
+        match self.resume {
+            Some(held) if held == self.live => Some(KeyframeReason::Resumed),
+            Some(_) => Some(KeyframeReason::Generation),
+            None => Some(KeyframeReason::First),
         }
     }
 }
@@ -126,7 +160,15 @@ pub struct GridStream {
 }
 
 impl GridStream {
-    /// Start a stream that owes its client a keyframe.
+    /// Start a stream that owes its client whatever its config says it owes.
+    ///
+    /// A fresh bind owes a [`First`](KeyframeReason::First) keyframe, as every
+    /// bind has since M0. A re-bind owes one too — a
+    /// [`Resumed`](KeyframeReason::Resumed) keyframe when the generation
+    /// matches and a [`Generation`](KeyframeReason::Generation) one when it
+    /// does not — because a generation says the geometry matches and says
+    /// nothing about whether the client's cells are current. 04 §6 asks for
+    /// exactly this: "keyframes for stale grids".
     ///
     /// # Errors
     ///
@@ -137,6 +179,7 @@ impl GridStream {
         let channel = config.stream.channel().ok_or(DamageError::Unbindable {
             stream: config.stream,
         })?;
+        let keyframe = config.opening_keyframe();
         Ok(Self {
             pane: config.pane,
             stream: config.stream,
@@ -145,8 +188,8 @@ impl GridStream {
             policy: config.policy,
             dirty: DirtySet::default(),
             encoder: Encoder::new(),
-            generation: GridGeneration::FIRST,
-            keyframe: Some(KeyframeReason::First),
+            generation: config.live,
+            keyframe,
             paused: false,
             seen: None,
             cursor: None,

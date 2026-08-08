@@ -23,15 +23,20 @@
 //! | sidecar unreadable or torn | skip the replay, keep the pane | degraded (pane) |
 //! | snapshot unreadable or newer than the window | start fresh | lost (session) |
 //! | a captured conversation cannot be resumed | restore a plain shell | degraded (pane) |
+//! | a workspace's git worktree is gone | keep it as a plain workspace | degraded (workspace) |
 //!
 //! Not one of those is a log line. 04 §6 requires restore loss to reach the
 //! status line and `amx session report` — "never log-only" — which is herdr's
 //! W8 in one sentence, and the reason the failure paths here end in a
 //! [`RestoreLoss`] rather than a `warn!`.
 //!
-//! The last row of that table is M2's, and it lives next door: [`super::resume`]
-//! plans each pane's conversation, claims it, and types it back into the shell
-//! this file respawns (V15, D-M2-7).
+//! The second-to-last row of that table is M2's, and it lives next door:
+//! [`super::resume`] plans each pane's conversation, claims it, and types it
+//! back into the shell this file respawns (V15, D-M2-7). The last row is M3's
+//! and lives here, in [`Core::restore_worktree`]: `amx work` is the only thing
+//! that puts a git worktree under a workspace, and a checkout somebody removed
+//! between two runs of the server is a loss the user can only see if restore
+//! says so.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -220,6 +225,11 @@ impl Core {
             return None;
         }
 
+        // Only now that the workspace is certain to come back: a membership
+        // recorded on a workspace about to be pruned would be state nobody can
+        // reach, and a report entry about it would name a loss inside a loss.
+        self.restore_worktree(saved_ws, run);
+
         // The transitions, in the order they would have happened live, now
         // that the workspace is settled: publishing a create for a workspace
         // that is about to be pruned would put a lie on the bus.
@@ -247,6 +257,43 @@ impl Core {
         // will not fit saturates rather than reporting a loss that never
         // happened.
         Some(u32::try_from(restored.len()).unwrap_or(u32::MAX))
+    }
+
+    /// Re-establish a workspace's git worktree membership, or degrade the
+    /// workspace to a plain one and say so (D-M3-10).
+    ///
+    /// Degraded, not lost, on D-M1-9's own distinction: every pane, the layout
+    /// and the label all come back, and what is missing is the *association* —
+    /// which is exactly why it may not be dropped quietly, since `amx work done`
+    /// reads it to decide what to delete.
+    ///
+    /// A directory that is there is adopted without asking git anything. Whether
+    /// it is still a *registered* worktree is the acting verb's question — `amx
+    /// work done` re-derives the path and reads the repository's own list — and
+    /// answering it here would put git on the server's startup path, which
+    /// D-M3-10 keeps in the CLI.
+    fn restore_worktree(&mut self, saved_ws: &WorkspaceSnapshot, run: &mut Restoring<'_>) {
+        let Some(worktree) = saved_ws.worktree.clone() else {
+            return;
+        };
+        if worktree.path.is_dir() {
+            // The workspace was adopted a few lines above: recording on it
+            // cannot fail.
+            let _ = self.state.set_worktree(saved_ws.id, Some(worktree));
+            return;
+        }
+        run.report.entries.push(RestoreLoss {
+            severity: RestoreSeverity::Degraded,
+            entity: RestoreEntity::Workspace,
+            workspace: Some(saved_ws.id),
+            pane: None,
+            label: saved_ws.label.clone(),
+            path: Some(worktree.path),
+            reason: format!(
+                "the git worktree for branch {} is gone; kept as a plain workspace",
+                worktree.branch
+            ),
+        });
     }
 
     /// Respawn one pane. `false` means it was pruned from the layout.

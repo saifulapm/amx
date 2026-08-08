@@ -18,7 +18,10 @@ use std::time::Duration;
 
 use amx_core::Env;
 use amx_proto::control::Method;
-use amx_proto::control::session::{RestoreEntity, RestoreLoss, RestoreReport, RestoreSeverity};
+use amx_proto::control::session::{
+    HandoffAttempt, HandoffOutcome, HandoffStage, RestoreEntity, RestoreLoss, RestoreReport,
+    RestoreSeverity,
+};
 use amx_server::session::registry::{self, StopOutcome};
 use anyhow::Context as _;
 use clap::ArgMatches;
@@ -114,8 +117,51 @@ async fn report(env: &Env, root: &ArgMatches, matches: &ArgMatches) -> anyhow::R
 
     let reply: amx_proto::control::session::ReportReply =
         serde_json::from_value(reply).context("decode the restore report")?;
+    // The handoff row first: an aborted upgrade is news about *this* server,
+    // and a reader who typed `session report` after one watched it happen.
+    // Without this branch the reply carries the row, `--json` prints it, and
+    // the human output says "no losses to report" — which is true about the
+    // restore and misleading about the question that was asked.
+    if let Some(handoff) = &reply.handoff {
+        print!("{}", format_handoff(handoff));
+    }
     print!("{}", format_report(&reply.report));
     Ok(ExitCode::SUCCESS)
+}
+
+/// Render the last handoff attempt as the two lines a human wants: what became
+/// of it and how far it got, then the binary and the reason.
+///
+/// One row, never a table: `session.report` carries the *last* attempt and only
+/// that, because a session that upgraded successfully is answered by a
+/// different server which has no attempt of its own to report (D-M3-6).
+#[must_use]
+pub fn format_handoff(handoff: &HandoffAttempt) -> String {
+    let outcome = match handoff.outcome {
+        HandoffOutcome::Refused => "refused",
+        HandoffOutcome::Aborted => "aborted",
+        HandoffOutcome::Committed => "committed",
+    };
+    let stage = match handoff.stage {
+        HandoffStage::PreFlight => "pre-flight",
+        HandoffStage::Quiesce => "quiesce",
+        HandoffStage::Manifest => "manifest",
+        HandoffStage::Descriptors => "descriptors",
+        HandoffStage::Restore => "restore",
+        HandoffStage::Retire => "retire",
+        HandoffStage::Ready => "ready",
+        HandoffStage::Commit => "commit",
+    };
+    let mut out = format!(
+        "handoff {outcome} at {stage}  {}\n",
+        handoff.binary.display()
+    );
+    if let Some(reason) = &handoff.reason {
+        out.push_str("  ");
+        out.push_str(reason);
+        out.push('\n');
+    }
+    out
 }
 
 /// What a column shows when the entry does not carry that field.
@@ -198,7 +244,10 @@ mod tests {
 
     use amx_core::{PaneId, WorkspaceId};
 
-    use super::{RestoreEntity, RestoreLoss, RestoreReport, RestoreSeverity, format_report};
+    use super::{
+        HandoffAttempt, HandoffOutcome, HandoffStage, RestoreEntity, RestoreLoss, RestoreReport,
+        RestoreSeverity, format_report,
+    };
 
     fn entry(severity: RestoreSeverity, entity: RestoreEntity) -> RestoreLoss {
         RestoreLoss {
@@ -261,5 +310,34 @@ mod tests {
     fn a_report_with_no_entries_says_so_in_one_line() {
         let out = format_report(&RestoreReport::default());
         assert_eq!(out, "no losses to report\n");
+    }
+
+    #[test]
+    fn an_aborted_handoff_says_what_it_was_and_why() {
+        let out = super::format_handoff(&HandoffAttempt {
+            outcome: HandoffOutcome::Aborted,
+            stage: HandoffStage::Quiesce,
+            binary: PathBuf::from("/tmp/staged/amx"),
+            reason: Some("the handoff peer went quiet during the token stage".to_owned()),
+        });
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2, "the row and its reason: {out}");
+        assert!(lines[0].starts_with("handoff aborted at quiesce"), "{out}");
+        assert!(lines[0].ends_with("/tmp/staged/amx"), "{out}");
+        assert!(
+            lines[1].contains("went quiet during the token stage"),
+            "{out}",
+        );
+    }
+
+    #[test]
+    fn a_committed_handoff_needs_no_reason_and_prints_none() {
+        let out = super::format_handoff(&HandoffAttempt {
+            outcome: HandoffOutcome::Committed,
+            stage: HandoffStage::Commit,
+            binary: PathBuf::from("/usr/local/bin/amx"),
+            reason: None,
+        });
+        assert_eq!(out, "handoff committed at commit  /usr/local/bin/amx\n");
     }
 }

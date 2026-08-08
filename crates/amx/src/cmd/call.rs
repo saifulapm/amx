@@ -11,13 +11,45 @@
 //! nobody is running is a mistake worth reporting, not a reason to daemonize:
 //! `amx` and `amx attach` are the two commands that mean "make this session
 //! exist".
+//!
+//! # Riding a swap (D-M3-7)
+//!
+//! A handoff retires the session socket and the successor binds it back a
+//! moment later (`docs/09-m3-plan.md` §3 step 11). Every one-shot verb that
+//! spans that window — and `amx wait` spans it by design, since a standing wait
+//! is the whole point of the verb — sees its connection end. Before M3 that was
+//! the command's answer: a broken pipe, and a wait that had been waiting for
+//! ten minutes lost. Now the failure is redialled and the call re-issued.
+//!
+//! Two rules keep the re-issue honest, and both are refusals:
+//!
+//! - **A call that was written is only re-issued when re-issuing it is asking
+//!   the same question.** `wait`, `pane.wait_output` and the pure reads are
+//!   *state* predicates (04 §2), so a transition that fired while nothing was
+//!   connected is simply true when the call is made again — which is what makes
+//!   the retry exact rather than lucky. `agent.prompt` is not: its first act is
+//!   to type into a pane, and a connection that died after the request was
+//!   written cannot say whether it typed. Re-issuing that would be a second
+//!   prompt, so it is refused with the transport error instead
+//!   ([`reissuable`]).
+//! - **A failure before the request was written is always retried**, whatever
+//!   the method: connect and `Hello` are the only two things that happened, and
+//!   neither touched the session. That is the ordinary shape of a verb typed
+//!   while a swap is in flight.
+//!
+//! The redial window is the caller's own patience, not a constant invented
+//! here: a call carrying `timeout_ms` gets exactly that long *in total*, and the
+//! re-issued call's timeout is reduced by what has already been spent, so
+//! `--timeout 2s` is two seconds whether it took one connection or four.
+//! [`REDIAL_WINDOW`] is what a call with no timeout of its own gets.
 
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
-use amx_client::net::{self, Session};
-use amx_core::Env;
+use amx_client::net::{self, NetError, Session};
+use amx_core::{Ctx, Env};
 use amx_proto::control::SPECS;
-use amx_proto::control::cli;
+use amx_proto::control::{Method, cli};
 use amx_server::session::probe::probe;
 use anyhow::Context as _;
 use clap::ArgMatches;
@@ -26,6 +58,19 @@ use serde_json::Value;
 use crate::cli::PARAMS;
 use crate::cmd::attach::client_info;
 use crate::ctx_of;
+
+/// How long a verb with no deadline of its own keeps redialling.
+///
+/// Bounded by what a swap can cost rather than by what a user will tolerate:
+/// §3's socket-free probe loop is capped at five seconds, and a verb that gave
+/// up at four would turn a slow-but-successful upgrade into an error message.
+/// Everything past that is a server that is not coming back, which is worth
+/// saying rather than waiting out.
+const REDIAL_WINDOW: Duration = Duration::from_secs(10);
+
+/// How long the first redial waits, and how long the longest does.
+const FIRST_BACKOFF: Duration = Duration::from_millis(20);
+const LONGEST_BACKOFF: Duration = Duration::from_millis(250);
 
 /// Make the control call `name`/`matches` names.
 pub async fn run(
@@ -63,7 +108,8 @@ pub async fn run(
 /// The connect-probe-negotiate preamble every one-shot verb shares, factored
 /// out so a verb that formats its own reply (`amx session report`) reaches the
 /// session exactly the way the generated ones do — including refusing to start
-/// a server, which is the rule stated above.
+/// a server, which is the rule stated above, and including the redial the
+/// module header describes.
 pub async fn one_shot(
     env: &Env,
     root: &ArgMatches,
@@ -71,6 +117,9 @@ pub async fn one_shot(
     params: Value,
 ) -> anyhow::Result<Value> {
     let ctx = ctx_of(env, root, None)?;
+    // Probed once, before anything is attempted: "there is no server" and "the
+    // server went away mid-call" are different sentences, and only the second
+    // one is worth redialling.
     anyhow::ensure!(
         probe(&ctx.socket)
             .context("probe the session socket")?
@@ -79,16 +128,185 @@ pub async fn one_shot(
         ctx.session
     );
 
+    let started = Instant::now();
+    let window = redial_window(&params);
+    let reissuable = Method::from_wire_name(wire).is_some_and(reissuable);
+    let mut attempts = 0_u32;
+    let mut last: Option<NetError> = None;
+
+    loop {
+        let left = window.saturating_sub(started.elapsed());
+        if attempts > 0 {
+            let delay = backoff(attempts - 1);
+            if delay >= left {
+                return Err(gave_up(&ctx, started.elapsed(), last));
+            }
+            tokio::time::sleep(delay).await;
+        }
+        attempts += 1;
+
+        // The timeout the *re-issued* call carries is what is left of the one
+        // the caller asked for. Without this a verb that lost three
+        // connections would wait three times as long as it was told to.
+        let attempt = attempt(&ctx, wire, &spend(&params, left)).await;
+        match attempt {
+            Ok(value) => return Ok(value),
+            Err(Attempt::Refused(err)) => {
+                return Err(anyhow::Error::new(err).context(format!("call {wire}")));
+            }
+            Err(Attempt::Fatal(err)) => return Err(err),
+            Err(Attempt::Lost { sent, err }) => {
+                if sent && !reissuable {
+                    return Err(anyhow::Error::new(err).context(format!(
+                        "the session went away while {wire} was in flight, and re-issuing it \
+                         could repeat what it already did"
+                    )));
+                }
+                if started.elapsed() >= window {
+                    return Err(gave_up(&ctx, started.elapsed(), Some(err)));
+                }
+                last = Some(err);
+            }
+        }
+    }
+}
+
+/// How one attempt ended.
+enum Attempt {
+    /// The connection failed. `sent` says whether the request had been written
+    /// when it did, which is the whole of what makes re-issuing safe or not.
+    Lost { sent: bool, err: NetError },
+    /// The server answered, and its answer was a refusal.
+    Refused(NetError),
+    /// Something no redial would change.
+    Fatal(anyhow::Error),
+}
+
+/// Connect, negotiate and make one call.
+async fn attempt(ctx: &Ctx, wire: &str, params: &Value) -> Result<Value, Attempt> {
     let stream = net::connect(&ctx.socket)
         .await
-        .context("connect to the session")?;
+        .map_err(|err| Attempt::Lost { sent: false, err })?;
+    // Nothing this connection did before the request went out can have touched
+    // the session: the handshake is a `Hello` and a `Welcome`, and a verb
+    // connection is defined as one that mutates nothing by connecting
+    // (`amx_proto::Hello::attach`).
     let (mut session, _welcome) = Session::attach(stream, client_info(), false, None)
         .await
-        .context("negotiate with the session")?;
-    session
-        .call(wire, params)
-        .await
-        .with_context(|| format!("call {wire}"))
+        .map_err(|err| {
+            if err.is_transport() {
+                Attempt::Lost { sent: false, err }
+            } else {
+                Attempt::Fatal(anyhow::Error::new(err).context("negotiate with the session"))
+            }
+        })?;
+    session.call(wire, params.clone()).await.map_err(|err| {
+        if err.is_transport() {
+            Attempt::Lost { sent: true, err }
+        } else {
+            Attempt::Refused(err)
+        }
+    })
+}
+
+/// The error a verb that ran out of patience reports.
+fn gave_up(ctx: &Ctx, after: Duration, last: Option<NetError>) -> anyhow::Error {
+    let why = last.map_or_else(
+        || "the session socket never answered".to_owned(),
+        |err| err.to_string(),
+    );
+    anyhow::anyhow!(
+        "session {} stopped answering and did not come back within {after:.1?}: {why}",
+        ctx.session
+    )
+}
+
+/// The delay after `attempts` failed redials: doubling, capped.
+fn backoff(attempts: u32) -> Duration {
+    let grown = FIRST_BACKOFF
+        .as_millis()
+        .saturating_mul(1_u128 << attempts.min(16));
+    Duration::from_millis(u64::try_from(grown).unwrap_or(u64::MAX)).min(LONGEST_BACKOFF)
+}
+
+/// How long this call may spend in total, connections included.
+///
+/// A `timeout_ms` in the params is the caller stating their patience, and it is
+/// taken literally: nothing about losing a server entitles a verb to outstay
+/// what it was told. Everything else gets [`REDIAL_WINDOW`].
+fn redial_window(params: &Value) -> Duration {
+    params
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .map_or(REDIAL_WINDOW, Duration::from_millis)
+}
+
+/// The same params with `timeout_ms` reduced to `left`, when it has one.
+fn spend(params: &Value, left: Duration) -> Value {
+    let Some(object) = params.as_object() else {
+        return params.clone();
+    };
+    if !object.contains_key("timeout_ms") {
+        return params.clone();
+    }
+    let mut spent = params.clone();
+    if let Some(slot) = spent.get_mut("timeout_ms") {
+        *slot = Value::from(u64::try_from(left.as_millis()).unwrap_or(u64::MAX));
+    }
+    spent
+}
+
+/// Whether re-issuing `method` on a fresh connection asks the same question.
+///
+/// True only for the reads and the state predicates. The list is exhaustive so
+/// a new row in the method table cannot inherit an answer nobody chose — the
+/// same discipline `mutates_layout` keeps in the client's wired loop.
+const fn reissuable(method: Method) -> bool {
+    match method {
+        // Pure reads: the reply describes the session, and asking twice
+        // describes it twice.
+        Method::Ping
+        | Method::SessionState
+        | Method::SessionReport
+        | Method::AgentReport
+        | Method::AgentExplain
+        | Method::PaneRead
+        // State predicates (04 §2). The reason the CLI needs no server-side
+        // wait persistence at all: a transition that fired while nothing was
+        // connected is true at re-subscribe time, so a wait cannot miss it.
+        | Method::Wait
+        | Method::PaneWaitOutput => true,
+        // Everything that types into a pane, spawns a process, moves the
+        // layout or hands the session over. A connection that died after the
+        // request was written cannot say whether it landed, and repeating any
+        // of these would be doing it twice.
+        Method::PaneSplit
+        | Method::PaneClose
+        | Method::PaneZoom
+        | Method::PaneSwap
+        | Method::PaneMove
+        | Method::PaneResize
+        | Method::PaneFocus
+        | Method::PaneRename
+        | Method::PaneRun
+        | Method::PaneSendText
+        | Method::PaneSendKeys
+        | Method::WorkspaceCreate
+        | Method::WorkspaceRename
+        | Method::WorkspaceKill
+        | Method::WorkspaceSwitch
+        | Method::AgentStart
+        | Method::AgentPrompt
+        | Method::AgentNext
+        | Method::SessionHandoff => false,
+        // Connection-scoped, and a redial is a different connection: a binding
+        // nothing reads and a subscription nothing consumes are not the call
+        // the caller made. `amx events` redials with its own cursor instead
+        // (`super::events`), and a bound stream belongs to the client that
+        // bound it.
+        Method::StreamBind | Method::PaneHistory | Method::ClientViewport
+        | Method::EventsSubscribe => false,
+    }
 }
 
 /// The full CLI path the user typed, and the matches of its last segment.

@@ -18,6 +18,7 @@
           "transition_seq": 51
         },
         "cols": 39,
+        "cwd": "/home/s/amx",
         "history_floor": 4,
         "history_head": 120,
         "label": "editor",
@@ -60,7 +61,12 @@
           "zoomed": null
         },
         "short": 1,
-        "workspace": "00000000-0000-0000-0000-0000000000b1"
+        "workspace": "00000000-0000-0000-0000-0000000000b1",
+        "worktree": {
+          "branch": "reflow-fix",
+          "path": "/home/s/amx--reflow-fix",
+          "repo": "/home/s/amx"
+        }
       }
     ]
   },

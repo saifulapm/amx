@@ -16,9 +16,13 @@ amx-proto = { workspace = true }
 amx-vt = { workspace = true }
 bytes = { workspace = true }
 regex = { workspace = true }
+# `net` carries `sendmsg`/`recvmsg` and `SendAncillaryBuffer`/`ScmRights`: the
+# descriptor transfer of D-M3-6, enabled here by W03 so W05 adds code and not a
+# dependency.
 rustix = { workspace = true, features = [
     "event",
     "fs",
+    "net",
     "pipe",
     "process",
     "pty",

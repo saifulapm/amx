@@ -425,6 +425,8 @@ fn shell_config(shell: &Path) -> Config {
             shell: Some(path_string(shell)),
         },
         persist: PersistConfig::default(),
+        update: amx_core::UpdateConfig::default(),
+        work: amx_core::WorkConfig::default(),
     }
 }
 
@@ -455,6 +457,7 @@ async fn new_workspace_pane(running: &Running) -> PaneId {
                 params: workspace::CreateParams {
                     label: None,
                     focus: true,
+                    worktree: None,
                 },
                 reply,
             })

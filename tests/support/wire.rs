@@ -31,6 +31,19 @@ impl Wire {
     /// Connect to the session socket.
     pub async fn connect(socket: &Path) -> Self {
         let stream = UnixStream::connect(socket).await.expect("connect");
+        Self::over(stream)
+    }
+
+    /// Speak the protocol over a stream that is already connected.
+    ///
+    /// What the bridge transport needs (D-M3-9): there, the peer is one end of
+    /// a socketpair whose twin is an `amx _bridge` child's stdin and stdout,
+    /// and there is no path to connect to. That the *same* `Wire` drives both
+    /// is the claim the bridge row exists to make — a remote session is the
+    /// ordinary protocol on a different pipe, and nothing above the stream
+    /// knows the difference.
+    #[must_use]
+    pub fn over(stream: UnixStream) -> Self {
         Self { stream, next_id: 1 }
     }
 
