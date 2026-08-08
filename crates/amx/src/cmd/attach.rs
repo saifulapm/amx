@@ -49,9 +49,11 @@ impl PaneRef {
         if let Ok(pane) = target.parse::<PaneId>() {
             return Ok(Self::Id(pane));
         }
-        ShortNumber::parse(target).map(Self::Short).with_context(|| {
-            format!("--pane wants a pane id or a short number, which {target:?} is not")
-        })
+        ShortNumber::parse(target)
+            .map(Self::Short)
+            .with_context(|| {
+                format!("--pane wants a pane id or a short number, which {target:?} is not")
+            })
     }
 }
 

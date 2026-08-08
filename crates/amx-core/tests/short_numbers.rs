@@ -127,7 +127,11 @@ fn adoption_refuses_to_let_two_keys_hold_one_number() {
     shorts.adopt(a, ShortNumber::new(3));
     let second = shorts.adopt(b, ShortNumber::new(3));
 
-    assert_eq!(second, ShortNumber::FIRST, "the duplicate falls back to free");
+    assert_eq!(
+        second,
+        ShortNumber::FIRST,
+        "the duplicate falls back to free"
+    );
     assert_eq!(shorts.resolve(ShortNumber::new(3)), Some(a));
     assert_eq!(shorts.resolve(ShortNumber::FIRST), Some(b));
 

@@ -224,7 +224,10 @@ async fn a_closed_pane_gives_its_number_back_to_the_next_split() {
         serde_json::from_value(result_of(&closed).clone()).expect("decode pane.close");
 
     let (fourth, fourth_short) = split(&mut client, root).await;
-    assert_ne!(fourth, second, "a fresh pane, with the departed pane's number");
+    assert_ne!(
+        fourth, second,
+        "a fresh pane, with the departed pane's number"
+    );
     assert_eq!(
         fourth_short, 2,
         "the closed pane's number is the lowest free one, so the next split takes it",
@@ -260,7 +263,11 @@ async fn a_killed_workspace_gives_back_its_number_and_its_panes_numbers() {
         .await;
     let killed: workspace_proto::KillReply =
         serde_json::from_value(result_of(&killed).clone()).expect("decode workspace.kill");
-    assert_eq!(killed.panes.len(), 2, "the workspace took both panes with it");
+    assert_eq!(
+        killed.panes.len(),
+        2,
+        "the workspace took both panes with it"
+    );
 
     let created = client.request(21, "workspace.create", json!({})).await;
     let created: workspace_proto::CreateReply =

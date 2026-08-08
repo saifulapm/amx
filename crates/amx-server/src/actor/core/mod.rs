@@ -31,6 +31,7 @@
 //! yesterday's session back, and [`resume`] for the half of that rebuild which
 //! puts each agent's *conversation* back (V15, D-M2-7).
 
+mod agents;
 mod handoff;
 mod import;
 mod pane;
