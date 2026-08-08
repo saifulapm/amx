@@ -187,13 +187,14 @@ const RSS_GROWTH_BOUND: u64 = 64 * 1024 * 1024;
 /// these suites run under `cargo test --workspace` and a flood given a sixth of
 /// a core delivers a sixth of the bytes, so any fixed number of megabytes is a
 /// throughput threshold wearing a memory bound's clothes. It failed as one —
-/// `docs/notes/m3-shutdown-wedge.md` records 7 923 383 bytes against an 8 MiB
+/// `docs/notes/m3-shutdown-wedge.md` records 7923383 bytes against an 8 MiB
 /// line on every round of a 35-minute field run under eight-way load.
 ///
-/// The floor is what "the flood is flowing at all" costs: two megabytes a
-/// second was the *loaded* rate in that run, and this is an order of magnitude
-/// under it. A slower machine observes for longer and proves the same pair of
-/// facts; only a flood that has stopped fails.
+/// The floor is what "the flood is flowing at all" costs. That same run put the
+/// *loaded* rate at about 2.6 MB/s (its 7923383 bytes over a three-second
+/// window), and this is twenty times under it. A slower machine observes for
+/// longer and proves the same pair of facts; only a flood that has stopped
+/// fails.
 const FLOOD_RATE: u64 = 128 * 1024;
 
 /// How long the memory bound is watched before the rate is judged.

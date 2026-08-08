@@ -332,8 +332,12 @@ impl Pace {
     /// The catch-up phase, and the only honest way to end: a reader still
     /// waiting on a permit when [`Wire::finish`] closes the pipe would leave
     /// [`Frames::finish_into`] waiting on frames nobody is going to read.
+    ///
+    /// A quarter of the cap and not all of it: `add_permits` panics on
+    /// overflow, and leaving room for a second call is cheaper than a harness
+    /// that explodes when somebody opens the tap twice.
     pub fn release(&self) {
-        self.permits.add_permits(Semaphore::MAX_PERMITS / 2);
+        self.permits.add_permits(Semaphore::MAX_PERMITS / 4);
     }
 }
 
