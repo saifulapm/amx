@@ -534,3 +534,105 @@ key is refused with a diagnostic rather than silently losing. A table that could
 remove the escape would let a config file lock a program out of its own way
 out — and the phone profile D14 exists for is exactly the case where the prefix
 has been moved to an unusual key that the user still needs to be able to send.
+---
+## X06 — The hub's new facts
+
+### Edits outside the entry's file list
+
+**`crates/amx-server/src/session/import.rs`, one closure.** `InheritedPane`
+gained `label` and `workspace_label`, so the one place that builds one had to
+fill them. They are read off `manifest.state`, which is the same snapshot the
+panes were adopted from and already carries every label
+(`amx-server/src/persist/mod.rs:177,215`). The file is in no wave-2 task's list,
+so this is a declared sequential edit rather than a contested one — the shape
+X02 used in the other direction when it planted `None`s in this task's files.
+
+It could not be avoided and it is load-bearing, not cosmetic. D-M4-6 names
+`AgentHub::inherit`/`announce_inherited` as a seeding path because an import
+**publishes nothing on the bus by design** ("the swap is invisible", 09 §4), so
+a names mirror fed only by `PaneRenamed` leaves every pane that crossed an
+upgrade anonymous — R-M4-4's warning, and the reason `an_inherited_pane_keeps_
+its_name_and_the_exporters_instant` exists.
+
+### Divergences from §5
+
+**`AgentCommand::PaneStarted` is *not* a seeding path, and does not need to
+be.** D-M4-6 names it alongside `inherit`. Read against the tree it is
+unnecessary, and adding a label to it would have meant editing
+`actor/agent.rs` and `actor/core/pane.rs`, neither of which X06 owns. Every
+live path publishes the rename the hub folds: `workspace.create` publishes
+`WorkspaceRenamed` for a label given at creation
+(`actor/core/workspace.rs:80`), the two rename verbs publish one each
+(`actor/core/pane.rs:331`, `workspace.rs:201`), and — the case R-M4-4 actually
+warns about — **a cold restore replays both** for every label it brings back
+(`actor/core/restore.rs:284,295`), after the hub's subscription is taken. So
+`PaneStarted` would have carried a label the hub already has. Checked, not
+assumed.
+
+The residual bound, written where the mirror lives: a rename lost inside a bus
+`Gap` leaves a stale label until the next one. The identity block's fields are
+optional for this class of reason, and the alternative — asking `Core` — is the
+sibling request D-M4-6 forbids.
+
+**`since` on a cold restore is absent, and the R-M4-4 fallback is declined.**
+R-M4-4 offers "since this server started tracking it" as the honest fallback.
+It is refused, because the persist snapshot deliberately carries no status at
+all ("never a status, which dies with the process it described",
+`amx-server/src/persist/mod.rs:94`), so a restored pane has no state to date
+and its first transition in the new process is a real observation. An age
+counted from a restart would look measured and would not be. A handoff is the
+opposite case and is exact: `AgentSnapshot` crosses whole on the manifest, so
+`adopt` takes the exporter's instant verbatim and the adoption itself is not a
+transition. The reasoning is in `Tracked::since`'s own doc comment.
+
+**A fifth bus arm, not two.** §5 says "the two new bus arms". There are three:
+`PaneRenamed`, `WorkspaceRenamed` and `WorkspaceClosed` — the third because a
+closed workspace can never be named again and its entry would outlive every
+pane that could quote it.
+
+**Two module splits inside the entry's files.** X06's additions pushed
+`actor/agent_hub/mod.rs` from 489 to 522 lines, so `names.rs` (the mirror and
+the identity block) and `probe.rs` (the counters and the report) moved out;
+`mod.rs` is 437. The generic `AgentProbe::bump(&Counters.field)` became five
+named methods so the counters could stay private to their own module. The hub
+suite split the same way — `agent_hub/facts.rs` for what the events carry,
+`agent_hub/stamps.rs` for what a view read sees — and the fusion suite gained
+`fusion/reason.rs`. No behaviour changed in any of it.
+
+**X02's `agent/fusion/tracker.rs` split had already landed; the other five
+had too.** Nothing to report except that R-M4-5's list is fully paid: this task
+found all six splits in place before it started.
+
+### For X00
+
+**DR-10's first half is closed.** `agent/fusion`'s `Effect` is now
+`Directive`. `amx_core::Effect` keeps the name 04 §2 gives it, and
+`amx-vt::callbacks`' shadow is X09's by file ownership. The row cannot be
+struck until X09 lands its half and the client's two booleans go.
+
+**The field ledger's X06 rows are written but not yet read.**
+`AgentSnapshot::reason` and `::since` are filled by the hub and carried on both
+read models; the attention events' identity block is filled from the names
+mirror. Every reader named in `tests/hygiene/ledgers.rs` (X10, X11, X14, X16)
+is still owed, so the three rows stay.
+
+### Notes for the tasks that read these fields
+
+**`reason` is a `String` and its values are the shipped detector names.** For a
+screen-owned state it is the winning manifest rule's `name` verbatim —
+`permission_dialog`, `prompt_box_idle`, `footer_interrupt_hint_working`. For a
+hook-asserted entry it is `HookEvent::as_str()` — `PermissionRequest`,
+`UserPromptSubmit`. It is absent for a tier-3 `busy`/`quiet`, for a staleness
+exit, and for a pane whose process ended. A renderer must not assume it is
+present and must not try to translate it.
+
+**`reason` and `since` describe one edge and move together.** A re-assertion of
+the state a pane already holds corroborates it without moving it, so neither
+changes — which is what lets a status line advance `4m` locally between
+refreshes instead of watching it restart every time a dialog re-announces
+itself.
+
+**The identity block on `attention_dequeued` describes the pane's *new*
+state.** `reason` there names what ended the block, not what caused it, and
+`since` is the new state's entry edge. A notifier matching a clear to its
+notification should key on `pane`.
