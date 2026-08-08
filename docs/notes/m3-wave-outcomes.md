@@ -666,3 +666,108 @@ budget, so the anticipated `conn/events.rs` split did not happen and should not
 be forced. `tests/resync.rs` did pass 500 and *was* split: the frame-level
 helpers moved to `tests/resync/harness.rs` (the `flow_control` `#[path]`
 convention), leaving 358 and 218.
+
+---
+
+## W11 — SSH remote
+
+**W03's tripwire is discharged, not deleted.**
+`the_bridge_transport_row_is_planted_and_fails_when_the_splice_arrives` went red
+the moment `_bridge` stopped refusing, and
+`every_skew_sample_row_answers_over_the_bridge_transport` replaced it in the
+same file: `for &method in Method::ALL` over the same `sample_params` table,
+against a `Wire` on the child's stdio. It is **current-vs-current**, the M0
+harness's honest label inherited whole — only protocol version 1 exists, so what
+it proves is that the bridge negotiates and answers, not that it has been tested
+across versions. A second version lands as a second entry in `ROWS` and nothing
+else changes.
+
+**W10's rig is lifted, and `support/mod.rs` is split four ways.**
+`crates/amx/tests/support/mod.rs` went 509 → 44: it is now the module list and
+the re-exports, over `env.rs` (roots, running, waiting), `tty.rs` (the
+pseudoterminal and a child on it), `procs.rs` (the process table), and `rig.rs`
+— W10's ~140 lines, verbatim in behavior, for a binary at an **arbitrary path**.
+`update.rs` went 557 → 426 and keeps only the manifest fixture, as a
+`Manifests` trait on the lifted `Rig`. **W12 can use it**: `Rig::plant` puts a
+copy of the binary under test anywhere under the rig's root, `Rig::command`
+hands back a `Command` still open for extra variables, and `Rig::run_on_tty`
+runs it on a real terminal. `Env::spawn_on_tty` now takes `&mut Command` for
+that same reason; the only caller signature that changed.
+
+**`--remote` is not in the clap tree, and that is a hand-off.** It selects
+*which machine parses the rest of the command line*, so it has to be taken off
+`argv` before a parse happens — `remote::split` does that in `main.rs`, and
+`cli.rs` stays the single-owner file the wave plan needs it to be. The cost is
+real and unpaid: **`amx --help` does not mention `--remote`.** One `Arg` with
+`.global(true)` on the root command would document it, and because `main` strips
+the flag before clap ever sees it the argument would be purely documentary.
+Hand-off to W14 or whoever next owns `cli.rs`, exactly as W10 handed over
+`update check --channel`.
+
+**`--remote` attaches; it does not carry verbs.** `amx --remote host session
+list` refuses by name rather than running on the local machine. A remote
+one-shot would mean re-implementing `cmd::call::one_shot` against a stream
+instead of a socket path — `call.rs` is W09's file this wave, and the
+duplication would be a second copy of the connect-negotiate-call preamble. Same
+for `attach --pane`, whose chrome-free client also reaches its session by path.
+Both refuse with the reason; neither is hard to add later.
+
+**Seeding does not retry the attach.** After a successful install it prints the
+path and says to run the command again, where herdr re-probes and continues. The
+retry is a few lines, but the second attempt has to distinguish "installed and
+now works" from "installed and still cannot exec", and the honest message for
+the second case is the same message as the first. Recorded as a deliberate
+simplification rather than an oversight.
+
+**Three things about ssh and sshd were measured on the build machine, not
+assumed.** All three shape code that would otherwise have been written from
+memory:
+
+- ssh(1) joins the command arguments with spaces into **one string for the
+  remote login shell**, so quoting is amx's job. A `SessionName` is validated as
+  a path component and may hold spaces, quotes and `$`, so every argument amx
+  sends is single-quoted (`remote::ssh::sq`, with the `'\''` construction that
+  works in every `sh`).
+- **ssh ignores `$HOME` when it looks for `~/.ssh/config`** — it reads the
+  passwd entry's home. So `tests/remote_ssh.rs` cannot hand ssh a port and a key
+  by redirecting `HOME`; it puts a two-line `ssh` on `PATH` that adds
+  `-F <config>` and `exec`s the real binary with amx's argv untouched. The
+  connection, the absent pty, the login shell and the framed bytes are all real.
+- **sshd takes the first value it obtains for a keyword**, so five `SetEnv`
+  directives set one variable and silently drop four. The first version of that
+  test config set `PATH` and lost all three XDG roots, and the "remote" session
+  ran in the developer's own runtime directory. One `SetEnv` line, all variables
+  on it. `HOME` and `SHELL` cannot be set that way at all — sshd assigns both
+  from the passwd entry afterwards — which is why the pane's shell is pinned
+  through `[terminal] shell` in the config root sshd *does* carry across.
+
+**The remote command looks in two places, not one.** `PATH`, and then
+`~/.local/bin/amx`. The second is not redundancy: it is the directory seeding
+installs into, and a non-interactive ssh `PATH` usually does not contain it — so
+without the fallback a seeded host would still fail on the next attach. herdr
+hits the same wall and warns about it; amx looks there instead. Anything else
+prints amx's own marker (`remote::ssh::NO_REMOTE_AMX`) and exits 127, so
+"the far side has no amx" is detected by a string this crate chose rather than
+by pattern-matching whatever the login shell says about a missing command.
+
+**The loopback-sshd job ran here, not only in CI.** `AMX_TEST_SSHD=1 cargo test
+-p amx-rig --test remote_ssh` is green on this machine: a real sshd on
+127.0.0.1, a real ssh connection, a real remote server, a pane that renders its
+prompt, a typed line whose output comes back, and a detach that leaves the
+remote session running. `scripts/ci.sh` sets the variable on Linux when
+`/usr/sbin/sshd` exists and prints the skip reason otherwise; the workflow
+installs `openssh-server` on the Linux runner only (R-M3-6).
+
+**Two files outside the §5 scope list, both forced.** `crates/amx/src/lib.rs`
+gains `pub mod remote;` — **W12 will need the same one line for `git.rs`**, so
+that is one trivial conflict declared in advance. `tests/support/wire.rs` gains
+`Wire::over(UnixStream)`, without which the skew row has no way to speak the
+protocol over a stream that was never connected to a path; `tests/support/env.rs`
+gains `Env::home()` for the same kind of reason. No wave-4 peer owns any of them.
+
+**Budget watch.** `tests/skew.rs` went 444 → 516 and is over the soft budget:
+the bridge row and its socketpair helper are what grew it, and it was **not**
+split, because splitting would separate the conformance table from the rows that
+run it and the plan names this file as the row's home. `tests/support/env.rs`
+(the rig's) is 561, over before this task and one method more now. No `src/`
+file this task touched is over: the largest is `remote/ssh.rs` at 321.

@@ -39,6 +39,16 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get install -y --no-install-recommends libclang-dev
 
+      # The SSH bridge's tier-2 suite starts its own sshd on 127.0.0.1 with a
+      # throwaway key, so the daemon has to exist — the service does not, and is
+      # not started here. Linux only: darwin's sshd lives under launchd and
+      # Remote Login, not in a temp directory a test can start it into, so the
+      # transport tier is Linux-gated by design (R-M3-6) and
+      # `tests/remote_ssh.rs` says so where it skips.
+      - name: Install openssh-server
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y --no-install-recommends openssh-server
+
       # The pinned Zig that builds the vendored terminal core. The vendoring
       # script downloads and checksums exactly 0.15.2 — the same path a
       # contributor takes — so CI cannot drift onto another version.

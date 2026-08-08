@@ -386,45 +386,117 @@ async fn a_peer_with_no_common_version_is_refused_without_a_welcome() {
 ///
 /// A remote session is the same protocol over `ssh host exec amx _bridge`
 /// stdio, so "the skew window is honored remotely" is a claim about *this*
-/// table answering over *that* transport — and W11's acceptance spells it
-/// `every_skew_sample_row_answers_over_the_bridge_transport`. The row is
-/// planted here, with the harness beside it, so W11 finds the law rather than
-/// discovering it.
+/// table answering over *that* transport. W03 planted the row as a tripwire
+/// against the stub's refusal; W11 wrote the splice, which turned the tripwire
+/// red, and this is the finished row it demanded.
 ///
-/// What it can assert today is the honest half: `amx _bridge` is routed, it is
-/// the binary's own verb, and it says plainly that it is not built. That is a
-/// tripwire rather than a skip — the day W11 writes the splice this assertion
-/// stops holding, and finishing the row is the only way past it. The loop to
-/// write then is the one two tests above: `for &method in Method::ALL`, over a
-/// `Wire` on the child's stdio instead of on the socket.
+/// Only the socketpair stands where ssh would. That is the whole substitution:
+/// ssh moves stdio between two machines, a socketpair moves it between two
+/// processes, and every byte either side of it is amx's. What runs over it is
+/// the same `for &method in Method::ALL` loop the socket rows run, against the
+/// same [`sample_params`] table, so a new method joins this transport's
+/// coverage by being added to the table once.
+///
+/// **Current-vs-current**, honestly labeled: only protocol version 1 exists, so
+/// this proves the bridge negotiates and answers, not that it has been tested
+/// across versions. It inherits that limit from the M0 harness above, and a
+/// second version lands here as a second row in [`ROWS`] and nothing else.
 #[tokio::test]
-async fn the_bridge_transport_row_is_planted_and_fails_when_the_splice_arrives() {
+async fn every_skew_sample_row_answers_over_the_bridge_transport() {
     let env = Env::new("skew-bridge");
     let server = env.server();
 
-    // Spawned exactly as ssh would run it — `amx _bridge --session <name>`,
-    // stdio and nothing else — so what this exercises is the real argv W11
-    // inherits, not a stand-in for it.
-    let bridged = env.run(&["_bridge"]);
+    for row in ROWS {
+        // Spawned exactly as ssh would run it — `amx _bridge`, stdio and
+        // nothing else — so what this exercises is the real argv the far side
+        // of an `ssh host exec amx _bridge` receives.
+        let (mut child, local) = bridge_child(&env);
+        let mut wire = Wire::over(local);
 
-    assert_ne!(
-        bridged.code,
-        Some(0),
-        "an unwired `_bridge` must fail rather than exit zero having spliced \
-         nothing: {bridged:?}"
-    );
-    assert!(
-        bridged.stderr.contains("W11"),
-        "the refusal names the task that owes the splice, so this row's own \
-         successor is findable from a failing run: {bridged:?}"
-    );
+        let welcome = wire.hello(row.client).await;
+        assert_eq!(
+            welcome.proto, row.expect,
+            "{}: the bridge negotiated the wrong version",
+            row.name
+        );
 
-    // Nothing about the probe disturbed the session it was pointed at.
+        for &method in Method::ALL {
+            let reply = wire
+                .request(method.wire_name(), sample_params(method))
+                .await;
+            if let amx_proto::RpcOutcome::Error(err) = &reply.outcome {
+                assert_ne!(
+                    err.code,
+                    RpcError::METHOD_NOT_FOUND,
+                    "{}: the server disowned its own method {} over the bridge",
+                    row.name,
+                    method.wire_name()
+                );
+            }
+        }
+
+        // A method from the future, refused softly on a connection that stays
+        // up: a splice that dropped bytes or desynced the framing would show
+        // here as a dead connection rather than as an error code.
+        let future = wire.request("pane.teleport", json!({})).await;
+        assert_eq!(
+            error_of(&future).code,
+            RpcError::METHOD_NOT_FOUND,
+            "{}: an unknown method must be METHOD_NOT_FOUND over the bridge",
+            row.name
+        );
+
+        let alive = wire.request("ping", json!({})).await;
+        assert!(
+            result_of(&alive)["seq"].is_u64(),
+            "{}: the bridged connection should still answer",
+            row.name
+        );
+
+        // The splice ends with its client, and it ends cleanly.
+        drop(wire);
+        rig::wait_until("the bridge child to exit", || {
+            child.try_wait().expect("try_wait").is_some()
+        });
+        let status = child.wait().expect("reap the bridge");
+        assert!(
+            status.success(),
+            "{}: the splice exited {status:?}",
+            row.name
+        );
+    }
+
+    // And the session every row was pointed at is the session it was.
     let mut wire = Wire::connect(&env.socket()).await;
     let welcome = wire.hello((PROTO_MIN, PROTO_MAX)).await;
     assert_eq!(welcome.proto, PROTO_MAX);
 
     drop(server);
+}
+
+/// Spawn `amx _bridge` with a socketpair as its stdin and stdout.
+///
+/// The one place ssh is replaced, and it is replaced by the two descriptors ssh
+/// would have handed the same process.
+fn bridge_child(env: &Env) -> (std::process::Child, tokio::net::UnixStream) {
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream as StdUnixStream;
+    use std::process::Stdio;
+
+    let (mine, theirs) = StdUnixStream::pair().expect("socketpair");
+    let stdin = OwnedFd::from(theirs.try_clone().expect("dup the bridge socket"));
+    let stdout = OwnedFd::from(theirs);
+    let child = env
+        .command()
+        .arg("_bridge")
+        .stdin(Stdio::from(stdin))
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn amx _bridge");
+    mine.set_nonblocking(true).expect("non-blocking");
+    let local = tokio::net::UnixStream::from_std(mine).expect("adopt the bridge socket");
+    (child, local)
 }
 
 #[test]
