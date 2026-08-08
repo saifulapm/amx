@@ -1042,6 +1042,35 @@ M1's `serve.rs`; W07 mirrors it in a new file; W12 fills the worktree field
 W03 planted; W10's handoff glue lands disabled until W06 merges and W14 turns
 it on. All sequential, never concurrent.
 
+### What the waves actually did
+
+Written after the fact; [`docs/notes/m3-wave-outcomes.md`](notes/m3-wave-outcomes.md)
+is the record, and only what changes how this plan should be read is repeated
+here.
+
+- **The wave order held.** Every task merged in its wave, no wave-mate collided
+  with another over a file, and the two gates the plan named worked: W01
+  unblocked W06 with a diagnosis and a watchdog, and W03's contracts meant no
+  wave-2 or wave-3 task discovered a shared surface mid-flight. The one
+  resolution the plan wrote in advance — W03 owning `actor/mod.rs` whole while
+  W02 hands it a comment — is the shape three later hand-offs followed.
+- **Two waves did more than their scope.** W05 split `protocol.rs` into a
+  directory and established that a submodule split needs no parent edit at all,
+  which is what made W14's four later splits free. W06 answered M3's one seam
+  row two waves before the ledger expected it.
+- **Every wave that could not decide something wrote down what deciding it would
+  cost, and W14 decided all eight.** That is the mechanism the plan was betting
+  on and it is the one worth keeping: a hand-off with a named fix, a named file
+  and a named consequence is a decision deferred, not a bug filed.
+- **The integration wave found three bugs and retracted one decision.** All
+  three were green in-process and broken over a socket, and none needed an
+  unusual input: an upgrade of a *named* session bound the wrong socket, a
+  `SIGTERM` during the assembly killed the server outright, and a reconnected
+  client could show a stale screen forever. The retraction is W08's delta-only
+  resume open (R-M3-14). M2's V17 lesson was that a suite one process away
+  catches what an in-process suite cannot; M3's is that the second process has
+  to be a *different* one.
+
 ---
 
 ## 7. The M3 exit test
@@ -1080,14 +1109,32 @@ server + real client on a real tty):
    bridge-as-child test stands in.
 
 **By hand, before the milestone closes** (recorded in
-`docs/notes/m3-live-smoke.md` with date, versions, checklist — the M2 smoke's
-format): five real Claude Code sessions mid-conversation; a real staged
-binary (a `--version`-bumped build of the same tree); `amx update apply`;
-every conversation scrolls back past the swap and answers its
-remembered-word probe; an interrupted upgrade (kill the importer mid-restore)
-aborts back to a working session; one SSH attach from a genuinely different
-machine. Green CI plus this checklist is the exit — green CI alone is not,
-three times proven.
+[`docs/notes/m3-live-smoke.md`](notes/m3-live-smoke.md) with date, versions,
+checklist — the M2 smoke's format): five real Claude Code sessions
+mid-conversation; a real staged binary (a `--version`-bumped build of the same
+tree); `amx update apply`; every conversation scrolls back past the swap and
+answers its remembered-word probe; an interrupted upgrade (kill the importer
+mid-restore) aborts back to a working session; one SSH attach from a genuinely
+different machine. Green CI plus this checklist is the exit — green CI alone is
+not, four times proven.
+
+**It ran, and three of its clauses need reading differently afterwards.**
+
+1. **"Kill the importer mid-restore" is not something a person can aim at.** The
+   frozen window is 24 ms wide for six panes, measured. Kills at 50 ms, 300 ms,
+   600 ms and 1200 ms all landed *after* the commit, which is not an interrupted
+   upgrade — it is killing the server that now owns the session. The by-hand
+   half of this step is a **pre-commit** interruption, which does abort back to a
+   working session with real agents still answering; the per-stage matrix is
+   W05's and W06's, and step 5 above is the two stages a *binary* can fail at.
+2. **"No visible screen content lost" is two claims.** A pane whose program does
+   not repaint comes back byte-identical, rows and row ids alike. A pane running
+   Claude Code comes back with the *agent's* UI redrawn, because it redraws on a
+   size announcement and the commit resizes every pane. Nothing is lost; the
+   criterion has to name which half is amx's.
+3. **The SSH clause needs a second machine and did not get one.** The loopback
+   tier passed and is not a substitute. This is the milestone's one unverified
+   exit clause.
 
 ---
 
@@ -1101,6 +1148,18 @@ drain. If W01 lands outcome (b) or (c), the watchdog is load-bearing and the
 live smoke gains the old-server post-mortem step. The milestone's other
 tracks are structurally independent of the drain and do not wait.
 
+*Outcome.* W01 landed **(a) and (b) at once**: one mechanism found, reproduced
+on demand and fixed — a connection's handshake observed no cancellation token,
+so one silent peer held the drain open forever — and a second, rarer path left
+open and narrowed to two `await`s in `conn/`. W06 kept the bounded post-commit
+drain accordingly. Two further things about that drain came out of W14 rather
+than W01 and are not the same bug: a `SIGTERM` arriving during the *assembly*
+killed the server outright, because tokio installs a signal handler when
+`signal()` is called rather than when the task calling it is first polled, and
+the install ran after the bind. Both orderings moved; `tests/seams/shutdown.rs`
+has the regression. The exporter exited **0** on every observed upgrade,
+including the live smoke's.
+
 **R-M3-2 — Grid-synthesis fidelity is the manifest's real risk.** Wide
 characters, spacer cells, wrapped rows, grapheme clustering (mode 2027, the
 R7 patch history) all have to survive synthesize→replay. W04's property tests
@@ -1109,6 +1168,19 @@ accepted precedent, restated in the module docs rather than discovered by a
 user. If property testing finds a cell class that cannot round-trip through
 the C API, that is a finding for this section, not a silent papering-over.
 
+*Found.* **Two cell classes cannot round-trip**, both by property test rather
+than by reasoning, both named in `handoff::grid`'s module docs and in the
+acceptance test's comparison: a blank column carrying SGR *attributes* crosses
+as a space carrying the same attributes (the library offers no sequence that
+underlines a column without writing one), and a spacer head is re-derived from
+the wrapping print rather than carried. Three more bounds are stated there for
+the same reason: a pane on the alternate screen crosses with a blank primary,
+a scrolling region does not cross at all, and a palette-indexed underline colour
+was already flattened before this module sees it. W14 adds a live one that is
+not a fidelity bound but reads like one: **a program that repaints on resize
+will repaint**, because the successor's commit resizes every pane it takes over
+— measured against Claude Code, whose whole UI comes back redrawn.
+
 **R-M3-3 — Post-handoff children report no exit code.** `try_wait` is a
 parent's call; an inherited child's death is detected by pty EOF and reported
 `ChildExit::Unknown` (D-M3-12). `wait --until exited` and pane teardown are
@@ -1116,7 +1188,13 @@ unaffected; only the numeric status in `pane.exited` degrades, and nothing in
 the tree branches on it today. Recorded so a future consumer of exit codes
 knows the constraint predates it.
 
-**R-M3-4 — There is no update channel to point at yet.** D-M3-8 ships
+**R-M3-4 — There is no update channel to point at yet, and there still is
+not.** W10 checked the default URL against the real network once — 404, reported
+plainly, exit 0 — and W14's live smoke did the whole of `amx update apply`
+against a `file://` manifest offering a real 0.1.1 built from this tree. So the
+machinery is proven end to end and the *hosting* is exactly as absent as this
+risk says. Nothing in the tree implies otherwise; `update check` against the
+default channel still says so in as many words. D-M3-8 ships
 machinery and format with a config-overridable URL defaulting to this
 repository's GitHub releases; no release pipeline, no prebuilt binaries, no
 preview channel exist, and `update check` says so plainly until they do.
@@ -1148,18 +1226,33 @@ retire, `conn/events.rs` 302 + cursor plumbing. W03 front-loads the two
 overs; W09 splits `app/reconnect.rs` out of `wired.rs` on arrival. The
 R-M1-3 rule stands: no split waits for the hard limit.
 
+*Outcome.* Fifteen splits across the milestone, every one on arrival. Three
+predictions were right (`persist/actor.rs`, `actor/mod.rs`, `gateway.rs`), one
+was right about the file and wrong about the seam (`wired.rs` needed
+`app/binds.rs` as well as `app/reconnect.rs`), and one was wrong
+(`conn/events.rs` never crossed). The rule that actually did the work is W05's
+discovery rather than anything in this section: **a file becoming a directory
+needs no parent edit**, so the "I cannot split this, it is not my file" that
+blocked W04 costs nothing, and W14 split four files on that basis. The `src/`
+files left over the soft budget and under the hard one are named in the wave
+outcomes with the reason each was not split.
+
 **R-M3-8 — One new dependency: `sha2`.** For update verification (D-M3-8).
 herdr made the same call; the alternatives — hand-rolled SHA-256 or parsing
 `sha256sum`/`shasum` output across platforms — are worse on correctness
 grounds. HTTP stays out of the tree via the curl subprocess, also herdr's
 documented choice. The justification line lands in the commit that adds it.
 
-**R-M3-9 — 04 §2's "one publisher" sentence needs a doc PR.** D-M3-2's fix
-implements one publisher *per event kind* (pane actor for pane-thread facts,
-Core for lifecycle), which is what keeps damage's never-drops property. The
-stale absolutist wording survives in `core/report.rs:5-6` and reads into
-04 §2; W02 fixes the comments and the doc PR carries the architecture
-wording. Raised here per HACKING.md rather than silently rewritten.
+**R-M3-9 — 04 §2's "one publisher" sentence needs a doc PR — withdrawn.**
+D-M3-2's fix implements one publisher *per event kind* (pane actor for
+pane-thread facts, Core for lifecycle), which is what keeps damage's never-drops
+property. W02 went to make the doc change and found there was nothing to change:
+04 §2 has no "one publisher" sentence. What it says about the bus is that "every
+state transition … is one typed event with a monotonic sequence number" — a
+claim about the *event*, which the per-kind rule satisfies exactly and which the
+duplicate publishing was the thing breaking. The absolutist reading existed only
+in code comments, and that is where it was fixed. `docs/04-architecture.md` was
+not touched and needs no change.
 
 **R-M3-10 — The exporter's post-commit snapshot is a split-brain hazard amx
 must fence, herdr merely outraces.** The final Persist push on shutdown
@@ -1168,19 +1261,34 @@ exporter's dying view. D-M3-6 point 5 disarms it at commit;
 `no_final_snapshot_is_written_after_commit` is the pin. Any future change to
 the shutdown-push path must keep the fence.
 
-**R-M3-11 — Per-pane fd messages trade one cliff for many syscalls.** herdr's
-single-message design caps sessions at 64 panes; amx's per-pane messages have
-no cap but cost a round of `sendmsg` per pane and lengthen the frozen window
-linearly. At five agents it is nothing; at hundreds of panes the quiesce
-itself (1 s budget per pane, parallelizable) dominates anyway. The exit suite
-measures wall-clock swap time and records it; if it ever matters, batching
-inside SCM_MAX_FD is a mechanical change behind W05's state machine.
+**R-M3-11 — Per-pane fd messages trade one cliff for a smaller cliff and many
+syscalls.** herdr's single-message design caps sessions at 64 panes. amx's
+per-pane messages move the cap rather than removing it: W05's payload is **one
+byte**, so the ceiling is **256 panes**, named as `fd::MAX_PANES` and refused by
+both machines rather than wrapped into a mispaired descriptor. D-M3-6 point 3's
+"no session-size cliff" is wrong as written; widening the payload is one
+constant and one `u8`, and nothing above the transport reads the index.
 
-**R-M3-12 — `Resume` was frozen in M2 without a consumer, and that bet pays
-off here.** No wire change was needed for the resync because the hello's
-resume block and the welcome's seq/session fields were golden-frozen ahead of
-use. Recorded as precedent the next time a "field with no reader" is
-questioned in review: the M3 resync is the reader, one milestone later.
+*Measured.* The frozen window is **24 ms for six panes**, from the exporter's own
+log during the live smoke — the syscall cost is not what anyone should optimize
+first. W07 adds the other half: the successor blocks briefly per pane twice
+(quiescing at adoption, resuming at the commit), so a large session pays two
+mailbox round trips per pane on the blocking pool.
+
+**R-M3-12 — `Resume` was frozen in M2 without a consumer, and the bet half paid
+off.** No wire change was needed for the resync because the hello's resume block
+and the welcome's seq/session fields were golden-frozen ahead of use, and
+`last_seq` is a full reader: it drives the event replay, and a `gap` is what the
+contract says it is. `generations` is the half that did not pay — see R-M3-14 —
+and it is now read for the keyframe's *reason* rather than its absence. The
+precedent stands with a qualification: freezing a field ahead of its reader
+costs nothing, and it does not make the reader's design right.
+
+The opposite lesson landed the same milestone, twice. `workspace.create`'s
+`focus` was frozen in M0 and had **no reader at all** until W14 gave it one —
+W12 found it by driving the real verb, not by reading — and `Hello.resume`'s
+generations had a reader whose premise was wrong. A frozen field is a promise
+that something will read it correctly, and only a live run collects on it.
 
 **R-M3-13 — Agent status across the swap is carried, not re-derived, and the
 choice is observable.** D-M3-5 carries hub state so the successor's first
@@ -1191,3 +1299,33 @@ nothing-then-blocked flap and because queue *order* — block time — is not
 recoverable from a screen. If the manifest's status ever disagrees with the
 first tier-2 read after resume, tier 2 wins by the ordinary fusion rules;
 nothing special-cases the handoff.
+
+**R-M3-14 — A grid generation is not evidence about cells, and the resync
+briefly assumed it was.** W08 opened a re-bound grid stream delta-only when the
+generation the client presented matched the pane's. The generation moves on
+resize and reset only, so what agrees is the *geometry*; the pane can paint
+freely between a client's last applied delta and its re-bind, and the client is
+then left looking at a wrong screen with no error, no repaint and nothing to
+notice. Across a handoff it is not a corner case at all — the successor resumes
+every pane at the commit — and W14's exit suite reproduced it with five agents
+in the session.
+
+Retracted rather than weakened: a resumed bind repaints, which is 04 §6's
+"keyframes for stale grids" read with the default the other way round. The
+optimization can be made sound without a wire change, and the route is written
+down where it would go: a resuming client is already replayed the `pane_damage`
+events it missed (one per transition since D-M3-2), so a client that drains its
+event replay *before* binding knows exactly which panes moved and can vouch for
+the rest. That is a client-side sequencing change and it is the follow-up this
+risk names.
+
+**R-M3-15 — A successor must be told which session it is.** A server started as
+`amx --session live server` takes its session from the flag, and the flag is not
+in its environment. The exporter spawned the successor with neither, so it
+derived `default`: `live`'s socket unlinked, `default`'s bound, the panes held
+by a server nobody could reach by name. Observed against the real binary, fixed
+at the spawn and refused on the importer's side by §3 step 6's session-dir
+identity — the check W07 judged would "only catch a bug in W06", which is
+exactly what it caught. Recorded because the class is general: anything the
+exporter knows only from *its own argv* has to be handed over explicitly, and
+the environment is not a substitute.

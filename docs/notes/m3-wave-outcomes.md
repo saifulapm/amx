@@ -1334,3 +1334,308 @@ then `amx session handoff --binary <the same build>` — accepted, exporter logs
 never restarted and never touched. Its final frame holds **both** sentinels and
 2082 non-blank characters, which is the T19 lesson taken literally: a screen that
 demonstrably held content, compared against itself across a swap.
+
+---
+
+## W14 — Integration
+
+**Three bugs the milestone would have shipped, all of them found by leaving the
+in-process world.** Each is written up where it was fixed; what they have in
+common is worth stating once. Every one was green in `crates/*/tests/` and
+broken over a socket, and none of them needed an unusual input — a named
+session, a signal at startup, a client reconnecting after a pane painted. M2's
+V17 lesson was that a suite one process away catches what a suite inside the
+process cannot; M3's is that the *second* process has to be a different one.
+
+1. **An upgrade of a named session bound the wrong socket.** `amx --session live
+   server` takes its session from the flag, and the flag is not in its
+   environment; the exporter spawned the successor with neither, so it derived
+   `default`. Observed against the real binary: `live`'s socket unlinked,
+   `default`'s bound, the panes held by a server nobody could reach by name, and
+   `amx --session live ping` answering "not running". Fixed at the spawn
+   (`--session` on the successor's argv) and refused on the importer's side,
+   which is §3 step 6's session-dir identity — the check W07 judged "would only
+   catch a bug in W06". It did.
+2. **A `SIGTERM` in the assembly window killed the server outright.** W01 saw it
+   once and could not place it. Two orderings were wrong, and both had to move:
+   tokio registers a signal handler when `signal()` is *called*, not when the
+   task that calls it is first polled, and neither assembly awaits between the
+   spawn and the end of the assembly; and the install ran after `Gateway::bind`,
+   which is the statement that makes the process findable. The regression test
+   seeds sixty panes and signals the instant the socket path appears — red on
+   every run without either half of the fix.
+3. **A reconnected client could stay wrong forever.** §4 below.
+
+**The eight hand-offs, and what became of each.**
+
+| # | Hand-off | Disposition |
+|---|---|---|
+| 1 | the hook token does not cross (W07) | **fixed** — an additive `token` on `PaneManifest` |
+| 2 | `workspace.create`'s `focus` has no reader (W12) | **fixed** — the field gets the reader, not the deletion |
+| 3 | `session report` does not render the handoff row (W06) | **fixed** — one branch above the restore table |
+| 4 | no `PaneState::cwd`, so `layout export` writes none (W13) | **fixed** — additive field, golden regenerated, export reads it |
+| 5 | `update check` cannot take `--channel` (W10) | **fixed** — one `Arg` on both verbs |
+| 6 | `amx --help` does not mention `--remote` (W11) | **fixed** — a documentary global argument |
+| 7 | budgets (W04, W11, W01) | **fixed for the two named, judged for the rest** |
+| 8 | §3 step 6's session-dir identity (W07) | **fixed, and it caught a live bug** |
+
+Each in turn, where the disposition needed an argument.
+
+**1 — the hook token rides the manifest, not the snapshot.** W07 offered
+`PaneSnapshot.token` or a `token` on `PaneManifest`; it is the manifest. The
+snapshot is a disk format and a cold restore respawns the child with a freshly
+minted token, so a persisted one would be a dead secret in `session.json`
+forever. The manifest crosses a 0600 socket to a process that needs it and is
+never written anywhere. `an_inherited_agents_hook_reports_are_still_attributed_to_it`
+sends a report carrying the exporter's token over the successor's socket and
+asserts it is accepted, and a stranger's is still refused — the guard is a guard
+again rather than a hole.
+
+**2 — `focus` gets a reader.** The alternative was deleting it from the row, and
+that is the wrong way round: the field is documented, on the wire and
+golden-frozen, and every caller that sends `true` means it. Honouring it changes
+what those callers do, which is what W12 could not decide alone — and every one
+of them is a harness or a verb that creates a workspace in order to work in it.
+`amx work` now says it once instead of following the create with a
+`workspace.switch`, and the create publishes the same `FocusChanged` a switch
+would. `a_create_asking_for_focus_gets_it_and_one_that_does_not_leaves_it_alone`
+pins both directions, because the second is the one that matters to a tool
+making a workspace in the background.
+
+**4 — `PaneState::cwd`, and what it cost the layout round trip.** The additive
+field landed as W13 specified. One consequence it did not predict: a layout file
+now carries a `cwd` for every pane, because the server records one for every
+pane, so `apply_builds_the_bsp_by_splits_in_deterministic_order` — which
+compares an exported file against a hand-written fixture — compares them without
+the `cwd` lines and says why. The round trip itself is unaffected: both sides
+carry the same directories.
+
+**7 — the budgets, one by one.** `handoff/grid.rs` (601) and
+`handoff/manifest.rs` (592) are split, and W04 was right that the cost is now
+one line: `grid/{mod,replay,emit}.rs` and `manifest/{mod,history,modes,base64}.rs`
+resolve through the same `pub mod` declarations W03 planted, exactly as W05's
+`protocol/` did. Three more files were split because *this* task grew them past
+the line: `tests/support/env.rs` (which W01 raised and named `ServerChild` as
+the seam for — that is the seam it was), `tests/handoff_exit.rs` into its own
+harness, and `handoff/manifest/mod.rs` a second time when the identity check
+pushed it back over.
+
+**`tests/skew.rs` is not split, and W11's argument holds.** The file is the
+conformance table and the rows that run it; splitting it would put the table one
+file away from its only readers, and the plan names this file as the bridge
+row's home. 526 lines, under the hard limit, and the reason it grew is a
+transport that belongs there.
+
+Left over the soft budget and *not* split, each with the reason: `pane_host/parser.rs`
+(532, W04 grew it with the adoption and it is one loop),
+`agent/fusion/tracker.rs` (511, W07's reasoning stands — the only seam cuts a
+transition function in half), `pane_host/mod.rs` (501, one line over).
+Nineteen-odd test files remain over the soft budget and under the hard one; the
+rule the waves have followed is that a test file splits when the wave that grows
+it grows it, and that is what happened here.
+
+---
+
+### The seam ledger, and the one exemption that was narrowed
+
+W06 emptied `tests/hygiene.rs`'s ledger two waves early and restored the resting
+form; that is still true and nothing re-opened it. What W06 also added was an
+exemption on the agent-event publisher guard, so that `Exporter::commit` — §3
+step 13, ownership of a session transferring — is not read as a second
+`StatusView::commit`. It is still needed: `handoff/export/mod.rs` has exactly
+that call. It was wider than the fact it covers, though — "any file under
+`handoff/`" — and the import half of that module *does* seed agent statuses,
+which is precisely the second publisher the guard exists to catch. The exemption
+is now the receiver (`exporter.commit(`) rather than the directory.
+
+---
+
+### The joins, and the two assemblies that were spelled twice
+
+W07 named the fold of `serve.rs`'s and `import.rs`'s shared scaffolding as a W14
+seam, and it was worth doing rather than leaving: the two copies of the signal
+watch, the config watcher and `home_dir` were byte-identical, so the next change
+to either would have been a change to one. They are `session/scaffold.rs` now.
+
+The fold is what made bug 2 above legible. Reading one copy, the ordering
+question — *when* is the handler actually installed — is a detail of a
+forty-line function; reading a file whose whole subject is "the scaffolding both
+assemblies need", it is the only question there is.
+
+---
+
+### 4 — the resync bug, and a retraction
+
+The exit suite's first honest run failed at the step §7 spells out: "the client
+reconnected by itself and `pane.read` plus the client's own screen show every
+sentinel". `pane.read` showed the sentinel; the client showed the pane's
+*pre-swap* screen and never updated it again.
+
+W08 opened a re-bound grid stream **delta-only** when the generation the client
+presented matched the pane's, adopting the first frame it saw and marking
+nothing. The premise is that a matching generation means the client's cells are
+current, and `conn/resume.rs`'s own documentation says why it does not: the
+generation moves on resize and reset only, so what agrees is the *geometry*.
+W08's note argues the gap is closed across a handoff because panes are quiesced
+before the exporter retires its gateway — true, and beside the point. The
+successor **resumes** every pane at the commit, and a reconnecting client lands
+after whatever they painted.
+
+The failure mode is the worst kind: no error, no second repaint, a screen that
+is wrong until something else forces a keyframe. It is not handoff-specific
+either — an ordinary reconnect after a network blip has the same hole.
+
+**What landed:** a resumed bind repaints, which is what 04 §6 asks for in as
+many words ("keyframes for stale grids") — without evidence to the contrary
+every grid is stale. What the generation still buys is the keyframe's *reason*
+(`KeyframeReason::Resumed` beside `First` and `Generation`), and R-M3-12's
+payoff narrows to `Resume.last_seq`, which drives the event replay and is the
+larger half of D-M3-7.
+
+**What would make the optimization sound**, written down rather than lost: a
+resuming client is already replayed the events it missed, and D-M3-2 made
+`pane_damage` exactly one event per transition — so a client that drained its
+event replay *before* binding knows exactly which panes moved while it was away
+and could vouch for the rest. That is a client-side sequencing change and it
+needs no wire at all. The alternative, carrying the publication counter in the
+claim, is a change to the grid stream's payload and is not worth it.
+
+Three of W08's tests and one of W09's assert the retracted behaviour and were
+rewritten to the corrected one, each with the reasoning at the assertion. Two of
+them are *sharper* now than they were: they assert which reason a keyframe
+carries, where before they asserted that none was sent.
+
+---
+
+### The exit suite: what it proves and what it stands in for
+
+`tests/handoff_exit.rs`, three tests, all over the real binary.
+
+- **§7 steps 1–4** in one test: five scripted agents across three workspaces, a
+  styled sentinel (bold, underlined, 24-bit foreground *and* background) painted
+  in every pane, a real client at 200×50 on a real pty, a standing `amx wait` and
+  an `amx events --json` relay from other connections, then
+  `session.handoff --binary <this build>`. Asserted in §7's order: the same five
+  child pids by identity, the successor's `Welcome` with the same `SessionId` and
+  a larger seq, the client's own cells for the sentinel compared **cell for cell
+  and pen for pen** either side of the swap, the standing wait returning
+  satisfied on a block that happens afterwards, the relay's sequences contiguous
+  or gap-marked, the exporter's exit, and the pane's row-id window unmoved.
+- **§7 step 5**: the abort injections a *staged binary* can produce — a successor
+  that is not an amx (refused at the pre-flight, before a pane is touched) and
+  one that answers the capability probe and never authenticates (aborted after
+  the freeze). After each: the same server, the same children, every pane still
+  answering input, and `session report` naming the outcome, the stage and the
+  reason.
+- **§7 step 6**: the bridge as a child against a session with five agents in it.
+
+**Three things it stands in for, said plainly.** The agents are the M2 scripted
+stand-ins (R-M2-8, unchanged). The successor is a build of the same tree, which
+is the M0 skew harness's honest label — the *version* change is the live smoke's
+and only the live smoke's. And the stages between `manifest` and `ready` are not
+reachable from a binary at all: they need a peer that speaks §3 and then stops,
+which is W05's and W06's in-process crash matrix.
+
+**Two measurements the plan asked for.** R-M3-11 wanted the swap's wall clock:
+**24 ms frozen for six panes** on this machine, measured from the exporter's own
+log during the live smoke. And the T19 lesson is taken literally — every screen
+comparison is paired with a count of non-blank characters, because two blank
+screens compare equal and prove nothing.
+
+**Serialized, deliberately.** The three tests run one at a time behind a mutex.
+Each is a server, five pty children, a real client and a process swap; three at
+once measures the machine, and it did — a sixty-second client-repaint timeout
+when the suite ran beside a compile. A deadline that has to absorb two other
+copies of the same test is a deadline that no longer means anything.
+
+---
+
+### The rig race W06 named, closed
+
+`crates/amx/tests/support/rig.rs` now retries an exec past `ETXTBSY`, as W06's
+export rig does, and the comment names the race so nobody removes it as
+defensive noise: `cargo test` runs a suite on threads of one process, a spawn is
+a fork and an exec, and between those two the child holds every descriptor the
+process had open — including a write descriptor another thread is planting a
+binary through. A long-lived server child holds it for its whole life. Copying
+rather than hard-linking the plant does not close it: the race is about who
+holds a descriptor, not about which inode.
+
+The retry went into `support/env.rs`'s spawn helpers rather than only the rig's,
+because `spawn_on_tty` is the third exec path and shares the same hazard.
+
+---
+
+### Turning W10's dormant half on
+
+`HANDOFF_AFTER_INSTALL` is `true`, which is what W10 said would be the whole of
+it, and it was. One change to the code behind it: the completion test is a
+**pid**, not a version. A successor is a different process serving the same
+`SessionId`; a version bump is the ordinary case and not a guaranteed one, and
+the M0 skew harness and the exit suite both hand a session to a build of the
+same tree — a version comparison would have sat out the ninety-second deadline
+while a perfectly good successor served underneath it.
+
+W10's tripwire is discharged rather than deleted: the sentence it asserted is
+replaced by an assertion that the successor answered. One of W10's other tests
+changed meaning as a result and says so — `apply` against a payload that is not
+an amx now installs the binary, is refused the handoff by the pre-flight, and
+exits non-zero with the reason on stderr. That is the right shape: the install
+succeeded and says so on stdout, and something the user asked for did not
+happen.
+
+---
+
+### What the live smoke found that CI could not
+
+[m3-live-smoke.md](m3-live-smoke.md) is the record. Three things belong here.
+
+**The first N→N+1 upgrade amx has done.** 0.1.0 → 0.1.1, a `--version`-bumped
+build of the same tree, published through a `file://` channel manifest and
+installed by `amx update apply` over the running binary, under five real Claude
+Code sessions. Same five child pids, every conversation answering its
+remembered word afterwards, exporter exit 0. Nothing in CI can do this, because
+CI has one version.
+
+**"No visible screen content lost" is two claims, not one.** A pane whose
+program does not repaint comes back byte-identical — head, floor and every row.
+A pane running Claude Code comes back with the agent's *own* UI redrawn, because
+Claude Code redraws on a size announcement and the successor's commit resizes
+every pane it takes over; measured as the same content shifted one row, with a
+box border that had scrolled off the exporter's grid back on screen. Nothing is
+missing. But the honest statement of the criterion has to name which half is
+amx's.
+
+**"Kill the importer mid-restore" is not a thing a human can do.** The window is
+24 ms wide. A kill at 50 ms, 300 ms, 600 ms and 1200 ms after the importer
+starts lands *after* the commit every time — which is not an interrupted upgrade
+at all, it is killing the server that now owns the session. The by-hand half of
+that step is the pre-commit abort, verified with three real Claude Code sessions
+still answering afterwards; the rest is CI's, and the plan should say so.
+
+**One step is not verified: an SSH attach from a genuinely different machine.**
+There is one machine here. The loopback tier passed; it is not a substitute, and
+the roadmap's "attach to the home machine from a laptop over SSH" is unproven
+end to end. It is the one thing on this milestone that needs a person.
+
+---
+
+### Left open
+
+- **The sound version of the resume optimization** (§4), which is a client-side
+  sequencing change and needs no wire.
+- **W09's three hand-offs, none of them taken.** `cmd/viewport.rs` (`amx attach
+  --pane`) still does not reconnect — it builds its own loop over a `Session`
+  rather than running `App`, and it has no model to resync, so the change is not
+  mechanical. A bridged client still cannot redial, because redialling one means
+  respawning `ssh`, which is `remote/`'s business rather than the client's. And
+  `DriveError::NotAccepting` still maps onto `INVALID_PARAMS`, so D-M3-6's
+  "input arriving during the frozen window is the caller's retry" is not
+  something a caller can act on — a distinct code would make every mutating verb
+  safely retriable, including `agent.prompt`.
+- **`Env::pids_with_arg` and the exit suite's process assertions are Linux-only
+  in practice.** `crate::platform::pids_with_arg` has a darwin implementation and
+  the suite does not skip; if it turns out not to answer on a macOS runner, the
+  assertion to keep is the identity one and the thing to change is the reader.
+- **The second wedge path W01 narrowed and did not find** is untouched here, and
+  the census still points at it.
