@@ -26,7 +26,11 @@
 //! `session/serve.rs` places before the accept loop ("the first client that can
 //! possibly connect already sees the restored session"). The pane survives, its
 //! process does not, and nothing that reconnects afterwards could have caused
-//! it, because there is no process left to exit.
+//! it, because there is no process left to exit. The program is
+//! [`exits_immediately`]'s, written into the environment, because a shell the
+//! restore cannot spawn is a *pruned pane* rather than a pane whose process
+//! exited — a different test entirely, and the one a hard-coded `/bin/true`
+//! quietly became on macOS.
 //!
 //! Every "the standing verb is connected now" is *observed*, never slept
 //! through: a second connection subscribes to the bus and waits for the
@@ -45,7 +49,10 @@ use std::time::Duration;
 use amx_server::session::probe::probe;
 use serde_json::{Value, json};
 
-use harness::{Session1, Standing, await_attach, flood, rename, reply, shell, state, watcher};
+use harness::{
+    Session1, Standing, await_attach, exits_immediately, flood, rename, reply, shell, state,
+    watcher,
+};
 use support::wait_until;
 
 #[path = "wait_retry/harness.rs"]
@@ -132,11 +139,23 @@ async fn a_transition_that_fires_during_the_gap_still_returns_the_wait() {
     assert!(waiting.running());
 
     session.kill_server();
-    // The restored pane's process is `/bin/true`: spawned by the restore and
-    // over before the successor's accept loop starts, so the wait's predicate
-    // becomes true at a moment when the wait has no connection to anything.
-    shell(&session.env, "/bin/true");
+    // The restored pane's process exits the moment it is spawned: started by
+    // the restore and over before the successor's accept loop starts, so the
+    // wait's predicate becomes true at a moment when the wait has no connection
+    // to anything.
+    shell(&session.env, &exits_immediately(&session.env));
     session.serve();
+
+    // Stated, because the wait below depends on it and the two failures read
+    // nothing alike: a pane the restore could not respawn is pruned with its
+    // workspace (D-M1-9), and the re-issued wait then reports a caller error —
+    // "no pane … in this session" — which looks like a client that lost track
+    // of its own question rather than a session that lost the pane.
+    assert_eq!(
+        state(&session.env)["panes"][0]["pane"].as_str(),
+        Some(pane.as_str()),
+        "the restored session must still hold the pane the wait is about"
+    );
 
     let done = waiting.finish();
     let answer = reply(&done);

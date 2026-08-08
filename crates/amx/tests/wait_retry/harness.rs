@@ -122,6 +122,24 @@ pub fn shell(env: &Env, path: &str) {
     .expect("write config.toml");
 }
 
+/// A program that exits the moment it starts, written into this environment.
+///
+/// Written rather than named: `/bin/true` is a path this suite happened to
+/// share with the developer's machine and not with a macOS runner, and a
+/// `[terminal] shell` the restore cannot spawn is not "a pane whose process
+/// exits" — it is D-M1-9's *shell spawn fails → prune the pane*, which takes
+/// the pane's only workspace with it and leaves the re-issued wait correctly
+/// answering that no such pane exists. What the test actually needs from the
+/// platform is `/bin/sh`, which is what every pane in this suite already runs.
+pub fn exits_immediately(env: &Env) -> String {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let path = env.root().join("exit-now");
+    std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write the exiting shell");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("make it exec");
+    path.to_string_lossy().into_owned()
+}
+
 /// The session's state.
 pub fn state(env: &Env) -> Value {
     serde_json::from_str(env.run(&["session", "state", "--params", "{}"]).ok())
