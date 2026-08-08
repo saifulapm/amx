@@ -7,8 +7,8 @@
 //! parsed at assembly, and a command that arrives after cancellation is refused
 //! from inside this module — no publish, no write, no sibling (R-M1-2).
 
-use amx_core::PaneId;
 use amx_core::agent::AgentKind;
+use amx_core::{PaneId, WorkspaceId};
 use amx_proto::control::agent as proto;
 use amx_proto::rpc::RpcError;
 use amx_vt::SnapshotRef;
@@ -26,21 +26,56 @@ impl AgentHub {
     /// does not wait for it: the hub must never park on a sibling, and the
     /// client learns focus moved from `FocusChanged` like it does for every
     /// other focus change.
-    pub(super) fn next_attention(&self) -> proto::NextReply {
-        let pane = self.attention.first().copied();
+    ///
+    /// `scope` is D15's scoped cycling, and it narrows *which entry of the
+    /// queue this call takes* and nothing else. The queue itself stays global
+    /// and block-time ordered — fairness is this actor's job and a caller
+    /// asking about one project must not be able to reorder another's — so a
+    /// scoped call reads the same `attention` a `session.state` a moment later
+    /// reports, in the same order, and leaves it exactly as it found it.
+    /// `waiting` is then the honest count *for the scope asked about*: a caller
+    /// clearing one project's queue watches that number fall to zero, which is
+    /// the whole point of asking scoped.
+    ///
+    /// A scope no pane is in is an empty reply, never an error — the shape the
+    /// unscoped call already has for an empty queue, and for the same reason
+    /// (03 §4 has no error chrome). That deliberately makes a workspace that
+    /// does not exist indistinguishable from one whose agents are all quiet:
+    /// the hub holds no workspace registry to check an id against, and asking
+    /// `Core` for one would be the sibling request the shutdown discipline
+    /// forbids.
+    pub(super) fn next_attention(&self, scope: Option<WorkspaceId>) -> proto::NextReply {
+        // A pane the hub has no workspace for is out of every scope and in the
+        // unscoped queue: `None` is "this actor never saw where it lives", and
+        // answering a question about `api` with a pane that might not be in it
+        // would be a guess.
+        let in_scope = |pane: &PaneId| {
+            scope.is_none_or(|workspace| self.workspaces.get(pane) == Some(&workspace))
+        };
+        let pane = self.attention.iter().copied().find(in_scope);
         if let Some(pane) = pane {
             let _ = self
                 .core
                 .try_send(CoreCommand::Agent(AgentCall::Focus { pane }));
         }
+        let waiting = self.attention.iter().filter(|pane| in_scope(pane)).count();
         proto::NextReply {
             pane,
             // A hint, from the workspace the pane was created in. `Core`
             // resolves the pane's *current* workspace when it focuses, so a
             // pane moved between workspaces since is focused correctly even
             // though this field names where it used to live.
+            //
+            // The scope is read out of the same map, so it inherits the same
+            // staleness with a sharper edge: after a `pane.move` across
+            // workspaces a scoped call sizes the pane up by where it was
+            // created. Nothing on the bus carries the new pairing — `pane.move`
+            // publishes `LayoutChanged`, which names a workspace and no pane
+            // (`actor/core/pane.rs:211-216`) — and the only other source is
+            // `Core`, which this actor may not ask. Closing it needs a pane's
+            // new workspace published, which is a change in `Core`'s files.
             workspace: pane.and_then(|pane| self.workspaces.get(&pane).copied()),
-            waiting: u32::try_from(self.attention.len()).unwrap_or(u32::MAX),
+            waiting: u32::try_from(waiting).unwrap_or(u32::MAX),
             seq: self.ctx.bus.head(),
         }
     }
@@ -136,7 +171,7 @@ impl AgentHub {
             AgentCommand::Explain { reply, .. } => {
                 let _ = reply.send(Err(shutting_down()));
             }
-            AgentCommand::NextAttention { reply } => {
+            AgentCommand::NextAttention { reply, .. } => {
                 // Not an empty reply: an empty queue and a queue nobody can be
                 // focused out of are different answers, and only one of them is
                 // true here.

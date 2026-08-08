@@ -298,16 +298,25 @@ pub(super) async fn explain(
 ///
 /// An empty queue is an honest empty reply, never an error: a prefix key that
 /// raised an error dialog for "nothing is waiting" would be chrome, and 03 §4
-/// has none.
+/// has none. A scope nothing is blocked in answers the same way, for the same
+/// reason.
+///
+/// The scope is carried, not resolved: `workspace` is a `WorkspaceId` like
+/// every other `workspace` parameter on the table, so there is nothing here to
+/// look up and no second name resolver in the server (X02's decision, recorded
+/// in `docs/notes/m4-wave-outcomes.md`). Which entry of the queue it selects is
+/// the hub's answer, because the hub is the only actor that holds the queue.
 pub(super) async fn next(
     router: &mut Router,
     params: agent::NextParams,
 ) -> Result<agent::NextReply, RpcError> {
-    // X17 reads the scope; until then the row behaves exactly as it did before
-    // the field existed, which is what the unchanged goldens assert.
-    let agent::NextParams { workspace: _ } = params;
+    let agent::NextParams { workspace } = params;
     let hub = lookup::hub(router)?;
-    lookup::ask(&hub, |reply| AgentCommand::NextAttention { reply }).await
+    lookup::ask(&hub, |reply| AgentCommand::NextAttention {
+        workspace,
+        reply,
+    })
+    .await
 }
 
 /// `agent.list`: every tracked agent, in one reply.
