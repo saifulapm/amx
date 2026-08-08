@@ -67,7 +67,7 @@ use crate::platform::UnixProcessTree;
 use crate::pty::{PtyActor, PtyActorConfig, PtyActorError, PtyActorHandle};
 
 pub use self::drive::{Drive, DriveError, Driven};
-pub use self::export::{ExportError, PaneExport};
+pub use self::export::{ExportError, PaneExport, PaneResume};
 pub use self::keys::{KeyParseError, KeyStroke};
 pub use self::probe::PaneProbe;
 
@@ -354,6 +354,20 @@ impl PaneHost {
     #[must_use]
     pub fn into_task(self) -> JoinHandle<()> {
         self.task
+    }
+
+    /// The one capability a caller keeps after giving the pane away.
+    ///
+    /// The import assembly's need, and nobody else's (`docs/09-m3-plan.md` §3
+    /// step 14): an inherited pane is quiesced *before* it is handed to `Core`,
+    /// and the thing that un-quiesces it happens minutes of protocol later,
+    /// after `Core` already owns the host. Narrow on purpose — it can resume a
+    /// pane and do nothing else — because the reason `PaneHost` keeps its pty
+    /// handle private is that quiescing, releasing and duplicating a terminal
+    /// belong to whoever owns the pane.
+    #[must_use]
+    pub fn resumer(&self) -> PaneResume {
+        PaneResume::new(self.pane, self.pty.clone())
     }
 }
 
