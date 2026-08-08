@@ -159,7 +159,7 @@ fn keyframes(app: &mut TestApp, pane: PaneId) -> u64 {
 }
 
 #[tokio::test]
-async fn a_dropped_client_reattaches_with_resume_and_repaints_only_stale_panes() {
+async fn a_dropped_client_reattaches_with_resume_and_keeps_the_cells_it_had() {
     let (server, mut app, _master) = attached("rcn1").await;
     let root = app.focused_pane().expect("the seeded workspace's pane");
 
@@ -223,15 +223,18 @@ async fn a_dropped_client_reattaches_with_resume_and_repaints_only_stale_panes()
         "the client resumed from where it had read to"
     );
 
-    // The doubted pane repaints; the vouched one is owed nothing and gets
-    // nothing, and its cells are still the ones the server drew.
+    // Both panes repaint, and the vouched one comes back holding what it held.
+    //
+    // W09 asserted the sharper thing — that a vouched pane was owed *no*
+    // keyframe — and W14 retracted it: a generation says the geometry matches,
+    // not that the client's cells are current, and a pane that painted while
+    // the client was away left it looking at a wrong screen forever (see
+    // `KeyframeReason::Resumed`). What the vouch still buys is the reason, and
+    // what this test is actually about is unchanged: a reattach keeps the
+    // session, resumes the cursor, and ends with the cells the server drew.
     pump_until(&mut app, |app| keyframes(app, root) >= 2).await;
+    pump_until(&mut app, |app| keyframes(app, kept) > repaints_before).await;
     pump_quietly(&mut app).await;
-    assert_eq!(
-        keyframes(&mut app, kept),
-        repaints_before,
-        "a pane whose generation the client presented was owed no keyframe"
-    );
     assert!(
         shows(&mut app, kept, "amx-w09-kept"),
         "and its cells survived the swap"

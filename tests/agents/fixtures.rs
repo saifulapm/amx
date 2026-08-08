@@ -90,11 +90,24 @@ impl Rig {
     /// because a fifth of a terminal is not a width the shipped rules were
     /// written for.
     pub async fn start_agent(&mut self, name: &str) -> Agent {
-        let created = self
-            .call("workspace.create", json!({ "focus": true }))
-            .await;
-        let workspace: WorkspaceId =
-            serde_json::from_value(created["workspace"].clone()).expect("a workspace id");
+        self.start_agent_in(name, None).await
+    }
+
+    /// Start one scripted agent under `name`, in `workspace` or a fresh one.
+    ///
+    /// M3's exit criterion puts five agents across *three* workspaces, so two
+    /// of them share, which [`Rig::start_agent`]'s one-workspace-per-agent
+    /// shape cannot say. Passing `None` is that shape exactly.
+    pub async fn start_agent_in(&mut self, name: &str, workspace: Option<WorkspaceId>) -> Agent {
+        let workspace = match workspace {
+            Some(workspace) => workspace,
+            None => {
+                let created = self
+                    .call("workspace.create", json!({ "focus": true }))
+                    .await;
+                serde_json::from_value(created["workspace"].clone()).expect("a workspace id")
+            }
+        };
         let reply = self
             .call(
                 "agent.start",
@@ -336,6 +349,38 @@ impl Rig {
         if let Err(stuck) = server.shutdown_within(budget) {
             panic!("{stuck}");
         }
+    }
+
+    /// The pid of the server process this rig started.
+    #[must_use]
+    pub fn server_pid(&self) -> u32 {
+        self.server
+            .as_ref()
+            .expect("the server is still running")
+            .pid()
+    }
+
+    /// Give up ownership of the server child, and answer with it.
+    ///
+    /// What a live upgrade needs: after a commit the process this rig started
+    /// is finished, and something has to reap it — but it is no longer the
+    /// session, so `Rig`'s own shutdown must not signal it and must not expect
+    /// it to answer.
+    pub fn take_server(&mut self) -> ServerChild {
+        self.server.take().expect("the server is still running")
+    }
+
+    /// Connect a fresh control connection, replacing this rig's own.
+    ///
+    /// The connection a handoff kills: the exporter retires its gateway partway
+    /// through §3 and every client's socket dies with it, by design.
+    pub async fn reconnect(&mut self) -> amx_proto::Welcome {
+        let mut wire = Wire::connect(&self.env.socket()).await;
+        let welcome = wire
+            .hello((amx_proto::PROTO_MIN, amx_proto::PROTO_MAX))
+            .await;
+        self.wire = wire;
+        welcome
     }
 
     /// Start a fresh server on the same state, and reconnect.

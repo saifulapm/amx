@@ -563,6 +563,18 @@ pub fn processes_with_arg(marker: &str) -> usize {
     crate::platform::processes_with_arg(marker)
 }
 
+/// The pids of every live process whose argv holds `marker`.
+///
+/// [`processes_with_arg`] answers "how many", which is enough for "the pane's
+/// process survived". A live upgrade needs the sharper question — M3's exit
+/// criterion is "every child pid alive across the swap", and five processes
+/// before and five after is also what a session that killed five and started
+/// five would look like.
+#[must_use]
+pub fn pids_with_arg(marker: &str) -> Vec<u32> {
+    crate::platform::pids_with_arg(marker)
+}
+
 /// Send `SIGWINCH` by hand to every live process whose argv holds `marker`;
 /// the answer is how many were signalled.
 ///
