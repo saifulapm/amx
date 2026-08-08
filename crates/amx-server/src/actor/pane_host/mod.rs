@@ -340,6 +340,19 @@ impl PaneHost {
         self.pty.resume()
     }
 
+    /// The pty actor's own mailbox, for the export path's freeze and thaw.
+    ///
+    /// [`quiesce`](Self::quiesce) and [`resume`](Self::resume) both block, so
+    /// the handoff runs them on the blocking pool — and a `PaneHost` cannot go
+    /// there, because `Core` is still serving with it. The handle can: cloning
+    /// it gives another way to reach the same actor, not another actor. W06's
+    /// orchestrator is the only caller, and it holds one per frozen pane so
+    /// that an abort can unfreeze the session without queueing behind `Core`.
+    #[must_use]
+    pub fn pty(&self) -> &PtyActorHandle {
+        &self.pty
+    }
+
     /// Ask the pane to stop and wait for it, threads included.
     ///
     /// # Errors

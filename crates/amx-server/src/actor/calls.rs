@@ -100,6 +100,25 @@ pub enum SessionCall {
         /// Where the snapshot goes.
         reply: Reply<session::StateReply>,
     },
+    /// `session.handoff`, with the pre-flight already run.
+    ///
+    /// The verdict on `<binary> _handoff-caps` travels *with* the call rather
+    /// than being fetched inside it, and that ordering is the whole of
+    /// "refused before any pane is touched": the probe runs on the connection
+    /// task, and a `Core` that refuses this has quiesced nothing (D-M3-6
+    /// point 2). It is also the reason the probe cannot stall the session —
+    /// exec'ing a wrong binary on `Core`'s own loop would hold every other
+    /// verb behind it.
+    Handoff {
+        /// Parameters.
+        params: session::HandoffParams,
+        /// What the staged binary said it can be handed, or why it cannot be.
+        preflight: Result<crate::handoff::export::Caps, String>,
+        /// Where the accepted-or-refused answer goes. Acceptance is not
+        /// completion: the caller's own connection dies when the gateway
+        /// retires, and the outcome is read back from `session.report`.
+        reply: Reply<session::HandoffReply>,
+    },
     /// `session.report`.
     ///
     /// Answered from the [`RestoreReport`](amx_proto::control::session::RestoreReport)
