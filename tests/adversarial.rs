@@ -180,12 +180,56 @@ async fn reattach_from_a_second_terminal_while_the_first_is_live() {
 /// that it does not scale with the flood.
 const RSS_GROWTH_BOUND: u64 = 64 * 1024 * 1024;
 
-/// How much of the flood must have reached the server before its steady memory
-/// is worth asserting anything about.
+/// How fast the flood must be reaching the server, per second of *observed*
+/// time, before its steady memory is worth asserting anything about.
 ///
-/// A quantity, not a rate: the observation loop waits for it rather than
-/// hoping three seconds bought it.
-const FLOOD_INGEST: u64 = 8 * 1024 * 1024;
+/// A rate, not a quantity (DR-19). A quantity is a claim about the machine:
+/// these suites run under `cargo test --workspace` and a flood given a sixth of
+/// a core delivers a sixth of the bytes, so any fixed number of megabytes is a
+/// throughput threshold wearing a memory bound's clothes. It failed as one —
+/// `docs/notes/m3-shutdown-wedge.md` records 7 923 383 bytes against an 8 MiB
+/// line on every round of a 35-minute field run under eight-way load.
+///
+/// The floor is what "the flood is flowing at all" costs: two megabytes a
+/// second was the *loaded* rate in that run, and this is an order of magnitude
+/// under it. A slower machine observes for longer and proves the same pair of
+/// facts; only a flood that has stopped fails.
+const FLOOD_RATE: u64 = 128 * 1024;
+
+/// How long the memory bound is watched before the rate is judged.
+const FLOOD_OBSERVE: Duration = Duration::from_secs(3);
+
+/// Whether `ingested` bytes over `observed` time clears [`FLOOD_RATE`].
+///
+/// Split out so the decision can be exercised directly: the loop below cannot
+/// be made to run at a chosen speed, and a predicate that is only ever read
+/// through a live pty is a predicate nobody has checked.
+fn flooding(ingested: u64, observed: Duration) -> bool {
+    let micros = u64::try_from(observed.as_micros()).unwrap_or(u64::MAX);
+    ingested.saturating_mul(1_000_000) >= FLOOD_RATE.saturating_mul(micros)
+}
+
+#[test]
+fn the_flood_bound_is_a_rate_and_not_a_machine_speed() {
+    // A sixth of a core still delivers: slow, steady, and over the floor for
+    // however long the observation runs.
+    let slow = FLOOD_RATE * 2;
+    for seconds in [3, 10, 60, 600] {
+        assert!(
+            flooding(slow * seconds, Duration::from_secs(seconds)),
+            "a flood at {slow} B/s must clear the floor over {seconds}s"
+        );
+    }
+
+    // A flood that stopped does not become acceptable by being waited on —
+    // which is what a fixed quantity plus a deadline lets happen.
+    let burst = 64 * 1024 * 1024;
+    assert!(flooding(burst, FLOOD_OBSERVE));
+    assert!(!flooding(burst, Duration::from_secs(10_000)));
+
+    // And nothing arriving is nothing arriving, at any duration.
+    assert!(!flooding(0, FLOOD_OBSERVE));
+}
 
 #[tokio::test]
 async fn flow_control_urandom_pane_with_stalled_client_bounds_memory_and_preserves_grids() {
@@ -236,12 +280,11 @@ async fn flow_control_urandom_pane_with_stalled_client_bounds_memory_and_preserv
     // monotonic sequence numbers the entire time.
     //
     // Two things end the loop, and neither is a clock alone: three seconds of
-    // observation, *and* the megabytes that make the bound mean something. A
-    // fixed window would turn the second into a claim about throughput — these
-    // suites run in parallel under `cargo test --workspace`, and a flood given
-    // a third of a core delivers a third of the bytes in the same three
-    // seconds. A slow machine takes longer here and proves exactly the same
-    // pair of facts; only a flood that never arrives fails, at the deadline.
+    // observation, *and* a flood still flowing over that window at a rate no
+    // machine speed decides ([`FLOOD_RATE`]). Both halves have to be there — a
+    // window alone measures throughput, and a quantity alone lets a flood that
+    // stopped a minute ago satisfy the bound it is supposed to make mean
+    // something.
     let mut ticker = tokio::time::interval(Duration::from_millis(50));
     let start = Instant::now();
     let ingested_before = server.read_bytes();
@@ -288,15 +331,16 @@ async fn flow_control_urandom_pane_with_stalled_client_bounds_memory_and_preserv
         if let (Some(before), Some(after)) = (ingested_before, server.read_bytes()) {
             ingested = after.saturating_sub(before);
         }
-        let flowed = !accounted || ingested > FLOOD_INGEST;
-        if start.elapsed() >= Duration::from_secs(3) && flowed {
+        let observed = start.elapsed();
+        let flowing = !accounted || flooding(ingested, observed);
+        if observed >= FLOOD_OBSERVE && flowing {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "after {:?} the server had ingested {ingested} bytes of the flood, \
-             short of {FLOOD_INGEST}; the flood never reached it",
-            start.elapsed()
+            "over {observed:?} the server ingested {ingested} bytes of the flood, \
+             under the {FLOOD_RATE} B/s that says it is flowing at all; the flood \
+             never reached it",
         );
     }
 
