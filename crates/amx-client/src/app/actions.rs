@@ -105,10 +105,10 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 Effect::Nothing
             }
             Action::Focus(dir) => {
-                let moved = self.neighbour_of(pane, dir).is_some_and(|next| {
+                let next = self.neighbour_of(pane, dir);
+                if let Some(next) = next {
                     self.focus.insert(ws, next);
-                    true
-                });
+                }
                 sink(InputEvent::Call(Call::PaneFocus(pane_proto::FocusParams {
                     workspace: ws,
                     direction: input::wire_direction(dir),
@@ -116,7 +116,11 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 // The status line names the focused pane and the cursor is
                 // parked in it, so a focus that moved is a chrome change even
                 // though no rect did.
-                if moved { Effect::Full } else { Effect::Nothing }
+                if next.is_some() {
+                    Effect::Full
+                } else {
+                    Effect::Nothing
+                }
             }
             // Deliberately no local layout change: the mirror is server truth
             // with no mutable accessor, so the resize round-trips and the
