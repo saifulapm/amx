@@ -144,6 +144,21 @@ as listed. `amx-server/src/dispatch/agent.rs` split into
 behaviour changed, and the only edits inside the moved code are visibility
 (`fn` → `pub(super) fn`) and imports.
 
+**Three suites split too, and five left over the soft budget on purpose.**
+`amx-proto/tests/additive.rs`, `tests/hygiene.rs` and `tests/skew.rs` each
+crossed 500 lines under this task's own additions and were split by
+responsibility — M3's additive fields from M4's, the wall-clock guards from the
+milestone ledgers, the negotiation harness from the per-milestone row ledgers.
+The ledgers file is the one X00 walks, which is also why it is one file.
+
+Five suites this task touched stay over: `handoff_import/harness.rs` (699),
+`resume.rs` (689), `dispatch.rs` (572), `flags.rs` (513) and `wire.rs` (506).
+Every one of them was over before X02 and every one took a two-to-five-line
+fixture fix — a new `AgentSnapshot` field, a `PaneState` field, a stub trait
+method. Splitting another task's suite to absorb three lines is churn in a file
+somebody else is about to edit, so they were left alone. `check-module-size.sh`
+is green either way: the soft budget warns, it does not fail.
+
 **`amx-core/src/lib.rs` did not gain re-exports, deliberately.** The new types —
 `AgentWorkspace`, `EpochMillis`, `ClientConfig`, `KeysConfig`,
 `DEFAULT_NARROW_COLS`, and the two section-name constants — are public at their
