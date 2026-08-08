@@ -6,8 +6,11 @@
 //! produces: the whole-file tier keeps everything, the per-section tier keeps
 //! one section, and both report what they rejected instead of logging it.
 
+use std::collections::BTreeMap;
+
 use amx_core::config::{
-    PERSIST_SECTION, SECTIONS, TERMINAL_SECTION, UPDATE_SECTION, WORK_SECTION, reload,
+    CLIENT_SECTION, ClientConfig, DEFAULT_NARROW_COLS, KEYS_SECTION, KeysConfig, PERSIST_SECTION,
+    SECTIONS, TERMINAL_SECTION, UPDATE_SECTION, WORK_SECTION, reload,
 };
 use amx_core::{Config, PersistConfig, TerminalConfig, UpdateConfig, WorkConfig};
 
@@ -24,6 +27,13 @@ fn running() -> Config {
         },
         work: WorkConfig {
             dir: Some("{repo_parent}/trees/{branch}".to_owned()),
+        },
+        client: ClientConfig {
+            narrow_cols: Some(48),
+        },
+        keys: KeysConfig {
+            prefix: Some("ctrl+t".to_owned()),
+            bind: BTreeMap::from([("q".to_owned(), "detach".to_owned())]),
         },
     }
 }
@@ -45,12 +55,28 @@ fn defaults_are_the_no_file_configuration() {
         "no work.dir override means the built-in sibling template, not a copy of it",
     );
     assert_eq!(
+        defaults.client.narrow_cols, None,
+        "no narrow_cols override means the design's own threshold, not a copy of it",
+    );
+    assert_eq!(
+        defaults.client.narrow_cols(),
+        DEFAULT_NARROW_COLS,
+        "and reading it through the accessor is what supplies that threshold",
+    );
+    assert_eq!(defaults.keys.prefix, None, "the shipped prefix stands");
+    assert!(
+        defaults.keys.bind.is_empty(),
+        "and so does the shipped table"
+    );
+    assert_eq!(
         SECTIONS,
         &[
             PERSIST_SECTION,
             TERMINAL_SECTION,
             UPDATE_SECTION,
-            WORK_SECTION
+            WORK_SECTION,
+            CLIENT_SECTION,
+            KEYS_SECTION,
         ]
     );
 
@@ -157,6 +183,12 @@ channel = 7
 
 [work]
 dir = 7
+
+[client]
+narrow_cols = \"wide\"
+
+[keys]
+prefix = 7
 ";
     let (next, diagnostics) = reload(&running, text);
 
@@ -171,8 +203,12 @@ dir = 7
             Some(PERSIST_SECTION),
             Some(TERMINAL_SECTION),
             Some(UPDATE_SECTION),
-            Some(WORK_SECTION)
-        ]
+            Some(WORK_SECTION),
+            Some(CLIENT_SECTION),
+            Some(KEYS_SECTION),
+        ],
+        "the order is SECTIONS' order, so a section added without a row there \
+         would be a section this test never named",
     );
     for diagnostic in &diagnostics {
         assert!(
@@ -180,6 +216,61 @@ dir = 7
             "a diagnostic without the parser's words cannot be acted on",
         );
     }
+}
+
+/// M4's two client-side sections read like every section before them.
+///
+/// D-M4-8 built them because 10 §D14's "keybindings are already config data"
+/// was false in every clause: there was no `[client]`, no `[keys]`, and the
+/// client read no configuration at all. The point of this test is that they are
+/// not a new mechanism — the same three outcomes per section (absent resets,
+/// valid applies, invalid keeps and reports) apply to a keymap exactly as they
+/// apply to a shell path.
+#[test]
+fn the_client_and_keys_sections_take_the_ordinary_per_section_leniency() {
+    let running = running();
+    let text = "\
+[client]
+narrow_cols = 45
+
+[keys]
+prefix = \"f1\"
+
+[keys.bind]
+s = \"split-vertical\"
+";
+    let (next, diagnostics) = reload(&running, text);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert_eq!(next.client.narrow_cols, Some(45));
+    assert_eq!(next.client.narrow_cols(), 45);
+    assert_eq!(next.keys.prefix.as_deref(), Some("f1"));
+    assert_eq!(
+        next.keys.bind.get("s").map(String::as_str),
+        Some("split-vertical")
+    );
+
+    // A malformed keymap leaves every running binding exactly as it is. This
+    // is the clause that matters most for `[keys]`: a typo in a prefix must
+    // never strand a user in an attached client with no way to reach the
+    // prefix layer.
+    let (next, diagnostics) = reload(&running, "[keys]\nprefix = 7\n");
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].section, Some(KEYS_SECTION));
+    assert_eq!(next.keys, running.keys, "the running bindings stand");
+
+    let (next, diagnostics) = reload(&running, "[client]\nnarrow_cols = \"wide\"\n");
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].section, Some(CLIENT_SECTION));
+    assert_eq!(next.client, running.client);
+
+    // And a file that names neither section resets both to the shipped
+    // behaviour, so the running config stays reconstructable from the file.
+    let (next, diagnostics) = reload(&running, "[persist]\nhistory = true\n");
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert_eq!(next.client, ClientConfig::default());
+    assert_eq!(next.keys, KeysConfig::default());
+    assert_eq!(next.client.narrow_cols(), DEFAULT_NARROW_COLS);
+    assert_eq!(next.keys.bind, BTreeMap::new());
 }
 
 /// A section that is present but not a table at all — `persist = 5` — is a

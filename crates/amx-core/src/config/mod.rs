@@ -22,6 +22,8 @@
 //! - Unknown keys and unknown sections are ignored silently — the same
 //!   tolerance rule the wire applies in both directions (04 §4).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// The `[persist]` section's name, as it appears in the file.
@@ -36,16 +38,30 @@ pub const UPDATE_SECTION: &str = "update";
 /// The `[work]` section's name, as it appears in the file.
 pub const WORK_SECTION: &str = "work";
 
+/// The `[client]` section's name, as it appears in the file.
+pub const CLIENT_SECTION: &str = "client";
+
+/// The `[keys]` section's name, as it appears in the file.
+pub const KEYS_SECTION: &str = "keys";
+
 /// Every section amx reads, in file order.
 ///
 /// M1 tables exactly the sections that have a consumer; a section nobody reads
 /// is a promise nobody keeps. Walked rather than repeated, so adding a section
 /// is adding a field plus a row here.
+///
+/// M4 adds the first two sections the *client* reads rather than the server
+/// (`docs/11-m4-plan.md` D-M4-8). They keep the rule above: `[client]` is read
+/// by the narrow-viewport projection and `[keys]` by the input machine and
+/// `amx keys`, all of them inside the same milestone that freezes the section
+/// (D-M4-10).
 pub const SECTIONS: &[&str] = &[
     PERSIST_SECTION,
     TERMINAL_SECTION,
     UPDATE_SECTION,
     WORK_SECTION,
+    CLIENT_SECTION,
+    KEYS_SECTION,
 ];
 
 /// The whole configuration, one field per section.
@@ -66,6 +82,12 @@ pub struct Config {
     /// `[work]`.
     #[serde(default)]
     pub work: WorkConfig,
+    /// `[client]`.
+    #[serde(default)]
+    pub client: ClientConfig,
+    /// `[keys]`.
+    #[serde(default)]
+    pub keys: KeysConfig,
 }
 
 /// `[persist]`: what durability keeps beyond the snapshot itself.
@@ -132,6 +154,72 @@ pub struct WorkConfig {
     /// user-supplied path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
+}
+
+/// `[client]`: how a client draws what it was given (D14).
+///
+/// The first section the *client* reads rather than the server, and the reason
+/// it exists is `docs/11-m4-plan.md` D-M4-8: 10 §D14 says the phone profile is
+/// "documentation work, not code", and every clause of that is false in the
+/// tree — there was no `[client]` section, no `[keys]` section, and `amx-client`
+/// read no configuration at all. This is the minimum that sentence needs to
+/// become true.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct ClientConfig {
+    /// The width below which a client shows one pane full-screen.
+    ///
+    /// An override rather than a value, on the same reasoning [`UpdateConfig`]
+    /// gives: [`DEFAULT_NARROW_COLS`] is a fact about the design, not something
+    /// a user should have to write out to get the ordinary behavior. Read it
+    /// through [`narrow_cols`](Self::narrow_cols) so the fallback lives in one
+    /// place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrow_cols: Option<u16>,
+}
+
+/// The default [`ClientConfig::narrow_cols`], from 10 §D14.
+pub const DEFAULT_NARROW_COLS: u16 = 60;
+
+impl ClientConfig {
+    /// The narrow threshold this configuration asks for.
+    #[must_use]
+    pub const fn narrow_cols(&self) -> u16 {
+        match self.narrow_cols {
+            Some(cols) => cols,
+            None => DEFAULT_NARROW_COLS,
+        }
+    }
+}
+
+/// `[keys]`: the prefix key and the prefix table, as data (D-M4-8).
+///
+/// 04 §7 promised keybindings would be configurable and `amx-client` shipped
+/// three milestones with a `const PREFIX` and a `match` on byte literals
+/// instead. This is the shape that promise is kept in: a prefix, and a table
+/// mapping the key pressed after it to the action it runs.
+///
+/// Both halves are overrides. An absent `prefix` is the shipped `ctrl+a`, and a
+/// `bind` entry replaces exactly one row of the shipped table and leaves the
+/// rest — so a phone profile that rebinds the prefix and nothing else is two
+/// lines, and a malformed section keeps every shipped binding under the lenient
+/// per-section rule this module opens with.
+///
+/// Key names are spelled the way `pane.send_keys` spells them — `ctrl+a`,
+/// `f1`, or a bare character — so a user who has read one part of the docs can
+/// write the other. Action names are the client's own verbs; `amx keys` prints
+/// the resolved table, which is what makes them discoverable rather than
+/// folklore.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct KeysConfig {
+    /// The key that opens the prefix layer, ahead of the shipped `ctrl+a`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// Prefix-layer bindings: the key pressed after the prefix, to the action.
+    ///
+    /// Sorted rather than hashed so `amx keys` prints a stable table and a
+    /// diff of two configurations is readable.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bind: BTreeMap<String, String>,
 }
 
 /// One thing that went wrong while reloading, named by section.
@@ -215,6 +303,20 @@ pub fn reload(current: &Config, text: &str) -> (Config, Vec<ConfigDiagnostic>) {
         WORK_SECTION,
         &current.work,
         &mut next.work,
+        &mut diagnostics,
+    );
+    section(
+        &document,
+        CLIENT_SECTION,
+        &current.client,
+        &mut next.client,
+        &mut diagnostics,
+    );
+    section(
+        &document,
+        KEYS_SECTION,
+        &current.keys,
+        &mut next.keys,
         &mut diagnostics,
     );
     (next, diagnostics)

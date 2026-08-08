@@ -427,6 +427,8 @@ fn shell_config(shell: &Path) -> Config {
         persist: PersistConfig::default(),
         update: amx_core::UpdateConfig::default(),
         work: amx_core::WorkConfig::default(),
+        client: amx_core::config::ClientConfig::default(),
+        keys: amx_core::config::KeysConfig::default(),
     }
 }
 
