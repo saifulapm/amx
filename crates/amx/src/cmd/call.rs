@@ -50,6 +50,17 @@
 //!   neither touched the session. That is the ordinary shape of a verb typed
 //!   while a swap is in flight.
 //!
+//! # A refusal that is not a failure (DR-16)
+//!
+//! [`RpcError::RETRIABLE`](amx_proto::RpcError::RETRIABLE) is the third thing a
+//! call can come back with, and it belongs to the second rule rather than the
+//! first: the session answered, and its answer is that it did *not* act. A pane
+//! quiesced for a handoff refuses `pane.send_text` without typing anything, so
+//! re-issuing is asking the same question — for `agent.prompt` as much as for a
+//! read, which is exactly what [`reissuable`] cannot say on its own. Before the
+//! code existed the same refusal arrived as `INVALID_PARAMS`, so every verb
+//! typed a moment before a swap reported a user error the user had not made.
+//!
 //! The redial window is the caller's own patience, not a constant invented
 //! here: a call carrying `timeout_ms` gets exactly that long *in total*, and the
 //! re-issued call's timeout is reduced by what has already been spent, so
@@ -218,6 +229,16 @@ async fn attempt(ctx: &Ctx, wire: &str, params: &Value) -> Result<Value, Attempt
             }
         })?;
     session.call(wire, params.clone()).await.map_err(|err| {
+        // A refusal that names itself retriable is the session saying it did
+        // not act — quiesced mid-handoff, and about to be a session again. So
+        // it is `sent: false`: nothing was done, whatever the method, and the
+        // re-issue asks the same question rather than repeating an act. That
+        // is the whole of what DR-16's code buys over `INVALID_PARAMS`, and it
+        // is why the test for it drives `pane.send_text` — a verb `reissuable`
+        // refuses, which this answer makes safe.
+        if matches!(&err, NetError::Call(refusal) if refusal.is_retriable()) {
+            return Attempt::Lost { sent: false, err };
+        }
         // A wait the session abandoned is the session going away, not an
         // answer: it says the question was dropped unanswered, which is the
         // one refusal a redial can legitimately ask again.

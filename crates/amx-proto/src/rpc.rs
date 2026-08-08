@@ -201,4 +201,18 @@ impl RpcError {
     pub fn method_not_found(method: &str) -> Self {
         Self::new(Self::METHOD_NOT_FOUND, format!("unknown method: {method}"))
     }
+
+    /// Whether the session said it did not act and the call may be made again.
+    ///
+    /// The reader half of [`RETRIABLE`](Self::RETRIABLE), and the whole reason
+    /// the refusal is a code rather than a message: a caller can only re-issue
+    /// what it knows had no effect, and no string is a contract about that. It
+    /// is deliberately a question about the *code* and not about the method —
+    /// a verb that types into a pane is unsafe to repeat after a connection
+    /// died mid-flight, and safe to repeat after this answer, because this
+    /// answer is the session saying it never typed anything.
+    #[must_use]
+    pub const fn is_retriable(&self) -> bool {
+        self.code == Self::RETRIABLE
+    }
 }
