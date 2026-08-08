@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use amx_core::GridGeneration;
 use amx_core::platform::WinSize;
-use amx_vt::Effect as VtEffect;
+use amx_vt::TerminalEvent;
 use tracing::{debug, warn};
 
 use super::super::mailbox::HostEvent;
@@ -31,8 +31,8 @@ impl Parser {
     pub(super) fn drain_effects(&mut self) {
         for index in 0..self.effects.events().len() {
             let event = match &self.effects.events()[index] {
-                VtEffect::Bell => Some(HostEvent::Bell),
-                VtEffect::TitleChanged => match self.terminal.title() {
+                TerminalEvent::Bell => Some(HostEvent::Bell),
+                TerminalEvent::TitleChanged => match self.terminal.title() {
                     Ok(Some(title)) => Some(HostEvent::Title(title)),
                     Ok(None) => None,
                     Err(err) => {
@@ -41,7 +41,7 @@ impl Parser {
                     }
                 },
                 // The pane's own cwd tracking and clipboard routing are not M0.
-                VtEffect::PwdChanged | VtEffect::ClipboardWrite { .. } => None,
+                TerminalEvent::PwdChanged | TerminalEvent::ClipboardWrite { .. } => None,
                 _ => None,
             };
             if let Some(event) = event {

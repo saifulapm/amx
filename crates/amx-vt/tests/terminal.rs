@@ -93,14 +93,14 @@ fn effects_accumulate_in_order_and_the_buffer_is_reusable() {
     terminal.write(b"\x07\x1b]2;pane\x07\x07", &mut effects);
     assert_eq!(
         effects.events(),
-        [Effect::Bell, Effect::TitleChanged, Effect::Bell]
+        [TerminalEvent::Bell, TerminalEvent::TitleChanged, TerminalEvent::Bell]
     );
     assert_eq!(terminal.title().expect("a title").as_deref(), Some("pane"));
 
     effects.clear();
     assert!(effects.is_empty());
     terminal.write(b"\x07", &mut effects);
-    assert_eq!(effects.events(), [Effect::Bell]);
+    assert_eq!(effects.events(), [TerminalEvent::Bell]);
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn osc_52_is_decoded_into_a_clipboard_effect() {
     terminal.write(b"\x1b]52;c;YW14\x07", &mut effects);
 
     match effects.events() {
-        [Effect::ClipboardWrite { location, contents }] => {
+        [TerminalEvent::ClipboardWrite { location, contents }] => {
             assert_eq!(*location, ClipboardLocation::Standard);
             let payload = contents.first().expect("one representation");
             assert_eq!(payload.data, b"amx");
@@ -128,7 +128,7 @@ fn osc_7_reports_a_pwd_change_and_the_value_reads_back() {
 
     terminal.write(b"\x1b]7;file:///tmp\x07", &mut effects);
 
-    assert_eq!(effects.events(), [Effect::PwdChanged]);
+    assert_eq!(effects.events(), [TerminalEvent::PwdChanged]);
     assert_eq!(
         terminal.pwd().expect("a pwd").as_deref(),
         Some("file:///tmp")
