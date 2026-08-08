@@ -198,7 +198,9 @@ fn work_branch_creates_worktree_workspace_and_agent_and_names_all_three() {
     let ws = fixture
         .workspace("feat")
         .expect("a workspace labelled for the branch");
-    let block = ws.worktree.expect("the workspace carries its worktree block");
+    let block = ws
+        .worktree
+        .expect("the workspace carries its worktree block");
     assert_eq!(block.branch, "feat");
     assert_eq!(block.path, tree);
     assert_eq!(block.repo, fixture.repo);
@@ -224,7 +226,10 @@ fn work_branch_creates_worktree_workspace_and_agent_and_names_all_three() {
         .iter()
         .find(|pane| pane.pane == panes[0])
         .expect("the root pane is reported");
-    assert!(root.label.is_none(), "the root pane is the shell, not the agent");
+    assert!(
+        root.label.is_none(),
+        "the root pane is the shell, not the agent"
+    );
 }
 
 /// `done` takes the workspace, its panes and the tree — and refuses to take any
@@ -271,7 +276,10 @@ fn work_done_collapses_all_three_and_refuses_a_dirty_tree_without_force() {
     assert!(tree.is_dir());
 
     // Forced: all three collapse together.
-    let said = fixture.amx(&["work", "done", "feat", "--force"]).ok().to_owned();
+    let said = fixture
+        .amx(&["work", "done", "feat", "--force"])
+        .ok()
+        .to_owned();
     assert!(said.contains("removed"), "{said}");
     assert!(!tree.exists(), "the tree is gone: {said}");
     assert!(fixture.workspace("feat").is_none(), "the workspace is gone");
@@ -286,6 +294,56 @@ fn work_done_collapses_all_three_and_refuses_a_dirty_tree_without_force() {
         "feat",
     );
     assert!(said.contains("branch feat is untouched"), "{said}");
+}
+
+/// `amx work done` with no branch is about the focused workspace — and refuses
+/// outright when that workspace is not one `amx work` made.
+///
+/// The property this pins is that `done` cannot become a way to lose a workspace
+/// nobody asked it about. A no-branch `done` typed in the wrong window has to be
+/// a refusal, not a kill, because `amx workspace kill` is right there for a
+/// workspace that is only a workspace.
+#[test]
+fn work_done_with_no_branch_takes_the_focused_tree_and_refuses_a_plain_workspace() {
+    let mut fixture = Fixture::new("wkf");
+    fixture.serve();
+
+    // A plain workspace, focused: the case that must refuse.
+    let created: serde_json::Value = serde_json::from_str(
+        fixture
+            .amx(&["workspace", "create", "--params", r#"{"label":"plain"}"#])
+            .ok(),
+    )
+    .expect("create reply is JSON");
+    let plain = created["workspace"].as_str().expect("a workspace id");
+    fixture
+        .amx(&[
+            "workspace",
+            "switch",
+            "--params",
+            &format!(r#"{{"workspace":"{plain}"}}"#),
+        ])
+        .ok();
+    let said = fixture.amx(&["work", "done"]).failed().to_owned();
+    assert!(said.contains("not made by `amx work`"), "{said}");
+    assert!(said.contains("plain"), "it names which one: {said}");
+    assert!(
+        fixture.workspace("plain").is_some(),
+        "the refusal killed nothing",
+    );
+
+    // `amx work` switches to what it made, so a no-branch `done` right after it
+    // means that tree — the "the workspace this pane is in" default.
+    fixture.amx(&["work", "feat"]).ok();
+    let tree = fixture.rig.root().join("repo--feat");
+    assert!(tree.is_dir());
+    fixture.amx(&["work", "done"]).ok();
+    assert!(!tree.exists(), "the focused tree came down");
+    assert!(fixture.workspace("feat").is_none());
+    assert!(
+        fixture.workspace("plain").is_some(),
+        "and only that one did",
+    );
 }
 
 /// A tree somebody removed between two runs of the server: the workspace comes
@@ -347,6 +405,37 @@ fn a_vanished_worktree_restores_as_a_plain_workspace_with_a_report_entry() {
             .amx(&["work", "done", "feat"])
             .failed()
             .contains("no workspace"),
+    );
+}
+
+/// Run from inside one worktree, `amx work` puts the next one beside the
+/// *repository* — not beside its sibling.
+///
+/// The whole reason `Repo::discover` reads `git worktree list` rather than
+/// `--show-toplevel`: a template built on `{repo_parent}` would otherwise stack
+/// trees inside each other the moment somebody ran the verb from a tree they had
+/// just made, which is the ordinary way to use it.
+#[test]
+fn work_from_inside_a_worktree_places_the_next_one_beside_the_repository() {
+    let mut fixture = Fixture::new("wkn");
+    fixture.serve();
+    fixture.amx(&["work", "first"]).ok();
+    let first = fixture.rig.root().join("repo--first");
+
+    fixture.at(&first, &["work", "second"]).ok();
+    let second = fixture.rig.root().join("repo--second");
+    assert!(second.join("README").is_file(), "beside the repository");
+    assert!(
+        !first.join("repo--second").exists(),
+        "and not nested inside the tree the verb was run from",
+    );
+    assert_eq!(
+        fixture
+            .workspace("second")
+            .and_then(|ws| ws.worktree)
+            .map(|tree| tree.repo),
+        Some(fixture.repo.clone()),
+        "the membership names the repository, not the worktree it was run from",
     );
 }
 
