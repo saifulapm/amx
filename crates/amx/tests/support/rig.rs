@@ -64,6 +64,21 @@ impl Rig {
             .join("sock")
     }
 
+    /// This rig's session snapshot, once a server has written one.
+    ///
+    /// A test that stops a server and starts another one is restoring from this
+    /// file, and `amx session stop` returns before it exists: the command waits
+    /// for the socket to go quiet, and the final capture is written afterwards,
+    /// while the server is still draining. So a restart is a race unless the
+    /// test waits for the fact, and waiting for it means being able to name it.
+    pub fn snapshot(&self) -> PathBuf {
+        self.root()
+            .join("state")
+            .join("amx")
+            .join(&self.session)
+            .join("session.json")
+    }
+
     /// Where `amx update apply` stages a download.
     pub fn staging(&self) -> PathBuf {
         self.root()

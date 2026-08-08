@@ -44,6 +44,14 @@
 //!   [`Repo::discover`] finds the main checkout even when the caller's directory
 //!   is itself a linked worktree, and how `amx work done` confirms the path it is
 //!   about to remove is one this repository actually owns.
+//!
+//!   **Every path it prints is a realpath.** Verified on git 2.55.0: a worktree
+//!   added through a symlinked path is listed under the target's spelling, and
+//!   so is the main worktree when the list is asked for through one. So the
+//!   paths this module hands back are git's spelling and not the caller's, and
+//!   anything joining them against a path amx derived resolves both first
+//!   ([`crate::work::resolve`]). Nothing here does that resolving: what a
+//!   command said is what this module reports.
 //! - `worktree prune` drops the administrative files of a worktree whose
 //!   directory has been removed by hand — the tidy-up for the case restore
 //!   reports.

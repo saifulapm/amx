@@ -26,7 +26,18 @@
 //! `session/serve.rs` places before the accept loop ("the first client that can
 //! possibly connect already sees the restored session"). The pane survives, its
 //! process does not, and nothing that reconnects afterwards could have caused
-//! it, because there is no process left to exit.
+//! it, because there is no process left to exit. The program is
+//! [`exits_immediately`]'s, written into the environment, because a shell the
+//! restore cannot spawn is a *pruned pane* rather than a pane whose process
+//! exited — a different test entirely, and the one a hard-coded `/bin/true`
+//! quietly became on macOS.
+//!
+//! The third half — the one M3's exit criterion found on CI — is a wait the
+//! session ends by *answering* it
+//! (`a_wait_the_session_abandons_is_re_issued_rather_than_reported`). A dying
+//! socket and an abandoned wait are the same event to a caller, and the suite
+//! drives the second one directly rather than handing a session over and hoping
+//! the reply wins its race with the close.
 //!
 //! Every "the standing verb is connected now" is *observed*, never slept
 //! through: a second connection subscribes to the bus and waits for the
@@ -45,7 +56,10 @@ use std::time::Duration;
 use amx_server::session::probe::probe;
 use serde_json::{Value, json};
 
-use harness::{Session1, Standing, await_attach, flood, rename, reply, shell, state, watcher};
+use harness::{
+    Abandoning, Session1, Standing, await_attach, exits_immediately, flood, rename, reply, shell,
+    state, watcher,
+};
 use support::wait_until;
 
 #[path = "wait_retry/harness.rs"]
@@ -132,11 +146,23 @@ async fn a_transition_that_fires_during_the_gap_still_returns_the_wait() {
     assert!(waiting.running());
 
     session.kill_server();
-    // The restored pane's process is `/bin/true`: spawned by the restore and
-    // over before the successor's accept loop starts, so the wait's predicate
-    // becomes true at a moment when the wait has no connection to anything.
-    shell(&session.env, "/bin/true");
+    // The restored pane's process exits the moment it is spawned: started by
+    // the restore and over before the successor's accept loop starts, so the
+    // wait's predicate becomes true at a moment when the wait has no connection
+    // to anything.
+    shell(&session.env, &exits_immediately(&session.env));
     session.serve();
+
+    // Stated, because the wait below depends on it and the two failures read
+    // nothing alike: a pane the restore could not respawn is pruned with its
+    // workspace (D-M1-9), and the re-issued wait then reports a caller error —
+    // "no pane … in this session" — which looks like a client that lost track
+    // of its own question rather than a session that lost the pane.
+    assert_eq!(
+        state(&session.env)["panes"][0]["pane"].as_str(),
+        Some(pane.as_str()),
+        "the restored session must still hold the pane the wait is about"
+    );
 
     let done = waiting.finish();
     let answer = reply(&done);
@@ -147,6 +173,67 @@ async fn a_transition_that_fires_during_the_gap_still_returns_the_wait() {
          true: {answer}"
     );
     assert_eq!(answer["pane"].as_str(), Some(pane.as_str()));
+}
+
+/// A wait the session cuts short *and answers* is the same event as a wait
+/// whose socket dies, and it must end the same way (D-M3-7).
+///
+/// This is the failure the exit criterion caught on a four-core runner and
+/// never on a twelve-core one: a handoff cancels every standing wait with
+/// `WAIT_ABANDONED` and then closes the socket, so on a loaded machine the
+/// *reply* arrives first and a client that reads it as a refusal loses a wait
+/// that was doing exactly what it was told. Nothing here is a race: the socket
+/// under test always sends the abandonment, always keeps the connection whole
+/// afterwards, and always answers the re-issue.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wait_the_session_abandons_is_re_issued_rather_than_reported() {
+    let env = std::sync::Arc::new(support::Env::new("wr-e"));
+    let pane = amx_core::PaneId::new_v4();
+    let session = Abandoning::listening(&env, pane);
+
+    // On a blocking thread: the socket answering it is a task on this runtime,
+    // and a verb run inline would hold a worker for the whole call.
+    let running = std::sync::Arc::clone(&env);
+    let target = pane.to_string();
+    let done = tokio::task::spawn_blocking(move || {
+        running.run(&[
+            "wait",
+            "--until",
+            "exited",
+            "--target",
+            &target,
+            "--timeout",
+            "10s",
+        ])
+    })
+    .await
+    .expect("run the wait");
+
+    assert_eq!(
+        done.code,
+        Some(0),
+        "an abandoned wait was reported instead of re-issued: {done:?}"
+    );
+    let answer = reply(&done);
+    assert_eq!(answer["satisfied"], json!(true), "{answer}");
+    assert_eq!(answer["pane"].as_str(), Some(pane.to_string().as_str()));
+
+    // Exactly twice: the wait was asked again, once, rather than redialled in
+    // a loop until something answered.
+    let asked = session.asked();
+    assert_eq!(asked.len(), 2, "the wait was issued {} times", asked.len());
+
+    // And the re-issue kept the caller's own deadline, which is the honesty
+    // rule the redial has carried since W09: the second call may spend only
+    // what the first one left.
+    let spent: Vec<u64> = asked
+        .iter()
+        .map(|params| params["timeout_ms"].as_u64().expect("a timeout"))
+        .collect();
+    assert!(
+        spent[0] <= 10_000 && spent[1] < spent[0],
+        "the re-issued wait did not spend the caller's remaining patience: {spent:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

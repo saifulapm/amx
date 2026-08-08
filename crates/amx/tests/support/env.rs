@@ -285,10 +285,28 @@ pub fn window(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 /// Poll `cond` until it holds, failing the test if it never does.
-pub fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+pub fn wait_until(what: &str, cond: impl FnMut() -> bool) {
+    wait_until_or(what, cond, String::new);
+}
+
+/// [`wait_until`], with a diagnostic naming what was actually observed when the
+/// wait expires.
+///
+/// The rig's harness carries the same pair for the same reason: a timeout that
+/// only says "not yet" leaves a CI-only failure undiagnosable, and the state a
+/// wait gave up on is usually the whole answer. `seen` is only ever called on
+/// the failing path, so an expensive diagnostic costs a green run nothing.
+pub fn wait_until_or(what: &str, mut cond: impl FnMut() -> bool, mut seen: impl FnMut() -> String) {
     let deadline = Instant::now() + PATIENCE;
     while !cond() {
-        assert!(Instant::now() < deadline, "timed out waiting until {what}");
+        assert!(Instant::now() < deadline, "{}", expired(what, &mut seen));
         std::thread::sleep(TICK);
     }
+}
+
+/// The message a [`wait_until_or`] gives up with.
+fn expired(what: &str, seen: &mut impl FnMut() -> String) -> String {
+    let observed = seen();
+    let sep = if observed.is_empty() { "" } else { ": " };
+    format!("timed out waiting until {what}{sep}{observed}")
 }

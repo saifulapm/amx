@@ -129,6 +129,21 @@ fn control_goldens_match() {
         ),
     );
 
+    // The one error code amx defines outside JSON-RPC's own four, frozen
+    // separately because a client *branches* on it: a wait a handoff cut short
+    // is a reconnect, not a failure (D-M3-7). Changing this number silently
+    // would turn every standing wait back into a lost one.
+    check_golden(
+        "response_wait_abandoned",
+        &Response::err(
+            RequestId::from(8),
+            RpcError::new(
+                RpcError::WAIT_ABANDONED,
+                "the session is shutting down; the wait was abandoned",
+            ),
+        ),
+    );
+
     call_golden(
         "method_ping",
         Call::Ping(session::PingParams {}),

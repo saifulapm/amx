@@ -1766,3 +1766,416 @@ to a csh host, per above; fixing it properly means encoding the name across the
 wire rather than through the shell, which is an interface change and not this
 one. And the machine-to-machine smoke that found this is recorded separately in
 `m3-live-smoke.md`.
+
+## Settling the load-sensitive reads
+
+Four flakes landed in one day, all with the same shape: the test performs an
+action, then reads a state row or a screen region **once**, before the actor
+responsible has finished filling it in. One of the four turned out to be hiding
+a product bug behind a green suite, which is the reason this shape gets its own
+section rather than four separate fixes.
+
+The two owned here are `explain_names_the_matching_rule_and_reports_every_other_one`
+(`tests/agents/explain.rs`) and `agent_start_spawns_from_the_registry_labels_the_pane_and_returns_ready`
+(`crates/amx-server/tests/agent_verbs.rs`). Neither is reproducible by
+re-running: both pass in isolation and under an unloaded full run.
+
+### Two read models, and the one nobody waits on
+
+`agent.start` answers `ready` off `AgentHub`'s `StatusView` — the fast read
+model, the one a wait predicate holds directly. `session.state`'s per-pane
+`agent` block is a **different** model: `Core`'s mirror of that view, posted by
+`agent_hub/commit.rs`'s `mirror` with an un-awaited, droppable `try_send`, and
+folded in `core/report.rs`. `docs/08-m2-plan.md` §3 calls the mirror the slower
+path "whose mailbox lag is harmless because nothing awaits on it".
+
+Something does await on it. A state read taken straight after a `ready` reply
+comes back carrying the pane's label and **no `agent` field at all** — `Null`
+where a kind was expected. Reproduced 22 times in 320 constrained runs; the
+failure is exactly
+
+```
+assertion `left == right` failed:
+  {"cols":80,…,"label":"dev","pane":"077c40b0-…","rows":24,"short":2}
+  left: Null
+ right: "fake"
+```
+
+Note what is *not* in that entry.
+
+### The finding: `ready` does not mean addressable
+
+Two of the three sites this closed in `agent_verbs.rs` were not reading state
+for its own sake — they were addressing a pane **by name**, which is D-M2-9's
+whole argument for names. `address::resolve` in `Scope::Agent` admits a pane
+only if its *mirrored* status carries a kind, and it resolves against
+`session.state`. So:
+
+```
+agent.start  name=dev  ->  readiness: ready, pane: <uuid>
+agent.prompt target=dev ->  "dev" names 1 panes and no agent is running in it
+```
+
+That is a product looseness, not a test bug. `agent.start` returns evidence
+drawn from one read model about a pane that the *other* read model — the one
+every subsequent verb addresses through — does not know about yet, and the
+reply carries nothing a caller could wait on. The `pane` field is the escape
+hatch (a UUID resolves in either scope, deliberately), but a script that uses
+the name it just chose is racing. Polling `session.state` is the only
+observation available, which is what the suites now do; closing it properly
+means either mirroring synchronously before the start reply is written, or
+giving the reply a sequence a caller can wait for. Neither is this change.
+
+The same ordering bites one tier further out. `AgentHub::absorb` publishes the
+status and attention *events on the bus* and only then calls `mirror`, so
+`crates/amx/tests/skill.rs`'s reference notifier — which reads the bus through
+`amx events --json` — learns of an enqueue strictly before `session.state` can
+report it. That test read the queue once, on the strength of the notification.
+
+### A frame is not a paint
+
+The second mechanism is the pane's own publication. `parser.rs`'s `publish`
+fills the snapshot slot **and then** tracks history, and it runs once per parsed
+chunk — so a block of lines can reach a reader a few lines at a time, and a
+reader that stopped at the first line is holding a screen that is still being
+written.
+
+`Rig::block` waited for `"Do you want to proceed?"` and called the dialog up.
+The shipped `permission_dialog` rule needs the question **and** one of the
+option lines under it, and `prompt_box_idle` has the question in its `not`
+clause — so on a half-painted dialog *no rule matches at all* and `agent
+explain` answers `matched: null` about a pane that is, by every other measure,
+blocked. The waiter was waiting for the wrong fact.
+
+This one does not reproduce on a box whose `/bin/sh` is bash: the paint arrives
+as a single 220-byte write and a single read, measured on the master side of a
+real pty. It was reproduced instead by splitting `paint_blocked` at exactly the
+line boundary the CI failure shows — 20 failures in 20 runs, with a
+`region_preview` that ends at the question and a `permission_dialog` verdict of
+"none of 3 alternatives hold", byte for byte the reported failure. With the
+wait naming both anchors: 0 in 20, and 0 in 12 full-suite runs still split.
+
+### What each site now waits on
+
+| Site | Waits on |
+|---|---|
+| `Rig::block` (`tests/agents/fixtures.rs`) | the region holding **both** anchors `permission_dialog` needs, not the first line of the dialog |
+| `Rig::start_agent` (same) | `session.state` naming the pane's agent, not the `ready` reply |
+| `resume.rs`, `agents.rs` `session_ref` reads | the conversation reaching the state tree — a later commit on the same mirror than the kind is |
+| `wait_pane_agent` (`agent_verbs/harness.rs`) | the same, and it answers with the entry so a caller has one read to reason about |
+| `start_timeout_reports_failure…` | the child's marker on the screen, not the dispatcher's own expired deadline |
+| `skill.rs`'s attention read | the state tree carrying the queue the bus already published |
+
+Every one of them fails with what it last saw. That is not decoration: a pane
+whose `agent` block has not been mirrored yet and a pane that never had one are
+the same `Null` to an assertion, and only the entry tells them apart.
+
+### Rates, on two cores or one
+
+Reproduction is by cpuset, not by repetition — `taskset` plus N copies of the
+whole test binary at once, which is the shape `cargo test --workspace` has on a
+small runner.
+
+| Suite | Constraint | Before | After |
+|---|---|---|---|
+| `agent_verbs` | `-c 0`, 8 copies × 8 threads, 320 runs | 22/320 | 0/320 |
+| `agents::explain` | `-c 0`, 8 copies × 8 threads, 160 runs | 0/160 | 0/160 |
+| `agents::explain`, dialog split at the line boundary | `-c 0-3`, 4 copies, 20 runs | 20/20 | 0/20 |
+| `agents` (whole suite), dialog split | `-c 0-3`, 3 copies, 12 runs | — | 0/12 |
+| `skill` | `-c 0`, 6 copies × 8 threads, 60 runs | 0/60 | 0/60 |
+
+The `agents` binary at `-c 0` with 6 or 8 copies also fails `resume::*`, but on
+`PATIENCE` expiry in `wait_snapshot_holds` — the persist debounce genuinely not
+landing inside sixty seconds under 8× oversubscription. That is the constraint
+being unreasonable, not a wait reading too early, and it is not touched here.
+
+### Examined and left alone
+
+The three test trees hold 71 reads of a state tree, a screen or a status that
+are *not* already inside a wait helper. Every one of those that sits
+immediately after a mutating call was traced to the code that fills the field.
+**Nine were changed**, across six files — two of them harness-level, so they
+settle every call site rather than one. The ones deliberately left:
+
+- **Reads of a synchronous reply.** `label`, `cwd` on split, `worktree`,
+  `restore` — `Core` mutates its own state and then answers, so one read is
+  right. `check_new_name` is in this group, which is why `agent.start`'s
+  duplicate-name refusal is *not* racy even though `Scope::Agent` addressing is.
+- **Reads whose precondition an earlier wait strictly implies.**
+  `edges.rs`'s interrupted-screen assertion: the status can only have reached
+  idle because `prompt_box_idle` matched, and that rule reads lines *below* the
+  text being asserted. Likewise `drive.rs` waiting on the last line of a block.
+- **`agent_hub.rs`'s spy reads.** `Rig::settle` is 32 `yield_now`s on a
+  current-thread runtime with the spy task on it, which is deterministic rather
+  than hopeful.
+
+### Left open
+
+Two sites are racy and have no barrier to wait on, so they are recorded rather
+than papered over:
+
+- **`handoff_exit.rs`'s `rows_before`.** `history_head`/`history_floor` are
+  `Core`'s fold of `HostEvent::Committed`, and `parser.rs`'s `publish` sends
+  those events *after* filling the snapshot slot — so `pane.read` showing the
+  sentinel does not mean the commits are in `Core`'s mailbox, and they arrive on
+  a different queue from the test's own `session.state` call. The assertion is
+  `rows_after.0 == rows_before.0`, so a stale-low `rows_before` fails it. There
+  is no observation that orders a pane's history commits against a state read;
+  the honest fixes are a barrier in the product or a claim that does not compare
+  two point reads. Not attempted here.
+- **The late-`SubagentStop` negatives** (`edges.rs`, `agents.rs`). Both comment
+  that the following call "cannot be answered before the report was handled,
+  since both cross the same connection to the same actors". They do not: the
+  hook rides a separately spawned `amx _hook` on its own connection. These only
+  ever fail *falsely green* — a lagging report cannot make a negative go red —
+  so they are not in this flake class, but the stated reasoning is wrong and the
+  coverage is weaker than it reads.
+
+**Budget watch.** The two harnesses that grew a wait went 445 → 518
+(`crates/amx-server/tests/agent_verbs/harness.rs`) and 443 → 514
+(`tests/agents/fixtures.rs`), both just over the soft budget. Not split: what
+was added is three wait helpers each sitting beside the reads they guard, and
+lifting them out would put a suite's waits in one file and the suite's model of
+the session in another. The next task to add a helper to either should expect
+to split the rig from the fake-agent plumbing rather than trim prose.
+
+---
+
+---
+
+## CI: the waits that did not keep waiting
+
+Two failures on `main` after M3 landed, one per platform. They look alike from
+the outside — a `wait` that exits 1 where it should have answered — and they
+have nothing else in common: one is the milestone's headline sentence being
+false, the other is a test that was measuring the wrong thing on a platform
+where `/bin` is not the `/bin` it was written against.
+
+### The standing wait that died at the swap (ubuntu-latest)
+
+**The mechanism.** A handoff ends every standing wait twice over: the exporter
+cancels the connection, which makes `conn/events.rs`'s long polls answer with
+`cancelled()`, and then the socket closes. Both reach the client, and which
+one *arrives first* is a race decided by how loaded the machine is. W09's
+redial keyed on the second — a transport failure — and read the first as a
+refusal: a well-formed JSON-RPC error, delivered before the close, which the
+CLI reported as `call wait: call failed: the session is shutting down; the wait
+was abandoned` and exited 1. On a twelve-core box the wait usually resolves or
+the socket usually wins, which is why
+`five_agents_ride_a_live_upgrade_and_nothing_notices` was green here and red on
+a four-core runner. Reproduced locally by giving the test the runner's shape —
+`taskset -c 0-3 handoff_exit --test-threads=3` — at **2 failures in 10 runs**.
+
+**What changed.** The cancellation got an identity a machine can check:
+`RpcError::WAIT_ABANDONED` (−32000, inside JSON-RPC 2.0's implementation-defined
+server-error range), which `cancelled()` now carries and which
+`NetError::is_abandoned_wait` recognises. `cmd/call.rs` treats it as exactly
+what it is — the session going away with the question unanswered — so it takes
+the same path a dropped connection does: redial, and re-issue if re-issuing asks
+the same question. Nothing matches on the message; the string is documentation,
+the code is the contract. This is the shape W09 named and left open above ("a
+distinct code … meaning 'the session is mid-swap and nothing happened'"), taken
+for the wait half only: the mutating verbs still refuse to be re-issued once
+their request is written, because `WAIT_ABANDONED` says a *wait* was dropped and
+says nothing about a `pane.run` that may already have typed.
+
+Additive under R-M1-8: a client that has never heard of −32000 reads an ordinary
+error and behaves exactly as it did before, and a client that knows it talking to
+an older server still sees −32603 and behaves exactly as it did before. The code
+is frozen in `tests/goldens/proto/response_wait_abandoned.json` — separately from
+the generic error envelope, because this is the one error a client *branches* on,
+and a silent change to the number would put every standing wait back where it
+started.
+
+**One correction fell out of writing the test.** The re-issued call's
+`timeout_ms` was computed at the top of the redial loop, before the backoff
+sleep, so a verb that lost four connections could outstay its own `--timeout` by
+the sum of the backoffs. It is now measured after the sleep: time spent waiting
+to redial is the caller's time too.
+
+**The regression test is not a handoff.** Driving this through a real swap would
+be staging the race again and hoping it goes the other way, which is how it
+stayed hidden. `a_wait_the_session_abandons_is_re_issued_rather_than_reported`
+puts a session socket in front of the real binary that always abandons the first
+`wait` — with the server's own `cancelled()`, so the fixture cannot drift — and
+always answers the second, on a connection that stays whole throughout. It
+asserts the verb exits 0 and satisfied, that the wait was issued exactly twice
+rather than redialled in a loop, and that the second call's timeout is strictly
+less than the first's. Without the client change it fails on every run with the
+CI symptom verbatim; with it, and with the constrained repro, `handoff_exit` is
+**10 green runs out of 10**.
+
+### The re-issued wait that found no pane (macos-14)
+
+**Not the same bug, and not a product bug.** `a_transition_that_fires_during_
+the_gap_still_returns_the_wait` fires its transition by pointing `[terminal]
+shell` at a program that exits the instant it starts, so the restored pane's
+process is over before the successor accepts anybody. It named that program
+`/bin/true`, which is a Linux path: macOS ships `true` as `/usr/bin/true` and
+has nothing at `/bin/true`, and that single fact is the one link in this chain
+this machine cannot check for itself. Given it, the restore could not spawn the
+restored pane's shell on that runner at all, and D-M1-9's
+table says what happens next: the pane is pruned, its workspace loses its only
+pane and is pruned too, and the session comes back empty. The re-issued wait then
+answered `no pane <uuid> in this session` (−32602), which is the *correct* answer
+to the question it was asked. The suspected culprit — the debounced save not
+reaching disk before the `SIGKILL` — is already answered by the harness:
+`Session1::new` waits for the snapshot to name the pane before any test touches
+the server.
+
+**Verified on Linux, not on macOS.** Pointing the same test's shell at a path
+that does not exist reproduces the macOS failure here exactly, error code and
+message included, which pins the mechanism to "the restore could not spawn it"
+rather than to anything about darwin's timing. What remains for CI to confirm is
+the premise: that `/bin/true` is the path macOS does not have.
+
+**The fix is in the test.** `exits_immediately` writes a two-line `/bin/sh`
+script into the environment and points the config at that, so the suite asks the
+platform for nothing it does not already depend on — every pane in this file runs
+`/bin/sh`. The test now also *states* its precondition: it asserts the restored
+session still holds the pane before it reads the wait's answer, so the next time
+something prunes it the failure names the prune instead of looking like a client
+that lost track of its own question.
+
+---
+
+## Darwin: /var is not /private/var
+
+The third failure on `main` after M3, and the one the other two were hiding:
+four tests in `crates/amx/tests/work.rs` on macos-14, none of which had ever
+reached a verdict on that platform because the wait test above failed earlier in
+the same run. W12 built the worktree verbs and verified them on Linux.
+
+**The mechanism, verified rather than assumed.** `git worktree list --porcelain`
+prints every worktree's **realpath**. Confirmed on git 2.55.0 by adding a tree
+through a symlinked path and listing it through one: both the main worktree and
+the linked one come back in the target's spelling, never the caller's. So every
+path amx learns from git is resolved — `Repo::discover`'s repository root, and
+the list `amx work done` checks itself against — while `work::derive_path`
+renders a template and returns exactly the characters that were in it. On darwin
+those two are different for every temporary directory that exists: `$TMPDIR` is
+under `/var`, and `/var` is a symlink to `/private/var`.
+
+**What it cost.** Two things, and only one of them was visible in CI.
+
+The visible one is the suite: the fixture built its expectations from the rig's
+own root and compared them against paths amx had been told by git, so
+`Some("/private/var/…/wkn/repo")` met `Some("/var/…/wkn/repo")` and four tests
+failed on characters. That half is fixed in the fixture, which now hangs every
+path it builds off a canonical root — it is asserting the feature, not the
+platform, and on Linux the two spellings coincide so nothing changes.
+
+The invisible one is the product, and it is the reason this is not filed as a
+test artifact. `done`'s locks 2 and 3 compared a path from `git worktree list`
+against the recorded membership with `PathBuf` equality. The default template is
+built on `{repo_parent}`, which comes from git and is therefore already
+resolved, so the default path happens to work — but a `work.dir` whose expansion
+runs through a symlink derives the other spelling, and then the repository's own
+list does not contain it. `amx work done` refuses to remove a tree amx made
+itself, with "does not list it as one of its worktrees", and there is no way
+past it: the path is not user input, so the user cannot correct it. Reproduced
+on Linux, verbatim, by a `work.dir` pointed through a planted symlink.
+
+**What the fix guarantees.** `work::resolve` is one function with one job:
+answer with the directory rather than with the characters. Both ends use it.
+`amx work` records the resolved path in the membership block, which is the same
+spelling git registered the tree under and therefore the spelling every later
+reader joins against — `done` reads git's list, restore stats the directory, the
+report prints it to somebody who may want to `cd` there. And all three of
+`done`'s comparing locks resolve both sides before comparing, so a membership
+written before this rule, or through a re-pointed symlink, still names a tree
+`done` can take down. Resolving does not loosen any lock: two different
+directories cannot resolve to one path, so each still refuses exactly what it
+refused. `derive_path` is untouched and still a pure function of three strings,
+which is what makes lock 1 pinnable at all — resolution is a separate step
+precisely so the derivation never learns about the filesystem.
+
+**A path that is not there resolves as far as it goes.** `fs::canonicalize`
+fails on a missing path, and the case that matters most is exactly that one: the
+vanished worktree, which `done` must still derive, compare and collapse rather
+than error on. So `resolve` canonicalizes the deepest ancestor that exists and
+puts the remaining components back on, and returns the path unchanged when the
+filesystem can say nothing at all — the shape `integration::edit::store` already
+used for a settings file behind a symlink.
+
+**The server-side validation does not have this bug — it was checked.**
+`actor/core/workspace.rs`'s `check_worktree` asks whether the paths are absolute
+and whether the directory exists; `actor/core/restore.rs`'s `restore_worktree`
+stats the directory and degrades the workspace when it is gone. Neither compares
+one path against another, which is the only operation the two spellings can
+disagree about, and neither should start: the server learns no git (D-M3-10), so
+the resolving belongs on the side that talks to git.
+
+**Why Linux could not see it.** On a Linux runner `/tmp` is a real directory,
+`$TMPDIR` is under it, and the derived path and git's path are the same
+characters — every comparison in the feature is an identity, and a suite of them
+proves nothing about a machine where they are not. The regression test therefore
+does not wait for darwin: `a_work_dir_through_a_symlink_is_the_worktree_git_registered`
+plants a symlink, points `work.dir` through it, and drives `work` and `work done`
+end to end. Without the fix it fails on Linux twice over — the membership records
+the template's spelling, and `done` then refuses the tree with the sentence
+above.
+
+### The one that was left: the restart that raced its own snapshot
+
+The directory-comparison fix took three of the four macos-14 failures. The
+fourth stayed, and it is a different bug wearing the same test:
+`a_vanished_worktree_restores_as_a_plain_workspace_with_a_report_entry` failed
+at `the workspace survives the vanished tree` — the workspace was not there at
+all after the restart, which is neither the degrade the test asserts nor a path
+spelling.
+
+**What it is not.** The obvious reading is that the vanished case is the one
+where `resolve` answers from a canonicalized *parent* plus a re-attached tail,
+so a value stored earlier might be spelled the other way. Ruled out, by
+emulating darwin's asymmetry on Linux rather than by argument: a server given
+every root through a symlink (`$ROOT/self -> $ROOT`, the `/var -> /private/var`
+arrangement) while git answers with realpaths, then `work`, `stop`, remove the
+tree, restart. The workspace came back degraded with both report entries, on
+the first try. Restore compares no paths at all — `restore_pane` stats the saved
+cwd and `restore_worktree` stats the tree — and stat does not care how a path is
+spelled.
+
+**What it is.** `amx session stop` returns *before* the snapshot exists.
+Measured: the command waits for the socket to stop answering, and the socket
+stops answering while the server is still draining — the final capture is
+`try_send`'d to persistence by `Core` on its way down (R-M1-2, deliberately
+fire-and-forget) and written during that drain. On this Linux box the gap is
+about two milliseconds, and at the instant `stop` exits there is no
+`session.json` at all: the debounced save had never fired in a session seconds
+old, so the *only* snapshot that will ever exist is the one being written after
+the command has already returned success.
+
+So the test's premise — "stopped rather than killed, so the snapshot on disk is
+the one M1's shutdown push writes" — was never true when it was read. The test
+restarted the server into a race and won it on Linux by accident, because
+starting a server takes far longer than finishing that write. It is the only
+test in the file that restarts a server, and it was the only one still failing.
+
+**The fix is in the harness, and it is the rule the wait work already landed:
+wait for the fact, not for the call that starts it.** `Fixture::stop` runs the
+verb and then waits for the snapshot on disk to name every labelled workspace
+the session had; `Rig::snapshot` names the file. The test also *asserts* that
+premise before it removes anything, so the next failure of this kind lands on
+"the stopped session left the workspace on disk" instead of on a claim about
+worktrees. Reverting the wait and keeping the assertion fails on Linux
+immediately — two runs in four, and eight times out of eight when measured from
+a shell without the test's own round trips in between. The lookup that failed on
+darwin now prints the session's workspaces and its restore report, which
+separates the two ways to lose a workspace: a session that restored nothing has
+no entries, a workspace whose panes could not be respawned is pruned and says
+so.
+
+**Hand-off, and it is a product question rather than a test one.** `amx session
+stop` printing `stopped <session>` while the state it is responsible for is not
+yet on disk is a real gap: `amx session stop` followed by `amx` is the restart
+path M1 designed for, and today it can restore the session as it was before the
+last few seconds of work. Waiting for the pid is not the answer — a server
+spawned by a test is that test's child, and a zombie answers `kill(pid, 0)`
+happily, so the wait would burn the whole timeout in the harness that needs it
+most. Making the socket outlive the drain is worse: the gateway unlinks it
+knowing about the handoff fence (`gateway/mod.rs` asks the listener first, and
+`bind.rs` records the same hazard from the other side), and moving that unlink
+would put a dying server's `remove_file` on a successor's socket. What the gap
+needs is a decision about what `stop` promises, which is a D-decision and not
+this branch's to take.

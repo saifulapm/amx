@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 
 mod support;
 
-use support::{Env, TempDir, wait_until};
+use support::{Env, TempDir, wait_until, wait_until_or};
 
 /// The verbs the skill may name that are not method rows.
 ///
@@ -379,10 +379,18 @@ fn notifier_emits_one_desktop_notification_per_attention_enqueue() {
 
     // And the queue the notifier consumed is the queue everything else reads —
     // D-M2-8's point, and the roadmap's requirement of the reference notifier.
-    assert_eq!(
-        state(&env)["attention"],
-        json!([pane]),
-        "`session.state` carries the same one waiting pane"
+    //
+    // Waited for rather than read, because the notification is the *earlier* of
+    // the two: the hub publishes the enqueue on the bus — which is what the
+    // notifier is reading, through `amx events --json` — and only then posts
+    // the queue to `Core` with an un-awaited `try_send`
+    // (`agent_hub/commit.rs`'s `absorb`, in that order). So the log line the
+    // wait above returned on is proof the *bus* has it, and says nothing yet
+    // about the state tree.
+    wait_until_or(
+        "`session.state` to carry the same one waiting pane",
+        || state(&env)["attention"] == json!([pane]),
+        || format!("it holds {}", state(&env)["attention"]),
     );
 
     let _ = notifier.kill();

@@ -37,7 +37,8 @@ pub mod rig;
 pub mod tty;
 
 pub use env::{
-    Env, Output, PATIENCE, SUN_BUDGET, TICK, TempDir, assert_sun_path_fits, wait_until, window,
+    Env, Output, PATIENCE, SUN_BUDGET, TICK, TempDir, assert_sun_path_fits, wait_until,
+    wait_until_or, window,
 };
 pub use procs::server_processes;
 pub use rig::{Done, Rig};
