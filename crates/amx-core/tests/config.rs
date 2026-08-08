@@ -6,8 +6,10 @@
 //! produces: the whole-file tier keeps everything, the per-section tier keeps
 //! one section, and both report what they rejected instead of logging it.
 
-use amx_core::config::{PERSIST_SECTION, SECTIONS, TERMINAL_SECTION, UPDATE_SECTION, reload};
-use amx_core::{Config, PersistConfig, TerminalConfig, UpdateConfig};
+use amx_core::config::{
+    PERSIST_SECTION, SECTIONS, TERMINAL_SECTION, UPDATE_SECTION, WORK_SECTION, reload,
+};
+use amx_core::{Config, PersistConfig, TerminalConfig, UpdateConfig, WorkConfig};
 
 /// A running config that differs from `Config::default()` in every field, so a
 /// test asserting "kept" can never pass by accidentally producing defaults.
@@ -19,6 +21,9 @@ fn running() -> Config {
         },
         update: UpdateConfig {
             channel: Some("https://example.invalid/latest.json".to_owned()),
+        },
+        work: WorkConfig {
+            dir: Some("{repo_parent}/trees/{branch}".to_owned()),
         },
     }
 }
@@ -36,8 +41,17 @@ fn defaults_are_the_no_file_configuration() {
         "no channel override means the built-in default, not a second copy of it",
     );
     assert_eq!(
+        defaults.work.dir, None,
+        "no work.dir override means the built-in sibling template, not a copy of it",
+    );
+    assert_eq!(
         SECTIONS,
-        &[PERSIST_SECTION, TERMINAL_SECTION, UPDATE_SECTION]
+        &[
+            PERSIST_SECTION,
+            TERMINAL_SECTION,
+            UPDATE_SECTION,
+            WORK_SECTION
+        ]
     );
 
     let (next, diagnostics) = reload(&running(), "");
