@@ -585,7 +585,7 @@ opposite case and is exact: `AgentSnapshot` crosses whole on the manifest, so
 `adopt` takes the exporter's instant verbatim and the adoption itself is not a
 transition. The reasoning is in `Tracked::since`'s own doc comment.
 
-**A fifth bus arm, not two.** §5 says "the two new bus arms". There are three:
+**A third bus arm, not two.** §5 says "the two new bus arms". There are three:
 `PaneRenamed`, `WorkspaceRenamed` and `WorkspaceClosed` — the third because a
 closed workspace can never be named again and its entry would outlive every
 pane that could quote it.
@@ -593,7 +593,7 @@ pane that could quote it.
 **Two module splits inside the entry's files.** X06's additions pushed
 `actor/agent_hub/mod.rs` from 489 to 522 lines, so `names.rs` (the mirror and
 the identity block) and `probe.rs` (the counters and the report) moved out;
-`mod.rs` is 437. The generic `AgentProbe::bump(&Counters.field)` became five
+`mod.rs` is 438. The generic `AgentProbe::bump(&Counters.field)` became five
 named methods so the counters could stay private to their own module. The hub
 suite split the same way — `agent_hub/facts.rs` for what the events carry,
 `agent_hub/stamps.rs` for what a view read sees — and the fusion suite gained
