@@ -14,7 +14,7 @@
 use std::collections::HashSet;
 
 use amx_core::agent::{AgentState, CoverageClass, StatusCause};
-use amx_server::agent::fusion::{Deadline, Effect, Input};
+use amx_server::agent::fusion::{Deadline, Directive, Input};
 use proptest::prelude::*;
 
 use crate::harness::{DEADLINES, any_tracker, script};
@@ -71,8 +71,8 @@ proptest! {
         loop {
             for effect in effects {
                 match effect {
-                    Effect::Arm { deadline, .. } => { wheel.insert(deadline); }
-                    Effect::Disarm { deadline } => { wheel.remove(&deadline); }
+                    Directive::Arm { deadline, .. } => { wheel.insert(deadline); }
+                    Directive::Disarm { deadline } => { wheel.remove(&deadline); }
                     _ => {}
                 }
             }
@@ -111,7 +111,7 @@ proptest! {
 
     /// One transition, one event — and one queue membership to match.
     ///
-    /// `AgentHub` turns each [`Effect::Status`] into a `StatusView` write plus
+    /// `AgentHub` turns each [`Directive::Status`] into a `StatusView` write plus
     /// one published `agent_status`, so two for one input would publish a
     /// transition that never happened, and none for a state change would leave
     /// a `wait --until blocked` asleep through the thing it was waiting for.
@@ -127,7 +127,7 @@ proptest! {
             let statuses: Vec<_> = effects
                 .iter()
                 .filter_map(|effect| match effect {
-                    Effect::Status { from, to, cause } => Some((*from, *to, *cause)),
+                    Directive::Status { from, to, cause } => Some((*from, *to, *cause)),
                     _ => None,
                 })
                 .collect();
@@ -146,11 +146,11 @@ proptest! {
             }
             for effect in &effects {
                 match effect {
-                    Effect::Enqueue => {
+                    Directive::Enqueue => {
                         prop_assert!(!queued, "enqueued twice without leaving");
                         queued = true;
                     }
-                    Effect::Dequeue => {
+                    Directive::Dequeue => {
                         prop_assert!(queued, "dequeued without being on the queue");
                         queued = false;
                     }
@@ -182,7 +182,7 @@ proptest! {
         for input in script {
             let before = tracker.state;
             for effect in tracker.apply(input) {
-                let Effect::Status { to, cause, .. } = effect else {
+                let Directive::Status { to, cause, .. } = effect else {
                     continue;
                 };
                 if !before.is_held() || to.is_held() {

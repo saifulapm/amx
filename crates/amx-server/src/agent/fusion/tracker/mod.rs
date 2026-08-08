@@ -28,7 +28,7 @@ use amx_core::agent::{
 
 mod inputs;
 
-use super::{Deadline, Effect, IDENTITY_GRACE, Input, STALENESS};
+use super::{Deadline, Directive, IDENTITY_GRACE, Input, STALENESS};
 
 /// A screen verdict that contradicts the held state, and how often it has.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -43,9 +43,9 @@ struct Pending {
 /// Which deadlines the hub is holding a timer for on this pane's behalf.
 ///
 /// Mirrored rather than inferred so the machine can answer
-/// [`Tracker::is_armed`] without replaying its own effects, and so the property
-/// test has something to compare the effect stream *against* — a set derived
-/// from the effects and a set the tracker believes in must agree after every
+/// [`Tracker::is_armed`] without replaying its own directives, and so the property
+/// test has something to compare the directive stream *against* — a set derived
+/// from the directives and a set the tracker believes in must agree after every
 /// single input, or a session of idle agents is paying for wakeups it does not
 /// need (03 §5).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -111,8 +111,8 @@ pub struct Tracker {
     pending: Option<Pending>,
     /// The timers the hub is holding for this pane.
     armed: Armed,
-    /// Whether a [`Status`](Effect::Status) has ever been emitted, so the first
-    /// one can report `from: None` the way the effect's contract says.
+    /// Whether a [`Status`](Directive::Status) has ever been emitted, so the first
+    /// one can report `from: None` the way the directive's contract says.
     reported: bool,
     /// Whether the pane's process has ended. Terminal: a retired tracker
     /// publishes its exit and then nothing, ever.
@@ -154,7 +154,7 @@ impl Tracker {
         kind: AgentKind,
         coverage: CoverageClass,
         grace: Duration,
-    ) -> Vec<Effect> {
+    ) -> Vec<Directive> {
         self.coverage = coverage;
         self.grace = grace;
         self.apply(Input::Identified { kind })
@@ -175,7 +175,7 @@ impl Tracker {
     /// grace exists so a booting TUI's splash is not read as evidence, and an
     /// inherited agent booted on somebody else's clock long ago.
     ///
-    /// Returns the effects the hub owes the wheel — a held state still needs
+    /// Returns the directives the hub owes the wheel — a held state still needs
     /// its staleness deadline, or a block that ends during the swap would be
     /// held forever.
     pub fn adopt(
@@ -183,7 +183,7 @@ impl Tracker {
         carried: &amx_core::agent::AgentSnapshot,
         coverage: CoverageClass,
         grace: Duration,
-    ) -> Vec<Effect> {
+    ) -> Vec<Directive> {
         self.kind = carried.kind.clone();
         self.coverage = coverage;
         self.grace = grace;
@@ -191,11 +191,11 @@ impl Tracker {
         self.cause = carried.cause;
         self.session_ref = carried.session_ref.clone();
         self.reported = true;
-        let mut effects = Vec::new();
+        let mut directives = Vec::new();
         if self.state.is_held() {
-            self.arm(Deadline::Staleness, STALENESS, &mut effects);
+            self.arm(Deadline::Staleness, STALENESS, &mut directives);
         }
-        effects
+        directives
     }
 
     /// The conversation this pane can be resumed into, as the last hook said.
@@ -236,103 +236,108 @@ impl Tracker {
     ///   from reviving an idle pane;
     /// - a held state is only left through an [`ExitAuthority`], so an `edges`
     ///   agent's `Working` can only end at the screen or at the deadline;
-    /// - at most one [`Effect::Status`] per input;
+    /// - at most one [`Directive::Status`] per input;
     /// - every armed deadline is eventually disarmed or fired — no input
     ///   sequence leaves one pending against a state that has moved on.
-    pub fn apply(&mut self, input: Input) -> Vec<Effect> {
-        let mut effects = Vec::new();
+    pub fn apply(&mut self, input: Input) -> Vec<Directive> {
+        let mut directives = Vec::new();
         if self.exited {
-            return effects;
+            return directives;
         }
         match input {
-            Input::Hook(edge) => self.on_hook(&edge, &mut effects),
-            Input::Screen(verdict) => self.on_screen(&verdict, &mut effects),
-            Input::Identified { kind } => self.on_identified(kind, &mut effects),
-            Input::Probe(activity) => self.on_probe(activity, &mut effects),
-            Input::Deadline(deadline) => self.on_deadline(deadline, &mut effects),
-            Input::Exited => self.on_exited(&mut effects),
+            Input::Hook(edge) => self.on_hook(&edge, &mut directives),
+            Input::Screen(verdict) => self.on_screen(&verdict, &mut directives),
+            Input::Identified { kind } => self.on_identified(kind, &mut directives),
+            Input::Probe(activity) => self.on_probe(activity, &mut directives),
+            Input::Deadline(deadline) => self.on_deadline(deadline, &mut directives),
+            Input::Exited => self.on_exited(&mut directives),
         }
-        effects
+        directives
     }
     /// An entry edge asserts `state`.
     pub(super) fn enter(
         &mut self,
         state: AgentState,
         cause: StatusCause,
-        effects: &mut Vec<Effect>,
+        directives: &mut Vec<Directive>,
     ) {
         if state == self.state {
             // Re-asserted, not moved. The pane is corroborated: whatever
             // contradiction the screen was accumulating is stale, and the
             // staleness clock starts again.
-            self.clear_pending(effects);
+            self.clear_pending(directives);
             if state.is_held() {
-                self.arm(Deadline::Staleness, STALENESS, effects);
+                self.arm(Deadline::Staleness, STALENESS, directives);
             }
             return;
         }
-        self.transition(state, cause, effects);
+        self.transition(state, cause, directives);
     }
 
     /// A hook says the held state is over — [`CoverageClass::Full`] only, since
     /// nothing else can build the authority.
-    pub(super) fn leave(&mut self, authority: ExitAuthority, effects: &mut Vec<Effect>) {
+    pub(super) fn leave(&mut self, authority: ExitAuthority, directives: &mut Vec<Directive>) {
         if !self.state.is_held() {
             return;
         }
-        self.transition(AgentState::Idle, authority.cause(), effects);
+        self.transition(AgentState::Idle, authority.cause(), directives);
     }
 
-    /// Move the pane, and emit the one status effect that says so.
+    /// Move the pane, and emit the one status directive that says so.
     ///
-    /// The fixed effect order lives here: the status, then the queue, then the
+    /// The fixed directive order lives here: the status, then the queue, then the
     /// timers.
     pub(super) fn transition(
         &mut self,
         to: AgentState,
         cause: StatusCause,
-        effects: &mut Vec<Effect>,
+        directives: &mut Vec<Directive>,
     ) {
         let from = self.state;
         self.state = to;
         self.cause = cause;
-        effects.push(Effect::Status {
+        directives.push(Directive::Status {
             from: self.reported.then_some(from),
             to,
             cause,
         });
         self.reported = true;
         if from.wants_attention() {
-            effects.push(Effect::Dequeue);
+            directives.push(Directive::Dequeue);
         }
         if to.wants_attention() {
-            effects.push(Effect::Enqueue);
+            directives.push(Directive::Enqueue);
         }
-        self.clear_pending(effects);
+        self.clear_pending(directives);
         if to.is_held() {
-            self.arm(Deadline::Staleness, STALENESS, effects);
+            self.arm(Deadline::Staleness, STALENESS, directives);
         } else {
-            self.disarm(Deadline::Staleness, effects);
+            self.disarm(Deadline::Staleness, directives);
         }
     }
 
     /// Drop an accumulating contradiction, and the cap that bounded it.
-    pub(super) fn clear_pending(&mut self, effects: &mut Vec<Effect>) {
+    pub(super) fn clear_pending(&mut self, directives: &mut Vec<Directive>) {
         if self.pending.take().is_some() {
-            self.disarm(Deadline::Confirmation, effects);
+            self.disarm(Deadline::Confirmation, directives);
         }
     }
 
     /// Ask the hub for a timer, replacing any it holds of the same kind.
-    pub(super) fn arm(&mut self, deadline: Deadline, after: Duration, effects: &mut Vec<Effect>) {
+    pub(super) fn arm(
+        &mut self,
+        deadline: Deadline,
+        after: Duration,
+        directives: &mut Vec<Directive>,
+    ) {
         self.armed.set(deadline, true);
-        effects.push(Effect::Arm { deadline, after });
+        directives.push(Directive::Arm { deadline, after });
     }
 
     /// Release a timer, if one is held.
-    pub(super) fn disarm(&mut self, deadline: Deadline, effects: &mut Vec<Effect>) {
+    pub(super) fn disarm(&mut self, deadline: Deadline, directives: &mut Vec<Directive>) {
         if self.armed.set(deadline, false) {
-            effects.push(Effect::Disarm { deadline });
+            directives.push(Directive::Disarm { deadline });
         }
     }
 }

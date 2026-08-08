@@ -163,8 +163,8 @@ impl AgentHub {
             self.identify(pane, &kind);
         }
         let edge = HookEdge::from_report(report, ref_kind);
-        let effects = self.apply(pane, Input::Hook(edge));
-        self.absorb(pane, &effects);
+        let directives = self.apply(pane, Input::Hook(edge));
+        self.absorb(pane, &directives);
         self.probe.bump(&self.probe.0.reports);
         true
     }
@@ -211,7 +211,7 @@ impl AgentHub {
     fn fire(&mut self) {
         let now = Instant::now();
         self.probe.bump(&self.probe.0.wakeups);
-        // Collected before anything is applied: a deadline's effects can arm
+        // Collected before anything is applied: a deadline's directives can arm
         // another deadline, and a wheel that walked its own mutations would
         // fire the new one in the same turn it was asked for.
         let fired: Vec<(amx_core::PaneId, Deadline)> = self
@@ -230,8 +230,8 @@ impl AgentHub {
             if let Some(tracked) = self.panes.get_mut(&pane) {
                 tracked.deadlines.remove(&deadline);
             }
-            let effects = self.apply(pane, Input::Deadline(deadline));
-            self.absorb(pane, &effects);
+            let directives = self.apply(pane, Input::Deadline(deadline));
+            self.absorb(pane, &directives);
         }
         self.evaluate_due(now);
     }

@@ -16,7 +16,7 @@
 //! of the four is how two views of one truth start disagreeing.
 //!
 //! The manifest cache lives here too, because binding one is a consequence of
-//! an [`Effect::Identified`] and of nothing else.
+//! an [`Directive::Identified`] and of nothing else.
 
 use std::sync::Arc;
 
@@ -26,27 +26,27 @@ use tokio::time::Instant;
 
 use super::{AgentHub, Tracked, load_manifest};
 use crate::actor::{AgentCall, CoreCommand, StatusUpdate};
-use crate::agent::fusion::{Effect, Input};
+use crate::agent::fusion::{Directive, Input};
 use crate::agent::manifest::Manifest;
 
 impl AgentHub {
-    // ------------------------------------------------------------ the effects
+    // ------------------------------------------------------------ the directives
 
     /// Apply one input to `pane`'s tracker, if it has one.
-    pub(super) fn apply(&mut self, pane: PaneId, input: Input) -> Vec<Effect> {
+    pub(super) fn apply(&mut self, pane: PaneId, input: Input) -> Vec<Directive> {
         self.panes
             .get_mut(&pane)
             .map(|tracked| tracked.tracker.apply(input))
             .unwrap_or_default()
     }
 
-    /// Fold `effects` into the queue, the wheel and both read models.
+    /// Fold `directives` into the queue, the wheel and both read models.
     ///
     /// The one place a `StatusView` write or an agent event happens, which is
     /// what makes the ordering §3 fixes a property of the module rather than of
     /// each call site.
-    pub(super) fn absorb(&mut self, pane: PaneId, effects: &[Effect]) {
-        if effects.is_empty() {
+    pub(super) fn absorb(&mut self, pane: PaneId, directives: &[Directive]) {
+        if directives.is_empty() {
             return;
         }
         let now = Instant::now();
@@ -60,24 +60,24 @@ impl AgentHub {
         let mut refreshed = false;
 
         if let Some(tracked) = self.panes.get_mut(&pane) {
-            for effect in effects {
-                match effect {
-                    Effect::Arm { deadline, after } => {
+            for directive in directives {
+                match directive {
+                    Directive::Arm { deadline, after } => {
                         tracked.deadlines.insert(*deadline, now + *after);
                     }
-                    Effect::Disarm { deadline } => {
+                    Directive::Disarm { deadline } => {
                         tracked.deadlines.remove(deadline);
                     }
-                    Effect::Ref { session_ref } => {
+                    Directive::Ref { session_ref } => {
                         tracked.session_ref = Some(session_ref.clone());
                         refreshed = true;
                     }
-                    Effect::Status { .. } => {
+                    Directive::Status { .. } => {
                         tracked.transition_seq = seq;
                         moved = true;
                     }
-                    Effect::Identified { kind } => identified = Some(kind.clone()),
-                    Effect::Enqueue | Effect::Dequeue => {}
+                    Directive::Identified { kind } => identified = Some(kind.clone()),
+                    Directive::Enqueue | Directive::Dequeue => {}
                 }
             }
         }
@@ -85,15 +85,15 @@ impl AgentHub {
         // The queue and the events, in the fixed order the machine emits them:
         // the status, then the queue, then the timers.
         let mut events = Vec::new();
-        for effect in effects {
-            match effect {
-                Effect::Status { from, to, cause } => events.push(Event::AgentStatus {
+        for directive in directives {
+            match directive {
+                Directive::Status { from, to, cause } => events.push(Event::AgentStatus {
                     pane,
                     from: *from,
                     to: *to,
                     cause: *cause,
                 }),
-                Effect::Identified { kind } => events.push(Event::AgentIdentified {
+                Directive::Identified { kind } => events.push(Event::AgentIdentified {
                     pane,
                     kind: kind.clone(),
                 }),
@@ -102,7 +102,7 @@ impl AgentHub {
                 // invented (`docs/11-m4-plan.md` D-M4-6). X02 froze the shape
                 // and left the fields empty, which is exactly what a consumer
                 // built before M4 reads.
-                Effect::Enqueue => {
+                Directive::Enqueue => {
                     self.attention.retain(|queued| *queued != pane);
                     self.attention.push(pane);
                     events.push(Event::AttentionEnqueued {
@@ -113,7 +113,7 @@ impl AgentHub {
                         since: None,
                     });
                 }
-                Effect::Dequeue => {
+                Directive::Dequeue => {
                     let before = self.attention.len();
                     self.attention.retain(|queued| *queued != pane);
                     if self.attention.len() != before {
@@ -126,7 +126,7 @@ impl AgentHub {
                         });
                     }
                 }
-                Effect::Ref { .. } | Effect::Arm { .. } | Effect::Disarm { .. } => {}
+                Directive::Ref { .. } | Directive::Arm { .. } | Directive::Disarm { .. } => {}
             }
         }
 

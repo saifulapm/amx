@@ -84,7 +84,7 @@ impl AgentHub {
     /// because both belong to the process now holding the pane. Nothing is
     /// published and nothing is written to either read model — [`inherit`] put
     /// the status in the view already and `Core` was seeded with the mirror —
-    /// so the only effects that reach [`absorb`](Self::absorb) are the
+    /// so the only directives that reach [`absorb`](Self::absorb) are the
     /// tracker's deadlines, which it applies without announcing anything.
     ///
     /// [`inherit`]: Self::inherit
@@ -104,15 +104,15 @@ impl AgentHub {
         });
         let mut tracked = Tracked::new(frames, spawn, carried.transition_seq);
         tracked.session_ref = carried.session_ref.clone();
-        let effects = tracked.tracker.adopt(carried, coverage, grace);
+        let directives = tracked.tracker.adopt(carried, coverage, grace);
         self.panes.insert(pane, tracked);
-        // Normally a consequence of `Effect::Identified`, which an adoption
+        // Normally a consequence of `Directive::Identified`, which an adoption
         // does not emit — the agent was identified on the exporter, one server
         // ago — and without it the pane would have no screen rules and tier 2
         // would go quiet for the rest of the session.
         if let Some(kind) = carried.kind.clone() {
             self.bind_manifest(pane, &kind);
         }
-        self.absorb(pane, &effects);
+        self.absorb(pane, &directives);
     }
 }
