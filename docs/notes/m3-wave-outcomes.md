@@ -1639,3 +1639,130 @@ end to end. It is the one thing on this milestone that needs a person.
   assertion to keep is the identity one and the thing to change is the reader.
 - **The second wedge path W01 narrowed and did not find** is untouched here, and
   the census still points at it.
+
+---
+
+## Remote login shells
+
+**The bug the second machine found, on the day there finally was one.**
+`ssh host <command>` hands the command to the **remote user's login shell**, and
+W11 sent that shell a POSIX `sh` script — `if … then … elif … else … fi`, with
+`$HOME` in it. Against a Fedora Asahi Remix aarch64 host whose login shell is
+`/usr/bin/fish`, with amx installed and answering `amx 0.1.0` at
+`~/.local/bin/amx`:
+
+```
+$ amx --remote saiful@<host>
+saiful@<host> has no amx on PATH or in ~/.local/bin.
+  fish: Missing end to balance this if statement
+  if command -v amx >/dev/null 2>&1; then
+  ^^
+```
+
+fish parses a script whole before running any of it, so the syntax error meant
+**nothing ran at all** — and the exit status a fish gives that is 127, which is
+exactly the status amx reads as "the far side has no amx". So `--remote` told a
+user a confident, wrong thing about their own machine and then offered to
+install a binary that was already there. Every host whose login shell is not
+POSIX was unreachable: fish, csh, tcsh.
+
+**Why no suite caught it.** `tests/remote_ssh.rs`'s loopback sshd runs as the
+*same* user on the *same* machine, whose login shell is POSIX, and the
+bridge-as-child tier never involves a login shell at all. The transport was
+real; the shell reading the command never was. That is the shape of the M3 exit
+criterion CI cannot cover, and it took a second machine to see it.
+
+**The fix, and it is one function.** `remote::ssh::via_sh` wraps every script as
+`/bin/sh -c '<script>'`. The login shell then sees three words — no keyword, no
+operator, no expansion — which is a simple command in every shell there is, and
+`/bin/sh` gets the script it was written for. The layering is the part that is
+easy to get backwards: the outer string is the login shell's to split into
+words, the inner one is `sh`'s to parse, and `$HOME`, `$$` and every keyword
+belong to the inner one.
+
+**All three commands amx sends go through it**, because auditing them found the
+same exposure in two more places. `bridge_script` is the reported one.
+`seed::INSTALL_SCRIPT` is worse than the reported one: under fish it dies on
+`dir="$HOME/.local/bin"` after the stream has already started, so a seeding
+would fail mid-install. The `uname` probe was the only one that happened to work
+bare, and it is wrapped anyway — a probe that survives by accident is not a
+probe that survives.
+
+**The wrapping is not the whole fix, and the other three constraints were found
+by measurement rather than reasoning.** Each one is a shell disagreeing about
+what a single-quoted word means, and each was caught by running the exact string
+amx emits through a real binary:
+
+- **csh and tcsh reject a newline *inside* single quotes** — `Unmatched '''.`,
+  tcsh 6.24. So wrapping a multi-line script in quotes fixes fish and breaks csh
+  in the same commit. Every script here is now one line, `;`-separated; `sh`
+  reads `;` and a newline identically, so the whole cost is the semicolons.
+- **csh expands history inside single quotes and in `-c` scripts alike**, so
+  `sq` escapes `!` the way it escapes `'`. A session name holding one arrived as
+  `mine!: Event not found.` — and only when a word follows the bang, which is
+  why the fixture is `!mine!` and not `mine!`.
+- **fish is the one shell that gives `\` a meaning inside single quotes**: `\'`
+  and `\\` are escapes there where every POSIX shell reads a backslash between
+  quotes as itself. This is the one that bit the fix rather than the bug. The
+  command nests two levels of quoting — the name into the script, the script
+  into the login shell's word — so a name's own `'\''` becomes a backslash
+  *inside* the outer quotes, and fish read it as an escape and handed `/bin/sh`
+  a word with unbalanced quotes. `sq` escapes the backslash too, which makes the
+  nesting mean the same thing in all six shells.
+
+`a_session_name_crosses_every_login_shell_intact` in `crates/amx/tests/bridge.rs`
+is that measurement made permanent: it builds the two nested levels the real
+command has and runs them through every one of sh, bash, zsh, fish, csh and tcsh
+the machine has, asserting `sh` receives the name byte for byte. It needs no
+sshd, so it runs everywhere — and it is the test that went red for fish on the
+backslash and for csh on the bang.
+
+The one character with no answer is a newline *in a session name*, which is
+legal (a name is validated as a path component) and which csh has no spelling
+for inside a word. It reaches sh, bash, zsh and fish and not csh; `sq`'s docs
+say so rather than leaving it to be discovered.
+
+**csh and tcsh cannot reproduce the original bug, which is why the new test
+measures rather than assumes.** They read a script line by line: handed the old
+bridge script they misparse the `if` line, complain — and then run the `exec` on
+the *next* line anyway. The wrong thing happens and the right thing happens too,
+so a case staged on tcsh alone would have attached happily with the bug in
+place. `refuses_posix` in `tests/remote_ssh.rs` sorts the two by running a POSIX
+probe and checking whether the marker appears, and the case skips with that
+reason when no installed shell refuses one. It then runs the attach through
+*every* installed non-POSIX shell, since csh and tcsh are exactly what catches a
+fix that trades one broken shell for another.
+
+**How the far side's login shell is staged.** sshd assigns `SHELL` from the
+passwd entry after `SetEnv` is applied, so it cannot be set by a variable and
+the developer's own is whatever it is. `ForceCommand exec <shell> -c
+"$SSH_ORIGINAL_COMMAND"` is the seam that is left, and it is character for
+character what sshd would have run had that shell been in the passwd entry. One
+line, and the only `ForceCommand` in the file — W11's rule that sshd takes the
+first value it obtains for a keyword applies here too.
+
+**Verified.** `AMX_TEST_SSHD=1 cargo test -p amx-rig --test remote_ssh` green
+with fish 4.8.1, csh and tcsh 6.24.16 all present, so the attach ran three times
+through three login shells. Every test was watched to fail without the change it
+protects: reverting `via_sh` to the identity puts the reported fish message back
+on the screen and takes the two unit assertions with it, putting the newlines
+back in `bridge_script` turns the csh and tcsh legs into `Unmatched '''.`,
+dropping the backslash case from `sq` fails the round-trip on fish, and dropping
+the bang case fails it on csh. The install script was exercised by hand under
+fish both ways — bare it exits 127 with nothing installed, wrapped it lands a
+755 file with the streamed bytes intact.
+
+**CI installs fish on the Linux runner** beside openssh-server. Without a shell
+that refuses POSIX the case skips, and a skip here is the coverage silently
+going away — the workflow comment says which shell and why csh would not do.
+
+**Budget watch.** `tests/remote_ssh.rs` went 319 → 525 and is over the soft
+budget. Not split: the second case shares the whole `Sshd` harness with the
+first, and the plan names this file as the ssh tier's home. The next task to add
+a third case here should expect to lift `Sshd` out rather than trim prose.
+
+**Left open.** `--remote` still cannot carry a session name containing a newline
+to a csh host, per above; fixing it properly means encoding the name across the
+wire rather than through the shell, which is an interface change and not this
+one. And the machine-to-machine smoke that found this is recorded separately in
+`m3-live-smoke.md`.

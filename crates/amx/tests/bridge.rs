@@ -413,3 +413,66 @@ fn a_remote_verb_says_which_machine_it_would_have_run_on() {
     );
     assert!(err.contains("box"), "{done:?}");
 }
+
+// ---------------------------------------------- login shells on the far side
+
+/// Every shell a remote user might have in their passwd entry that this machine
+/// happens to have. `/bin/sh` is always here; the rest are a bonus.
+///
+/// `command -v` rather than a table of paths: these arrive from a distribution,
+/// from homebrew and from `/usr/local` on different machines, and a table
+/// written here would be a table written from memory.
+fn login_shells() -> Vec<PathBuf> {
+    ["sh", "bash", "zsh", "fish", "csh", "tcsh"]
+        .iter()
+        .filter_map(|name| {
+            let found = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("command -v {name}"))
+                .output()
+                .ok()?;
+            let path = PathBuf::from(String::from_utf8_lossy(&found.stdout).trim());
+            (found.status.success() && path.is_file()).then_some(path)
+        })
+        .collect()
+}
+
+#[test]
+fn a_session_name_crosses_every_login_shell_intact() {
+    // The two levels the real bridge command has, and the reason this is worth
+    // a test of its own: `sq` quotes the session name *into* the script, and
+    // `via_sh` quotes the whole script again *for the login shell*. Each level
+    // on its own is easy; the nesting is where the shells disagree. fish is the
+    // one that gives `\` a meaning inside single quotes, so the `'\''` a name's
+    // own quote produces became an escape at the outer level and reached `sh`
+    // as a word with unbalanced quotes — measured, then fixed by escaping the
+    // backslash too.
+    // `!mine` and not just `mine!`: csh expands `!` only when a word follows
+    // it, so a bang at the end of a word would let the history rule through
+    // unnoticed.
+    let name = "it's !mine! $HOME `x` \"q\" back\\slash";
+    let script = format!("printf %s {}", amx::remote::ssh::sq(name));
+    let command = amx::remote::ssh::via_sh(&script);
+
+    let shells = login_shells();
+    assert!(
+        shells.len() > 1,
+        "only {shells:?} here, so this would prove nothing about a login shell \
+         that is not `sh`; install fish"
+    );
+    for shell in &shells {
+        let out = Command::new(shell)
+            .arg("-c")
+            .arg(&command)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap_or_else(|err| panic!("run {}: {err}", shell.display()));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            name,
+            "{} did not hand `sh` the name it was given (stderr: {})",
+            shell.display(),
+            String::from_utf8_lossy(&out.stderr).trim(),
+        );
+    }
+}
