@@ -36,8 +36,20 @@
 //!    is killed: a `done` that took the panes and then declined to take the tree
 //!    would have destroyed the half the user could not get back.
 //!
+//! Three of those four locks compare one path against another, and all three
+//! compare *directories* rather than characters ([`crate::work::resolve`]). git
+//! answers every question about a worktree in the filesystem's own spelling,
+//! with symlinks resolved; a `work.dir` template answers in whatever spelling it
+//! was written in. A lock that compared the characters would refuse a tree amx
+//! had just made through a symlinked path — which is what darwin does to every
+//! one of them, `$TMPDIR` living under `/var` and `/var` being a symlink to
+//! `/private/var`. Resolving is not a loosening: each lock still refuses exactly
+//! the tree it refused before, because two different directories cannot resolve
+//! to one path.
+//!
 //! Only then: kill the workspace through the existing verb, then remove the tree.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use amx_client::net::{self, Session};
@@ -54,7 +66,7 @@ use serde_json::Value;
 use crate::cmd::attach::client_info;
 use crate::ctx_of;
 use crate::git::{self, Repo};
-use crate::work::{derive_path, template};
+use crate::work::{derive_path, resolve, template};
 
 /// The clap id of the `branch` positional, on both `work` and `work done`.
 const BRANCH: &str = "branch";
@@ -134,11 +146,11 @@ async fn up(
     let cwd = std::env::current_dir().context("read the current directory")?;
     let repo = Repo::discover(&cwd).await?;
     let ctx = ctx_of(env, root, None)?;
-    let path = derive_path(&template(&ctx), repo.root(), branch)?;
+    let derived = derive_path(&template(&ctx), repo.root(), branch)?;
     anyhow::ensure!(
-        !path.exists(),
+        !derived.exists(),
         "{} already exists; `amx work done {branch}` takes down the last one",
-        path.display()
+        derived.display()
     );
 
     // Refused before the tree exists rather than after: a session that is not
@@ -148,11 +160,21 @@ async fn up(
     // git creates the leaf, never its ancestors: a template with a directory
     // component (`{repo_parent}/trees/{branch}`) needs the containing directory
     // to be there first.
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = derived.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let create = !repo.has_branch(branch).await?;
-    repo.add_worktree(&path, branch, create).await?;
+    repo.add_worktree(&derived, branch, create).await?;
+
+    // The tree exists now, so it has one spelling the filesystem agrees to, and
+    // from here on that is the only one amx uses. git registered the tree under
+    // that spelling whatever it was handed — `worktree list` prints realpaths —
+    // and every later reader of the membership joins against git: `done` reads
+    // the list, restore stats the directory, the report prints it to a person
+    // who may want to `cd` there. Recording the template's spelling instead
+    // would mean recording a path that is *nearly* the one git holds, which is
+    // the worst of the two.
+    let path = resolve(&derived);
     println!(
         "worktree {} ({} branch {branch})",
         path.display(),
@@ -160,6 +182,9 @@ async fn up(
     );
 
     let worktree = Worktree {
+        // Already resolved, and by git rather than by amx: `Repo::discover` took
+        // this out of `worktree list --porcelain`, so both paths in the block
+        // are in the one spelling.
         repo: repo.root().to_path_buf(),
         branch: branch.to_owned(),
         path: path.clone(),
@@ -247,8 +272,15 @@ async fn done(
     // Lock 1: the path is the one this template derives today, not the one a
     // reply happened to carry.
     let derived = derive_path(&template(&ctx), &worktree.repo, &worktree.branch)?;
+    // Both sides resolved, and the message below still names them as they were
+    // written: the refusal is about a template that no longer derives this tree,
+    // and a person re-reading their config wants their own spelling back. A
+    // membership older than this rule — recorded through a symlink before amx
+    // resolved what it recorded — is a tree `done` must still be able to take
+    // down, which is the other half of resolving here rather than only at the
+    // point the block is written.
     anyhow::ensure!(
-        derived == worktree.path,
+        resolve(&derived) == resolve(&worktree.path),
         "refusing to remove {}: the work.dir template derives {} for branch {} \
          in {}. Remove the tree with `git worktree remove` if that is what you \
          meant.",
@@ -264,17 +296,27 @@ async fn done(
     // side.
     let vanished = !worktree.path.exists();
     if !vanished {
-        let registered = repo.worktrees().await?;
+        // git's answers and amx's are made comparable once, here, and both locks
+        // below read the resolved list: `worktree list` prints realpaths, so a
+        // tree whose path reaches it through a symlink is listed under the other
+        // spelling of itself.
+        let registered: Vec<PathBuf> = repo
+            .worktrees()
+            .await?
+            .into_iter()
+            .map(|known| resolve(&known))
+            .collect();
+        let wanted = resolve(&worktree.path);
         // Lock 2: the repository's own list, not a guess about layout.
         anyhow::ensure!(
-            registered.iter().any(|known| known == &worktree.path),
+            registered.contains(&wanted),
             "refusing to remove {}: {} does not list it as one of its worktrees",
             worktree.path.display(),
             worktree.repo.display(),
         );
         // Lock 3: never the repository's own working tree.
         anyhow::ensure!(
-            registered.first() != Some(&worktree.path),
+            registered.first() != Some(&wanted),
             "refusing to remove {}: that is the repository's main working tree",
             worktree.path.display(),
         );
