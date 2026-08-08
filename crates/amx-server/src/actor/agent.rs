@@ -55,7 +55,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock};
 
 use amx_core::agent::{AgentKind, AgentSnapshot, HookToken};
-use amx_core::{Bus, Event, PaneId, Seq};
+use amx_core::{Bus, Event, PaneId, Seq, WorkspaceId};
 use amx_proto::control::agent as proto;
 use tokio::sync::mpsc;
 
@@ -125,6 +125,11 @@ pub enum AgentCommand {
     },
     /// `agent.next`: the head of the attention queue, focused.
     NextAttention {
+        /// Cycle only this workspace's blocked agents, or the whole queue when
+        /// absent (D15's scoped cycling). The queue itself stays global and
+        /// block-time ordered; this narrows only which of its entries the call
+        /// will focus.
+        workspace: Option<WorkspaceId>,
         /// Where the answer goes.
         reply: Reply<proto::NextReply>,
     },

@@ -121,8 +121,8 @@ impl AgentHub {
             AgentCommand::Explain { pane, reply } => {
                 let _ = reply.send(self.explain(pane));
             }
-            AgentCommand::NextAttention { reply } => {
-                let _ = reply.send(Ok(self.next_attention()));
+            AgentCommand::NextAttention { workspace, reply } => {
+                let _ = reply.send(Ok(self.next_attention(workspace)));
             }
             AgentCommand::Stanza { kind, reply } => {
                 let _ = reply.send(self.stanza(&kind));

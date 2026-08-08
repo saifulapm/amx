@@ -36,6 +36,8 @@ use amx_proto::control::agent::HookEvent;
 mod facts;
 #[path = "agent_hub/fixtures.rs"]
 mod fixtures;
+#[path = "agent_hub/scope.rs"]
+mod scope;
 #[path = "agent_hub/stamps.rs"]
 mod stamps;
 mod support;
