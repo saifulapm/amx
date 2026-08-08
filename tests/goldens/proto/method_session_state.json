@@ -10,10 +10,12 @@
           "attention": 0,
           "cause": "hook",
           "kind": "claude",
+          "reason": "permission_dialog",
           "session_ref": {
             "kind": "id",
             "value": "c9a3c73b-b184-4871-8e98-79b46b87b635"
           },
+          "since": 1754650000000,
           "state": "blocked",
           "transition_seq": 51
         },
@@ -22,6 +24,10 @@
         "history_floor": 4,
         "history_head": 120,
         "label": "editor",
+        "mouse": {
+          "events": "button",
+          "format": "sgr"
+        },
         "pane": "00000000-0000-0000-0000-0000000000a1",
         "rows": 22,
         "short": 1

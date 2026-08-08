@@ -48,6 +48,8 @@ fn check_golden(name: &str, value: &impl Serialize) {
 
 #[path = "goldens/m2.rs"]
 mod m2;
+#[path = "goldens/m4.rs"]
+mod m4;
 
 fn pane_id() -> PaneId {
     "00000000-0000-0000-0000-0000000000a1".parse().unwrap()
@@ -334,6 +336,16 @@ fn control_goldens_match() {
                     // the queue position, which is derived from `attention`
                     // below and must agree with it.
                     agent: Some(m2::agent_snapshot()),
+                    // M4's mouse block, frozen with a value for the reason the
+                    // cwd above it is: a shape nothing populates is a shape
+                    // nobody has read. `sgr` because that is the one format
+                    // the client recognises on the way in, and `button` is what
+                    // a full-screen program that wants drag reporting asks for
+                    // (`docs/notes/m4-mouse-path.md` F-2).
+                    mouse: Some(session::MouseMode {
+                        events: session::MouseEvents::Button,
+                        format: session::MouseFormat::Sgr,
+                    }),
                 },
                 // The second pane freezes the absent-label shape beside the
                 // present one: every optional field is skipped when unset, so
@@ -348,6 +360,9 @@ fn control_goldens_match() {
                     history_head: RowId::from_raw(0),
                     history_floor: RowId::from_raw(0),
                     agent: None,
+                    // A pane that asked for nothing, which is every pane
+                    // running a shell.
+                    mouse: None,
                 },
             ],
             attention: vec![pane_id()],

@@ -291,6 +291,20 @@ method_table! {
         about: "Focus the agent at the head of the attention queue",
     }
 
+    /// Every tracked agent, with what it is doing and the line it last drew.
+    ///
+    /// D15's one data source, read by three surfaces: the status line's
+    /// per-workspace breakdown, the agents view and `amx agents`. One reply,
+    /// one `Core` round trip, whatever the pane count (D-M4-2).
+    AgentList {
+        wire: "agent.list",
+        handler: agent_list,
+        params: agent::ListParams,
+        reply: agent::ListReply,
+        cli: ["agent", "list"],
+        about: "List every tracked agent with its status, reason and last line",
+    }
+
     /// Wait for a pane's agent status, or for its process to end.
     Wait {
         wire: "wait",

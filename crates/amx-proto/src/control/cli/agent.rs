@@ -68,16 +68,18 @@ pub(super) const EXPLAIN: FlagRow = FlagRow {
     parse: explain,
 };
 
-/// `amx agent next`, which takes nothing and is listed anyway.
+/// `amx agent next [--workspace <UUID>]`.
 ///
-/// A row with no arguments still owes a field list: it is what the coverage
-/// test reads, so the day `agent.next` grows a parameter the test fails here
-/// instead of the verb silently gaining an unreachable field.
+/// It took nothing and was listed anyway, so that the day it grew a parameter
+/// the coverage test would fail here instead of the verb silently gaining an
+/// unreachable field. That day is D15's scoped cycling: clearing one project's
+/// queue must not yank focus across projects, so the verb learned a scope and
+/// this row learned the flag that reaches it.
 pub(super) const NEXT: FlagRow = FlagRow {
     method: Method::AgentNext,
-    fields: &[],
-    args: |command| command,
-    parse: |_| flag::encode(&NextParams {}),
+    fields: &[from_arg("workspace", WORKSPACE)],
+    args: next_args,
+    parse: next,
 };
 
 fn start_args(command: Command) -> Command {
@@ -177,6 +179,22 @@ fn prompt(matches: &ArgMatches) -> Result<Value, FlagError> {
             }
         },
         timeout_ms: flag::timeout(matches)?,
+    };
+    flag::encode(&params)
+}
+
+fn next_args(command: Command) -> Command {
+    command.arg(
+        Arg::new(WORKSPACE)
+            .long("workspace")
+            .value_name("UUID")
+            .help("Cycle only this workspace's blocked agents [default: the whole queue]"),
+    )
+}
+
+fn next(matches: &ArgMatches) -> Result<Value, FlagError> {
+    let params = NextParams {
+        workspace: flag::parse_opt::<WorkspaceId>(matches, WORKSPACE, "--workspace")?,
     };
     flag::encode(&params)
 }

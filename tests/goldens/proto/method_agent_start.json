@@ -3,10 +3,12 @@
     "agent": {
       "cause": "screen",
       "kind": "claude",
+      "reason": "permission_dialog",
       "session_ref": {
         "kind": "id",
         "value": "c9a3c73b-b184-4871-8e98-79b46b87b635"
       },
+      "since": 1754650000000,
       "state": "idle",
       "transition_seq": 51
     },

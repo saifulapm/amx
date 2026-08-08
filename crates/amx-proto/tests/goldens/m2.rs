@@ -39,6 +39,13 @@ pub(super) fn agent_snapshot() -> AgentSnapshot {
         transition_seq: 51,
         attention: Some(0),
         session_ref: Some(session_ref()),
+        // M4's two, frozen with values on the same terms as everything above
+        // them: the reason is the *shipped* rule name from
+        // `assets/manifests/claude.toml`, not a translation of it (D-M4-3),
+        // and the instant is milliseconds so a reader of the golden can tell
+        // the units from the magnitude (D-M4-4).
+        reason: Some("permission_dialog".to_owned()),
+        since: Some(1_754_650_000_000),
     }
 }
 
@@ -164,7 +171,10 @@ fn method_goldens_cover_all_twelve_m2_rows() {
 
     call_golden(
         "method_agent_next",
-        Call::AgentNext(agent::NextParams {}),
+        // Unscoped, which is every call this row has ever taken: the
+        // `workspace` field X17 reads is absent, so these bytes are the bytes
+        // M2 froze (`docs/11-m4-plan.md` X17's acceptance says so out loud).
+        Call::AgentNext(agent::NextParams { workspace: None }),
         agent::NextReply {
             pane: Some(pane_id()),
             workspace: Some(workspace_id()),

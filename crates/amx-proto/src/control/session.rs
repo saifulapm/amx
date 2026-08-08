@@ -108,6 +108,83 @@ pub struct PaneState {
     /// status line and `amx wait` come to disagree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentSnapshot>,
+    /// What the pane's application asked its terminal to report about the
+    /// mouse, when it asked for anything.
+    ///
+    /// D9 forwards SGR reports to a pane whose application enabled mouse
+    /// reporting and to no other, and until M4 nothing on the wire carried the
+    /// answer — `Terminal::mouse_tracking` had no caller and the client's
+    /// per-pane gate had no production writer (`docs/11-m4-plan.md` D-M4-1).
+    /// This is that answer, and it is read off the parser thread's own terminal
+    /// and folded into `Core` the way the history window already is, so
+    /// `session.state` still answers synchronously with no parser round trip
+    /// (`docs/notes/m4-mouse-path.md` §3).
+    ///
+    /// Absent when the pane asked for nothing — which is every pane running a
+    /// shell — and also when the peer answering does not report this field at
+    /// all. The two collapse deliberately: both mean "do not forward", which is
+    /// the only decision a reader makes with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouse: Option<MouseMode>,
+}
+
+/// What a pane's application asked its terminal to report about the mouse.
+///
+/// Two independent choices, and `docs/notes/m4-mouse-path.md` F-2 is why this
+/// is not the boolean the plan first assumed. An application picks *which*
+/// events it wants and, separately, *how* they should be encoded; a pane that
+/// enabled `?1000` without `?1006` expects the X10 encoding, and forwarding an
+/// SGR report to it delivers bytes it cannot parse. A reader has to be able to
+/// answer "would this pane understand what I am about to send it", so both
+/// halves travel.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub struct MouseMode {
+    /// Which events the application asked for.
+    pub events: MouseEvents,
+    /// How it asked for them to be encoded.
+    pub format: MouseFormat,
+}
+
+/// The event set a pane's application asked for; mutually exclusive modes.
+///
+/// The names and the modes behind them are the terminal's own
+/// (`vendor/libghostty-vt/src/terminal/mouse.zig:6-13`), not a vocabulary amx
+/// invented, so a pane's answer means the same thing here as it does in the
+/// emulator that produced it. The `none` case is not a variant: a pane that
+/// asked for nothing carries no [`MouseMode`] at all.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseEvents {
+    /// `?9` — press only, and no release.
+    X10,
+    /// `?1000` — press and release.
+    Normal,
+    /// `?1002` — press, release, and motion while a button is held.
+    Button,
+    /// `?1003` — press, release, and all motion.
+    Any,
+}
+
+/// The encoding a pane's application asked reports to arrive in.
+///
+/// Also the terminal's own list (`mouse.zig:21-28`). Only [`Sgr`](Self::Sgr) is
+/// the encoding amx's client recognises on the way in
+/// (`amx-client/src/input/mouse.rs`), which is why the honest first cut of
+/// forwarding is "forward to panes whose format is `sgr`, and record the drop
+/// for the rest" rather than a translation layer nobody has measured.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseFormat {
+    /// The original encoding: one byte per coordinate, offset by 32.
+    X10,
+    /// `?1005` — UTF-8 coordinates.
+    Utf8,
+    /// `?1006` — `ESC [ < btn ; col ; row (M|m)`.
+    Sgr,
+    /// `?1015` — urxvt's decimal form.
+    Urxvt,
+    /// `?1016` — SGR, in pixels rather than cells.
+    SgrPixels,
 }
 
 /// Reply to `session.state`: the full snapshot a fresh client folds into its

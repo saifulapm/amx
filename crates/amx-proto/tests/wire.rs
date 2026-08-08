@@ -265,8 +265,8 @@ fn method_table_generates_matching_serde_names_dispatch_and_clap_tree() {
     // plus M2's twelve (`docs/08-m2-plan.md` §4): agent{report,start,prompt,
     // explain,next} + wait + events.subscribe + pane{send_text,send_keys,run,
     // read,wait_output}; plus M3's one (`docs/09-m3-plan.md` §4):
-    // session.handoff.
-    assert_eq!(Method::ALL.len(), 18 + 12 + 1);
+    // session.handoff; plus M4's one (`docs/11-m4-plan.md` §3): agent.list.
+    assert_eq!(Method::ALL.len(), 18 + 12 + 1 + 1);
     assert_eq!(Method::ALL.len(), SPECS.len());
 
     for method in Method::ALL {
@@ -392,6 +392,7 @@ fn state_reply_with_restore_summary_round_trips_and_omits_when_none() {
             cols: 80,
             history_head: RowId::from_raw(0),
             history_floor: RowId::from_raw(0),
+            mouse: None,
             agent: Some(AgentSnapshot {
                 kind: Some(AgentKind::new("claude").unwrap()),
                 state: AgentState::Blocked,
@@ -399,6 +400,8 @@ fn state_reply_with_restore_summary_round_trips_and_omits_when_none() {
                 transition_seq: 8,
                 attention: Some(0),
                 session_ref: None,
+                reason: Some("permission_dialog".to_owned()),
+                since: Some(1_754_650_000_000),
             }),
         }],
         attention: vec![pane],
