@@ -50,9 +50,17 @@ start       = ["cat"]
 /// than read from the developer's own config, and `commit.gpgsign` is turned off:
 /// a CI runner with no signing key and a developer with `commit.gpgsign = true`
 /// must produce the same fixture.
+///
+/// The root is **canonical**, and every path this suite builds hangs off it.
+/// Every path amx reports here has been through git, and git prints realpaths;
+/// on darwin the rig's own root is not one, `$TMPDIR` sitting under `/var` and
+/// `/var` being a symlink to `/private/var`. A fixture that compared its own
+/// spelling against git's would be asserting the platform rather than the
+/// feature — and would have nothing to say on Linux, where the two coincide.
 struct Fixture {
     rig: Rig,
     exe: PathBuf,
+    root: PathBuf,
     repo: PathBuf,
 }
 
@@ -60,7 +68,8 @@ impl Fixture {
     fn new(tag: &str) -> Self {
         let rig = Rig::new(tag);
         let exe = rig.plant("bin/amx");
-        let repo = rig.root().join("repo");
+        let root = rig.root().canonicalize().expect("the rig root exists");
+        let repo = root.join("repo");
         std::fs::create_dir_all(&repo).expect("create the repo directory");
 
         git(&repo, &["init", "-q", "-b", "main", "."]);
@@ -71,18 +80,28 @@ impl Fixture {
         git(&repo, &["add", "README"]);
         git(&repo, &["commit", "-qm", "one"]);
 
-        Self { rig, exe, repo }
+        Self {
+            rig,
+            exe,
+            root,
+            repo,
+        }
+    }
+
+    /// This fixture's root, as the filesystem spells it.
+    fn root(&self) -> &Path {
+        &self.root
     }
 
     /// Write `config.toml` for this rig.
     fn config(&self, text: &str) {
-        std::fs::write(self.rig.root().join("config/amx/config.toml"), text)
+        std::fs::write(self.root().join("config/amx/config.toml"), text)
             .expect("write config.toml");
     }
 
     /// Plant the registry override, so `--kind fake` resolves.
     fn agents(&self) {
-        std::fs::write(self.rig.root().join("config/amx/agents.toml"), FAKE_AGENT)
+        std::fs::write(self.root().join("config/amx/agents.toml"), FAKE_AGENT)
             .expect("write agents.toml");
     }
 
@@ -173,7 +192,7 @@ fn work_branch_creates_worktree_workspace_and_agent_and_names_all_three() {
 
     let out = fixture.amx(&["work", "feat", "--kind", "fake"]);
     let said = out.ok().to_owned();
-    let tree = fixture.rig.root().join("repo--feat");
+    let tree = fixture.root().join("repo--feat");
 
     // Named, all three, in what the command printed.
     assert!(said.contains(&tree.display().to_string()), "{said}");
@@ -245,7 +264,7 @@ fn work_done_collapses_all_three_and_refuses_a_dirty_tree_without_force() {
     fixture.serve();
     fixture.amx(&["work", "feat"]).ok();
 
-    let tree = fixture.rig.root().join("repo--feat");
+    let tree = fixture.root().join("repo--feat");
     let panes_before = fixture.state().panes.len();
     std::fs::write(tree.join("scratch.txt"), "unfinished\n").expect("dirty the tree");
 
@@ -335,7 +354,7 @@ fn work_done_with_no_branch_takes_the_focused_tree_and_refuses_a_plain_workspace
     // `amx work` switches to what it made, so a no-branch `done` right after it
     // means that tree — the "the workspace this pane is in" default.
     fixture.amx(&["work", "feat"]).ok();
-    let tree = fixture.rig.root().join("repo--feat");
+    let tree = fixture.root().join("repo--feat");
     assert!(tree.is_dir());
     fixture.amx(&["work", "done"]).ok();
     assert!(!tree.exists(), "the focused tree came down");
@@ -357,7 +376,7 @@ fn a_vanished_worktree_restores_as_a_plain_workspace_with_a_report_entry() {
     let mut fixture = Fixture::new("wkv");
     fixture.serve();
     fixture.amx(&["work", "feat"]).ok();
-    let tree = fixture.rig.root().join("repo--feat");
+    let tree = fixture.root().join("repo--feat");
     let workspace = fixture
         .workspace("feat")
         .expect("the workspace exists before the restart")
@@ -420,10 +439,10 @@ fn work_from_inside_a_worktree_places_the_next_one_beside_the_repository() {
     let mut fixture = Fixture::new("wkn");
     fixture.serve();
     fixture.amx(&["work", "first"]).ok();
-    let first = fixture.rig.root().join("repo--first");
+    let first = fixture.root().join("repo--first");
 
     fixture.at(&first, &["work", "second"]).ok();
-    let second = fixture.rig.root().join("repo--second");
+    let second = fixture.root().join("repo--second");
     assert!(second.join("README").is_file(), "beside the repository");
     assert!(
         !first.join("repo--second").exists(),
@@ -452,13 +471,13 @@ fn work_dir_template_is_config_overridable() {
     fixture.serve();
 
     fixture.amx(&["work", "feat"]).ok();
-    let configured = fixture.rig.root().join("trees").join("feat");
+    let configured = fixture.root().join("trees").join("feat");
     assert!(
         configured.join("README").is_file(),
         "the tree went where the template said",
     );
     assert!(
-        !fixture.rig.root().join("repo--feat").exists(),
+        !fixture.root().join("repo--feat").exists(),
         "and not where the default would have put it",
     );
     assert_eq!(
@@ -478,7 +497,7 @@ fn work_dir_template_is_config_overridable() {
     // refuse rather than remove a directory the current template does not
     // derive: the recorded path is not user input, and neither is this one.
     fixture.amx(&["work", "second"]).ok();
-    let second = fixture.rig.root().join("trees").join("second");
+    let second = fixture.root().join("trees").join("second");
     assert!(second.is_dir());
     fixture.config("[work]\ndir = \"{repo_parent}/other/{branch}\"\n");
     let said = fixture.amx(&["work", "done", "second"]).failed().to_owned();
@@ -488,5 +507,69 @@ fn work_dir_template_is_config_overridable() {
     assert!(
         fixture.workspace("second").is_some(),
         "nor killed the workspace",
+    );
+}
+
+/// A `work.dir` that reaches its tree through a symlink is still one worktree.
+///
+/// darwin's bug, made reproducible anywhere. There, `$TMPDIR` is under `/var`
+/// and `/var` is a symlink to `/private/var`, so *every* path derived from a
+/// template rooted in a temporary directory is spelled one way while `git
+/// worktree list` prints the other — and the whole feature was verified on
+/// Linux, where the two coincide and nothing is wrong. A symlinked `work.dir`
+/// is the same mismatch, asked for on purpose, on any platform.
+///
+/// What it pins is the destructive path: the membership records the spelling
+/// git registered, and `done`'s second lock — "the repository lists this as one
+/// of its worktrees" — compares directories rather than characters. Compared as
+/// characters it refuses a tree amx made itself, which is `amx work done`
+/// unusable rather than `amx work done` cautious.
+#[test]
+fn a_work_dir_through_a_symlink_is_the_worktree_git_registered() {
+    let mut fixture = Fixture::new("wkl");
+    let real = fixture.root().join("elsewhere");
+    let link = fixture.root().join("link");
+    std::fs::create_dir_all(&real).expect("create the directory the link points at");
+    std::os::unix::fs::symlink(&real, &link).expect("plant the symlink");
+    fixture.config(&format!(
+        "[work]\ndir = \"{}/{{branch}}\"\n",
+        link.display()
+    ));
+    fixture.serve();
+
+    fixture.amx(&["work", "feat"]).ok();
+    let tree = real.join("feat");
+    assert!(
+        tree.join("README").is_file(),
+        "the tree was checked out through the link",
+    );
+    assert!(
+        fixture.worktrees().contains(&tree.display().to_string()),
+        "git registers the tree under the target's spelling: {:?}",
+        fixture.worktrees(),
+    );
+
+    // The membership is git's spelling too — the one `done` joins against and
+    // the one restore stats — and not the template's.
+    assert_eq!(
+        fixture
+            .workspace("feat")
+            .and_then(|ws| ws.worktree)
+            .map(|block| block.path),
+        Some(tree.clone()),
+        "the recorded path is the directory, not the template's characters",
+    );
+
+    // And `done` takes it down instead of refusing a tree of its own making.
+    let said = fixture.amx(&["work", "done", "feat"]).ok().to_owned();
+    assert!(said.contains("removed"), "{said}");
+    assert!(!tree.exists(), "the tree is gone: {said}");
+    assert!(
+        fixture.workspace("feat").is_none(),
+        "and so is the workspace"
+    );
+    assert!(
+        link.symlink_metadata().is_ok(),
+        "removing the tree did not follow the link out of its own directory",
     );
 }
