@@ -197,7 +197,7 @@ impl AgentHub {
                 self.workspaces.insert(pane, workspace);
             }
             // The names mirror (D-M4-6), folded off the bus beside the pairing
-            // above and never asked of `Core`. Two arms and one map is the
+            // above and never asked of `Core`. Three arms and one map is the
             // whole of what an identity-bearing `attention_enqueued` costs,
             // and it is the same shape `PaneCreated` already had: the hub
             // learns a fact by watching it be published, not by requesting it.

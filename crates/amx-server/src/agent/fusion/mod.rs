@@ -43,7 +43,7 @@
 //!
 //! | Module | What lives there |
 //! |---|---|
-//! | this one | the constants, the input and directive vocabulary, the deadlines |
+//! | this one | the constants, the input and directive vocabulary, the timers |
 //! | [`edge`] | one hook report reduced to an edge, and the precedence table |
 //! | [`tracker`] | the transition function, which is the machine itself |
 //!
@@ -58,8 +58,8 @@
 //! function. **V04** fills [`Tracker::apply`] and [`precedence`], and its
 //! property tests are as much the deliverable as the machine: arbitrary
 //! interleavings must never revive an idle pane from a subagent event, never
-//! wedge a tracker with an unfired deadline, and never emit two status directives
-//! for one transition.
+//! wedge a tracker with an unfired deadline, and never emit two status
+//! directives for one transition.
 
 pub mod edge;
 pub mod tracker;
@@ -148,7 +148,8 @@ pub struct ScreenVerdict {
     /// idle. Neither confirms a held state nor contradicts it, so neither
     /// touches the confirmation count.
     pub asserts: Option<AgentState>,
-    /// The rule that won, for `agent.explain` and for the directive's provenance.
+    /// The rule that won, for `agent.explain` and for the provenance the
+    /// directive carries.
     pub rule: Option<String>,
     /// Whether the winning rule is flagged `visible_idle`.
     ///
@@ -219,8 +220,8 @@ pub enum Input {
 /// directives into the attention queue — but none of that ordering is this
 /// module's business, which is why it can be property-tested without one.
 ///
-/// One input's directives come out in a fixed order — the status, then the queue,
-/// then the timers — so a test may compare a whole directive list rather than
+/// One input's directives come out in a fixed order — the status, then the
+/// queue, then the timers — so a test may compare a whole list rather than
 /// searching it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Directive {

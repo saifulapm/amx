@@ -16,7 +16,7 @@
 //! of the four is how two views of one truth start disagreeing.
 //!
 //! The manifest cache lives here too, because binding one is a consequence of
-//! an [`Directive::Identified`] and of nothing else.
+//! a [`Directive::Identified`] and of nothing else.
 
 use std::sync::Arc;
 
@@ -30,7 +30,7 @@ use crate::agent::fusion::{Directive, Input};
 use crate::agent::manifest::Manifest;
 
 impl AgentHub {
-    // ------------------------------------------------------------ the directives
+    // --------------------------------------------------------- the directives
 
     /// Apply one input to `pane`'s tracker, if it has one.
     pub(super) fn apply(&mut self, pane: PaneId, input: Input) -> Vec<Directive> {
@@ -92,8 +92,8 @@ impl AgentHub {
         // used by whichever of the two queue arms runs: D15 wants an
         // `attention_enqueued` a notifier can render straight
         // (`api/backend blocked (permission_dialog)`) without a follow-up call,
-        // and a dequeue carries the same block so the notification it clears
-        // can be matched to the one it clears.
+        // and the dequeue that clears it says the same thing about the pane it
+        // is about.
         let identity = self.identity(pane);
 
         // The queue and the events, in the fixed order the machine emits them:

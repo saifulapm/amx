@@ -50,7 +50,7 @@
 //! | [`run`] | the loop, the mailbox, the bus, the wheel, the drain |
 //! | [`commit`] | one transition folded into the queue and both read models |
 //! | [`inherit`] | a predecessor's statuses, taken across a live upgrade |
-//! | [`names`] | the labels an attention event carries, and where they came from |
+//! | [`names`] | the labels an attention event carries, and where from |
 //! | [`probe`] | the counters a test watches and the report a run returns |
 //! | [`detect`] | tier-2 scheduling and evaluation against the published frame |
 //! | [`verbs`] | what `agent.next`, `agent.explain` and a refusal answer |
@@ -125,18 +125,19 @@ struct Tracked {
     /// here and not inside the fusion machine because the machine has no clock
     /// and is not getting one: deadlines *arrive* as inputs, which is what lets
     /// V04's property tests enumerate interleavings instead of running them.
-    /// `absorb` already reads a clock for the wheel, so the stamp costs one more
-    /// `SystemTime::now`.
+    /// `absorb` already reads a clock for the wheel, so the stamp costs one
+    /// more `SystemTime::now`.
     ///
     /// `None` until this hub has seen the pane move. D-M4-4's absolute instant
-    /// is only honest when somebody observed the edge, and there are exactly two
-    /// ways a pane has one: this process watched it happen, or a predecessor did
-    /// and handed the value over on the handoff manifest. A **cold restore**
+    /// is only honest when somebody observed the edge, and there are exactly
+    /// two ways a pane has one: this process watched it happen, or a
+    /// predecessor did and handed it over on the handoff manifest. A **cold
+    /// restore**
     /// gives neither — the persist snapshot deliberately carries no status
     /// ("never a status, which dies with the process it described",
     /// `crates/amx-server/src/persist/mod.rs:94`) — so a restored pane starts
-    /// with no `since` and takes one from its first real transition, rather than
-    /// reporting the restore as the moment an agent became blocked. R-M4-4 asks
+    /// with no `since` and takes one from its first real transition, rather
+    /// than reporting the restore as the moment an agent blocked. R-M4-4 asks
     /// for that answer said out loud: this is it, and the fallback it offers
     /// ("since this server started tracking it") is declined, because an age
     /// counted from a restart is a number that looks measured and is not.

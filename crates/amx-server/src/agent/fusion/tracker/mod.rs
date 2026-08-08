@@ -47,11 +47,11 @@ struct Pending {
 /// Which deadlines the hub is holding a timer for on this pane's behalf.
 ///
 /// Mirrored rather than inferred so the machine can answer
-/// [`Tracker::is_armed`] without replaying its own directives, and so the property
-/// test has something to compare the directive stream *against* — a set derived
-/// from the directives and a set the tracker believes in must agree after every
-/// single input, or a session of idle agents is paying for wakeups it does not
-/// need (03 §5).
+/// [`Tracker::is_armed`] without replaying its own directives, and so the
+/// property test has something to compare the directive stream *against* — a
+/// set derived from the directives and a set the tracker believes in must agree
+/// after every single input, or a session of idle agents is paying for wakeups
+/// it does not need (03 §5).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 struct Armed {
     /// [`Deadline::Confirmation`].
@@ -134,8 +134,8 @@ pub struct Tracker {
     pending: Option<Pending>,
     /// The timers the hub is holding for this pane.
     armed: Armed,
-    /// Whether a [`Status`](Directive::Status) has ever been emitted, so the first
-    /// one can report `from: None` the way the directive's contract says.
+    /// Whether a [`Status`](Directive::Status) has ever been emitted, so the
+    /// first one can report `from: None` the way that directive's contract says.
     reported: bool,
     /// Whether the pane's process has ended. Terminal: a retired tracker
     /// publishes its exit and then nothing, ever.
@@ -320,8 +320,8 @@ impl Tracker {
 
     /// Move the pane, and emit the one status directive that says so.
     ///
-    /// The fixed directive order lives here: the status, then the queue, then the
-    /// timers.
+    /// The fixed directive order lives here: the status, then the queue, then
+    /// the timers.
     ///
     /// `reason` is the *name* of whatever moved it, and it is a parameter
     /// rather than a field the arms set for themselves so that a new way of
