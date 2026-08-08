@@ -84,6 +84,21 @@ pub struct PaneGrid {
     cols: u16,
     cells: Vec<Cell>,
     cursor: Cursor,
+    /// Whether every cell in this grid came from the server.
+    ///
+    /// False until the first keyframe lands: a blank grid is a placeholder the
+    /// model minted so a delta had somewhere to go, and its cells are this
+    /// client's invention rather than the pane's. The distinction is load
+    /// bearing on a reconnect — presenting a generation asserts "I hold a
+    /// **complete** grid at generation G", and a placeholder cannot make that
+    /// claim (`app::reconnect`).
+    complete: bool,
+    /// How many keyframes this grid has absorbed.
+    ///
+    /// The only externally visible difference between a resumed stream that was
+    /// owed nothing and one that had to repaint, and therefore what a reconnect
+    /// test asserts on.
+    keyframes: u64,
 }
 
 impl PaneGrid {
@@ -102,6 +117,8 @@ impl PaneGrid {
                 shape: CursorShape::default(),
                 blink: false,
             },
+            complete: false,
+            keyframes: 0,
         }
     }
 
@@ -109,6 +126,30 @@ impl PaneGrid {
     #[must_use]
     pub const fn generation(&self) -> GridGeneration {
         self.generation
+    }
+
+    /// Whether every cell here came from the server.
+    ///
+    /// Only a complete grid may have its generation presented on a reattach.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.complete
+    }
+
+    /// How many keyframes this grid has absorbed.
+    #[must_use]
+    pub const fn keyframes(&self) -> u64 {
+        self.keyframes
+    }
+
+    /// Forget that this grid's cells are the server's.
+    ///
+    /// What a client does when it can no longer vouch for a pane: the cells
+    /// stay on screen — a stale screen is better than a blank one — but the
+    /// generation stops being presentable, so the next bind opens with a
+    /// keyframe instead of delta-only.
+    pub const fn doubt(&mut self) {
+        self.complete = false;
     }
 
     /// Rows in the grid.
@@ -163,6 +204,8 @@ impl PaneGrid {
         self.cells
             .resize(usize::from(rows) * usize::from(cols), Cell::default());
         self.cursor = cursor;
+        self.complete = true;
+        self.keyframes += 1;
     }
 
     /// Apply an incremental update: overwrite the cells inside `rects`.
