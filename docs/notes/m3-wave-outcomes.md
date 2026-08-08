@@ -2115,3 +2115,67 @@ plants a symlink, points `work.dir` through it, and drives `work` and `work done
 end to end. Without the fix it fails on Linux twice over — the membership records
 the template's spelling, and `done` then refuses the tree with the sentence
 above.
+
+### The one that was left: the restart that raced its own snapshot
+
+The directory-comparison fix took three of the four macos-14 failures. The
+fourth stayed, and it is a different bug wearing the same test:
+`a_vanished_worktree_restores_as_a_plain_workspace_with_a_report_entry` failed
+at `the workspace survives the vanished tree` — the workspace was not there at
+all after the restart, which is neither the degrade the test asserts nor a path
+spelling.
+
+**What it is not.** The obvious reading is that the vanished case is the one
+where `resolve` answers from a canonicalized *parent* plus a re-attached tail,
+so a value stored earlier might be spelled the other way. Ruled out, by
+emulating darwin's asymmetry on Linux rather than by argument: a server given
+every root through a symlink (`$ROOT/self -> $ROOT`, the `/var -> /private/var`
+arrangement) while git answers with realpaths, then `work`, `stop`, remove the
+tree, restart. The workspace came back degraded with both report entries, on
+the first try. Restore compares no paths at all — `restore_pane` stats the saved
+cwd and `restore_worktree` stats the tree — and stat does not care how a path is
+spelled.
+
+**What it is.** `amx session stop` returns *before* the snapshot exists.
+Measured: the command waits for the socket to stop answering, and the socket
+stops answering while the server is still draining — the final capture is
+`try_send`'d to persistence by `Core` on its way down (R-M1-2, deliberately
+fire-and-forget) and written during that drain. On this Linux box the gap is
+about two milliseconds, and at the instant `stop` exits there is no
+`session.json` at all: the debounced save had never fired in a session seconds
+old, so the *only* snapshot that will ever exist is the one being written after
+the command has already returned success.
+
+So the test's premise — "stopped rather than killed, so the snapshot on disk is
+the one M1's shutdown push writes" — was never true when it was read. The test
+restarted the server into a race and won it on Linux by accident, because
+starting a server takes far longer than finishing that write. It is the only
+test in the file that restarts a server, and it was the only one still failing.
+
+**The fix is in the harness, and it is the rule the wait work already landed:
+wait for the fact, not for the call that starts it.** `Fixture::stop` runs the
+verb and then waits for the snapshot on disk to name every labelled workspace
+the session had; `Rig::snapshot` names the file. The test also *asserts* that
+premise before it removes anything, so the next failure of this kind lands on
+"the stopped session left the workspace on disk" instead of on a claim about
+worktrees. Reverting the wait and keeping the assertion fails on Linux
+immediately — two runs in four, and eight times out of eight when measured from
+a shell without the test's own round trips in between. The lookup that failed on
+darwin now prints the session's workspaces and its restore report, which
+separates the two ways to lose a workspace: a session that restored nothing has
+no entries, a workspace whose panes could not be respawned is pruned and says
+so.
+
+**Hand-off, and it is a product question rather than a test one.** `amx session
+stop` printing `stopped <session>` while the state it is responsible for is not
+yet on disk is a real gap: `amx session stop` followed by `amx` is the restart
+path M1 designed for, and today it can restore the session as it was before the
+last few seconds of work. Waiting for the pid is not the answer — a server
+spawned by a test is that test's child, and a zombie answers `kill(pid, 0)`
+happily, so the wait would burn the whole timeout in the harness that needs it
+most. Making the socket outlive the drain is worse: the gateway unlinks it
+knowing about the handoff fence (`gateway/mod.rs` asks the listener first, and
+`bind.rs` records the same hazard from the other side), and moving that unlink
+would put a dying server's `remove_file` on a successor's socket. What the gap
+needs is a decision about what `stop` promises, which is a D-decision and not
+this branch's to take.
