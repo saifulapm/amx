@@ -135,7 +135,7 @@ pub fn apply(
         let Ok(message) = decode(payload) else {
             return Applied::Nothing;
         };
-        apply_grid(model, caches, pane, message);
+        apply_grid(model, pane, message);
         return Applied::Grid(pane);
     }
     if let Some(&pane) = bindings.history.get(&header.channel) {
@@ -157,12 +157,12 @@ pub fn apply(
 }
 
 /// Apply one decoded grid message to the pane's cached grid.
-fn apply_grid(
-    model: &mut ClientModel,
-    caches: &mut HashMap<PaneId, Scrollback>,
-    pane: PaneId,
-    message: Decoded,
-) {
+///
+/// The grid stream reaches the live grid and nothing else. It used to reach the
+/// scrollback cache too, through the scroll notice DR-7 retired; the committed
+/// window now moves only where it is announced — `history.committed` on the
+/// event bus, and the per-pane `history_head` on `session.state`.
+fn apply_grid(model: &mut ClientModel, pane: PaneId, message: Decoded) {
     match message {
         Decoded::Reset {
             generation,
@@ -197,9 +197,6 @@ fn apply_grid(
                 }
             }
             target.apply_delta(generation, &rects, &cells, cursor);
-        }
-        Decoded::Scrolled { range, .. } => {
-            caches.entry(pane).or_default().commit(range);
         }
         Decoded::Cursor(cursor) => {
             model.pane_mut(pane, 0, 0).apply_cursor(cursor);

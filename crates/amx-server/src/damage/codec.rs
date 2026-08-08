@@ -13,7 +13,7 @@ use amx_vt::CursorStyle;
 pub use amx_proto::stream::codec::{
     CURSOR_BYTES, CodecError, RECT_BYTES, Reader, put_cursor, put_rect,
 };
-pub use amx_proto::stream::grid::{TAG_CURSOR, TAG_DELTA, TAG_RESET, TAG_SCROLLED};
+pub use amx_proto::stream::grid::{TAG_CURSOR, TAG_DELTA, TAG_RESET};
 
 /// A cursor position on the wire.
 ///

@@ -168,31 +168,24 @@ fn grid_stream_goldens_match() {
         &json!({ "kind": "cursor-only", "cursor": cursor }),
         encoder.payload(),
     );
+}
 
-    let range = RowRange::new(RowId::from_raw(40), RowId::from_raw(41));
-    let hashes = [hash_bytes(b"alpha"), hash_bytes(b"beta")];
-    let mut scrolled = Vec::new();
-    GridMessage::Scrolled {
-        range,
-        hashes: &hashes,
-    }
-    .encode(&mut scrolled);
-    check_bytes_golden(
-        "stream/grid_scrolled",
-        &json!({
-            "kind": "rows committed to history",
-            "rows": [40, 41],
-            "hashes": hashes.iter().map(hash_hex).collect::<Vec<_>>(),
-        }),
-        &scrolled,
+/// DR-7: tag 2 carried the scroll notice, and nothing ever sent one. It is
+/// retired rather than renumbered, so a build that still speaks it is answered
+/// like any other unknown tag and no later variant inherits its meaning.
+#[test]
+fn the_retired_scroll_notice_has_no_golden_and_no_decode() {
+    let mut bytes = vec![2];
+    bytes.extend_from_slice(&40_u64.to_le_bytes());
+    bytes.extend_from_slice(&41_u64.to_le_bytes());
+    bytes.extend_from_slice(&0_u32.to_le_bytes());
+    assert!(
+        grid::decode(&bytes).is_err(),
+        "tag 2 is retired, not decodable"
     );
-    let decoded = grid::decode(&scrolled).expect("the scroll notice decodes");
-    assert_eq!(
-        decoded,
-        Decoded::Scrolled {
-            range,
-            hashes: hashes.to_vec()
-        }
+    assert!(
+        !goldens_dir().join("stream/grid_scrolled.json").exists(),
+        "the scroll notice's golden went with the message it froze"
     );
 }
 
@@ -422,7 +415,6 @@ fn grid_message_goldens() -> Vec<String> {
         blink: false,
     };
     let generation = GridGeneration::FIRST;
-    let range = RowRange::new(RowId::from_raw(0), RowId::from_raw(0));
     [
         GridMessage::Reset {
             generation,
@@ -437,7 +429,6 @@ fn grid_message_goldens() -> Vec<String> {
             cells: Cells::new(&[]),
             cursor,
         },
-        GridMessage::Scrolled { range, hashes: &[] },
         GridMessage::Cursor(cursor),
     ]
     .iter()
@@ -445,7 +436,6 @@ fn grid_message_goldens() -> Vec<String> {
         match message {
             GridMessage::Reset { .. } => "grid_reset",
             GridMessage::Delta { .. } => "grid_delta",
-            GridMessage::Scrolled { .. } => "grid_scrolled",
             GridMessage::Cursor(_) => "grid_cursor",
         }
         .to_owned()
