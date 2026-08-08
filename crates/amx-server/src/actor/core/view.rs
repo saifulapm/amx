@@ -129,17 +129,11 @@ impl Core {
     }
 
     pub(super) fn short_of_workspace(&self, ws: amx_core::WorkspaceId) -> ShortNumber {
-        self.workspace_shorts
-            .get(&ws)
-            .copied()
-            .unwrap_or(ShortNumber::FIRST)
+        self.workspace_shorts.get(&ws).unwrap_or(ShortNumber::FIRST)
     }
 
     pub(super) fn short_of_pane(&self, pane: PaneId) -> ShortNumber {
-        self.pane_shorts
-            .get(&pane)
-            .copied()
-            .unwrap_or(ShortNumber::FIRST)
+        self.pane_shorts.get(&pane).unwrap_or(ShortNumber::FIRST)
     }
 
     /// Record the active client's declared size and re-project every layout.

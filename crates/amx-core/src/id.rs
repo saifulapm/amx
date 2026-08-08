@@ -6,6 +6,7 @@
 //! layered on top; nothing in the protocol or the state tree is keyed by
 //! position (D7, D13).
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
@@ -190,6 +191,23 @@ impl ShortNumber {
     pub const fn get(self) -> u32 {
         self.0
     }
+
+    /// Read a user-typed short number, if that is what this string is.
+    ///
+    /// Digits and nothing else: whoever resolves a target checks short numbers
+    /// before labels, so "is this a short number" has to be a question about
+    /// the string alone. Answering it from what happens to be in the tree is
+    /// how `7` would name a pane one minute and a label the next.
+    ///
+    /// So no sign, no spaces, no `0x`, and a number too large for the counter
+    /// is not one: `"+7"`, `" 7"` and `"7 "` are labels.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        if s.is_empty() || !s.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        s.parse::<u32>().ok().map(Self)
+    }
 }
 
 impl fmt::Display for ShortNumber {
@@ -227,9 +245,69 @@ impl<K: Ord + Copy> ShortNumbers<K> {
 
     /// Assign the lowest unused short number to `key`, or return the number it
     /// already holds.
+    ///
+    /// Lowest free rather than next highest: the numbers are what a user
+    /// types, and a session that has opened and closed forty panes over a day
+    /// should still be offering `1`–`4` rather than `37`–`40`. The cost is
+    /// that a number means something different after a release, which is why
+    /// [`ShortNumbers::resolve`] is only ever a display lookup and never an
+    /// identity (04 §6).
     pub fn assign(&mut self, key: K) -> ShortNumber {
-        let _ = key;
-        todo!("assign the lowest free short number")
+        if let Some(held) = self.assigned.get(&key) {
+            return *held;
+        }
+        let number = self.lowest_free();
+        self.assigned.insert(key, number);
+        number
+    }
+
+    /// Take `number` for `key` — restore and handoff import putting back the
+    /// numbers a previous server handed out — or the lowest free number if
+    /// another key already holds it.
+    ///
+    /// 04 §6 requires short numbers "stable across restarts", so the recorded
+    /// number wins whenever it can. Two objects claiming one number is a
+    /// rewritten file rather than a session, and the answer is to keep the
+    /// mapping one-to-one anyway: [`ShortNumbers::resolve`] over a duplicated
+    /// number would answer with whichever key the walk reached first, which is
+    /// a number that names a different pane depending on nothing.
+    ///
+    /// Returns the number `key` ended up with.
+    pub fn adopt(&mut self, key: K, number: ShortNumber) -> ShortNumber {
+        let taken = self
+            .assigned
+            .iter()
+            .any(|(held, held_number)| *held_number == number && *held != key);
+        if taken {
+            return self.assign(key);
+        }
+        self.assigned.insert(key, number);
+        number
+    }
+
+    /// The lowest number no key holds.
+    ///
+    /// Sorts on every call. The map holds one entry per live pane or
+    /// workspace — tens, in the session this is built for — and the
+    /// alternative is a reverse index that has to be rebuilt after every
+    /// deserialize, for a walk nothing measures.
+    fn lowest_free(&self) -> ShortNumber {
+        let mut taken: Vec<u32> = self.assigned.values().map(|number| number.get()).collect();
+        taken.sort_unstable();
+        let mut free = ShortNumber::FIRST.get();
+        for used in taken {
+            match used.cmp(&free) {
+                // Below the first number ever handed out: only an adopted
+                // number can be down here, and it blocks nothing.
+                Ordering::Less => {}
+                // Saturating for the same reason every other counter here is,
+                // and unreachable for the ordinary one: `u32::MAX` live
+                // objects is four billion panes.
+                Ordering::Equal => free = free.saturating_add(1),
+                Ordering::Greater => break,
+            }
+        }
+        ShortNumber::new(free)
     }
 
     /// The short number currently displayed for `key`, if any.
@@ -245,13 +323,25 @@ impl<K: Ord + Copy> ShortNumbers<K> {
     /// slot next, because the mapping is only reused after an explicit release.
     #[must_use]
     pub fn resolve(&self, number: ShortNumber) -> Option<K> {
-        let _ = number;
-        todo!("reverse the mapping")
+        self.assigned
+            .iter()
+            .find(|(_, held)| **held == number)
+            .map(|(key, _)| *key)
     }
 
     /// Drop the mapping for `key`, freeing its number for reuse.
     pub fn release(&mut self, key: &K) -> Option<ShortNumber> {
         self.assigned.remove(key)
+    }
+
+    /// Release every mapping `keep` rejects.
+    ///
+    /// Bulk [`ShortNumbers::release`], for the caller that holds the list of
+    /// objects that still exist rather than the list of ones that went: a
+    /// number outliving its object is a number that resolves to something the
+    /// user cannot see.
+    pub fn retain(&mut self, mut keep: impl FnMut(&K) -> bool) {
+        self.assigned.retain(|key, _| keep(key));
     }
 
     /// How many objects currently hold a short number.

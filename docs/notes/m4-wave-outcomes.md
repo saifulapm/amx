@@ -370,3 +370,66 @@ that found the work already done. The register's `agent_verbs` clause should be
 struck as stale rather than as fixed here, with `aba0877` named; the flood
 clause is half-stale the same way, with `f09a87c` named for the window and X04
 for the quantity.
+---
+## X05 — ShortNumbers
+
+**A shipped test asserted the stand-in's behaviour, and was rewritten.**
+`a_new_workspace_after_a_restore_takes_the_next_free_short`
+(`crates/amx-server/tests/restore.rs`) asserted that a create after restoring
+workspace `4` and pane `9` answers `5` and `10` — which is what a monotonic
+counter does and not what 04 §6 specifies. It is now
+`a_new_workspace_after_a_restore_takes_the_lowest_free_short` and asserts
+`1, 2, 3, 5`: the holes below the restored number, then past it. The property
+the old test was defending — a create must not collide with a restored number —
+is still asserted, and is the reason the fourth create skips `4`.
+
+**A collision the stand-in could produce, found while porting restore.** A
+layout naming a pane the snapshot has no row for was given a number *during*
+the rebuild, so a pane whose row came later in the file could adopt the same
+number and two panes then held one. Restore now settles every number in one
+pass after the tree is final (`Core::restore_shorts`), recorded numbers before
+leftovers. Test: `a_pane_the_snapshot_has_no_row_for_takes_no_other_panes_number`.
+
+**Release is swept at assignment, not at the close.** A short number is held
+exactly while its object is in `Core::state`, and the sweep runs immediately
+before an assignment (`Core::release_departed_shorts`, called from the two
+`next_*_short` helpers). Deferring it to the end of the batch — the other
+obvious place — makes what the next number is depend on which batch a close
+landed in, which is a mapping nobody can learn. **The close, kill and prune
+sites in `actor/core/{pane,workspace}.rs` are deliberately untouched**: they are
+outside X05's file scope, and with the sweep they need no edit. A later task
+adding a way for an object to leave the tree needs to add nothing either.
+
+**Two helper names still read `next_*`.** `Core::next_workspace_short` and
+`next_pane_short` assign the lowest free number now, not the next one; their
+call sites are in `actor/core/{pane,workspace}.rs`, which X05 does not own, so
+the rename was not made. Whoever next owns those two files can rename them to
+`assign_*_short` for free.
+
+**Behaviour change: an all-digits agent name is refused.** `check_new_name`
+(`amx-server/src/agent/address.rs`) now rejects `agent start 3` the way it
+already rejected a UUID-shaped name, because short numbers resolve before
+labels and such a label could never win. Worth a line in X20's docs if agent
+naming is documented there.
+
+**Hand-off to X07 — `attach --pane <number>` has no end-to-end test.**
+`crates/amx/tests/session_cli.rs` has the tty harness this wants
+(`spawn_on_tty`, and `attach_pane_renders_full_screen_with_no_chrome` is the
+shape), but `crates/amx/tests/**` is X07's in wave 2, so X05 left it alone. The
+parse is covered inline in `cmd/attach.rs`; the resolution rule is covered over
+a real socket in `crates/amx-server/tests/short_numbers.rs`. What is uncovered
+is the ten lines between them — `resolve_pane` asking `session.state` and
+handing a pane id to `viewport::one_pane`.
+
+**Hand-off to X02 (or X00) — the seam ledger can now assert it.** §7's exit
+item 8 wants "no `todo!()` in `crates/*/src`"; there are none as of this branch,
+and `tests/hygiene.rs` is where a check would live. X05 does not own that file.
+
+**Nothing else diverged.** `amx-core/src/id.rs`,
+`amx-server/src/actor/core/{mod,view,restore,import}.rs`,
+`amx-server/src/agent/address.rs`, `crates/amx/src/cmd/attach.rs` and server
+tests, as §5 says, plus X02's declared hand-off: `actor/core/agents.rs` is
+planted empty and declared from `actor/core/mod.rs`, so X02 never touches that
+file. The declaration is `mod agents;` and not `pub mod agents;` as §5 spells
+it — every other module in `actor/core/` is private and reaches `Core` through
+`impl` blocks and `pub(super)` functions, and X10 needs nothing wider.

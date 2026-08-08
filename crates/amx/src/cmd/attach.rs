@@ -14,35 +14,67 @@
 use std::process::ExitCode;
 
 use amx_client::app::App;
+use amx_client::net::{self, Session};
 use amx_client::term::{self, Sigwinch};
-use amx_core::{Ctx, PaneId};
+use amx_core::{Ctx, PaneId, ShortNumber};
 use amx_proto::ClientInfo;
+use amx_proto::control::session;
 use amx_server::session::daemon::{self, READY_TIMEOUT};
 use amx_server::session::probe::clear_if_stale;
 use anyhow::Context as _;
 use clap::ArgMatches;
+use serde_json::json;
+
+/// What `--pane` named, before there is a session to ask.
+///
+/// A UUID needs nobody: it *is* the pane's identity. A short number is the
+/// display mapping of 04 §6 and only the session it was issued in knows which
+/// pane holds it, so the two arrive here as two cases and are collapsed by
+/// [`resolve_pane`] once the server is up.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PaneRef {
+    /// A pane UUID, exactly as `session.state` reports it.
+    Id(PaneId),
+    /// A user-visible short number, as the picker and the status line show it.
+    Short(ShortNumber),
+}
+
+impl PaneRef {
+    /// Read what the user typed after `--pane`.
+    ///
+    /// # Errors
+    ///
+    /// A target that is neither spelling.
+    pub fn parse(target: &str) -> anyhow::Result<Self> {
+        if let Ok(pane) = target.parse::<PaneId>() {
+            return Ok(Self::Id(pane));
+        }
+        ShortNumber::parse(target)
+            .map(Self::Short)
+            .with_context(|| {
+                format!("--pane wants a pane id or a short number, which {target:?} is not")
+            })
+    }
+}
 
 /// What `amx attach` was asked for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Options {
     /// Attach to one pane, full-screen and without chrome.
-    pub pane: Option<PaneId>,
+    pub pane: Option<PaneRef>,
     /// Take size authority for that pane.
     pub takeover: bool,
 }
 
 impl Options {
     /// Read the options out of `matches`.
+    ///
+    /// # Errors
+    ///
+    /// A `--pane` target that is neither a pane id nor a short number.
     pub fn parse(matches: &ArgMatches) -> anyhow::Result<Self> {
         let pane = match matches.get_one::<String>("pane") {
-            // Pane ids only, for now: the short numbers 04 §6 puts in the UI
-            // are `amx_core::ShortNumbers`, whose `resolve` is still `todo!()`
-            // and which no wire method exposes yet.
-            Some(target) => Some(
-                target
-                    .parse::<PaneId>()
-                    .with_context(|| format!("--pane wants a pane id, which {target:?} is not"))?,
-            ),
+            Some(target) => Some(PaneRef::parse(target)?),
             None => None,
         };
         Ok(Self {
@@ -73,9 +105,46 @@ pub async fn run(ctx: &Ctx, options: Options) -> anyhow::Result<ExitCode> {
     );
     ensure_running(ctx).await?;
     match options.pane {
-        Some(pane) => crate::cmd::viewport::one_pane(ctx, pane, options.takeover).await,
+        Some(target) => {
+            let pane = resolve_pane(ctx, target).await?;
+            crate::cmd::viewport::one_pane(ctx, pane, options.takeover).await
+        }
         None => full(ctx).await,
     }
+}
+
+/// Turn what the user typed into the pane it names.
+///
+/// A UUID costs nothing and asks nobody, which is the same promise
+/// `dispatch/pane.rs` makes server-side. A short number costs one
+/// `session.state` — the reply that carries the mapping — and it is only paid
+/// by the caller who typed a number.
+async fn resolve_pane(ctx: &Ctx, target: PaneRef) -> anyhow::Result<PaneId> {
+    let number = match target {
+        PaneRef::Id(pane) => return Ok(pane),
+        PaneRef::Short(number) => number,
+    };
+    let socket = net::connect(&ctx.socket)
+        .await
+        .context("connect to the session")?;
+    // A verb connection: it declares no viewport and binds no stream, so
+    // asking which pane `2` is does not make this terminal the size authority
+    // before the real attach below decides whether to be.
+    let (mut session, _welcome) = Session::attach(socket, client_info(), false, None)
+        .await
+        .context("negotiate with the session")?;
+    let state = session
+        .call("session.state", json!({}))
+        .await
+        .context("read the session's state")?;
+    let state: session::StateReply =
+        serde_json::from_value(state).context("decode the session's state")?;
+    state
+        .panes
+        .iter()
+        .find(|pane| pane.short == number)
+        .map(|pane| pane.pane)
+        .with_context(|| format!("no pane in this session is numbered {number}"))
 }
 
 /// Make sure a server is answering on `ctx`'s socket, starting one if not.
@@ -152,4 +221,38 @@ pub fn flush(out: &mut impl std::io::Write, frame: &[u8]) -> anyhow::Result<()> 
     out.write_all(frame).context("write to the terminal")?;
     out.flush().context("flush the terminal")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
+
+    use amx_core::{PaneId, ShortNumber};
+
+    use super::PaneRef;
+
+    #[test]
+    fn a_pane_target_is_a_uuid_or_a_short_number_and_nothing_else() {
+        let pane = PaneId::new_v4();
+        assert_eq!(
+            PaneRef::parse(&pane.to_string()).expect("a pane id"),
+            PaneRef::Id(pane),
+        );
+        assert_eq!(
+            PaneRef::parse("2").expect("a short number"),
+            PaneRef::Short(ShortNumber::new(2)),
+        );
+
+        // A label is not a target here. `--pane` is answered before the
+        // terminal is touched and the whole point of the mode is that a typo
+        // is a refusal rather than a blank screen, so the parse stays a
+        // question about the string.
+        for bogus in ["not-a-pane", "", "dev2", " 2"] {
+            let err = PaneRef::parse(bogus).expect_err("neither spelling");
+            assert!(
+                err.to_string().contains("pane id or a short number"),
+                "{bogus:?}: {err}",
+            );
+        }
+    }
 }

@@ -31,6 +31,7 @@
 //! yesterday's session back, and [`resume`] for the half of that rebuild which
 //! puts each agent's *conversation* back (V15, D-M2-7).
 
+mod agents;
 mod handoff;
 mod import;
 mod pane;
@@ -48,7 +49,7 @@ use std::time::Duration;
 
 use amx_core::{
     Config, Ctx, EffectSet, Event, Level, PaneId, RowId, Scheduled, SessionId, SessionState,
-    ShortNumber, WorkspaceId,
+    ShortNumber, ShortNumbers, WorkspaceId,
 };
 use amx_proto::ServerInfo;
 use amx_proto::rpc::RpcError;
@@ -93,20 +94,15 @@ pub struct Core {
     state: SessionState,
     effects: EffectSet,
     session_id: SessionId,
-    /// Placeholder short-number issuance: monotonic, never reused.
+    /// The short number each workspace holds, for `session.state`.
     ///
-    /// `amx_core::ShortNumbers::assign`/`resolve` (the lowest-free-number,
-    /// reuse-after-release mapping 04 §6 specifies) are still `todo!()` and no
-    /// task in the DAG claims `amx-core/src/id.rs`'s bodies yet, so `Core`
-    /// cannot call them without panicking. This counter is a stand-in scoped
-    /// to T09 only; swap it for `ShortNumbers` once that lands.
-    next_workspace_short: u32,
-    /// See [`Self::next_workspace_short`].
-    next_pane_short: u32,
-    /// The short number each workspace was issued, for `session.state`.
-    workspace_shorts: HashMap<WorkspaceId, ShortNumber>,
-    /// The short number each pane was issued, for `session.state`.
-    pane_shorts: HashMap<PaneId, ShortNumber>,
+    /// The lowest-free-number, reuse-after-release mapping of 04 §6: assigned
+    /// at creation, adopted back from a snapshot or a manifest, and released
+    /// by [`Core::release_departed_shorts`] when the object leaves the tree.
+    workspace_shorts: ShortNumbers<WorkspaceId>,
+    /// The short number each pane holds, for `session.state`. See
+    /// [`Self::workspace_shorts`].
+    pane_shorts: ShortNumbers<PaneId>,
     /// The panes currently backed by a live process, actor task included.
     ///
     /// Every pane minted through [`Core::run`] has an entry (splits and
@@ -194,10 +190,8 @@ impl Core {
             state: SessionState::new(),
             effects: EffectSet::new(),
             session_id: SessionId::new_v4(),
-            next_workspace_short: ShortNumber::FIRST.get(),
-            next_pane_short: ShortNumber::FIRST.get(),
-            workspace_shorts: HashMap::new(),
-            pane_shorts: HashMap::new(),
+            workspace_shorts: ShortNumbers::new(),
+            pane_shorts: ShortNumbers::new(),
             panes: HashMap::new(),
             draining: Vec::new(),
             history: HashMap::new(),
@@ -311,20 +305,36 @@ impl Core {
         }
     }
 
+    /// The number a new workspace is displayed as: the lowest one free.
     fn next_workspace_short(&mut self, workspace: WorkspaceId) -> ShortNumber {
-        let n = self.next_workspace_short;
-        self.next_workspace_short += 1;
-        let short = ShortNumber::new(n);
-        self.workspace_shorts.insert(workspace, short);
-        short
+        self.release_departed_shorts();
+        self.workspace_shorts.assign(workspace)
     }
 
+    /// The number a new pane is displayed as: the lowest one free.
     fn next_pane_short(&mut self, pane: PaneId) -> ShortNumber {
-        let n = self.next_pane_short;
-        self.next_pane_short += 1;
-        let short = ShortNumber::new(n);
-        self.pane_shorts.insert(pane, short);
-        short
+        self.release_departed_shorts();
+        self.pane_shorts.assign(pane)
+    }
+
+    /// Free the number of every workspace and pane no longer in the tree.
+    ///
+    /// One rule in one place: a short number is held exactly while its object
+    /// is in [`Core::state`]. The alternative — a release beside every close,
+    /// kill and prune — is a handful of call sites that each have to remember,
+    /// and the one that forgets leaves a number pointing at nothing forever.
+    ///
+    /// Swept immediately before an assignment rather than after a close, so
+    /// that what the next number is depends on the tree and never on which
+    /// batch the close landed in: 04 §6's numbers are what a user types, and a
+    /// split that answers `4` or `2` depending on scheduling is not a mapping
+    /// anybody can learn. It costs one walk of the map per create, on a map
+    /// with one entry per live pane.
+    fn release_departed_shorts(&mut self) {
+        let state = &self.state;
+        self.pane_shorts.retain(|pane| state.pane(*pane).is_some());
+        self.workspace_shorts
+            .retain(|ws| state.workspace(*ws).is_some());
     }
 
     /// The workspace whose layout currently holds `pane`, if any.
@@ -355,6 +365,7 @@ impl Core {
     /// `out` keeps its buffer capacity across calls (`EffectSet::drain_into`'s
     /// contract), so a steady state of drain-a-mailbox / schedule / repeat
     /// performs no allocation once warmed up.
+    ///
     pub fn drain_scheduled(&mut self, out: &mut Scheduled) {
         self.effects.drain_into(out);
     }

@@ -198,10 +198,7 @@ impl Core {
             if let Some(worktree) = saved.worktree.clone() {
                 let _ = self.state.set_worktree(saved.id, Some(worktree));
             }
-            self.workspace_shorts.insert(saved.id, saved.short);
-            self.next_workspace_short = self
-                .next_workspace_short
-                .max(saved.short.get().saturating_add(1));
+            self.workspace_shorts.adopt(saved.id, saved.short);
         }
         // The hook tokens, by pane. They ride the manifest's own pane entries
         // rather than the snapshot's (the snapshot is a disk format and a cold
@@ -215,10 +212,7 @@ impl Core {
             if self.state.pane(saved.id).is_none() {
                 continue;
             }
-            self.pane_shorts.insert(saved.id, saved.short);
-            self.next_pane_short = self
-                .next_pane_short
-                .max(saved.short.get().saturating_add(1));
+            self.pane_shorts.adopt(saved.id, saved.short);
             if let Some(cwd) = saved.cwd.clone() {
                 let _ = self.state.set_pane_cwd(saved.id, cwd);
             }
@@ -343,8 +337,11 @@ impl Core {
             .collect();
         for workspace in empty {
             let _ = self.state.kill_workspace(workspace);
-            self.workspace_shorts.remove(&workspace);
         }
+        // Whatever the manifest named and this server could not keep gives its
+        // number back, panes included: an import that pruned two panes must
+        // not leave two numbers pointing at nothing.
+        self.release_departed_shorts();
         pruned
     }
 

@@ -11,9 +11,20 @@
 //!
 //! 1. a UUID, if the string parses as one — checked *first*, so a pane
 //!    mischievously labelled with another pane's UUID cannot shadow it;
-//! 2. otherwise a label match, which must be **unique among agent panes**;
-//! 3. otherwise an error that *names the candidates*, because "ambiguous
+//! 2. a short number, if the string is digits — the number `session.state`
+//!    reports for the pane (04 §6), checked before labels for the same reason
+//!    UUIDs are: `2` is what the picker and the status line show, and a pane
+//!    labelled `2` must not be able to take that away from the pane that
+//!    *is* 2;
+//! 3. otherwise a label match, which must be **unique among agent panes**;
+//! 4. otherwise an error that *names the candidates*, because "ambiguous
 //!    target" without them is a message the user cannot act on.
+//!
+//! Rules 1 and 2 are questions about the string, not about the tree: a
+//! digits-only target is a short number even when no pane holds that number,
+//! and answers `no pane is numbered 7` rather than quietly looking for a pane
+//! called `7`. A target that resolved differently depending on which panes
+//! happened to be open is one nobody can learn.
 //!
 //! The pane-driving verbs (`pane.send_text` and friends) use the same wire type
 //! with the wider rule — any pane, not only agent panes — since a script
@@ -43,7 +54,7 @@
 //!
 //! V02 planted the file so `agent/mod.rs` could be planted whole.
 
-use amx_core::PaneId;
+use amx_core::{PaneId, ShortNumber};
 use amx_proto::control::pane::PaneTarget;
 use amx_proto::control::session::PaneState;
 use amx_proto::rpc::RpcError;
@@ -88,10 +99,12 @@ impl Scope {
 
 /// Resolve `target` against the panes `session.state` reports.
 ///
-/// The three rules of the module documentation, in order. A UUID is taken at
-/// face value in either scope: it is unambiguous, and refusing one for a pane
+/// The rules of the module documentation, in order. A UUID is taken at face
+/// value in either scope: it is unambiguous, and refusing one for a pane
 /// whose agent has not been identified *yet* would make `agent prompt <uuid>`
-/// fail for a race rather than for a reason.
+/// fail for a race rather than for a reason. A short number is not taken at
+/// face value in the same way, because unlike a UUID it can be a number no
+/// pane holds — it is looked up, and the scope applies to what it finds.
 ///
 /// # Errors
 ///
@@ -105,6 +118,18 @@ pub fn resolve(
     let name = target.as_str();
     if let Ok(pane) = name.parse::<PaneId>() {
         return Ok(pane);
+    }
+    if let Some(number) = ShortNumber::parse(name) {
+        let Some(numbered) = panes.iter().find(|pane| pane.short == number) else {
+            return Err(AddressError::UnknownNumber { number });
+        };
+        if !scope.admits(numbered) {
+            return Err(AddressError::NoAgent {
+                name: name.to_owned(),
+                panes: vec![numbered.pane],
+            });
+        }
+        return Ok(numbered.pane);
     }
     let named: Vec<&PaneState> = panes
         .iter()
@@ -144,6 +169,8 @@ pub fn resolve(
 ///   picker;
 /// - **UUID-shaped** — rule 1 checks UUIDs first, so such a label is shadowed
 ///   by whatever pane the UUID names (or by nothing at all) and can never win;
+/// - **all digits** — rule 2 checks short numbers first, for the same reason
+///   and with the same result;
 /// - **already a pane's label** — the second one makes both unaddressable,
 ///   which is exactly the ambiguity error the resolver would then have to
 ///   report forever.
@@ -161,6 +188,11 @@ pub fn check_new_name(name: &str, panes: &[PaneState]) -> Result<(), AddressErro
     }
     if name.parse::<PaneId>().is_ok() {
         return Err(AddressError::UuidName {
+            name: name.to_owned(),
+        });
+    }
+    if ShortNumber::parse(name).is_some() {
+        return Err(AddressError::NumberName {
             name: name.to_owned(),
         });
     }
@@ -213,9 +245,21 @@ pub enum AddressError {
     /// A new agent was asked for with no name.
     #[error("an agent's name is the pane's label, and a label cannot be blank")]
     BlankName,
+    /// No pane carries that short number.
+    #[error("no pane is numbered {number}")]
+    UnknownNumber {
+        /// The number, as written.
+        number: ShortNumber,
+    },
     /// A new agent was asked for with a UUID-shaped name.
     #[error("{name:?} is shaped like a pane UUID, which is checked first and would shadow it")]
     UuidName {
+        /// The name, as written.
+        name: String,
+    },
+    /// A new agent was asked for with an all-digits name.
+    #[error("{name:?} is a short number, which is checked first and would shadow it")]
+    NumberName {
         /// The name, as written.
         name: String,
     },

@@ -41,7 +41,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use amx_core::{Event, PaneId, WorkspaceId};
+use amx_core::{Event, PaneId, ShortNumber, WorkspaceId};
 use amx_proto::control::session::{
     RestoreEntity, RestoreLoss, RestoreReport, RestoreSeverity, RestoreSummary,
 };
@@ -117,6 +117,14 @@ impl Core {
             .map(|pane| (pane.id, pane))
             .collect();
 
+        // The numbers the workspaces were saved under, kept for the pass at
+        // the end: the snapshot rows themselves are consumed by the rebuild.
+        let recorded: Vec<(WorkspaceId, ShortNumber)> = snapshot
+            .workspaces
+            .iter()
+            .map(|ws| (ws.id, ws.short))
+            .collect();
+
         let (mut workspaces, mut panes) = (0_u32, 0_u32);
         for ws in snapshot.workspaces {
             if let Some(restored) = self.restore_workspace(&ws, &saved, &mut run) {
@@ -124,6 +132,7 @@ impl Core {
                 panes += restored;
             }
         }
+        self.restore_shorts(&recorded, &saved);
         self.focus_restored(snapshot.focused_workspace);
 
         let Restoring {
@@ -174,6 +183,51 @@ impl Core {
         summary
     }
 
+    /// Put the short numbers back, once the tree is final.
+    ///
+    /// One pass, after the rebuild rather than during it, and in one order:
+    /// **every recorded number first, then the leftovers.** 04 §6 wants the
+    /// numbers "stable across restarts", and assignment is lowest-free — so a
+    /// pane the snapshot has no row for, handed a number while the file still
+    /// had rows to read, would take one a later workspace's pane is about to
+    /// claim back. Two panes would then hold one number and the second would
+    /// be unaddressable.
+    ///
+    /// Nothing pruned on the way in is here to ask for a number, which is why
+    /// this needs no release afterwards: what did not come back never took a
+    /// number to give up.
+    fn restore_shorts(
+        &mut self,
+        recorded: &[(WorkspaceId, ShortNumber)],
+        saved: &HashMap<PaneId, PaneSnapshot>,
+    ) {
+        for (id, short) in recorded {
+            if self.state.workspace(*id).is_some() {
+                self.workspace_shorts.adopt(*id, *short);
+            }
+        }
+        for pane in saved.values() {
+            if self.state.pane(pane.id).is_some() {
+                self.pane_shorts.adopt(pane.id, pane.short);
+            }
+        }
+        // The leftovers: a layout naming a pane the snapshot has no row for
+        // (already reported as degraded above) and, in principle, a workspace
+        // the same is true of. `assign` is idempotent, so this walk is only
+        // about the objects the two loops above did not reach.
+        let live: Vec<(WorkspaceId, Vec<PaneId>)> = self
+            .state
+            .workspaces()
+            .map(|ws| (ws.id(), ws.layout().panes()))
+            .collect();
+        for (ws, panes) in live {
+            self.workspace_shorts.assign(ws);
+            for pane in panes {
+                self.pane_shorts.assign(pane);
+            }
+        }
+    }
+
     /// Restore one workspace; the answer is how many panes came back with it,
     /// or `None` if the workspace itself was pruned.
     fn restore_workspace(
@@ -198,13 +252,6 @@ impl Core {
                 return None;
             }
         }
-        self.workspace_shorts.insert(id, saved_ws.short);
-        // Saturating, because the number comes from a file: a snapshot naming
-        // `u32::MAX` must not make the next create panic in debug.
-        self.next_workspace_short = self
-            .next_workspace_short
-            .max(saved_ws.short.get().saturating_add(1));
-
         let mut restored = Vec::with_capacity(members.len());
         for pane in members {
             if self.restore_pane(id, pane, saved.get(&pane), run) {
@@ -217,7 +264,6 @@ impl Core {
             if let Ok((_, effect)) = self.state.kill_workspace(id) {
                 self.effects.absorb(effect);
             }
-            self.workspace_shorts.remove(&id);
             run.report.entries.push(lost_workspace(
                 saved_ws,
                 "no pane in this workspace could be restored".to_owned(),
@@ -355,17 +401,8 @@ impl Core {
                         reason: "the snapshot's layout names a pane it has no record of".to_owned(),
                     });
                 }
-                match saved.map(|saved| saved.short) {
-                    Some(short) => {
-                        self.pane_shorts.insert(pane, short);
-                        // Saturating, for the reason the workspace's is.
-                        self.next_pane_short =
-                            self.next_pane_short.max(short.get().saturating_add(1));
-                    }
-                    None => {
-                        let _ = self.next_pane_short(pane);
-                    }
-                }
+                // Short numbers are settled in one pass once the tree is
+                // final: see `Core::restore_shorts`.
                 self.replay_sidecar(workspace, pane, &handle, &mut run.report);
                 if let Some(planned) = claimed {
                     self.launch_resume(pane, &handle, frames, &planned);
