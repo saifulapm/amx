@@ -179,7 +179,11 @@ async fn server_memory_is_bounded_under_a_stalled_client() {
             peak < MEMORY_BOUND,
             "accounted bytes reached {peak}, over the {MEMORY_BOUND} byte bound: {stats:?}"
         );
-        if stats.frames() * MARGIN < stats.absorbed {
+        // `frames() >= 1` is not pedantry: a stream that has sent nothing yet
+        // satisfies the ratio for free, and "the writer took one frame and then
+        // blocked" is the scenario. Without it the loop could exit on its first
+        // turn having observed nothing at all.
+        if stats.frames() >= 1 && stats.frames() * MARGIN < stats.absorbed {
             break stats;
         }
         assert!(
