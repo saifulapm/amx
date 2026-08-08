@@ -52,26 +52,31 @@
 //!
 //! # The three files
 //!
-//! This one is the manifest and its pane entries, in both directions. [`modes`]
-//! is the terminal-mode inventory — the list of what crosses and the reasons
-//! four classes do not — and [`base64`] is the encoding the one binary field
-//! rides in. Split by responsibility on arrival at 617 lines rather than at the
-//! hard limit (R-M1-3); the directory needs no change to `handoff/mod.rs`,
-//! which is what W05 established when `protocol.rs` became `protocol/`.
+//! This one is the manifest and its pane entries, in both directions.
+//! [`history`] is the scrollback half — the budget, what it drops, and the two
+//! functions that read and trim it — [`modes`] is the terminal-mode inventory
+//! with the reasons four classes do not cross, and [`base64`] is the encoding
+//! the one binary field rides in. Split by responsibility on arrival rather
+//! than at the hard limit (R-M1-3); the directory needs no change to
+//! `handoff/mod.rs`, which is what W05 established when `protocol.rs` became
+//! `protocol/`.
 
 mod base64;
+mod history;
 mod modes;
 
 use std::path::PathBuf;
 
 use amx_core::agent::{AgentSnapshot, HookToken};
 use amx_core::platform::{ProcessId, WinSize};
-use amx_core::{Ctx, GridGeneration, PaneId, RowId, RowRange, Seq, SessionId, SessionName};
+use amx_core::{Ctx, GridGeneration, PaneId, RowId, Seq, SessionId, SessionName};
 use amx_vt::{Snapshot as GridSnapshot, Terminal};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use self::base64::{decode, encode};
+use self::base64::decode;
+use self::history::capture_history;
+pub use self::history::{MAX_ROW_BYTES, MAX_ROWS, PaneHistory};
 pub use self::modes::{ModeState, PaneModes};
 use super::grid;
 use crate::history::HistoryTracker;
@@ -85,15 +90,6 @@ pub const VERSION: u32 = 1;
 /// The N/N−1 window the handoff surface skews on, separately from the control
 /// protocol. At v1 there is no predecessor, so the window is just `{1}`.
 pub const READ_WINDOW: &[u32] = &[VERSION];
-
-/// How many scrollback rows one pane carries.
-pub const MAX_ROWS: u64 = 500;
-
-/// How many bytes of packed scrollback one pane carries.
-///
-/// Measured against the packed bytes, which is what the budget in D-M3-4 means
-/// and what the transport pays for once they are encoded.
-pub const MAX_ROW_BYTES: usize = 256 * 1024;
 
 /// A manifest could not be built, read, or applied.
 #[derive(Debug, Error)]
@@ -252,40 +248,6 @@ pub struct AgentEntry {
     /// Its kind, state, cause, transition sequence and attention rank.
     pub agent: AgentSnapshot,
 }
-/// The scrollback one pane carries, and what fell off the bottom.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct PaneHistory {
-    /// One past the newest committed row, which the successor continues from.
-    pub head: RowId,
-    /// The oldest row the *exporter* could still serve.
-    ///
-    /// Kept for the audit trail. The successor's own floor is derived from what
-    /// actually landed in its scrollback, which is never older than this and is
-    /// usually newer.
-    pub floor: RowId,
-    /// The first row id the carried rows start at.
-    pub first: RowId,
-    /// How many rows are carried.
-    pub count: u64,
-    /// The packed rows, base64 of the M1 sidecar packing.
-    pub packed: String,
-    /// Whether either budget dropped rows off the oldest end.
-    pub truncated: bool,
-    /// How many rows the budget dropped, oldest first.
-    pub dropped: u64,
-}
-
-impl PaneHistory {
-    /// The carried rows, back in the M1 packing they were read out as.
-    ///
-    /// # Errors
-    ///
-    /// [`ManifestError::Malformed`] if the payload is not base64.
-    pub fn rows(&self) -> Result<Vec<u8>, ManifestError> {
-        decode(&self.packed)
-    }
-}
-
 /// One pane, frozen.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct PaneManifest {
@@ -473,68 +435,6 @@ pub struct PaneSeed {
     /// because replaying DEC mode 6 homes it; see
     /// [`grid::put_cursor`](super::grid::put_cursor).
     pub modes: Vec<u8>,
-}
-
-/// Read the newest rows the budget allows, oldest dropped first.
-fn capture_history(
-    terminal: &Terminal,
-    tracker: &mut HistoryTracker,
-) -> Result<PaneHistory, ManifestError> {
-    let head = tracker.head();
-    let floor = tracker.oldest_row().0;
-    let mut carried = PaneHistory {
-        head,
-        floor,
-        first: head,
-        count: 0,
-        packed: String::new(),
-        truncated: false,
-        dropped: 0,
-    };
-    let Some(committed) = tracker.committed() else {
-        return Ok(carried);
-    };
-    let wanted = head
-        .get()
-        .saturating_sub(MAX_ROWS)
-        .max(committed.first.get());
-    carried.dropped = wanted - committed.first.get();
-    let range = RowRange::new(RowId::from_raw(wanted), committed.last);
-    let served = tracker
-        .read(terminal, range)
-        .map_err(|err| ManifestError::History(err.to_string()))?;
-    let (at, dropped) = trim_oldest(&served.rows, MAX_ROW_BYTES);
-    carried.dropped += dropped;
-    carried.first = RowId::from_raw(wanted + dropped);
-    carried.count = head.get().saturating_sub(carried.first.get());
-    carried.truncated = carried.dropped > 0;
-    carried.packed = encode(&served.rows[at..]);
-    Ok(carried)
-}
-
-/// Where to start reading a packed run so that it fits in `cap`, and how many
-/// rows that drops off the oldest end.
-fn trim_oldest(packed: &[u8], cap: usize) -> (usize, u64) {
-    let mut at = 0usize;
-    let mut dropped = 0u64;
-    while packed.len() - at > cap {
-        // The packing is self-delimiting: a `u32` length, the text, one flag
-        // byte. A run that does not parse is one this process wrote, so a
-        // short read can only mean the budget already reached the end.
-        let Some(head) = packed.get(at..at + 4) else {
-            break;
-        };
-        let Ok(length) = <[u8; 4]>::try_from(head) else {
-            break;
-        };
-        let step = 4 + u32::from_le_bytes(length) as usize + 1;
-        if at + step > packed.len() {
-            break;
-        }
-        at += step;
-        dropped += 1;
-    }
-    (at, dropped)
 }
 
 pub(super) fn terminal_error(err: amx_vt::Error) -> ManifestError {

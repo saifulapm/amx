@@ -34,13 +34,17 @@ mod fixtures;
 #[path = "handoff_exit/harness.rs"]
 mod harness;
 
-use amx_core::{PaneId, WorkspaceId};
 use rig::agent;
-use rig::{Terminal, pids_with_arg, rasterize_styled, shows, styled_run};
+use rig::{pids_with_arg, rasterize_styled, shows, styled_run};
 use serde_json::{Value, json};
 
-use fixtures::{Agent, Rig};
-use harness::{Standing, gapped, seqs};
+use fixtures::Rig;
+use harness::non_blank;
+use harness::{
+    Standing, a_silent_successor, alive, exclusive, gapped, history_window, not_an_amx,
+    paint_sentinels, seed_three_workspaces, sentinel_of, seqs, sorted, wait_for_repaint,
+    wait_for_successor, wait_report,
+};
 
 /// The client the exit criterion attaches: §7 step 1's 200×50.
 const CLIENT_ROWS: u16 = 50;
@@ -70,6 +74,7 @@ const MIN_PAINTED: usize = 200;
 /// §7 steps 1–4: five agents, one client, one swap, and nothing notices.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn five_agents_ride_a_live_upgrade_and_nothing_notices() {
+    let _one_at_a_time = exclusive().await;
     let mut rig = Rig::start("m3x").await;
     let agents = seed_three_workspaces(&mut rig).await;
     paint_sentinels(&mut rig, &agents).await;
@@ -320,6 +325,7 @@ async fn five_agents_ride_a_live_upgrade_and_nothing_notices() {
 /// agents in it, seen from the outside.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_abort_before_the_commit_leaves_a_session_that_is_still_serving() {
+    let _one_at_a_time = exclusive().await;
     let mut rig = Rig::start("m3a").await;
     let agents = seed_three_workspaces(&mut rig).await;
     paint_sentinels(&mut rig, &agents).await;
@@ -398,6 +404,7 @@ async fn an_abort_before_the_commit_leaves_a_session_that_is_still_serving() {
 /// Tier 3, a genuinely different machine, is the live smoke's and no CI's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_bridge_reaches_a_session_full_of_agents_and_drives_a_verb() {
+    let _one_at_a_time = exclusive().await;
     let mut rig = Rig::start("m3b").await;
     let agents = seed_three_workspaces(&mut rig).await;
     paint_sentinels(&mut rig, &agents).await;
@@ -445,161 +452,4 @@ async fn the_bridge_reaches_a_session_full_of_agents_and_drives_a_verb() {
 
     wire.abandon();
     rig.env.stop();
-}
-
-// ------------------------------------------------------------------ helpers
-
-/// Poll `session.report` until it names an attempt that reached `stage`.
-async fn wait_report(rig: &mut Rig, stage: &str) -> Value {
-    let deadline = tokio::time::Instant::now() + rig::PATIENCE;
-    loop {
-        let report = rig.call("session.report", json!({})).await;
-        if report["handoff"]["stage"] == stage {
-            return report;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "no handoff attempt reached {stage}; the report reads {report}",
-        );
-        rig::env::tick().await;
-    }
-}
-
-/// A staged binary that is not an amx at all: refused at the pre-flight.
-fn not_an_amx(rig: &Rig) -> String {
-    let path = rig.env.home().join("not-amx");
-    std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write the fixture");
-    make_executable(&path);
-    path.to_string_lossy().into_owned()
-}
-
-/// A staged binary that passes the pre-flight and then never authenticates.
-///
-/// It answers `_handoff-caps` with this build's own window, so the pre-flight
-/// accepts it and the session is frozen and captured; then it does nothing at
-/// all, and the exporter's token stage times out into §3's abort.
-fn a_silent_successor(rig: &Rig) -> String {
-    let path = rig.env.home().join("silent-amx");
-    let caps = serde_json::to_string(&json!({
-        "version": "0.1.0",
-        "handoff": [1, 1],
-        "proto": [amx_proto::PROTO_MIN, amx_proto::PROTO_MAX],
-    }))
-    .expect("encode the capabilities");
-    std::fs::write(
-        &path,
-        format!(
-            "#!/bin/sh\nif [ \"$1\" = _handoff-caps ]; then printf '%s' '{caps}'; exit 0; fi\n\
-             while : ; do read -r _ || exit 0; done\n"
-        ),
-    )
-    .expect("write the fixture");
-    make_executable(&path);
-    path.to_string_lossy().into_owned()
-}
-
-fn make_executable(path: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-        .expect("make the fixture executable");
-}
-
-/// Five agents across three workspaces (§7 step 1).
-async fn seed_three_workspaces(rig: &mut Rig) -> Vec<Agent> {
-    let mut agents = Vec::new();
-    let mut homes: Vec<WorkspaceId> = Vec::new();
-    for (n, name) in fixtures::NAMES.iter().enumerate() {
-        // Three workspaces, five agents: the fourth and fifth join the first
-        // and second, which is what makes "across three workspaces" a shape
-        // rather than a count.
-        let home = homes.get(n).copied().or_else(|| homes.get(n % 3).copied());
-        let agent = rig.start_agent_in(name, home).await;
-        if homes.len() < 3 {
-            homes.push(agent.workspace);
-        }
-        agents.push(agent);
-    }
-    agents
-}
-
-/// Paint a distinctively styled sentinel in every pane (§7 step 1).
-async fn paint_sentinels(rig: &mut Rig, agents: &[Agent]) {
-    for a in agents {
-        rig.drive(&a.name, &format!("{} {}", agent::SENTINEL, a.name))
-            .await;
-    }
-    for a in agents {
-        rig.wait_screen(a.pane, &sentinel_of(a)).await;
-    }
-}
-
-/// The sentinel text one agent paints.
-fn sentinel_of(a: &Agent) -> String {
-    format!("{} {}", agent::SENTINEL_TEXT, a.name)
-}
-
-/// How many non-blank characters a terminal's output rasterizes to.
-fn non_blank(bytes: &[u8]) -> usize {
-    rasterize_styled(bytes)
-        .values()
-        .filter(|(c, _)| !c.is_whitespace())
-        .count()
-}
-
-/// Wait until the client has repainted a sentinel, and answer with its cells.
-fn wait_for_repaint(client: &mut Terminal, width: usize) -> Vec<(char, String)> {
-    let mut last = Vec::new();
-    client.wait_output("the client to repaint its sentinel", |bytes| {
-        let painted = rasterize_styled(bytes);
-        match styled_run(&painted, agent::SENTINEL_TEXT, width) {
-            Some(run) => {
-                last = run;
-                true
-            }
-            None => false,
-        }
-    });
-    last
-}
-
-/// A pane's history window — `(head, floor)` — as `session.state` reports it.
-async fn history_window(rig: &mut Rig, pane: PaneId) -> (u64, u64) {
-    let entry = rig.pane_state(pane).await;
-    let field = |name: &str| {
-        entry[name]
-            .as_u64()
-            .unwrap_or_else(|| panic!("pane {pane} has no {name}: {entry}"))
-    };
-    (field("history_head"), field("history_floor"))
-}
-
-/// Wait until a process that is not `previous` is serving `socket`.
-async fn wait_for_successor(socket: &std::path::Path, previous: u32) {
-    let deadline = tokio::time::Instant::now() + rig::PATIENCE;
-    loop {
-        if let Ok(Some(pid)) = amx_server::session::probe::server_pid(socket).await
-            && pid != previous
-            && amx_server::session::probe::probe(socket).is_ok_and(|state| state.is_running())
-        {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "no successor took {} from pid {previous}",
-            socket.display(),
-        );
-        rig::env::tick().await;
-    }
-}
-
-/// Whether a pid is still a live process.
-fn alive(pid: u32) -> bool {
-    rustix::process::Pid::from_raw(pid.cast_signed())
-        .is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
-}
-
-fn sorted(pids: &[u32]) -> Vec<u32> {
-    let mut copy = pids.to_vec();
-    copy.sort_unstable();
-    copy
 }

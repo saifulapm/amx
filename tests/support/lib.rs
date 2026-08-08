@@ -35,15 +35,16 @@ pub mod env;
 pub mod golden;
 pub mod platform;
 pub mod screen;
+pub mod server;
 pub mod term;
 pub mod wire;
 
 pub use agent::FakeAgents;
 pub use env::{
-    Env, Output, PATIENCE, ServerChild, TICK, TempDir, pids_with_arg, tick, wait_until,
-    wait_until_or,
+    Env, Output, PATIENCE, TICK, TempDir, pids_with_arg, tick, wait_until, wait_until_or,
 };
 pub use golden::{check_bytes_golden, check_json_golden, goldens_dir};
 pub use screen::{Screen, StyledScreen, rasterize, rasterize_styled, shows, styled_run};
+pub use server::ServerChild;
 pub use term::{ALT_ENTER, ALT_LEAVE, PREFIX, Terminal};
 pub use wire::{Wire, read_frame, result_of};

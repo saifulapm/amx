@@ -20,7 +20,33 @@ use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 
-use rig::{Env, Wire};
+use amx_core::PaneId;
+use amx_core::WorkspaceId;
+use rig::agent;
+use rig::{Env, PATIENCE, Terminal, Wire, rasterize_styled, styled_run};
+use serde_json::{Value, json};
+
+use crate::fixtures::{Agent, Rig};
+
+/// Run one exit test at a time.
+///
+/// Each of these tests is a whole session: a server, five agent panes on five
+/// pseudoterminals, a real client at 200×50, two long-lived CLI children and a
+/// process swap. `cargo test` runs a binary's tests on threads of one process,
+/// and three of these at once measures the machine rather than amx — observed
+/// as a sixty-second client-repaint timeout when the suite ran beside a
+/// compile. They are serialized here rather than made more patient, because a
+/// deadline that has to absorb two other copies of the same test is a deadline
+/// that no longer means anything.
+///
+/// A tokio mutex rather than a std one: the guard is held across every await
+/// in the test body, which is exactly what a std guard may not be, and a
+/// panicking test leaves this one unpoisoned so the rest of the suite still
+/// runs and still says what it found.
+pub async fn exclusive() -> tokio::sync::MutexGuard<'static, ()> {
+    static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    ONE_AT_A_TIME.lock().await
+}
 
 /// A child `amx` whose output is captured to files under the environment root.
 ///
@@ -199,4 +225,161 @@ pub fn gapped(deliveries: &[serde_json::Value]) -> bool {
     deliveries
         .iter()
         .any(|delivery| delivery["delivery"] == "gap")
+}
+
+// -------------------------------------------------- the session and its shape
+
+/// Poll `session.report` until it names an attempt that reached `stage`.
+pub async fn wait_report(rig: &mut Rig, stage: &str) -> Value {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        let report = rig.call("session.report", json!({})).await;
+        if report["handoff"]["stage"] == stage {
+            return report;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no handoff attempt reached {stage}; the report reads {report}",
+        );
+        rig::env::tick().await;
+    }
+}
+
+/// A staged binary that is not an amx at all: refused at the pre-flight.
+pub fn not_an_amx(rig: &Rig) -> String {
+    let path = rig.env.home().join("not-amx");
+    std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write the fixture");
+    make_executable(&path);
+    path.to_string_lossy().into_owned()
+}
+
+/// A staged binary that passes the pre-flight and then never authenticates.
+///
+/// It answers `_handoff-caps` with this build's own window, so the pre-flight
+/// accepts it and the session is frozen and captured; then it does nothing at
+/// all, and the exporter's token stage times out into §3's abort.
+pub fn a_silent_successor(rig: &Rig) -> String {
+    let path = rig.env.home().join("silent-amx");
+    let caps = serde_json::to_string(&json!({
+        "version": "0.1.0",
+        "handoff": [1, 1],
+        "proto": [amx_proto::PROTO_MIN, amx_proto::PROTO_MAX],
+    }))
+    .expect("encode the capabilities");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = _handoff-caps ]; then printf '%s' '{caps}'; exit 0; fi\n\
+             while : ; do read -r _ || exit 0; done\n"
+        ),
+    )
+    .expect("write the fixture");
+    make_executable(&path);
+    path.to_string_lossy().into_owned()
+}
+
+pub fn make_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .expect("make the fixture executable");
+}
+
+/// Five agents across three workspaces (§7 step 1).
+pub async fn seed_three_workspaces(rig: &mut Rig) -> Vec<Agent> {
+    let mut agents = Vec::new();
+    let mut homes: Vec<WorkspaceId> = Vec::new();
+    for (n, name) in crate::fixtures::NAMES.iter().enumerate() {
+        // Three workspaces, five agents: the fourth and fifth join the first
+        // and second, which is what makes "across three workspaces" a shape
+        // rather than a count.
+        let home = homes.get(n).copied().or_else(|| homes.get(n % 3).copied());
+        let agent = rig.start_agent_in(name, home).await;
+        if homes.len() < 3 {
+            homes.push(agent.workspace);
+        }
+        agents.push(agent);
+    }
+    agents
+}
+
+/// Paint a distinctively styled sentinel in every pane (§7 step 1).
+pub async fn paint_sentinels(rig: &mut Rig, agents: &[Agent]) {
+    for a in agents {
+        rig.drive(&a.name, &format!("{} {}", agent::SENTINEL, a.name))
+            .await;
+    }
+    for a in agents {
+        rig.wait_screen(a.pane, &sentinel_of(a)).await;
+    }
+}
+
+/// The sentinel text one agent paints.
+pub fn sentinel_of(a: &Agent) -> String {
+    format!("{} {}", agent::SENTINEL_TEXT, a.name)
+}
+
+/// How many non-blank characters a terminal's output rasterizes to.
+pub fn non_blank(bytes: &[u8]) -> usize {
+    rasterize_styled(bytes)
+        .values()
+        .filter(|(c, _)| !c.is_whitespace())
+        .count()
+}
+
+/// Wait until the client has repainted a sentinel, and answer with its cells.
+pub fn wait_for_repaint(client: &mut Terminal, width: usize) -> Vec<(char, String)> {
+    let mut last = Vec::new();
+    client.wait_output("the client to repaint its sentinel", |bytes| {
+        let painted = rasterize_styled(bytes);
+        match styled_run(&painted, agent::SENTINEL_TEXT, width) {
+            Some(run) => {
+                last = run;
+                true
+            }
+            None => false,
+        }
+    });
+    last
+}
+
+/// A pane's history window — `(head, floor)` — as `session.state` reports it.
+pub async fn history_window(rig: &mut Rig, pane: PaneId) -> (u64, u64) {
+    let entry = rig.pane_state(pane).await;
+    let field = |name: &str| {
+        entry[name]
+            .as_u64()
+            .unwrap_or_else(|| panic!("pane {pane} has no {name}: {entry}"))
+    };
+    (field("history_head"), field("history_floor"))
+}
+
+/// Wait until a process that is not `previous` is serving `socket`.
+pub async fn wait_for_successor(socket: &std::path::Path, previous: u32) {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        if let Ok(Some(pid)) = amx_server::session::probe::server_pid(socket).await
+            && pid != previous
+            && amx_server::session::probe::probe(socket).is_ok_and(|state| state.is_running())
+        {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no successor took {} from pid {previous}",
+            socket.display(),
+        );
+        rig::env::tick().await;
+    }
+}
+
+/// Whether a pid is still a live process.
+pub fn alive(pid: u32) -> bool {
+    rustix::process::Pid::from_raw(pid.cast_signed())
+        .is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
+}
+
+pub fn sorted(pids: &[u32]) -> Vec<u32> {
+    let mut copy = pids.to_vec();
+    copy.sort_unstable();
+    copy
 }
