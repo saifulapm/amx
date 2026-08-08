@@ -35,118 +35,40 @@
 //! that it does not behave like one.
 
 mod actor;
+mod config;
 pub mod drive;
 mod export;
+mod feed;
 pub mod keys;
 mod mailbox;
 mod parser;
 mod probe;
 
-use std::fmt;
 use std::os::fd::AsFd;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::mpsc as sync_mpsc;
-use std::time::Duration;
 
-use amx_core::platform::{ProcessTree, PtySession, WinSize};
-use amx_core::{Bus, GridGeneration, PaneId};
-use amx_vt::{RenderState, SnapshotRef, Snapshots, Terminal, TerminalOptions};
-use bytes::Bytes;
+use amx_core::platform::PtySession;
+use amx_core::{GridGeneration, PaneId};
+use amx_vt::{RenderState, Snapshots, Terminal, TerminalOptions};
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 
 use self::actor::{Actor, Mailboxes};
-use self::mailbox::{HostEvent, ParserCommand, Scratch};
+use self::config::{pty_config, short};
 use self::parser::{Parser, ParserParts};
-use crate::actor::{CoreHandle, PaneCommand, PaneHandle};
-use crate::handoff::manifest::PaneSeed;
-use crate::platform::UnixProcessTree;
-use crate::pty::{PtyActor, PtyActorConfig, PtyActorError, PtyActorHandle};
+use crate::actor::{PaneCommand, PaneHandle};
+use crate::pty::{PtyActor, PtyActorError, PtyActorHandle};
 
+pub use self::config::PaneHostConfig;
 pub use self::drive::{Drive, DriveError, Driven};
 pub use self::export::{ExportError, PaneExport, PaneResume};
+pub(crate) use self::feed::PublishedFrame;
+pub use self::feed::SnapshotFeed;
 pub use self::keys::{KeyParseError, KeyStroke};
 pub use self::probe::PaneProbe;
-
-/// How long output coalesces before a frame is published.
-const DEFAULT_FRAME_INTERVAL: Duration = Duration::from_millis(8);
-
-/// How many commands may queue for one pane before its sender waits.
-const DEFAULT_MAILBOX: usize = 256;
-
-/// How much memory a pane's scrollback may hold.
-///
-/// Bytes, not rows: the vendored library's `max_scrollback` is a memory bound
-/// whatever its header says, and the rows it buys move with the pane's width
-/// (`docs/notes/scrollback-identity.md`).
-const DEFAULT_SCROLLBACK: usize = 4 * 1024 * 1024;
-
-/// Everything one pane host needs to start.
-pub struct PaneHostConfig {
-    /// Which pane this is. Every event and report carries it.
-    pub pane: PaneId,
-    /// The session event bus.
-    pub bus: Arc<Bus>,
-    /// The `Core`'s mailbox, when there is one to report to.
-    pub core: Option<CoreHandle>,
-    /// Initial grid size. The pty was opened at this size too.
-    pub size: WinSize,
-    /// How much memory, in bytes, the scrollback may hold.
-    pub max_scrollback: usize,
-    /// How long output coalesces before a frame is published.
-    pub frame_interval: Duration,
-    /// Command mailbox depth.
-    pub mailbox: usize,
-    /// How the pane reads the process tree behind it.
-    pub process_tree: Arc<dyn ProcessTree>,
-    /// The shutdown signal.
-    pub cancel: CancellationToken,
-    /// Counters for the threading invariants.
-    pub probe: PaneProbe,
-    /// What an inherited pane is rebuilt from (D-M3-4), absent for a fresh one.
-    ///
-    /// Present exactly when the pty session handed to
-    /// [`PaneHost::spawn`] is one that crossed a handoff: the seed carries the
-    /// bytes that put the screen and the scrollback back, and the three
-    /// counters — row-id head, grid generation, frame counter — a successor
-    /// continues rather than restarts.
-    pub seed: Option<PaneSeed>,
-}
-
-impl PaneHostConfig {
-    /// A config with the defaults, for one pane on one bus.
-    #[must_use]
-    pub fn new(pane: PaneId, bus: Arc<Bus>, size: WinSize) -> Self {
-        Self {
-            pane,
-            bus,
-            core: None,
-            size,
-            max_scrollback: DEFAULT_SCROLLBACK,
-            frame_interval: DEFAULT_FRAME_INTERVAL,
-            mailbox: DEFAULT_MAILBOX,
-            process_tree: Arc::new(UnixProcessTree),
-            cancel: CancellationToken::new(),
-            probe: PaneProbe::new(),
-            seed: None,
-        }
-    }
-}
-
-impl fmt::Debug for PaneHostConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PaneHostConfig")
-            .field("pane", &self.pane)
-            .field("size", &self.size)
-            .field("max_scrollback", &self.max_scrollback)
-            .field("frame_interval", &self.frame_interval)
-            .field("mailbox", &self.mailbox)
-            .finish_non_exhaustive()
-    }
-}
 
 /// A running pane: its mailbox, its published frames, and its task.
 ///
@@ -384,58 +306,6 @@ impl PaneHost {
     }
 }
 
-/// What one publication carries: the frame and the grid generation it was
-/// built at, stored in one `watch` slot so a reader can never pair a frame
-/// with another publication's generation.
-pub(crate) type PublishedFrame = (SnapshotRef, GridGeneration);
-
-/// A reader's handle on one pane's published frames.
-///
-/// Cloning gives another reader. Reading is an `Arc` clone out of the published
-/// slot: whatever a reader then does with the snapshot, it does to plain data
-/// that nothing will mutate under it, and the parser never waits for it.
-#[derive(Clone, Debug)]
-pub struct SnapshotFeed {
-    frames: watch::Receiver<PublishedFrame>,
-    generation: Arc<AtomicU64>,
-}
-
-impl SnapshotFeed {
-    /// The most recently published frame.
-    #[must_use]
-    pub fn latest(&self) -> SnapshotRef {
-        self.frames.borrow().0.clone()
-    }
-
-    /// The most recently published frame with the grid generation it was
-    /// built at, read atomically.
-    ///
-    /// This is the pair a delta stream must use: [`SnapshotFeed::latest`] and
-    /// [`SnapshotFeed::generation`] are two reads, and a resize between them
-    /// would label one publication's cells with another's generation.
-    #[must_use]
-    pub fn frame(&self) -> (SnapshotRef, GridGeneration) {
-        let published = self.frames.borrow();
-        (published.0.clone(), published.1)
-    }
-
-    /// The pane's grid generation (04 §4), which the frame counter is not.
-    ///
-    /// This is the *live* generation: after a resize it can lead the one in
-    /// [`SnapshotFeed::frame`] until the reflowed frame is published.
-    #[must_use]
-    pub fn generation(&self) -> GridGeneration {
-        GridGeneration::from_raw(self.generation.load(Ordering::Acquire))
-    }
-
-    /// Wait for a frame newer than the one last seen through this handle.
-    ///
-    /// `false` once the pane is gone.
-    pub async fn changed(&mut self) -> bool {
-        self.frames.changed().await.is_ok()
-    }
-}
-
 /// A pane host could not be started.
 #[derive(Debug, Error)]
 pub enum PaneHostError {
@@ -448,54 +318,4 @@ pub enum PaneHostError {
     /// The parser thread could not be spawned.
     #[error(transparent)]
     Io(#[from] std::io::Error),
-}
-
-/// Build the pty actor's config, read callback included.
-///
-/// The callback is the seam between the two threads: it fills the shuttle
-/// buffer, blocks while the parser owns it, and pushes whatever came back into
-/// the reply queue T05 is holding open for it.
-fn pty_config<S>(
-    session: S,
-    pane: PaneId,
-    parser: sync_mpsc::Sender<ParserCommand>,
-    done: sync_mpsc::Receiver<Box<Scratch>>,
-    events: mpsc::UnboundedSender<HostEvent>,
-) -> PtyActorConfig<S> {
-    let mut scratch = Some(Box::new(Scratch::default()));
-    let on_read = move |bytes: &[u8], responses: &mut Vec<Bytes>| {
-        // `None` means the parser already went away with the buffer; the pane
-        // is on its way down and the bytes have nowhere to go.
-        let Some(mut buffer) = scratch.take() else {
-            return;
-        };
-        buffer.input.clear();
-        buffer.input.extend_from_slice(bytes);
-        buffer.replies.clear();
-        if parser.send(ParserCommand::Parse(buffer)).is_err() {
-            return;
-        }
-        let Ok(buffer) = done.recv() else {
-            return;
-        };
-        if !buffer.replies.is_empty() {
-            responses.push(Bytes::copy_from_slice(&buffer.replies));
-        }
-        scratch = Some(buffer);
-    };
-
-    let mut config = PtyActorConfig::new(session, Box::new(on_read));
-    config.name = format!("amx-pty-{}", short(pane));
-    config.on_exit = Some(Box::new(move |exit| {
-        let _ = events.send(HostEvent::Exited(exit));
-    }));
-    config
-}
-
-/// The head of a pane id, for a thread name.
-///
-/// Six characters: Linux truncates a thread name at 15 bytes, and the prefixes
-/// here are eight, so anything longer would be cut off mid-identifier.
-fn short(pane: PaneId) -> String {
-    pane.to_string().chars().take(6).collect()
 }
