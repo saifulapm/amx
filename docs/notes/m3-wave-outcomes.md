@@ -771,3 +771,177 @@ split, because splitting would separate the conformance table from the rows that
 run it and the plan names this file as the row's home. `tests/support/env.rs`
 (the rig's) is 561, over before this task and one method more now. No `src/`
 file this task touched is over: the largest is `remote/ssh.rs` at 321.
+
+---
+
+## W07 — Import path
+
+**The five-actor order moves in one place, and §3 is what moves it.** `serve`
+binds the session socket *first* — losing that race must cost an error, not a
+set of actors to tear down — and builds `AgentHub` before the restore so no
+`PaneStarted` is missed. An importer cannot bind first: the exporter keeps its
+listener through `restored` (D-M3-6 point 4). So the bind lands in the middle,
+and everything hanging off the gateway moves with it: `StatusView` is the
+gateway's to create, so the hub is assembled *after* the bind. Nothing is lost,
+because the reason `serve` builds the hub early is that its restore **spawns**
+panes, and this path spawns none — `Core::announce_inherited` hands the hub
+every inherited pane explicitly, `await`ed rather than `try_send`, once the hub
+is listening and before `Core` is running.
+
+**`Core` runs before `ready`, not after the commit.** §3 step 12 promises that
+new connections see "frozen grids and full state", and a `Core` that had not
+started yet would leave a client's first call parked in a mailbox until the
+commit — including its `Welcome`, which is built from `Core`'s state. Running it
+early costs nothing that matters, because nothing it can be asked to do moves a
+pane: every one is quiesced and every terminal is behind a closed gate. It does
+mean a client that connects in the `ready`→`committed` window can *mutate* the
+session (a split, a close) a moment before ownership formally transfers; the
+window is one round trip and the alternative was worse.
+
+**The terminal is gated, not just quiesced, and the gate is load-bearing.**
+`InheritedPtySession` (`platform/pty.rs`) starts behind a closed `PtyGate`:
+`read` and `write` answer `WouldBlock` until the commit opens it. The quiesce
+covers the pane from a moment after `PaneHost::spawn`; the gate covers *that
+moment*, and it is not academic — with the gate forced open,
+`panes_stay_quiescent_until_committed_and_resume_after` reads `"go\nRESUMED"`
+off the successor's screen before the commit. What that costs in the abort case
+is the whole point: output the successor consumed pre-commit is output the
+exporter can never show again, so a handoff that then aborted would have
+destroyed exactly what it was carrying across. A gated `write` answers
+`WouldBlock` rather than failing, so the pty actor keeps the chunk queued and
+writes it after the commit — the same promise a quiesce makes about queued
+input. **`resize` is deliberately not gated**: refusing one would lose it (the
+actor logs and moves on) and leave the successor's grid and the child's winsize
+disagreeing, which is worse than a `SIGWINCH` arriving a beat early.
+
+**Resuming a pane is not `Core`'s to do, so `PaneHost` grew one accessor.** The
+commit lands long after `Core` owns the hosts, and a resume must bypass the
+mailbox the way a quiesce does. `PaneHost::resumer()` answers a `PaneResume`
+(in `pane_host/export.rs`, beside the rest of the handoff vocabulary) which can
+resume that pane and do nothing else — not release the terminal, not duplicate
+it. `Adopted::take_over` opens every gate and then resumes every actor, in that
+order; a resumed actor whose gate was still closed would poll a terminal it is
+still refused. It is spelled `take_over` rather than `commit` because
+`tests/hygiene.rs` counts `.commit(` call sites in the server, and one of them
+is the agent-status ordering rule.
+
+**Hub seeding is W07's work and the §5 scope list does not name its files.** §3
+step 9 says "hub seeded" and R-M3-13 says why, but the plan's file list stops at
+`session/import.rs`, `core/import.rs`, `platform/pty.rs`, `cmd/server.rs` and
+the tests. Seeding needs three more, none of them touched by a wave-3 or wave-4
+peer (W06: `handoff/export.rs`, `gateway.rs`, `core/handoff.rs`,
+`dispatch/session.rs`, `serve.rs`; W08: `conn/**`, `dispatch/stream.rs`,
+`damage/stream.rs`; W11: `cmd/bridge.rs`, `remote.rs`, `main.rs`):
+
+- `actor/agent_hub/inherit.rs` (new) — `InheritedPane`, `AgentHub::inherit`
+  (statuses into the view before the socket is bound) and `AgentHub::adopt`
+  (the tracker, when the pane's frames arrive), plus the one-line branch in
+  `track` that chooses between adoption and the ordinary identification path.
+- `agent/fusion/tracker.rs` — `Tracker::adopt`, which continues a status a
+  predecessor established: already-reported (so the next transition says what it
+  moved *from*), no identity grace (the agent booted on somebody else's clock),
+  and the staleness deadline re-armed for a held state.
+- `actor/agent_hub/commit.rs` — `AgentHub::write`, one line wrapping
+  `StatusView::commit`, because `agent_events_have_exactly_one_publisher`
+  requires exactly one `.commit(` call site in the server and the seeding is a
+  second writer. Both writers are still the hub's and still go through one
+  function, which is what the rule is actually about.
+
+**Provably load-bearing.** With the adoption branch disabled,
+`restored_agents_report_their_manifest_status_without_a_flap` fails with both
+agents reading `idle` — the hub re-identifies from the carried argv, publishes
+`agent_identified` plus a probe transition per pane, and its mirror overwrites
+the one `Core` was seeded with. That is the flap R-M3-13 describes, reproduced.
+
+**The hook token does not cross the manifest, and post-handoff hook reports are
+dropped.** `AMX_HOOK_TOKEN` is minted per spawn and lives in `SessionState`;
+`PaneSnapshot` does not carry it (a cold restore respawns the child and mints a
+fresh one, so it never needed to) and neither does `PaneManifest`. A handoff
+keeps the *same* children, whose environment still carries the exporter's token,
+so the successor mints one they do not know and D-M2-4's misattribution guard
+drops every hook report from an inherited agent until it restarts. Agent status
+degrades to tier 2 alone — screen detection still works, `wait --until blocked`
+still returns, and the carried status is right until the screen moves. **The fix
+is one additive field**: `PaneSnapshot.token` (or a `token` on `PaneManifest`),
+filled by `capture_cheap`, read where `core/import.rs` currently calls
+`mint_token()`. It belongs to whoever owns the persist schema next — W06 or W14
+— and it is the largest honest gap in this path.
+
+**§3 step 6's "session dir identity" cannot be checked, and is not.** The
+manifest carries a `SessionId` and a persist `Snapshot`; it carries no session
+*name*, socket path or state directory, so the importer has nothing to compare
+its own `Ctx` against. What it does check is the manifest's read window
+(D-M3-6's *window*, not equality) and that the descriptor count matches the
+entry count — the pairing `Importer::validated(panes)` then enforces. The
+exporter spawns the importer with the session already selected, so the check
+would only catch a bug in W06; adding it is one additive manifest field and one
+comparison.
+
+**The attention queue is reconstructed from `AgentSnapshot.attention`.**
+`Manifest.agents` is a list, and the only place block order survives in it is
+the rank the hub fills in on a status before mirroring it. `core/import.rs`
+sorts by that rank; a pane that wants attention and carries no rank is queued
+behind everything that does, because leaving a blocked agent off the queue would
+lose it from `agent.next`. **For W06:** capture the hub statuses from `Core`'s
+mirror (where `AgentCall::Status` has already filled the position in), or the
+queue crosses in whatever order the entries happen to be listed.
+
+**§3 step 14 says the successor publishes nothing; it publishes one
+`pane_damage` per pane.** The seeded parser publishes its first frame, the pane
+actor announces it, and that is one sequence number per inherited pane before
+any client can have connected. It is harmless — at-least-once damage is the
+contract, and the resync W08/W09 build treats it as an ordinary delta — but it
+is not literally "nothing", so the flap test asserts the sharper thing: every
+delivery replayed from the exporter's last sequence is examined, and **none** of
+them may be an `agent_status`, `agent_identified`, `attention_enqueued` or
+`attention_dequeued`. `bus_continues_from_the_inherited_seq_and_welcome_reports_it`
+pins the continuity itself: the successor's first event is `inherited + 1`,
+gapless and never a restart at zero.
+
+**Two helpers are spelled twice, deliberately.** `session/import.rs` carries its
+own copy of `serve.rs`'s config watcher and signal watch. `serve.rs` is W06's
+file this wave, and a live upgrade that silently stopped reloading `config.toml`
+or stopped answering `SIGTERM` would be a capability lost to a merge conflict.
+Folding the two assemblies' shared scaffolding into one is a **W14 seam**, named
+here so it is a decision rather than an oversight.
+
+**`Core`'s history window is seeded from the manifest, approximately.**
+`session.state` answers the window synchronously from a map `Core` folds from
+pane reports, and an import has none to fold. It is seeded with the carried
+`head` and the *first carried row* as the floor; the parser derives the
+authoritative floor from what actually landed in the successor's scrollback
+(W04), which is never older. A client asking for a row the replay could not fit
+gets the ordinary refusal rather than silence.
+
+**One line outside the scope list in `crates/amx/`.** `cmd/mod.rs`'s server arm
+reads its sub-matches (`Some(("server", sub))`) instead of discarding them,
+because `--handoff-import` is the one flag that changes which assembly the
+process runs. `cli.rs` gained exactly the argument W03 said it would, hidden.
+
+**Budgets.** Three splits, all on arrival rather than at the hard limit
+(R-M1-3): `agent_hub/inherit.rs` out of `agent_hub/mod.rs` (573 → 484),
+`PaneResume` into `pane_host/export.rs` (mod.rs 520 → 488), and
+`tests/handoff_import/harness.rs` out of the suite (1080 → 435 + 685, the suite
+having gone over the *hard* limit). `agent/fusion/tracker.rs` is at 511 and was
+**not** split: it is one state machine and `adopt` is one of its transitions, so
+the only seam available would cut the transition function in half. It is the
+first `src/` file over the soft budget on this path; the next task to add to it
+should expect to move `Armed`/`Pending` out rather than trim.
+
+**What W14 needs to know for the real upgrade under load.** (1) The importer is
+`amx server --handoff-import <socket>` with the token on stdin, and it exits
+non-zero having served nothing on any pre-commit failure — smoked against the
+real binary: `the handoff socket failed during the token stage … ending=Abort`,
+exit 1. (2) There is no full-binary upgrade smoke yet and there cannot be until
+W06 exists, because the exporter is what spawns the importer; everything below
+that line is exercised in-process over real sockets, real descriptors and real
+ptys. (3) The successor blocks briefly per pane, twice — once quiescing at
+adoption, once resuming at the commit — so a 200-pane session pays two mailbox
+round trips per pane, on the blocking pool rather than on a runtime thread.
+(4) The probe loop between `restored` and `ready` costs one `Gateway::bind`
+attempt per 10 ms up to `Timeouts::socket_free`; each attempt's connect probe is
+fast against a real exporter (it answers) and slow (1 s) against anything that
+holds the socket without answering. (5)
+`strict_abort_on_missing_commit_serves_nothing` covers the wedged-exporter row
+by *holding* the socket open without committing, which is §3's split-brain case
+rather than a peer that merely died.

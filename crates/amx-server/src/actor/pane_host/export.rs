@@ -9,13 +9,21 @@
 //!
 //! The capture itself lives on the parser thread ([`super::parser`]), because
 //! everything it reads does.
+//!
+//! The other direction is here too, and it is one method wide. A pane that
+//! crossed a handoff is quiesced before `Core` is given it and resumed long
+//! after — §3 step 14, once the commit lands — so the assembly keeps a
+//! [`PaneResume`] and nothing else: not the pty handle, which could also
+//! release or duplicate a terminal that is no longer the caller's.
 
 use std::os::fd::OwnedFd;
 
 use thiserror::Error;
 
+use amx_core::PaneId;
+
 use crate::handoff::manifest::{ManifestError, PaneManifest};
-use crate::pty::PtyActorError;
+use crate::pty::{PtyActorError, PtyActorHandle};
 
 /// One pane, frozen: what it was, and the terminal it was on.
 ///
@@ -60,5 +68,44 @@ impl From<PtyActorError> for ExportError {
             PtyActorError::Gone | PtyActorError::Released => Self::Gone,
             other => Self::Pty(other),
         }
+    }
+}
+
+/// The right to resume one pane, held by a caller that no longer owns it.
+///
+/// See [`PaneHost::resumer`].
+#[derive(Clone, Debug)]
+pub struct PaneResume {
+    pane: PaneId,
+    pty: PtyActorHandle,
+}
+
+impl PaneResume {
+    /// Build one for `pane`, over the pty actor behind it.
+    ///
+    /// `pub(super)` because the only honest way to get one is from the
+    /// [`PaneHost`](super::PaneHost) that owns the actor.
+    pub(super) fn new(pane: PaneId, pty: PtyActorHandle) -> Self {
+        Self { pane, pty }
+    }
+}
+
+impl PaneResume {
+    /// Which pane this resumes.
+    #[must_use]
+    pub fn pane(&self) -> PaneId {
+        self.pane
+    }
+
+    /// Undo the quiesce, writing whatever queued behind it.
+    ///
+    /// Blocks for the round trip to the pty actor's thread, exactly as
+    /// [`PaneHost::resume`] does: call it off the runtime's threads.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the pty actor answers.
+    pub fn resume(&self) -> Result<(), PtyActorError> {
+        self.pty.resume()
     }
 }

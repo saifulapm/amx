@@ -40,7 +40,7 @@ pub use calls::{
 };
 pub use pane_host::{
     Drive, DriveError, Driven, ExportError, KeyParseError, KeyStroke, PaneExport, PaneHost,
-    PaneHostConfig, PaneHostError, PaneProbe, SnapshotFeed,
+    PaneHostConfig, PaneHostError, PaneProbe, PaneResume, SnapshotFeed,
 };
 pub use panes::{HistoryError, HistoryRows, PaneCommand, PaneReport};
 pub use persist::{Capture, PersistCommand, PersistHandle};

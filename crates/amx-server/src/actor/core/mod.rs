@@ -31,6 +31,7 @@
 //! yesterday's session back, and [`resume`] for the half of that rebuild which
 //! puts each agent's *conversation* back (V15, D-M2-7).
 
+mod import;
 mod pane;
 mod persist;
 mod report;
@@ -52,6 +53,7 @@ use amx_proto::ServerInfo;
 use amx_proto::rpc::RpcError;
 use tokio::sync::{mpsc, watch};
 
+pub use self::import::{AdoptError, Adopted};
 pub use self::persist::CAPTURE_PROBE_BUDGET;
 use self::persist::Restored;
 pub use self::restore::RestoreOptions;

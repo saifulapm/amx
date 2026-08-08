@@ -46,6 +46,14 @@ pub const JSON: &str = "json";
 /// The `--after-seq` argument's id, carried by `events`.
 pub const AFTER_SEQ: &str = "after-seq";
 
+/// The `--handoff-import` argument's id, carried by `server`.
+///
+/// Hidden surface (`docs/09-m3-plan.md` §4): an exporter spawns
+/// `amx server --handoff-import <socket>` and writes the handoff token to its
+/// stdin, and nobody types it. A flag on an existing verb rather than a
+/// routing arm, which is why W03 left it out and W07 adds it here.
+pub const HANDOFF_IMPORT: &str = "handoff-import";
+
 /// The whole `amx` command tree.
 #[must_use]
 pub fn cli() -> Command {
@@ -119,6 +127,13 @@ fn server() -> Command {
              `amx` starts this for you, detached, when nothing answers on the \
              session socket. Run it yourself to watch a session's logs, or \
              under a service manager.",
+        )
+        .arg(
+            Arg::new(HANDOFF_IMPORT)
+                .long("handoff-import")
+                .value_name("SOCKET")
+                .hide(true)
+                .help("Take a running session over from the exporter on SOCKET"),
         )
 }
 

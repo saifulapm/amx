@@ -42,18 +42,20 @@
 //! answer without leaving the module, and returns. Detection state is derived
 //! and dies with the process.
 //!
-//! # The three files
+//! # The files
 //!
 //! | Module | What lives there |
 //! |---|---|
 //! | this one | the hub's state, its construction, and a pane's lifecycle |
 //! | [`run`] | the loop, the mailbox, the bus, the wheel, the drain |
 //! | [`commit`] | one transition folded into the queue and both read models |
+//! | [`inherit`] | a predecessor's statuses, taken across a live upgrade |
 //! | [`detect`] | tier-2 scheduling and evaluation against the published frame |
 //! | [`verbs`] | what `agent.next`, `agent.explain` and a refusal answer |
 
 pub mod commit;
 pub mod detect;
+pub mod inherit;
 pub mod run;
 pub mod verbs;
 
@@ -262,6 +264,13 @@ pub struct AgentHub {
     /// Compiled manifests by file name, so five Claude panes share one.
     manifests: HashMap<String, Arc<Manifest>>,
     panes: HashMap<PaneId, Tracked>,
+    /// Statuses a predecessor server carried across a handoff, waiting for the
+    /// panes they belong to (R-M3-13).
+    ///
+    /// Emptied one entry at a time by [`AgentHub::track`], because a status is
+    /// only half of a tracked pane: the other half is the frame feed, and only
+    /// `Core` can hand one over.
+    inherited: HashMap<PaneId, AgentSnapshot>,
     /// The attention queue, in block order (D-M2-8). A re-block re-enters at
     /// the tail, which is why an enqueue removes any existing entry first.
     attention: Vec<PaneId>,
@@ -290,6 +299,7 @@ impl AgentHub {
             registry,
             manifests: HashMap::new(),
             panes: HashMap::new(),
+            inherited: HashMap::new(),
             attention: Vec::new(),
             workspaces: HashMap::new(),
             probe: AgentProbe::new(),
@@ -330,6 +340,10 @@ impl AgentHub {
     /// Start tracking `pane`, with the frames and the spawn identity `Core`
     /// handed over.
     fn track(&mut self, pane: PaneId, frames: SnapshotFeed, spawn: SpawnedIdentity) {
+        if let Some(carried) = self.inherited.remove(&pane) {
+            self.adopt(pane, frames, spawn, &carried);
+            return;
+        }
         let seq = self.ctx.bus.head();
         let requested = spawn.requested.clone();
         let tracked = Tracked::new(frames, spawn, seq);

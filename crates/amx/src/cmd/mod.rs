@@ -47,7 +47,10 @@ pub async fn dispatch(env: &Env, matches: &ArgMatches) -> anyhow::Result<ExitCod
         Some(("attach", sub)) => {
             attach::run(&ctx_of(env, matches, None)?, attach::Options::parse(sub)?).await
         }
-        Some(("server", _)) => server::run(ctx_of(env, matches, None)?).await,
+        // The sub-matches are read, unlike every other lifecycle arm: `amx
+        // server` carries `--handoff-import`, the one flag that changes which
+        // assembly the process runs (`docs/09-m3-plan.md` §3).
+        Some(("server", sub)) => server::run(ctx_of(env, matches, None)?, sub).await,
         // The emitter never fails, by contract: an agent's turn must not be
         // broken or slowed by a hook, so this arm returns an exit code rather
         // than a `Result` and nothing above it can add an error message.
