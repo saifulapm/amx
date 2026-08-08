@@ -29,6 +29,7 @@ use amx_server::platform::UnixPty;
 use amx_vt::{Snapshot, SnapshotRef};
 use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncReadExt, DuplexStream};
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -240,27 +241,52 @@ impl Wire {
         }
     }
 
-    /// Start reading the far end, `delay` per frame.
+    /// Start reading the far end as fast as the pipe delivers.
     ///
-    /// A delay of zero is a client keeping up; anything else is a client
-    /// falling behind at a controlled rate, which is what
-    /// `two_clients_at_different_speeds_each_stay_consistent` needs.
-    pub fn reader(&mut self, delay: Duration) -> Frames {
+    /// A client keeping up. For one that falls behind, see [`Wire::paced`].
+    pub fn reader(&mut self) -> Frames {
+        let (frames, pace) = self.paced();
+        pace.release();
+        frames
+    }
+
+    /// Start reading the far end one frame per issued permit.
+    ///
+    /// A client falls behind because the test says so, not because a sleep
+    /// happened to be longer than a round. DR-19: `delay` per frame made "slow"
+    /// a comparison between two wall clocks — the reader's nap and the round's
+    /// own duration — and under `cargo test --workspace` on a loaded core the
+    /// round is the slower of the two, so the slow client keeps up, coalesces
+    /// nothing, and the suite reports a mechanism failure that is really a
+    /// machine speed. Reproduced 4 rounds in 4 at eight copies on one core;
+    /// see `docs/notes/m4-wave-outcomes.md`.
+    ///
+    /// A permit is one frame off the wire. Issue them at whatever fraction of
+    /// the rounds the scenario wants and the client is exactly that far behind
+    /// on any machine; [`Pace::release`] opens the tap for the catch-up the
+    /// test ends on.
+    pub fn paced(&mut self) -> (Frames, Pace) {
         let mut client = self.client.take().expect("the wire is only read once");
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let permits = Arc::new(Semaphore::new(0));
+        let pace = Pace {
+            permits: Arc::clone(&permits),
+        };
         let task = tokio::spawn(async move {
-            while let Some((_, payload)) = read_frame(&mut client).await {
+            loop {
+                let Ok(permit) = permits.acquire().await else {
+                    break;
+                };
+                permit.forget();
+                let Some((_, payload)) = read_frame(&mut client).await else {
+                    break;
+                };
                 if tx.send(payload).is_err() {
                     break;
                 }
-                if !delay.is_zero() {
-                    // A client consuming at a controlled rate is the
-                    // scenario, not a wait: nothing asserts on this nap.
-                    tokio::time::sleep(delay).await; // deliberate
-                }
             }
         });
-        Frames { rx, task }
+        (Frames { rx, task }, pace)
     }
 
     /// Wait until nothing is queued for the writer.
@@ -287,6 +313,31 @@ impl Wire {
         self.cancel.cancel();
         drop(self.client);
         self.task.await.expect("the writer task ended")
+    }
+}
+
+/// How many frames a [`Wire::paced`] reader is allowed off the wire.
+pub struct Pace {
+    permits: Arc<Semaphore>,
+}
+
+impl Pace {
+    /// Let the reader take `frames` more.
+    pub fn allow(&self, frames: usize) {
+        self.permits.add_permits(frames);
+    }
+
+    /// Let the reader take everything, for good.
+    ///
+    /// The catch-up phase, and the only honest way to end: a reader still
+    /// waiting on a permit when [`Wire::finish`] closes the pipe would leave
+    /// [`Frames::finish_into`] waiting on frames nobody is going to read.
+    ///
+    /// A quarter of the cap and not all of it: `add_permits` panics on
+    /// overflow, and leaving room for a second call is cheaper than a harness
+    /// that explodes when somebody opens the tap twice.
+    pub fn release(&self) {
+        self.permits.add_permits(Semaphore::MAX_PERMITS / 4);
     }
 }
 

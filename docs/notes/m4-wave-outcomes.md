@@ -292,3 +292,81 @@ value rather than an invented vocabulary.
 was re-derived rather than observed entering has no entry edge to report, and a
 zero would render as 1970. R-M4-4's honest fallback ("since this server started
 tracking it") is X06's to choose; the type does not force a lie either way.
+---
+## X04 — DR-19: the four recorded flakes
+
+**One of the four was already paid, and one clause of a second was.** R-M4-6's
+lesson applied to this row, and it applies twice.
+
+`agent_verbs` was diagnosed and fixed in `aba0877` ("wait for the fact, not for
+the call that starts it"), whose two named sites are exactly DR-19's "2 in ~12
+runs" (`m3-wave-outcomes.md`, "Settling the load-sensitive reads"). That commit
+is **not** an ancestor of `18c9261`, the register's re-verification — both
+branch from `08a4257` — so the register could not have seen the fix, and
+re-measuring at the reproduction that once gave 22/320 found nothing to fix.
+
+The flood threshold is the sharper case. `f09a87c` had already replaced the
+*fixed window* with a wait, and it **is** an ancestor of `18c9261` — so the
+"fails under 8-way load every time" the register records was verified against a
+tree where it no longer did. The fixed *quantity* it recommends replacing was
+still there, and that is what X04 changed.
+
+**Two failures the register does not name, in a file X04 owns, same
+mechanism.** `flow_control.rs` holds three tests whose evidence is a wall clock
+against the machine, not one. Reproduction throughout is the M3 shape —
+`taskset -c 0`, eight copies of the binary, eight test threads each — because
+repetition on an idle box reproduces none of them:
+
+| Test | Before | What was really being measured |
+|---|---|---|
+| `two_clients_at_different_speeds_each_stay_consistent` | every round of 4 | a 20 ms-per-frame reader is only slow while the round is faster than the nap; both clients reported byte-identical stats |
+| `no_client_grid_is_corrupted_after_coalescing` | 16 runs in 16 | the same reader, at 30 ms |
+| `server_memory_is_bounded_under_a_stalled_client` | 1 run in 16, then 8 in 160 | `absorbed > 100` in a three-second window is a publication *rate*; at this load the pane manages ten a second and lands at 95 |
+
+They are in the entry's owned files and share the named defect, so they were
+fixed with it rather than left as a suite X04 could not call green. Recorded
+here because §5 names only the first.
+
+The third took two passes, and the first pass is the more useful record: moving
+the window from three seconds to the suite's patience only made the constant
+bigger, and it still failed at 95 publications against 100. What fixed it was
+deleting the count — the watch now ends when publications outrun frames on the
+wire by the margin the assertion states, which becomes true at whatever speed
+the pane publishes and never becomes true if the stream keeps sending.
+
+**The `_hook` race did not reproduce and was fixed anyway.** 18 runs at six
+copies on one core produced none, which matches the register's "once in 115
+runs". The mechanism is not in doubt — with no environment
+`PaneIdentity::from_process` answers `None` before `read_payload` is called
+(`crates/amx/src/cmd/hook.rs:112-118`), so the child can exit before the caller
+writes — so the write tolerates `BrokenPipe` and a new case forces the race
+every time by offering the payload after the process has been reaped.
+
+**Verification, at the load each one was reproduced under.**
+
+| Suite | Constraint | Before | After |
+|---|---|---|---|
+| `flow_control` | `-c 0`, 8 copies × 8 threads, 160 runs | see the table above | 0/160 |
+| `agent_verbs` | `-c 0`, 8 copies × 8 threads, 160 runs | 22/320 at `aba0877`'s measurement | 0/160, unchanged tree |
+| `adversarial` | `-c 0-1`, 6 copies × 8 threads | 0/18 (its window was already gone) | 0/24 |
+| `hook` | `-c 0`, 6 copies × 8 threads | 0/18 (once in 115 elsewhere) | 0/24 |
+
+The two zeroes in the "before" column are the point of the first paragraph:
+neither reproduced on this tree, and both are recorded as verifications rather
+than as fixes that were needed.
+
+The entry's own bar — all four green under `nproc`-wide load — is 10 runs of
+each suite against twelve spinners on a twelve-core box, 0 failures in 40. The
+pinned figures above are the harsher measurement, and they are the ones the
+fixes were judged on: `nproc`-wide load never reproduced any of these.
+`cargo test --workspace` on this branch is 774 tests over 119 suites, 0 failed.
+
+**Nothing outside the entry's files was touched.** `flow_control/drive.rs` was
+considered for the paced-reader helper and left alone; the helper went into
+`flow_control/harness.rs`, which the entry lists.
+
+**For X00 — DR-19's row.** Four owners, three code changes, one verification
+that found the work already done. The register's `agent_verbs` clause should be
+struck as stale rather than as fixed here, with `aba0877` named; the flood
+clause is half-stale the same way, with `f09a87c` named for the window and X04
+for the quantity.

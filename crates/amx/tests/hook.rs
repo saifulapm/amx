@@ -227,6 +227,47 @@ async fn hook_exits_zero_and_fast_with_no_socket_no_env_or_dead_server() {
     );
 }
 
+/// An emitter that is gone before the payload is written is still a pass.
+///
+/// DR-19's `_hook` self-race, made deterministic: with no environment the
+/// emitter answers `None` before it reads stdin, so the caller's write races the
+/// child's exit and loses whenever the child is quick. Here it always loses —
+/// the payload is offered *after* the process has been reaped — which is the
+/// same `BrokenPipe` the flake produced, arriving every time instead of once in
+/// 115 runs. The contract under test is the emitter's exit and its silence;
+/// whether anybody was left to read the payload is not part of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hook_that_exits_before_its_payload_is_written_is_still_silent() {
+    let env = Env::new("hook-epipe");
+    let text = permission_request().to_string();
+
+    let out = tokio::task::spawn_blocking(move || {
+        let mut child = env
+            .command()
+            .args(["_hook", "claude", "--marker", "1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn amx _hook");
+        let stdin = child.stdin.take().expect("a piped stdin");
+        // Waited for, not slept on: the write below has to happen after the
+        // read end is really closed, and only the exit says that it is.
+        let status = child.wait().expect("wait for amx _hook");
+        offer_payload(stdin, text.as_bytes());
+        let out = child.wait_with_output().expect("collect the output");
+        Output {
+            code: status.code(),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }
+    })
+    .await
+    .expect("run the emitter");
+
+    assert_silent(&out);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn hook_never_writes_to_stdout_or_stderr_on_failure() {
     let env = Env::new("hook-quiet");
@@ -468,12 +509,7 @@ async fn run_hook(env: &Env, env_vars: &[(&str, String)], payload: &Value) -> (O
     tokio::task::spawn_blocking(move || {
         let start = Instant::now();
         let mut child = command.spawn().expect("spawn amx _hook");
-        child
-            .stdin
-            .take()
-            .expect("a piped stdin")
-            .write_all(text.as_bytes())
-            .expect("write the payload");
+        offer_payload(child.stdin.take().expect("a piped stdin"), text.as_bytes());
         let out = child.wait_with_output().expect("wait for amx _hook");
         let elapsed = start.elapsed();
         (
@@ -487,6 +523,26 @@ async fn run_hook(env: &Env, env_vars: &[(&str, String)], payload: &Value) -> (O
     })
     .await
     .expect("run the emitter")
+}
+
+/// Write `payload` to a hook's stdin, tolerating a hook that has already gone.
+///
+/// The emitter's fastest contract is to exit without reading stdin at all: with
+/// no `AMX_SOCKET` in the environment, `PaneIdentity::from_process` answers
+/// `None` before `read_payload` is ever called (`crates/amx/src/cmd/hook.rs`),
+/// so a child that wins the race closes the read end and this write returns
+/// `BrokenPipe`. Panicking on that fails the test for the emitter doing exactly
+/// what the test is asserting it does, and gets more likely the faster the
+/// emitter gets — DR-19's `_hook` self-race, seen once in 115 runs under 16–20
+/// hogs. A refused payload is an outcome the caller is entitled to see, so it is
+/// dropped and the child's own exit and silence stay the assertion. Every other
+/// error is still a real failure of the harness.
+fn offer_payload(mut stdin: std::process::ChildStdin, payload: &[u8]) {
+    match stdin.write_all(payload) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(err) => panic!("write the payload: {err}"),
+    }
 }
 
 /// The whole visible contract: exit 0, and not a byte anywhere.
