@@ -6,8 +6,8 @@
 //! produces: the whole-file tier keeps everything, the per-section tier keeps
 //! one section, and both report what they rejected instead of logging it.
 
-use amx_core::config::{PERSIST_SECTION, SECTIONS, TERMINAL_SECTION, reload};
-use amx_core::{Config, PersistConfig, TerminalConfig};
+use amx_core::config::{PERSIST_SECTION, SECTIONS, TERMINAL_SECTION, UPDATE_SECTION, reload};
+use amx_core::{Config, PersistConfig, TerminalConfig, UpdateConfig};
 
 /// A running config that differs from `Config::default()` in every field, so a
 /// test asserting "kept" can never pass by accidentally producing defaults.
@@ -16,6 +16,9 @@ fn running() -> Config {
         persist: PersistConfig { history: true },
         terminal: TerminalConfig {
             shell: Some("/bin/zsh".to_owned()),
+        },
+        update: UpdateConfig {
+            channel: Some("https://example.invalid/latest.json".to_owned()),
         },
     }
 }
@@ -28,7 +31,14 @@ fn defaults_are_the_no_file_configuration() {
     let defaults = Config::default();
     assert!(!defaults.persist.history, "scrollback holds secrets");
     assert_eq!(defaults.terminal.shell, None);
-    assert_eq!(SECTIONS, &[PERSIST_SECTION, TERMINAL_SECTION]);
+    assert_eq!(
+        defaults.update.channel, None,
+        "no channel override means the built-in default, not a second copy of it",
+    );
+    assert_eq!(
+        SECTIONS,
+        &[PERSIST_SECTION, TERMINAL_SECTION, UPDATE_SECTION]
+    );
 
     let (next, diagnostics) = reload(&running(), "");
     assert_eq!(next, defaults, "an empty file is the missing file");
@@ -127,12 +137,22 @@ history = 3
 
 [terminal]
 shell = 7
+
+[update]
+channel = 7
 ";
     let (next, diagnostics) = reload(&running, text);
 
     assert_eq!(next, running, "both sections were rejected, both were kept");
     let named: Vec<Option<&'static str>> = diagnostics.iter().map(|d| d.section).collect();
-    assert_eq!(named, vec![Some(PERSIST_SECTION), Some(TERMINAL_SECTION)]);
+    assert_eq!(
+        named,
+        vec![
+            Some(PERSIST_SECTION),
+            Some(TERMINAL_SECTION),
+            Some(UPDATE_SECTION)
+        ]
+    );
     for diagnostic in &diagnostics {
         assert!(
             !diagnostic.message.is_empty(),

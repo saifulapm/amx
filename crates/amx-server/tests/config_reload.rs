@@ -425,6 +425,7 @@ fn shell_config(shell: &Path) -> Config {
             shell: Some(path_string(shell)),
         },
         persist: PersistConfig::default(),
+        update: amx_core::UpdateConfig::default(),
     }
 }
 

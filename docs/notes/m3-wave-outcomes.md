@@ -163,3 +163,87 @@ finished row is `every_skew_sample_row_answers_over_the_bridge_transport`.
 task, and the seam ledger is what grew it). No `src/` file is over the soft
 budget; the next task to add to either of those two should expect to split
 rather than trim.
+
+---
+
+## W10 — Self-update
+
+**The dormant path, named exactly.** `crates/amx/src/cmd/update.rs` carries
+`pub const HANDOFF_AFTER_INSTALL: bool = false`, and `hand_over()` beneath it is
+the whole of D-M3-8's second half: `session.handoff` with the staged binary,
+then a reconnect-poll that treats *same `SessionId`, different server version*
+as success and the old version answering again as the abort path having run.
+It compiles and typechecks on every build and is not reached. **Turning it on is
+flipping that one constant to `true`** — nothing else, no feature, no argument.
+A cargo feature was considered and rejected: code excluded from the build is
+code that rots between the wave that writes it and the wave that enables it,
+and this glue has to survive three waves.
+
+`apply_says_plainly_that_the_running_session_is_not_handed_over_yet` is the
+tripwire in W03's style: it asserts the constant is `false` *and* that `apply`
+prints the sentence saying panes are still on the old binary. Both halves go red
+the day W14 flips it, which is the point — the sentence must be replaced by an
+assertion that the successor answered, not merely deleted.
+
+**Three files outside the §5 scope list, each forced by the config field.** The
+field itself (`[update] channel`) is in scope; these are the places the tree
+does not compile without:
+
+- `amx-core/src/lib.rs` re-exports `UpdateConfig` beside the other section
+  types.
+- `amx-core/tests/config.rs` builds `Config` with an exhaustive struct literal
+  and pins `SECTIONS` as a literal list, so both had to learn the third section.
+  Its `diagnostics_name_the_failing_section` text gained a bad `[update]` line
+  too, or the section would have reset to its default while the test asserted
+  nothing moved.
+- `amx-server/tests/config_reload.rs` has one exhaustive `Config` literal;
+  one line.
+
+No wave-2 peer owns any of them (W04 is `handoff/{manifest,grid}.rs` and
+`pane_host/**`, W05 is `handoff/{fd,protocol}.rs`).
+
+**`check` cannot take a `--channel`, and did not grow one.** W03's clap tree
+puts `--channel` on `apply` only. Rather than edit `cli.rs` — the one file the
+wave plan exists to keep single-owner — `check` reads the channel from
+`config.toml` and the built-in default, which is what the acceptance test
+exercises. Asymmetric, and arguably wrong for a read-only verb: **hand-off to
+W14 or whoever next owns `cli.rs`** — one `Arg` on the `check` subcommand and
+one `args.get_one` at the call site, no other change.
+
+**mise's `$MISE_INSTALLS_DIR` is not read, deliberately.** herdr consults it so a
+relocated installs root is still detected. This crate's rule is that process
+environment is read once in `run` and threaded as an `amx_core::Env`, and no
+`Env` field carries that variable; adding one is amx-core's file, not this
+task's. Consequence, stated in `update/pm.rs`'s docs rather than left to be
+discovered: a user who has moved mise's installs root out of a directory named
+`installs` is classified `Standalone`, and `apply` would replace a file mise
+believes it owns. The fix is one `Env` field plus one parameter on
+`pm::classify`.
+
+**Version strings are strictly `major.minor.patch`.** A `-rc1` suffix is refused
+by name rather than compared as though the suffix were absent. There is no
+preview channel to publish a prerelease into (R-M3-4), so this costs nothing
+today and cannot silently order `0.2.0-rc1` above `0.2.0` later.
+
+**The default channel was exercised against the real network, once, by hand.**
+`https://github.com/saifulapm/amx/releases/latest/download/latest.json` answers
+404, and `amx update check` prints `no manifest at … (curl exited 22: curl: (22)
+The requested URL returned error: 404)` followed by the no-release-pipeline
+sentence, exit 0 — R-M3-4's expected answer, observed rather than assumed. The
+suite itself touches no network: every test channel is a `file://` URL.
+
+**curl's exit codes are never translated.** amx prints curl's own stderr line
+beside the numeric status instead of mapping codes to English. The mapping would
+have been written from memory, and `HACKING.md`'s first rule forbids exactly
+that; the flags themselves (`-sSfL --retry --connect-timeout --max-time
+--max-filesize`) were read off `curl --help all` on the build machine.
+
+**Budget watch.** `crates/amx/tests/update.rs` lands at 557 lines, the
+nineteenth test file over the soft 500 and well under the hard 1000. About 140
+of those are a rig that plants a *copy* of the binary under test at an arbitrary
+path — which `crates/amx/tests/support/mod.rs` cannot do (it hard-codes
+`CARGO_BIN_EXE_amx`) and which W11 and W12 will both want. Lifting it into
+`support/` is the split, and it belongs to the wave that next needs it rather
+than to this one, since `support/mod.rs` is shared and already at 509. No `src/`
+file this task touched is over the soft budget; the largest is
+`cmd/update.rs` at 338.
