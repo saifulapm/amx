@@ -12,8 +12,11 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
-use amx_core::PaneId;
+use amx_core::agent::{AgentKind, AgentSnapshot, AgentState};
+use amx_core::{PaneId, RowId, ShortNumber};
+use amx_proto::control::pane::PaneTarget;
 use amx_proto::control::{pane as pane_proto, session, workspace as workspace_proto};
+use amx_server::agent::address::{self, AddressError, Scope};
 use serde_json::json;
 
 mod support;
@@ -45,6 +48,153 @@ async fn split(client: &mut support::Client, pane: PaneId) -> (PaneId, u32) {
     let reply: pane_proto::SplitReply =
         serde_json::from_value(result_of(&response).clone()).expect("decode pane.split");
     (reply.pane, reply.short.get())
+}
+
+/// A pane as `session.state` would report it, for the resolution rules — the
+/// module they live in is a pure function over exactly this list.
+fn pane_state(pane: PaneId, short: u32, label: Option<&str>, agent: bool) -> session::PaneState {
+    session::PaneState {
+        pane,
+        short: ShortNumber::new(short),
+        label: label.map(str::to_owned),
+        cwd: None,
+        rows: 24,
+        cols: 80,
+        history_head: RowId::from_raw(0),
+        history_floor: RowId::from_raw(0),
+        agent: agent.then(|| AgentSnapshot {
+            kind: Some(AgentKind::new("claude").expect("a valid kind")),
+            state: AgentState::Quiet,
+            ..AgentSnapshot::unidentified(1)
+        }),
+    }
+}
+
+#[test]
+fn a_short_number_resolves_before_a_label_that_spells_one() {
+    let (numbered, mischief) = (PaneId::new_v4(), PaneId::new_v4());
+    let panes = vec![
+        pane_state(numbered, 2, None, true),
+        pane_state(mischief, 3, Some("2"), true),
+    ];
+
+    assert_eq!(
+        address::resolve(&PaneTarget::new("2"), &panes, Scope::Agent),
+        Ok(numbered),
+        "the pane that *is* 2 wins over the pane merely called 2",
+    );
+    assert_eq!(
+        address::resolve(&PaneTarget::new("3"), &panes, Scope::Agent),
+        Ok(mischief),
+        "and the number the label was hiding behind still names its own pane",
+    );
+}
+
+#[test]
+fn a_number_no_pane_holds_says_so_rather_than_looking_for_a_label() {
+    let panes = vec![pane_state(PaneId::new_v4(), 1, Some("7"), true)];
+    let err = address::resolve(&PaneTarget::new("7"), &panes, Scope::Agent)
+        .expect_err("no pane is numbered 7");
+    assert_eq!(
+        err,
+        AddressError::UnknownNumber {
+            number: ShortNumber::new(7),
+        },
+        "a digits-only target is a number whatever is in the tree, or it would \
+         mean one thing today and another tomorrow",
+    );
+    assert!(err.to_string().contains('7'), "{err}");
+}
+
+#[test]
+fn a_numbered_pane_outside_the_scope_names_itself_in_the_refusal() {
+    // The agent verbs' narrower rule, reached by number: the pane exists and
+    // the caller may still not drive it as an agent, and the error says which
+    // pane it was rather than "no pane is numbered 2".
+    let shell = PaneId::new_v4();
+    let panes = vec![pane_state(shell, 2, None, false)];
+
+    assert_eq!(
+        address::resolve(&PaneTarget::new("2"), &panes, Scope::AnyPane),
+        Ok(shell),
+        "the driving verbs take any pane, by number as by label",
+    );
+    assert_eq!(
+        address::resolve(&PaneTarget::new("2"), &panes, Scope::Agent),
+        Err(AddressError::NoAgent {
+            name: "2".to_owned(),
+            panes: vec![shell],
+        }),
+    );
+}
+
+#[test]
+fn a_new_agent_cannot_be_named_after_a_short_number() {
+    // The same argument the UUID-shaped name is refused on: rule 2 is checked
+    // first, so such a label could never win, and a name that cannot be
+    // resolved back is a pane that cannot be addressed.
+    assert_eq!(
+        address::check_new_name("3", &[]),
+        Err(AddressError::NumberName {
+            name: "3".to_owned(),
+        }),
+    );
+    assert_eq!(
+        address::check_new_name("3a", &[]),
+        Ok(()),
+        "a name that merely starts with a digit is a name",
+    );
+}
+
+#[tokio::test]
+async fn a_pane_can_be_driven_by_the_number_the_status_line_shows() {
+    let server = Server::start("short-address").await;
+    let mut client = server.connect().await;
+    client.hello_as_attach(amx_proto::version::window()).await;
+
+    let root = state_of(&mut client)
+        .await
+        .panes
+        .first()
+        .expect("the seeded pane")
+        .pane;
+    let (second, second_short) = split(&mut client, root).await;
+    assert_eq!(second_short, 2);
+
+    // The root pane takes the *other* pane's number as its label, which is the
+    // reason the order is fixed rather than convenient.
+    let renamed = client
+        .request(
+            50,
+            "pane.rename",
+            json!({ "pane": root.to_string(), "label": "2" }),
+        )
+        .await;
+    assert!(result_of(&renamed).is_object(), "pane.rename answered");
+
+    let read = client
+        .request(51, "pane.read", json!({ "target": "2", "lines": 1 }))
+        .await;
+    let read: pane_proto::ReadReply =
+        serde_json::from_value(result_of(&read).clone()).expect("decode pane.read");
+    assert_eq!(
+        read.pane, second,
+        "`2` reached the pane numbered 2, not the pane labelled 2",
+    );
+
+    let missing = client
+        .request(52, "pane.read", json!({ "target": "9" }))
+        .await;
+    let amx_proto::RpcOutcome::Error(err) = &missing.outcome else {
+        panic!("no pane is numbered 9, so the read must be refused: {missing:?}");
+    };
+    assert!(
+        err.message.contains("numbered 9"),
+        "the refusal names the number: {}",
+        err.message,
+    );
+
+    server.shutdown().await;
 }
 
 #[tokio::test]
