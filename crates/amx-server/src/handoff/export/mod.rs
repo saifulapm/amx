@@ -130,7 +130,7 @@ pub async fn orchestrate(
             },
         };
         let ctx = job.ctx.clone();
-        let successor = Box::new(StagedBinary::new(job.binary.clone()));
+        let successor = Box::new(StagedBinary::new(job.binary.clone(), ctx.session.clone()));
         let committed = run(job, &gateway, successor).await.outcome == HandoffOutcome::Committed;
         if committed {
             // Ownership has moved; this process's only remaining job is to

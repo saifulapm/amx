@@ -62,9 +62,11 @@
 mod base64;
 mod modes;
 
+use std::path::PathBuf;
+
 use amx_core::agent::{AgentSnapshot, HookToken};
 use amx_core::platform::{ProcessId, WinSize};
-use amx_core::{GridGeneration, PaneId, RowId, RowRange, Seq, SessionId};
+use amx_core::{Ctx, GridGeneration, PaneId, RowId, RowRange, Seq, SessionId, SessionName};
 use amx_vt::{Snapshot as GridSnapshot, Terminal};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -113,6 +115,14 @@ pub enum ManifestError {
     /// A carried payload is not the shape it says it is.
     #[error("malformed manifest payload: {0}")]
     Malformed(String),
+    /// The manifest is about a session this process is not (§3 step 6).
+    #[error("the manifest hands over session {theirs}, and this process is {ours}")]
+    WrongSession {
+        /// The session the exporter is handing over.
+        theirs: SessionIdentity,
+        /// The session this process derived for itself.
+        ours: SessionIdentity,
+    },
 }
 
 /// One session, frozen, as the successor receives it.
@@ -132,6 +142,23 @@ pub struct Manifest {
     /// "different server": `Welcome.session` is the only place the swap is
     /// visible at all.
     pub session: SessionId,
+    /// The session's *name* and socket, which the successor must already be.
+    ///
+    /// §3 step 6's "session dir identity", which W07 could not check because
+    /// nothing carried it. It is not decoration: a server started as `amx
+    /// --session live server` selects its session from a flag, not from its
+    /// environment, and a successor spawned without that flag derives `default`
+    /// — so an upgrade of a named session used to unlink `live`'s socket, bind
+    /// `default`'s, and leave the panes under a name nobody could reach.
+    /// Observed against the real binary on 2026-08-08, fixed at the spawn
+    /// ([`super::super::export::StagedBinary`]) and refused here, so a future
+    /// way of losing it is a message rather than a vanished session.
+    ///
+    /// Additive and optional: a manifest from an exporter that never sent it
+    /// is checked as it always was, which is the same both-directions rule
+    /// every other field on this surface follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<SessionIdentity>,
     /// The bus head the successor's sequence numbers continue from.
     pub seq: Seq,
     /// The session as persistence would have written it, captured in memory.
@@ -161,6 +188,59 @@ impl Manifest {
         Err(ManifestError::UnsupportedVersion {
             found: self.version,
         })
+    }
+
+    /// Check that this manifest is about the session `ctx` describes
+    /// (§3 step 6).
+    ///
+    /// Equality, not a window: a successor either *is* this session or it is
+    /// somebody else, and there is no partial answer. Both facts are compared
+    /// because they can disagree independently — the name is what the process
+    /// was told and the socket is what it derived from it, and a mismatched
+    /// runtime root produces the second without the first.
+    ///
+    /// # Errors
+    ///
+    /// [`ManifestError::WrongSession`] when either differs. A manifest that
+    /// carries no identity at all passes, which is what makes the field
+    /// additive: an older exporter is checked exactly as it always was.
+    pub fn check_session_identity(&self, ours: &SessionIdentity) -> Result<(), ManifestError> {
+        let Some(theirs) = &self.session_name else {
+            return Ok(());
+        };
+        if theirs == ours {
+            return Ok(());
+        }
+        Err(ManifestError::WrongSession {
+            theirs: theirs.clone(),
+            ours: ours.clone(),
+        })
+    }
+}
+
+/// Which session a manifest is about, by the two names a process has for one.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SessionIdentity {
+    /// The session name, as `--session` or `AMX_SESSION` spells it.
+    pub session: SessionName,
+    /// The socket that name resolves to under this machine's roots.
+    pub socket: PathBuf,
+}
+
+impl SessionIdentity {
+    /// The session `ctx` describes.
+    #[must_use]
+    pub fn of(ctx: &Ctx) -> Self {
+        Self {
+            session: ctx.session.clone(),
+            socket: ctx.socket.clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for SessionIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} at {}", self.session, self.socket.display())
     }
 }
 

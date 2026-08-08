@@ -450,6 +450,10 @@ pub fn manifest(
         exporter: "0.1.0".to_owned(),
         proto: amx_proto::version::window(),
         session,
+        // Filled by the tests that are about it: `None` is what an exporter
+        // from before the field sends, and it is checked exactly as it always
+        // was (`Manifest::check_session_identity`).
+        session_name: None,
         seq,
         state: Box::new(state),
         panes: panes.iter().map(|frozen| frozen.entry.clone()).collect(),

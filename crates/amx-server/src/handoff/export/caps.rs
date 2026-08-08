@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use amx_core::SessionName;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -289,24 +290,38 @@ pub trait Successor: Send + 'static {
     fn disown(&mut self);
 }
 
-/// The successor as a real process: `<binary> server --handoff-import <socket>`.
+/// The successor as a real process:
+/// `<binary> --session <name> server --handoff-import <socket>`.
 ///
 /// The token rides the child's stdin and never its argv (D-M3-6 point 1):
 /// `/proc/*/cmdline` is world-readable on Linux, and a secret that leaks is
 /// worse than no secret.
+///
+/// **`--session` is load-bearing and was missing.** A server started as `amx
+/// --session live server` selects its session from the flag, and the flag is
+/// not in its environment — `AMX_SESSION` is the *other* way to say it and may
+/// be unset. A successor spawned without it therefore built its paths for
+/// `default`, and an upgrade of a named session committed happily onto the
+/// wrong socket: `live`'s socket unlinked, `default`'s bound, and the panes
+/// held by a server nobody could reach by name. Observed against the real
+/// binary on 2026-08-08. The importer checks the same fact from its own side
+/// (`Manifest::session_name`), so a future way of losing it is a refusal
+/// instead of a silent swap.
 #[derive(Debug)]
 pub struct StagedBinary {
     binary: PathBuf,
+    session: SessionName,
     child: Option<std::process::Child>,
     disowned: bool,
 }
 
 impl StagedBinary {
-    /// A successor to be started from `binary`.
+    /// A successor to be started from `binary`, for `session`.
     #[must_use]
-    pub const fn new(binary: PathBuf) -> Self {
+    pub const fn new(binary: PathBuf, session: SessionName) -> Self {
         Self {
             binary,
+            session,
             child: None,
             disowned: false,
         }
@@ -318,6 +333,8 @@ impl Successor for StagedBinary {
         use std::io::Write as _;
 
         let mut child = std::process::Command::new(&self.binary)
+            .arg("--session")
+            .arg(self.session.as_str())
             .arg("server")
             .arg("--handoff-import")
             .arg(socket)

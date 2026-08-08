@@ -54,7 +54,7 @@ use crate::actor::gateway::{Gateway, GatewayError};
 use crate::actor::persist::{PERSIST_MAILBOX, Persist};
 use crate::actor::{AGENT_MAILBOX, AgentHandle, CoreHandle, PersistHandle};
 use crate::config_rt::ConfigRuntime;
-use crate::handoff::manifest::{Manifest, ManifestError};
+use crate::handoff::manifest::{Manifest, ManifestError, SessionIdentity};
 use crate::handoff::protocol::importer::Restoring;
 use crate::handoff::protocol::{Ending, HandoffError, Importer, Timeouts, Token};
 use crate::platform::watch::watch_config;
@@ -142,8 +142,10 @@ pub async fn import(ctx: Ctx, opts: ImportOptions) -> Result<ServeReport, Import
 
     // Steps 2–9: connect, prove who this is, read the session, take every
     // descriptor. All of it blocking, all of it off the runtime's threads.
+    let identity = SessionIdentity::of(&ctx);
     let received =
-        tokio::task::spawn_blocking(move || receive(&socket, &token, timeouts)).await??;
+        tokio::task::spawn_blocking(move || receive(&socket, &token, timeouts, &identity))
+            .await??;
     let Received {
         manifest,
         masters,
@@ -320,6 +322,7 @@ fn receive(
     socket: &std::path::Path,
     token: &Token,
     timeouts: Timeouts,
+    identity: &SessionIdentity,
 ) -> Result<Received, ImportFailed> {
     let importer = Importer::connect(socket, token, timeouts)?;
     let (document, importer) = importer.recv_manifest()?;
@@ -335,6 +338,15 @@ fn receive(
         }
     };
     if let Err(err) = manifest.check_version() {
+        importer.abort(&err.to_string());
+        return Err(err.into());
+    }
+    // §3 step 6's session-dir identity. The exporter names this process's
+    // session on the argv it spawned it with, so a mismatch means the two
+    // disagree about which session is being handed over — and serving a
+    // manifest under the wrong name would take one session's panes and put
+    // them behind another one's socket.
+    if let Err(err) = manifest.check_session_identity(identity) {
         importer.abort(&err.to_string());
         return Err(err.into());
     }
