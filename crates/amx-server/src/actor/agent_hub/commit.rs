@@ -135,19 +135,31 @@ impl AgentHub {
             .filter(|_| !retired)
             .map(Tracked::snapshot);
         let attention = self.attention.clone();
-        self.view.commit(
-            &self.ctx.bus,
-            StatusUpdate {
-                pane,
-                status: status.clone(),
-                attention: attention.clone(),
-                events,
-            },
-        );
+        self.write(StatusUpdate {
+            pane,
+            status: status.clone(),
+            attention: attention.clone(),
+            events,
+        });
         self.mirror(pane, status, attention);
         if retired {
             self.panes.remove(&pane);
         }
+    }
+
+    /// The one call in the tree that writes a [`StatusView`].
+    ///
+    /// Two callers reach it and both are the hub's: [`absorb`](Self::absorb),
+    /// which is a transition, and
+    /// [`inherit`](super::AgentHub::inherit), which is a predecessor's
+    /// transition arriving in a new process. Funnelling them through one line
+    /// is what keeps `docs/08-m2-plan.md` §3's write-then-publish ordering a
+    /// property of the module — and it is what `agent_events_have_exactly_one_
+    /// publisher` counts.
+    ///
+    /// [`StatusView`]: crate::actor::StatusView
+    pub(super) fn write(&self, update: StatusUpdate) -> Option<amx_core::Seq> {
+        self.view.commit(&self.ctx.bus, update)
     }
 
     /// Push one pane's status into `Core`'s mirror, never waiting.
