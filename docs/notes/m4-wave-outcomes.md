@@ -860,3 +860,91 @@ payload byte `b'o'` was read as channel 111 — at 60 frames with *every* read
 cancelled at least once, rather than at whatever load happened to be running.
 `tests/reader.rs` keeps its two resume-point tests; this is the count they were
 missing.
+---
+## X17 — Workspace-scoped `next-attention`
+
+### Edits outside the entry's file list
+
+**`crates/amx-server/src/actor/agent.rs` and `actor/agent_hub/run.rs`, one
+field and one line.** The scope has to reach the actor that holds the queue, and
+the only road is the mailbox: `AgentCommand::NextAttention` gained
+`workspace: Option<WorkspaceId>` and the loop passes it to `next_attention`.
+Neither file is in a wave-3 task's list, so this is a declared sequential edit
+rather than a contested one. `verbs.rs::refuse` matches the variant with `..`,
+because a command arriving after cancellation is refused for being late and not
+for where it was pointed.
+
+**`crates/amx-server/src/dispatch/agent/mod.rs`, the line X02 named.** §6 gives
+that file to X10 this wave, and X02's hand-off ("the handler currently
+destructures the field and ignores it … which is the one line X17 replaces")
+postdates it. The edit is that line and its doc comment and nothing else, so
+X10's `agent.list` arm lands beside it without a conflict.
+
+**`crates/amx/src/cmd/**` produced no diff, as X02 predicted.** The §5 entry
+scopes "`crates/amx/src/cmd/**` for the CLI flag"; `amx agent next --workspace
+<UUID>` already parsed before this task started, because `amx-proto`'s flag rows
+are the only place a typed flag can live. Nothing was left to do there and
+nothing was invented to fill the scope. A *label* still does not resolve on this
+path — X02 decided `workspace` parameters are ids and that labels resolve in
+whoever holds `session.state` — so `amx agent next --workspace api` is not a
+spelling that works today. X16's `amx agents --workspace api` is the one that
+will, and if the scoped verb ever wants the same convenience it is a resolver in
+the CLI, not a second one in the server.
+
+### The bound this feature inherits, and where it can be closed
+
+**A pane that moved workspaces is scoped by where it was created.** The hub
+learns the pane→workspace pairing from `Event::PaneCreated` (`agent_hub/run.rs`)
+and from `AgentHub::inherit` on the import path, which covers every way a pane
+comes into existence — a live create, a cold restore (`actor/core/restore.rs`
+publishes one per restored pane, after the hub's subscription is taken) and a
+handoff. It does not cover `pane.move` across workspaces: that publishes
+`LayoutChanged`, which names a workspace and no pane
+(`actor/core/pane.rs:211-216`), and there is no other event carrying the new
+pairing. So after a cross-workspace move a scoped call sizes that pane up by its
+old workspace.
+
+This is not new with X17 — the same map already answers the `workspace` hint on
+`NextReply` and, since X06, the identity block on every attention event
+(`agent_hub/names.rs`) — but X17 gives it a consumer where being wrong is a
+wrong pane rather than a stale label. The hub cannot fix it from inside: asking
+`Core` is the sibling request D-M4-6 forbids. Closing it means publishing the
+pairing when it changes, which is `actor/core/pane.rs` and `amx-core/src/event/`,
+neither of them this task's. **X00** decides whether that is worth a row; the
+bound is written where the map is read.
+
+### Hand-offs
+
+**To X14 — what the scoped keybinding needs, exactly.** The server half is done
+and the client half is one call site. `Action::NextAttention` sends
+`NextParams { workspace: None }` (`amx-client/src/app/actions.rs`); the scoped
+variant sends `NextParams { workspace: self.model.focused_workspace_id() }`,
+which the model already answers (`amx-client/src/model/mod.rs:113`). Per X07's
+hand-off the binding itself is a `PrefixAction` variant plus a row in `SHIPPED`
+plus an arm in `Input::prefix_key`, on a key neighbouring `prefix+a`. One
+subtlety worth not rediscovering: the scoped action belongs in `actions.rs`'s
+*first* group — the verbs that need no focused pane — because a client with no
+focused pane at all should send the unscoped call rather than nothing, and
+`focused_workspace_id()` returning `None` is exactly that case, which the
+server already reads as "the whole queue".
+
+**To X00 — the field ledger's last row.** `tests/hygiene/ledgers.rs`'s
+`FIELD_LEDGER` row for `NextParams.workspace` ("X17 reads the scope on
+agent.next") can be struck: the reader landed, over the mailbox in
+`agent_hub/verbs.rs` and over the real decode path in
+`crates/amx-server/tests/scoped_attention.rs`.
+
+### Divergences from §5, small
+
+**Two suites, one of them new, and a fixture file that crossed the soft
+budget.** The hub-level scenarios went to `crates/amx-server/tests/agent_hub/
+scope.rs` rather than into `agent_hub.rs`, which was already 549 lines: X06's
+split-by-responsibility shape, one `#[path]` line in the suite root. The
+end-to-end half is a new file, `crates/amx-server/tests/scoped_attention.rs`,
+which borrows `agent_verbs/harness.rs` by `#[path]` the way X09's
+`attach_pane_swap.rs` borrows `wait_retry/harness.rs` — a new file contends with
+nobody, and that harness now has a third reader. `agent_hub/fixtures.rs` went
+from 500 lines to 511 for an eleven-line rig method (`next_attention_in`) and a
+second workspace id; splitting a shared rig to absorb eleven lines is the churn
+X02 declined to make for the same reason, so it was left at 511 and is recorded
+here rather than silently.
