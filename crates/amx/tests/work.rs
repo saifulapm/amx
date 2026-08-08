@@ -26,7 +26,7 @@ use std::process::Command;
 use amx_proto::control::session::{
     ReportReply, RestoreEntity, RestoreSeverity, StateReply, WorkspaceState,
 };
-use support::{Output, Rig};
+use support::{Output, Rig, wait_until_or};
 
 /// A stanza for an agent that is nothing but a process that stays open.
 ///
@@ -110,6 +110,49 @@ impl Fixture {
         self.rig.serve(&self.exe);
     }
 
+    /// Stop this fixture's server, and wait until its state is on disk.
+    ///
+    /// `amx session stop` returns when the socket stops answering, and the
+    /// socket stops answering *before* the final capture is written: the
+    /// server is still draining when the command exits, and the snapshot does
+    /// not exist yet. Measured on Linux, where the gap is a couple of
+    /// milliseconds and every restart wins the race by accident because
+    /// starting a server takes longer than that. Nothing promises that
+    /// ordering — a slower disk on the writing side, or a faster start on the
+    /// reading side, and the new server restores the session as it was *before*
+    /// whatever the test just built.
+    ///
+    /// So this waits for the fact rather than for the call that starts it: the
+    /// snapshot on disk naming every labelled workspace the session had. Not a
+    /// sleep, and not a weaker assertion — the wait is the premise a restart
+    /// test is entitled to state. The suites that stop a server and keep going
+    /// reach the same guarantee from the other end, by waiting for the child
+    /// process to exit (`session_cli.rs`); this rig owns no handle to wait on,
+    /// and the file is the thing the next server actually reads.
+    fn stop(&self) {
+        let live: Vec<String> = self
+            .state()
+            .workspaces
+            .iter()
+            .filter_map(|ws| ws.label.clone())
+            .collect();
+        self.amx(&["session", "stop"]).ok();
+        let snapshot = self.rig.snapshot();
+        wait_until_or(
+            "the snapshot on disk names every workspace the session had",
+            || {
+                saved_labels(&snapshot)
+                    .is_some_and(|saved| live.iter().all(|had| saved.contains(had)))
+            },
+            || {
+                format!(
+                    "it names {:?}; the session had {live:?}",
+                    saved_labels(&snapshot)
+                )
+            },
+        );
+    }
+
     /// Run `amx` with the repository as the working directory.
     ///
     /// From inside the repository, because that is the whole of how `amx work`
@@ -158,6 +201,24 @@ impl Fixture {
             .filter_map(|line| line.strip_prefix("worktree ").map(str::to_owned))
             .collect()
     }
+}
+
+/// Every workspace label the snapshot at `path` names, if it can be read.
+///
+/// `None` for a file that is not there yet or is not yet a whole document —
+/// both are ordinary states for a snapshot a draining server is still writing,
+/// and neither is a failure until the wait that asks runs out of patience.
+fn saved_labels(path: &Path) -> Option<Vec<String>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let saved: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Some(
+        saved
+            .get("workspaces")?
+            .as_array()?
+            .iter()
+            .filter_map(|ws| ws.get("label")?.as_str().map(str::to_owned))
+            .collect(),
+    )
 }
 
 /// Run git in `dir` and hand back its stdout, failing the test if it refuses.
@@ -383,15 +444,38 @@ fn a_vanished_worktree_restores_as_a_plain_workspace_with_a_report_entry() {
         .workspace;
 
     // Stopped rather than killed, so the snapshot on disk is the one M1's
-    // shutdown push writes.
-    fixture.amx(&["session", "stop"]).ok();
+    // shutdown push writes — and waited for, because `amx session stop` returns
+    // before that write lands ([`Fixture::stop`]). Asserted here as well as
+    // waited for: this test's whole subject is what the *next* server restores,
+    // so a run that restarted from a snapshot with no `feat` in it would be
+    // testing nothing and saying the tree was the problem.
+    fixture.stop();
+    assert_eq!(
+        saved_labels(&fixture.rig.snapshot()).as_deref(),
+        Some(["feat".to_owned()].as_slice()),
+        "the stopped session left the workspace on disk to be restored from",
+    );
     std::fs::remove_dir_all(&tree).expect("remove the tree behind amx's back");
     fixture.serve();
 
     // The workspace is still here, and it is plain now.
-    let ws = fixture
-        .workspace("feat")
-        .expect("the workspace survives the vanished tree");
+    let ws = fixture.workspace("feat").unwrap_or_else(|| {
+        // Two ways to lose it, and they are not the same bug: a session that
+        // restored nothing has no entries at all, while a workspace whose panes
+        // could not be respawned is *pruned* and says so. Naming which one
+        // happened is the difference between a diagnosis and another round trip.
+        panic!(
+            "the workspace did not survive the vanished tree; the session now has {:?} and \
+             reports:\n{}",
+            fixture
+                .state()
+                .workspaces
+                .iter()
+                .map(|ws| ws.label.clone())
+                .collect::<Vec<_>>(),
+            fixture.amx(&["session", "report"]).ok(),
+        )
+    });
     assert_eq!(ws.workspace, workspace, "under the id it had");
     assert_eq!(
         ws.worktree, None,
