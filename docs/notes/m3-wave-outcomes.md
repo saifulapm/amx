@@ -530,3 +530,136 @@ counters continued. The session-level `Manifest` is defined with D-M3-5's
 inventory (`session`, `seq`, the persist `Snapshot`, `panes` in transfer order,
 `agents` as `AgentSnapshot`s) and `Manifest::check_version` implements D-M3-6's
 *window* check; W06 fills the session-level fields, W07 reads them.
+
+---
+
+## W06 — Export path
+
+**The pre-flight runs on the connection task, not on `Core`.** §3 numbers it step
+0 and D-M3-6 point 2 says why it exists; where it *runs* was open, and putting it
+in `Core`'s arm would have made "refused before any pane is touched" a claim
+about statement order inside one function. It runs in `dispatch/session.rs`
+instead, and only its verdict travels on: `SessionCall::Handoff` carries
+`preflight: Result<Caps, String>`, so a `Core` that refuses a wrong binary has
+provably not reached a pane. It also keeps a staged binary that never answers
+from stalling every other verb — `Core` serves one mailbox loop, and an exec on
+it would hold `session.state` behind a subprocess.
+
+**`Core` freezes in one mailbox turn, and the orchestrator does the talking.**
+`handle_handoff_live` quiesces every pane (on the blocking pool), captures each
+one through `PaneCommand::ExportHandoff`, builds the manifest, and hands a `Job`
+to a task; `Core` is stalled for exactly that turn and the socket answers
+throughout. The alternative — the orchestrator asking `Core` for each piece —
+would have meant the session frozen across a socket conversation with a peer
+that may never answer.
+
+**Three fences, not one, and the second is what R-M3-10 actually needs.** D-M3-6
+point 5 disarms "the final Persist push". The final push is one of *two* ways the
+exporter's dying view reaches disk: the other is a debounced save, which asks
+`Core` for a capture through the ordinary mailbox. So the fence is read in both
+places — `push_final_capture` returns early, and `handle_capture` drops the reply
+channel, which `Persist` already reads as "`Core` cannot be reached" and turns
+into a save that does not happen. The third is the ordering: the fence is armed
+*before* `committed` goes on the wire, never after, so there is no window at all.
+`no_final_snapshot_is_written_after_commit` pins both halves and fails on each
+one independently — with the final push unfenced the exporter writes a
+`session.json` that was not there before (`None` → `Some(inode)`), and with the
+capture unfenced a post-commit flush succeeds.
+
+**A failed commit unfences.** `HandoffError::ending()` puts `Stage::Committed` on
+the abort side — the importer never heard the word, so it strict-aborts and this
+server owns the snapshot again — which means the fence has to be reversible.
+`Ledger::unfence` is that, and it is the only path back.
+
+**Gateway retirement is a mode, and the client token is replaced rather than
+reused.** `GatewayControl::{retire, restore}` drive one actor through two modes;
+the `JoinSet`, the accounting, the `StatusView` and the hub handle all survive,
+so `GatewayReport::clean()` still means what it meant. The one thing that cannot
+survive is the connections' cancellation token: retiring cancels it, and a
+cancelled token cancels everything handed it afterwards, so a restored gateway
+reusing it would accept and immediately hang up. It takes a fresh child token on
+the way out of the retirement.
+
+**The retirement's join is bounded (5 s) and the swap does not wait for it.** The
+successor is waiting for the socket path, so a connection slow to notice its
+cancellation must not hold the upgrade open. Nothing is abandoned — the task
+stays in the same `JoinSet` and is accounted whenever it returns — but
+`RetireReport::outstanding` says how many were left, which is W01's near-miss
+signal seen early rather than at the drain.
+
+**The drain watchdog shortens the census interval to fit inside its bound.**
+W01's census is written when a drain overruns `CENSUS_INTERVAL` (5 s); a
+post-commit bound of 30 s would produce one, but a *test's* bound of 400 ms would
+not, and a watchdog whose diagnosis is unavailable under test is a watchdog
+nobody can check. `export::drain::bounded` therefore sets the interval to half
+its bound (capped at W01's own), and reads the file back into the error. What it
+prints, measured: `the exporter's shutdown drain did not empty within 400ms after
+the handoff committed; pid 1098484; waiting 200 ms; 1 task(s) not returned:
+stubborn`. Returning drops the `JoinSet`, which aborts whatever had not returned
+— correct only after the commit, which is the only place this is used.
+
+**Two edits outside the §5 scope list, both forced.**
+
+- `crates/amx/src/cmd/handoff_caps.rs` — W03 planted the stub with `**W06** owes
+  it` written on it and on its clap entry, and the §5 scope list simply does not
+  name it. Without a body the pre-flight refuses every real successor, so
+  `session.handoff` against the actual binary could never be accepted. It prints
+  `Caps` itself (`{"version":"0.1.0","handoff":[1,1],"proto":[1,1]}`), which is
+  the same type the orchestrator reads back — there is no second spelling of the
+  format to drift.
+- `actor/pane_host/mod.rs` gains `PaneHost::pty()`. `quiesce`/`resume` block, so
+  the freeze and the rollback belong on the blocking pool, and a `PaneHost`
+  cannot go there because `Core` is still serving with it. The pty actor's own
+  mailbox can: it is `Clone`, and the orchestrator holds one per frozen pane so
+  an abort unfreezes the session without queueing behind `Core`. Four lines in a
+  wave-2 file no wave-3 peer touches.
+
+**Three edits in files W03 had already crossed into, and why each is now
+different.** `tests/hygiene.rs`'s seam ledger is emptied and the assertion
+restored to its resting form — W06 answered M3's one row two waves before the
+plan expected it, and the test's own failure message says to do exactly this. Its
+agent-event guard also grew one exemption: `Exporter::commit` is §3 step 13 and
+shares nothing with `StatusView::commit` but the English word. And
+`tests/skew.rs`'s `method_golden_and_skew_arm_cover_session_handoff` asserted the
+seam code; it now asserts the behavior — a staged binary that does not exist is a
+*reply* (`accepted: false` with the reason), never a failed call. **W11 also owns
+`tests/skew.rs`**; the two edits are in different functions.
+
+**`actor/gateway.rs` became `actor/gateway/`, three files.** R-M3-7 predicted it
+("`gateway.rs` 383 + retire") and retirement took it to 648. Split by
+responsibility on arrival rather than at the hard limit (R-M1-3):
+`mod.rs` (347, the actor and its accept loop), `bind.rs` (159, the socket-taking
+rules, read twice now — once by `Gateway::bind` and once by a restore), and
+`retire.rs` (187, the mode the export path drives). Nothing outside the module
+changed: `crate::actor::gateway::…` resolves to the directory unchanged.
+
+**One rig hazard worth writing down: `ETXTBSY` when a test writes a program.**
+`fixture_binary` plants a shell script and then execs it, and a pane spawned by a
+*concurrent* test can inherit the write descriptor for the few microseconds
+between its `fork` and its `exec` — the kernel then refuses to execute a file
+somebody holds open for writing. Seen once in a full-workspace run here and once,
+the same day, in `crates/amx/tests/update.rs`, which plants a copy of a real
+binary the same way. The rig retries the exec past `ETXTBSY`; the update suite
+has no such retry yet and is the other half of this note.
+
+**`amx session report` does not *render* the handoff row.** The wire carries it —
+`session report --json` against a real server prints
+`"handoff": {"outcome": "aborted", "stage": "quiesce", "reason": "the handoff
+peer went quiet during the token stage", …}` — and the acceptance tests assert on
+the reply. What is missing is the human line: `format_report` in
+`crates/amx/src/cmd/session.rs` renders `reply.report` and ignores
+`reply.handoff`, so `amx session report` still says "no losses to report" after
+an aborted upgrade. That file is not in W06's scope and nothing forced it.
+**Hand-off to W14** (or whoever next owns `cmd/session.rs`): one branch above the
+restore table, printing outcome, stage, binary and reason.
+
+**Live-smoke of the real binary, since three milestones have been caught by a
+green suite.** Against `./target/debug/amx` on 2026-08-08: `_handoff-caps` prints
+its window and exits 0; `amx session handoff --binary <that same binary>
+--timeout 2s` is *accepted*, freezes the pane, spawns the importer, and — because
+`amx server --handoff-import` is W07's and does not exist — times out at the
+token stage, aborts, resumes, and the session answers `ping` and `session state`
+afterwards; `--binary /bin/true` is refused with "did not print handoff
+capabilities"; the server then stops on `SIGTERM` with exit 0. That is the whole
+export path over a real socket with a real pty, up to the point where the
+successor would answer.
