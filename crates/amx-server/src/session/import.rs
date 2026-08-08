@@ -189,7 +189,7 @@ pub async fn import(ctx: Ctx, opts: ImportOptions) -> Result<ServeReport, Import
         Ok(adopted) => adopted,
         Err(err) => {
             importer.abort(&err.to_string());
-            return Err(err.into());
+            return Err(unwind(core, ctx, runtime, err.into()).await);
         }
     };
     let inherited = adopted
