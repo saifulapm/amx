@@ -1062,6 +1062,16 @@ platforms in CI. Existing darwin rig lore (pty drain rules, libproc process
 probes, sun_path budget) is already encoded in `tests/support/` and U09
 inherits it.
 
+*Superseded, 2026-08-09.* "macOS is CI-enforced" is no longer true: the hosted
+macos runner has been taken out of the `ci` matrix, so **no test runs on darwin
+automatically**. What remains automatic is `darwin-check`, which cross-compiles
+every target for `aarch64-apple-darwin` from Linux and therefore proves the tree
+*builds* — it cannot see a timing difference, an `F_FULLFSYNC` cost or a kqueue
+coarseness, which is exactly what this risk is about. Darwin's runtime behaviour
+is now established only by running the suite by hand on a real Mac. Anything in
+this section that reads as a guarantee should be read as a thing somebody has to
+do.
+
 **R-M1-7 — cwd freshness is capture-time, not tracked.** amx has no OSC 7
 plumbing; `Pane.cwd` is set at split time. Capture refreshes it via
 `ProcessTree`'s foreground-cwd probe (the `PaneCommand::ForegroundCwd` query

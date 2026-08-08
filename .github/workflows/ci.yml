@@ -11,12 +11,18 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  # Both tier-1 platforms (03 §design principles) run the full pipeline.
+  # Linux runs the full pipeline. darwin is a tier-1 platform (03 §design
+  # principles) and is still checked two ways: `darwin-check` below cross-compiles
+  # every target for aarch64-apple-darwin on every run, and the suite is run by
+  # hand on a real Mac. A hosted macos runner is deliberately not in this matrix —
+  # it hung for four hours on one occasion and the pty- and fsync-timing failures
+  # it did report were, every time, reproducible faster on a Mac somebody was
+  # sitting at. Reinstate the runner here if the by-hand step stops happening.
   ci:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -90,10 +96,12 @@ jobs:
       - name: ci
         run: scripts/ci.sh
 
-  # A cheap tripwire between full macOS runs: cross-check every target for
-  # aarch64-apple-darwin from Linux, which catches cfg'd-API compile breaks
-  # (rustix declares CLOEXEC-at-open and pipe2 only where the kernel has
-  # them) without a mac in the loop.
+  # The only automated darwin signal, now that no macos runner is in the matrix:
+  # cross-check every target for aarch64-apple-darwin from Linux, which catches
+  # cfg'd-API compile breaks (rustix declares CLOEXEC-at-open and pipe2 only
+  # where the kernel has them) without a mac in the loop. It proves the tree
+  # *builds* for darwin and nothing more — no test runs here, so darwin's
+  # runtime behaviour is only ever established by the by-hand run on a real Mac.
   darwin-check:
     runs-on: ubuntu-latest
     steps:
