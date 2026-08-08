@@ -317,3 +317,93 @@ which is W14's call if it wants one.
 — "its fds close with the process (kernel)" — so every crash row moves its
 socket into a real `/bin/sh` child's stdin and `SIGKILL`s it. A dropped
 `UnixStream` would have proven something weaker and read the same.
+
+---
+
+## W13 — Layout export/apply
+
+**`session.state` does not carry a pane's cwd, so an export cannot.** D-M3-11
+says the reply "already carries the workspace list, BSP trees, cwds, labels, and
+agent kinds". Four of those five are there; the cwd is not.
+`amx_core::state::Pane` holds one and the persist snapshot writes it, but
+`control::session::PaneState` has no such field and `core/view.rs` never
+projects one — so a client cannot read a cwd at all, and export writes none.
+
+The layout file has a `cwd` key regardless, and apply honours it on every pane:
+a file a person writes is the main thing a `cwd` is for, and a format missing
+the key would have had to grow one later anyway. What is missing is only the
+export half, and it is missing by one additive optional field —
+`PaneState::cwd`, under the same R-M1-8 terms as `label` and `agent` beside it,
+plus the `core/view.rs` line that fills it and a regenerated `session.state`
+golden. **Hand-off:** that is proto and server work, which W13's scope
+explicitly excludes ("no server code and no new wire surface"), so it is left
+for whoever owns the next `session.state` change — W14, or a follow-up. Until
+then `amx layout export` writes shape, labels and agent kinds, and a
+round-tripped layout starts its panes wherever the server's default cwd is.
+
+**Three verb-shaped gaps the plan does not mention, and what apply does about
+them.** None is a divergence from D-M3-11 — the decision says "replays it
+through the public surface", and this is what that surface costs:
+
+- `workspace.create` takes no cwd, so a workspace's *first* pane cannot be
+  given one directly. When the file asks, apply splits the root with the cwd it
+  wants and closes the root under it — two calls to say what one parameter
+  would, and the tree ends identical.
+- `agent.start` picks its own slot (it splits the workspace's focus,
+  `dispatch/agent.rs`), so an agent leaf cannot be created where the file puts
+  it. Apply builds a placeholder there, starts the agent, `pane.swap`s it into
+  the placeholder's slot and closes the placeholder — which collapses the
+  temporary split and restores the tree exactly.
+- `pane.split` always cuts at 0.5, so ratios are reached with `pane.resize`
+  immediately after each split, while both children are still leaves and the
+  nudge therefore lands on the split just made.
+
+**Ratios are written to three decimals, and that is what makes the round trip
+byte-exact.** Apply reaches a ratio by nudging a half-split by
+`ratio - 0.5`, which lands within an f32 rounding error of the written value
+rather than on it. Three decimals is a tenth of a percent of a workspace —
+finer than a cell — and rounding to it makes the second export write the same
+characters as the first. The file also omits `ratio` entirely at 0.500, so an
+unresized layout says nothing about ratios at all.
+
+**Export reads the layout tree through its serialized form.** `amx_core::Layout`
+keeps `Node` private and exposes only `panes()`, `rects()` and `zoomed()` —
+none of which recovers the axis and ratio of an internal node. Rather than
+widen `amx-core` (not W13's file), `build.rs` deserializes the tree's own wire
+shape, which is frozen and golden-pinned as the thing clients mirror (04 §3).
+If a later task wants a public visitor on `Layout`, this is the caller that
+would use it.
+
+**Three edits outside the §5 scope list.** `crates/amx/src/lib.rs` gains
+`pub mod layout;` — a module cannot exist otherwise. `crates/amx/Cargo.toml`
+gains `toml` (`parse` + `serde`, both already in the lock) and the `derive`
+feature on the `serde` it already had; no new dependency enters the tree, and
+`toml`'s `display` feature is deliberately *not* taken, because export renders
+its own TOML so that key order, the header comment and the omission of defaults
+are the format's design rather than a serializer's. **W10 touches both files
+too** (its own `pub mod update;` and its `sha2` line): the two edits are
+additive and adjacent, so the wave-2 merge should expect a two-line textual
+conflict and nothing semantic.
+
+**A second test file, for the budget.** The five acceptance names plus the two
+that pin the nudge table and the root-replacement rule came to 550 lines in one
+file. Split by responsibility rather than left over the soft budget (R-M1-3):
+`crates/amx/tests/layout.rs` (359) drives the real binary against a real
+server, `crates/amx/tests/layout_file.rs` (205) is the pure pair of
+translations and needs no session — which is also the only way the agent path
+can be tested at all, since a real agent binary does not exist on a runner
+(R-M2-8). `agent_kinds_apply_but_session_refs_never_export` lives in the
+second file for that reason.
+
+**The round-trip test needs a session with no workspaces**, which is why it
+starts servers with `amx server` rather than `amx attach`: an attaching client
+seeds a first workspace (`Session::attach`'s `attach: true`), and a layout
+applied on top of one would export as itself plus somebody else's shell. Apply
+connects with `attach: false` for the same reason.
+
+**Not exported, deliberately, beyond the refs D-M3-11 names.** Focus and zoom
+(where a person is looking, not how the session is built), and the `worktree`
+membership block W03 added — `amx work` owns that association, and a layout
+replayed on another machine would name a checkout that is not there. `command`
+has no key either: D-M3-11's list does not include it, and `session.state`
+could not export one.

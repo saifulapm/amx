@@ -37,16 +37,21 @@ tokio = { workspace = true, features = [
 ] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-# `serde`'s derive is not needed: the integration installer's one hand-written
-# `Deserialize` keeps an agent's configuration in the order it was written in,
-# which `serde_json`'s own `Value` cannot do without reordering the tree.
-serde = { workspace = true }
+# The integration installer's one hand-written `Deserialize` keeps an agent's
+# configuration in the order it was written in, which `serde_json`'s own `Value`
+# cannot do without reordering the tree; `derive` is here for the layout file's
+# schema, which is an ordinary set of structs and has no such constraint.
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 # `amx update apply` verifies the asset it downloaded before it renames one
 # byte of it over the running binary. The alternatives are hand-rolled SHA-256
 # and parsing `sha256sum`/`shasum` output across platforms; both are worse on
 # correctness grounds, and herdr made the same call (R-M3-8).
 sha2 = { workspace = true }
+# Reading layout files (D-M3-11). `display` is deliberately absent: export
+# renders its own TOML, so that the key order, the comments and the omission of
+# every default are the file's design rather than a serializer's.
+toml = { workspace = true, features = ["parse", "serde"] }
 
 # Test-only: the CLI acceptance tests drive the real binary against a real
 # terminal, and `tcgetattr`/`tcsetattr` refuse anything that is not a tty.
