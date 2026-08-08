@@ -347,10 +347,7 @@ branch refs/heads/feat
 ";
         assert_eq!(
             worktree_paths(listed),
-            vec![
-                PathBuf::from("/src/repo"),
-                PathBuf::from("/src/repo--feat"),
-            ],
+            vec![PathBuf::from("/src/repo"), PathBuf::from("/src/repo--feat"),],
         );
         assert!(worktree_paths("").is_empty());
     }

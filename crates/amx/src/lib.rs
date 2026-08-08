@@ -26,6 +26,7 @@ pub mod integration;
 pub mod layout;
 pub mod remote;
 pub mod update;
+pub mod work;
 
 /// Parse `argv` and run the command it names.
 ///

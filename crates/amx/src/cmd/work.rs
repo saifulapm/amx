@@ -7,13 +7,9 @@
 //! workspace, because `done` resolves a workspace by branch and restore has to
 //! notice a tree that is no longer there.
 //!
-//! # Where the tree goes
-//!
-//! The `work.dir` template, default `{repo_parent}/{repo_name}--{branch}`: a
-//! *sibling* of the repository rather than a directory inside it, so repo-
-//! internal tooling — a test that walks the tree, a linter with a glob, a build
-//! that hashes every file — never trips over a second checkout of the same
-//! project. [`derive_path`] is the whole of the substitution.
+//! Where the tree goes is [`crate::work`]'s question, asked here twice: once to
+//! place a tree and once, on the way down, to check that the tree being removed
+//! is the one today's template derives.
 //!
 //! # The destructive path
 //!
@@ -23,8 +19,9 @@
 //! *before* anything is killed or removed:
 //!
 //! 1. The path is never taken from the user. It comes out of the workspace's
-//!    recorded membership, and it has to equal the path [`derive_path`] computes
-//!    today from the same repository and branch. A template that has been edited
+//!    recorded membership, and it has to equal the path
+//!    [`crate::work::derive_path`] computes today from the same repository and
+//!    branch. A template that has been edited
 //!    since the tree was made, a membership from another machine, a snapshot
 //!    somebody hand-edited: each of those disagrees, and each is refused with
 //!    both paths named.
@@ -41,12 +38,11 @@
 //!
 //! Only then: kill the workspace through the existing verb, then remove the tree.
 
-use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use amx_client::net::{self, Session};
 use amx_core::agent::AgentKind;
-use amx_core::{Config, Ctx, Env, WorkspaceId, Worktree};
+use amx_core::{Ctx, Env, WorkspaceId, Worktree};
 use amx_proto::control::session::{StateParams, StateReply, WorkspaceState};
 use amx_proto::control::{Method, agent, workspace};
 use amx_server::session::probe::probe;
@@ -58,14 +54,7 @@ use serde_json::Value;
 use crate::cmd::attach::client_info;
 use crate::ctx_of;
 use crate::git::{self, Repo};
-
-/// Where a worktree goes when `work.dir` says nothing.
-///
-/// A sibling of the repository, named for the repository and the branch. The
-/// double dash is a separator a branch name cannot contain a single of by
-/// accident and git will not let one contain twice in a row (`a..b` is not a
-/// branch name), so `repo--feature/x` reads back unambiguously.
-pub const DEFAULT_DIR: &str = "{repo_parent}/{repo_name}--{branch}";
+use crate::work::{derive_path, template};
 
 /// The clap id of the `branch` positional, on both `work` and `work done`.
 const BRANCH: &str = "branch";
@@ -160,8 +149,7 @@ async fn up(
     // component (`{repo_parent}/trees/{branch}`) needs the containing directory
     // to be there first.
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let create = !repo.has_branch(branch).await?;
     repo.add_worktree(&path, branch, create).await?;
@@ -181,7 +169,13 @@ async fn up(
         Method::WorkspaceCreate,
         &workspace::CreateParams {
             label: Some(branch.to_owned()),
-            focus: true,
+            // Not `true`, and not an oversight: `workspace.create`'s `focus`
+            // field has no reader in the server today — nothing between the
+            // dispatch arm and `Core` looks at it. The verb that does move focus
+            // is `workspace.switch`, called below, and asking twice through a
+            // field that does nothing would be the kind of duplicate mechanism
+            // that later reads as two answers to one question.
+            focus: false,
             worktree: Some(worktree),
         },
     )
@@ -197,11 +191,33 @@ async fn up(
             // strand the tree.
             match repo.remove_worktree(&path, true).await {
                 Ok(()) => bail!("{err:#}; the worktree was removed again"),
-                Err(undo) => bail!("{err:#}; the worktree at {} is still there ({undo:#})", path.display()),
+                Err(undo) => bail!(
+                    "{err:#}; the worktree at {} is still there ({undo:#})",
+                    path.display()
+                ),
             }
         }
     };
     println!("workspace {} ({branch})", created.short);
+
+    // Switched to, because a person who typed `amx work <branch>` is going to
+    // work on that branch now. It is also what makes `amx work done` with no
+    // branch mean the tree the caller is looking at, which is the default
+    // D-M3-10 gives it.
+    //
+    // Not fatal if it is refused: the workspace and the tree both exist, and the
+    // user can switch by hand. Saying so is the whole of the handling.
+    if let Err(err) = call::<_, workspace::SwitchReply>(
+        &mut session,
+        Method::WorkspaceSwitch,
+        &workspace::SwitchParams {
+            workspace: created.workspace,
+        },
+    )
+    .await
+    {
+        eprintln!("amx: could not switch to the new workspace: {err:#}");
+    }
 
     if let Some(kind) = kind {
         let started: agent::StartReply = call(
@@ -218,7 +234,10 @@ async fn up(
         )
         .await
         .context("start the agent in the new workspace")?;
-        println!("agent {branch} in pane {} ({:?})", started.short, started.readiness);
+        println!(
+            "agent {branch} in pane {} ({:?})",
+            started.short, started.readiness
+        );
         if started.readiness != agent::Readiness::Ready {
             // V13's rule, inherited: the pane is left running for inspection.
             eprintln!("amx: agent {branch} did not report ready; its pane is running");
@@ -352,10 +371,11 @@ fn target<'a>(
         });
     };
 
-    let mut matched = state
-        .workspaces
-        .iter()
-        .filter(|ws| ws.worktree.as_ref().is_some_and(|tree| tree.branch == branch));
+    let mut matched = state.workspaces.iter().filter(|ws| {
+        ws.worktree
+            .as_ref()
+            .is_some_and(|tree| tree.branch == branch)
+    });
     let first = matched
         .next()
         .with_context(|| format!("no workspace in this session is on branch {branch}"))?;
@@ -368,74 +388,6 @@ fn target<'a>(
         );
     }
     with_tree(first).context("the matched workspace lost its worktree block between two reads")
-}
-
-// ------------------------------------------------------------------ inputs
-
-/// The `work.dir` template: the config file's, then the built-in default.
-///
-/// Read from disk here rather than asked of the server, and leniently, through
-/// the same [`amx_core::config::reload`] every server uses — so a half-edited
-/// file costs the user the default rather than a failure. The same shape
-/// `amx update`'s channel override has.
-fn template(ctx: &Ctx) -> String {
-    std::fs::read_to_string(&ctx.config_path)
-        .ok()
-        .and_then(|text| amx_core::config::reload(&Config::default(), &text).0.work.dir)
-        .unwrap_or_else(|| DEFAULT_DIR.to_owned())
-}
-
-/// Substitute `{repo_parent}`, `{repo_name}` and `{branch}` into `template`.
-///
-/// A pure function of three strings, which is what makes it usable as the pin on
-/// the destructive path: `done` recomputes it and compares, so the answer must
-/// not depend on anything that has changed since the tree was made.
-///
-/// # Errors
-///
-/// If the repository path has no parent or no final component, if the result is
-/// not absolute, if it still holds a `{...}` token — a placeholder amx does not
-/// know is a typo in someone's config, and quietly making a directory named
-/// after it would be worse than saying so — or if any component is `..`, which
-/// no substitution of a git-legal branch name can produce and no template should
-/// need.
-pub fn derive_path(template: &str, repo: &Path, branch: &str) -> anyhow::Result<PathBuf> {
-    let parent = repo
-        .parent()
-        .with_context(|| format!("{} has no parent directory", repo.display()))?;
-    let name = repo
-        .file_name()
-        .with_context(|| format!("{} has no final path component", repo.display()))?;
-    let rendered = template
-        .replace("{repo_parent}", &parent.to_string_lossy())
-        .replace("{repo_name}", &name.to_string_lossy())
-        .replace("{branch}", branch);
-
-    if let Some(start) = rendered.find('{') {
-        let token: String = rendered[start..]
-            .chars()
-            .take_while(|c| *c != '}')
-            .chain(std::iter::once('}'))
-            .collect();
-        bail!(
-            "work.dir template {template:?} holds {token}, which amx does not substitute; \
-             the ones it does are {{repo_parent}}, {{repo_name}} and {{branch}}"
-        );
-    }
-    let path = PathBuf::from(rendered);
-    anyhow::ensure!(
-        path.is_absolute(),
-        "work.dir template {template:?} derives {}, which is not an absolute path",
-        path.display(),
-    );
-    anyhow::ensure!(
-        !path
-            .components()
-            .any(|part| part == std::path::Component::ParentDir),
-        "work.dir template {template:?} derives {}, which walks upwards",
-        path.display(),
-    );
-    Ok(path)
 }
 
 // ------------------------------------------------------------------- wire
@@ -472,41 +424,4 @@ where
     let params: Value = serde_json::to_value(params).context("encode the call")?;
     let reply = session.call(method.wire_name(), params).await?;
     serde_json::from_value(reply).context("read the reply")
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::{Path, PathBuf};
-
-    use super::{DEFAULT_DIR, derive_path};
-
-    #[test]
-    fn the_default_template_puts_the_tree_beside_the_repository() {
-        assert_eq!(
-            derive_path(DEFAULT_DIR, Path::new("/src/amx"), "feat").unwrap(),
-            PathBuf::from("/src/amx--feat"),
-        );
-        // A branch with a slash nests, which is a directory the template's own
-        // author asked for by writing `{branch}` — still under the sibling
-        // prefix, still nowhere near the repository's inside.
-        assert_eq!(
-            derive_path(DEFAULT_DIR, Path::new("/src/amx"), "feature/x").unwrap(),
-            PathBuf::from("/src/amx--feature/x"),
-        );
-    }
-
-    #[test]
-    fn a_template_amx_cannot_satisfy_is_refused_by_name() {
-        let err = derive_path("{repo_parent}/{repo}--{branch}", Path::new("/src/amx"), "feat")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("{repo}"), "{err}");
-
-        for bad in ["trees/{branch}", "{repo_parent}/../{branch}"] {
-            assert!(
-                derive_path(bad, Path::new("/src/amx"), "feat").is_err(),
-                "{bad:?} must not derive a path",
-            );
-        }
-    }
 }
