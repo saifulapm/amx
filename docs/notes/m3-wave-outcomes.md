@@ -2036,3 +2036,82 @@ platform for nothing it does not already depend on — every pane in this file r
 session still holds the pane before it reads the wait's answer, so the next time
 something prunes it the failure names the prune instead of looking like a client
 that lost track of its own question.
+
+---
+
+## Darwin: /var is not /private/var
+
+The third failure on `main` after M3, and the one the other two were hiding:
+four tests in `crates/amx/tests/work.rs` on macos-14, none of which had ever
+reached a verdict on that platform because the wait test above failed earlier in
+the same run. W12 built the worktree verbs and verified them on Linux.
+
+**The mechanism, verified rather than assumed.** `git worktree list --porcelain`
+prints every worktree's **realpath**. Confirmed on git 2.55.0 by adding a tree
+through a symlinked path and listing it through one: both the main worktree and
+the linked one come back in the target's spelling, never the caller's. So every
+path amx learns from git is resolved — `Repo::discover`'s repository root, and
+the list `amx work done` checks itself against — while `work::derive_path`
+renders a template and returns exactly the characters that were in it. On darwin
+those two are different for every temporary directory that exists: `$TMPDIR` is
+under `/var`, and `/var` is a symlink to `/private/var`.
+
+**What it cost.** Two things, and only one of them was visible in CI.
+
+The visible one is the suite: the fixture built its expectations from the rig's
+own root and compared them against paths amx had been told by git, so
+`Some("/private/var/…/wkn/repo")` met `Some("/var/…/wkn/repo")` and four tests
+failed on characters. That half is fixed in the fixture, which now hangs every
+path it builds off a canonical root — it is asserting the feature, not the
+platform, and on Linux the two spellings coincide so nothing changes.
+
+The invisible one is the product, and it is the reason this is not filed as a
+test artifact. `done`'s locks 2 and 3 compared a path from `git worktree list`
+against the recorded membership with `PathBuf` equality. The default template is
+built on `{repo_parent}`, which comes from git and is therefore already
+resolved, so the default path happens to work — but a `work.dir` whose expansion
+runs through a symlink derives the other spelling, and then the repository's own
+list does not contain it. `amx work done` refuses to remove a tree amx made
+itself, with "does not list it as one of its worktrees", and there is no way
+past it: the path is not user input, so the user cannot correct it. Reproduced
+on Linux, verbatim, by a `work.dir` pointed through a planted symlink.
+
+**What the fix guarantees.** `work::resolve` is one function with one job:
+answer with the directory rather than with the characters. Both ends use it.
+`amx work` records the resolved path in the membership block, which is the same
+spelling git registered the tree under and therefore the spelling every later
+reader joins against — `done` reads git's list, restore stats the directory, the
+report prints it to somebody who may want to `cd` there. And all three of
+`done`'s comparing locks resolve both sides before comparing, so a membership
+written before this rule, or through a re-pointed symlink, still names a tree
+`done` can take down. Resolving does not loosen any lock: two different
+directories cannot resolve to one path, so each still refuses exactly what it
+refused. `derive_path` is untouched and still a pure function of three strings,
+which is what makes lock 1 pinnable at all — resolution is a separate step
+precisely so the derivation never learns about the filesystem.
+
+**A path that is not there resolves as far as it goes.** `fs::canonicalize`
+fails on a missing path, and the case that matters most is exactly that one: the
+vanished worktree, which `done` must still derive, compare and collapse rather
+than error on. So `resolve` canonicalizes the deepest ancestor that exists and
+puts the remaining components back on, and returns the path unchanged when the
+filesystem can say nothing at all — the shape `integration::edit::store` already
+used for a settings file behind a symlink.
+
+**The server-side validation does not have this bug — it was checked.**
+`actor/core/workspace.rs`'s `check_worktree` asks whether the paths are absolute
+and whether the directory exists; `actor/core/restore.rs`'s `restore_worktree`
+stats the directory and degrades the workspace when it is gone. Neither compares
+one path against another, which is the only operation the two spellings can
+disagree about, and neither should start: the server learns no git (D-M3-10), so
+the resolving belongs on the side that talks to git.
+
+**Why Linux could not see it.** On a Linux runner `/tmp` is a real directory,
+`$TMPDIR` is under it, and the derived path and git's path are the same
+characters — every comparison in the feature is an identity, and a suite of them
+proves nothing about a machine where they are not. The regression test therefore
+does not wait for darwin: `a_work_dir_through_a_symlink_is_the_worktree_git_registered`
+plants a symlink, points `work.dir` through it, and drives `work` and `work done`
+end to end. Without the fix it fails on Linux twice over — the membership records
+the template's spelling, and `done` then refuses the tree with the sentence
+above.
