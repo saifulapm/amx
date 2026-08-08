@@ -159,6 +159,17 @@ impl RpcError {
     pub const INVALID_PARAMS: i32 = -32602;
     /// The JSON-RPC 2.0 reserved code for a handler failure.
     pub const INTERNAL_ERROR: i32 = -32603;
+    /// A long poll the session ended before it could answer.
+    ///
+    /// The first code of amx's own, and it sits in −32000..=−32099, the range
+    /// JSON-RPC 2.0 reserves for implementation-defined server errors. It is
+    /// separate from [`INTERNAL_ERROR`](Self::INTERNAL_ERROR) because it is not
+    /// a failure: a `wait` cut short because the session is handing over or
+    /// shutting down was never answered at all, and the caller's question is
+    /// still open. A client that recognises this code redials and asks again
+    /// (D-M3-7); one that does not sees an ordinary error, exactly as every
+    /// client did before the code existed.
+    pub const WAIT_ABANDONED: i32 = -32000;
 
     /// An error with a code and message and no data.
     #[must_use]

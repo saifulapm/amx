@@ -112,6 +112,23 @@ impl NetError {
     pub const fn is_transport(&self) -> bool {
         matches!(self, Self::Io(_) | Self::Closed)
     }
+
+    /// Whether this failure is a long poll the session abandoned rather than an
+    /// answer to it.
+    ///
+    /// The other half of what a reconnect turns on, and the reason it is a code
+    /// and not a message: a session handing over cancels every standing wait and
+    /// says so *in a reply*, which arrives on a socket that is about to close
+    /// but has not yet. A caller that can re-ask its question — a state
+    /// predicate — should redial and ask it, exactly as it does when the socket
+    /// dies first ([`RpcError::WAIT_ABANDONED`](amx_proto::RpcError::WAIT_ABANDONED)).
+    #[must_use]
+    pub const fn is_abandoned_wait(&self) -> bool {
+        match self {
+            Self::Call(error) => error.code == amx_proto::RpcError::WAIT_ABANDONED,
+            _ => false,
+        }
+    }
 }
 
 /// Every feature this client build offers at handshake.

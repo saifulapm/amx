@@ -1938,3 +1938,101 @@ was added is three wait helpers each sitting beside the reads they guard, and
 lifting them out would put a suite's waits in one file and the suite's model of
 the session in another. The next task to add a helper to either should expect
 to split the rig from the fake-agent plumbing rather than trim prose.
+
+---
+
+---
+
+## CI: the waits that did not keep waiting
+
+Two failures on `main` after M3 landed, one per platform. They look alike from
+the outside — a `wait` that exits 1 where it should have answered — and they
+have nothing else in common: one is the milestone's headline sentence being
+false, the other is a test that was measuring the wrong thing on a platform
+where `/bin` is not the `/bin` it was written against.
+
+### The standing wait that died at the swap (ubuntu-latest)
+
+**The mechanism.** A handoff ends every standing wait twice over: the exporter
+cancels the connection, which makes `conn/events.rs`'s long polls answer with
+`cancelled()`, and then the socket closes. Both reach the client, and which
+one *arrives first* is a race decided by how loaded the machine is. W09's
+redial keyed on the second — a transport failure — and read the first as a
+refusal: a well-formed JSON-RPC error, delivered before the close, which the
+CLI reported as `call wait: call failed: the session is shutting down; the wait
+was abandoned` and exited 1. On a twelve-core box the wait usually resolves or
+the socket usually wins, which is why
+`five_agents_ride_a_live_upgrade_and_nothing_notices` was green here and red on
+a four-core runner. Reproduced locally by giving the test the runner's shape —
+`taskset -c 0-3 handoff_exit --test-threads=3` — at **2 failures in 10 runs**.
+
+**What changed.** The cancellation got an identity a machine can check:
+`RpcError::WAIT_ABANDONED` (−32000, inside JSON-RPC 2.0's implementation-defined
+server-error range), which `cancelled()` now carries and which
+`NetError::is_abandoned_wait` recognises. `cmd/call.rs` treats it as exactly
+what it is — the session going away with the question unanswered — so it takes
+the same path a dropped connection does: redial, and re-issue if re-issuing asks
+the same question. Nothing matches on the message; the string is documentation,
+the code is the contract. This is the shape W09 named and left open above ("a
+distinct code … meaning 'the session is mid-swap and nothing happened'"), taken
+for the wait half only: the mutating verbs still refuse to be re-issued once
+their request is written, because `WAIT_ABANDONED` says a *wait* was dropped and
+says nothing about a `pane.run` that may already have typed.
+
+Additive under R-M1-8: a client that has never heard of −32000 reads an ordinary
+error and behaves exactly as it did before, and a client that knows it talking to
+an older server still sees −32603 and behaves exactly as it did before. The code
+is frozen in `tests/goldens/proto/response_wait_abandoned.json` — separately from
+the generic error envelope, because this is the one error a client *branches* on,
+and a silent change to the number would put every standing wait back where it
+started.
+
+**One correction fell out of writing the test.** The re-issued call's
+`timeout_ms` was computed at the top of the redial loop, before the backoff
+sleep, so a verb that lost four connections could outstay its own `--timeout` by
+the sum of the backoffs. It is now measured after the sleep: time spent waiting
+to redial is the caller's time too.
+
+**The regression test is not a handoff.** Driving this through a real swap would
+be staging the race again and hoping it goes the other way, which is how it
+stayed hidden. `a_wait_the_session_abandons_is_re_issued_rather_than_reported`
+puts a session socket in front of the real binary that always abandons the first
+`wait` — with the server's own `cancelled()`, so the fixture cannot drift — and
+always answers the second, on a connection that stays whole throughout. It
+asserts the verb exits 0 and satisfied, that the wait was issued exactly twice
+rather than redialled in a loop, and that the second call's timeout is strictly
+less than the first's. Without the client change it fails on every run with the
+CI symptom verbatim; with it, and with the constrained repro, `handoff_exit` is
+**10 green runs out of 10**.
+
+### The re-issued wait that found no pane (macos-14)
+
+**Not the same bug, and not a product bug.** `a_transition_that_fires_during_
+the_gap_still_returns_the_wait` fires its transition by pointing `[terminal]
+shell` at a program that exits the instant it starts, so the restored pane's
+process is over before the successor accepts anybody. It named that program
+`/bin/true`, which is a Linux path: macOS ships `true` as `/usr/bin/true` and
+has nothing at `/bin/true`, and that single fact is the one link in this chain
+this machine cannot check for itself. Given it, the restore could not spawn the
+restored pane's shell on that runner at all, and D-M1-9's
+table says what happens next: the pane is pruned, its workspace loses its only
+pane and is pruned too, and the session comes back empty. The re-issued wait then
+answered `no pane <uuid> in this session` (−32602), which is the *correct* answer
+to the question it was asked. The suspected culprit — the debounced save not
+reaching disk before the `SIGKILL` — is already answered by the harness:
+`Session1::new` waits for the snapshot to name the pane before any test touches
+the server.
+
+**Verified on Linux, not on macOS.** Pointing the same test's shell at a path
+that does not exist reproduces the macOS failure here exactly, error code and
+message included, which pins the mechanism to "the restore could not spawn it"
+rather than to anything about darwin's timing. What remains for CI to confirm is
+the premise: that `/bin/true` is the path macOS does not have.
+
+**The fix is in the test.** `exits_immediately` writes a two-line `/bin/sh`
+script into the environment and points the config at that, so the suite asks the
+platform for nothing it does not already depend on — every pane in this file runs
+`/bin/sh`. The test now also *states* its precondition: it asserts the restored
+session still holds the pane before it reads the wait's answer, so the next time
+something prunes it the failure names the prune instead of looking like a client
+that lost track of its own question.
