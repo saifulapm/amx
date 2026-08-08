@@ -39,8 +39,8 @@ pub use calls::{
     ClientCall, CoreCommand, PaneCall, PaneWiring, SessionCall, StreamCall, WorkspaceCall,
 };
 pub use pane_host::{
-    Drive, DriveError, Driven, KeyParseError, KeyStroke, PaneHost, PaneHostConfig, PaneHostError,
-    PaneProbe, SnapshotFeed,
+    Drive, DriveError, Driven, ExportError, KeyParseError, KeyStroke, PaneExport, PaneHost,
+    PaneHostConfig, PaneHostError, PaneProbe, SnapshotFeed,
 };
 pub use panes::{HistoryError, HistoryRows, PaneCommand, PaneReport};
 pub use persist::{Capture, PersistCommand, PersistHandle};

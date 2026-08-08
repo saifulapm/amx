@@ -82,6 +82,18 @@ pub enum PaneCommand {
     /// `None` when it cannot be read — the caller falls back to the pane's own
     /// cwd rather than failing the split (04 §7).
     ForegroundCwd(oneshot::Sender<Option<PathBuf>>),
+    /// Freeze the pane into the bytes and the descriptor a successor needs
+    /// (D-M3-4, D-M3-5).
+    ///
+    /// A parser-thread command like every other read of terminal state, and a
+    /// **quiesced-only** one: the answer is a duplicate of the master
+    /// descriptor, which the pty actor hands out in no other state, so a pane
+    /// that is still moving cannot be captured at all rather than being
+    /// captured wrongly.
+    ExportHandoff {
+        /// Where the frozen pane goes.
+        reply: oneshot::Sender<Result<pane_host::PaneExport, pane_host::ExportError>>,
+    },
     /// Signal the child process.
     Kill,
     /// Stop the actor, releasing the PTY and the terminal.
@@ -93,6 +105,14 @@ pub enum PaneCommand {
 /// Reports are facts about what already happened, and the pane actor has
 /// already published every one of them: what `Core` takes from a report is the
 /// fold beside it, never a second announcement (`docs/09-m3-plan.md` D-M3-2).
+///
+/// So a transition with no fold has no report. The title is the one that was:
+/// `Core` answers no question about a pane title — no state row carries one —
+/// and `Event::PaneTitle` already tells every client. W02 found the arm folding
+/// to nothing once the republish went; W04 removed the message, because a
+/// report whose only effect is a blocking send into a bounded `Core` mailbox is
+/// D-M3-2's duplicate wearing a different hat. If a title ever lands in session
+/// state, the report comes back with the fold that needs it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum PaneReport {
     /// The grid has damage at this generation.
@@ -124,8 +144,6 @@ pub enum PaneReport {
         /// The oldest row still fetchable.
         oldest_row: RowId,
     },
-    /// The application set the terminal title.
-    Title(String),
     /// The application rang the bell.
     Bell,
     /// The child process ended.

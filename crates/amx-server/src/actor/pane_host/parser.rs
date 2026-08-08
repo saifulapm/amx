@@ -46,17 +46,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc as sync_mpsc;
 use std::time::{Duration, Instant};
 
-use amx_core::platform::WinSize;
-use amx_core::{GridGeneration, RowRange};
+use amx_core::platform::{ProcessId, WinSize};
+use amx_core::{GridGeneration, PaneId, RowId, RowRange};
 use amx_vt::{Effect as VtEffect, Effects, RenderState, Snapshots, Terminal};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, warn};
 
-use super::PublishedFrame;
 use super::drive::Driver;
 use super::mailbox::{HostEvent, ParserCommand, Scratch};
 use super::probe::PaneProbe;
+use super::{ExportError, PaneExport, PublishedFrame};
 use crate::actor::{HistoryError, HistoryRows};
+use crate::handoff::manifest::{self, PaneManifest, PaneSeed};
 use crate::history::{CHUNK_ROWS, HistoryChunks, HistoryEvent, HistoryTracker};
 use crate::pty::PtyActorHandle;
 
@@ -66,8 +67,19 @@ use crate::pty::PtyActorHandle;
 /// timeout is: every path that makes the terminal dirty sends a command.
 const IDLE_TICK: Duration = Duration::from_millis(250);
 
+/// How many line feeds one adoption will spend pushing replayed rows off the
+/// top of the screen.
+///
+/// The cursor starts somewhere inside the grid and every row of it may hold
+/// replayed text, so two grid heights is the ceiling and the loop below stops
+/// the moment the scrollback has swallowed what was carried. A bound rather
+/// than a trust: a terminal that refused to scroll would otherwise spin here.
+const ADOPT_FEED_LIMIT: u32 = 2;
+
 /// The parser thread's own state. Nothing here is shared.
 pub(super) struct Parser {
+    pane: PaneId,
+    child: ProcessId,
     terminal: Terminal,
     render: RenderState,
     snapshots: Snapshots,
@@ -114,8 +126,14 @@ struct Transfer {
 
 impl Parser {
     /// Assemble the parser. The terminal moves onto its thread with it.
+    ///
+    /// A pane rebuilt from a manifest is seeded here, before the thread is even
+    /// spawned, so the first frame anyone can publish already carries the
+    /// screen the exporter froze rather than a blank one.
     pub(super) fn new(parts: ParserParts) -> Self {
         let ParserParts {
+            pane,
+            child,
             terminal,
             render,
             snapshots,
@@ -127,8 +145,11 @@ impl Parser {
             frame_interval,
             size,
             generation,
+            seed,
         } = parts;
-        Self {
+        let mut parser = Self {
+            pane,
+            child,
             terminal,
             render,
             snapshots,
@@ -144,7 +165,66 @@ impl Parser {
             found: Vec::new(),
             transfers: VecDeque::new(),
             driver: Driver::default(),
+        };
+        if let Some(seed) = seed {
+            parser.adopt(&seed);
         }
+        parser
+    }
+
+    /// Rebuild an inherited pane from its manifest entry: rows, grid, modes.
+    ///
+    /// The order is D-M3-4's, and the step between the first two is the one
+    /// that cannot be expressed as bytes. Replaying the rows leaves the newest
+    /// of them sitting on the screen, where the grid paint is about to
+    /// overwrite them — so they are fed off the top first, until the scrollback
+    /// holds everything the manifest carried and the screen is blank. That
+    /// blank screen is also what lets the paint skip cursor-addressed columns
+    /// it has nothing to say about; `handoff::grid` has why clearing one
+    /// instead would be worse.
+    ///
+    /// The floor is *derived*, not taken from the manifest: what a resumed
+    /// tracker must get right is the head, because that is where the next
+    /// committed row id comes from, and the head is the floor plus whatever
+    /// actually landed in this terminal's scrollback. Rows the replay could not
+    /// fit are therefore below the floor — evicted, in the ordinary sense the
+    /// eviction floor already means, never renumbered.
+    fn adopt(&mut self, seed: &PaneSeed) {
+        self.write_quietly(&seed.rows);
+        let mut fed = 0;
+        while self.scrollback() < seed.carried && fed < ADOPT_FEED_LIMIT * u32::from(seed.size.rows)
+        {
+            self.write_quietly(b"\n");
+            fed += 1;
+        }
+        let landed = self.scrollback().min(seed.carried);
+        let floor = RowId::from_raw(seed.head.get().saturating_sub(landed));
+        self.history = HistoryTracker::resume(seed.size.cols, seed.size.rows, seed.head, floor);
+        self.write_quietly(&seed.screen);
+        self.write_quietly(&seed.modes);
+        // Publish rather than wait for a frame boundary: an inherited pane may
+        // produce no output at all for minutes, and the first reader must not
+        // see an empty grid until it does. `track_history` is deliberately not
+        // called — the tracker's adopting first look belongs to the first
+        // ordinary observation, with the terminal already whole.
+        if let Err(err) = self.frame() {
+            warn!(error = %err, "inherited pane frame could not be published");
+        }
+    }
+
+    /// Rows of scrollback the terminal is holding, or zero if it will not say.
+    fn scrollback(&self) -> u64 {
+        self.terminal.scrollback_rows().unwrap_or(0) as u64
+    }
+
+    /// Write bytes that came from a manifest, answering nobody.
+    ///
+    /// The same rule [`Parser::seed`] follows: a reply belongs to the program
+    /// that provoked it, and these bytes were provoked by an upgrade.
+    fn write_quietly(&mut self, bytes: &[u8]) {
+        self.effects.clear();
+        self.terminal.write(bytes, &mut self.effects);
+        self.effects.clear();
     }
 
     /// Serve commands until told to stop or until every sender is gone.
@@ -221,6 +301,10 @@ impl Parser {
                 }
                 false
             }
+            ParserCommand::Export(reply) => {
+                let _ = reply.send(self.export());
+                false
+            }
             ParserCommand::Drive { what, reply } => {
                 // The write is queued from this thread, which is what orders it
                 // behind the replies of every parse already served (04 §3), and
@@ -257,9 +341,7 @@ impl Parser {
     /// yesterday must not ring today. Everything else about them is ordinary
     /// output, so the frame this dirties is published like any other.
     fn seed(&mut self, bytes: &[u8]) -> bool {
-        self.effects.clear();
-        self.terminal.write(bytes, &mut self.effects);
-        self.effects.clear();
+        self.write_quietly(bytes);
         true
     }
 
@@ -320,6 +402,31 @@ impl Parser {
         // invalidates nothing (04 §3) — is the tracker's to work out from the
         // terminal itself, at the next frame boundary.
         true
+    }
+
+    /// Freeze the pane: a manifest entry and a duplicate of the master.
+    ///
+    /// The descriptor is asked for **first**, and that ordering is the whole of
+    /// the quiesced-only rule (D-M3-3): the pty actor hands one out in no other
+    /// state, so a running pane is refused before a single row is read rather
+    /// than after a capture that would already be stale. Nothing else here
+    /// knows what state the terminal is in, and nothing else should — the actor
+    /// that owns the descriptor is the one that owns the answer.
+    fn export(&mut self) -> Result<PaneExport, ExportError> {
+        let master = self.pty.dup_fd().map_err(ExportError::from)?;
+        // A frame first, so the capture describes what the terminal holds now
+        // rather than what it held at the last coalescing boundary.
+        self.publish();
+        let snapshot = self.snapshots.latest();
+        let manifest = PaneManifest::capture(manifest::Capture {
+            pane: self.pane,
+            child: self.child,
+            generation: self.current_generation(),
+            terminal: &self.terminal,
+            tracker: &mut self.history,
+            snapshot: &snapshot,
+        })?;
+        Ok(PaneExport { manifest, master })
     }
 
     /// Copy the damaged rows into the back buffer and publish it.
@@ -407,6 +514,8 @@ impl Parser {
 /// Everything [`Parser::new`] needs, so the constructor stays inside the
 /// argument budget.
 pub(super) struct ParserParts {
+    pub(super) pane: PaneId,
+    pub(super) child: ProcessId,
     pub(super) terminal: Terminal,
     pub(super) render: RenderState,
     pub(super) snapshots: Snapshots,
@@ -418,4 +527,6 @@ pub(super) struct ParserParts {
     pub(super) frame_interval: Duration,
     pub(super) size: WinSize,
     pub(super) generation: Arc<AtomicU64>,
+    /// What an inherited pane is rebuilt from, absent for a fresh one.
+    pub(super) seed: Option<PaneSeed>,
 }

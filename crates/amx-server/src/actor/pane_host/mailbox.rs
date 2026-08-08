@@ -73,6 +73,13 @@ pub(super) enum ParserCommand {
         /// Where the outcome goes.
         reply: oneshot::Sender<Result<Driven, DriveError>>,
     },
+    /// Freeze the pane for a live upgrade (D-M3-4).
+    ///
+    /// On this queue because everything it reads — the published grid, the
+    /// modes, the title, the scrollback — is state only this thread may touch,
+    /// and because being *behind* every parse already queued is what makes the
+    /// capture describe a terminal that has stopped moving.
+    Export(oneshot::Sender<Result<super::PaneExport, super::ExportError>>),
     /// Stop the thread.
     Stop,
 }

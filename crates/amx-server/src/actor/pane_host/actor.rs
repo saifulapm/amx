@@ -25,9 +25,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use super::PublishedFrame;
 use super::drive::{Drive, DriveError, Driven};
 use super::mailbox::{HostEvent, ParserCommand};
+use super::{ExportError, PaneExport, PublishedFrame};
 use crate::actor::{CoreCommand, CoreHandle, HistoryError, HistoryRows, PaneCommand, PaneReport};
 use crate::pty::{ChildExit, PtyActorHandle};
 
@@ -159,6 +159,7 @@ impl Actor {
             PaneCommand::HistoryRange { range, reply } => Step::Effect(self.history(range, reply)),
             PaneCommand::Drive { what, reply } => Step::Effect(self.drive(what, reply)),
             PaneCommand::ForegroundCwd(reply) => Step::Effect(self.foreground_cwd(reply).await),
+            PaneCommand::ExportHandoff { reply } => Step::Effect(self.export(reply)),
             PaneCommand::Kill => Step::Effect(self.kill().await),
             PaneCommand::Shutdown => Step::Stop,
         }
@@ -227,6 +228,20 @@ impl Actor {
         Effect::Nothing
     }
 
+    /// Freezing the pane for a handoff is a parser-thread read like the others
+    /// (D-M3-4): the grid, the modes and the scrollback all live there.
+    ///
+    /// Forwarded with the caller's reply channel, so the parser answers the
+    /// orchestrator directly and this actor never waits on a capture.
+    fn export(&mut self, reply: oneshot::Sender<Result<PaneExport, ExportError>>) -> Effect {
+        if let Err(err) = self.parser.send(ParserCommand::Export(reply))
+            && let ParserCommand::Export(reply) = err.0
+        {
+            let _ = reply.send(Err(ExportError::Gone));
+        }
+        Effect::Nothing
+    }
+
     /// The foreground process's cwd, or `None` when it cannot be read.
     ///
     /// Both halves are blocking syscalls on another thread's terminal, so they
@@ -262,12 +277,14 @@ impl Actor {
 
     async fn event(&mut self, event: HostEvent) -> Effect {
         match event {
+            // Published and not reported: `Core` folds nothing from a title, so
+            // the report would be a blocking send into a bounded mailbox for a
+            // fact the bus already carries. See [`PaneReport`].
             HostEvent::Title(title) => {
                 self.bus.publish(Event::PaneTitle {
                     pane: self.pane,
-                    title: title.clone(),
+                    title,
                 });
-                self.report(PaneReport::Title(title)).await;
             }
             HostEvent::Bell => self.report(PaneReport::Bell).await,
             HostEvent::Resized {
