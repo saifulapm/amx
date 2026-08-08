@@ -31,6 +31,7 @@
 //! import half is an alternate session assembly and lives in `session/`, which
 //! is **W07**'s.
 
+pub mod export;
 pub mod fd;
 pub mod grid;
 pub mod manifest;

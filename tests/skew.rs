@@ -213,11 +213,12 @@ async fn skew_calls_every_m2_row_and_none_is_method_not_found() {
 /// the table routes `session.handoff`, the server owns it, and asking for one
 /// leaves the session exactly as it was.
 ///
-/// While W06 is unbuilt the answer is the seam code, which is the *permitted*
-/// answer for a tabled row without wiring and is asserted here as such:
-/// `METHOD_NOT_FOUND` would tell a client to stop offering the method that
-/// `amx update apply` exists to find. `session_handoff_answers_with_behavior`
-/// below is the other side of that ledger.
+/// W03 wrote this against the seam code, which was the *permitted* answer for a
+/// tabled row without wiring: `METHOD_NOT_FOUND` would tell a client to stop
+/// offering the method that `amx update apply` exists to find. **W06 wired the
+/// row**, so the answer is now behavior — a staged binary that does not exist
+/// is refused, by name, with the session untouched (D-M3-6 point 2), and the
+/// seam code has become forbidden here the way it already was for M2's twelve.
 #[tokio::test]
 async fn method_golden_and_skew_arm_cover_session_handoff() {
     let env = Env::new("skew-handoff");
@@ -230,27 +231,36 @@ async fn method_golden_and_skew_arm_cover_session_handoff() {
     let reply = wire
         .request(method.wire_name(), sample_params(method))
         .await;
-    let err = error_of(&reply);
-    assert_ne!(
-        err.code,
-        RpcError::METHOD_NOT_FOUND,
-        "the server disowned its own method: {err:?}",
-    );
+    if let amx_proto::RpcOutcome::Error(err) = &reply.outcome {
+        assert_ne!(
+            err.code,
+            RpcError::METHOD_NOT_FOUND,
+            "the server disowned its own method: {err:?}",
+        );
+        panic!(
+            "a staged binary this session may not be handed to is a reply, not \
+             a failed call: {err:?}"
+        );
+    }
+    let refused = result_of(&reply);
     assert_eq!(
-        err.code, RETIRED_SEAM,
-        "while W06 is unbuilt this row answers at the seam and says who owes \
-         it; anything else means the handler landed without this row being \
-         moved to the answered list: {err:?}",
+        refused["accepted"],
+        json!(false),
+        "the sample names a binary that does not exist: {refused}",
     );
+    let reason = refused["reason"]
+        .as_str()
+        .expect("a refusal carries its reason");
     assert!(
-        err.message.contains("W06"),
-        "a seam names the task that owes it: {err:?}",
+        reason.contains("amx-from-a-version-that-was-never-built"),
+        "a refusal names the binary it refused: {reason}",
     );
+    assert!(refused["seq"].is_u64());
 
     // And the session it was asked to leave is still the session it was.
     let alive = wire.request("ping", json!({})).await;
     assert!(result_of(&alive)["seq"].is_u64());
-    assert!(server.alive(), "asking for a handoff started nothing");
+    assert!(server.alive(), "a refused handoff started nothing");
 
     drop(server);
 }

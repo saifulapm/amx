@@ -30,6 +30,7 @@ use crate::actor::gateway::{Gateway, GatewayError, GatewayReport};
 use crate::actor::persist::{PERSIST_MAILBOX, Persist};
 use crate::actor::{AGENT_MAILBOX, AgentHandle, CoreHandle, PersistHandle};
 use crate::config_rt::ConfigRuntime;
+use crate::handoff::export::{self, DrainWedged, JOB_MAILBOX, POST_COMMIT_DRAIN};
 use crate::platform::watch::watch_config;
 use crate::runtime::{Runtime, ShutdownReport};
 
@@ -62,6 +63,15 @@ pub enum ServeError {
     /// is already running, which is not a failure so much as an answer.
     #[error(transparent)]
     Gateway(#[from] GatewayError),
+    /// A handoff committed and then this process would not go away.
+    ///
+    /// W01's watchdog firing (`docs/notes/m3-shutdown-wedge.md` §6). Not an
+    /// error about the session — the successor owns it and is serving — but an
+    /// error about *this* process, which is why it is one at all: the exporter
+    /// exits non-zero with the drain census in the message rather than sitting
+    /// there holding descriptors of terminals it no longer serves.
+    #[error(transparent)]
+    DrainWedged(#[from] DrainWedged),
 }
 
 /// What one server run did.
@@ -149,6 +159,22 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
         let _persist = persist.run(persist_rx, events).await;
     });
 
+    // The export orchestrator, and the two capabilities it needs that nothing
+    // else may have: a way to retire the gateway (§3 step 11) and a queue
+    // `Core` puts a frozen session on. It is spawned as a named task like every
+    // other actor, so a drain waiting on a handoff says `handoff` rather than
+    // going quiet — which is the whole reason W01 taught the runtime to name
+    // things. The ledger is taken before `Core` moves into its task, because
+    // the post-commit drain below is bounded only when it says ownership moved.
+    let (jobs_tx, jobs_rx) = mpsc::channel(JOB_MAILBOX);
+    core.set_handoff(jobs_tx);
+    let handoff = core.handoff_ledger();
+    let gateway_control = gateway.control();
+    runtime.spawn(
+        "handoff",
+        export::orchestrate(jobs_rx, gateway_control, ctx.cancel.clone()),
+    );
+
     runtime.spawn("core", async move {
         // Output rides two paths out of a folded batch. Grid traffic flows
         // from each pane's published frames through the per-client grid
@@ -170,7 +196,17 @@ pub async fn serve(ctx: Ctx, stop: StopOn) -> Result<ServeReport, ServeError> {
     }
 
     ctx.cancel.cancelled().await;
-    let shutdown = runtime.shutdown().await;
+    // Ordinarily unbounded, and deliberately so (04 §2): bounding every drain
+    // would turn a wedge into a silent leak of whatever the unjoined task owns.
+    // After a handoff commits that trade reverses — this process owns nothing
+    // the session needs any more — so the drain gets a deadline, the census,
+    // and a non-zero exit instead of a silent park. See `handoff::export::drain`
+    // and `docs/notes/m3-shutdown-wedge.md` §6.
+    let shutdown = if handoff.fenced() {
+        export::bounded_drain(runtime, &ctx, POST_COMMIT_DRAIN).await?
+    } else {
+        runtime.shutdown().await
+    };
     let gateway = report_rx.await.unwrap_or_default();
     Ok(ServeReport { gateway, shutdown })
 }

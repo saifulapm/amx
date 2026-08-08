@@ -417,9 +417,10 @@ async fn cancelling_a_session_joins_every_task_and_removes_the_socket() {
     let report = session.stop().await;
     assert!(report.clean(), "{report:?}");
     assert_eq!(
-        report.shutdown.joined, 5,
-        "the core, the agent hub, the gateway, persistence and the config \
-         watcher are the runtime's tasks when signals are off"
+        report.shutdown.joined, 6,
+        "the core, the agent hub, the gateway, persistence, the config watcher \
+         and the export orchestrator are the runtime's tasks when signals are \
+         off"
     );
     // The readiness probe is itself a connection, so the count is "at least the
     // client"; what matters is that every accept was joined, which `clean` is.
