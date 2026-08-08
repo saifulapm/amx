@@ -154,17 +154,24 @@ shell = 7
 
 [update]
 channel = 7
+
+[work]
+dir = 7
 ";
     let (next, diagnostics) = reload(&running, text);
 
-    assert_eq!(next, running, "both sections were rejected, both were kept");
+    assert_eq!(
+        next, running,
+        "every section was rejected, every one was kept"
+    );
     let named: Vec<Option<&'static str>> = diagnostics.iter().map(|d| d.section).collect();
     assert_eq!(
         named,
         vec![
             Some(PERSIST_SECTION),
             Some(TERMINAL_SECTION),
-            Some(UPDATE_SECTION)
+            Some(UPDATE_SECTION),
+            Some(WORK_SECTION)
         ]
     );
     for diagnostic in &diagnostics {
