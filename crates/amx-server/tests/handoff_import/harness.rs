@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::support::{self, Client, TempDir, connect_to, ctx_under};
-use amx_core::agent::{AgentKind, AgentSnapshot, AgentState, StatusCause};
+use amx_core::agent::{AgentKind, AgentSnapshot, AgentState, HookToken, StatusCause};
 use amx_core::platform::{ProcessId, Pty, PtyCommand, WinSize};
 use amx_core::{Bus, Ctx, Delivery, Event, Layout, PaneId, Seq, SessionId, ShortNumber};
 use amx_proto::rpc::Notification;
@@ -290,6 +290,14 @@ impl Frozen {
 
     pub fn pane(&self) -> PaneId {
         self.entry.pane
+    }
+
+    /// Say which token this pane's child carries in its environment.
+    ///
+    /// `Core` fills this in as it assembles the manifest; here the exporter is
+    /// a script, so the test says it.
+    pub fn carry_token(&mut self, token: HookToken) {
+        self.entry.token = Some(token);
     }
 
     /// Type at the child's terminal, from outside both servers.

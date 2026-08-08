@@ -50,7 +50,7 @@
 //! so a client that cached them keeps them and simply cannot refetch, which is
 //! the M0 invalidation contract doing exactly its job.
 
-use amx_core::agent::AgentSnapshot;
+use amx_core::agent::{AgentSnapshot, HookToken};
 use amx_core::platform::{ProcessId, WinSize};
 use amx_core::{GridGeneration, PaneId, RowId, RowRange, Seq, SessionId};
 use amx_vt::{Mode, Screen, Snapshot as GridSnapshot, Terminal};
@@ -348,6 +348,28 @@ pub struct PaneManifest {
     pub cursor: String,
     /// The scrollback, and what the budget dropped.
     pub history: PaneHistory,
+    /// The hook token this pane's child carries in its environment.
+    ///
+    /// A handoff keeps the *same* children, and a child's `AMX_HOOK_TOKEN` was
+    /// written into its environment at spawn and cannot be changed afterwards —
+    /// so a successor that minted a fresh one would drop every hook report the
+    /// inherited agent sends (D-M2-4's misattribution guard), leaving its status
+    /// on tier 2 alone across the upgrade. The token therefore crosses.
+    ///
+    /// It rides *here*, on the manifest, rather than on the persist
+    /// `PaneSnapshot` beside the argv it belongs with: the snapshot is written
+    /// to `session.json`, and a cold restore respawns the child with a freshly
+    /// minted token — so a persisted one would be a dead secret on disk that
+    /// nothing ever reads. This one crosses a 0600 socket to a process that
+    /// needs it and is never written anywhere.
+    ///
+    /// Optional because [`PaneManifest::capture`] runs on the parser thread,
+    /// which does not know it; `Core` fills it in from its own state as the
+    /// manifest is assembled. `None` is a pane that never carried a token
+    /// (never spawned through `Core::spawn`) or an entry from an exporter old
+    /// enough not to have had this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<HookToken>,
 }
 
 impl PaneManifest {
@@ -386,6 +408,9 @@ impl PaneManifest {
             grid: String::from_utf8_lossy(&grid_bytes).into_owned(),
             cursor: String::from_utf8_lossy(&cursor_bytes).into_owned(),
             history: capture_history(terminal, tracker)?,
+            // Filled by `Core` on the way past: the token lives in session
+            // state, and this thread owns a terminal rather than a session.
+            token: None,
         })
     }
 

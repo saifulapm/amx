@@ -222,7 +222,16 @@ impl Core {
         for pane in &frozen {
             match self.capture_pane(pane.pane).await {
                 Ok(export) => {
-                    panes.push(export.manifest);
+                    let mut entry = export.manifest;
+                    // The one field the parser thread cannot fill: the token
+                    // the child's environment carries lives in session state,
+                    // and it has to cross or the successor drops every hook
+                    // report from an agent that never restarted.
+                    entry.token = self
+                        .state
+                        .pane(pane.pane)
+                        .and_then(|state| state.hook_token().cloned());
+                    panes.push(entry);
                     masters.push(export.master);
                 }
                 Err(reason) => {

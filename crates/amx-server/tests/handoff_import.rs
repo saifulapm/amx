@@ -24,8 +24,9 @@ mod support;
 use std::os::fd::AsFd;
 use std::time::Duration;
 
-use amx_core::agent::AgentState;
+use amx_core::agent::{AgentKind, AgentState, HookToken, RefSource};
 use amx_core::{Delivery, Event, SessionId};
+use amx_proto::control::agent as proto;
 use amx_server::handoff::protocol::{Ending, HandoffError, HandoffListener, Timeouts};
 use harness::{
     Frozen, Plan, Rig, SIZE, SLEEPER, Script, Watcher, agent, brisk, document, manifest, read_pane,
@@ -430,4 +431,75 @@ async fn restored_agents_report_their_manifest_status_without_a_flap() {
     successor.stop().await;
     first.kill_child();
     second.kill_child();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_inherited_agents_hook_reports_are_still_attributed_to_it() {
+    let rig = Rig::new("tokn");
+    let mut pane = Frozen::new(SLEEPER).await;
+    // The token this pane's child was spawned with. It lives in the child's
+    // environment and cannot be changed there, so a successor that minted a
+    // fresh one would drop every report the agent sends until it restarts.
+    let carried = HookToken::new("carried-across-the-swap");
+    pane.carry_token(carried.clone());
+    let agents = vec![agent(pane.pane(), AgentState::Idle, None)];
+    let carried_manifest = manifest(SessionId::new_v4(), 500, &[&pane], agents);
+    let listener = HandoffListener::bind(rig.handoff.clone()).expect("bind the handoff socket");
+    let exporter = spawn_exporter(Script {
+        listener,
+        token: rig.token.clone(),
+        timeouts: Timeouts::DEFAULT,
+        manifest: document(&carried_manifest),
+        masters: vec![pane.master.try_clone().expect("a descriptor to hand over")],
+        held: None,
+        plan: Plan::Commit,
+    });
+    let successor = rig.start_import(Timeouts::DEFAULT);
+    let mut client = successor.client().await;
+    let _ = client.hello(amx_proto::version::window()).await;
+    exporter
+        .await
+        .expect("the exporter thread ended")
+        .expect("the exporter walked every stage");
+
+    let claude = AgentKind::new("claude").expect("a valid agent kind");
+    let report = |token: &HookToken| {
+        let params = proto::ReportParams {
+            pane: pane.pane(),
+            token: token.clone(),
+            agent: claude.clone(),
+            source: RefSource::for_agent(&claude),
+            event: proto::HookEvent::PermissionRequest,
+            seq: 1,
+            scope: proto::ReportScope::Parent,
+            session_id: None,
+            transcript_path: None,
+            start_source: None,
+            tool: None,
+            notification: None,
+        };
+        serde_json::to_value(params).expect("the report serializes")
+    };
+
+    let accepted = client.request(7, "agent.report", report(&carried)).await;
+    assert_eq!(
+        support::result_of(&accepted)["accepted"],
+        json!(true),
+        "the successor knows the token the inherited child carries: {accepted:?}",
+    );
+
+    // The guard is still a guard: a report from somewhere else is still
+    // dropped, so what crossed is this pane's token and not a hole.
+    let stranger = client
+        .request(8, "agent.report", report(&HookToken::new("stranger")))
+        .await;
+    assert_eq!(
+        support::result_of(&stranger)["accepted"],
+        json!(false),
+        "a foreign token is still nobody's hook: {stranger:?}",
+    );
+
+    pane.retire().await;
+    successor.stop().await;
+    pane.kill_child();
 }
