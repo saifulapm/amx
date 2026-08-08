@@ -42,6 +42,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::event::Seq;
+use crate::id::WorkspaceId;
 
 pub use refs::{RefError, RefKind, RefSource, SessionRef, StartSource};
 pub use status::{Activity, AgentState, CoverageClass, ExitAuthority, StatusCause};
@@ -189,6 +190,42 @@ impl std::fmt::Debug for HookToken {
     }
 }
 
+/// Milliseconds since the Unix epoch: how every wall-clock instant is spelled.
+///
+/// Absolute, never an age, and `docs/11-m4-plan.md` D-M4-4 is why. The bus
+/// sequence a status transition already carries
+/// ([`AgentSnapshot::transition_seq`]) cannot be rendered as `4m`, so a wall
+/// clock has to travel — and an age computed against the *reader's* clock is
+/// wrong by the skew between two machines, which a remote attach is by
+/// definition. So the instant travels absolute and every reply that carries one
+/// carries the server's own `now` beside it: a surface renders `now − since`
+/// from inside one reply and never against a clock of its own.
+pub type EpochMillis = u64;
+
+/// A workspace, named — the half of an agent's identity that is not the pane.
+///
+/// `docs/10-attention-surfaces.md` §D15 requires the attention events and every
+/// `agent.list` row to say which project an agent belongs to, so a notifier can
+/// render `api/backend blocked (permission_dialog)` with no follow-up query.
+/// The id is what a consumer acts on; the label is what a person reads, and it
+/// is optional because a workspace need not have one.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct AgentWorkspace {
+    /// The workspace.
+    pub id: WorkspaceId,
+    /// Its label, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl AgentWorkspace {
+    /// A workspace whose label is not known here.
+    #[must_use]
+    pub const fn unnamed(id: WorkspaceId) -> Self {
+        Self { id, name: None }
+    }
+}
+
 /// One pane's agent status, as the hub holds it and the wire reports it.
 ///
 /// This is the value in `AgentHub`'s `StatusView` (`docs/08-m2-plan.md` §3), the
@@ -237,6 +274,37 @@ pub struct AgentSnapshot {
     /// one process, so a ref captured before it is stale.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_ref: Option<SessionRef>,
+    /// The name of whatever last moved this pane into
+    /// [`state`](Self::state) — the detector's own identifier, never a
+    /// summary of it.
+    ///
+    /// `docs/11-m4-plan.md` D-M4-3 chose a detector's name over a second
+    /// vocabulary, because the detectors already name themselves and a
+    /// hand-maintained enum beside the manifests is a table that goes stale the
+    /// first time a rule is added. So this carries the winning manifest rule's
+    /// name for a screen-owned state (`permission_dialog`, `prompt_box_idle`,
+    /// `footer_interrupt_hint_working`), the hook event's name for a
+    /// hook-asserted entry (`PermissionRequest`), and nothing at all for a
+    /// tier-3 [`Busy`](AgentState::Busy)/[`Quiet`](AgentState::Quiet), which no
+    /// named rule produced.
+    ///
+    /// Additive and optional under the R-M1-8 terms every field below the label
+    /// on the wire follows: absent when nothing named the transition, so a peer
+    /// built before M4 reads exactly the bytes it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// When this pane entered [`state`](Self::state), on a wall clock.
+    ///
+    /// The renderable half of [`transition_seq`](Self::transition_seq), which
+    /// is a bus sequence and cannot be shown to a person as `4m`. D-M4-4 makes
+    /// it absolute — see [`EpochMillis`] for why an age would have been wrong
+    /// across a remote attach.
+    ///
+    /// `None` is honest rather than convenient: a pane whose status was
+    /// re-derived rather than observed entering has no entry edge to report,
+    /// and a zero would read as 1970.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<EpochMillis>,
 }
 
 impl AgentSnapshot {
@@ -250,6 +318,8 @@ impl AgentSnapshot {
             transition_seq,
             attention: None,
             session_ref: None,
+            reason: None,
+            since: None,
         }
     }
 }

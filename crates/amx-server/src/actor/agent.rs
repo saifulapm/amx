@@ -328,6 +328,8 @@ pub struct StatusUpdate {
 ///             transition_seq: bus.head() + 1,
 ///             attention: None,
 ///             session_ref: None,
+///             reason: None,
+///             since: None,
 ///         }),
 ///         attention: Vec::new(),
 ///         events: vec![Event::AgentStatus {

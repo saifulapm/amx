@@ -242,6 +242,11 @@ impl Tracked {
             // shifts everyone behind it must not leave a stale number here.
             attention: None,
             session_ref: self.session_ref.clone(),
+            // X06 retains the name of whatever last moved this pane and stamps
+            // the entry edge. X02 froze the fields; until then a consumer reads
+            // the absences that mean "this build did not say" (D-M4-3/4).
+            reason: None,
+            since: None,
         }
     }
 

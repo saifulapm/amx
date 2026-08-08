@@ -97,16 +97,33 @@ impl AgentHub {
                     pane,
                     kind: kind.clone(),
                 }),
+                // The identity block is X06's: this hub keeps no names mirror
+                // yet, and a label it has not seen is absent rather than
+                // invented (`docs/11-m4-plan.md` D-M4-6). X02 froze the shape
+                // and left the fields empty, which is exactly what a consumer
+                // built before M4 reads.
                 Effect::Enqueue => {
                     self.attention.retain(|queued| *queued != pane);
                     self.attention.push(pane);
-                    events.push(Event::AttentionEnqueued { pane });
+                    events.push(Event::AttentionEnqueued {
+                        pane,
+                        workspace: None,
+                        name: None,
+                        reason: None,
+                        since: None,
+                    });
                 }
                 Effect::Dequeue => {
                     let before = self.attention.len();
                     self.attention.retain(|queued| *queued != pane);
                     if self.attention.len() != before {
-                        events.push(Event::AttentionDequeued { pane });
+                        events.push(Event::AttentionDequeued {
+                            pane,
+                            workspace: None,
+                            name: None,
+                            reason: None,
+                            since: None,
+                        });
                     }
                 }
                 Effect::Ref { .. } | Effect::Arm { .. } | Effect::Disarm { .. } => {}

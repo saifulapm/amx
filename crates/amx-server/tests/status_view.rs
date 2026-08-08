@@ -33,6 +33,34 @@ fn blocked(transition_seq: Seq) -> AgentSnapshot {
         transition_seq,
         attention: None,
         session_ref: None,
+        reason: None,
+        since: None,
+    }
+}
+
+/// One attention event, with the identity block D15 added and X06 fills.
+///
+/// A helper rather than four literals: this suite is about ordering, not about
+/// names, and the fields it does not care about should not be four lines of
+/// noise at every publish.
+fn enqueued(pane: PaneId) -> Event {
+    Event::AttentionEnqueued {
+        pane,
+        workspace: None,
+        name: None,
+        reason: None,
+        since: None,
+    }
+}
+
+/// The other half of [`enqueued`].
+fn dequeued(pane: PaneId) -> Event {
+    Event::AttentionDequeued {
+        pane,
+        workspace: None,
+        name: None,
+        reason: None,
+        since: None,
     }
 }
 
@@ -77,7 +105,7 @@ async fn status_view_orders_write_before_event_publish() {
                     to: AgentState::Blocked,
                     cause: StatusCause::Hook,
                 },
-                Event::AttentionEnqueued { pane },
+                enqueued(pane),
             ],
         },
     );
@@ -135,7 +163,7 @@ async fn queue_position_is_derived_from_the_queue_not_stored_on_the_status() {
                 pane,
                 status: Some(blocked(bus.head())),
                 attention: queue,
-                events: vec![Event::AttentionEnqueued { pane }],
+                events: vec![enqueued(pane)],
             },
         );
     }
@@ -157,7 +185,7 @@ async fn queue_position_is_derived_from_the_queue_not_stored_on_the_status() {
                 ..blocked(bus.head())
             }),
             attention: vec![second],
-            events: vec![Event::AttentionDequeued { pane: first }],
+            events: vec![dequeued(first)],
         },
     );
     assert_eq!(view.get(first).and_then(|s| s.attention), None);
@@ -176,7 +204,7 @@ async fn retiring_a_pane_removes_it_from_the_view_and_the_queue() {
             pane,
             status: Some(blocked(bus.head())),
             attention: vec![pane],
-            events: vec![Event::AttentionEnqueued { pane }],
+            events: vec![enqueued(pane)],
         },
     );
 
@@ -189,7 +217,7 @@ async fn retiring_a_pane_removes_it_from_the_view_and_the_queue() {
             pane,
             status: None,
             attention: Vec::new(),
-            events: vec![Event::AttentionDequeued { pane }],
+            events: vec![dequeued(pane)],
         },
     );
     assert!(view.get(pane).is_none());

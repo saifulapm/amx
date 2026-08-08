@@ -25,7 +25,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use amx_core::agent::{AgentKind, AgentState, StatusCause};
+use amx_core::agent::{AgentKind, AgentState, AgentWorkspace, EpochMillis, StatusCause};
 use amx_core::event::{Envelope, Event, Seq};
 use amx_core::{ClientId, GridGeneration, InvalidationCause, PaneId, RowId, RowRange, WorkspaceId};
 
@@ -35,6 +35,13 @@ use amx_core::{ClientId, GridGeneration, InvalidationCause, PaneId, RowId, RowRa
 /// and a per-event counter would make an inserted variant rewrite every
 /// golden after it.
 const SEQ: Seq = 41;
+
+/// The wall-clock instant every golden that carries one carries.
+///
+/// One value for the same reason [`SEQ`] is one value, and a real one rather
+/// than a round number: it is 2025-08-08T11:26:40Z, so a reader of the golden
+/// can tell at a glance that the units are milliseconds and not seconds.
+const SINCE: EpochMillis = 1_754_650_000_000;
 
 fn goldens_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/goldens/event")
@@ -139,8 +146,32 @@ fn every_event() -> Vec<Event> {
             pane,
             kind: AgentKind::new("claude").unwrap(),
         },
-        Event::AttentionEnqueued { pane },
-        Event::AttentionDequeued { pane },
+        // M4's identity block, frozen with values rather than as absences: a
+        // shape nothing ever populates is a shape nobody has read, and the
+        // whole point of the block is that a notifier can render a line from
+        // the event alone (D15). The absent shape — a hub that has seen no
+        // label — is asserted in `contracts.rs`, where both directions of the
+        // additive rule belong.
+        Event::AttentionEnqueued {
+            pane,
+            workspace: Some(AgentWorkspace {
+                id: workspace,
+                name: Some("api".to_owned()),
+            }),
+            name: Some("backend".to_owned()),
+            reason: Some("permission_dialog".to_owned()),
+            since: Some(SINCE),
+        },
+        Event::AttentionDequeued {
+            pane,
+            workspace: Some(AgentWorkspace {
+                id: workspace,
+                name: Some("api".to_owned()),
+            }),
+            name: Some("backend".to_owned()),
+            reason: Some("prompt_box_idle".to_owned()),
+            since: Some(SINCE),
+        },
     ]
 }
 
