@@ -1613,10 +1613,15 @@ at all, it is killing the server that now owns the session. The by-hand half of
 that step is the pre-commit abort, verified with three real Claude Code sessions
 still answering afterwards; the rest is CI's, and the plan should say so.
 
-**One step is not verified: an SSH attach from a genuinely different machine.**
-There is one machine here. The loopback tier passed; it is not a substitute, and
-the roadmap's "attach to the home machine from a laptop over SSH" is unproven
-end to end. It is the one thing on this milestone that needs a person.
+**One step was not verified when this was written, and was verified afterwards:
+an SSH attach from a genuinely different machine.** There was one machine here;
+the loopback tier passed and is not a substitute. A second machine arrived on
+2026-08-08 and the roadmap's "attach to the home machine from a laptop over SSH"
+was run end to end — see [m3-live-smoke §5](m3-live-smoke.md) and this note's
+**Remote login shells** section below, which is the bug that attach found. What
+stayed unproven is narrower and is DR-20's: the far side's binary was cross-built
+here from the same tree rather than independently versioned, and no handoff or
+`update apply` has crossed the remote link.
 
 ---
 
