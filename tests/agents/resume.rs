@@ -28,11 +28,19 @@ async fn a_reported_conversation_survives_a_restart_and_is_typed_back() {
     // The ref arrived by hook — `SessionStart` carries `session_id`, which for
     // an `id`-kind agent *is* the resume ref (V01 §3 M8) — and reached the wire
     // through the hub's mirror into `Core`'s pane state.
-    let entry = rig.pane_state(a.pane).await;
-    assert_eq!(
-        entry["agent"]["session_ref"]["value"], conversation,
-        "the hook-reported conversation reached session.state: {entry}"
-    );
+    //
+    // Waited for rather than read, because the mirror is the un-awaited half of
+    // the two read models: the pane is an agent on the wire as soon as its
+    // *kind* is mirrored, and the ref is a later commit on the same channel. So
+    // "the pane has an agent block" does not mean "the ref is in it", and a
+    // single read of one takes whichever the mailbox had got to.
+    let entry = rig
+        .wait_pane_state(
+            "the hook-reported conversation to reach session.state",
+            a.pane,
+            |entry| entry["agent"]["session_ref"]["value"] == conversation.as_str(),
+        )
+        .await;
     assert_eq!(entry["agent"]["session_ref"]["kind"], "id", "{entry}");
 
     rig.wait_snapshot_holds(std::slice::from_ref(&conversation))

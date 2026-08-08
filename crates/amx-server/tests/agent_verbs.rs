@@ -79,8 +79,11 @@ async fn agent_start_spawns_from_the_registry_labels_the_pane_and_returns_ready(
         .expect("the fake agent records utf-8");
     assert_eq!(argv, want);
 
-    // The name is the label, which is the whole of D-M2-9.
-    let state = rig.pane_state(pane).await;
+    // The name is the label, which is the whole of D-M2-9. Read off the entry
+    // the wait settled on rather than off a fresh one: the `agent` block is
+    // `Core`'s mirror of the hub's view and arrives after the reply does, so a
+    // state read taken here comes back with the label and no agent at all.
+    let state = rig.wait_pane_agent(pane).await;
     assert_eq!(state["label"], "dev");
     assert_eq!(state["agent"]["kind"], FAKE, "{state}");
     assert_eq!(reply["agent"]["state"], "idle", "{reply}");
@@ -137,11 +140,11 @@ async fn start_timeout_reports_failure_but_leaves_the_pane_running() {
     let pane = pane_of(&reply, "pane");
     let state = rig.pane_state(pane).await;
     assert_eq!(state["label"], "never");
-    let screen = rig.screen(pane).await;
-    assert!(
-        screen.iter().any(|row| row.contains(IDLE_MARK)),
-        "the pane should still be running its child: {screen:?}"
-    );
+    // Waited for, not read: the readiness deadline this start expired on is the
+    // dispatcher's own timer and says nothing about the child, which paints
+    // whenever the pty gets to it. The wait fails with the screen, so a pane
+    // that really did die still reports what was on it.
+    rig.wait_screen(pane, IDLE_MARK).await;
 
     // The other half of "identity confirmed": a pane that came up, was
     // identified and reads idle — as somebody else. An `impostor` stanza whose
@@ -167,16 +170,13 @@ async fn start_timeout_reports_failure_but_leaves_the_pane_running() {
 async fn addressing_resolves_uuid_then_unique_label_and_names_ambiguity() {
     let mut rig = Rig::start("aadr").await;
     plant_script(rig.scripts(), FAKE, &idles());
-    let first = pane_of(
-        &rig.call("agent.start", json!({ "name": "one", "kind": FAKE }))
-            .await,
-        "pane",
-    );
-    let second = pane_of(
-        &rig.call("agent.start", json!({ "name": "two", "kind": "faux" }))
-            .await,
-        "pane",
-    );
+    // Both starts wait for the state tree to name their agent, because that is
+    // what the rules below resolve against: `Scope::Agent` admits a pane only
+    // once its *mirrored* status carries a kind, and the mirror lands after the
+    // start reply. Without the wait, rule 2 is refused with "no agent is
+    // running in it" — about the pane the line above just started.
+    let (_, first) = rig.start_agent("one", FAKE).await;
+    let (_, second) = rig.start_agent("two", "faux").await;
 
     // Rule 2: a unique label among agent panes.
     let reply = rig
@@ -231,11 +231,10 @@ async fn agent_prompt_submits_via_run_and_wait_blocked_returns_on_the_next_block
     let text = "write the tests";
     plant_script(rig.scripts(), FAKE, &blocks_after(text.len(), &heard));
 
-    let start = rig
-        .call("agent.start", json!({ "name": "dev", "kind": FAKE }))
-        .await;
+    // The prompt below addresses by label, so the start has to be settled in
+    // the state tree and not merely answered: `Scope::Agent` reads the mirror.
+    let (start, pane) = rig.start_agent("dev", FAKE).await;
     assert_eq!(start["readiness"], "ready", "{start}");
-    let pane = pane_of(&start, "pane");
 
     let reply = rig
         .call(

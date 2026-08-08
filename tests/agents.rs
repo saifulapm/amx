@@ -163,19 +163,29 @@ async fn five_named_fake_agents_report_correct_status_through_the_spike_edge_cas
     assert!(rig.attention().await.is_empty(), "the queue emptied");
 
     // ---------------------------------------------- every conversation is known
-    let state = rig.state().await;
+    //
+    // Waited for, not read: each ref is a hook commit mirrored into `Core` on
+    // the un-awaited channel, so the five land independently and a single read
+    // takes whichever of them the mailbox had got to.
+    let wanted: Vec<String> = agents.iter().map(fixtures::Agent::conversation).collect();
+    let state = rig
+        .wait_state("every conversation to reach the wire", |state| {
+            agents.iter().all(|a| {
+                fixtures::pane_entry(state, a.pane)["agent"]["session_ref"]["value"]
+                    == a.conversation().as_str()
+            })
+        })
+        .await;
     for a in &agents {
         let entry = fixtures::pane_entry(&state, a.pane);
         assert_eq!(
-            entry["agent"]["session_ref"]["value"],
-            a.conversation(),
-            "{}'s conversation reached the wire: {entry}",
+            entry["agent"]["session_ref"]["kind"], "id",
+            "{}'s conversation is an id ref: {entry}",
             a.name
         );
     }
 
     // -------------------------------- the snapshot has it too, then the restart
-    let wanted: Vec<String> = agents.iter().map(fixtures::Agent::conversation).collect();
     rig.wait_snapshot_holds(&wanted).await;
     rig.shutdown_within(rig::PATIENCE);
     rig.restart().await;

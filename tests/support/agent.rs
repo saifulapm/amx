@@ -97,6 +97,16 @@ pub const QUIT: &str = "quit";
 pub const WORKING_TEXT: &str = "esc to interrupt";
 /// The phrase the permission dialog carries.
 pub const BLOCKED_TEXT: &str = "Do you want to proceed?";
+/// The dialog's *last* line, and the second anchor `permission_dialog` needs.
+///
+/// The shipped rule requires the question **and** one of the option lines under
+/// it (`1. Yes`, `2. No`, or this), so a screen carrying only [`BLOCKED_TEXT`]
+/// is a half-painted dialog that matches no rule at all — the question is on
+/// screen and `prompt_box_idle`'s `not` clause refuses it, so `agent explain`
+/// answers `matched: null`. A waiter that stops at the question is therefore
+/// waiting for the wrong fact; this is the line that says the paint is whole,
+/// because the script below writes it last.
+pub const BLOCKED_TAIL_TEXT: &str = "(esc to cancel)";
 /// What Claude Code paints where an interrupted tool call was.
 pub const INTERRUPTED_TEXT: &str = "Interrupted · What should Claude do instead?";
 /// A phrase only the prompt box carries, for waiting on a painted idle screen.
