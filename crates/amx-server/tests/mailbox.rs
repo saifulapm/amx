@@ -59,9 +59,13 @@ async fn sending_to_a_stopped_actor_reports_it_gone() {
 }
 
 #[test]
-fn pane_reports_cover_every_transition_the_bus_publishes() {
-    // Each report is the pane actor's half of a bus event; they are listed
-    // together here so a new event variant without a report is visible.
+fn pane_reports_cover_every_transition_the_core_folds() {
+    // Each report is a fact `Core` does something with; they are listed
+    // together here so a transition that grows a fold without growing a report
+    // is visible. Not every bus event has one: the pane actor publishes the
+    // title itself and `Core` answers no question about it, so W04 removed the
+    // report rather than keep a message whose arm was empty
+    // (`docs/09-m3-plan.md` D-M3-2).
     let reports = [
         PaneReport::Damage {
             generation: GridGeneration::FIRST,
@@ -77,10 +81,9 @@ fn pane_reports_cover_every_transition_the_bus_publishes() {
         PaneReport::Evicted {
             oldest_row: RowId::FIRST,
         },
-        PaneReport::Title("build".into()),
         PaneReport::Bell,
         PaneReport::Exited { status: Some(0) },
     ];
-    assert_eq!(reports.len(), 7);
+    assert_eq!(reports.len(), 6);
     assert_ne!(reports[0], reports[1]);
 }

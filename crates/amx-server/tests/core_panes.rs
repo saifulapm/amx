@@ -492,7 +492,7 @@ async fn a_pane_transition_publishes_exactly_one_event() {
 /// everything": damage reports reach `Core` by `try_send` and are droppable
 /// under saturation, so a `Core` that owned the publish could starve
 /// `pane.wait_output` on a busy session. It is also why damage cannot be
-/// counted the way a title can — the drops are deliberate — so every kind is
+/// counted the way a commit can — the drops are deliberate — so every kind is
 /// driven straight into the mailbox here, where the count is exactly zero.
 ///
 /// The reports are addressed to a pane id no actor backs, which is what makes
@@ -569,7 +569,6 @@ fn reports() -> Vec<PaneReport> {
             from_row: RowId::from_raw(7),
             cause: InvalidationCause::Clear,
         },
-        PaneReport::Title("not session state".to_owned()),
         PaneReport::Bell,
         PaneReport::Exited { status: Some(0) },
     ]

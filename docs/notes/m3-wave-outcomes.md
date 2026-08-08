@@ -407,3 +407,126 @@ membership block W03 added — `amx work` owns that association, and a layout
 replayed on another machine would name a checkout that is not there. `command`
 has no key either: D-M3-11's list does not include it, and `session.state`
 could not export one.
+
+---
+
+## W04 — Handoff manifest
+
+**`PaneReport::Title` is dropped: the variant, the send, and the arm.** W02
+flagged it and W03 left it open; the answer is the one D-M3-2 already implies.
+A report exists to give `Core` a *fold*, and there is none — no state row
+carries a pane title, `Event::PaneTitle` already tells every client, and the
+pane actor is the publisher of it. What the message actually cost was a `String`
+clone and a **blocking** `send().await` into a bounded `Core` mailbox on every
+OSC 2, which is a shell prompt away from being per-command. Damage avoids that
+hazard with `try_send` deliberately (D-M3-2); the title had no reason to take it
+at all. If a title ever lands in `session.state`, the report comes back with the
+fold that needs it, which is a smaller change than the one being avoided.
+
+**The export answers with the descriptor, not just the entry.**
+`PaneCommand::ExportHandoff` replies `PaneExport { manifest, master }`, and the
+parser thread asks the pty actor for the duplicate **first**. That is what makes
+"quiesced only" structural rather than advisory: the pty actor hands a
+descriptor out in no other state, so a running pane is refused before a single
+row is read, and there is exactly one owner of the answer. It also spends one
+round trip instead of two on a state that must not move in between. **For W06:**
+this is where §3 step 8's fd comes from — no other path to a pane's master
+exists — and `PaneHost::quiesce()`/`resume()` (new, bypassing the mailbox like
+`kill`, blocking for the drain) are the pair that gets a pane into and out of
+the state that allows it.
+
+**The cursor is applied after the modes, not with the grid.** Read literally,
+D-M3-4's "rows → grid → modes" loses the cursor: replaying DEC mode 6 homes it,
+so a position written with the paint is thrown away by the first origin-mode
+sequence that follows. `PaneManifest` therefore carries `cursor` as a field of
+its own and `PaneSeed.modes` ends with it. Caught by
+`modes_survive_the_round_trip` going red, not by reading the spec.
+
+**The alternate-screen switch belongs to the paint, not to the modes.** The
+published snapshot is the *active* screen's, so the screen has to be selected
+before the grid is painted onto it; `?1049h` rides a small paint prologue
+together with the four modes a faithful paint needs held (wraparound on, origin
+off, insert off, synchronised output off) and grapheme clustering set to what
+the pane actually had. The rest of the modes follow the paint and are what put
+the forced ones back.
+
+**The successor's eviction floor is derived, not carried.** What a resumed
+tracker must get exactly right is the *head* — that is where the next committed
+row id comes from — and the head is the floor plus whatever actually landed in
+this terminal's scrollback. So the parser replays the carried rows, feeds line
+feeds until the scrollback has swallowed them, and only then builds
+`HistoryTracker::resume(head, head − landed)`. Rows the replay could not fit sit
+below that floor: evicted in the ordinary sense, never renumbered. The feed also
+produces the **blank screen** the paint needs, which is why nothing clears one —
+`Terminal.eraseDisplay` turns `ED 2` into a *scroll* when the last non-empty row
+looks like a prompt, which would push rows into the scrollback and move every id
+the manifest had just carried across.
+
+**R-M3-2: two cell classes cannot round-trip through the C API.** Both were
+found by the property test rather than reasoned about in advance, and both are
+in `handoff::grid`'s module docs and in the acceptance test's comparison, named
+and narrow, rather than hidden behind a looser assertion:
+
+- **A blank column carrying SGR attributes** crosses as a *space* carrying the
+  same attributes. `Screen.blankCell` returns `style.bgCell()`, so an erase can
+  colour a column and can never underline one, and no other sequence writes a
+  column without writing a character. The space renders identically and loses
+  the never-written bit; dropping the attributes instead would lose a visible
+  underline. The state is reachable only by mutating a grid after the fact.
+- **A spacer head is re-derived, not carried.** Its paint is set by the print
+  that wraps past it and by nothing else, so a head whose paint was left over
+  from an earlier print comes back with the wrapping character's paint, and a
+  head whose wide character has since been erased comes back as a blank column.
+  Every sequence that could touch the cell afterwards clears it outright —
+  `Screen.splitCellBoundary` erases a spacer head whenever the wide character
+  below it is disturbed. The wrap flag itself always survives, and that is what
+  the test refuses to tolerate a difference in.
+
+**A live bug a naive SGR emitter would have shipped.** `Parser.zig:203` sets
+`MAX_PARAMS = 24` and drops a CSI **outright** once the sequence fills it — not
+the overflow, the whole sequence. A cell wearing every attribute plus three
+direct colours needs 26 parameters, so it would have replayed with *no* styling
+at all. Pens are emitted as however many sequences it takes (16 parameters
+each); SGR accumulates, so only the first carries the reset. Found by the
+property test at ~1900 cases in; the acceptance run does 256 and a soak of
+150 000 is green.
+
+**Other bounds, stated in the module docs rather than discovered later.** A pane
+on the alternate screen crosses with a **blank primary** — only the active grid
+is published and the C API offers no way to read the other one, though its
+scrollback still crosses. A **scrolling region (DECSTBM) does not cross**: the
+terminal exposes no accessor for it. A **palette-indexed underline colour** was
+already flattened to "none" by `amx-vt` before this module sees it.
+
+**The packed rows ride base64.** The manifest is one JSON line and the M1 row
+packing is binary; base64 is forty hand-rolled lines against a serde byte array
+that would have cost ~4× on the wire, and no dependency either way. Everything
+else in the entry is text, including the synthesized grid — every byte of it is
+an ASCII control sequence or a cluster the library already gave us as UTF-8. The
+256 KiB budget is measured on the **packed** bytes, before that encoding.
+
+**Edits outside the §5 scope list, each forced by the deliverable.**
+`actor/panes.rs` (the `ExportHandoff` command and the removed `Title` report —
+W03's split moved `PaneCommand` there after §5 was written), `actor/core/report.rs`
+(the arm the removed variant left behind), `actor/mod.rs` (re-exporting the two
+new types), `pane_host/mailbox.rs` (the `ParserCommand::Export` variant — the
+parser's vocabulary lives beside it, not in `parser.rs`), and
+`tests/{mailbox,core_panes}.rs`, which both listed the removed variant. No
+wave-2 peer touches any of them.
+
+**Budget.** `handoff/grid.rs` is 601 and `handoff/manifest.rs` 592 — over the
+soft budget, under the hard one, and **not split**: the scope forbids editing
+`handoff/mod.rs` beyond the two module declarations W03 planted, and a third
+file needs a third declaration. If a later wave wants them split, that one line
+is the whole cost. `pane_host/mod.rs` *was* split — `export.rs`, the handoff
+vocabulary, beside `mailbox.rs`'s parser vocabulary — because that file is W04's
+to declare in; it went 518 → 474. `pane_host/parser.rs` is at 532, and the
+adoption is what grew it.
+
+**For W07.** `PaneHostConfig::seed` is the whole import surface: give it
+`PaneManifest::seed()` and a pty session over the received descriptor, and the
+pane comes back with its screen, its scrollback, its modes, and all three
+counters continued. The session-level `Manifest` is defined with D-M3-5's
+inventory (`session`, `seq`, the persist `Snapshot`, `panes` in transfer order,
+`agents` as `AgentSnapshot`s) and `Manifest::check_version` implements D-M3-6's
+*window* check; W06 fills the session-level fields, W07 reads them.

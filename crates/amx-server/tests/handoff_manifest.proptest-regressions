@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e3c8f5eab63dc6f99da61367a5daa163e7fa3f193e21d3ebaf498ad78a506bc6 # shrinks to paints = [NewLine, Text("漢aaae\u{301}a"), Text("a漢a漢"), Move(1, 0), NewLine, Sgr(["1"]), Text("漢")]
+cc b54df8c4a74e9653904992f211a7cc608af39b957dab9542c83427018374c9af # shrinks to paints = [Move(2, 9), Text("aaaaae\u{301}漢漢"), Text("a漢e\u{301}漢"), Text("a"), Move(2, 0), NewLine, NewLine, EraseLine]
+cc 035740377d44c4741ed07a8c8572647c8454c0f76984dcab7bf831d3b17cb661 # shrinks to paints = [Sgr(["1"]), Sgr(["58;2;0;0;0", "8"]), Sgr(["9", "5"]), Sgr(["2", "4:3"]), Sgr(["48;5;0", "3"]), Sgr(["38;2;0;0;0", "7"]), Text("a")]
