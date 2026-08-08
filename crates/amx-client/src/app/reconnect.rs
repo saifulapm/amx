@@ -319,15 +319,48 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
 /// The same `Resume` on every attempt: it describes the connection that died,
 /// and nothing about waiting changes what this client holds.
 async fn redial(origin: &Origin, resume: Resume) -> Result<(Session, Welcome), AppError> {
+    dial_until(
+        &origin.socket,
+        &origin.client,
+        &resume,
+        origin.policy,
+        &mut |_| {},
+    )
+    .await
+}
+
+/// Redial `socket` under `policy` until a `Welcome` lands or the deadline
+/// passes, telling `waiting` how long it has been trying before each nap.
+///
+/// Public because a full attach is not the only client amx runs: `amx attach
+/// --pane` drives one pane with its own tiny loop and no [`App`] behind it
+/// (`crates/amx/src/cmd/viewport.rs`), and until M4 it was the one attached
+/// client a handoff simply ended (DR-16). Sharing the redial rather than
+/// writing a second one is what keeps the two from disagreeing about how long
+/// a swap is allowed to take — and [`ReconnectPolicy`] is where that number
+/// lives, in one place.
+///
+/// # Errors
+///
+/// [`AppError::Unreachable`] when the deadline passes with no `Welcome`, and
+/// whatever the negotiation refused with when a server answers and this build
+/// cannot speak to it — no amount of waiting settles a protocol disagreement.
+pub async fn dial_until(
+    socket: &std::path::Path,
+    client: &ClientInfo,
+    resume: &Resume,
+    policy: ReconnectPolicy,
+    waiting: &mut impl FnMut(Duration),
+) -> Result<(Session, Welcome), AppError> {
     let started = Instant::now();
     let mut attempts = 0_u32;
     let mut last: Option<NetError> = None;
     loop {
         if attempts > 0 {
-            let delay = origin.policy.backoff(attempts - 1);
+            let delay = policy.backoff(attempts - 1);
             // Checked against the deadline before sleeping into it, so a client
             // gives up when it said it would rather than one backoff later.
-            if started.elapsed() + delay > origin.policy.deadline {
+            if started.elapsed() + delay > policy.deadline {
                 return Err(AppError::Unreachable {
                     after: started.elapsed(),
                     why: match last {
@@ -336,11 +369,12 @@ async fn redial(origin: &Origin, resume: Resume) -> Result<(Session, Welcome), A
                     },
                 });
             }
+            waiting(started.elapsed());
             tokio::time::sleep(delay).await;
         }
         attempts += 1;
 
-        match dial(origin, resume.clone()).await {
+        match dial(socket, client, resume.clone()).await {
             Ok(pair) => return Ok(pair),
             // A refusal is not a redial: the socket answered and this build
             // and that server do not agree on a protocol, which no amount of
@@ -352,7 +386,11 @@ async fn redial(origin: &Origin, resume: Resume) -> Result<(Session, Welcome), A
 }
 
 /// One connect-and-negotiate attempt.
-async fn dial(origin: &Origin, resume: Resume) -> Result<(Session, Welcome), NetError> {
-    let stream = net::connect(&origin.socket).await?;
-    Session::attach(stream, origin.client.clone(), true, Some(resume)).await
+async fn dial(
+    socket: &std::path::Path,
+    client: &ClientInfo,
+    resume: Resume,
+) -> Result<(Session, Welcome), NetError> {
+    let stream = net::connect(socket).await?;
+    Session::attach(stream, client.clone(), true, Some(resume)).await
 }
