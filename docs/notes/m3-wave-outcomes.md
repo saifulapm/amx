@@ -1078,3 +1078,112 @@ afterwards; `--binary /bin/true` is refused with "did not print handoff
 capabilities"; the server then stops on `SIGTERM` with exit 0. That is the whole
 export path over a real socket with a real pty, up to the point where the
 successor would answer.
+
+---
+
+## W12 — Worktree flow
+
+**The plan's W12 scope was missing the field the pass-through passes through.**
+§5 gives W12 `dispatch/workspace.rs` for "worktree block pass-through" and D-M3-10
+says the block is what `done` and restore read — but §4's additive-field list
+names only `session.state` and the persist snapshot, and W03 accordingly planted
+the field on state, on the snapshot and on `SessionState::set_worktree`, with no
+wire path that could ever *set* it. Two files outside the §5 scope are what closed
+that, both concurrent-safe (wave 4's other task, W11, owns `cmd/bridge.rs`,
+`remote.rs`, `main.rs`, `tests/skew.rs` and CI):
+
+- `amx-proto/src/control/workspace.rs` — `worktree: Option<Worktree>` on
+  `CreateParams`, additive and optional under R-M1-8. One field for two facts,
+  because the server needs both at the same instant: the membership to remember,
+  and the directory the new workspace's root pane opens in. A workspace on a
+  worktree whose shell started in the server's own directory would be a
+  membership in name only.
+- `amx-core/src/config/mod.rs` — a fourth section, `[work] dir`, exactly as W10
+  added `[update] channel` for the same reason (its §5 scope named "config
+  channel-URL field"; W12's forgot the equivalent). `SECTIONS` is asserted
+  verbatim by `amx-core/tests/config.rs`, so that suite moved with it.
+
+`dispatch/workspace.rs` then needed **no arm at all** — every function there
+forwards its parameters whole — which is the better outcome: the membership rides
+the create it belongs to, arrives on the same serialized mailbox as the workspace
+it describes, and cannot be recorded against a create that failed. What the file
+gained is the paragraph saying so.
+
+Three one-line sequential fills in files earlier waves own, each declared here
+rather than discovered: `cmd/apply.rs` and two server test suites gained
+`worktree: None` on their `CreateParams` literals (W13's layout deliberately
+carries no worktree, so `None` is the semantic and not a placeholder), and
+`amx-proto/tests/goldens.rs`'s `method_workspace_create` gained the same —
+**the golden's bytes are unchanged**, which is itself the additivity assertion.
+The field's own two directions are pinned in `additive.rs` beside W03's, as
+`workspace_create_with_a_worktree_reads_at_v1_and_without_it_still_parses`.
+
+**`workspace.create`'s `focus` field has no reader in the server, and `amx work`
+found out the hard way.** Nothing between the dispatch arm and `Core` looks at
+`CreateParams::focus`; `finish_workspace_create` never switches. A green suite
+did not notice — the acceptance tests read `session.state` rather than asking
+which workspace is focused — and the live smoke did, at the first `amx work done`
+with no branch, which resolves the focused workspace and found none. `amx work`
+now sends `focus: false` and calls `workspace.switch`, the verb that actually
+moves focus, with the comment saying why rather than two mechanisms for one
+effect. **Hand-off:** either give the field a reader in
+`actor/core/workspace.rs` or delete it from the row. It is not W12's to decide,
+because honoring it would change what every existing `focus: true` caller does
+(`tests/config_reload.rs` is one) and D-M3-10 says nothing about it. Fourth time
+a green suite has hidden a non-working path from a live run.
+
+**`Repo::discover` reads `git worktree list --porcelain`, not
+`rev-parse --show-toplevel`.** Verified on git 2.55.0: the porcelain list names
+the **main** worktree first, from anywhere inside the repository, including from
+inside a linked worktree. `--show-toplevel` would answer with the linked tree —
+and since the default template is built on `{repo_parent}`, `amx work` run from a
+tree it had just made would stack the next one *inside* it, which is the ordinary
+way somebody would use the verb. Pinned by
+`work_from_inside_a_worktree_places_the_next_one_beside_the_repository`, a fifth
+test beyond the four §5 names.
+
+**The destructive path got a fourth lock the plan did not ask for.** D-M3-10 says
+"pinned under the derived path, never a user-supplied one"; that is lock 1
+(recompute the template, compare, refuse with both paths named). Locks 2 and 3
+came out of writing the failure down: the repository's own `worktree list` has to
+agree the path is one of its worktrees, and the path may not be the repository's
+main working tree. `git worktree remove` refuses that last one too, but its
+sentence is "the main worktree cannot be removed" where amx's is "that is the
+repository's main working tree", and the difference matters when the reason a
+user is reading it is that a template went wrong. Lock 4 is the dirty refusal,
+asked by amx before the workspace dies rather than left to git after — the
+ordering is the point, since a `done` that took the panes and then declined the
+tree would have destroyed the half nobody can rebuild.
+
+**A failed `workspace.create` rolls the tree back; a failed `agent.start` does
+not.** Asymmetric on purpose. A checkout seconds old with no workspace ever
+opened on it holds nothing to lose, so leaving it would be litter the caller did
+not ask for. By the time an agent fails, the caller has the workspace and the tree
+they asked for, and taking both away over a third thing would be amx deciding
+their work was worthless — V13's "the pane is left running for inspection", one
+level up.
+
+**`cmd/work.rs` split on arrival at 527 lines**, per R-M1-3's no-split-waits rule:
+`crates/amx/src/work.rs` (131) holds the template question — `DEFAULT_DIR`,
+`template`, `derive_path` — and `cmd/work.rs` (423) is the verb, the same
+`cmd/update.rs` + `src/update/` shape W10 used. The split is load-bearing rather
+than cosmetic: `derive_path` is the pin on the destructive path *because* it is a
+pure function of three strings, and a home with nothing else in scope is what
+keeps it one. `actor/core/restore.rs` crossed the soft budget at 505 with the new
+handler and is back at 499 on a right-sized doc comment; the split it will want
+eventually is `replay_bytes`, which is about the sidecar format and not about
+restore's policy.
+
+**Live-smoke of the real binary**, against `./target/debug/amx` on 2026-08-08 in a
+throwaway repository, because the green suite already hid the focus gap once:
+`amx work fix-thing` printed its two lines and `session state` carried the block
+with all three fields; `git worktree list` showed the tree; an untracked file made
+`work done` refuse and leave both halves standing; `work done --force` collapsed
+all three and left the branch; `amx work -- --force` was refused before any argv
+("a branch name cannot begin with '-'") and `amx work 'bad..name'` by git's own
+grammar; then `work gone`, `session stop`, `rm -rf` the tree, restart — and
+`amx session report` printed `degraded workspace gone … the git worktree for
+branch gone is gone; kept as a plain workspace` beside the pane's own degradation,
+with the workspace back under its own id and no worktree block. Also smoked: no
+session running, no arguments, outside a repository, twice for one branch, and
+both no-branch `done` refusals.
