@@ -147,6 +147,12 @@ fn control_goldens_match() {
         Call::WorkspaceCreate(workspace::CreateParams {
             label: Some("scratch".into()),
             focus: true,
+            // Absent, deliberately, and that is what keeps this golden's bytes
+            // the ones M0 froze: the worktree block D-M3-10 adds is additive and
+            // optional, so an ordinary create — every create in the tree but
+            // `amx work`'s — encodes exactly as it always did. The field's own
+            // two directions are pinned in `additive.rs`.
+            worktree: None,
         }),
         workspace::CreateReply {
             workspace: workspace_id(),

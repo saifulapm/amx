@@ -127,6 +127,12 @@ async fn replay(session: &mut Session, steps: &[Step]) -> anyhow::Result<Made> {
                         label: label.clone(),
                         // Applying a layout must not move anybody's focus.
                         focus: false,
+                        // A layout carries no worktree, by W13's decision:
+                        // `amx work` owns that association, and a layout
+                        // replayed on another machine would name a checkout
+                        // that is not there. `amx work` is the only caller
+                        // that fills this in.
+                        worktree: None,
                     },
                 )
                 .await
