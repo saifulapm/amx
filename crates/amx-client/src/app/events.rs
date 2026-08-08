@@ -240,9 +240,24 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             return Folded::Nothing;
         };
         match delivery {
-            Delivery::Event(envelope) => self.apply_event(envelope.seq, &envelope.event),
-            // The events are gone; the state they described is not.
-            Delivery::Gap { .. } => Folded::Resync,
+            Delivery::Event(envelope) => {
+                // Before the fold, and whatever the fold makes of it: the
+                // cursor is how far this client has *read* the stream, not how
+                // much of it it understood. An event this build has no model
+                // for is still an event a reattach must not ask to have
+                // replayed (`super::reconnect`).
+                self.consumed(envelope.seq);
+                self.apply_event(envelope.seq, &envelope.event)
+            }
+            // The events are gone; the state they described is not. `to` is
+            // where the stream resumes, so that is where the cursor goes — the
+            // gap is loss made visible, and pretending it did not move the
+            // stream on would ask a successor to replay a window nothing can
+            // still produce.
+            Delivery::Gap { to, .. } => {
+                self.consumed(to);
+                Folded::Resync
+            }
         }
     }
 

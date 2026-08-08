@@ -10,14 +10,18 @@
 //! The module splits by responsibility: this file is the presentation core —
 //! model, layout, repaint — [`actions`] turns one decoded key into what leaves
 //! the client, [`wired`] is the live loop over the session socket (frames in,
-//! input and calls out), [`events`] is the state the server pushes and what it
-//! does to the model, [`overlay`] is the picker and copy-mode surfaces drawn
-//! over the panes, and [`status`] is the status line and the cursor a repaint
-//! finishes with.
+//! input and calls out), [`binds`] is the streams that loop opens and the
+//! viewport it declares, [`events`] is the state the server pushes and what it
+//! does to the model, [`reconnect`] is what the loop does when that socket ends
+//! under it, [`overlay`] is the picker and copy-mode surfaces drawn over the
+//! panes, and [`status`] is the status line and the cursor a repaint finishes
+//! with.
 
 mod actions;
+mod binds;
 mod events;
 mod overlay;
+pub mod reconnect;
 mod status;
 mod wired;
 
@@ -26,7 +30,7 @@ use std::fmt;
 use std::io::Write;
 use std::os::fd::AsFd;
 
-use amx_core::{PaneId, Rect, RowRange, WorkspaceId};
+use amx_core::{PaneId, Rect, RowRange, Seq, SessionId, WorkspaceId};
 
 use crate::cache::Scrollback;
 use crate::input::{Input, InputEvent};
@@ -37,6 +41,7 @@ use crate::term::{TermError, TermSize, TerminalGuard};
 
 pub use events::Folded;
 pub use overlay::{CopyUi, PickTarget, PickerUi};
+pub use reconnect::{Reattached, ReconnectPolicy};
 
 /// Interaction mode the client is in (04 §7).
 ///
@@ -76,6 +81,18 @@ pub enum AppError {
     /// The server's snapshot could not be decoded.
     #[error("malformed session state: {0}")]
     BadState(&'static str),
+    /// The session socket stopped answering and never came back.
+    ///
+    /// What a reconnect gives up with, carrying how long it tried and what the
+    /// last redial said, so the message a user reads names the failure rather
+    /// than the giving up.
+    #[error("the session stopped answering and did not come back within {after:.1?}: {why}")]
+    Unreachable {
+        /// How long the client kept redialling.
+        after: std::time::Duration,
+        /// What the last redial failed with.
+        why: String,
+    },
 }
 
 /// How long a burst of `SIGWINCH` is allowed to keep arriving before it is
@@ -139,6 +156,19 @@ pub struct App<Fd: AsFd, W: Write> {
     /// twice over in M2: the difference between hearing an event and polling
     /// for it is invisible in the rendered frame and exact in this counter.
     pub resyncs: u64,
+    /// Where to redial and as whom, for a client that has somewhere to redial.
+    ///
+    /// `None` for one assembled around a connection with no path behind it —
+    /// see [`reconnect::Origin`].
+    origin: Option<reconnect::Origin>,
+    /// The highest bus sequence this client has consumed.
+    ///
+    /// Seeded from `Welcome.seq` and moved by every delivery folded, because
+    /// this is what a reattach presents as `Resume.last_seq` and the server
+    /// replays from.
+    cursor: Seq,
+    /// How many times this client has reattached ([`App::reconnects`]).
+    reconnects: u64,
 }
 
 impl<Fd: AsFd, W: Write> App<Fd, W> {
@@ -172,7 +202,33 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             status: status::StatusLine::default(),
             repaints: 0,
             resyncs: 0,
+            origin: None,
+            cursor: 0,
+            reconnects: 0,
         })
+    }
+
+    /// Forget everything that only meant something to the server that is gone.
+    ///
+    /// The grids, the scrollback caches, the mirrored workspaces and this
+    /// terminal's per-workspace focus are all keyed by ids a different server
+    /// minted. They cannot collide with the successor's — they are UUIDs — but
+    /// keeping them would leave a screen showing panes nothing owns, so the
+    /// caches go and the fold that follows starts from nothing.
+    pub(super) fn forget_session(&mut self, session: SessionId) {
+        self.model = ClientModel::new(self.model.term.h, self.model.term.w);
+        self.caches.clear();
+        self.focus.clear();
+        self.picker = None;
+        self.copy = None;
+        self.mode = Mode::default();
+        self.pane_rects.clear();
+        self.wanted_history.clear();
+        self.layout_dirty = true;
+        self.dirty = true;
+        if let Some(origin) = self.origin.as_mut() {
+            origin.adopt(session);
+        }
     }
 
     /// The interaction mode the client is in.
