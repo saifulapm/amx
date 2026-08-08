@@ -133,6 +133,15 @@ over SSH.
   trip p99 < 5 ms local), flow-control tuning under adversarial output.
 - Kitty graphics: implement the reserved graphics stream kind (passthrough to
   clients), or formally defer again with a written revisit condition.
+- **Attention surfaces & small screens** (D14/D15,
+  [10-attention-surfaces.md](10-attention-surfaces.md)): `agent.list` +
+  last-line, per-workspace status-line breakdown, the agents view with live
+  peek, `amx agents --watch`, workspace-scoped `next-attention`, narrow-
+  viewport projection, wheel → copy-mode scroll.
+- **Design-review register paydown**
+  ([notes/design-review.md](notes/design-review.md)): DR-1 `Cells` wire
+  format and DR-2 history delivery gate everything above; the M4 plan adopts
+  DR-4's standing integration owner + wave-1 live smoke.
 
 **Exit:** a stranger can read the docs, extend amx with a shell script, and
 add their agent with one registry stanza.
