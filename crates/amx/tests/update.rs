@@ -177,7 +177,10 @@ fn check_takes_a_channel_of_its_own_and_it_beats_the_configured_one() {
         .run(&exe, &["update", "check", "--channel", &elsewhere])
         .ok()
         .to_owned();
-    assert!(out.contains(&elsewhere), "it says which channel it read: {out}");
+    assert!(
+        out.contains(&elsewhere),
+        "it says which channel it read: {out}"
+    );
     assert!(out.contains(&format!("{newer} is available")), "{out}");
 
     // Without the flag the configured channel still wins, so the argument is
