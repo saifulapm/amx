@@ -146,8 +146,18 @@ over SSH.
   DR-4's standing integration owner + wave-1 live smoke and DR-5's leaner
   plan format.
 
+**The plan for the last two bullets is [11-m4-plan.md](11-m4-plan.md)**, and it
+covers only those two: the D14/D15 surfaces (opening with a spike, because the
+mouse path they build on has never carried a byte in production) and the
+register paydown, with DR-18 and DR-21 declined against written revisit
+conditions. The other five bullets above — `amx api schema`, extension
+examples, the registry long tail, theme and OSC 10/11 sync, the performance
+pass, and the kitty-graphics decision — are **not** in that plan and need one
+of their own (R-M4-11).
+
 **Exit:** a stranger can read the docs, extend amx with a shell script, and
-add their agent with one registry stanza.
+add their agent with one registry stanza. 11-m4-plan §7 is the exit for the
+half it plans, not for this sentence.
 
 ## Non-goals (revisit only with evidence)
 
