@@ -25,7 +25,7 @@ use std::os::fd::AsFd;
 use std::time::Duration;
 
 use amx_core::agent::{AgentKind, AgentState, HookToken, RefSource};
-use amx_core::{Delivery, Event, SessionId, SessionName};
+use amx_core::{Delivery, Event, SessionId, SessionName, ShortNumber};
 use amx_proto::control::agent as proto;
 use amx_server::handoff::manifest::SessionIdentity;
 use amx_server::handoff::protocol::{Ending, HandoffError, HandoffListener, Timeouts};
@@ -564,4 +564,71 @@ async fn an_inherited_agents_hook_reports_are_still_attributed_to_it() {
     pane.retire().await;
     successor.stop().await;
     pane.kill_child();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn short_numbers_cross_the_handoff_unchanged_and_the_gaps_stay_free() {
+    // 04 §6's numbers are stable across a restart *and* across an upgrade, so
+    // a manifest's numbers are adopted verbatim — gaps included. The gaps are
+    // what make this more than a copy: the server that wrote them never reused
+    // a number, and the successor's first split has to take the lowest one
+    // free rather than counting on from the highest.
+    let rig = Rig::new("shorts");
+    let mut frozen = Frozen::new(SLEEPER).await;
+    let session = SessionId::new_v4();
+    let mut carried = manifest(session, 11, &[&frozen], Vec::new());
+    carried.state.workspaces[0].short = ShortNumber::new(4);
+    carried.state.panes[0].short = ShortNumber::new(6);
+
+    let held = rig.hold_socket();
+    let listener = HandoffListener::bind(rig.handoff.clone()).expect("bind the handoff socket");
+    let exporter = spawn_exporter(Script {
+        listener,
+        token: rig.token.clone(),
+        timeouts: Timeouts::DEFAULT,
+        manifest: document(&carried),
+        masters: vec![
+            frozen
+                .master
+                .try_clone()
+                .expect("a descriptor to hand over"),
+        ],
+        held: Some(held),
+        plan: Plan::Commit,
+    });
+    let successor = rig.start_import(Timeouts::DEFAULT);
+    let mut client = successor.client().await;
+    let _ = client.hello(amx_proto::version::window()).await;
+
+    let state = state_of(&mut client).await;
+    assert_eq!(
+        (
+            state["workspaces"][0]["short"].as_u64(),
+            state["panes"][0]["short"].as_u64(),
+        ),
+        (Some(4), Some(6)),
+        "the numbers crossed as they were, not renumbered from one: {state}",
+    );
+
+    let split = client
+        .request(
+            40,
+            "pane.split",
+            json!({ "pane": frozen.pane().to_string(), "direction": "vertical" }),
+        )
+        .await;
+    assert_eq!(
+        support::result_of(&split)["short"].as_u64(),
+        Some(1),
+        "the successor's first split takes the lowest free number, not the one \
+         past the highest the exporter had reached: {split:?}",
+    );
+
+    exporter
+        .await
+        .expect("the exporter thread ended")
+        .expect("the exporter walked every stage");
+    frozen.retire().await;
+    successor.stop().await;
+    frozen.kill_child();
 }

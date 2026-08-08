@@ -89,9 +89,11 @@ async fn restore_rebuilds_workspaces_panes_and_shorts_with_the_same_uuids() {
 }
 
 #[tokio::test]
-async fn a_new_workspace_after_a_restore_takes_the_next_free_short() {
-    // The shorts counter has to move past what came back, or the first
-    // workspace created after a restart collides with a restored one.
+async fn a_new_workspace_after_a_restore_takes_the_lowest_free_short() {
+    // 04 §6's mapping is lowest-free, so a create after a restore fills the
+    // holes the snapshot left and steps over what came back. Stepping over is
+    // the load-bearing half: a create that reused a restored number would give
+    // two objects one number, and the second would be unaddressable.
     let mut fx = Fixture::new("next");
     let (ws, pane) = (WorkspaceId::new_v4(), PaneId::new_v4());
     let work = fx.dir_named("work");
@@ -111,22 +113,82 @@ async fn a_new_workspace_after_a_restore_takes_the_next_free_short() {
     );
 
     let running = fx.start();
-    let created: amx_proto::control::workspace::CreateReply = running
-        .call(|reply| {
-            CoreCommand::Workspace(amx_server::actor::WorkspaceCall::Create {
-                params: amx_proto::control::workspace::CreateParams {
-                    label: None,
-                    focus: false,
-                    worktree: None,
-                },
-                reply,
+    let mut created = Vec::new();
+    for _ in 0..4 {
+        let reply: amx_proto::control::workspace::CreateReply = running
+            .call(|reply| {
+                CoreCommand::Workspace(amx_server::actor::WorkspaceCall::Create {
+                    params: amx_proto::control::workspace::CreateParams {
+                        label: None,
+                        focus: false,
+                        worktree: None,
+                    },
+                    reply,
+                })
             })
-        })
-        .await;
-    assert_eq!(created.short.get(), 5, "the next free workspace number");
+            .await;
+        created.push(reply.short.get());
+    }
+    assert_eq!(
+        created,
+        vec![1, 2, 3, 5],
+        "the free numbers below the restored 4, and then past it",
+    );
+
     let state = running.state().await;
-    let shorts: Vec<u32> = state.panes.iter().map(|pane| pane.short.get()).collect();
-    assert_eq!(shorts, vec![9, 10], "and the next free pane number");
+    let mut shorts: Vec<u32> = state.panes.iter().map(|pane| pane.short.get()).collect();
+    shorts.sort_unstable();
+    assert_eq!(
+        shorts,
+        vec![1, 2, 3, 4, 9],
+        "each new workspace's root pane took the lowest free number too, and \
+         the restored pane kept 9",
+    );
+
+    running.into_core().await;
+}
+
+#[tokio::test]
+async fn a_pane_the_snapshot_has_no_row_for_takes_no_other_panes_number() {
+    // A layout naming a pane the snapshot has no record of is already a
+    // degraded restore (D-M1-9), and the pane comes back anyway — but it must
+    // not be handed a number a pane further down the file is about to claim.
+    // Assignment is lowest-free, so settling the recorded numbers first is the
+    // whole of what keeps the two apart.
+    let mut fx = Fixture::new("orphan");
+    let (ws, orphan, recorded) = (WorkspaceId::new_v4(), PaneId::new_v4(), PaneId::new_v4());
+    let work = fx.dir_named("work");
+    let opts = fx.opts();
+    let summary = fx.core.restore(
+        snapshot_of(
+            vec![workspace_row(
+                ws,
+                1,
+                None,
+                row_of(&[orphan, recorded]),
+                Some(recorded),
+            )],
+            // Only the second pane has a row, and it holds number 1 — the
+            // number the first pane would otherwise be given on the way past.
+            vec![pane_row(recorded, 1, None, Some(work))],
+        ),
+        &opts,
+    );
+    assert_eq!(summary.degraded, 1, "the pane with no row is degraded");
+
+    let running = fx.start();
+    let state = running.state().await;
+    let shorts: Vec<(PaneId, u32)> = state
+        .panes
+        .iter()
+        .map(|pane| (pane.pane, pane.short.get()))
+        .collect();
+    assert_eq!(
+        shorts,
+        vec![(recorded, 1), (orphan, 2)],
+        "the recorded number went back where it was, and the pane without one \
+         took the lowest still free",
+    );
 
     running.into_core().await;
 }
