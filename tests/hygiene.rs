@@ -138,7 +138,7 @@ fn crate_tests_wait_on_conditions_not_wall_clock() {
     );
 }
 
-/// M3's seam ledger: one row, one file, one owner.
+/// The milestone guard, back in its resting state: **no dispatch seam exists.**
 ///
 /// A row that lands before its wiring is answered through a `seam` helper
 /// rather than `METHOD_NOT_FOUND`, because telling a client a method is unknown
@@ -146,24 +146,19 @@ fn crate_tests_wait_on_conditions_not_wall_clock() {
 /// `session.handoff` on the server it is upgrading. The helper is therefore a
 /// milestone's tool, and this test is what keeps it one: while a milestone is
 /// being built the list of owning tasks is non-empty and every call site must
-/// live in a file the list names; when the integration task closes the last
-/// row, the helper, the list and this exemption go together.
+/// live in a file the list names; when the last row is answered, the helper,
+/// the list and this exemption go together.
 ///
-/// That has happened twice. U01 introduced the helper with M1's two rows, U06
-/// and U07 closed them, and both retired. V02 brought both back for M2's
-/// twelve; V12 closed four, V09 one, V11 three, V13 two, and V17 closed
-/// `agent.explain` and `agent.next` and deleted the helper — M2's exit check.
-///
-/// **W03 reopens it for M3 with a ledger of one**, and put the helper inside
-/// the module that owns the row rather than in `dispatch/mod.rs`, so closing
-/// the row deletes the helper by deleting a file:
-///
-/// | Row | File | Owed by |
-/// |---|---|---|
-/// | `session.handoff` | `dispatch/session.rs` | **W06** |
-///
-/// W14 empties this list and restores the assertion to its resting form — no
-/// `seam(` anywhere, no helper to make one from — which is M3's exit check.
+/// That has now happened three times. U01 introduced the helper with M1's two
+/// rows, U06 and U07 closed them. V02 brought both back for M2's twelve; V12
+/// closed four, V09 one, V11 three, V13 two, and V17 closed `agent.explain` and
+/// `agent.next`. W03 reopened it for M3 with a ledger of one —
+/// `session.handoff` in `dispatch/session.rs`, owed by **W06** — and put the
+/// helper inside the module that owns the row rather than in `dispatch/mod.rs`,
+/// so closing the row deleted the helper by rewriting one file. **W06 wired the
+/// row**, one wave earlier than the plan expected the ledger to empty, so this
+/// is back to the empty assertion: no `seam(` call site, and no helper to make
+/// one from.
 #[test]
 fn no_dispatch_seam_outlives_the_milestone_that_opened_it() {
     // `<workspace>/tests/../crates`: the shipped code, not the suites, since a
@@ -173,12 +168,8 @@ fn no_dispatch_seam_outlives_the_milestone_that_opened_it() {
     // noun for a trait boundary (`platform.rs`, `persist/io.rs`) and banning
     // the word would ban the vocabulary.
     let call = "seam(";
-    // The one file M3's ledger permits. A path fragment rather than a method
-    // name, because what is being bounded is where an unwired row may hide.
-    let ledger = ["dispatch/session.rs"];
 
     let mut found = Vec::new();
-    let mut ledgered = 0;
     let mut scanned = 0;
     for krate in fs::read_dir(&crates).expect("read crates/") {
         let src = krate.expect("a directory entry").path().join("src");
@@ -189,33 +180,23 @@ fn no_dispatch_seam_outlives_the_milestone_that_opened_it() {
             scanned += 1;
             let text = fs::read_to_string(&path).expect("read a source file");
             let where_it_is = path.display().to_string().replace('\\', "/");
-            let on_the_ledger = ledger.iter().any(|at| where_it_is.ends_with(at));
             for (n, line) in text.lines().enumerate() {
                 // Prose says "the seam (`Pty`, `Ipc`)"; code says `seam(…)`.
                 if !line.contains(call) || line.trim_start().starts_with("//") {
                     continue;
                 }
-                if on_the_ledger {
-                    ledgered += 1;
-                } else {
-                    found.push(format!("{where_it_is}:{}: {}", n + 1, line.trim()));
-                }
+                found.push(format!("{where_it_is}:{}: {}", n + 1, line.trim()));
             }
         }
     }
 
     assert!(
         found.is_empty(),
-        "a `seam(…)` outside M3's ledger is a row that landed without wiring \
-         in a file nobody agreed to. Implement it, or add the file to the \
-         ledger above *with* the task that owes it:\n{}",
+        "M3's seam ledger is empty and the helper is deleted, so a `seam(…)` \
+         call site can only be a row that landed without wiring. Implement it, \
+         or reintroduce the helper *with* the owner list this test used to \
+         carry:\n{}",
         found.join("\n")
-    );
-    assert!(
-        ledgered > 0,
-        "M3's ledger names dispatch/session.rs and nothing there answers at a \
-         seam any more. If W06 has landed, empty the ledger and delete the \
-         helper with it — that is the exit check, not a formality."
     );
     assert!(
         scanned >= 50,
@@ -328,9 +309,14 @@ fn agent_events_have_exactly_one_publisher() {
                 // ordinary word and the client's row cache has three of its
                 // own. The type's definition carries the doctest that documents
                 // the ordering, and a doctest is prose that happens to compile
-                // rather than a publisher.
+                // rather than a publisher. The handoff protocol's `commit` is
+                // §3 step 13 — ownership of a whole session transferring to a
+                // successor process — and shares nothing with this one but the
+                // English word.
                 let server = where_it_is.contains("amx-server");
-                if server && line.contains(".commit(") && !where_it_is.ends_with("actor/agent.rs") {
+                let another_verb =
+                    where_it_is.ends_with("actor/agent.rs") || where_it_is.contains("/handoff/");
+                if server && line.contains(".commit(") && !another_verb {
                     committers.push(format!("{where_it_is}:{}: {code}", n + 1));
                 }
             }
