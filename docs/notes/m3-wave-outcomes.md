@@ -163,3 +163,73 @@ finished row is `every_skew_sample_row_answers_over_the_bridge_transport`.
 task, and the seam ledger is what grew it). No `src/` file is over the soft
 budget; the next task to add to either of those two should expect to split
 rather than trim.
+
+---
+
+## W05 — SCM_RIGHTS transport
+
+**`handoff/protocol.rs` became `handoff/protocol/`, four files.** The §5 scope
+names `handoff/{fd.rs,protocol.rs}`. Written as one file the protocol lands
+around 900 lines — the line codec and the token, the stage vocabulary and the
+error type, and two state machines — so it split by responsibility on arrival
+rather than at the hard limit (R-M1-3): `protocol/{mod,wire,exporter,importer}.rs`,
+466/233/264/271 lines. W03's `handoff/mod.rs` is untouched; `pub mod protocol;`
+resolves to the directory unchanged, and W04's two files are not in it.
+
+**The one-byte pane index is a 256-pane cliff, not the absence of one.**
+D-M3-6 point 3 says per-pane messages have "no session-size cliff", and the
+payload it specifies — one byte — addresses 256 entries. herdr's cliff moves
+from 64 to 256; it does not go away. `fd::MAX_PANES` names it and both machines
+refuse past it (`HandoffError::TooManyPanes`) rather than wrapping into a
+silently mispaired descriptor, so the failure is a message and not a pane
+handed to the wrong terminal. Widening the payload is one constant and one
+`u8`; nothing above the transport reads the index.
+
+**Both machines are blocking, and W06/W07 own the `spawn_blocking`.** Ancillary
+data has no async surface in rustix and tokio's `UnixStream` cannot be given a
+`recvmsg` without draining its own buffer first, which is exactly the read-ahead
+this protocol must not do (below). The transitions are ordinary blocking calls
+bounded by `SO_RCVTIMEO`/`SO_SNDTIMEO`; the orchestrator and the importer
+assembly are the ones that must not call them on a runtime thread.
+
+**Line reads peek, because a buffered reader would eat descriptors.** A
+descriptor rides beside a byte, and anything that consumes that byte with an
+ordinary `read(2)` gets the byte while the kernel closes the descriptor —
+silently, with no error on either side. `wire::read_line` therefore `MSG_PEEK`s
+for the newline and then consumes exactly up to it, never one byte further.
+`UnixStream::peek` is still unstable (rust-lang#76923), so it is rustix's `recv`
+with `RecvFlags::PEEK`. Any future edit that puts a `BufReader` on this socket
+breaks the descriptor stage without failing a line test.
+
+**A failed transition tells the peer before it dies.** Consuming `self` is what
+makes an illegal ordering unrepresentable, and it also means a fault leaves no
+state machine to abort from afterwards. So the locally-detected faults — out of
+order, malformed, over the cap, mispaired index, too many panes, a bad token —
+write the `abort` line themselves on the way out. Timeouts and closed sockets do
+not: there is nobody to tell.
+
+**Three things W06 and W07 have to supply that the protocol deliberately does
+not.** (1) The manifest crosses as an opaque `serde_json::Value`; W04's codec
+serialises into it and the importer checks its own read window — this layer
+never reads a field. (2) `Importer::validated(panes)` takes the descriptor count
+*from the manifest the caller just checked*, and that number is what
+`recv_masters` will accept; getting it from anywhere else reopens the pairing
+the index byte closes. (3) `Timeouts::socket_free` is §3's 5 s constant and the
+protocol never uses it — the probe-loop between `restored` and `ready` is W07's,
+and `Importer<Binding>` is the state it belongs in.
+
+**What `Ending` is for.** §3's crash table has exactly two survivor states and
+`HandoffError::ending()` computes which: everything before the commit is
+`Abort`, and the only stage past it is the advisory ack. W06's abort matrix and
+W07's strict abort can both assert against it instead of re-deriving the table.
+
+**One test file over the soft budget.** `crates/amx-server/tests/handoff_protocol.rs`
+is 779 lines and joins the sixteen already over. The crash-table test alone is
+seven rows, each of which has to script a peer up to its stage before killing
+it; splitting it would move the shared `Fake` and rig into `tests/support/`,
+which is W14's call if it wants one.
+
+**Killed peers are killed, not dropped.** The table talks about processes dying
+— "its fds close with the process (kernel)" — so every crash row moves its
+socket into a real `/bin/sh` child's stdin and `SIGKILL`s it. A dropped
+`UnixStream` would have proven something weaker and read the same.
