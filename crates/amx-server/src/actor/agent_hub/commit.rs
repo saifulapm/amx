@@ -149,7 +149,7 @@ impl AgentHub {
             return;
         }
         if moved {
-            self.probe.bump(&self.probe.0.transitions);
+            self.probe.counted_transition();
         }
         let retired = self
             .panes

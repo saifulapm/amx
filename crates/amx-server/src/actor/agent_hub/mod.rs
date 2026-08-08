@@ -50,24 +50,27 @@
 //! | [`run`] | the loop, the mailbox, the bus, the wheel, the drain |
 //! | [`commit`] | one transition folded into the queue and both read models |
 //! | [`inherit`] | a predecessor's statuses, taken across a live upgrade |
+//! | [`names`] | the labels an attention event carries, and where they came from |
+//! | [`probe`] | the counters a test watches and the report a run returns |
 //! | [`detect`] | tier-2 scheduling and evaluation against the published frame |
 //! | [`verbs`] | what `agent.next`, `agent.explain` and a refusal answer |
 
 pub mod commit;
 pub mod detect;
 pub mod inherit;
+mod names;
+mod probe;
 pub mod run;
 pub mod verbs;
+
+pub use probe::{AgentProbe, AgentReport};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use amx_core::agent::{
-    AgentKind, AgentSnapshot, AgentWorkspace, EpochMillis, HookToken, SessionRef,
-};
+use amx_core::agent::{AgentKind, AgentSnapshot, EpochMillis, HookToken, SessionRef};
 use amx_core::{Ctx, PaneId, Seq, WorkspaceId};
 use amx_proto::control::agent as proto;
 use tokio::time::Instant;
@@ -88,94 +91,6 @@ use crate::agent::registry::{AgentStanza, Registry};
 /// on the config watcher's reload event, which is as far as M2 takes hot
 /// reloading (R-M2-13 — a remote catalog is M4's).
 pub const MANIFEST_DIR: &str = "manifests";
-
-/// What one run of the hub did.
-///
-/// Returned rather than logged, for the reason [`PersistReport`] is: "did that
-/// report actually land?" and "did a cancelled hub keep working?" are the
-/// questions the suite asks, and counting at the seam is how they get answered
-/// without reaching into a status line for the answer.
-///
-/// [`PersistReport`]: crate::actor::persist::PersistReport
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct AgentReport {
-    /// Hook reports accepted and applied.
-    pub reports: u64,
-    /// Hook reports dropped: a token that did not match the pane's, or a
-    /// source claiming an agent it was not installed for.
-    pub dropped: u64,
-    /// Tier-2 screen evaluations run.
-    pub evaluations: u64,
-    /// Times the deadline wheel fired.
-    pub wakeups: u64,
-    /// Status transitions published.
-    pub transitions: u64,
-    /// Panes still tracked when the hub stopped.
-    pub tracked: usize,
-}
-
-/// A live window onto a running hub's counters.
-///
-/// Cloneable and lock-free, the shape [`PaneProbe`](crate::actor::PaneProbe)
-/// uses: a test watches the hub work without having to stop it first, which is
-/// the only way to assert that a *cancelled* hub stopped working.
-#[derive(Clone, Debug, Default)]
-pub struct AgentProbe(Arc<Counters>);
-
-#[derive(Debug, Default)]
-struct Counters {
-    reports: AtomicU64,
-    dropped: AtomicU64,
-    evaluations: AtomicU64,
-    wakeups: AtomicU64,
-    transitions: AtomicU64,
-}
-
-impl AgentProbe {
-    /// A fresh set of counters.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Hook reports accepted and applied.
-    #[must_use]
-    pub fn reports(&self) -> u64 {
-        self.0.reports.load(Ordering::Relaxed)
-    }
-
-    /// Hook reports dropped for a bad token or a foreign source.
-    #[must_use]
-    pub fn dropped(&self) -> u64 {
-        self.0.dropped.load(Ordering::Relaxed)
-    }
-
-    /// Tier-2 screen evaluations run.
-    #[must_use]
-    pub fn evaluations(&self) -> u64 {
-        self.0.evaluations.load(Ordering::Relaxed)
-    }
-
-    /// Times the deadline wheel fired.
-    ///
-    /// The number `idle_session_arms_no_timer` is about: with nothing armed the
-    /// timer branch of the select is disabled, so this stays at zero however
-    /// long the session sits there.
-    #[must_use]
-    pub fn wakeups(&self) -> u64 {
-        self.0.wakeups.load(Ordering::Relaxed)
-    }
-
-    /// Status transitions published.
-    #[must_use]
-    pub fn transitions(&self) -> u64 {
-        self.0.transitions.load(Ordering::Relaxed)
-    }
-
-    fn bump(&self, counter: &AtomicU64) {
-        counter.fetch_add(1, Ordering::Relaxed);
-    }
-}
 
 /// One pane the hub is tracking.
 ///
@@ -309,60 +224,8 @@ pub struct AgentHub {
     /// Which workspace each pane was created in, for `agent.next`'s reply.
     workspaces: HashMap<PaneId, WorkspaceId>,
     /// The labels the identity block on an attention event needs.
-    names: Names,
+    names: names::Names,
     probe: AgentProbe,
-}
-
-/// Pane and workspace labels, as this hub last saw them.
-///
-/// D-M4-6's names mirror. D15 requires `attention_enqueued` to carry
-/// `workspace{id,name}` and `name` so a notifier can render
-/// `api/backend blocked (permission_dialog)` with no follow-up call, and the
-/// hub is the events' only publisher — but it holds an argv and a title, and
-/// nothing a person named.
-///
-/// It does not *ask* for them. Parking on a sibling is what its shutdown
-/// discipline forbids ([`AgentHub`]'s module docs), and it does not have to:
-/// every label in a live session reaches this actor on the bus it already
-/// reads. `workspace.create` publishes `WorkspaceRenamed` for a label given at
-/// creation (`actor/core/workspace.rs:80`), `pane.rename` and
-/// `workspace.rename` publish one each, and a **cold restore replays both** for
-/// every label it brings back (`actor/core/restore.rs:284,295`) — which is what
-/// R-M4-4 warns is load-bearing, checked rather than assumed.
-///
-/// The one path that publishes nothing at all is the live handoff, by design
-/// ("the swap is invisible on the bus", `docs/09-m3-plan.md` §4), so an import
-/// seeds this map explicitly through
-/// [`InheritedPane`](super::agent_hub::inherit::InheritedPane) instead.
-///
-/// What it cannot promise: a rename lost inside a bus [`Gap`] leaves the old
-/// label here until the next one. The identity block is optional for exactly
-/// this class of reason, and a stale label on a notification is the cost of not
-/// asking a draining sibling for one.
-///
-/// [`Gap`]: amx_core::Delivery::Gap
-#[derive(Debug, Default)]
-struct Names {
-    /// Pane labels, which are the agent names D-M2-9 defines.
-    panes: HashMap<PaneId, String>,
-    /// Workspace labels.
-    workspaces: HashMap<WorkspaceId, String>,
-}
-
-/// One pane, said the way a notifier would say it.
-///
-/// The four optional fields `Event::AttentionEnqueued` and
-/// `AttentionDequeued` grew in X02, assembled in one place so the two arms that
-/// build those events cannot disagree about what "the identity block" means.
-pub(super) struct Identity {
-    /// The workspace and its label.
-    pub workspace: Option<AgentWorkspace>,
-    /// The pane's label — the agent's name (D-M2-9).
-    pub name: Option<String>,
-    /// What named the pane's current state, if a detector did.
-    pub reason: Option<String>,
-    /// When it entered that state.
-    pub since: Option<EpochMillis>,
 }
 
 impl AgentHub {
@@ -388,7 +251,7 @@ impl AgentHub {
             inherited: HashMap::new(),
             attention: Vec::new(),
             workspaces: HashMap::new(),
-            names: Names::default(),
+            names: names::Names::default(),
             probe: AgentProbe::new(),
         }
     }
@@ -471,31 +334,7 @@ impl AgentHub {
         self.workspaces.remove(&pane);
         // After `absorb`, not before: the dequeue this exit publishes still
         // names the pane a person would recognise.
-        self.names.panes.remove(&pane);
-    }
-
-    /// The identity block D15 puts on an attention event.
-    ///
-    /// Every field is what this hub already holds, and every one of them is
-    /// optional because a fact it has not been told is *absent* — never
-    /// invented and never asked of a sibling (D-M4-6).
-    ///
-    /// `reason` and `since` describe the pane's state **as it is now**, which
-    /// is the state the event is announcing: on an enqueue that is what blocked
-    /// it, and on a dequeue it is what ended the block. Read after the
-    /// directives are folded, so the tracker has already moved.
-    pub(super) fn identity(&self, pane: PaneId) -> Identity {
-        let workspace = self.workspaces.get(&pane).map(|id| AgentWorkspace {
-            id: *id,
-            name: self.names.workspaces.get(id).cloned(),
-        });
-        let tracked = self.panes.get(&pane);
-        Identity {
-            workspace,
-            name: self.names.panes.get(&pane).cloned(),
-            reason: tracked.and_then(|tracked| tracked.tracker.reason.clone()),
-            since: tracked.and_then(|tracked| tracked.since),
-        }
+        self.names.forget_pane(pane);
     }
 
     /// Name `pane`'s agent and adopt its stanza's fusion parameters.

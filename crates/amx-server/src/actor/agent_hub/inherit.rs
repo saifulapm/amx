@@ -70,11 +70,11 @@ impl AgentHub {
             if let Some(workspace) = pane.workspace {
                 self.workspaces.insert(pane.pane, workspace);
                 if let Some(label) = pane.workspace_label {
-                    self.names.workspaces.insert(workspace, label);
+                    self.names.name_workspace(workspace, label);
                 }
             }
             if let Some(label) = pane.label {
-                self.names.panes.insert(pane.pane, label);
+                self.names.name_pane(pane.pane, label);
             }
             let Some(status) = pane.status else { continue };
             // The fast read model, written now: a `wait --until blocked` that

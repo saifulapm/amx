@@ -367,9 +367,8 @@ impl Builder {
     ///
     /// The import path's own call, in the same order: `AgentHub::inherit`
     /// before `run`, then a `PaneStarted` per pane once the hub is listening
-    /// (`session/import.rs`'s step 9 and `Core::announce_inherited`). It is the
-    /// only path that publishes nothing on the bus, so it is the only one where
-    /// the labels have to arrive by hand.
+    /// (`session/import.rs` step 9, then `Core::announce_inherited`). It
+    /// publishes nothing, so it is the one path where labels arrive by hand.
     pub fn inherit(mut self, panes: Vec<InheritedPane>, attention: Vec<PaneId>) -> Self {
         self.inherited = Some((panes, attention));
         self

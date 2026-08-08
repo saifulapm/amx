@@ -143,12 +143,12 @@ impl AgentHub {
         report: &proto::ReportParams,
     ) -> bool {
         let Some(stanza) = self.claimed(report) else {
-            self.probe.bump(&self.probe.0.dropped);
+            self.probe.counted_drop();
             return false;
         };
         let (kind, ref_kind) = (stanza.id.clone(), stanza.ref_kind);
         if !self.token_matches(pane, token) {
-            self.probe.bump(&self.probe.0.dropped);
+            self.probe.counted_drop();
             return false;
         }
         // A `claude` typed into a shell by hand is identified by exactly this:
@@ -165,7 +165,7 @@ impl AgentHub {
         let edge = HookEdge::from_report(report, ref_kind);
         let directives = self.apply(pane, Input::Hook(edge));
         self.absorb(pane, &directives);
-        self.probe.bump(&self.probe.0.reports);
+        self.probe.counted_report();
         true
     }
 
@@ -209,16 +209,16 @@ impl AgentHub {
             // The live handoff, which publishes nothing at all, seeds the map
             // through `inherit` instead.
             Event::PaneRenamed { pane, label } => {
-                self.names.panes.insert(pane, label);
+                self.names.name_pane(pane, label);
             }
             Event::WorkspaceRenamed { workspace, label } => {
-                self.names.workspaces.insert(workspace, label);
+                self.names.name_workspace(workspace, label);
             }
             // A workspace that is gone cannot be named again, and its entry
             // would outlive every pane that could have quoted it. Panes are
             // dropped by `retire`, which runs after the dequeue it publishes.
             Event::WorkspaceClosed { workspace } => {
-                self.names.workspaces.remove(&workspace);
+                self.names.forget_workspace(workspace);
             }
             // A user editing a rule to fix a wrong detection sees it take
             // effect without restarting the session (R-M2-13). The registry is
@@ -234,7 +234,7 @@ impl AgentHub {
     /// Fire everything the wheel owes at this instant.
     fn fire(&mut self) {
         let now = Instant::now();
-        self.probe.bump(&self.probe.0.wakeups);
+        self.probe.counted_wakeup();
         // Collected before anything is applied: a deadline's directives can arm
         // another deadline, and a wheel that walked its own mutations would
         // fire the new one in the same turn it was asked for.

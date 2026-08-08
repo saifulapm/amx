@@ -97,7 +97,7 @@ impl AgentHub {
                 visible_idle: false,
             },
         };
-        self.probe.bump(&self.probe.0.evaluations);
+        self.probe.counted_evaluation();
         let directives = self.apply(pane, Input::Screen(verdict));
         self.absorb(pane, &directives);
     }
