@@ -169,13 +169,12 @@ async fn up(
         Method::WorkspaceCreate,
         &workspace::CreateParams {
             label: Some(branch.to_owned()),
-            // Not `true`, and not an oversight: `workspace.create`'s `focus`
-            // field has no reader in the server today — nothing between the
-            // dispatch arm and `Core` looks at it. The verb that does move focus
-            // is `workspace.switch`, called below, and asking twice through a
-            // field that does nothing would be the kind of duplicate mechanism
-            // that later reads as two answers to one question.
-            focus: false,
+            // A person who typed `amx work <branch>` is going to work on that
+            // branch now — and it is what makes `amx work done` with no branch
+            // mean the tree they are looking at, which is the default D-M3-10
+            // gives it. W12 sent `false` and switched afterwards because the
+            // field had no reader; W14 gave it one, so the create says it once.
+            focus: true,
             worktree: Some(worktree),
         },
     )
@@ -199,25 +198,6 @@ async fn up(
         }
     };
     println!("workspace {} ({branch})", created.short);
-
-    // Switched to, because a person who typed `amx work <branch>` is going to
-    // work on that branch now. It is also what makes `amx work done` with no
-    // branch mean the tree the caller is looking at, which is the default
-    // D-M3-10 gives it.
-    //
-    // Not fatal if it is refused: the workspace and the tree both exist, and the
-    // user can switch by hand. Saying so is the whole of the handling.
-    if let Err(err) = call::<_, workspace::SwitchReply>(
-        &mut session,
-        Method::WorkspaceSwitch,
-        &workspace::SwitchParams {
-            workspace: created.workspace,
-        },
-    )
-    .await
-    {
-        eprintln!("amx: could not switch to the new workspace: {err:#}");
-    }
 
     if let Some(kind) = kind {
         let started: agent::StartReply = call(

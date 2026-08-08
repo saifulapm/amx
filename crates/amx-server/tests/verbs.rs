@@ -258,6 +258,66 @@ async fn workspace_create_returns_a_uuid_and_a_stable_short_number() {
 }
 
 #[tokio::test]
+async fn a_create_asking_for_focus_gets_it_and_one_that_does_not_leaves_it_alone() {
+    let ctx = fresh_ctx("ws-focus");
+    let (tx, rx) = mpsc::channel(8);
+    let core = Core::new(ctx.clone(), CoreHandle::new(tx.clone()));
+    let task = tokio::spawn(core.run(rx, |_: &Scheduled| {}));
+
+    let create = |focus: bool| {
+        let tx = tx.clone();
+        async move {
+            call(&tx, move |reply| {
+                CoreCommand::Workspace(WorkspaceCall::Create {
+                    params: workspace::CreateParams {
+                        focus,
+                        ..workspace::CreateParams::default()
+                    },
+                    reply,
+                })
+            })
+            .await
+            .expect("create succeeds")
+        }
+    };
+    let focused_workspace = || {
+        let tx = tx.clone();
+        async move {
+            call(&tx, |reply| {
+                CoreCommand::Session(amx_server::actor::SessionCall::State {
+                    params: amx_proto::control::session::StateParams::default(),
+                    reply,
+                })
+            })
+            .await
+            .expect("state answers")
+            .focused_workspace
+        }
+    };
+
+    let first = create(true).await;
+    assert_eq!(
+        focused_workspace().await,
+        Some(first.workspace),
+        "a create that asked to be focused is the focused workspace",
+    );
+
+    // And a create that does not ask leaves the focus where it was: a tool
+    // making a workspace in the background must not take the screen from
+    // whoever is at the keyboard.
+    let second = create(false).await;
+    assert_eq!(
+        focused_workspace().await,
+        Some(first.workspace),
+        "an unfocused create moved the focus to {}",
+        second.workspace,
+    );
+
+    ctx.cancel.cancel();
+    let _ = task.await;
+}
+
+#[tokio::test]
 async fn workspace_kill_reports_which_panes_it_took_with_it() {
     let (harness, ws, root) = Harness::start("ws-kill").await;
 
