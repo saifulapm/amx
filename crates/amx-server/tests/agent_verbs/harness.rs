@@ -37,6 +37,7 @@ use amx_server::actor::agent_hub::AgentHub;
 use amx_server::actor::core::Core;
 use amx_server::actor::{AGENT_MAILBOX, AgentHandle, CoreHandle, StatusView};
 use amx_server::conn::events::ConnEvents;
+use amx_server::conn::resume::ConnResume;
 use amx_server::conn::writer::{self, WriterQueue};
 use amx_server::dispatch::Router;
 use amx_server::runtime::Runtime;
@@ -137,6 +138,9 @@ impl Rig {
             view.clone(),
             outbound,
             ctx.cancel.child_token(),
+            // No hello reached this rig, so there is nothing to resume from —
+            // the same state a first attach's connection carries.
+            ConnResume::none(),
         ));
         router.attach_agent(AgentHandle::new(agent_tx));
 

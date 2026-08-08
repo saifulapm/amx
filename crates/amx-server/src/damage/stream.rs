@@ -88,10 +88,21 @@ pub struct GridStreamConfig {
     pub max_frame: u32,
     /// When a delta gives way to a keyframe.
     pub policy: KeyframePolicy,
+    /// The pane's live grid generation at bind time.
+    pub live: GridGeneration,
+    /// The generation the client says it already holds for the pane, when the
+    /// bind is a re-bind after a reconnect (`docs/09-m3-plan.md` D-M3-7).
+    ///
+    /// `None` is a fresh bind and opens with a [`KeyframeReason::First`]
+    /// keyframe, which is what every bind did before this field existed. Equal
+    /// to `live` opens delta-only. Anything else is stale, and opens with a
+    /// [`KeyframeReason::Generation`] keyframe.
+    pub resume: Option<GridGeneration>,
 }
 
 impl GridStreamConfig {
-    /// A config at the default frame cap and keyframe policy.
+    /// A config at the default frame cap and keyframe policy, for a fresh
+    /// bind of a pane whose generation nobody has looked up.
     #[must_use]
     pub fn new(pane: PaneId, stream: StreamId) -> Self {
         Self {
@@ -99,6 +110,27 @@ impl GridStreamConfig {
             stream,
             max_frame: amx_proto::frame::DEFAULT_STREAM_FRAME,
             policy: KeyframePolicy::default(),
+            live: GridGeneration::FIRST,
+            resume: None,
+        }
+    }
+
+    /// The same config for a client re-binding a pane it already holds cells
+    /// for at `held`, against the pane's `live` generation.
+    #[must_use]
+    pub fn resuming(mut self, live: GridGeneration, held: Option<GridGeneration>) -> Self {
+        self.live = live;
+        self.resume = held;
+        self
+    }
+
+    /// Why this stream opens as it does: `None` when the client's generation
+    /// makes a keyframe unnecessary.
+    fn opening_keyframe(&self) -> Option<KeyframeReason> {
+        match self.resume {
+            Some(held) if held == self.live => None,
+            Some(_) => Some(KeyframeReason::Generation),
+            None => Some(KeyframeReason::First),
         }
     }
 }
@@ -117,6 +149,12 @@ pub struct GridStream {
     generation: GridGeneration,
     /// Set while a keyframe is owed, with the reason it is owed.
     keyframe: Option<KeyframeReason>,
+    /// Set on a stream that opened delta-only and has not yet seen a frame.
+    ///
+    /// The client's cells *are* this stream's starting state, so the first
+    /// publication is adopted rather than treated as news; see
+    /// [`Self::absorb`].
+    resumed: bool,
     paused: bool,
     /// Publication counter of the last snapshot folded in.
     seen: Option<u64>,
@@ -126,7 +164,14 @@ pub struct GridStream {
 }
 
 impl GridStream {
-    /// Start a stream that owes its client a keyframe.
+    /// Start a stream that owes its client whatever its config says it owes.
+    ///
+    /// A fresh bind owes a [`First`](KeyframeReason::First) keyframe, as every
+    /// bind has since M0. A re-bind presenting the generation the pane is
+    /// already at owes nothing — it opens delta-only, and the first
+    /// publication is adopted rather than repainted. A re-bind presenting any
+    /// other generation owes a [`Generation`](KeyframeReason::Generation)
+    /// keyframe, which is 04 §6's "keyframes for stale grids".
     ///
     /// # Errors
     ///
@@ -137,6 +182,7 @@ impl GridStream {
         let channel = config.stream.channel().ok_or(DamageError::Unbindable {
             stream: config.stream,
         })?;
+        let keyframe = config.opening_keyframe();
         Ok(Self {
             pane: config.pane,
             stream: config.stream,
@@ -145,8 +191,9 @@ impl GridStream {
             policy: config.policy,
             dirty: DirtySet::default(),
             encoder: Encoder::new(),
-            generation: GridGeneration::FIRST,
-            keyframe: Some(KeyframeReason::First),
+            generation: config.live,
+            keyframe,
+            resumed: keyframe.is_none(),
             paused: false,
             seen: None,
             cursor: None,
@@ -219,6 +266,26 @@ impl GridStream {
     /// contained. Nothing is read out of the snapshot's cells here — that
     /// happens in [`Self::flush`], at send time.
     pub fn absorb(&mut self, snapshot: &Snapshot, generation: GridGeneration) {
+        if self.resumed {
+            self.resumed = false;
+            // The first frame a delta-only stream sees is the grid its client
+            // is already looking at, so it seeds the shape and the publication
+            // counter and marks nothing: reshaping from zero would read as a
+            // resize and a whole-grid mark would cross the keyframe threshold,
+            // both of which would repaint a screen that is already right. If
+            // the generation moved between the bind and this frame the client
+            // is stale after all, and the ordinary path below says so.
+            if generation == self.generation {
+                self.dirty.reshape(snapshot.rows(), snapshot.cols());
+                self.seen = Some(snapshot.generation());
+                self.stats.absorbed += 1;
+                return;
+            }
+            // Recorded before the reshape below can claim the reason: the
+            // generation is why this client's cells stopped being usable, and
+            // the resize is only how.
+            self.need(KeyframeReason::Generation);
+        }
         if self.dirty.reshape(snapshot.rows(), snapshot.cols()) {
             self.need(KeyframeReason::Resize);
         }

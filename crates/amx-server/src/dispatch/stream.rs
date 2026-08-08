@@ -25,13 +25,20 @@ const CHUNK_ROWS: usize = 256;
 const CHUNK_CAP: u32 = amx_proto::frame::DEFAULT_STREAM_FRAME;
 
 /// Bind one stream for this connection.
+///
+/// The whole call is a resolve and a hand-off, including the additive
+/// `generation` a reconnecting client sends (`docs/09-m3-plan.md` D-M3-7):
+/// deciding what a re-bound grid opens with needs the pane's live generation,
+/// which arrives with the wiring, and this connection's resume block, which
+/// only [`ConnStreams`] holds. So the parameters travel whole rather than
+/// being unpacked here.
 pub async fn bind(router: &mut Router, params: BindParams) -> Result<BindReply, RpcError> {
     let streams = conn_streams(router)?.clone();
     let pane = params.kind.pane();
     let wiring = router
         .call(|reply| CoreCommand::Stream(StreamCall::Wiring { pane, reply }))
         .await?;
-    streams.bind(params.kind, &wiring)
+    streams.bind(params, &wiring)
 }
 
 /// Serve one history range as chunks on the bound history stream.

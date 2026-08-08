@@ -530,3 +530,139 @@ counters continued. The session-level `Manifest` is defined with D-M3-5's
 inventory (`session`, `seq`, the persist `Snapshot`, `panes` in transfer order,
 `agents` as `AgentSnapshot`s) and `Manifest::check_version` implements D-M3-6's
 *window* check; W06 fills the session-level fields, W07 reads them.
+
+---
+
+## W08 — Server-side reconnect-resync
+
+**"Opens delta-only" is implemented literally: nothing is sent.** D-M3-7 says a
+re-bound grid stream opens with "`Generation`-keyframe-or-nothing", and 04 §4
+says a keyframe is sent "on reconnect/resync". They only agree if equal
+generations mean *nothing owed*, so that is what landed: a bind whose
+generation matches the pane's live one starts with an empty dirty set, adopts
+the first publication's shape and publication counter without marking a row,
+and sends its first cells only when new damage arrives. (It does send one
+cursor message immediately — `Resume` carries no cursor, so the server owes it,
+and a cursor message is not a keyframe.)
+
+The alternative considered and rejected was a full-grid *delta* — same bytes as
+a keyframe, applied onto the client's grid rather than replacing it — which
+would have been correct no matter what the client's cells actually held. It was
+rejected because it makes the generation meaningless: every re-bind would repaint
+regardless, and the field would be doing nothing. The cost of the literal
+reading is a contract the client now carries, stated in `conn/resume.rs`:
+
+> Presenting a generation asserts "I hold a **complete** grid at generation G."
+> The server cannot check it — the generation moves on resize and reset only, so
+> agreement means the geometry still matches, not that the cells are current.
+
+That contract is cheap to honor across a handoff, because panes are quiesced
+*before* the exporter retires its gateway (§3): a client drained at disconnect
+time was drained against a grid nothing could still move. A client that was not
+drained must omit the generation (opening with `First`, exactly as before) or
+ask for a keyframe with `FlowControl::Resync`. **W09 owns that judgement.**
+
+**The hello's `generations` is read too, and both halves of `Resume` are spent
+once.** §5 scopes W08 to the bind parameter, but `Resume.generations` is the
+other frozen field with no reader and 04 §6 puts the claim in the *hello*
+("re-Hellos presenting its last cursor and generations"). Since no stream exists
+at hello time — bindings die with their connection — the only thing the hello's
+generations can be is a per-pane default for the first re-bind, and that is what
+they are. Both `last_seq` and each pane's generation are **taken**, not read:
+the claim describes the moment the client reconnected, so it answers exactly one
+bare `events.subscribe` and one bare `stream.bind` per pane. A second bare
+subscribe means "from here", not "rewind and replay it all again"; a second bare
+bind for a pane is a client asking for that grid afresh, which is a request for
+a keyframe, not a repeat of a claim it already cashed in.
+`a_generation_presented_in_the_hello_is_spent_by_the_first_rebind` pins both
+halves, and both halves are load-bearing — removing the fallback turns the
+first assertion red, making the lookup non-consuming turns the second one red.
+
+**Four edits outside the §5 scope list.** None is behavior beyond the decision
+above; all four are the plumbing without which the decision cannot reach the
+code that makes it.
+
+- `conn/streams.rs` — the generation comparison happens here and nowhere else,
+  because this is the only place the pane's live generation (from the wiring)
+  and the client's claim are both in hand. `ConnStreams::bind` therefore takes
+  `BindParams` whole instead of `StreamKind`, and `ConnStreams::new` takes the
+  connection's resume block. No wave-3 or wave-4 peer lists this file.
+- `conn/resume.rs` (new) — the resume block as connection state, shared by the
+  event subscription and the stream bindings. It is a new file rather than
+  fields on both, because the "spent once" rule has to be one rule.
+- `tests/support/mod.rs` — `Server::start_with_replay` (the gap case needs a
+  bus with the *real* `DEFAULT_REPLAY_CAPACITY`, not the harness's 64),
+  `Client::{hello_resuming, hello_as_attach_resuming, send_request, next_frame,
+  next_frame_within}` and `try_read_frame`. All additive; nothing existing
+  changed shape. `next_frame_within` is the only way to assert a *silence*, and
+  "no keyframe" is a claim about what the server did not send.
+- `tests/agent_verbs/harness.rs` — one `ConnResume::none()` argument, the
+  in-process rig's truth (no hello reached it).
+
+**The keyframe *reason* is not observable on the wire, and is not made so.**
+`GridMessage::Reset` has no reason field; adding one would be a wire change for
+a fact only the server's own logs and tests want.
+`a_bind_with_a_stale_generation_opens_with_keyframe_reason_generation` therefore
+proves the keyframe over the socket and the reason through the public damage
+API (`GridStreamConfig::resuming` → `GridStream::owed_keyframe`), against the
+same live generation the socket case was judged against.
+
+**The goldens did not move.** No file under `tests/goldens/` and nothing in
+`amx-proto` was touched: `Resume` and the additive `generation` were already
+frozen (R-M3-12 in full — this is the reader it was frozen for), so the resync
+needed no wire at all.
+`a_verb_connection_without_resume_behaves_exactly_as_before` is the behavioral
+half of the same claim, and it is the one case in the suite that stays **green**
+when the change is neutered.
+
+**One intermittent failure observed, in `flow_control`, not attributable here.**
+`two_clients_at_different_speeds_each_stay_consistent` failed once in a full
+`cargo test --workspace` run with both streams reporting identical stats
+(`absorbed: 60, coalesced: 1, keyframes: 1, deltas: 1`) — 58 of 60 publications
+carried no damage at all, i.e. the pane's `cat` never echoed the bursts. That is
+upstream of `GridStream` entirely, and `GridStreamConfig::new` still produces
+byte-identical state for that suite (`live: FIRST`, `resume: None` ⇒ the same
+`First` keyframe and the same `resumed: false`). Not reproduced in 10 repetitions
+under 8-way CPU load, nor in two subsequent full workspace runs. Recorded rather
+than explained.
+
+**For W09 — the client contract, exactly.** What to send, when, and what to be
+ready for:
+
+1. **On transport EOF**, reconnect with backoff and re-`Hello` with
+   `resume: Some(Resume { last_seq, generations })`, where `last_seq` is the
+   highest bus sequence the client has *consumed* (from `Welcome.seq`, then
+   every `Delivery::Event`'s `seq`, and `to` from every `Delivery::Gap`), and
+   `generations` lists only panes whose grid the client believes **complete** —
+   omit a pane whose stream was paused, stalled, or mid-delta at the
+   disconnect.
+2. **Branch on `Welcome.session`** before using any of it. A different
+   `SessionId` means a different server: drop the caches and treat it as a
+   fresh attach (`resume: None` would have been the honest hello, so re-Hello
+   or simply re-bind with no generation — a stale generation from another
+   server's pane id space cannot collide, but presenting one is a lie).
+3. **`events.subscribe` with `after_seq: None`** on a resumed connection and
+   the server opens at the hello's `last_seq`. Passing an explicit `after_seq`
+   overrides it. Either way, be ready for `Delivery::Gap{from, to}` as the
+   **first** delivery: that is a resume past the replay ring
+   (`DEFAULT_REPLAY_CAPACITY`, 1024) and it means re-query `session.state` and
+   resume from its capture seq — never a silent skip, and never an error.
+   The fallback is spent; a second bare subscribe on that connection opens at
+   the head.
+4. **`stream.bind`** for a pane in the hello's `generations` may omit
+   `generation` and gets the hello's value for its first bind; every later bind
+   of that pane must pass `generation` explicitly or it opens with a `First`
+   keyframe. Passing it on the call always wins.
+5. **What arrives on a delta-only open**: a `Cursor` message, then ordinary
+   `Delta`s. No `Reset`. A `Reset` after presenting a matching generation means
+   the pane resized between the bind and the first frame, which is the
+   `Generation` keyframe arriving late and correct.
+6. **If the client cannot vouch for its cells**, `FlowControl::Resync` on the
+   bound stream is the ask, and it is cheaper than a wrong screen.
+
+**Budget.** `conn/events.rs` 302 → 315, `conn/streams.rs` 234 → 252,
+`damage/stream.rs` 380 → 447, `conn/mod.rs` 209 → 227 — every one under the soft
+budget, so the anticipated `conn/events.rs` split did not happen and should not
+be forced. `tests/resync.rs` did pass 500 and *was* split: the frame-level
+helpers moved to `tests/resync/harness.rs` (the `flow_control` `#[path]`
+convention), leaving 358 and 218.

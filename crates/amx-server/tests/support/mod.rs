@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use amx_core::{Bus, Ctx, Scheduled, SessionName};
 use amx_proto::frame::{CONTROL_CHANNEL, FRAME_HEADER_LEN};
-use amx_proto::{ClientInfo, Feature, FrameHeader, Hello, Request, RequestId, Response, Welcome};
+use amx_proto::{
+    ClientInfo, Feature, FrameHeader, Hello, Request, RequestId, Response, Resume, Welcome,
+};
 use amx_server::actor::CoreHandle;
 use amx_server::actor::core::Core;
 use amx_server::actor::gateway::{Gateway, GatewayProbe, GatewayReport};
@@ -92,8 +94,17 @@ pub struct Server {
 impl Server {
     /// Bind a session socket under a fresh temp directory and start serving.
     pub async fn start(tag: &str) -> Self {
+        Self::start_with_replay(tag, 64).await
+    }
+
+    /// The same, with a bus whose replay ring holds `replay_capacity` events.
+    ///
+    /// The width of the replay ring is the width of the resume window, so a
+    /// test about falling off the back of it needs to say which ring it means.
+    pub async fn start_with_replay(tag: &str, replay_capacity: usize) -> Self {
         let dir = TempDir::new(tag);
-        let ctx = ctx_under(dir.path());
+        let mut ctx = ctx_under(dir.path());
+        ctx.bus = Arc::new(Bus::new(replay_capacity));
         let mut runtime = Runtime::new(ctx.clone());
 
         let (core_tx, core_rx) = mpsc::channel(64);
@@ -135,6 +146,14 @@ impl Server {
     pub async fn attach(&self) -> Client {
         let mut client = self.connect().await;
         client.hello(amx_proto::version::window()).await;
+        client
+    }
+
+    /// Connect and complete the handshake as an attached client, so the
+    /// session has a workspace with a live pane in it.
+    pub async fn attach_rendering(&self) -> Client {
+        let mut client = self.connect().await;
+        client.hello_as_attach(amx_proto::version::window()).await;
         client
     }
 
@@ -197,7 +216,26 @@ impl Client {
         self.hello_with(proto, true).await
     }
 
+    /// Do the handshake presenting a resume block: this is a reattach.
+    pub async fn hello_resuming(&mut self, proto: (u16, u16), resume: Resume) -> Welcome {
+        self.hello_full(proto, false, Some(resume)).await
+    }
+
+    /// Do the handshake as an attached client that is also reattaching.
+    pub async fn hello_as_attach_resuming(&mut self, proto: (u16, u16), resume: Resume) -> Welcome {
+        self.hello_full(proto, true, Some(resume)).await
+    }
+
     async fn hello_with(&mut self, proto: (u16, u16), attach: bool) -> Welcome {
+        self.hello_full(proto, attach, None).await
+    }
+
+    async fn hello_full(
+        &mut self,
+        proto: (u16, u16),
+        attach: bool,
+        resume: Option<Resume>,
+    ) -> Welcome {
         let hello = Hello {
             proto,
             features: BTreeSet::from([Feature::GRID_STREAM, Feature::named(UNKNOWN_FEATURE)]),
@@ -207,7 +245,7 @@ impl Client {
                 term: None,
             },
             attach,
-            resume: None,
+            resume,
         };
         self.send_control(&serde_json::to_vec(&hello).expect("encode hello"))
             .await;
@@ -224,6 +262,38 @@ impl Client {
         let (header, payload) = read_frame(&mut self.stream).await;
         assert!(header.is_control(), "a reply must be a control frame");
         serde_json::from_slice(&payload).expect("decode response")
+    }
+
+    /// Queue one JSON-RPC call without reading anything back.
+    ///
+    /// For calls whose reply can be overtaken by traffic the same call starts:
+    /// `events.subscribe` spawns its pump before the dispatcher queues the
+    /// reply, so a notification may reach the wire first and the caller has to
+    /// read frames rather than *the* reply.
+    pub async fn send_request(&mut self, id: u64, method: &str, params: Value) {
+        let request = Request::new(RequestId::Number(id), method, Some(params));
+        self.send_control(&serde_json::to_vec(&request).expect("encode request"))
+            .await;
+    }
+
+    /// Read the next whole frame, whatever channel it is on.
+    pub async fn next_frame(&mut self) -> (FrameHeader, Vec<u8>) {
+        read_frame(&mut self.stream).await
+    }
+
+    /// Read the next whole frame, or `None` if nothing arrives within
+    /// `patience`.
+    ///
+    /// The only way to assert a *silence*: "no keyframe" is a claim about what
+    /// the server did not send, and there is no positive event for that.
+    pub async fn next_frame_within(
+        &mut self,
+        patience: Duration,
+    ) -> Option<(FrameHeader, Vec<u8>)> {
+        tokio::time::timeout(patience, try_read_frame(&mut self.stream))
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Read until the server closes. `true` if it did so within [`PATIENCE`].
@@ -257,6 +327,21 @@ pub async fn read_frame<R: AsyncRead + Unpin>(source: &mut R) -> (FrameHeader, V
         .expect("a frame payload arrived")
         .expect("read the payload");
     (header, payload)
+}
+
+/// Read one whole frame, or `None` if the peer stops mid-frame.
+///
+/// [`read_frame`]'s deadline is a test failure; this one's absence is an
+/// answer, so it never panics on a short read.
+pub async fn try_read_frame<R: AsyncRead + Unpin>(
+    source: &mut R,
+) -> Option<(FrameHeader, Vec<u8>)> {
+    let mut header = [0_u8; FRAME_HEADER_LEN];
+    source.read_exact(&mut header).await.ok()?;
+    let header = FrameHeader::decode(header).expect("a decodable header");
+    let mut payload = vec![0_u8; header.payload_len()];
+    source.read_exact(&mut payload).await.ok()?;
+    Some((header, payload))
 }
 
 /// Poll `cond` until it holds, failing the test if it never does.
