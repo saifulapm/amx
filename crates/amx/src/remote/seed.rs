@@ -125,13 +125,34 @@ fn confirmed(question: &str) -> anyhow::Result<bool> {
 /// caller reaches it — so there is nothing here to quote and nothing to inject.
 /// `$$` names the remote shell's own pid, which is what keeps two seedings of
 /// the same host from colliding on the temporary file.
-const INSTALL_SCRIPT: &str = "\
-set -e
-dir=\"$HOME/.local/bin\"
-mkdir -p \"$dir\"
-tmp=\"$dir/.amx.$$\"
-trap 'rm -f \"$tmp\"' EXIT
-cat > \"$tmp\"
-chmod 755 \"$tmp\"
-mv -f \"$tmp\" \"$dir/amx\"
-";
+///
+/// It is `sh`, and it is only ever read by `sh`: [`Remote::feed`] wraps it
+/// through `remote::ssh::via_sh` so the remote *login* shell never parses a
+/// word of it. Four constructions here would fail outright under fish —
+/// `set -e`, the two assignments, and `trap … EXIT` — and `$HOME` must be
+/// expanded by the interpreter that runs the script rather than by whatever
+/// shell ssh happened to hand the string to. One line, `;`-separated, for the
+/// reason `via_sh` gives: csh will not have a newline inside a quoted word.
+const INSTALL_SCRIPT: &str = "set -e; \
+     dir=\"$HOME/.local/bin\"; \
+     mkdir -p \"$dir\"; \
+     tmp=\"$dir/.amx.$$\"; \
+     trap 'rm -f \"$tmp\"' EXIT; \
+     cat > \"$tmp\"; \
+     chmod 755 \"$tmp\"; \
+     mv -f \"$tmp\" \"$dir/amx\"";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::remote::ssh::{assert_one_simple_command, via_sh};
+
+    #[test]
+    fn the_remote_command_is_one_simple_command_so_a_non_posix_login_shell_can_run_it() {
+        // Built as `Remote::feed` builds it. The install is the command with
+        // the most `sh` in it and the one whose failure would be worst: a
+        // login shell that ran half of this would leave a partial file where
+        // the atomic `mv` was supposed to put a whole one.
+        assert_one_simple_command(&via_sh(INSTALL_SCRIPT));
+    }
+}

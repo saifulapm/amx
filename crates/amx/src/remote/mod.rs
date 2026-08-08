@@ -23,9 +23,16 @@
 //! ssh(1) is explicit that "the arguments will be appended to the command,
 //! separated by spaces, before it is sent to the server to be executed" — one
 //! string, parsed by the remote login shell. Every argument amx sends is
-//! therefore single-quoted here ([`sq`]), because a session name is validated
-//! as a *path component* (`amx_core::SessionName`) and a path component may
-//! hold spaces, quotes and `$`. Nothing reaches a remote shell unquoted.
+//! therefore single-quoted here ([`ssh::sq`]), because a session name is
+//! validated as a *path component* (`amx_core::SessionName`) and a path
+//! component may hold spaces, quotes and `$`. Nothing reaches a remote shell
+//! unquoted.
+//!
+//! The shell doing that parsing is the remote *user's* login shell, which is
+//! not required to be POSIX and on plenty of machines is not — so no command
+//! amx sends is shell syntax either. Every one of them goes out through
+//! [`ssh::via_sh`] as `/bin/sh -c '<script>'`: three words, no keyword, no
+//! operator, runnable by fish and csh as readily as by `sh`.
 //!
 //! # What happens when the far side has no amx
 //!

@@ -7,6 +7,17 @@
 //! script as written, that framed binary really survives the channel. This
 //! suite does, against a loopback sshd on 127.0.0.1 with a throwaway key.
 //!
+//! # More than one login shell, because "the remote login shell" is not one
+//!
+//! The loopback sshd runs as the developer, whose login shell is POSIX, so on
+//! its own this suite would only ever prove the remote command runs under `sh`.
+//! It did — and `--remote` was still unusable against every host whose login
+//! shell is fish, csh or tcsh, because ssh hands the command to *that* shell
+//! and amx used to send it POSIX syntax. So the second case forces each
+//! non-POSIX shell the machine has onto the far side in turn and asserts the
+//! attach works anyway; see [`Sshd::force_command`] for how, and
+//! [`refuses_posix`] for why the list is measured rather than trusted.
+//!
 //! # Where it runs, and why not everywhere
 //!
 //! Linux only, and only when `AMX_TEST_SSHD` is set (R-M3-6). darwin runners
@@ -108,6 +119,69 @@ fn first_file(candidates: &[&str]) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// Login shells that are in ordinary daily use and cannot parse `sh`.
+///
+/// Not an exhaustive list of non-POSIX shells and not meant to be: one of them
+/// qualifying is enough to run the case, and none of them qualifying is a
+/// stated skip rather than a silent pass.
+const NON_POSIX_SHELLS: &[&str] = &["fish", "csh", "tcsh"];
+
+/// A script shaped exactly like the one amx sends — a POSIX `if`, and the work
+/// on the line after `then` — printing a marker instead of doing the work.
+const POSIX_PROBE: &str = "if true; then\nprintf %s ran-it\nfi\n";
+
+/// What a shell that parsed [`POSIX_PROBE`] prints.
+const PROBE_MARKER: &str = "ran-it";
+
+/// The same work in the shape amx now sends: one line, quoted, for `/bin/sh` to
+/// parse rather than the login shell.
+///
+/// One line matters as much as the quoting. csh answers `Unmatched '''.` to a
+/// newline inside single quotes, so a wrapping that fixed fish with a
+/// multi-line payload would have broken csh in the same commit.
+const WRAPPED_PROBE: &str = "/bin/sh -c 'if true; then printf %s ran-it; fi'";
+
+/// Every one of [`NON_POSIX_SHELLS`] this machine has, wherever it keeps it.
+///
+/// `command -v` rather than a table of paths, because these arrive from a
+/// distribution, from homebrew and from `/usr/local` on different machines and
+/// a table written here would be a table written from memory.
+fn non_posix_shells() -> Vec<PathBuf> {
+    NON_POSIX_SHELLS
+        .iter()
+        .filter_map(|name| {
+            let found = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("command -v {name}"))
+                .output()
+                .ok()?;
+            let path = PathBuf::from(String::from_utf8_lossy(&found.stdout).trim());
+            (found.status.success() && path.is_file()).then_some(path)
+        })
+        .collect()
+}
+
+/// Whether `shell` refuses [`POSIX_PROBE`] outright — the failure amx was
+/// reported with, rather than merely a shell that is not `sh`.
+///
+/// **Not every non-POSIX shell can catch this bug, which is why there is a
+/// probe here and not just a `command -v`.** csh and tcsh read a script line by
+/// line: handed amx's old bridge script they misparse
+/// `if command -v amx …; then`, print a complaint — and then run the `exec` on
+/// the next line anyway. The wrong thing happens *and* the right thing happens,
+/// so a case staged only on tcsh would attach happily with the bug in place.
+/// fish parses the whole script before running any of it, so a syntax error
+/// means nothing runs at all — the reported failure exactly. This tells the two
+/// apart by measurement instead of a hard-coded preference that would rot when
+/// a fourth shell shows up.
+fn refuses_posix(shell: &Path) -> bool {
+    Command::new(shell)
+        .arg("-c")
+        .arg(POSIX_PROBE)
+        .output()
+        .is_ok_and(|out| !String::from_utf8_lossy(&out.stdout).contains(PROBE_MARKER))
+}
+
 /// A loopback sshd, its keys, and the client config that reaches it.
 struct Sshd {
     child: Child,
@@ -125,7 +199,10 @@ impl Drop for Sshd {
 impl Sshd {
     /// Start one, carrying `env`'s roots and `path` into every session it
     /// serves, and write the `~/.ssh/config` entry that reaches it.
-    fn start(env: &Env, path: &str) -> Self {
+    ///
+    /// `login_shell` stages the far side's *login shell* for the one case the
+    /// developer's own passwd entry cannot supply: see [`Self::force_command`].
+    fn start(env: &Env, path: &str, login_shell: Option<&Path>) -> Self {
         let dir = env.home().join("sshd");
         fs::create_dir_all(&dir).expect("create the sshd dir");
         keygen(&dir.join("host_key"));
@@ -157,9 +234,11 @@ impl Sshd {
              KbdInteractiveAuthentication no\n\
              PubkeyAuthentication yes\n\
              SetEnv PATH={path} XDG_RUNTIME_DIR={home}/run \
-             XDG_STATE_HOME={home}/state XDG_CONFIG_HOME={home}/config\n",
+             XDG_STATE_HOME={home}/state XDG_CONFIG_HOME={home}/config\n\
+             {forced}",
             dir = dir.display(),
             home = env.home().display(),
+            forced = login_shell.map(Self::force_command).unwrap_or_default(),
         );
         let config_path = dir.join("sshd_config");
         fs::write(&config_path, config).expect("write sshd_config");
@@ -207,6 +286,27 @@ impl Sshd {
             dir,
             ssh_config,
         }
+    }
+
+    /// The directive that makes `shell` read amx's command, as a login shell
+    /// would.
+    ///
+    /// sshd assigns `SHELL` from the passwd entry after `SetEnv` is applied
+    /// (see above), so the far side's login shell cannot be set by a variable
+    /// and the developer's own is whatever it is. `ForceCommand` is the seam
+    /// that is left: sshd runs it *instead of* the requested command, with the
+    /// requested one in `$SSH_ORIGINAL_COMMAND` — so `shell -c "<command>"` is
+    /// character for character what sshd itself would have run had `shell` been
+    /// in the passwd entry. Nothing about amx's string is touched on the way.
+    ///
+    /// One line, and it is the only `ForceCommand` in the file: sshd takes the
+    /// first value it obtains for a keyword and drops the rest, which is the
+    /// same rule the single `SetEnv` line above exists for.
+    fn force_command(shell: &Path) -> String {
+        format!(
+            "ForceCommand exec {shell} -c \"$SSH_ORIGINAL_COMMAND\"\n",
+            shell = shell.display(),
+        )
     }
 
     /// A directory holding an `ssh` that adds `-F <config>` and execs the real
@@ -272,7 +372,7 @@ fn loopback_ssh_attach_renders_a_real_pane() {
         .expect("write the remote config");
     let exe = env.exe();
     let bin_dir = exe.parent().expect("the binary's directory").to_path_buf();
-    let sshd = Sshd::start(&env, &bin_dir.display().to_string());
+    let sshd = Sshd::start(&env, &bin_dir.display().to_string(), None);
     env.set_var(
         "PATH",
         &format!(
@@ -316,4 +416,111 @@ fn loopback_ssh_attach_renders_a_real_pane() {
         amx_server::session::probe::probe(&env.socket()).is_ok_and(|p| p.is_running()),
         "detaching took the remote session with it"
     );
+}
+
+#[test]
+fn loopback_ssh_attaches_through_a_login_shell_that_cannot_parse_sh() {
+    const NAME: &str = "loopback_ssh_attaches_through_a_login_shell_that_cannot_parse_sh";
+    if let Some(reason) = skipped() {
+        eprintln!("{NAME}: skipped — {reason}");
+        return;
+    }
+    let shells = non_posix_shells();
+    if shells.is_empty() {
+        eprintln!(
+            "{NAME}: skipped — none of {NON_POSIX_SHELLS:?} is installed here, and \
+             this case needs a real login shell that is not `sh` to be worth \
+             anything. Install fish to run it."
+        );
+        return;
+    }
+    if !shells.iter().any(|shell| refuses_posix(shell)) {
+        eprintln!(
+            "{NAME}: skipped — {shells:?} are installed but every one of them \
+             muddles through a POSIX script instead of refusing it, so this case \
+             would pass with the bug in place (see `refuses_posix`). Install fish \
+             to run it."
+        );
+        return;
+    }
+
+    // Every one of them, not only the one that reproduces the bug. csh and
+    // tcsh cannot catch the original failure, but they are exactly what catches
+    // a *fix* that trades one broken shell for another — a quoted payload with
+    // a newline in it is `Unmatched '''.` to csh and fine to fish.
+    for shell in &shells {
+        attaches_through(shell);
+    }
+}
+
+/// Attach over the loopback sshd with `shell` reading amx's remote command.
+fn attaches_through(shell: &Path) {
+    // The staging is only meaningful if the shell can run what amx sends
+    // *after* the fix — otherwise a green result would mean the far side never
+    // ran anything either way.
+    let wrapped = Command::new(shell)
+        .arg("-c")
+        .arg(WRAPPED_PROBE)
+        .output()
+        .expect("run the wrapped probe");
+    assert!(
+        String::from_utf8_lossy(&wrapped.stdout).contains(PROBE_MARKER),
+        "{} could not run `/bin/sh -c '<script>'` either: {wrapped:?}",
+        shell.display(),
+    );
+
+    let mut env = Env::new("sshf");
+    fs::write(env.config_path(), "[terminal]\nshell = \"/bin/sh\"\n")
+        .expect("write the remote config");
+    let exe = env.exe();
+    let bin_dir = exe.parent().expect("the binary's directory").to_path_buf();
+    // The whole of the difference from the case above: the far side reads
+    // amx's command with a shell that has no `if`, no `fi` and no `VAR=value`.
+    let sshd = Sshd::start(&env, &bin_dir.display().to_string(), Some(shell));
+    env.set_var(
+        "PATH",
+        &format!(
+            "{}:{}",
+            sshd.wrapper_dir().display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+
+    // The two ways the far side refuses: amx's own "no amx here" sentence, and
+    // any error the binary printed. Both end the wait, so a failure is the
+    // assertion below and its account of what the shell said — not a timeout
+    // waiting for a prompt that was never coming.
+    let refused = |seen: &[u8]| shows(seen, "has no amx") || shows(seen, "amx: ");
+    let mut term = env.attach_on_tty(&["--remote", ALIAS], ROWS, COLS);
+    term.wait_output_or(
+        "a remote pane to render its prompt, or amx to give up on the far side",
+        |seen| shows(seen, "$") || refused(seen),
+        || sshd.log(),
+    );
+    assert!(
+        !refused(term.output()),
+        "{} could not run amx's remote command, so `--remote` is unusable against \
+         every host whose login shell is that one — and a host with a working amx \
+         on it gets told it has none. One simple command, on one line. The screen \
+         held:\n{}\nsshd said:\n{}",
+        shell.display(),
+        rig::screen::render(&rig::rasterize(term.output())),
+        sshd.log(),
+    );
+
+    // And it is a real session, not merely a pane that painted: the far side
+    // parsed the whole script, found amx, and the server it started answers.
+    term.type_line("printf 'ok-%s\\n' past-the-login-shell");
+    term.wait_output("the remote child's output to render", |seen| {
+        shows(seen, "ok-past-the-login-shell")
+    });
+    assert!(
+        amx_server::session::probe::probe(&env.socket()).is_ok_and(|p| p.is_running()),
+        "no server is answering {}; sshd said:\n{}",
+        env.socket().display(),
+        sshd.log(),
+    );
+
+    term.chord(b'd');
+    assert_eq!(term.wait(), Some(0), "sshd said:\n{}", sshd.log());
 }
