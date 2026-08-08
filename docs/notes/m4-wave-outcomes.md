@@ -433,3 +433,104 @@ planted empty and declared from `actor/core/mod.rs`, so X02 never touches that
 file. The declaration is `mod agents;` and not `pub mod agents;` as §5 spells
 it — every other module in `actor/core/` is private and reaches `Core` through
 `impl` blocks and `pub(super)` functions, and X10 needs nothing wider.
+---
+## X07 — Client configuration, a configurable prefix, and `amx keys`
+
+### The decision R-M4-14 left to this task
+
+**`client::Keybindings` gets the exemption, not a reader, and 04 should say so.**
+R-M4-14 gave X07 the choice and named the reason it might go this way: bindings
+resolved entirely client-side may make the handshake declaration redundant. They
+do, and more strongly than the risk row supposed — the enum has no *coherent*
+reader to build, not merely no built one. `Keybindings::Server` means "use the
+session's bindings" (`amx-proto/src/control/client.rs:41-43`) and there is no
+such thing: no server-side binding table exists, none is designed anywhere in
+04, and the whole of the prefix layer is decided in `amx-client/src/input/` out
+of a file the server never reads. A client has always been `Local`, so a field
+that can only ever carry one value carries nothing. The honest close is one
+sentence in 04 §7 recording that keybindings are client-side by construction and
+`Keybindings` is documentary, the shape `cli/mod.rs:53-57,85-93` already uses
+for `--remote`. **X07 does not own `docs/04-architecture.md`** (X03 owned it in wave
+1 and no wave-2 task lists it), so the sentence is owed to **X00 or X20** — X20
+writes the configuration reference in wave 5 and is the natural place. The
+alternative, deleting the enum, is a wire change for no gain and is not
+proposed.
+
+### Divergences from §5
+
+**A key that is not one byte is refused, and `[keys]`'s doc comment is wider
+than that.** X02's `KeysConfig` doc says key names are spelled "the way
+`pane.send_keys` spells them — `ctrl+a`, `f1`, or a bare character"
+(`amx-core/src/config/mod.rs:207-210`). The spelling is identical, deliberately
+— the plus-as-a-key rule of `actor/pane_host/keys.rs:64-77` is reproduced
+character for character — but the *vocabulary* is a strict subset, and `f1` is
+outside it. The input machine is a byte-stream state machine and matches one
+byte after the prefix; `f1`, arrows and `alt+x` arrive as escape sequences or as
+two bytes, and binding them would need a second, lossy key decoder in the one
+place 04 §7 forbids one. Such a name is refused by name, with the reason and
+with what to write instead, rather than silently dropped. `amx-core`'s comment
+is not this task's file; the example wants correcting to a key that resolves
+(`esc`, or a bare character) whenever someone next owns it. **X20** documents
+the vocabulary either way.
+
+**One more file than §5 lists, and one fewer than it might look.** The entry
+scopes `amx-client/src/config.rs`; it landed as `config/{mod,keys,name}.rs`. The
+single file came to 622 lines — over the soft budget on the day it was written,
+which is what R-M1-3 says not to do — so it was split by responsibility before
+it landed: the reading and `[client]` in `mod.rs`, the prefix table in
+`keys.rs`, the key grammar in `name.rs`. Everything is re-exported from `mod`,
+so every consumer still writes `amx_client::config::Bindings`. Nothing outside
+`amx-client/src/config/` knows there are three files. Tests went to a new
+`crates/amx-client/tests/config.rs` beside the `input.rs` the entry names, for
+the same reason: they are about resolution, `input.rs`'s are about the machine.
+
+**`crates/amx-client/src/input/mouse.rs`'s header is corrected, per X03's
+hand-off.** X03 recorded that the "forwarded verbatim" claim there is false for
+the same reason 04 §7's was, and left it to whichever of X07 and X13 touched the
+module first. X07 did. The correction is prose only — the module still reads no
+coordinate — and it names X13 as the owner of whatever the code does about the
+offset.
+
+**X05's hand-off is closed.** `attach --pane <short number>` now has the
+end-to-end test X05 could not write from its own file scope: a number resolved
+against a running session and rendered full-screen without chrome, and a number
+no pane holds refused before the terminal is touched.
+`crates/amx/tests/session_cli.rs`, beside its UUID sibling.
+
+### Hand-offs
+
+**To X12 — the narrow threshold is resolved and nothing consumes it yet.**
+`amx_client::config::Settings::narrow_cols` is read out of `[client]` and
+carried as a `NarrowCols` newtype whose `Default` is
+`amx_core::config::DEFAULT_NARROW_COLS`, so "the settings nobody configured"
+cannot mean a threshold of zero. `NarrowCols::is_narrow(cols)` is the whole
+predicate. `amx attach`'s `full()` already has the resolved `Settings` in hand
+(`crates/amx/src/cmd/attach.rs`); threading it into `App` is one field in
+`app/mod.rs`, which is X09's this wave and X12's the next. The field ledger's
+rule holds — the reader lands inside M4.
+
+**To X09 and X12 — `amx attach --pane` runs the shipped bindings, deliberately
+untouched.** The one-pane client has its own prefix constant and its own detach
+chord (`crates/amx/src/cmd/detach.rs:12`, read by `cmd/viewport.rs:230-235`),
+which are not the input machine's table and did not move with it. `viewport.rs`
+is X09's this wave and `detach.rs` is in no wave-2 task's list, so X07 changed
+neither. A user who rebinds the prefix therefore gets it in the full client and
+`ctrl+a` in `attach --pane`. That is a real inconsistency and it is small — two
+constants and one `Chord` — but it is somebody else's file. Whoever next owns
+`cmd/detach.rs` should take its prefix from `amx_client::config::load`.
+
+**To X14 — new prefix bindings are a table row now, not a match arm.** The
+scoped-attention key X17 owes the client is `PrefixAction` plus one row in
+`SHIPPED` (`amx-client/src/config/keys.rs`) plus one arm in
+`Input::prefix_key`; the arm is exhaustive on purpose, so a verb added to the
+enum and not to the machine does not compile. Its name becomes bindable and
+`amx keys`-visible the day it is written, with no second table to update.
+
+### One thing the next waves should not re-litigate
+
+**The prefix-twice escape is a row of the table and is not overridable.** It
+sits on whatever the prefix resolved to, seated last, and a `bind` aimed at that
+key is refused with a diagnostic rather than silently losing. A table that could
+remove the escape would let a config file lock a program out of its own way
+out — and the phone profile D14 exists for is exactly the case where the prefix
+has been moved to an unusual key that the user still needs to be able to send.
