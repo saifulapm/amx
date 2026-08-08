@@ -7,8 +7,9 @@
 //! mechanically, because a convention nothing checks is a convention on its
 //! way out.
 //!
-//! Beside it are the guards on who may *publish* an event, which is the same
-//! kind of rule about the shipped code rather than about the suites.
+//! Beside it are the guards on who may *publish* an event, and — in
+//! [`unfinished`] — the guard that no shipped body is left as a stub. Both are
+//! the same kind of rule about the shipped code rather than about the suites.
 //!
 //! The milestone's own two ledgers — the open dispatch seam, and the fields
 //! frozen ahead of their readers — live in [`ledgers`]. They are the only
@@ -24,6 +25,8 @@ use rig::Env;
 
 #[path = "hygiene/ledgers.rs"]
 mod ledgers;
+#[path = "hygiene/unfinished.rs"]
+mod unfinished;
 
 /// The forbidden token, assembled so this file does not match itself.
 fn needle() -> String {
