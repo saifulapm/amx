@@ -154,43 +154,46 @@ async fn server_memory_is_bounded_under_a_stalled_client() {
     let wire = Wire::new(TINY_PIPE);
     let mut stream = grid_stream(&pane, KeyframePolicy::default());
 
-    // Watched until the pane has published enough frames for the ratio below to
-    // mean something, not for a fixed three seconds (DR-19). A window is a
-    // claim about the machine — a flood given a sixth of a core publishes a
-    // sixth of the frames in the same three seconds, and this suite runs under
-    // `cargo test --workspace` beside everything else. Counting *publications*
-    // and not loop turns is the other half: the old `absorbed > 100` counted
-    // how often the test itself got scheduled, which is a fact about the runner
-    // and not about the flood.
-    const PUBLICATIONS: usize = 100;
-    let mut published = 0_usize;
+    // Watched until the claim below is true, not for a fixed three seconds and
+    // not for a fixed number of publications (DR-19). Both are claims about the
+    // machine: this suite runs under `cargo test --workspace` beside everything
+    // else, and a pane's parser given a sixth of a core publishes a sixth of
+    // the frames a second. The old `absorbed > 100` in a three-second window
+    // asked for a publication rate; measured at eight copies on one core the
+    // pane manages ten a second and lands just short, which is a runner
+    // reported as a memory failure.
+    //
+    // What the flood has to demonstrate is the ratio itself — publications
+    // outrunning frames on the wire, because the writer wedged on the first one
+    // and the rest coalesced into the set behind it. That becomes true at
+    // whatever speed the pane publishes, and never becomes true if the stream
+    // keeps sending, which is the failure this test is for.
+    const MARGIN: u64 = 20;
     let mut peak = 0;
     let deadline = Instant::now() + PATIENCE;
-    while published <= PUBLICATIONS {
+    let stats = loop {
         sample(&feed, &mut [(&mut stream, &wire.out)]);
         peak = peak.max(stream.accounted_bytes(&wire.out));
+        let stats = stream.stats();
         assert!(
             peak < MEMORY_BOUND,
-            "accounted bytes reached {peak}, over the {MEMORY_BOUND} byte bound: {:?}",
-            stream.stats()
+            "accounted bytes reached {peak}, over the {MEMORY_BOUND} byte bound: {stats:?}"
         );
+        if stats.frames() * MARGIN < stats.absorbed {
+            break stats;
+        }
         assert!(
             Instant::now() < deadline,
-            "the pane published {published} frames in {:?}: {:?}",
-            PATIENCE,
-            stream.stats()
+            "a client that never reads was still being sent frames after {:?}: {stats:?}",
+            PATIENCE
         );
-        if tokio::time::timeout(Duration::from_millis(5), feed.changed())
-            .await
-            .unwrap_or(false)
-        {
-            published += 1;
-        }
-    }
+        let _ = tokio::time::timeout(Duration::from_millis(5), feed.changed()).await;
+    };
 
-    let stats = stream.stats();
+    // Restated as an assertion so the claim is readable where it is made, and
+    // so a loop that ever stops enforcing it fails here rather than passing.
     assert!(
-        stats.frames() * 20 < stats.absorbed,
+        stats.frames() * MARGIN < stats.absorbed,
         "a client that never reads is sent only what the writer took before it \
          blocked, however long the flood runs: {stats:?}"
     );
