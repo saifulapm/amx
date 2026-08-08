@@ -309,13 +309,19 @@ fn agent_events_have_exactly_one_publisher() {
                 // ordinary word and the client's row cache has three of its
                 // own. The type's definition carries the doctest that documents
                 // the ordering, and a doctest is prose that happens to compile
-                // rather than a publisher. The handoff protocol's `commit` is
-                // §3 step 13 — ownership of a whole session transferring to a
-                // successor process — and shares nothing with this one but the
-                // English word.
+                // rather than a publisher. `Exporter::commit` is §3 step 13 —
+                // ownership of a whole session transferring to a successor
+                // process — and shares nothing with this one but the English
+                // word.
+                //
+                // The exemption is the *receiver*, not the directory. W06 wrote
+                // it as "any file under `handoff/`", which is wider than the
+                // fact it covers: the import half of that module seeds agent
+                // statuses, and a `StatusView::commit` appearing there is
+                // exactly the second publisher this test exists to catch.
                 let server = where_it_is.contains("amx-server");
                 let another_verb =
-                    where_it_is.ends_with("actor/agent.rs") || where_it_is.contains("/handoff/");
+                    where_it_is.ends_with("actor/agent.rs") || code.contains("exporter.commit(");
                 if server && line.contains(".commit(") && !another_verb {
                     committers.push(format!("{where_it_is}:{}: {code}", n + 1));
                 }

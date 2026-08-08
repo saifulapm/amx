@@ -57,8 +57,8 @@ use crate::config_rt::ConfigRuntime;
 use crate::handoff::manifest::{Manifest, ManifestError, SessionIdentity};
 use crate::handoff::protocol::importer::Restoring;
 use crate::handoff::protocol::{Ending, HandoffError, Importer, Timeouts, Token};
-use crate::platform::watch::watch_config;
 use crate::runtime::Runtime;
+use crate::session::scaffold::{SignalWatch, spawn_config_watcher};
 
 /// How often the probe loop looks at the session socket path.
 ///
@@ -163,6 +163,15 @@ pub async fn import(ctx: Ctx, opts: ImportOptions) -> Result<ServeReport, Import
 
     let (core_tx, core_rx) = mpsc::channel(CORE_MAILBOX);
     let mut runtime = Runtime::new(ctx.clone());
+    // Before the adoption, not after the commit. The successor is signallable
+    // from the moment it binds the session socket — a client that reconnects
+    // into the `ready`→`committed` window can be followed by an `amx session
+    // stop` — and a `SIGTERM` reaching a process with no handler installed
+    // kills it outright, mid-swap, holding every inherited descriptor. The
+    // token it cancels is watched by every stage that follows.
+    if stop == StopOn::Signals {
+        SignalWatch::install().spawn(&mut runtime, ctx.cancel.clone());
+    }
     // The identity is the whole point of a handoff: a reconnecting client
     // branches on `Welcome.session`, and a fresh id would tell every one of
     // them to throw away exactly the state this went to the trouble of
@@ -296,9 +305,6 @@ pub async fn import(ctx: Ctx, opts: ImportOptions) -> Result<ServeReport, Import
     tokio::task::spawn_blocking(move || importer.owned()).await?;
     tracing::info!(session = %ctx.session, "the handoff committed; this server owns the session");
 
-    if stop == StopOn::Signals {
-        runtime.spawn("signals", watch_signals(ctx.cancel.clone()));
-    }
     ctx.cancel.cancelled().await;
     let shutdown = runtime.shutdown().await;
     let gateway = report_rx.await.unwrap_or_default();
@@ -423,62 +429,4 @@ async fn unwind(
 ) -> ImportFailed {
     drop(core);
     stop_serving(ctx, runtime, err).await
-}
-
-/// Cancel `cancel` on `SIGTERM` or `SIGINT`, and return when it is cancelled.
-///
-/// The successor is an ordinary server from the commit onwards, and `amx
-/// session stop` signals whatever process the socket's peer credentials name —
-/// which is this one. Spelled again for the reason
-/// [`spawn_config_watcher`] is.
-async fn watch_signals(cancel: tokio_util::sync::CancellationToken) {
-    use tokio::signal::unix::{SignalKind, signal};
-
-    let (mut terminate, mut interrupt) = match (
-        signal(SignalKind::terminate()),
-        signal(SignalKind::interrupt()),
-    ) {
-        (Ok(terminate), Ok(interrupt)) => (terminate, interrupt),
-        (terminate, interrupt) => {
-            let err = terminate.err().or(interrupt.err());
-            tracing::error!(error = ?err, "could not install signal handlers");
-            cancel.cancelled().await;
-            return;
-        }
-    };
-    tokio::select! {
-        _ = terminate.recv() => {
-            tracing::info!("SIGTERM: shutting the session down");
-            cancel.cancel();
-        }
-        _ = interrupt.recv() => {
-            tracing::info!("SIGINT: shutting the session down");
-            cancel.cancel();
-        }
-        () = cancel.cancelled() => {}
-    }
-}
-
-/// Put the config watcher under the supervisor, if the watch can be
-/// established.
-///
-/// [`serve`](super::serve)'s helper, spelled again rather than shared: that
-/// file is the export path's this wave (W06), and a live upgrade that silently
-/// stopped reloading `config.toml` would be a capability lost to a merge
-/// conflict. Folding the two assemblies' shared scaffolding into one is a W14
-/// seam, named here so it is a decision rather than an oversight.
-fn spawn_config_watcher(runtime: &mut Runtime, ctx: &Ctx, config: ConfigRuntime) {
-    match watch_config(ctx, ctx.cancel.clone()) {
-        Ok(watcher) => {
-            let bus = Arc::clone(&ctx.bus);
-            runtime.spawn("config-watch", config.run(bus, watcher));
-        }
-        Err(err) => {
-            tracing::warn!(
-                path = %ctx.config_path.display(),
-                error = %err,
-                "config changes will not be picked up until this session restarts",
-            );
-        }
-    }
 }

@@ -239,6 +239,42 @@ impl Env {
         }
     }
 
+    /// Start `amx server` and return the instant its socket file appears.
+    ///
+    /// [`Env::server`] waits until the socket *answers*, which is the whole
+    /// assembly — the restore included. This one returns as soon as the path
+    /// exists, which is the moment `Gateway::bind` claims the session, and it
+    /// exists so a test can signal a server that is still assembling itself.
+    /// Nothing else should want it.
+    pub fn server_while_it_assembles(&self) -> ServerChild {
+        let child = self
+            .command()
+            .arg("server")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn amx server");
+        let socket = self.socket();
+        // Spun rather than ticked, and this is the one place that is right:
+        // what comes *after* the bind is the assembly this wants to interrupt,
+        // and it is milliseconds long. A [`TICK`] between looks would usually
+        // be spent watching the thing under test finish.
+        let deadline = Instant::now() + PATIENCE;
+        while !socket.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the server never bound {}",
+                socket.display(),
+            );
+            std::hint::spin_loop();
+        }
+        ServerChild {
+            child,
+            runtime_dir: self.runtime_dir(),
+        }
+    }
+
     /// Start the real client on a fresh pseudoterminal of this size.
     pub fn attach_on_tty(&self, args: &[&str], rows: u16, cols: u16) -> Terminal {
         let pty = open_pty(rows, cols);
