@@ -384,6 +384,243 @@ owns the file.
 
 ---
 
+## 2. The wave-1 delta — 2026-08-09
+
+**Subject.** amx at `6f4fb5d` — wave 1 merged: X02's contracts, X03's doc
+corrections, X04's flake paydown and X05's `ShortNumbers`, plus the one
+integration fix the merge itself needed (§2.6). Same machine, same isolation,
+same driver: §1's six items are re-run *unchanged*, so a number that moved is a
+number the wave moved, and the wave's own new surface is smoked beside them.
+
+`cargo test --workspace` on this tree: **122 suites, 808 passed, 0 failed**;
+`cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean.
+
+### 2.1 Verdict
+
+| # | What | Result |
+|---|---|---|
+| 1–6 | §1's baseline, re-run whole | **holds** — every item, with one number changed on purpose (§2.2) |
+| 7 | DR-6: a released short number is reused | **holds** — the close→create that answered `31` in §1.6 answers `1` (§2.2) |
+| 8 | short numbers restored from a **stand-in-written** snapshot | **holds** — X05's hardest acceptance clause, run against the actual file §1 left behind (§2.3) |
+| 9 | X02's new wire surface answers by name from the real binary | **holds** — `agent.list` refuses with the seam code and names its owner (§2.4) |
+| 10 | `attach --pane <short>` end to end | **holds** — X05 landed it uncovered past the parse; it renders and detaches (§2.5) |
+| 11 | DR-11's watch | **holds** — four more clean stops, no census (§2.7) |
+
+### 2.2 What the baseline's own numbers did
+
+Re-run identically. Everything held: 25 agents ready in 0.5 s, the same
+five-blocked distribution across four workspaces, both ptys, the same letterbox,
+the event stream gapless, both servers exit 0. Two numbers moved, and one of them
+is the wave:
+
+```
+                          §1 baseline (0721ac2)     §2 wave 1 (6f4fb5d)
+session.state x7          7 8 8 8 8 9 10 ms         7 8 9 11 12 13 14 ms
+agent.next x3             5 6 6 ms                  10 8 10 ms
+state + 25 pane.read      161 ms                    214 ms
+close api-4, start api-6  short 31                  short 1
+```
+
+The timings moved with the machine, not with the tree — this run shared the box
+with four wave-2 worktrees compiling — and the milestone's own load-sensitivity
+lesson applies to its smoke as much as to its suites. The figure that matters is
+unchanged in shape: **the hand-assembled D15 table still costs an order of
+magnitude more than the state read that carries everything else** (214 ms against
+9), and `agent.list` still has that to beat.
+
+**The last row is DR-6, visible from outside.** In §1.6 the stand-in answered
+`31` — a monotonic counter's next number. It now answers `1`, the lowest number
+free at that moment (the session's original first pane, closed long before). The
+whole numbering follows:
+
+```
+§1  panes: 2=api-1 3=api-2 4=api-3 5=api-4 6=api-5 8=web-1 … 30=exp-5   (holes at 7,13,19,25)
+§2  panes: 1=api-6 2=api-1 3=api-2 4=api-3 6=api-5 7=web-1 … 26=exp-5   (one hole, at 5)
+```
+
+Each workspace's root shell is closed once its agents are in. Under the stand-in
+its number was gone forever; under `ShortNumbers` the next workspace's first
+agent takes it, so twenty-five agents occupy 1–26 instead of 2–30. Across the
+restart every number came back unchanged, `session report` says `no losses to
+report`, and the run's own `pane shorts unchanged: True` is now over the real
+mapping.
+
+### 2.3 The stand-in's snapshot, restored by the real mapping
+
+X05's acceptance asks for numbers that survive "a session whose snapshot was
+written by the stand-in". §1 left exactly one such file behind — 25 panes, shorts
+`2,3,4,6,8,…,31`, a high-water mark of 31 with six holes below it — and it was
+kept aside before this run overwrote its scratch tree. Restored under `6f4fb5d`:
+
+```
+it holds 25 panes, shorts [2, 3, 4, 6, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18,
+                           20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31]
+the free numbers below its high-water mark are [1, 5, 7, 13, 19, 25, 32]
+restored shorts unchanged: True
+  workspace 6 brought pane short(s) [1]
+  workspace 7 brought pane short(s) [5]
+  workspace 8 brought pane short(s) [7]
+panes created after the restore took [1, 5, 7], lowest-free order [1, 5, 7]
+```
+
+Every recorded number came back on the number it was written with, and the three
+assignments after the restore walked the holes the stand-in had left, in order,
+before going anywhere near 32. That is both halves of 04 §6 at once — *restored
+numbers are held* and *the next number is the lowest free* — measured on a file
+the implementation under test did not write, which is the one thing no test in
+the repository can arrange any more.
+
+### 2.4 X02's surface, answered by the binary
+
+Every row is reachable by name and refuses in the shape the plan specifies:
+
+```
+$ amx agent list
+amx: call agent.list: call failed: agent.list is tabled but not wired yet; X10 owes it (-32099)
+
+$ amx agent list --params '{"workspace":"…"}'
+amx: call agent.list: call failed: agent.list is tabled but not wired yet; X10 owes it (-32099)
+
+$ amx agents
+amx: `amx agents` is not wired yet; X16 owes it
+
+$ amx keys
+amx: `amx keys` is not wired yet; X07 owes it
+```
+
+`-32099` and not `-32000`: X02's divergence, and it is the right one — `-32000`
+is `WAIT_ABANDONED`, whose contract is *redial and ask the same question again*,
+so an unwired row answering it would put a caller in a loop.
+
+**`PaneState.mouse` is absent for a pane that asked for nothing**, which is what
+an additive optional field must look like on the wire:
+
+```
+the pane's state entry keys: ['agent', 'cols', 'cwd', 'history_floor',
+                              'history_head', 'label', 'pane', 'rows', 'short']
+```
+
+**`agent.next`'s scope parses and is ignored, and that is now measured rather
+than asserted.** With the only blocked agent in `api`, asking for `web`'s queue:
+
+```
+$ amx agent next --workspace <web>
+{"pane": "e1b6e865-…", "seq": 157, "waiting": 1, "workspace": "c9da964b-…"}   ← api's pane
+```
+
+X02 reported the flag as already built; this is the "before" X17's acceptance is
+measured against — a scoped call that focuses another workspace's agent and
+reports the global queue depth.
+
+### 2.5 `attach --pane <short>`, the ten lines nobody covered
+
+X05's own hand-off names this: the parse is covered inline, the resolution rule
+is covered over a socket, and the code between them — `resolve_pane` asking
+`session.state` and handing a pane id to `viewport::one_pane` — is not, because
+`crates/amx/tests/**` is X07's this wave. An integration seam with no owner for a
+wave is what X00 is for. Run on a real 80×24 pty against pane short `2`:
+
+```
+(nineteen blank rows)
+✻ Worked for 3s
+──────────────────────────────────────
+❯
+──────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts
+```
+
+A pane, full screen, no border and no status line, addressed by a number a human
+would type — and `prefix+q` detached it with exit **0**. The chord is the
+single-pane mode's own (`DETACH_PANE`, `crates/amx/src/cmd/viewport.rs:35,57`),
+not the `prefix+d` the full client uses, and the difference cost this run one
+wrong reading before the source was checked. Recorded because it is the sort of
+thing a `--watch`-style consumer or a doc will get wrong next.
+
+Short-number resolution over the same socket:
+
+```
+$ amx pane read 1              # after the pane numbered 1 was closed
+amx: call pane.read: call failed: no pane is numbered 1 (-32602)
+$ amx agent start 3 --kind fake
+amx: call agent.start: call failed: "3" is a short number, which is checked first and would shadow it (-32602)
+```
+
+A released number refuses rather than resolving to whatever the slot held next,
+and the resolution order is defended at the naming boundary rather than at
+lookup — X05's recorded behaviour change, working.
+
+### 2.6 The integration break, and whether the ledger would have caught it
+
+One break at the merge, fixed by the orchestrator in `6f4fb5d` rather than by a
+wave task: X02 added `mouse: Option<MouseMode>` to `PaneState`
+(`crates/amx-proto/src/control/session.rs:128`, honouring X01's "cannot be a
+boolean" hand-off), and X05's **new** fixture
+`crates/amx-server/tests/short_numbers.rs:56` builds a `PaneState` literal. The
+workspace did not compile until `mouse: None` was added — one line.
+
+That is seam 1 firing exactly where D-M4-10 says it should. **The field ledger
+would not have caught it, and could not have.**
+
+- `FIELD_LEDGER` (`tests/hygiene/ledgers.rs:53-84`) asserts that the *declaring*
+  file still contains `pub mouse: Option<MouseMode>`. That was true before the
+  fix and after it. The ledger's own doc says so: what it checks mechanically is
+  that a frozen field still exists where its row claims, and "whether the reader
+  arrived — that is the integration owner's".
+- The ledger is a test, and the break was a **compile** error in a test target.
+  Nothing under `tests/` runs on a tree that does not build.
+
+What caught it is what should catch it. `PaneState` is a plain struct — no
+`#[non_exhaustive]`, no `Default` — so `rustc` names every construction site that
+has not been updated, at every site, with no test needed. The ledger is not a
+substitute for the compiler and was never meant to be one.
+
+**The gap the break exposes is in the plan, not in the ledger.** X02 found the
+field's other construction sites and filled them, including two outside its own
+file list — `crates/amx-server/src/actor/core/view.rs:98` (X05's file this wave)
+and `crates/amx/tests/layout_file.rs:44` — and declared both in
+[m4-wave-outcomes.md](m4-wave-outcomes.md). It could not declare the last one,
+because the file did not exist when X02 was written: X05 created
+`short_numbers.rs` in the same wave. §6's declared-hand-off mechanism enumerates
+files that exist at planning time; a *new* file a concurrent task creates against
+a shape another task is changing in the same wave is outside its reach by
+construction.
+
+No new mechanism is proposed for it, deliberately. The cost was one line, found
+by the first build of the merge; a rule that made it findable earlier would have
+to predict files nobody has written yet. What is worth carrying forward is the
+shape, because M4 freezes six additive fields and four of them are on structs
+built by literal in suites: **an additive field on a wire struct costs an edit at
+every construction site in the workspace, and the ones in a wave-mate's
+not-yet-written test files are the integration owner's to expect at the merge.**
+
+### 2.7 DR-11's watch: four more clean stops
+
+| Run | Stops | Exit | `drain-census` | Census log line |
+|---|---|---|---|---|
+| §2.2's baseline re-run | 2 | **0**, **0** | absent | none |
+| §2.4–2.5's delta session | 1 | **0** | absent | none |
+| §2.3's restore session | 1 | **0** | absent | none |
+
+Six clean stops across the milestone so far, over sessions of 2, 3, 25 and 26
+panes. Nothing has fired.
+
+### 2.8 What this delta hands the later waves
+
+1. **X17's "before" is on the record** (§2.4): a scoped `agent.next` today
+   focuses another workspace's agent and reports the global depth.
+2. **X10 still has the table's cost to beat.** §1.4's 161 ms and this run's
+   214 ms bracket what the machine does to the figure; neither is within an
+   order of magnitude of the state read beside it.
+3. **X07 inherits a smoked path, not an assumption** (§2.5). Whether
+   `attach --pane <short>` also gets a suite test is X07's call; it is no longer
+   a path nobody has run.
+4. **No wave-1 field has a reader yet, and that is correct.** `reason`, `since`,
+   the attention identity block, `now` and `mouse` are all frozen, all in the
+   ledger, and every reader is wave 2 or later. The ledger is walked and
+   non-empty; X00 closes no row at this boundary.
+
+---
+
 ## Re-running this
 
 The harness is the product plus a Python driver's worth of glue, and it is not
