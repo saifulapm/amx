@@ -67,15 +67,20 @@ chose. Touch only `1006` and `1000`, in both directions.
 ## X04 — DR-19: the four recorded flakes
 
 **One of the four was already paid, and one clause of a second was.** R-M4-6's
-lesson applied to this row: `agent_verbs` was diagnosed and fixed in commit
-`aba0877` ("wait for the fact, not for the call that starts it"), which landed
-**after** `18c9261` re-verified the register — so DR-19 carries a failure the
-tree no longer has. `agent_verbs`'s two recorded failures are the two sites that
-commit names (`m3-wave-outcomes.md`, "Settling the load-sensitive reads"), and
-re-measuring found nothing to fix. The same is half-true of the flood
-threshold: `f09a87c` had already replaced its *fixed window* with a wait, so the
-"fails under 8-way load every time" the register records was gone; the fixed
-*quantity* it recommends replacing was not, and that is what X04 changed.
+lesson applied to this row, and it applies twice.
+
+`agent_verbs` was diagnosed and fixed in `aba0877` ("wait for the fact, not for
+the call that starts it"), whose two named sites are exactly DR-19's "2 in ~12
+runs" (`m3-wave-outcomes.md`, "Settling the load-sensitive reads"). That commit
+is **not** an ancestor of `18c9261`, the register's re-verification — both
+branch from `08a4257` — so the register could not have seen the fix, and
+re-measuring at the reproduction that once gave 22/320 found nothing to fix.
+
+The flood threshold is the sharper case. `f09a87c` had already replaced the
+*fixed window* with a wait, and it **is** an ancestor of `18c9261` — so the
+"fails under 8-way load every time" the register records was verified against a
+tree where it no longer did. The fixed *quantity* it recommends replacing was
+still there, and that is what X04 changed.
 
 **Two failures the register does not name, in a file X04 owns, same
 mechanism.** `flow_control.rs` holds three tests whose evidence is a wall clock
@@ -120,6 +125,12 @@ every time by offering the payload after the process has been reaped.
 The two zeroes in the "before" column are the point of the first paragraph:
 neither reproduced on this tree, and both are recorded as verifications rather
 than as fixes that were needed.
+
+The entry's own bar — all four green under `nproc`-wide load — is 10 runs of
+each suite against twelve spinners on a twelve-core box, 0 failures in 40. The
+pinned figures above are the harsher measurement, and they are the ones the
+fixes were judged on: `nproc`-wide load never reproduced any of these.
+`cargo test --workspace` on this branch is 774 tests over 119 suites, 0 failed.
 
 **Nothing outside the entry's files was touched.** `flow_control/drive.rs` was
 considered for the paced-reader helper and left alone; the helper went into
