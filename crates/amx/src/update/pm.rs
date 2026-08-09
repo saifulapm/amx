@@ -16,22 +16,29 @@
 //! | Manager | Shape |
 //! |---|---|
 //! | Homebrew | `…/Cellar/amx/<version>/bin/amx` |
-//! | mise | `…/installs/amx/<version>/bin/amx` |
+//! | mise | `…/installs/amx/<version>/bin/amx`, or the same under
+//!   `$MISE_INSTALLS_DIR` |
 //! | Nix | anything under `/nix/store` |
 //!
-//! # Two bounds, stated rather than papered over
+//! # mise's relocated root
 //!
-//! - **mise's `$MISE_INSTALLS_DIR`.** mise lets the installs root be moved, and
-//!   herdr reads that variable to catch the moved case. amx does not read it:
-//!   this crate's rule is that process environment is read once, in
-//!   [`crate::run`], and threaded as a value ([`amx_core::Env`]), and no `Env`
-//!   field carries it. A user who has moved mise's installs root out of a
-//!   directory named `installs` is therefore seen as a standalone install. The
-//!   fix is an `Env` field, which is amx-core's file and not this task's.
-//! - **A binary copied out of a manager's tree** is a standalone install by
-//!   this test, and correctly so: nothing owns it any more.
+//! mise lets the installs root be moved, and a moved root is the one case a
+//! path shape cannot see: `/opt/tools/amx/0.1.0/bin/amx` is mise's file and
+//! looks like nobody's. So [`classify`] takes the root as a parameter — read
+//! from `$MISE_INSTALLS_DIR` into [`amx_core::Env`] at process start, like every
+//! other piece of environment this crate uses, and threaded here as a value.
+//!
+//! Only a root moved *out of a directory named `installs`* needs it. mise's
+//! other spelling of the same move, `$MISE_DATA_DIR`, puts its installs at
+//! `<data>/installs`, and the shape rule already matches a directory named
+//! `installs` wherever it sits.
+//!
+//! # One bound, stated rather than papered over
+//!
+//! **A binary copied out of a manager's tree** is a standalone install by this
+//! test, and correctly so: nothing owns it any more.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The file name amx is installed under.
 const EXE: &str = "amx";
@@ -83,42 +90,80 @@ impl Install {
     }
 }
 
-/// Classify the binary at `exe`.
+/// Classify the binary at `exe`, with mise's installs root as `mise_installs`
+/// says it is ([`amx_core::Env::mise_installs_dir`], `None` when the variable is
+/// unset).
 ///
 /// Checks the path as given and, if that says nothing, the path with every
-/// symlink resolved.
+/// symlink resolved — and the configured root the same way, since a resolved
+/// `exe` cannot sit under an unresolved root.
 #[must_use]
-pub fn classify(exe: &Path) -> Install {
-    let direct = shape(exe);
+pub fn classify(exe: &Path, mise_installs: Option<&Path>) -> Install {
+    let mise = Mise::rooted_at(mise_installs);
+    let direct = shape(exe, &mise);
     if direct != Install::Standalone {
         return direct;
     }
     match exe.canonicalize() {
-        Ok(real) => shape(&real),
+        Ok(real) => shape(&real, &mise),
         Err(_) => Install::Standalone,
     }
 }
 
+/// Where mise installs, as configured: the root as given and as resolved.
+///
+/// Both, because [`classify`] tries `exe` twice. A root reached through a
+/// symlink — `~/tools` pointing into another filesystem is the ordinary case —
+/// matches the literal `exe` under its own spelling and the canonicalised `exe`
+/// under the resolved one, and neither spelling answers for the other.
+struct Mise {
+    roots: Vec<std::path::PathBuf>,
+}
+
+impl Mise {
+    /// The configured root, if there is one.
+    fn rooted_at(configured: Option<&Path>) -> Self {
+        let mut roots = Vec::new();
+        if let Some(root) = configured {
+            roots.push(root.to_path_buf());
+            if let Ok(real) = root.canonicalize()
+                && real != root
+            {
+                roots.push(real);
+            }
+        }
+        Self { roots }
+    }
+
+    /// Whether `dir` is that root.
+    fn holds(&self, dir: &Path) -> bool {
+        self.roots.iter().any(|root| root == dir)
+    }
+}
+
 /// Classify one literal path, following nothing.
-fn shape(exe: &Path) -> Install {
+fn shape(exe: &Path, mise: &Mise) -> Install {
     if exe.starts_with("/nix/store") {
         return Install::Nix;
     }
-    if keg(exe, "Cellar").is_some() {
+    let Some(root) = keg_root(exe) else {
+        return Install::Standalone;
+    };
+    if named(root, "Cellar") {
         return Install::Brew;
     }
-    if keg(exe, "installs").is_some() {
+    if named(root, "installs") || mise.holds(root) {
         return Install::Mise;
     }
     Install::Standalone
 }
 
-/// The version directory of a `<root>/amx/<version>/bin/amx` path.
+/// The directory above a `<root>/amx/<version>/bin/amx` path.
 ///
-/// Homebrew and mise lay their trees out identically apart from the name of the
-/// root — `Cellar` and `installs` — so one walk answers for both, and a shape
-/// that matches everything but the root name matches neither.
-fn keg(exe: &Path, root: &str) -> Option<PathBuf> {
+/// Homebrew and mise lay their trees out identically apart from the root — one
+/// walk answers for both, and the root is compared afterwards, by name for the
+/// two default layouts and by path for a relocated one.
+fn keg_root(exe: &Path) -> Option<&Path> {
     if exe.file_name()? != EXE {
         return None;
     }
@@ -131,8 +176,10 @@ fn keg(exe: &Path, root: &str) -> Option<PathBuf> {
     if tool.file_name()? != EXE {
         return None;
     }
-    if tool.parent()?.file_name()? != root {
-        return None;
-    }
-    Some(version.to_path_buf())
+    tool.parent()
+}
+
+/// Whether `dir`'s own name is `name`, wherever `dir` sits.
+fn named(dir: &Path, name: &str) -> bool {
+    dir.file_name().is_some_and(|actual| actual == name)
 }

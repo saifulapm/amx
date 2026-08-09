@@ -84,7 +84,7 @@ const RECONNECT_TICK: Duration = Duration::from_millis(100);
 pub async fn run(env: &Env, root: &ArgMatches, sub: &ArgMatches) -> anyhow::Result<ExitCode> {
     let ctx = ctx_of(env, root, None)?;
     match sub.subcommand() {
-        Some(("check", args)) => check(&ctx, args).await,
+        Some(("check", args)) => check(env, &ctx, args).await,
         Some(("apply", args)) => apply(env, root, &ctx, args).await,
         _ => bail!("`amx update` needs a verb: `check` or `apply`"),
     }
@@ -93,9 +93,9 @@ pub async fn run(env: &Env, root: &ArgMatches, sub: &ArgMatches) -> anyhow::Resu
 // ------------------------------------------------------------------- check
 
 /// Report what the channel has, and say so plainly when it has nothing.
-async fn check(ctx: &Ctx, args: &ArgMatches) -> anyhow::Result<ExitCode> {
+async fn check(env: &Env, ctx: &Ctx, args: &ArgMatches) -> anyhow::Result<ExitCode> {
     let exe = current_exe()?;
-    let install = pm::classify(&exe);
+    let install = pm::classify(&exe, env.mise_installs_dir.as_deref());
     let channel = channel_of(ctx, args.get_one::<String>(CHANNEL).map(String::as_str))?;
     let running = current();
 
@@ -155,7 +155,7 @@ async fn apply(
     args: &ArgMatches,
 ) -> anyhow::Result<ExitCode> {
     let exe = current_exe()?;
-    let install = pm::classify(&exe);
+    let install = pm::classify(&exe, env.mise_installs_dir.as_deref());
     if let (Some(manager), Some(hint)) = (install.manager(), install.upgrade_hint()) {
         // Nothing has been fetched, staged or written at this point, and the
         // order is deliberate: a redirect that had already downloaded something

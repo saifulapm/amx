@@ -412,11 +412,11 @@ fn a_brew_mise_nix_exe_path_redirects_and_writes_nothing() {
     // cannot create one outside a machine that has Nix. The classifier is the
     // whole of the detection, so a path is the whole of the fixture.
     assert_eq!(
-        pm::classify(Path::new("/nix/store/9k3v0q1x2m-amx-0.1.0/bin/amx")),
+        pm::classify(Path::new("/nix/store/9k3v0q1x2m-amx-0.1.0/bin/amx"), None),
         Install::Nix
     );
     assert_eq!(
-        pm::classify(Path::new("/usr/local/bin/amx")),
+        pm::classify(Path::new("/usr/local/bin/amx"), None),
         Install::Standalone,
         "an ordinary install is amx's to replace"
     );
@@ -473,7 +473,109 @@ fn a_brew_mise_nix_exe_path_redirects_and_writes_nothing() {
         &link,
     )
     .expect("symlink");
-    assert_eq!(pm::classify(&link), Install::Brew);
+    assert_eq!(pm::classify(&link, None), Install::Brew);
+}
+
+#[test]
+fn a_relocated_mise_installs_root_is_still_mise_and_is_redirected() {
+    // DR-17's second clause. mise lets its installs root be moved, and a moved
+    // root is the one mise install no path shape can recognise: this is a real
+    // mise tree, and without the variable it reads as a binary nobody owns —
+    // which would let `amx update apply` write into it.
+    let rig = Rig::new("mise");
+    let root = rig.root().join("tools");
+    let exe = rig.plant(&format!("tools/amx/{CURRENT}/bin/amx"));
+
+    assert_eq!(
+        pm::classify(&exe, None),
+        Install::Standalone,
+        "with no root configured there is nothing to recognise this by, and \
+         saying so here is what makes the line below mean something"
+    );
+    assert_eq!(
+        pm::classify(&exe, Some(&root)),
+        Install::Mise,
+        "a tree under the configured installs root is mise's"
+    );
+    assert_eq!(
+        pm::classify(&exe, Some(&rig.root().join("elsewhere"))),
+        Install::Standalone,
+        "a root that is not this one classifies nothing"
+    );
+
+    // The root reached through a symlink, which is how a relocated root is
+    // usually spelled — `$MISE_INSTALLS_DIR` pointing at a link into another
+    // filesystem. Neither spelling of the root answers for the other, so both
+    // are tried against both spellings of the binary.
+    let linked_root = rig.root().join("linked-tools");
+    std::os::unix::fs::symlink(&root, &linked_root).expect("symlink the root");
+    assert_eq!(
+        pm::classify(&exe, Some(&linked_root)),
+        Install::Mise,
+        "the configured root resolves to the one the binary sits under"
+    );
+
+    // And the whole point of classifying: the real binary, run from that tree
+    // with the variable set, refuses to replace itself and names mise's own
+    // command instead. A channel with something to install, so the only reason
+    // nothing is fetched is the redirect.
+    let (asset, sha256) = payload(&rig, "amx: never installed");
+    rig.channel(&rig.manifest("latest.json", &newer(), Some((&asset, &sha256))));
+    let before = fs::metadata(&exe).expect("stat").len();
+
+    let mut command = rig.command(&exe);
+    command
+        .args(["update", "apply"])
+        .env("MISE_INSTALLS_DIR", &root)
+        .stdin(std::process::Stdio::null());
+    let done = support::env::Output::of(&support::env::past_busy("run amx", || command.output()));
+    let err = done.failed();
+    assert!(err.contains("mise"), "{done:#?}");
+    assert!(
+        err.contains("mise upgrade amx"),
+        "a redirect that does not name the command is not a redirect: {done:#?}"
+    );
+    assert!(err.contains("Nothing was written"), "{done:#?}");
+    assert_eq!(
+        fs::metadata(&exe).expect("stat").len(),
+        before,
+        "amx wrote into mise's relocated tree"
+    );
+    assert!(
+        siblings(&exe).is_empty(),
+        "amx left a file in mise's relocated tree"
+    );
+    assert!(
+        !rig.staging().exists(),
+        "amx downloaded before it checked whose binary this is"
+    );
+
+    // The same tree with the variable unset installs, which is the measurement
+    // that makes the refusal above the variable's doing and not the fixture's.
+    // A second version directory in the same tree, because the plant this
+    // installs over ends up as the payload.
+    let unguarded = rig.plant("tools/amx/9.9.9/bin/amx");
+    let done = rig.run(&unguarded, &["update", "apply"]);
+    assert!(
+        done.ok().contains("installed"),
+        "without $MISE_INSTALLS_DIR this is a standalone install and amx \
+         replaces it: {done:#?}"
+    );
+
+    // `check` reads the same variable: a managed install is told what to run
+    // instead, and never told to run `amx update apply`.
+    let mut command = rig.command(&exe);
+    command
+        .args(["update", "check"])
+        .env("MISE_INSTALLS_DIR", &root)
+        .stdin(std::process::Stdio::null());
+    let done = support::env::Output::of(&support::env::past_busy("run amx", || command.output()));
+    let out = done.ok();
+    assert!(out.contains("installed by mise"), "{done:#?}");
+    assert!(
+        !out.contains("run `amx update apply`"),
+        "check offered to replace a binary mise owns: {done:#?}"
+    );
 }
 
 #[test]

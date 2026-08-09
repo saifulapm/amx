@@ -23,6 +23,7 @@ fn env_at(root: &str) -> Env {
         home: Some(root.join("home")),
         session: None,
         tmpdir: None,
+        mise_installs_dir: None,
     }
 }
 

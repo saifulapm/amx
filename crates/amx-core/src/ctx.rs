@@ -137,6 +137,15 @@ pub struct Env {
     /// `$TMPDIR`, the shared-root fallback when there is no runtime
     /// directory; `/tmp` is the resort behind it.
     pub tmpdir: Option<PathBuf>,
+    /// `$MISE_INSTALLS_DIR`, where mise keeps the trees it installs tools into.
+    ///
+    /// Read for one question and no other: whether the amx being asked to
+    /// replace itself is a file mise owns. mise lets that root be moved out of
+    /// the directory named `installs` its layout otherwise implies, and a
+    /// relocated root is the one mise install path-shape detection cannot see —
+    /// so the variable is the only source for it. Nothing in this crate uses
+    /// it; `amx`'s `update::pm` does.
+    pub mise_installs_dir: Option<PathBuf>,
 }
 
 impl Env {
@@ -161,6 +170,7 @@ impl Env {
                 .ok()
                 .and_then(|name| SessionName::new(name).ok()),
             tmpdir: read_path("TMPDIR"),
+            mise_installs_dir: read_path("MISE_INSTALLS_DIR"),
         }
     }
 }
