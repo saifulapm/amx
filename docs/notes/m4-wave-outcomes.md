@@ -3084,3 +3084,124 @@ with the literal `pane <uuid> needs input` the smoke recorded),
 `a_scoped_watch_announces_its_own_workspace_and_no_other`. `watch.rs` is 599
 lines, 99 over soft and 401 under hard; the new responsibility went into its own
 module rather than into it.
+
+
+## Y02 — the manifest sees every dialog
+
+M4 exit defect 2 (m4-live-smoke §6.8 item 1, second finding): the shipped
+`permission_dialog` rule required `contains = ["do you want to proceed?"]`, so a
+`Write` dialog saying *"Do you want to overwrite exit-probe.txt?"* was invisible
+to tier 2 and `agent explain` answered `matched: null` with the dialog on the
+screen.
+
+**What the wording actually is.** Seven dialog classes were driven on a real
+`claude` 2.1.226 on 2026-08-09 — credentials copied into a scratch
+`CLAUDE_CONFIG_DIR` and `HOME`, so the operator's own `~/.claude` was never
+opened — and the questions are:
+
+| Dialog | The question |
+|---|---|
+| bash | `Do you want to proceed?` |
+| web search | `Do you want to proceed?` |
+| write, new file | `Do you want to create exit-probe.txt?` |
+| write, existing | `Do you want to overwrite exit-probe.txt?` |
+| edit | `Do you want to make this edit to exit-probe.txt?` |
+| fetch | `Do you want to allow Claude to fetch this content?` |
+| plan approval | `Claude has written up a plan and is ready to execute. Would you like to proceed?` |
+
+Four of the seven name the file or the resource; one asks a different question
+altogether; the fetch dialog has no `Esc to cancel` footer and offers `3. No,
+and tell Claude what to do differently (esc)` where the others offer `3. No`.
+Six are fixtures under `tests/fixtures/manifest/`; web search is not, because
+its screen would be a copy of the bash one.
+
+**What the rule keys on now.** The answer list, not the question: `1. Yes` is
+the first option in all seven, with `❯` on whichever line the selection rests
+on, so `^\s*❯?\s*1\.\s*Yes` is the required matcher and the question is one of
+three corroborating witnesses under it. That also keeps the rule away from the
+TUI's other numbered pickers, which do not offer a yes. The question witness is
+the *family* — `Do you want to …?` / `… Would you like to …?` — rather than the
+seven sentences, so a new tool that asks in the same shape is covered on the day
+it ships.
+
+`prompt_box_idle`'s `not` guard on the same phrase became the same
+discriminator read the other way: a dialog's answer list is indented and the
+composer's `❯` is at column 0, so `^\s+` before it excludes every dialog and no
+live prompt box.
+
+**One measurement worth keeping.** With a permission dialog up and the tool call
+still outstanding, the window title reads `✳ Create exit-probe.txt with hello` —
+at rest, no braille. `title_spinner_working` is priority 1100 against the
+dialog rule's 900, so a spinner there would have made every dialog read
+`working`. It does not, and the blocked fixtures need no title of their own.
+
+### For Y01
+
+The corroboration that §6.8 said did not exist "even in principle" now exists,
+and it disagrees with the fused state in exactly the way that makes it useful.
+Driven against the real binary, a real `claude` in an amx pane, a real
+`Do you want to overwrite exit-probe.txt?` dialog, and no hook integration
+installed at all — so tier 2 was the only detector in the room:
+
+```
+t+0s    agent.list  status=blocked reason=permission_dialog  attention=[pane]  next: waiting=1
+        agent explain: cause=screen  state=blocked  matched=permission_dialog
+t+30s   agent.list  status=idle     reason=None             attention=[]      next: waiting=0
+        agent explain: cause=staleness state=idle  matched=permission_dialog
+```
+
+The second line is the smoke's finding with its last field changed: it read
+`matched: None` there and reads `matched: permission_dialog` here. Staleness
+still demotes a held block on a screen that has stopped painting — that is Y01's
+defect and this change does not touch it — but the screen now has a verdict to
+be asked for. One keystroke of damage is enough to prove it live: moving the
+dialog's selection to option 2 put the pane straight back to
+`blocked` / `cause: screen`, and the Esc that cancelled the dialog was seen by
+`prompt_box_idle` with no hook involved.
+
+### What would keep this file honest, since DR-14's burden arrived with a date
+
+Three things, in the order they cost:
+
+1. **The suite walks the fixture directory.** `every_recorded_permission_dialog_reads_blocked_from_the_dialog_rule`
+   asserts every `claude-blocked-*.txt` reads `blocked` off `permission_dialog`,
+   so *recording* a dialog is enough to cover it — no Rust to write, which is
+   what makes re-recording cheap enough to actually happen. The gap this defect
+   came from was not a rule that rotted; it was a rule tested against one dialog
+   while six others existed.
+2. **The re-recording procedure is in the fixture README**, one row per dialog
+   class with the prompt that raises it, and it says to re-record the *whole*
+   blocked set rather than the one file that broke.
+3. **What is still missing is a probe that runs without a person.** Nothing in
+   CI drives a real `claude`, so the fixtures are only as current as the last
+   person who re-recorded them. The honest form is a manual step at each
+   milestone exit — the live smoke already is one — rather than a scheduled job
+   that needs credentials in CI.
+
+### Edits this task did not make, and where they belong
+
+- **`crates/amx-server/src/agent/manifest/rule.rs:17`** shows the old
+  `permission_dialog` rule as the grammar's worked example, `contains =
+  ["do you want to proceed?"]` included. It still compiles and still teaches the
+  grammar, but it now teaches the shape that caused this defect. Source, outside
+  this task's file scope.
+- **`crates/amx-server/src/agent/manifest/explain.rs:12`** uses the same phrase
+  as its example of a rule reporting what it wanted. Same call.
+- **`docs/notes/m4-live-smoke.md` §6.8/§6.9** record the finding and the
+  verdict. Whoever re-runs the exit owns those lines; a task being graded does
+  not mark itself.
+
+### Verification
+
+`cargo test --workspace`, `cargo clippy --all-targets -- -D warnings` and
+`cargo fmt --check` clean. Three new tests.
+`every_recorded_permission_dialog_reads_blocked_from_the_dialog_rule` is the one
+that fails without the change: with the fixtures in place and the manifest
+reverted it reports `claude-blocked-edit is a user being waited on: left None,
+right Some(Blocked)`, which is `matched: null` in the suite's own words. The
+other two are the guards around it — `the_recorded_dialogs_are_six_different_questions`
+pins the wording each fixture carries so six screens cannot collapse into six
+copies of the easy one, and
+`widening_the_dialog_rule_leaves_the_idle_and_working_screens_alone` asserts
+nothing became blocked that was not. Then the live run above, which is the part
+a fixture cannot do.
