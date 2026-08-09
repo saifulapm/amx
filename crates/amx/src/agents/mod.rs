@@ -63,7 +63,9 @@
 //! order it carries, and the rules stated above. The full account is in
 //! `docs/notes/m4-wave-outcomes.md`.
 
+pub mod scope;
 pub mod table;
+pub mod watch;
 
 use std::collections::HashMap;
 
