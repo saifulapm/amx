@@ -3143,3 +3143,65 @@ shape X04 spent a task on, in a test this branch does not touch.
   — it makes the block survive not being visible. `agent explain` still answers
   `matched: null` for a Write dialog, and `agent_hub/staleness.rs` asserts that
   it does, so the day Y02 lands, that assertion is what says so.
+
+### The flake this branch was accused of, and what it actually was
+
+`agent_hub::shutdown_after_cancel_sends_no_sibling_request` failed once in a
+whole-workspace run — `bus.head()` one higher than the arithmetic allowed, under
+a message that says a cancelled hub published. It was read as a regression from
+"ask tier 2 before firing staleness", on the theory that the fire reaches for a
+sibling. It is neither.
+
+**What it is.** The assertion took `bus.head()` before and after and expected it
+to move by exactly the test's own two publishes. The bus is the *session's*, and
+the pane the test starts is a publisher on it: `PaneHost` publishes its own
+`PaneDamage` off the parser's `frames.changed()`
+(`actor/pane_host/actor.rs:86,132`), and `paint` returns when the snapshot
+command answers, not when that wakeup has been folded. Instrumenting the test to
+keep what was published rather than count it names the offender in one run:
+
+```
+seq 6  PaneDamage    <- the test's own
+seq 7  PaneExited    <- the test's own
+seq 8  PaneDamage    <- the pane host, after `rig.stop()` had joined the hub
+```
+
+No `agent_status`, no `attention_dequeued`, nothing of the hub's at all — and
+seq 8 lands after the hub has been joined and dropped, which is a publisher that
+cannot be the hub. The same run against `crates/amx-server/src` checked out at
+83c0d3d — this branch's fix reverted entirely — fails identically, which settles
+the regression question: it is a pre-existing load-sensitive assertion, and this
+branch's only relation to it is having been merged nearby.
+
+`corroborate` also asks no sibling. It reads `tracked.frames.latest()`, the
+`SnapshotFeed` the hub was handed at `PaneStarted` and owns; the whole point of
+D-M2-3's design is that an evaluation is a read of a frame already published.
+
+**The assertion is now about the hub.** `agent_events` drains the subscription
+and keeps only the four kinds this actor is the only publisher of (04 §2's rule,
+read per kind). That is the property the test exists to defend and it is not a
+hostage to what else shares the bus.
+
+**And the concern underneath it was real, so it is fixed too.** The select is
+deliberately not biased, which means cancellation has no precedence: a delivery,
+a command or a wheel wakeup that was ready in the *same poll* can win it, and
+the actor would take one more turn of work on the way out. That hole predates
+this branch — `fire` and `observe` could both publish through it — and
+`corroborate` widened the wheel branch's share of it, since an evaluation can
+transition a pane. `run.rs` now checks the token after the select instead of
+trusting the branch, which covers all three at once; a command already taken out
+of the mailbox is refused rather than dropped, because a caller waiting on a
+reply that never comes waits forever.
+
+`a_cancelled_hub_ignores_a_wakeup_that_was_ready_in_the_same_poll` forces the
+race rather than waiting for it: `publish` and `cancel` are both synchronous, so
+on a current-thread runtime the hub cannot run between them and its next poll
+has both branches ready. The delivery is a `PaneExited` for a blocked pane —
+`retire` publishes two events and mirrors both. Twenty-four rounds, because a
+loop that takes the wrong branch half the time survives one round with
+probability ½ and the test with probability 2⁻²⁴. Without the check it failed on
+round 1, reporting the `agent_status` and `attention_dequeued` it had no business
+publishing.
+
+`cargo test`: 143 suites, 994 passed, 0 failed. Clippy and fmt clean. The
+agent_hub suite ran ten times over with no failure.
