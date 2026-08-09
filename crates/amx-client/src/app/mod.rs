@@ -412,6 +412,10 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// through a constructor argument every test would have to carry.
     pub fn set_narrow_cols(&mut self, narrow: crate::config::NarrowCols) {
         self.narrow = narrow;
+        // One threshold, two consumers: the pane projection below, and the
+        // status line's own compact form, which degrades at the same width
+        // because it is the same viewport that got narrow.
+        self.status.set_narrow(narrow);
         // The threshold decides the projection, and the projection decides the
         // declaration: a client told the threshold after it declared owes the
         // server a fresh one, and the next fold is what makes it.

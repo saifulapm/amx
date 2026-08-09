@@ -99,7 +99,7 @@ impl StatusLine {
     }
 
     /// Set the width below which the compact form takes over.
-    pub(super) fn set_narrow(&mut self, cols: NarrowCols) {
+    pub(in crate::app) fn set_narrow(&mut self, cols: NarrowCols) {
         self.narrow = cols;
     }
 

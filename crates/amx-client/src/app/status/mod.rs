@@ -75,17 +75,6 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         );
     }
 
-    /// Set the width below which the status line degrades to D14's compact
-    /// form.
-    ///
-    /// The client's own configuration reaches the app the way its bindings do
-    /// ([`App::input`] and `amx_client::config::Settings`): read once at attach
-    /// and handed in, because nothing in this crate reads a file.
-    pub fn set_narrow_cols(&mut self, cols: NarrowCols) {
-        self.status.set_narrow(cols);
-        self.absorb(Effect::Full);
-    }
-
     /// Tell the status line what the server's wall clock reads, from a reply
     /// that carries it.
     ///
