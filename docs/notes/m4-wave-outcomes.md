@@ -860,3 +860,124 @@ payload byte `b'o'` was read as channel 111 — at 60 frames with *every* read
 cancelled at least once, rather than at whatever load happened to be running.
 `tests/reader.rs` keeps its two resume-point tests; this is the count they were
 missing.
+---
+## X12 — the narrow projection
+
+### The rule is narrower than D-M4-7 words it, and it has to be
+
+D-M4-7 and §5 both say "a viewport declaring a single pane sizes that pane to
+the whole content area". Taken literally that **regresses the ordinary wide
+client**, and the shipped rule carries one more clause: *of a layout that holds
+more than that pane*.
+
+The reason is that `report_viewport` has always declared
+`ws.layout.panes()`, so a client tiling a **one-pane workspace** declares one
+pane too — and it draws that pane's border. Giving it the whole content area
+would hand it a grid two columns wider and two rows taller than the box it
+blits into, which is the D-M4-7 letterbox in miniature and in the opposite
+direction. With the clause, the client and the server derive the same predicate
+from the same fact: the client keeps the tiled projection for a one-pane
+workspace however narrow the terminal is, and the server keeps sizing it to its
+slot's interior. The rule fires only where the client has said, by leaving panes
+out, that it is not tiling. Both halves are pinned — one test in each suite,
+named for the workspace of one pane.
+
+**The residual, named rather than fixed.** A declaration is one round trip
+behind the layout, so a *wide* client whose one-pane workspace has just been
+split declares one pane against a two-pane layout for as long as its resync
+takes, and the server sizes that pane to the whole area meanwhile. It corrects
+itself on the fold below, and the pane sees one extra `SIGWINCH` — the same
+double-resize any layout change already produces. Removing it needs the server
+to know a declaration is stale, which nothing on the wire says.
+
+### Divergences from §5
+
+**Four files outside the entry's list, each one edit.**
+
+- `crates/amx-server/src/actor/core/mod.rs`: `viewport: Option<(u16, u16)>`
+  becomes `Option<view::Viewport>`. The declared pane has to be held beside the
+  size and `Core`'s struct does not live in `view.rs`. X05 owned this file in
+  wave 1 and has landed; no wave-3 task lists it.
+- `crates/amx-client/src/app/events.rs`: one line, `declare_projection` after
+  the state fold. That fold is where the layout the projection is computed from
+  is replaced, and it is the only place a task confined to `binds.rs` could not
+  reach.
+- `crates/amx-client/src/app/wired.rs`: one line, `redeclare_shown_pane` after
+  every wake. See below.
+- `crates/amx-client/src/app/overlay.rs`: copy mode measures `pane_interior`
+  instead of `chrome::inset`, and the picker fills the screen under the policy
+  (10 §D14 asks for it, and eight rows of list over twelve rows of an unreadable
+  pane is the overlay region the policy replaces). **X14** owns this file in
+  wave 4.
+- `crates/amx/src/cmd/attach.rs`: one line handing `Settings::narrow_cols` to
+  `App`, which is X07's hand-off to this task. `crates/amx/src/cmd/**` is X17's
+  in wave 3 on paper; X02's outcome records that X17 has nothing left to do
+  there, so this is sequential rather than contested. Without it the threshold
+  is a config key with no reader and D-M4-10 is not met.
+
+**`app/mod.rs` split: `app/paint.rs` is new.** The narrow fields and the branch
+on the projection took `mod.rs` to 562 lines, over the soft budget its own suite
+asserts (`crates/amx-client/tests/modules.rs`), so the frame path — `frame_due`,
+`showing`, `repaint`, `frame` — moved out whole before this landed rather than
+after (R-M1-3). `mod.rs` is 468 and is now the app's shape and lifecycle only.
+
+**The viewport is re-declared, which it never was.** `report_viewport` ran at
+attach and at settle-resize and nowhere else, which was sound while the third
+field had no reader. It has one now, and under D14 the declared pane changes
+when *focus* moves inside a workspace — a numeric jump, a pane chosen in the
+picker, another client's `pane.focus` — none of which is a call this client
+resyncs after. Two call sites, both cheap: `declare_projection` from the state
+fold compares against the last declaration and makes no round trip when it would
+repeat itself, and `redeclare_shown_pane` runs after every wake of the loop and
+returns at the threshold comparison for any client wide enough to tile.
+
+**`App::showing` was narrowed, which X09 left optional.** Under the single-pane
+projection only the shown pane owes a frame. The panes D14 hides stay *bound* —
+see the hand-off below — so without this a flooding agent in a pane nobody is
+looking at repaints the phone at its own rate.
+`a_delta_for_a_pane_the_narrow_projection_hides_owes_no_frame` is the test, and
+it makes its damage by resizing one pane through the very rule this task added.
+
+### Hand-offs
+
+**X15 — `Viewport.panes` is a *sizing* declaration and not a traffic filter, so
+a peek bind stays legitimate.** §5 names the agreement between this task and
+peek as X00's seam 4. It is settled in the direction that costs peek nothing:
+the server reads the field only to decide pane sizes, and the narrow client goes
+on binding a grid stream for every pane of the focused workspace, so moving
+between panes on a phone costs no keyframe. The field's original doc comment
+("the server sends grid traffic for these panes and no others") describes a
+clause that has never had a reader and did not get one here. What X15 does owe
+is `showing`: it now has two arms to widen for a peeked pane, not one.
+
+**X13 — `mouse: None` in `core/view.rs` is still the one line you owe.** X02
+planted it and this commit carries it unchanged; nothing here fills it. The
+`Viewport` struct this task added is beside it and does not touch it.
+
+**X11 — the compact status line has a predicate to key on, and the cursor
+forked.** `App::projection()` is public and `Projection::Single(_)` is exactly
+"the narrow form", so the compact status line needs no width comparison of its
+own. `status.rs` is untouched — including `place_cursor`, which insets for a
+border the single-pane projection does not draw; the fork is
+`narrow::place_cursor_full_bleed`, called from `paint::repaint`'s own match, and
+X11 need not know it exists.
+
+**Whoever next owns `crates/amx/src/cmd/viewport.rs` — `attach --pane
+--takeover` got better and is still a row short.** It has always declared
+`panes: vec![pane]` and drew no chrome at all, and the server sized that pane to
+its slot; it now gets the whole content area, which is `rows - 1` for a client
+that draws no status line. One row of letterbox instead of a slot's worth. The
+honest fix is a client that declares what it draws — either the mode reports its
+own full height, or the server learns the difference — and neither is X12's file
+or X12's call.
+
+**X00 — the pane a single-pane projection leaves out is not resized at all.**
+X00's wave-1 hand-off asked what D-M4-7's rule does with the other four panes of
+a five-pane workspace (`m4-live-smoke.md` §1.8 item 2). Decided: nothing. They
+have no rect in the declaring client's projection, so there is no size to give
+them and they keep the one the last client that could see them gave them — the
+same answer `reconcile_pane_sizes` already gives a pane squeezed out of visible
+space, and the answer that lets a wide client attached to the same session take
+them all back the moment it declares. Sizing them to slots nobody is drawing
+would shrink live processes for a projection that does not exist.
+
