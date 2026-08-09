@@ -48,38 +48,28 @@ use super::rust_files;
 /// where the ledger says it does. What it cannot check is that the reader
 /// arrived — that is the integration owner's, and this list is what X00 walks.
 /// A row is deleted when its reader lands, not when the field does.
-const FIELD_LEDGER: &[(&str, &str, &str)] = &[
-    (
-        "amx-core/src/agent/mod.rs",
-        "pub reason: Option<String>",
-        "X06 writes it; X10, X11, X14 and X16 read it",
-    ),
-    (
-        "amx-core/src/agent/mod.rs",
-        "pub since: Option<EpochMillis>",
-        "X06 stamps it; X10, X11, X14 and X16 read it",
-    ),
-    (
-        "amx-core/src/event/mod.rs",
-        "workspace: Option<AgentWorkspace>",
-        "X06 folds the names mirror; X16's --watch and examples/notify.sh read it",
-    ),
-    (
-        "amx-proto/src/control/session.rs",
-        "pub mouse: Option<MouseMode>",
-        "X13 fills it from the pane's own terminal and reads it client-side",
-    ),
-    (
-        "amx-proto/src/control/agent/list.rs",
-        "pub now: EpochMillis",
-        "X10 answers it; X14 and X16 render every age against it",
-    ),
-    (
-        "amx-proto/src/control/agent/verbs.rs",
-        "pub workspace: Option<WorkspaceId>",
-        "X17 reads the scope on agent.next",
-    ),
-];
+/// Five of M4's six rows were struck at the wave-4 boundary, each against the
+/// running binary rather than against a call site (m4-live-smoke §4, §5):
+/// `AgentSnapshot::{reason,since}` are a column and an age on three surfaces,
+/// `PaneState.mouse` gates a relay that was watched delivering bytes to a pane,
+/// `ListReply::now` dates every age on two of them, and `NextParams.workspace`
+/// scopes a cycle that was driven to the end of one workspace's queue.
+///
+/// **One row is left, and it is the one the ledger exists for.** The identity
+/// block on `attention_enqueued`/`attention_dequeued` is written and observed on
+/// the wire, and *neither* reader this row named reads it: `amx agents --watch`
+/// takes `envelope.seq` off a delivery and asks `agent.list` again
+/// (`crates/amx/src/agents/watch.rs`'s `drain`), and `examples/notify.sh` still
+/// prints `pane <uuid> needs input`. D-M4-6 froze the block so a notifier could
+/// render `api/backend blocked (permission_dialog)` without a follow-up call;
+/// nothing does. `examples/` is X20's in wave 5 and that is where the reader
+/// belongs — a two-line change to the reference notifier, which is the whole
+/// demonstration the field was frozen for.
+const FIELD_LEDGER: &[(&str, &str, &str)] = &[(
+    "amx-core/src/event/mod.rs",
+    "workspace: Option<AgentWorkspace>",
+    "X06 folds the names mirror; X20's examples/notify.sh is the reader still owed",
+)];
 
 #[test]
 fn no_dispatch_seam_outlives_the_milestone_that_opened_it() {
@@ -153,8 +143,10 @@ fn every_field_m4_froze_is_still_where_its_ledger_row_says() {
     }
     assert_eq!(
         FIELD_LEDGER.len(),
-        6,
-        "docs/11-m4-plan.md §3 freezes six additive fields; this list must be \
-         all of them until their readers land",
+        1,
+        "docs/11-m4-plan.md §3 freezes six additive fields. Five were struck at \
+         the wave-4 boundary, each against the running binary; the sixth is \
+         struck when its reader lands, and a row is never struck because the \
+         field looks used",
     );
 }
