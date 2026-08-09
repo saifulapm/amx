@@ -24,36 +24,6 @@ use crate::actor::{
     WorkspaceCall,
 };
 
-/// The answer a tabled row gives while its wiring is being built.
-///
-/// Not `METHOD_NOT_FOUND`, and the difference matters more than it looks:
-/// telling a client a method is unknown tells it to *stop offering it*, and a
-/// client that stopped offering `agent.list` against a wave-1 build would keep
-/// not offering it against the wave-3 build that answers. So an unwired row
-/// refuses by name, says who owes it, and stays on the table.
-///
-/// The helper is a milestone's tool and has never been allowed to outlive one:
-/// U01 introduced it for M1's two rows, V02 brought it back for M2's twelve and
-/// V17 deleted it, W03 wrote M3's and W06 deleted that. `tests/hygiene.rs`
-/// carries the ledger that makes the deletion a test rather than a habit.
-fn seam(method: &str, owner: &str) -> RpcError {
-    RpcError::new(
-        NOT_IMPLEMENTED,
-        format!("{method} is tabled but not wired yet; {owner} owes it"),
-    )
-}
-
-/// The code [`seam`] answers with: the *last* of amx's own −32000..=−32099.
-///
-/// M1, M2 and M3 all spelled this `-32000`, which was free while nothing else
-/// in the range was taken. It is not free now:
-/// [`RpcError::WAIT_ABANDONED`] is `-32000` and a client that recognises it
-/// redials and asks the same question again, so an unwired row answering that
-/// number would put a caller in a loop. The permanent codes fill the range from
-/// the top; the temporary one takes the bottom, where nothing will reach it
-/// before it is deleted.
-const NOT_IMPLEMENTED: i32 = -32099;
-
 impl Core {
     /// Apply one command: mutate state through a T07 handler if it names one,
     /// publish the event that transition produced, answer any reply channel,
@@ -166,13 +136,12 @@ impl Core {
             }
             CoreCommand::PaneReport { pane, report } => self.handle_pane_report(pane, report),
             CoreCommand::Agent(call) => self.handle_agent_call(call),
-            // M4's one seam. The route is real from wave 1 — the table, the
-            // decode, the mailbox and the reply channel are all exercised —
-            // and only the answer is owed. **X10** replaces this arm with the
-            // projection in `core/agents.rs`, out of the state this actor
-            // already holds (`docs/11-m4-plan.md` D-M4-2).
-            CoreCommand::AgentQuery(AgentQueryCall::List { params: _, reply }) => {
-                let _ = reply.send(Err(seam("agent.list", "X10")));
+            // Answered here and nowhere else, synchronously, out of the state
+            // this actor already holds (`docs/11-m4-plan.md` D-M4-2): being on
+            // this side of `absorb` is what makes the whole reply one mailbox
+            // round trip whatever the pane count.
+            CoreCommand::AgentQuery(AgentQueryCall::List { params, reply }) => {
+                let _ = reply.send(self.agent_list(&params));
             }
             CoreCommand::Shutdown => {}
         }
