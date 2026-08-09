@@ -2300,3 +2300,93 @@ columns here, so its own dialog wraps mid-word — X12's "a pane squeezed out of
 visible space keeps its last size", one workspace further out), and `last_line`
 faithfully reports the bottom row of *that* wrapped screen, which is why the
 detail column reads `(esc to cancel)` rather than the whole prompt.
+
+---
+## X20 — the configuration reference and the phone profile
+
+### Edits outside the §5 file list
+
+**`docs/04-architecture.md` §7, one nested bullet — X07's owed sentence, taken
+here.** X07's entry above decided that `client::Keybindings` gets an exemption
+rather than a reader, and left the sentence recording it to "**X00 or X20**".
+It is written where the promise it qualifies lives: 04 §7's keybinding bullet
+now carries the reason bindings are client-side by construction, that `Server`
+names a table nothing designs, and that the enum is documentary the way
+`--remote` is. §6 gives wave 5's `docs/` to this task and X18/X19 list none of
+it, so this is ownership rather than an exception; the register row R-M4-14
+half it closes is X00's to strike.
+
+### Divergences from §5
+
+**One test file, in `amx-client` rather than in the rig.** A documentation task
+still lands tests that fail without it (`crates/amx-client/tests/reference.rs`,
+six of them). They pin the three claims that go stale silently — the reference
+documents every section in `amx_core::config::SECTIONS`, names every
+`PrefixAction` a `bind` row may name, and prints the shipped table row for row —
+plus the two that make the profile a file rather than a suggestion: every TOML
+example in the reference resolves through the real reader, and
+`examples/keys-phone.toml` resolves with nothing rejected, with the prefix
+rebound and the escape row following it. The rig package was the other home and
+was refused: a new `[[test]]` there is an edit to `tests/Cargo.toml` beside
+`tests/hygiene.rs`, which is X00's, while a new file under
+`crates/amx-client/tests/` needs no parent edit at all (W05's discovery, applied
+to a suite instead of a module).
+
+**The reference documents two files, not one.** `~/.config/amx/agents.toml` is
+named with its merge rule and pointed at 04 §5. A configuration reference that
+described one of the two documents in that directory would send a reader looking
+for the registry into `config.toml`'s leniency rules, which are not the
+registry's.
+
+### What was verified against the real binary, and one control
+
+Green tests are not the exit (§7), and a config file is exactly the kind of
+thing that resolves in a type and does nothing in a client. Both halves of the
+profile were driven through the shipped binary on a real pty, `amx attach` on a
+real session, with the profile copied to `~/.config/amx/config.toml`:
+
+| Config | Keys sent | Outcome | DEC private modes written |
+|---|---|---|---|
+| the profile | `` ` `` `d` | detached, exit 0 | `1049h 25l` **`1006h 1000h`** … `1000l 1006l 25h 1049l` |
+| the profile | `ctrl+a` `d` | still attached (killed) | `1049h 25l` **`1006h 1000h`** … |
+| empty file | `` ` `` `d` | still attached (killed) | `1049h 25l` … and **no `1006`/`1000` at all** |
+
+Read off that rather than argued: the rebound prefix reaches the real input
+machine, the old prefix stops detaching and goes to the pane, `[client] mouse`
+is what puts `?1006h ?1000h` on the wire, and the request is released before the
+alternate screen it was made on top of. The mouse-off control is the one that
+matters most — it is D-M4-1's failure mode (green in a unit test, dead in a
+running amx) checked in the direction that would have hidden it.
+
+`amx keys` was run against the profile, against a file with four bad rows, and
+against a `[[keys.command]]` block: the first resolves with nothing rejected,
+the second prints the shipped table plus four diagnostics and still exits 0, and
+the third is ignored silently — which is what §11's "unbuilt, not removed" is
+citing.
+
+**Not verified, and said so in the document: no phone.** No phone SSH client was
+reachable from this machine, so the profile's tap-count argument is reasoning
+about soft keyboards rather than an observation. §7's by-hand exit item 2 still
+owns that run, and X01 §7.3's dated record has the same gap for the same reason.
+
+### Hand-offs
+
+**X00 — `amx-core`'s `[keys]` doc comment still offers `f1` as an example key.**
+`crates/amx-core/src/config/mod.rs:247-248` says key names are spelled "`ctrl+a`,
+`f1`, or a bare character"; X07 recorded that `f1` is refused by name because a
+prefix-layer key is one byte, and asked that the example be corrected "whenever
+someone next owns it". No wave-5 task owns that file, and the reference now
+documents the real vocabulary, so the stale example is the last place in the
+tree that offers a key the tree refuses. One word.
+
+**X00 — X05's naming line was not taken.** The wave-1 boundary offered X20 "an
+all-digits agent name is now refused … worth a line if agent naming is
+documented there". It is not: this reference is `config.toml`, and agent naming
+is a CLI behaviour with no user-facing document to put it in. Raised so it is
+not read as covered.
+
+**X18 — X15's peek-crop line has no home here either.** X15 asked for "one line
+somewhere a user reads" about a peek shorter than its pane showing the pane's
+middle. That is render behaviour, not configuration; the reference does not
+mention peek at all, and inventing a rendering section for one sentence would be
+worse than leaving it where X15 put it.

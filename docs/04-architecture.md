@@ -362,6 +362,17 @@ inside the CLI across the reconnect.
   `amx keys`. **`[[keys.command]]` bindings** map a key to an arbitrary argv
   (spawned detached or in a pane) — the escape valve an extension-by-API
   design leans on.
+  - **Keybindings are client-side by construction**, and that is what the
+    `[keys]` section built in M4 assumes: a client resolves the prefix and the
+    prefix table out of its own `config.toml` and sends the resulting calls, so
+    no binding table exists on the server and none is designed. The wire's
+    `client::Keybindings` enum (`amx-proto/src/control/client.rs:34-46`) is
+    therefore **documentary**, the shape `--remote` already uses on the CLI: its
+    `Server` variant names a thing there is none of, a client has always been
+    `Local`, and a field that can only carry one value carries nothing. Recorded
+    rather than deleted — removing it is a wire change for no gain. The section
+    itself is [12-config.md](12-config.md); `[[keys.command]]` above is still
+    unbuilt, and that document says so.
 - No chrome mouse handling. `mouse_forward = true` (default) forwards SGR
   events to applications that enabled mouse reporting; amx itself never
   interprets them **as chrome input** — no hit-rects, no drag states, nothing

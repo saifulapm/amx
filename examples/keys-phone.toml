@@ -1,0 +1,68 @@
+# amx's phone profile: a prefix a soft keyboard can reach, and touch-scroll on.
+#
+# Copy it to ~/.config/amx/config.toml, or paste the two sections into the file
+# you already have — every section stands alone, so nothing else in your
+# configuration changes (docs/12-config.md §2).
+#
+#     cp examples/keys-phone.toml ~/.config/amx/config.toml
+#     amx keys                       # what it resolved to, and what it rejected
+#
+# It changes two things, and both are settings the shipped defaults get right on
+# a laptop and wrong on a phone:
+#
+#   1. the prefix, because `ctrl+a` costs two taps on a keyboard whose Ctrl is
+#      itself a key on a strip;
+#   2. mouse reporting, because a touch-scroll gesture arrives as a wheel event
+#      and amx asks for no mouse reports unless it is told to.
+#
+# Nothing here is phone-only. It is an ordinary configuration file that happens
+# to be tuned for a terminal you hold in one hand.
+
+[client]
+# Ask the host terminal for mouse reporting, so a wheel — which is what a
+# touch-scroll gesture arrives as — reaches amx. A wheel-up in a pane whose
+# program asked for no mouse opens copy mode and scrolls the pane's scrollback;
+# a wheel-down at the live edge closes it again. Nothing else about the mouse is
+# interpreted: no taps, no drags, no positions, ever.
+#
+# It is off by default because on a desktop the same request costs you your own
+# terminal's drag-select, which becomes shift-drag while amx holds the mouse
+# (measured in docs/notes/m4-mouse-path.md §5). On a phone there is no
+# drag-select to lose and no wheel without it, which is why the setting exists
+# and why this file is where it is turned on.
+mouse = true
+
+# The single-pane projection below 60 columns is on by default and a phone is
+# always below it, so `narrow_cols` is left alone here. Raise it if your
+# terminal is wide enough to tile but you would rather it did not:
+# narrow_cols = 60
+
+[keys]
+# The prefix, on a key that needs no modifier at all: one tap on the symbol
+# layer every soft keyboard has, against Ctrl-then-a on a modifier strip.
+# Backtick is the least missed printable byte in a terminal, and it is not
+# gone — pressing it twice sends a literal backtick to the pane, which is a
+# rule no configuration can take away.
+#
+# Anything spellable as a single byte works here: `esc` if your terminal app
+# puts Esc on its strip and you do not live in vi keys, `ctrl+space`, or another
+# punctuation character. Keys that arrive as escape sequences — `f1`, `up`,
+# `alt+x` — are refused by name, with the reason, by `amx keys`.
+prefix = "`"
+
+[keys.bind]
+# One row per key pressed *after* the prefix. A row replaces exactly that key
+# and leaves the rest of the shipped table standing, so what follows is two
+# additions rather than a table to maintain.
+#
+# `n` for the workspace-scoped attention jump, which ships on `A`: capital
+# letters cost a shift tap, and this is a key you press over and over while
+# clearing one project's queue.
+"n" = "attention-here"
+
+# `,` for the picker, beside `p`, because the symbol row is already open on a
+# phone keyboard when the letters are not.
+"," = "picker"
+
+# `amx keys` prints the resolved table with the source of every row, so a
+# binding that did not take is a question you can answer rather than guess at.

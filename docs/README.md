@@ -21,6 +21,7 @@ herdr's structural weaknesses.
 | [09-m3-plan.md](09-m3-plan.md) | M3 execution plan: continuity & reach — wedge spike, SCM_RIGHTS handoff, reconnect-resync, self-update, SSH bridge, worktrees, layouts |
 | [10-attention-surfaces.md](10-attention-surfaces.md) | D14/D15 design: attention at 25-agent scale (agent.list, agents view with live peek, status-line breakdown, `amx agents`) and small screens (narrow-viewport projection, wheel → copy-mode) |
 | [11-m4-plan.md](11-m4-plan.md) | M4 execution plan: mouse-path spike, D14/D15 implementation, design-review paydown, standing integration owner with a wave-1 live smoke |
+| [12-config.md](12-config.md) | Configuration reference: every `config.toml` section and key, the lenient reload rule, the `[keys]` grammar, and the phone profile |
 | [notes/design-review.md](notes/design-review.md) | 2026-08 full-design review: findings register DR-1…DR-21 with priorities and effort |
 
 ## TL;DR
