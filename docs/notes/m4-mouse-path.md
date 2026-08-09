@@ -583,3 +583,64 @@ Append the transcripts to this section under a dated heading, name the
 emulators and their versions, and then either confirm outcome (b) or record
 outcome (c) with the bytes that forced it. X13 does not merge before that
 heading exists.
+
+#### 2026-08-09 — the wheel was turned, and outcome (b) is confirmed
+
+The session that was locked when §2.5 was written is unlocked, so
+`wheel-in-emulator.sh` ran as designed: a `zwlr_virtual_pointer_v1` pointer
+turning a real wheel in a real emulator, with the probe reading the tty.
+`foot 1.27.0` and `alacritty 0.17.0`, two runs each — baseline (the probe asks
+for nothing, as `amx attach` does today) and sgr (`?1006h ?1000h`).
+
+**foot 1.27.0**, verbatim:
+
+```
+== baseline: modes requested "" ==
+   [  0.514s]   9B  1b 5b 41 1b 5b 41 1b 5b 41  "\e[A\e[A\e[A"  [other "\e[A"]…
+   [  0.998s]   9B  1b 5b 42 1b 5b 42 1b 5b 42  "\e[B\e[B\e[B"  [other "\e[B"]…
+== sgr: modes requested "1006,1000" ==
+   [  0.522s]  13B  1b 5b 3c 36 34 3b 31 39 30 3b 33 34 4d  "\e[<64;190;34M"  [sgr-report 13B wheel=up]
+   [  1.005s]  13B  1b 5b 3c 36 35 3b 31 39 31 3b 33 34 4d  "\e[<65;191;34M"  [sgr-report 13B wheel=down]
+   [  1.491s]  12B  1b 5b 3c 30 3b 31 39 31 3b 33 34 4d   "\e[<0;191;34M"  [sgr-report 12B]
+   [  1.612s]  12B  1b 5b 3c 30 3b 31 39 31 3b 33 34 6d   "\e[<0;191;34m"  [sgr-report 12B]
+```
+
+**alacritty 0.17.0**, verbatim:
+
+```
+== baseline: modes requested "" ==
+   [  0.499s]   9B  1b 4f 41 1b 4f 41 1b 4f 41  "\eOA\eOA\eOA"  [other "\eOA"]…
+   [  0.982s]   9B  1b 4f 42 1b 4f 42 1b 4f 42  "\eOB\eOB\eOB"  [other "\eOB"]…
+== sgr: modes requested "1006,1000" ==
+   [  0.496s]  13B  1b 5b 3c 36 34 3b 32 31 32 3b 33 34 4d  "\e[<64;212;34M"  [sgr-report 13B wheel=up]
+   [  0.979s]  13B  1b 5b 3c 36 35 3b 32 31 32 3b 33 34 4d  "\e[<65;212;34M"  [sgr-report 13B wheel=down]
+```
+
+**Outcome (b) is confirmed, and §5's hypothesis is now an observation.** Wheel
+up is button `64`, wheel down is `65`, in the SGR grammar `mouse::scan` already
+recognises, from both emulators, at the byte level. The press/release pair at
+the end of foot's transcript (`\e[<0;…M` then `\e[<0;…m`) is the button-1 click
+the scripted sequence makes, and it is the same grammar — which is what the
+button-only parse and its fence in §4 are written against.
+
+**Two things the run adds that §2 could not.**
+
+1. **The baseline confirms `1007` empirically, and the two emulators disagree
+   about how.** With amx asking for nothing, a wheel turn already produces
+   cursor keys — but foot sends CSI (`\e[A`/`\e[B`) and alacritty sends SS3
+   (`\eOA`/`\eOB`), the application-cursor-key form. So today's wheel is not
+   merely ambiguous in the abstract: what a pane receives depends on which
+   emulator the user runs. That strengthens the case §5 makes for the
+   exception buying *unambiguity*, and it is one more reason the interpreted
+   path cannot be inferred from what arrives.
+2. **`wheel-in-emulator.sh` only ever worked on foot.** It passed
+   `--fullscreen`, which alacritty rejects outright, so the alacritty half of
+   the spike's own harness had never run. Fixed here — the launcher now spells
+   fullscreen and title per emulator — which is the difference between a
+   re-runnable harness and one that was only ever run one way.
+
+Method note: the wheel was turned by a virtual pointer, not by a hand. The
+emulator cannot distinguish the two (it sees a `wl_pointer` axis event either
+way), so this is an observation of the emulator's behaviour and not of a
+human's; nothing in the chain under test is downstream of which device
+generated the axis event.

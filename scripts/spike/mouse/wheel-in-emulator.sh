@@ -72,8 +72,22 @@ launch() {
     local modes="$2"
     local log="$out/$label.log"
 
-    "$emulator" --fullscreen --title=amx-x01-wheel \
-        "$probe" --modes "$modes" --seconds 14 --alt --log "$log" &
+    # Each emulator spells "fullscreen, and this title" its own way; the
+    # window has to be big and findable, and neither flag is portable.
+    case "$emulator" in
+        foot)
+            "$emulator" --fullscreen --title=amx-x01-wheel \
+                "$probe" --modes "$modes" --seconds 14 --alt --log "$log" &
+            ;;
+        alacritty)
+            "$emulator" --title amx-x01-wheel \
+                -o 'window.startup_mode="Fullscreen"' \
+                -e "$probe" --modes "$modes" --seconds 14 --alt --log "$log" &
+            ;;
+        *)
+            "$emulator" -e "$probe" --modes "$modes" --seconds 14 --alt --log "$log" &
+            ;;
+    esac
     local emu=$!
 
     # Wait on the probe announcing itself, never on a fixed nap.
