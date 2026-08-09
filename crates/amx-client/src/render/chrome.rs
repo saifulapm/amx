@@ -4,6 +4,8 @@
 //! is server state — which is exactly the split 04 §3 draws: "draws its own
 //! chrome (borders, status line, picker)".
 
+use std::ops::Range;
+
 use amx_core::Rect;
 use unicode_width::UnicodeWidthChar;
 
@@ -72,30 +74,46 @@ pub fn inset(rect: Rect) -> Rect {
 }
 
 /// Draw `text` left-aligned on one full-width row, truncated or blank-padded
-/// to exactly `cols` cells.
-pub fn status_line(writer: &mut FrameWriter, row: u16, cols: u16, text: &str) {
+/// to exactly `cols` cells, with the bytes in `emphasis` drawn out of the bar.
+///
+/// The whole row is reverse video, so a run drawn *without* it is what stands
+/// out — which is how the status line marks the workspace this client is
+/// showing (D15 asks for the active workspace to be highlighted). Emphasis by
+/// attribute rather than by a marker glyph, because the one surface that most
+/// needs the distinction is the one with the least width to spend on it: D14's
+/// compact form on a phone.
+///
+/// `emphasis` is a byte range into `text`; an empty or out-of-range one draws
+/// the row uniformly, which is what a line with no active workspace wants.
+pub fn status_line(
+    writer: &mut FrameWriter,
+    row: u16,
+    cols: u16,
+    text: &str,
+    emphasis: Range<usize>,
+) {
+    let bar = Attrs {
+        reverse: true,
+        ..Attrs::default()
+    };
     writer.move_to(row, 0);
     let mut written = 0_u16;
-    for ch in text.chars() {
+    for (at, ch) in text.char_indices() {
         let w = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
         if written + w > cols {
             break;
         }
-        writer.write_cell(&Cell {
-            ch,
-            attrs: Attrs {
-                reverse: true,
-                ..Attrs::default()
-            },
-        });
+        let attrs = if emphasis.contains(&at) {
+            Attrs::default()
+        } else {
+            bar
+        };
+        writer.write_cell(&Cell { ch, attrs });
         written += w;
     }
     let pad = Cell {
         ch: ' ',
-        attrs: Attrs {
-            reverse: true,
-            ..Attrs::default()
-        },
+        attrs: bar,
     };
     for _ in written..cols {
         writer.write_cell(&pad);

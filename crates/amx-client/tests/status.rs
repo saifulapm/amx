@@ -1,7 +1,9 @@
 //! U07 and V14 acceptance: what the status line says — labels, the attention
 //! count 04 §5 requires ("the status line renders `⚑3` from the same state"),
 //! the focused pane's agent status, and the restore-loss indicator 04 §6
-//! requires ("shown in the status line ... never log-only").
+//! requires ("shown in the status line ... never log-only"). What the same line
+//! says about the *agents* in the session — D15's per-workspace breakdown, the
+//! queue head and its age, D14's compact form — is `status_agents.rs`.
 //!
 //! The assertions are made against rasterized frame bytes rather than against
 //! the cached `String`, because the thing a user sees is the row that lands on
@@ -29,6 +31,8 @@ use amx_proto::control::session::RestoreSummary;
 const ROWS: u16 = 24;
 const COLS: u16 = 80;
 
+type TestApp = App<std::fs::File, Vec<u8>>;
+
 fn client_info() -> ClientInfo {
     ClientInfo {
         name: "amx-status-test".to_owned(),
@@ -43,7 +47,7 @@ async fn app_with_one_pane(
     tag: &'static str,
     server: &support::Server,
     pty_slave: std::fs::File,
-) -> (App<std::fs::File, Vec<u8>>, PaneId) {
+) -> (TestApp, PaneId) {
     let mut app = App::attach(server.socket(), pty_slave, Vec::new(), client_info())
         .await
         .expect("attach to the real server over the real socket");
@@ -61,7 +65,7 @@ async fn app_with_one_pane(
 }
 
 /// The text of the status row of the last painted frame.
-fn status_row(app: &App<std::fs::File, Vec<u8>>) -> String {
+fn status_row(app: &TestApp) -> String {
     let cells = support::rasterize(app.frame());
     (0..COLS)
         .map(|col| cells.get(&(ROWS - 1, col)).copied().unwrap_or(' '))

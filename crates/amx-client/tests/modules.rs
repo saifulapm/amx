@@ -24,11 +24,20 @@ fn app_status_module_is_extracted_and_mod_rs_returns_under_soft_budget() {
             .count()
     };
 
-    let status = lines("status.rs");
-    assert!(
-        status > 40,
-        "app/status.rs must hold the status line, not a re-export",
-    );
+    // `status.rs` became `status/` when D15's breakdown, D14's compact form and
+    // the clock their ages are rendered against crossed the same budget (X11).
+    // What the original assertion is about is unchanged: the status line lives
+    // outside `app/mod.rs` and holds real code, wherever inside `status/` it
+    // sits.
+    let status = ["status/mod.rs", "status/line.rs", "status/clock.rs"];
+    for name in status {
+        let held = lines(name);
+        assert!(held > 40, "app/{name} must hold code, not a re-export");
+        assert!(
+            held <= 500,
+            "app/{name} is {held} lines, over the 500-line soft budget",
+        );
+    }
     let modrs = lines("mod.rs");
     assert!(
         modrs <= 500,
