@@ -35,6 +35,20 @@ addendum, and the budget snapshot. Both waves were smoked in one run against the
 real binary ([m4-live-smoke.md](m4-live-smoke.md) §4, §5), which found five
 things nothing in this register predicted; they are listed at the end.
 
+**M4's exit (2026-08-09, `ad4b44b`).** All twenty implementation tasks landed and
+[§7](../11-m4-plan.md#7-the-m4-exit) was run item by item
+([m4-live-smoke.md](m4-live-smoke.md) §6). **The milestone's work is done and its
+exit criteria are not met**: the CI half holds except a queue-head age that stops
+advancing on a quiet screen, the agents view's jump, and one frozen field with no
+reader; the by-hand half's item 1 fails on its substance — a real Claude Code
+blocked on a real permission dialog is reported `idle` 35.4 s later with the
+dialog still on its screen — and its items 2 and 3 are unrun and recorded as
+unrun. **None of what fails is a row this register named**, which is the case for
+having kept both instruments: the review found execution gaps and process debt,
+the smoke found behaviour. The rows the exit moved are DR-1's residual and DR-17
+(struck), DR-11's count, DR-19's fifth flake, DR-21's measurement, and the budget
+snapshot.
+
 **Overall verdict.** No architectural mistake found. The bets 04 makes are
 sound and the measured spikes (scrollback identity, hook coverage, shutdown
 wedge) validated the risky ones. The budget holds (zero files over hard
@@ -51,14 +65,24 @@ two numbers is amx's reason to exist, and it was earned by verification
 
 ## Critical path
 
-**DR-1 — The `Cells` wire format is the missing keystone.** `resolved (M3)`
+**DR-1 — The `Cells` wire format is the missing keystone.**
+`resolved (M3); its residual resolved (M4, X18)`
 The codec is real: length-prefixed `put_cells` / `read_rows`
 (`amx-proto/src/stream/grid.rs:242,379`) over a per-cell layout in
 `amx-proto/src/stream/cell.rs`; no `todo!()` remains in amx-proto.
-Residuals: the stale comment at `amx-client/src/model/grid.rs:33` is corrected
-(M4/X03, under DR-15), and it now states the gap it used to hide — the client's
-`Attrs` remains a reduced projection, six of the wire's ten attributes.
-Widening it is scheduled as M4's X18.
+Residuals, both closed in M4: the stale comment at
+`amx-client/src/model/grid.rs:33` was corrected by X03 under DR-15, and the gap
+it then stated — the client's `Attrs` carrying six of the wire's ten
+attributes — is gone. **X18 widened it to all ten**, with the underline *style*
+carried as the wire's own enum and emitted in the sub-parameter form
+(`4:2`…`4:5`) the vendored parser reads, and the underline colour as `58;2;r;g;b`.
+Two reductions remain and neither is an attribute: a palette-indexed underline
+colour never reaches the wire (an `amx-vt` limitation, recorded there), and a
+cell's text is one `char`, so a multi-codepoint grapheme keeps its first scalar.
+Both are named in `Attrs`' own doc rather than left for a reader to find. Watched
+end to end at the exit: the widest SGR run a stand-in can paint arrived through a
+**peek** of a pane in another workspace, underline and both 24-bit colours intact
+([m4-live-smoke.md](m4-live-smoke.md) §6.4).
 
 **DR-2 — History delivery is unwired.** `resolved (M3)`
 The full path exists: client requests (`app/binds.rs:151`
@@ -86,9 +110,20 @@ cross-crate seams, and the live smoke is a gate at every wave boundary rather
 than an exit step — [m4-live-smoke.md](m4-live-smoke.md) §1 is the baseline
 recorded before wave 2 opened, §2 the first delta. It found the wave's own
 integration break to be one the compiler catches (§2.6) and two seams measured
-before either half of them is built. Whether the practice pays is answerable at
-M4's exit; that the structure exists is answerable now, which is what this row
-asked for.
+before either half of them is built.
+
+**Whether the practice pays was left to M4's exit, and the exit answers yes —
+though not where this row expected.** The merge gate caught four integration
+breaks across the milestone, three of them in wave 3 alone and every one between
+tasks whose *files never overlapped*, which is precisely the hole this row names;
+one of the three (`pane_interior`, defined twice) was hiding a real defect rather
+than merely duplicating code. But the merges were the cheaper half. **The live
+smoke found more than the merges did** — ten findings with no register row, five
+of them behavioural defects in shipped surfaces, and the largest of them
+(a blocked agent reported idle after thirty seconds) is invisible to every suite
+in the tree and was found because the smoke ran the binary and then *waited*.
+The structural fix this row asked for is worth keeping; the part of it that
+earned its cost is the standing smoke, not the standing merge.
 The wave/file-ownership scheme that makes parallel execution safe leaves
 cross-crate joins owned by nobody, by construction. T19, U10, V17 and now
 W14 are four retrofits of the same hole; M2's W-1 (hub and gateway "both
@@ -206,13 +241,17 @@ mechanism was still never caught in the act — keep the watch until a census
 either fires or a milestone of field time passes clean.
 **M4 is that milestone of field time, and the count is kept**: every live-smoke
 run records each `session stop`'s exit status, the presence of a `drain-census`
-file and any census log line. **Fourteen clean stops through wave 4**, over
-sessions of 2, 3, 4, 25 and 26 panes, plus four handoffs whose successors took
-the session and whose exporters exited 0 where that was observable
-([m4-live-smoke.md](m4-live-smoke.md) §1.7, §2.7, §3.9, §4.9); nothing has fired.
-Stops of servers a driver did not spawn are not counted, since their exit status
-cannot be read.
-R-M4-10 is what turns that from an impression into a record.
+file and any census log line. **Seventeen clean stops across the milestone**, all
+exit 0, over sessions of 2, 3, 4, 24, 25 and 26 panes, beside the handoffs whose
+successors took the session in every case
+([m4-live-smoke.md](m4-live-smoke.md) §1.7, §2.7, §3.9, §4.9, §6.8); no
+`drain-census` file and no census line in any server's stderr. Stops of servers a
+driver did not spawn are not counted, since their exit status cannot be read.
+R-M4-10 is what turns that from an impression into a record, and **the milestone
+of field time this row asked for has now passed clean**. The watch's own
+condition is met; whether to close DR-11 or keep it through M5 is a decision this
+register leaves to the next plan, since the field mechanism was never caught in
+the act and a watch that costs nothing is cheap to keep.
 
 **DR-12 — `frame on unbound channel` under flood.** `resolved (M4, X08)`
 Decided, and not as a choice between refusal and silence: the two layers answer
@@ -306,7 +345,22 @@ second bind's reply is outstanding. Pre-existing — identical at `6f4fb5d` and
 `335cc27` — and unowned. [m4-live-smoke.md](m4-live-smoke.md) §3.8 has the
 measurement and the one-line shape of the fix.
 
-**DR-17 — Remote UX edges.** `open — one clause of three was already paid`
+**DR-17 — Remote UX edges.** `resolved (M4, X19) — one of three was already paid`
+All three clauses answered. The newline one was **decided rather than encoded**:
+`SessionName::new` refuses every ASCII control character, with the reasoning
+written at both ends of the path, because anything encoded here must be decoded
+by a far side of unknown version — and an older one would serve a *different*
+session under a name nobody asked for, a silent wrong answer where a refusal is
+a sentence a user can act on. That is a stated interface change: a name holding a
+control character was legal yesterday and is refused today, in `--session`,
+`$AMX_SESSION` and the serde path alike. `$MISE_INSTALLS_DIR` is now read (one
+`Env` field, one `pm::classify` parameter, two call sites), so a relocated mise
+root classifies as mise and `amx update apply` redirects to `mise upgrade amx`
+instead of writing over a managed install — asserted against the real binary from
+such a tree, with the variable unset installing as the control. The `--help`
+clause needed nothing and is recorded as already paid (R-M4-6).
+
+The row as first written, for the record:
 ~~`amx --help` never mentions `--remote`~~ — it does, and did before this row
 was written: `8e508c1` declared the flag documentary in clap with the reason,
 and it is an ancestor of `b727786`, the tree this register re-verified against.
@@ -375,11 +429,23 @@ from the same tree, not independently versioned), and no handoff or
 `update apply` has run over the remote link. Name these in the M4 plan
 rather than letting "SSH works" round up.
 
-**DR-21 — Resume optimization, recorded not built.** `open (optional)`
+**DR-21 — Resume optimization, recorded not built.**
+`open (optional) — now with the measurement §7 asked for`
 R-M3-14's sound route: a reconnecting client drains event replay before
 binding grids, so unchanged grids skip their keyframes without trusting
 generations. Client-side only, no wire change. Worth taking when reconnect
 traffic matters (many panes × frequent swaps), not before.
+**Measured at M4's exit** ([m4-live-smoke.md](m4-live-smoke.md) §6.8), and the
+number argues for leaving it alone: with 25 agents and a peek open the bound set
+is **six streams** — the five panes the client draws plus the peek, because D14's
+projection binds the drawn set and not the session — so a resume costs six
+keyframes and about 6900 cells, not twenty-five panes' worth. The wire figure the
+row really wants needs a counter in `damage/keyframe.rs`, which is one line and
+is named here so the next person does not have to rediscover that the product
+exposes none. What the same measurement *did* find is a bigger number in the
+other direction: the agents view repaints every cell four times a second
+(`absorb(Effect::Full)`), 82 KB/s at 160×44 against nothing at all with the board
+closed — reconnect traffic is not where this client's bytes are going.
 
 Budget snapshot post-M3: 28 files over soft (24 tests), 0 over hard;
 largest src `pane_host/parser.rs` 532, then `remote/ssh.rs` 516,
@@ -395,6 +461,15 @@ when it was written: `actor/core/restore.rs` 499 → 536, which X05 grew, and
 `remote/ssh.rs`, still 516 and X19's in wave 5.
 `todo!()` count in src: **0**, and `tests/hygiene/unfinished.rs` fails if it ever
 stops being 0, rather than leaving it to a snapshot in a note.
+
+Budget snapshot at M4's exit (`ad4b44b`): **35 files over soft, 0 over hard**.
+The three `src` files over are `actor/core/restore.rs` 536 (wave 1),
+`crates/amx/src/agents/watch.rs` 530 (X16) and `crates/amx/src/remote/ssh.rs`
+**559**, which X19 grew from the 516 it had carried since M3 — the only `src`
+file wave 5 pushed further over, and the one R-M4-5 named as certain to grow.
+Nothing crossed the hard budget in the whole milestone, and the two files that
+came closest were split by the tasks that wrote them rather than by a later
+cleanup.
 
 Budget snapshot after M4 waves 3 and 4 (`b698c51`): **34 files over soft, 0 over
 hard**. Three `src` files are over: `actor/core/restore.rs` 536 and
@@ -422,19 +497,26 @@ DR-19 flake paydown → DR-4/DR-5 written into the M4 plan → D14/D15
 implementation (~2 weeks, [10-attention-surfaces.md](../10-attention-surfaces.md))
 → DR-17/DR-18/DR-20/DR-21 as M4 scope decisions.
 
-**Taken, as of M4 wave 4**: DR-4, DR-5, DR-6, DR-7, DR-9, DR-10, DR-12, DR-13,
-DR-15, DR-16 and DR-19 are struck above — the whole of the order's first six
-steps. What is left of the register is three `open` rows (DR-17 and DR-20, both
-X19 in wave 5; DR-18, declined with a condition), one `open (optional)` (DR-21,
-declined with a measurement §7 records), one `watch` (DR-11, whose count is now
-fourteen clean stops) and one `no action` (DR-14). The D14/D15 implementation is
-waves 3–5 and carries no register row of its own; the last step of the order that
-is still open in code is DR-1's residual, which is X18's in wave 5. Progress
-against this order is recorded per wave in
+**Taken, as of M4's exit**: DR-1's residual, DR-4, DR-5, DR-6, DR-7, DR-9,
+DR-10, DR-12, DR-13, DR-15, DR-16, DR-17 and DR-19 are struck above — **the whole
+of the order**, including the D14/D15 implementation it ends with. What is left
+of this register is **one open row** (DR-20, whose two clauses need a second
+machine and have written procedures), one declined-with-a-condition (DR-18), one
+`open (optional)` with its measurement taken (DR-21), one `watch` whose condition
+is now met (DR-11, seventeen clean stops) and one `no action` (DR-14). Twenty-one
+rows in, four out, and three of the twenty-one turned out to have been paid
+before they were scheduled — which is R-M4-6's whole argument, re-earned three
+times.
+
+**The register is not the exit.** M4's §7 criteria are *not* met
+([m4-live-smoke.md](m4-live-smoke.md) §6.9), and none of what fails is a row this
+register named: the review found execution gaps and process debt, and the smoke
+found behaviour. Both instruments were needed and they found different things,
+which is the case for keeping both. Progress is recorded per wave in
 [m4-wave-outcomes.md](m4-wave-outcomes.md), and each wave's run of the real
 binary in [m4-live-smoke.md](m4-live-smoke.md).
 
-**Seven findings this register has no row for**, none a regression, none
+**Ten findings this register has no row for**, none a regression, none
 blocking M4, every one outside every remaining task's file scope. From the
 wave-2 boundary: a session can be handed over only once (the importer assembles
 no export path), and the non-`--takeover` `amx attach --pane` can start blank
@@ -452,8 +534,27 @@ under load. From the wave-3/4 boundary:
 - **`prefix+d` does not reach a client with the agents view open** (§5.5);
 - **the board's filter survives closing and reopening it** (§5.3).
 
-All seven are written up in [m4-wave-outcomes.md](m4-wave-outcomes.md) under the
+And three more from the exit itself:
+
+- **the shipped `claude.toml` sees only one phrasing of a permission dialog** —
+  `contains = ["do you want to proceed?"]`, which a Write/Edit dialog does not
+  say, so for that whole class tier 2 has no opinion and `agent explain` answers
+  `matched: null` with a dialog plainly on screen (m4-live-smoke §6.8). It is
+  what makes the first finding above unrecoverable rather than merely wrong, and
+  it is DR-14's "manifest-catalog maintenance burden carries over" with a date
+  on it;
+- **the agents view repaints every cell four times a second** —
+  `apply_agent_list` ends in `absorb(Effect::Full)`; 82 KB/s at 160×44 and
+  9 KB/s at the phone width D14 exists for, against *nothing at all* with the
+  board closed (§6.8);
+- **`pane.run` did not submit to a real Claude Code composer**, 3 of 3, and a
+  following `pane.send-keys enter` did (§6.8). DR-3 records the mechanism and
+  cites ~3% for the swallow it redesigned around; this is the same shape at a
+  rate nobody has measured against a real agent since.
+
+All ten are written up in [m4-wave-outcomes.md](m4-wave-outcomes.md) under the
 boundary that found them, with mechanisms and citations. They want plan decisions
-rather than rows invented by the integration owner — and the first of them wants
-one before M4's exit criteria are read as met, since §7's items 1–5 are all
-measured inside the thirty seconds it is talking about.
+rather than rows invented by the integration owner — and the first two want one
+**before M4's exit criteria are read as met**, because they are why by-hand item
+1 fails and why every one of §7's items 1–5 has to be measured inside thirty
+seconds of a paint to hold at all.

@@ -245,8 +245,11 @@ impl ClientConfig {
 /// per-section rule this module opens with.
 ///
 /// Key names are spelled the way `pane.send_keys` spells them — `ctrl+a`,
-/// `f1`, or a bare character — so a user who has read one part of the docs can
-/// write the other. Action names are the client's own verbs; `amx keys` prints
+/// `esc`, or a bare character — so a user who has read one part of the docs can
+/// write the other. Not every name that verb accepts survives here: a
+/// prefix-layer key is one byte, so `f1`, `up` and `alt+x` are refused by name
+/// (`amx-client/src/config/name.rs`, which says why). Action names are the
+/// client's own verbs; `amx keys` prints
 /// the resolved table, which is what makes them discoverable rather than
 /// folklore.
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
