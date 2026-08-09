@@ -22,6 +22,13 @@
 //!   module, and the actor returns. There is a rare, undiagnosed wedge in the
 //!   runtime's `JoinSet` drain (R-M1-2), and a draining task that awaits
 //!   another draining task is exactly the shape that could feed it.
+//!
+//!   The second rule is what makes the third need a line of its own. An
+//!   unbiased select hands cancellation no precedence, so a wakeup that was
+//!   ready in the same poll can win it and the actor would take one more turn
+//!   of work on its way out. The loop therefore checks the token after the
+//!   select rather than trusting the branch, which is what turns "the
+//!   cancellation usually wins" into a guarantee.
 
 use amx_core::{Delivery, Event, Subscription};
 use amx_proto::control::agent as proto;
@@ -79,6 +86,21 @@ impl AgentHub {
                 () = tokio::time::sleep_until(due.unwrap_or_else(Instant::now)),
                     if due.is_some() => Step::Due,
             };
+            // The select is deliberately not biased, and that cuts both ways: a
+            // delivery, a command or a wakeup that was ready in the *same* poll
+            // as the cancellation can win it, and then the shutdown discipline
+            // would be a matter of which branch tokio happened to pick. One
+            // check makes it structural instead — past this line the actor
+            // publishes nothing, evaluates nothing, arms no timer and asks no
+            // sibling anything, whichever branch woke it. A command already
+            // taken out of the mailbox is still answered, because a caller
+            // waiting on a reply that was dropped waits forever.
+            if cancel.is_cancelled() {
+                if let Step::Command(command) = step {
+                    self.refuse(command);
+                }
+                break;
+            }
             match step {
                 Step::Command(command) => self.command(command),
                 Step::Delivery(delivery) => self.observe(delivery),
