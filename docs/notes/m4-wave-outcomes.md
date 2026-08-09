@@ -2300,3 +2300,139 @@ columns here, so its own dialog wraps mid-word — X12's "a pane squeezed out of
 visible space keeps its last size", one workspace further out), and `last_line`
 faithfully reports the bottom row of *that* wrapped screen, which is why the
 detail column reads `(esc to cancel)` rather than the whole prompt.
+
+## X19 — DR-17 and DR-20 residuals
+
+### DR-17, clause by clause
+
+**`amx --help` — re-verified, not re-paid.** R-M4-6 and the register already
+record this clause as paid before it was scheduled, and this task confirmed it
+rather than touching it: `crates/amx/src/cli/mod.rs:85-97` declares the flag
+documentary with the reason, `8e508c1` is an ancestor of this branch, the built
+binary prints `--remote <HOST>` in `amx --help`, and
+`crates/amx/tests/bridge.rs:383` already fails if it stops doing so. No change.
+
+**`$MISE_INSTALLS_DIR` — read, as W10 said it would be.** One `Env` field
+(`amx-core/src/ctx.rs`), one parameter on `pm::classify`, and the two call sites
+in `crates/amx/src/cmd/update.rs` that pass it. A tree under the configured root
+now classifies as mise, so `amx update apply` redirects to `mise upgrade amx`
+and writes nothing — asserted against the real binary run from such a tree, with
+the same tree and the variable unset installing, which is what makes the refusal
+the variable's doing.
+
+Two details worth not rediscovering. The root is compared **as configured and as
+resolved**, because `classify` tries the exe twice (as given, then
+canonicalised) and a root reached through a symlink matches under one spelling
+per attempt. And mise's other spelling of the same move, `$MISE_DATA_DIR`, needs
+nothing: its installs live at `<data>/installs`, and the shape rule already
+matches a directory *named* `installs` wherever it sits.
+
+### The newline decision: refused at construction, and why not encoded
+
+`SessionName::new` now refuses every ASCII control character
+(`amx-core/src/ctx.rs`), with a `SessionNameError::Control` variant of its own.
+Newline is the character that forced it; the rule is the class because a name is
+printed back into terminals as well as sent to one, and there is no reason to
+admit `\r` or `\x1b` while refusing `\n`. NUL moved into the same check, having
+been in the path-component one before.
+
+An encoding was considered and refused for a reason that outlives the taste
+argument: **the far side's amx is a different binary of an unknown version.**
+Anything encoded here has to be decoded there, and an older far side would take
+the encoded form literally and serve a *different session* under a name nobody
+asked for — a silent wrong answer where a refusal is a sentence the user can act
+on. The `sh`-side alternative (`--session "$(printf …)"`, built inside the inner
+script where csh never looks) also loses a trailing newline to command
+substitution, so it is not even a correct encoding for the case it exists for.
+The reasoning is written at both ends of the path: `SessionName::new`'s doc and
+`remote::ssh::sq`'s, which no longer says the case has no answer.
+
+**Interface change, stated:** a session name that was legal yesterday and held a
+control character is refused today, at construction, in every path — `--session`,
+`$AMX_SESSION` (already dropped when invalid), and the serde `TryFrom<String>`.
+
+### DR-20: what was run, and what is still unrun
+
+**The skew table's label (the acceptance).** `tests/skew.rs` now says what it
+does not vary: current-against-current while one protocol version exists, and
+one build unless told otherwise. Both halves have teeth rather than being prose:
+`the_table_is_current_against_current_until_a_second_version_exists` fails the
+day `PROTO_MIN != PROTO_MAX` and names the row and the three labels that then
+owe a rewrite; and the bridge row asserts the `Welcome`'s server version equals
+what the far binary answers `--version`, so the row cannot claim a build it did
+not run.
+
+**An independently *versioned* far side, run.** `AMX_SKEW_FAR_BINARY` points the
+bridge row's whole far side — the server *and* the splice — at another binary.
+Run here against a 0.1.1 build of this tree (bump the workspace version, `cargo
+build -p amx`, copy it aside, put the version back): all nine skew cases green,
+with the far side's `Welcome` reading 0.1.1 against a 0.1.0 near side. That
+covers the *versioned* half of DR-20's first residual and none of the other
+half.
+
+**A handoff over the real ssh link, run.** `tests/remote_ssh.rs` gained a third
+case: a client attached through the loopback sshd, a `session.handoff` under it,
+and the successor observed by pid. It found the answer nobody had written down —
+**the bridged client does not survive it.** It exits 1 with `amx: run the
+attached client: the server closed the connection`, because a local client
+redials the socket path it was given and a bridged one has no path to redial
+(DR-16 declined that redial, naming the respawned ssh child it needs). The
+session is fine: a second `amx --remote` reaches the successor with the pane's
+content still on it, which the case asserts. Both facts are now assertions, so
+giving the bridged client a redial is a change that suite notices.
+
+**Unrun, with the procedure that closes each.** Neither is unrun for want of
+trying, and neither is written as passing anywhere:
+
+1. **A far side running a binary it built itself.** Needs a second machine.
+   Procedure: on that machine, build amx from this tree with its own toolchain
+   (`cargo build --release -p amx`) — *not* cross-built here, which is what
+   m3-live-smoke §5 did and why that run is same-tree — then `amx --remote
+   <host>` from this one and drive a pane. For the protocol half specifically:
+   `AMX_SKEW_FAR_BINARY=<path to a binary that machine built>` also runs the
+   bridge row against it, if the binary can be copied back and executed here.
+2. **`amx update apply` over the remote link.** Needs a second machine and a
+   published channel the far side can fetch from. Procedure: seed or install amx
+   on the host, publish a successor to a `file://` (or reachable) manifest the
+   *host* can read, attach with `amx --remote <host>`, then on the host run `amx
+   update apply` and watch the attached client from here. Expected, on today's
+   code: the far side swaps, and this end prints the sentence in the paragraph
+   above rather than riding through. A test cannot do this in place of a person
+   because `apply` replaces the binary it is running, which on a remote host is
+   that host's own file.
+
+**This machine has no second host to reach.** The one m3-live-smoke §5 used
+(`192.168.0.105`) answers ICMP at ~46 ms but refuses this session's keys
+(`Permission denied (publickey)`), so neither clause above could be attempted
+from here. Recorded as attempted-and-blocked rather than skipped.
+
+### Divergences from §5
+
+**Five files outside the entry's list, all consequences of the two fixes it
+names.** `crates/amx/src/cmd/update.rs` (the two `pm::classify` call sites the
+new parameter requires — the redirect itself lives there, so the acceptance
+cannot hold without it); `crates/amx-core/src/error.rs` (the `Control` variant —
+reusing `NotAComponent` would have said a control character is not a valid
+directory component, which is false on POSIX); `crates/amx-core/tests/ctx.rs`
+(the rule's own test, beside its siblings); and
+`crates/amx-server/tests/{session.rs,persist_io/fixtures.rs}` plus that same
+`ctx.rs` — one line each, the new `Env` field in three exhaustive struct
+literals. Nobody else in wave 5 owns any of them.
+
+**`tests/skew.rs` grew a mechanism the acceptance did not ask for.** The
+acceptance is the label, and the plan says no code change can close the
+residual. `AMX_SKEW_FAR_BINARY` does not close it either — it closes the half a
+single machine can supply, and it turns the other half into one variable for
+whoever has the second machine. It is off by default and CI runs exactly what it
+ran before.
+
+### For X00, and for whoever holds the smoke
+
+- Two of §7's by-hand item 3 clauses now have a partial run behind them and a
+  written procedure each (above). The clause that remains wholly a second
+  machine's is the far side that built its own binary.
+- **A user-visible fact the smoke should show a human:** upgrading a remote
+  session drops the attached remote client with an error. If that is not the
+  behavior M4 wants to ship, the fix is a bridged-client redial — a respawned
+  ssh child in `crates/amx/src/remote/`, which is DR-16's declined row and
+  nobody's in this milestone.
