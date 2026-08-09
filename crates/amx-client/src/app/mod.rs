@@ -8,17 +8,18 @@
 //! `input` dispatches through that module's key table.
 //!
 //! The module splits by responsibility: this file is the app's shape and its
-//! lifecycle — the struct, the attach, the accessors, the input entry and the
-//! resize — [`actions`] turns one decoded key into what leaves the client,
-//! [`wired`] is the live loop over the session socket (frames in, input and
-//! calls out), [`binds`] is the streams that loop opens and the viewport it
-//! declares, [`events`] is the state the server pushes and what it does to the
-//! model, [`paint`] is whether a frame is owed and what one draws, [`narrow`] is
-//! D14's small-screen projection, [`reconnect`] is what the loop does when that
-//! socket ends under it, [`overlay`] is the picker and copy-mode surfaces drawn
-//! over the panes, [`agents`] is D15's board over every tracked agent, [`peek`]
-//! is its read-only look at a pane this terminal is not drawing, and [`status`]
-//! is the status line and the cursor a repaint finishes with.
+//! lifecycle — the struct, the attach, the accessors and the input entry —
+//! [`actions`] turns one decoded key into what leaves the client, [`wired`] is
+//! the live loop over the session socket (frames in, input and calls out),
+//! [`binds`] is the streams that loop opens and the viewport it declares,
+//! [`events`] is the state the server pushes and what it does to the model,
+//! [`paint`] is whether a frame is owed and what one draws, [`resize`] is what a
+//! `SIGWINCH` does, [`narrow`] is D14's small-screen projection, [`reconnect`]
+//! is what the loop does when that socket ends under it, [`overlay`] is the
+//! picker and copy-mode surfaces drawn over the panes, [`agents`] is D15's board
+//! over every tracked agent, [`peek`] is its read-only look at a pane this
+//! terminal is not drawing, and [`status`] is the status line and the cursor a
+//! repaint finishes with.
 //!
 //! # Dirtiness is a value (D2)
 //!
@@ -40,6 +41,7 @@ mod overlay;
 mod paint;
 mod peek;
 pub mod reconnect;
+mod resize;
 mod status;
 mod wired;
 
@@ -63,6 +65,7 @@ pub use narrow::Projection;
 pub use overlay::{CopyUi, PickTarget, PickerUi};
 pub use peek::PeekLayout;
 pub use reconnect::{Reattached, ReconnectPolicy};
+pub use resize::RESIZE_DEBOUNCE;
 
 /// Interaction mode the client is in (04 §7).
 ///
@@ -115,10 +118,6 @@ pub enum AppError {
         why: String,
     },
 }
-
-/// How long a burst of `SIGWINCH` is allowed to keep arriving before it is
-/// treated as settled and acted on once.
-pub const RESIZE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(60);
 
 /// The running client: its server connection, its terminal, and what it has
 /// drawn so far.
@@ -454,41 +453,6 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         // declaration: a client told the threshold after it declared owes the
         // server a fresh one, and the next fold is what makes it.
         self.absorb(Effect::Layout);
-    }
-
-    /// Note that a resize happened; does not yet act on it.
-    ///
-    /// Called once per `SIGWINCH` in [`Self::run`]. A burst of signals
-    /// (the terminal emulator itself coalesces some, but not all, depending
-    /// on how the user dragged) each overwrite the pending size rather than
-    /// queuing, so [`Self::settle_resize`] always acts on the *last* one.
-    pub fn note_resize(&mut self, size: TermSize) {
-        self.pending_resize = Some(size);
-    }
-
-    /// Whether a resize is waiting to be settled.
-    #[must_use]
-    pub const fn has_pending_resize(&self) -> bool {
-        self.pending_resize.is_some()
-    }
-
-    /// Act on the pending resize, if any: apply it to the model, report it
-    /// once through `report`, and repaint once.
-    ///
-    /// `report` stands in for `client.viewport` — declared in
-    /// `amx_proto::control::client` but not yet a row in the method table
-    /// (`net`'s module doc), so there is no live call to make yet. Returns
-    /// whether a resize was actually settled, so a caller (and a test) can
-    /// tell "nothing was pending" from "one was applied".
-    pub fn settle_resize(&mut self, report: &mut impl FnMut(TermSize)) -> bool {
-        let Some(size) = self.pending_resize.take() else {
-            return false;
-        };
-        self.model.term = Rect::new(0, 0, size.cols, size.rows);
-        self.absorb(Effect::Layout);
-        report(size);
-        self.repaint();
-        true
     }
 }
 
