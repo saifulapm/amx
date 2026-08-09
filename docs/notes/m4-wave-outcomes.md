@@ -3019,3 +3019,68 @@ untaken.
   alone among the tree's three consumers of that call. Latent, one line.
 - 05's M4 section still describes a milestone twice this size (R-M4-11); this
   plan built the D14/D15 half.
+
+---
+
+## Y04 — the identity block gets its readers
+
+M4 exit defect 4 (m4-live-smoke §6.7, item 8's last clause): the identity block
+on `attention_enqueued`/`attention_dequeued` was written, was on the wire, and
+nothing read it. Both readers D-M4-6 named now do.
+
+**`examples/notify.sh`** says `api/backend blocked (permission_dialog)` from the
+delivery, with no follow-up call. It degrades a field at a time — `api/backend`,
+then `backend` for a workspace nobody labelled, then the pane uuid a pre-M4
+server was all that ever sent — because every field of the block is optional by
+design. The one query left in the script is the gap arm, and that is the one
+path where the block cannot help: what a gap lost is exactly the deliveries that
+carried the names, so `session.state`'s queue is panes and a gap notification
+names panes.
+
+**`amx agents --watch`** puts the same sentence on its footer, with an age:
+`q quits · seq 1422 · api/backend blocked 4s (permission_dialog)`. The table
+beside it is still re-queried, and that is not a shortcut left standing — the
+block names one agent and carries no `status`, no `last_line` and no queue
+order, so it can answer *what just happened* and can never answer *what is on
+screen now*. Two questions, one delivery. `crates/amx/src/agents/announce.rs`
+holds the reader and the argument.
+
+What the footer says and no query could: a block that clears inside one refresh
+window is on no table this watch ever draws, and a dequeue caused by a pane
+exiting names an agent the next `agent.list` has no row for at all — the hub
+forgets a pane's label only *after* publishing that dequeue
+(`crates/amx-server/src/actor/agent_hub/names.rs:63-70`). The second is what
+`watch_names_an_agent_that_left_the_queue_by_exiting` drives.
+
+A `--workspace`-scoped watch announces its own workspace and no other, which is
+the `workspace.id` on the block doing the one job an id does. An event with no
+workspace on it is not announced under a scope: the block is optional, so silence
+is the honest answer where the alternative is another project's agent on a screen
+that promised one.
+
+### Edits this task did not make, and where they belong
+
+- **`tests/hygiene/ledgers.rs`**: `FIELD_LEDGER`'s one remaining row —
+  `amx-core/src/event/mod.rs`, `workspace: Option<AgentWorkspace>` — is now owed
+  nothing. The ledger's own rule is "a row is deleted when its reader lands, not
+  when the field does", and the reader has landed. The row and the paragraph
+  above it should go, which empties the ledger. Outside this task's file scope.
+- **`docs/notes/m4-live-smoke.md` §6.7**: the last clause of item 8 reads "does
+  not hold". Whoever re-runs the exit owns that line; it is not for the task
+  being graded to mark itself.
+- **`docs/notes/m4-live-smoke.md` §6.5** quotes the footer as
+  `q quits · seq 1422`. It has a fourth clause now, after `seq` and ahead of
+  `stale`, whenever the queue has moved since the watch opened.
+
+### Verification
+
+`cargo test --workspace`, `cargo clippy --all-targets -- -D warnings` and
+`cargo fmt --check` clean. Four tests, each failing on the tree before the
+change and against the real binary rather than a renderer:
+`notifier_emits_one_notification_naming_the_agent_and_the_reason` (which failed
+with the literal `pane <uuid> needs input` the smoke recorded),
+`watch_names_the_agent_that_blocked_and_the_detector_that_said_so`,
+`watch_names_an_agent_that_left_the_queue_by_exiting`, and
+`a_scoped_watch_announces_its_own_workspace_and_no_other`. `watch.rs` is 599
+lines, 99 over soft and 401 under hard; the new responsibility went into its own
+module rather than into it.
