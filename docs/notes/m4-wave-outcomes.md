@@ -3019,3 +3019,127 @@ untaken.
   alone among the tree's three consumers of that call. Latent, one line.
 - 05's M4 section still describes a milestone twice this size (R-M4-11); this
   plan built the D14/D15 half.
+
+---
+
+## Y01 — the staleness demotion, and what staleness is for
+
+Exit defect 1 (m4-live-smoke §4.8, §6.8, §6.9 item 1): a state a hook asserted
+was dropped to `idle` by a timer that never asked tier 2, so a real Claude Code
+session blocked on a real permission dialog was called idle 35.4 s later while
+`amx agents` reported five idle agents and `amx agent next` answered
+`waiting: 0`. Files: `agent/fusion/**`, `actor/agent_hub/**`, and their suites.
+
+### The rule, and why this one
+
+The question the defect forces is what the staleness deadline is a timeout
+*on*. It was a timeout on the state: thirty seconds after the last thing that
+agreed with a held state, the state goes. It is now a timeout on **evidence**,
+and the two differ exactly where the milestone failed, because tier 2 is
+evaluated on damage and a dialog waiting for a human produces none. The screen
+that proves the block is the reason the screen stopped changing, and the old
+rule read that silence as proof of the opposite.
+
+So the fire consults tier 2 first, and the answer decides:
+
+| What tier 2 can see, at the fire | What the deadline does |
+|---|---|
+| a state — the held one or another | held; the clock starts again |
+| nothing: `NoMatch` or a `skip_state_update` hold | held; the clock starts again |
+| nothing at all, because no manifest is bound | **demoted**, cause `stale`, dequeued |
+
+The third row is 04 §5's clause (c) and the pane it was written for — V01 §7's
+edge case 13, a Codex approval the user denied, which emits nothing further for
+as long as anyone watched. The rows above it are panes tier 2 *is* reading, and
+04 §5 already puts those exits on clause (b). The change is a narrowing between
+the clauses of one rule rather than a move away from it, and clause (c) is still
+the only exit a pane with no screen coverage has.
+
+The second row is the one that goes furthest, and it is deliberate: **silence
+from a detector that is looking is not a verdict.** §6.8's dialog was a Write
+confirmation the shipped `claude.toml` cannot match at all, so a rule of "demote
+unless corroborated" — the cheap shape §4.8 proposed — would have left that
+whole class of block exactly where it was, waiting on the manifest fix.
+
+The asymmetry is the argument. A block amx still reports after it ended is a
+wrong row a person sees, jumps to and clears in one keystroke, and the next
+repaint clears it without them. A block amx has forgotten is a phone that says
+nobody is waiting. D14 and D15 build four surfaces whose whole subject is who
+needs a human; the failure that under-reports is worse than the one that
+over-reports, because it is trusted and it is silent.
+
+**What it costs.** A blocked pane re-arms every 30 s instead of demoting once:
+one wakeup and one manifest pass over a frame already in memory, per 30 s, per
+*blocked* pane. 03 §5's promise is about idle agents and they still arm nothing.
+**What it leaves standing.** An agent whose idle screen no rule matches holds
+its last state until something repaints into a rule that does. Both shipped
+manifests match their own prompt box, and the gap is visible in `agent explain`
+rather than silent in the queue.
+
+### The two halves, and why both
+
+- **The machine** carries `Sight` (`fusion/tracker/mod.rs`) — blind, silent, or
+  asserting — written by every screen verdict, read by the staleness arm alone,
+  and reset when identity moves, because a verdict from the previous agent's
+  manifest is not coverage of this one.
+- **The hub** evaluates the pane's current frame on the way to firing staleness
+  (`agent_hub/detect.rs::corroborate`, called from `run.rs::fire`). Without it
+  the machine would decide on the last evaluation, which for this defect's pane
+  is the last screen *change* — before the block, or never, for a pane whose
+  manifest was bound after its last damage. That last case is the ordinary
+  `claude`-typed-into-a-shell pane and it is covered by its own test.
+
+Each half is independently load-bearing: reverting either one fails a test that
+the other one passes.
+
+### Verification
+
+`cargo test`: 143 suites, 993 passed, 0 failed (985 before; +4 fusion, +4 hub).
+`cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean.
+
+Every new test was verified to bite by reverting the change under it. The
+proptest's own shrink is the defect in two inputs: a screen verdict asserting
+`working`, then `Deadline(Staleness)`.
+
+- `fusion.rs::staleness_holds_a_block_the_screen_is_still_showing` — §4.8.
+- `fusion.rs::staleness_holds_a_block_tier_2_is_looking_at_and_cannot_name` —
+  §6.8, for both `NoMatch` and a `skip_state_update` hold, and for `working` as
+  well as `blocked`.
+- `fusion.rs::a_re_identified_pane_has_not_been_read_by_its_new_manifest`.
+- `fusion/properties.rs::staleness_only_demotes_a_pane_tier_2_has_never_read` —
+  the rule over arbitrary interleavings, tracked from outside the machine.
+- `agent_hub/staleness.rs` — four panes against a real hub, the shipped
+  registry and the shipped `claude.toml`, on a paused clock: the dialog the
+  manifest reads, the Write dialog it cannot name, the pane whose manifest was
+  bound after its last damage, and the stanza whose manifest never loaded. The
+  last one is clause (c) still working, end to end.
+
+`staleness_deadline_clears_a_hook_held_state_with_no_screen_coverage` is
+unchanged and still passes; its prose was rewritten, because "no screen
+coverage" now means *nobody is looking* and used to be read as *nobody
+recognised what they saw*.
+
+One flake: `agent_hub::shutdown_after_cancel_sends_no_sibling_request` failed
+once in a whole-suite run and passed 15/15 alone and in every later run,
+including two clean whole-workspace sweeps. It is the settle-timing-under-load
+shape X04 spent a task on, in a test this branch does not touch.
+
+### Edits outside the file list, named rather than made
+
+- **`docs/04-architecture.md` §5** now over-states clause (c): "a hook-asserted
+  state is cleared by … (c) a bounded staleness timeout — whichever comes
+  first" describes what the machine did before this change. The sentence wants
+  a clause: *…or (c) a bounded staleness timeout, for a pane with no tier-2
+  coverage — a pane whose screen is being read leaves a held state through (b),
+  and silence from a detector that is looking is not a verdict.* Left to
+  whoever owns 04; leaving it as it stands is DR-15's stale prose with a fresh
+  date on it.
+- **`docs/notes/m4-live-smoke.md`** §4.8's "Not taken" paragraph and §6.9's
+  first verdict still read as open. They are records of runs and are not
+  rewritten here; closing them wants the smoke re-run, which is the exit
+  owner's.
+- **`crates/amx-server/assets/manifests/claude.toml`** is Y02's and is
+  untouched. Fixing this defect does *not* make §6.8's dialog visible to tier 2
+  — it makes the block survive not being visible. `agent explain` still answers
+  `matched: null` for a Write dialog, and `agent_hub/staleness.rs` asserts that
+  it does, so the day Y02 lands, that assertion is what says so.
