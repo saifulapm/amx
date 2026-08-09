@@ -2300,3 +2300,126 @@ columns here, so its own dialog wraps mid-word — X12's "a pane squeezed out of
 visible space keeps its last size", one workspace further out), and `last_line`
 faithfully reports the bottom row of *that* wrapped screen, which is why the
 detail column reads `(esc to cancel)` rather than the whole prompt.
+---
+## X18 — the cells the server sent, and where a clip is taken from
+
+### DR-1's residual: what survives now, and what still does not
+
+**All ten of `CellStyle`'s attributes reach the terminal.** `Attrs`
+(`amx-client/src/model/grid.rs`) carries the wire's vocabulary rather than a
+projection of it — bold, faint, italic, blink, inverse, invisible,
+strikethrough, overline, the underline *style* as `amx_proto::stream::Underline`
+(re-exported from `amx_client::model`, so nothing has to reach past the client
+to name a field of its own struct) and the underline colour beside the
+foreground and the background. `stream::cell_of` is a field-for-field copy and
+`FrameWriter::set_attrs` emits every one of them, so nothing is decoded and then
+dropped on the way out. **No attribute is dropped with a reason; the module doc
+names none, because there are none to name.**
+
+Two reductions remain in the cell model and neither is an attribute. Both are
+named in `Attrs`' doc comment rather than left for the next reader to find:
+
+- **A palette-indexed underline colour never reaches the wire**, and that is a
+  crate earlier than this task: cell colours arrive resolved through the
+  palette, the underline colour does not, and amx has no palette of its own to
+  resolve it with (`amx-vt/src/render/rows.rs:387-399`, which already records
+  it as a real limitation). The client renders what arrives; what arrives for
+  such a cell is "no explicit colour", and the terminal falls back to the
+  foreground. Closing it means a palette in `amx-vt` or on the wire, which is
+  nobody's task in this plan.
+- **A cell's text is one `char`.** A multi-codepoint grapheme cluster keeps its
+  first scalar (`stream::cell_of`, unchanged and still documented there). That
+  is `Cell`, not `Attrs`, and it is what the wire's `PackedCell::text` is
+  wider than.
+
+**On the escape sequences.** `Single` keeps the bare `\x1b[4m` this writer has
+always emitted; `Double`, `Curly`, `Dotted` and `Dashed` take the
+sub-parameter form (`4:2`…`4:5`) that the vendored parser reads for every shape
+(`vendor/libghostty-vt/src/terminal/sgr.zig:269-285`). That is one deliberate
+difference from the handoff's own pen, which writes `Double` as `21`
+(`amx-server/src/handoff/grid/mod.rs:415`): the pen paints into a libghostty-vt
+terminal whose reading of `21` is known, and this writer paints into whatever
+the user attached from. The underline colour is `58;2;r;g;b` — the same
+direct-colour grammar as `38` and `48`, which is how the vendored parser reads
+it (`sgr.zig:388-413`) and how the pen already writes it.
+
+### The design change: a clip keeps the bottom-left, everywhere
+
+X14's smoke found a peek of a tall pane reading as empty and raised it here
+(the entry above). It is taken, as a change to a shipped rule rather than a
+peek-side workaround, and `render::grid`'s header carries the argument in full.
+The three parts of the decision, so no later task re-derives them:
+
+1. **The crop anchors to the bottom.** An agent's screen is written at its
+   bottom, which is the same premise `agent.list`'s `last_line` is built on, and
+   a peek that cannot show the last line cannot answer the question D15 built it
+   to answer.
+2. **The tiled letterbox does *not* keep centre-cropping.** One rule for every
+   surface. A clipped tiled pane hid the same thing for the same reason — that
+   case is real, not hypothetical, since a client narrower than the size
+   authority clips every pane it draws (D14's phone against a desktop) — and a
+   peek-only exception would have ended X18's own acceptance that "a peeked pane
+   and a focused pane render the same cells identically". That clause is now
+   asserted on the bytes rather than held by construction:
+   `a_peeked_pane_and_a_focused_pane_paint_the_same_bytes`
+   (`crates/amx-client/tests/cell_style.rs`).
+3. **The columns anchor to the left**, by the same argument one axis over: a
+   line's text begins at column zero, so a centred horizontal crop hid the start
+   of every line. §5 names only the peek's rows; this is the same defect on the
+   other axis of the same function and is recorded here because it is not in the
+   entry.
+
+**The padding did not move.** A grid *smaller* than its slot is still centred —
+that is only ever a question about blank space, `tests/letterbox.rs` is its
+acceptance, and `a_grid_smaller_than_its_slot_is_still_centred` pins it beside
+the two crop tests so a later edit to `fit` cannot take the letterbox with it.
+
+**Nothing above this file is contradicted.** 04 §3 says "letterbox/clip" and
+does not say from where. 10 §D15 describes the peek and does not describe a
+crop. **X00 or X20**: if either doc gains a sentence about what a region too
+small for its pane shows, "the pane's last rows" is now the true one — this task
+owns no line in `docs/` beyond this note.
+
+### Edits outside the entry's file list
+
+§5 scopes X18 to `amx-client/src/{model/grid.rs,render/**,stream.rs}` and client
+tests. Three more, each named because none is in that list and no wave-5 task
+holds them (X19: `crates/amx/src/{update,remote}`, `amx-core/src/ctx.rs`,
+`tests/{skew,remote_ssh}.rs`; X20: docs and `examples/`):
+
+- **`amx-client/src/model/mod.rs`** — one line, the `Underline` re-export beside
+  `Attrs`.
+- **`crates/amx-client/tests/peek_render.rs`** (X15's) — one assertion. Its
+  fixture gives the *shown* pane 22 rows for a 21-row interior, so the pane it
+  draws behind the peek is itself clipped by one row, and the test read the
+  pane's first row at the top of the screen. Under the new rule the top of the
+  screen is the pane's second row. The assertion moved by one glyph and gained
+  the reason; nothing else in that file changed, and the test still asserts what
+  it was written to assert — that a peek is a region and not a takeover.
+- **`crates/amx-client/tests/support/mod.rs`** — `rasterize` accepts `:` inside
+  an escape sequence's parameters. Without it an extended underline (`\x1b[4:3m`)
+  reads as a sequence terminated by the colon and its shape rasterizes as two
+  cells of text, which would have made every later test that draws one wrong in
+  a way that looks like a rendering bug. No current test draws one; the helper
+  claims to skip what this writer emits, and now does.
+
+### Verification
+
+`cargo test --workspace --no-fail-fast`: 974 tests over 142 targets, 0 failed.
+`cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean.
+
+Two `amx-server` tests each failed once, in two earlier whole-workspace runs,
+and neither recurred: `two_clients_at_different_speeds_each_stay_consistent`
+(`flow_control.rs`, DR-19's own row and X04's), and
+`dup_fd_answers_only_in_quiesced_and_yields_a_working_duplicate`
+(`pty_dup_fd.rs`), on a `BrokenPipe` where it expected a refusal.
+Each passed alone and in the clean run above. Recorded rather than
+swept: they are in a crate this branch does not touch — the whole diff is
+`crates/amx-client/**` — and both are the wall-clock-under-parallel-load shape
+X04 spent a task on, in the suite X04 named and one it did not.
+
+Both halves were verified to bite by mutation. The attribute tests do not
+compile against the old struct, which is the point X03 built them for. The crop
+tests were run against `fit` restored to its centred form: three of the four
+failed, including the end-to-end peek, which reported twelve blank rows — the
+smoke's finding, reproduced in a test.
