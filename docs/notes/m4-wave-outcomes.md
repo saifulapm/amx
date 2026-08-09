@@ -995,6 +995,49 @@ surfaces now read through `Input::feed_chrome`, which takes every report out of
 the stream before the surface sees a byte. Pinned by
 `the_picker_survives_a_wheel_turn`.
 
+### Smoked against the real binary, both halves — for X00's record
+
+Green tests are not the exit and this task's own subject is why (D-M4-1: green
+in a unit test, dead in a running amx). Both halves were run over the shipped
+binary on this branch, in an isolated `XDG_*` root, and the transcripts are
+reproducible from `docs/notes/m4-mouse-path.md` §7's shape.
+
+**Server half**, over a real socket, `session.state` verbatim:
+
+```
+  plain-shell  f23518d9-…  mouse=null
+  mouse-app    50b6eec3-…  mouse={"events": "normal", "format": "sgr"}
+```
+
+The second pane is `/bin/sh -c "printf '\033[?1006h\033[?1000h'; sleep 300"`.
+Closing it leaves the map with no entry for it.
+
+**Client half**, a real `amx attach` on a pty the driver owned, twice:
+
+```
+  no config.toml
+    alt-screen enter             at byte 0
+    mouse enter  ?1006h?1000h    absent
+    alt-screen leave             at byte 44
+    every DEC private mode written: [1049, 25]
+  mouse = true
+    alt-screen enter             at byte 0
+    mouse enter  ?1006h?1000h    at byte 14
+    mouse leave  ?1000l?1006l    at byte 54
+    alt-screen leave             at byte 76
+    every DEC private mode written: [1000, 1006, 1049, 25]
+```
+
+Three things read off that, rather than argued: the default really asks for
+nothing; the request is released *before* the screen it was asked for on top
+of; and `1007` appears in neither list, in either direction, which is F-4 met
+by observation and not only by the pty test that asserts it.
+
+What is **not** smoked, and cannot be here, is the hop §7.3 exists for: a wheel
+turn producing a report. The session is still locked
+(`LockedHint=yes`), and `wheel-in-emulator.sh` refuses to run on one rather
+than producing a false negative.
+
 ### For X00 — the seam ledger
 
 `PaneState.mouse` has its reader. Server: `pane_host/mouse.rs` reads it off the
