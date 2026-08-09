@@ -1408,6 +1408,373 @@ before the exit rather than one milestone after. `examples/` is **X20**'s in wav
 5, and a two-line change to the reference notifier is the whole demonstration the
 field was frozen for.
 
+## 6. The M4 exit — 2026-08-09
+
+**Subject.** amx at `ad4b44b`: all twenty implementation tasks on main, wave 5
+included (X18's cell attributes and its clip rule, X19's DR-17/DR-20 residuals,
+X20's configuration reference and phone profile). Same machine, same isolation,
+same driver as §1–§5.
+
+`cargo test --workspace`: **143 suites, 985 passed, 0 failed**;
+`cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean; the
+module budget 35 over soft, **0 over hard**.
+
+This section is [§7](../11-m4-plan.md#7-the-m4-exit) run item by item. The
+verdict is in §6.9 and it is not "green".
+
+### 6.1 The CI half, item by item
+
+| # | §7's item | Result |
+|---|---|---|
+| 1 | 25 agents; `agent.list` with every field, `attention` in queue order, `last_line` matching `pane.read` | **holds** (§6.2) |
+| 2 | a per-workspace breakdown summing to the global count; the queue head with an age that advances | **holds, with the age qualified** (§6.3) |
+| 3 | the agents view opens, filters, groups, collapses, jumps, prompts, renames, kills on the second press; peek shows another workspace's pane with its real attributes and forwards no keystroke | **holds except the jump** (§6.4) |
+| 4 | `amx agents`, `--json`, `--watch` with no client attached; `--watch` survives a swap | **holds** (§6.5) |
+| 5 | `next-attention --workspace` clears one project's queue without leaving it | **holds** (§6.2) |
+| 6 | a 45-column client renders one pane at 45 columns; crossing the threshold mutates no layout | **holds** (§6.3) |
+| 7 | the mouse row X01's outcome licenses — under (b), both clauses | **holds** (§6.6) |
+| 8 | the register's own greens | **holds except one clause** (§6.7) |
+
+### 6.2 Items 1 and 5
+
+```
+25 agents started in 0.4s; agent.list has 25
+queue, head first: api/api-1, web/web-2, infra/infra-3, infra/infra-4, exp/exp-1
+per workspace: api 5 ⚑1  web 5 ⚑1  infra 5 ⚑2  docs 5 ⚑0  exp 5 ⚑1
+fields missing on any row: none
+reason present on 5 of 25
+last_line == pane.read's bottom on 25/25
+session.state 14 13 16 15 15 ms;  agent.list 11 12 10 9 9 ms
+```
+
+`agent.list` at 25 agents costs what `session.state` costs and a fifth of what
+the hand-assembled shape it replaces costs (§4.3's 230 ms), which is D-M4-2's
+whole argument holding at the exit.
+
+Item 5, driven to the end of one workspace's queue and not merely one call deep:
+
+```
+next --workspace infra -> infra/infra-3  waiting=2  focused=infra  queue=[api-1, web-2, infra-3, infra-4, exp-1]
+next --workspace infra -> infra/infra-4  waiting=1  focused=infra  queue=[api-1, web-2, infra-4, exp-1]
+next --workspace infra -> none           waiting=0  focused=infra  queue=[api-1, web-2, exp-1]
+```
+
+`waiting` counts the scope it was asked about, the focused workspace never
+moves, and the three panes waiting in other projects are still waiting.
+
+### 6.3 Items 2 and 6
+
+```
+ [api ⚑1] [docs] [exp ⚑1] [infra ⚑2] [web ⚑1] · api-5 · idle ⚑5 api/api-1 0s
+```
+
+The four per-workspace counts sum to 5, the global mark is `⚑5`, `agent.list`'s
+queue is 5, and `docs` renders with no count at all. At 45 columns the same line
+is ` api ⚑5 api/api-1 4s`.
+
+**The age advances while the drawn workspace paints, and only then.** Measured
+both ways in one attach, with a pane in the *drawn* workspace painting every two
+seconds and then with nothing painting:
+
+```
+  [ 0s] api/api-1 0s      [ 0s] api/api-1 12s
+  [ 2s] api/api-1 2s      [ 2s] api/api-1 12s
+  [ 4s] api/api-1 4s      [ 4s] api/api-1 12s
+  [ 6s] api/api-1 6s      [ 6s] api/api-1 12s
+  [ 8s] api/api-1 8s
+  [10s] api/api-1 10s
+```
+
+X11's clock is not what stands still: it is a monotonic estimate that only moves
+forward and is right the instant the line is rebuilt. What is missing is a reason
+to rebuild it — X14's 250 ms tick is gated on the board being open and the status
+line has none. §7 asks for "an age that advances"; on a session where nothing is
+happening it does not, which is exactly the session a user glances at.
+
+Item 6, with the same client resized twice:
+
+```
+api at 200x50   98x47  48x47  23x47  11x47  10x47
+     at 45x20   98x47  48x47  23x47  11x47  45x19
+back at 200x50  98x47  48x47  23x47  11x47  10x47
+the layout is untouched by the crossing: True
+```
+
+One pane at **45 columns**, not a 28-column grid letterboxed inside 45; the four
+the projection does not draw keep their last commanded size; the `workspaces`
+block of `session.state` is byte-identical before the first crossing and after
+the second.
+
+### 6.4 Item 3 — the agents view, and the peek that now shows the bottom
+
+Every verb the item names, driven over a real attach: the board opens
+(`agents — 25 · ⚑3 · by workspace`), a typed query filters it, `ctrl+b` narrows
+to the blocked, `ctrl+s` regroups to `by state` and collapses `22 idle` into one
+line, `ctrl+p` opens `prompt exp/exp-1>` and a submitted `stop` left that agent
+idle without attaching, `ctrl+r` opens `rename exp/exp-2> exp-2` (prefilled) and
+the server's label became `renamed-at-exit`, and `ctrl+x` armed with
+`kill docs/docs-5? ctrl+x again` and took the pane count 25 → 24 only on the
+second press.
+
+**The peek shows a live pane from another workspace with its real attributes.**
+X18's clip anchors to the bottom-left, so the sentinel the stand-in paints — the
+widest SGR run a cell can carry short of the wire's own — is now inside the
+region rather than cropped away:
+
+```
+│                     AMX-SENTINEL EXIT-M4                     │
+│                     ✻ Worked for 3s                          │
+│                     ────────────────────────────             │
+```
+
+and the SGR run the client wrote immediately before that text was
+`4`, `38;2;255;90;30`, `48;2;10;20;60` — the underline and both 24-bit colours,
+on the wire and out to the terminal. Typing `zzz` with the peek open changed
+neither the peeked pane's status, nor its `since`, nor its screen: the peek
+forwards no keystroke.
+
+**The jump does not land on the agent.** Selected `exp/exp-3`, pressed `Enter`:
+the focused workspace became `exp` and the focused pane was `exp-5`, the pane
+that workspace happened to remember. Reproduced at the wave-4 boundary twice
+(§5.5) and again here; the mechanism is `agents_enter` setting the client's local
+focus and then calling `workspace.switch`, whose `FocusChanged` names the
+workspace's remembered pane and is folded over the local insert
+(`app/agents/keys.rs:206-219`, `app/events.rs:364-367`). "Jumps" is one of the
+eight verbs item 3 lists, and it is the one that does not work.
+
+### 6.5 Item 4 — `amx agents`, in four forms
+
+With no client attached anywhere: the table renders (`24 agents · 2 blocked`),
+`--workspace api` scopes both the rows and the count (`5 agents · 1 blocked`),
+`--json` prints the reply with `now` and `attention`, and `--watch --json` is
+refused with the spelling that works. Across a live handoff:
+
+```
+footer before   q quits · seq 1422
+footer after    q quits · seq 1474
+api/api-1  blocked  PermissionRequest  1s → 3s   (the same rows, ages continuous)
+```
+
+No `the session restarted` note, because it is the same session; `q` exits 0;
+and the short numbers were unchanged across that swap, which is half of item 8's
+short-number clause measured where it actually happens.
+
+### 6.6 Item 7 — the mouse path, under outcome (b)
+
+```
+a pane that asked nothing   mouse=null
+a pane that asked for SGR   mouse={"events":"normal","format":"sgr"}
+
+press inside               '\x1b[<0;30;25M'   -> '^[[<0;29;4M'
+release inside             '\x1b[<0;30;25m'   -> '^[[<0;29;4m'
+wheel-up inside            '\x1b[<64;30;25M'  -> '^[[<64;29;4M'
+wheel-down inside          '\x1b[<65;30;25M'  -> '^[[<65;29;4M'
+press in the other pane    '\x1b[<0;30;10M'   -> ''
+press on the status line   '\x1b[<0;30;40M'   -> ''
+
+every DEC private mode the client wrote:
+  ?1049h ?25l ?1006h ?1000h … ?1000l ?1006l ?25h ?1049l
+```
+
+Same grammar, same button, coordinates moved into the pane's own frame and
+nothing else; anything outside the focused pane's interior dropped; the request
+released before the alternate screen it was made on top of; and `1007` in
+neither direction. Over a pane that asked for nothing, wheel-up opened copy mode
+(`… docs-1 · idle COPY`), one wheel-down at the live edge left it, and a click
+did nothing at all.
+
+### 6.7 Item 8 — the register's own greens
+
+| Clause | Result |
+|---|---|
+| no `todo!()` in `crates/*/src` | **holds** — one grep hit, and it is prose in `agent/resume.rs:62` describing a constructor that was *not* left as one; `tests/hygiene/unfinished.rs` enforces it rather than a note asserting it |
+| short numbers stable across restart and handoff | **holds** — 24/24 across a restart with the workspace numbers and a rename intact, and unchanged across the live handoff in §6.5 |
+| the four DR-19 flakes green under `nproc`-wide load, at X04's count | **holds** — 10 runs each of `flow_control`, `agent_verbs`, `adversarial` and `hook` against twelve spinners: **0 failures in 40 runs**, 330 tests |
+| no golden protecting an unexercised message | **holds** — `protocol_goldens_cover_every_control_method_and_stream_message` is the law, and `the_retired_scroll_notice_has_no_golden_and_no_decode` pins DR-7's deletion; `tests/goldens/stream/grid_scrolled.json` does not exist |
+| the client carrying no boolean dirtiness flag | **holds** — nothing in `amx-client/src/app/` says "the screen needs redrawing"; the booleans left are surface state (`open`, `blocked_only`, `selected`, `live`) and the one `dirty` in the tree is a doc comment in `app/peek.rs` quoting the pause rule. Redraw is `amx_core::Effect`, returned rather than flagged |
+| the seam ledger empty | **holds** — no `seam(` call site in `crates/*/src`, and `no_dispatch_seam_outlives_the_milestone_that_opened_it` is what says so |
+| **every additive field of §3 read by the task that promised to read it** | **does not hold** — five of six are read (§5.6); the identity block on the attention events is written, is on the wire, and has no reader. `amx agents --watch` takes `envelope.seq` off a delivery and re-queries; `examples/notify.sh` still prints `pane <uuid> needs input`. X20 owned `examples/` in wave 5 and did not take it |
+
+### 6.8 The by-hand half
+
+**Item 1 — five real Claude Code sessions. Run, and it is where M4 fails.**
+
+Five real `claude` 2.1.226 sessions started as amx panes across two workspaces,
+through the shipped registry stanza and the shipped `claude.toml`, with amx's
+hook integration installed into a **scratch** `CLAUDE_CONFIG_DIR` so the user's
+own `~/.claude` was never touched (`amx integration status` against the real
+directory still reads `not installed`). Nothing here stands in.
+
+What holds: all five were detected as agents; **`last_line` was the bottom line
+of that pane's own screen on every row, twice, at two widths**; and `reason`
+carried **both vocabularies in one session, from real agents** — `PermissionRequest`
+and `UserPromptSubmit` and `PostToolUse` from the hooks that fired,
+`prompt_box_idle` from the manifest rule, each naming the detector that actually
+fired. The board and `amx agents` rendered them side by side and agreed.
+
+What fails is the thing the item exists to check. One agent, asked for a file
+write, watched once a second and touched by nothing:
+
+```
+[   0.0s] status=working  reason='UserPromptSubmit'   queued=False queue=0
+[   4.1s] status=blocked  reason='PermissionRequest'  queued=True  queue=1
+[  39.5s] status=idle     reason=None                 queued=False queue=0
+blocked for 35.4s before it was called idle
+agent explain: cause=staleness state=idle matched=None
+```
+
+The permission dialog is still on that pane — `Do you want to overwrite
+exit-probe.txt?`, `❯ 1. Yes`, `3. No`, `Esc to cancel · Tab to amend` — and
+`amx agents` reports five idle agents, the board shows no `⚑` at all, and
+`amx agent next` answers `waiting: 0`. This is §4.8's finding with a real agent
+and a real dialog instead of a stand-in, and it is the milestone's own thesis
+proving itself: the suites are green and the feature does not work.
+
+**A second finding, from the same run, and it is a manifest gap.** The shipped
+`permission_dialog` rule requires `contains = ["do you want to proceed?"]`
+(`crates/amx-server/assets/manifests/claude.toml:47-56`). A Write/Edit
+permission dialog does not say that — it says *"Do you want to overwrite
+exit-probe.txt?"* — so **tier 2 cannot see that dialog at all**, `agent explain`
+answers `matched: null` with the dialog plainly on screen, and the hook is the
+only detector there is. That makes the staleness demotion above unrecoverable
+for this whole class of block: there is no screen verdict to corroborate it even
+in principle. It is a manifest fix (more dialog phrasings) in a file no M4 task
+owns, and it is DR-14's "manifest-catalog maintenance burden carries over" with
+a date on it.
+
+**A third, smaller, from driving them:** `pane.run` did not submit to a real
+Claude Code composer on 3 of 3 attempts — the bracketed paste landed in the
+composer and the submit did not take, and a following `pane.send-keys enter`
+submitted it. DR-3 records the mechanism and cites ~3% for the single-`write()`
+swallow; against a real agent's composer here it was 3 in 3, and a driver that
+did not check would have concluded the agents never received anything.
+
+**Item 2 — an attach from a phone SSH client. UNRUN, and not passing.**
+No phone was reachable from this machine, exactly as X20's own note records for
+the same reason. The procedure, so it can be closed by whoever has the phone:
+
+1. Copy `examples/keys-phone.toml` to `~/.config/amx/config.toml` on the
+   *client* side and confirm `amx keys` resolves it with nothing rejected.
+2. From the phone's SSH client, `ssh <host>` and then `amx attach` (or
+   `amx --remote <host>` from a second machine). Confirm the client comes up at
+   the phone's width and that the narrow projection draws **one** pane, not a
+   letterboxed grid.
+3. Reach a pane, scroll its scrollback by touch, and record which of the three
+   outcomes the wheel takes on that client — or record that touch scrolling does
+   not reach amx at all, which is the honest outcome if the client sends no
+   reports.
+4. Open `amx agents --watch` in a second SSH window and answer a blocked agent
+   with the profile's rebound `ctrl+p` equivalent.
+5. Write the result into this file under a dated heading, the way §7.3 of
+   `m4-mouse-path.md` was closed.
+
+**Item 3 — DR-20's two clauses. UNRUN.** X19 recorded both as unrun with the
+procedure that closes each, and re-checked here: the second machine
+(`192.168.0.105`) that answered ICMP at ~46 ms during X19's wave now does not
+answer at all (2 packets, 100% loss; ssh times out). Neither a far side that
+built its own binary nor `amx update apply` over the link can be attempted from
+here. X19's own suite did close the halves one machine can supply: an
+independently *versioned* far side through `AMX_SKEW_FAR_BINARY`, and a handoff
+over the loopback ssh link — which found that a bridged client does **not**
+survive a handoff and says so with an error.
+
+**Item 4 — DR-11's watch.** Every stop in this file whose exit status this
+driver could actually read, across the milestone: **seventeen clean stops**, all
+**0**, no `drain-census` file and no census line in any server's stderr, over
+sessions of 2, 3, 4, 24, 25 and 26 panes — eleven through wave 2 (§1.7, §2.7,
+§3.9), three at the wave-3/4 boundary (§4.9), and three here, each of which
+restored 25 panes and 25 agents before it was stopped again:
+
+```
+stop 1: 25 panes, 25 agents, exit 0, census none
+stop 2: 25 panes, 25 agents, exit 0, census none
+stop 3: 25 panes, 25 agents, exit 0, census none
+```
+
+Beside them, the handoffs of §3.7, §5.2, §6.5 and §6.8, whose successors took
+the session in every case. Stops of servers a driver did not spawn are not
+counted, since their exit status cannot be read. Nothing has fired: that is the
+milestone of field time R-M4-10 asked for, and it is a record rather than an
+impression.
+
+**Item 5 — DR-21's measurement.** The revisit condition asks for keyframe count
+and bytes on a reconnect with 25 agents and a peek open. **The product exposes
+neither from outside**: `damage/keyframe.rs` has no counter, and this machine has
+no `strace`. What is measured instead is said plainly, at the layer that is
+observable:
+
+```
+the client draws 5 panes: 78x41 38x41 18x41 8x41 8x41, plus a peek on 18x41 web-3
+the bound set is therefore 6 streams, 6888 cells of keyframe if every one resumes
+bytes to the terminal, 5 s of steady state with the board and a peek open: 432782
+bytes to the terminal, the 5 s across a live handoff:                    615006
+                                                                    (+182224)
+```
+
+So a resume with 25 agents and a peek open costs six keyframes, not
+twenty-five — the bound set is the *drawn* set plus the peek, which is D14's
+projection doing the work — and about 180 KB of extra terminal traffic at
+160×44. The wire figure DR-21 actually wants needs a counter in
+`damage/keyframe.rs`; that is one line and it is what turns this into the
+measurement the row asked for.
+
+**And one thing item 5 found that nobody asked for.** The steady-state number
+above is not small, and it is not the panes:
+
+```
+                     board open      board closed
+160x44               411483 B/5s     0 B/5s
+80x24                153160 B/5s     0 B/5s
+45x20                 44620 B/5s     0 B/5s
+```
+
+With the agents view open the client repaints **every cell of the terminal four
+times a second** whether anything changed or not — about 2.5 bytes per cell per
+tick, 82 KB/s at a desktop width and 9 KB/s at the phone width D14 exists for —
+while a client with the board closed and a quiet session writes **nothing at
+all**. The mechanism is one line: `App::apply_agent_list` ends with
+`absorb(Effect::Full)` (`app/agents/mod.rs`), and `Effect::Full` means
+"everything must be redrawn from scratch" (`amx-core/src/effect.rs`). X16 built
+`--watch`'s per-line diff precisely so a phone would not pay this, and wrote
+down that "the whole point of this surface is a phone over SSH"; the in-client
+board asks for a full repaint instead. Nobody owns it in wave 5.
+
+### 6.9 The verdict
+
+**M4 does not meet §7 as written.** Green CI is not the exit and this milestone
+said so four times over; the smoke is what the plan added, and it is what is
+reporting.
+
+What holds: CI items 1, 4, 5, 6 and 7 in full, item 2 except for a queue-head
+age that stops advancing on a quiet screen, item 3 except for the jump, item 8
+except for one frozen field with no reader. The by-hand half's DR-11 watch is
+clean over seventeen stops, and DR-21 has a number for the part that can be
+measured from outside.
+
+What does not, in the order it costs a user:
+
+1. **By-hand item 1 fails on its substance.** Every clause it names about
+   `reason` and `last_line` holds, on real agents — and thirty-five seconds after
+   a real permission dialog appears, `agent.list`, the status line, the agents
+   view and `amx agent next` all report that nobody is waiting, while the dialog
+   sits on the screen. Two mechanisms compound: staleness demotes a held state
+   without asking tier 2, and for Write/Edit dialogs the shipped manifest could
+   not corroborate it even if it were asked.
+2. **Item 3's jump lands on the wrong pane** — the one verb of eight that does
+   not do what D15 says it does.
+3. **Item 8's last clause is not met**: `attention_enqueued`'s identity block
+   ships unread.
+4. **Item 2 is unrun** and is recorded as unrun, with the procedure. It is not
+   passing and must not be read as passing.
+5. **Item 3 of the by-hand list is unrun** for want of a second machine, with
+   X19's procedure standing.
+
+None of the four defects is a wave-5 regression; three of them predate the wave
+that made them visible, which is the pattern this file exists to make legible.
+The milestone's *work* is done — twenty tasks, every surface built and every one
+of them driven here — and the exit criteria are not met. Those are different
+sentences and this record keeps them different.
+
 ---
 
 ## Re-running this
