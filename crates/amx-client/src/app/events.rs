@@ -153,7 +153,14 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                     layout: ws.layout.clone(),
                 },
             );
-            if let Some(focus) = ws.focus {
+            // The snapshot states the session's focus for every workspace, and
+            // one of those statements can be the answer to a switch the agents
+            // board's jump made — which names the pane that workspace was
+            // remembering rather than the agent the user picked. `jump_outranks`
+            // is where the two are told apart (`super::agents`).
+            if let Some(focus) = ws.focus
+                && !self.jump_outranks(ws.workspace, focus)
+            {
                 self.focus.insert(ws.workspace, focus);
             }
         }
@@ -361,8 +368,16 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             // the flood pane nothing"). The one cross-workspace move that *is*
             // asked for is `agent.next`, and the client that asked follows its
             // own reply — see `mutates_layout` in `super::wired`.
+            //
+            // The one focus that is *not* recorded is the answer to a switch the
+            // agents board's jump made: `workspace.switch` carries no pane, so
+            // the session answers it by restating the focus that workspace
+            // already had, and folding that would take the user off the agent
+            // they picked (`super::agents`, and §6.4 of the M4 exit smoke).
             Event::FocusChanged { workspace, pane } => {
-                if let Some(pane) = pane {
+                if let Some(pane) = pane
+                    && !self.jump_outranks(workspace, pane)
+                {
                     self.focus.insert(workspace, pane);
                 }
                 let showing = self.model.focused_workspace_id() == Some(workspace);
