@@ -2650,3 +2650,239 @@ ran before.
   behavior M4 wants to ship, the fix is a bridged-client redial — a respawned
   ssh child in `crates/amx/src/remote/`, which is DR-16's declined row and
   nobody's in this milestone.
+---
+
+## X00 — the wave-3 and wave-4 boundary
+
+Eight task reports above, folded. The delta smoke is
+[m4-live-smoke.md](m4-live-smoke.md) §4 and §5; the register was struck in
+[design-review.md](design-review.md). One entry for two waves because that is
+how they were smoked: both merged before either boundary was run, and splitting
+the record would imply a separation the measurements do not have.
+
+### X13's gate is closed, and two things fell out of closing it
+
+`m4-mouse-path.md` §7.3 has its dated heading (`545670e`, 2026-08-09) and X13
+merged after it existed, which is the gate holding rather than the gate being
+waived. **Outcome (b) is confirmed by observation**: `foot 1.27.0` and
+`alacritty 0.17.0` both report wheel-up as button 64 and wheel-down as 65 in the
+SGR grammar `mouse::scan` already recognised. The reverts X13 cut for outcome (c)
+are not taken, `docs/10-attention-surfaces.md` §D14 keeps its wheel clause, and
+§7's exit row 7 keeps both halves — smoked in full at m4-live-smoke §4.6.
+
+Two things in that heading belong in an integration owner's ledger rather than in
+a spike note:
+
+- **The two emulators disagree about what a wheel does when nothing asks.** With
+  amx requesting nothing, foot sends CSI `\e[A`/`\e[B` and alacritty sends SS3
+  `\eOA`/`\eOB`. So today's wheel is not merely ambiguous in principle: what a
+  pane receives depends on which terminal the user runs. That is a second
+  argument for the exception buying *unambiguity*, and it is one X01's §2 could
+  not make because it never watched two emulators do it.
+- **The spike's own harness had only ever run on one of them.**
+  `wheel-in-emulator.sh` passed `--fullscreen`, which alacritty rejects, so the
+  alacritty half of a two-emulator harness had never executed. Fixed in the same
+  commit. A harness that silently covers half of what it claims is the same
+  failure class as a green suite hiding a non-working feature, one level down —
+  and the fix is why the paragraph above can say "both".
+
+### Three integration breaks at the merge, and the answer about the field ledger
+
+All three were caught by the orchestrator's gate rather than by a wave task, and
+all three were between tasks whose **files never overlapped** — DR-4's thesis
+demonstrated three times in one wave.
+
+| # | The collision | Fixed by |
+|---|---|---|
+| a | X11 and X12 both defined `set_narrow_cols` on `App` | one setter feeding both consumers (`a241e56`; `ed22923` dropped the import it left behind) |
+| b | X12 and X13 both defined `pane_interior` on `App` | X13's now delegates to X12's (`c5c3293`) |
+| c | X13 and X12 both appended a settings line to `cmd/attach.rs` | both kept |
+
+**(b) was hiding a defect and not merely a duplicate.** X13's `pane_interior`
+insetted unconditionally with `chrome::inset`, which is wrong under the
+single-pane projection that draws no border: a pane drawn full-bleed has no
+border to step inside of, so a mouse report near its edge would have been
+translated into the wrong cell — or dropped as outside the interior — on exactly
+the narrow client D14 exists for. The duplicate definition is what made it
+visible; had the two tasks shared a function from the start, X13's rule would
+have been the one nobody wrote.
+
+**Could the D-M4-10 field ledger have caught any of them? No, and it is worth
+saying why rather than filing it as a miss.** The field ledger asserts that a
+*named field* still exists where its row claims (`tests/hygiene/ledgers.rs`);
+these are three collisions over *methods and lines*, in files no row names, and
+in two of the three both definitions were individually correct. It is the same
+answer wave 1's single break got, for the same reason: **the compiler is the
+instrument for a same-name collision, and it worked** — (a) and (b) were build
+failures at the merge, named at their definition sites. The ledger's job is the
+opposite failure, the one no compiler can see: a field that compiles perfectly
+and is read by nobody. It caught one of those at this boundary (below), which is
+the division of labour working rather than a hole in it.
+
+What *would* have caught (c) — two tasks appending different lines to the same
+settings block, both correct, neither aware — is nothing mechanical. It is a
+merge an owner reads. Three breaks, no regression escaping the wave, and the
+scheme's cost is one afternoon of that owner's attention.
+
+### The field ledger caught the thing it was built for
+
+Five of six rows are struck at this boundary, each against the running binary
+(m4-live-smoke §5.6). The sixth is not, and it is the interesting one: the
+identity block D-M4-6 froze on the attention events is written, is on the wire,
+and **neither reader the row named reads it** — `amx agents --watch` takes only
+`envelope.seq` off a delivery and re-queries (correctly, for that surface), and
+`examples/notify.sh` still prints `pane <uuid> needs input`. R-M4-14 lists four
+fields frozen ahead of readers that never came; this is the fifth, caught one
+wave before the exit instead of one milestone after, by the list D-M4-10 asked
+for. **X20** owns `examples/` in wave 5 and a two-line change there is the whole
+demonstration the field was frozen for. If wave 5 closes without it, the honest
+move at the exit is to say the field ships unread — not to strike the row.
+
+### Five findings, none of them a wave-3 or wave-4 regression
+
+Ordered by what they cost a user; the measurements are in the smoke.
+
+**1. A blocked agent goes idle after thirty seconds of screen silence, and the
+attention queue empties under nobody** (m4-live-smoke §4.8). Measured at 30.4 s
+on a pane whose permission dialog is still on screen and whose `agent explain`
+still reports the `permission_dialog` rule matching it. The mechanism is that
+`Deadline::Staleness` demotes a held state without asking tier 2
+(`agent/fusion/tracker/inputs.rs:196-205`), and tier 2 runs only on damage — so
+`fusion/mod.rs:124-126`'s "a pane the screen keeps confirming … is never cleared
+for staleness" cannot hold for a screen that has stopped changing: no *new*
+evidence is being read as no evidence. Any repaint revives it: one `amx attach`
+at a new size flipped three stale panes back to `blocked (permission_dialog)` and
+took the queue from 0 to 3, with `since` restamped at the revival so a night-long
+block reads `0s`. This **predates M4** and no earlier smoke could have seen it —
+M2's recorded that the deadline was never reached, because a real agent's screen
+kept moving — but M4 is the milestone that builds four surfaces whose whole
+subject is who is waiting, and D14's phone case is precisely the one with nobody
+attached to keep repainting. `agent/fusion/**` and `actor/agent_hub/**` were
+X06's in wave 2 and are in no wave-5 list. **A plan decision, not an integration
+repair**; the cheap shape is to evaluate the screen the tracker already holds
+when the deadline fires and demote only if it does not corroborate.
+
+**2. The agents view's `Enter` jumps to the workspace and not to the agent**
+(m4-live-smoke §5.5). Reproduced twice, including inside the already-focused
+workspace. `agents_enter` sets the client's local focus and then calls
+`workspace.switch` (`app/agents/keys.rs:206-219`); the server publishes
+`FocusChanged` naming the workspace's *remembered* pane and
+`app/events.rs:364-367` folds it over the local insert. A wave-4 defect in a
+shipped D15 surface, unowned in wave 5, repairable entirely inside `amx-client`
+(apply the local focus after the switch reply, whose `focused_pane` is already
+returned; or ignore a `FocusChanged` for a workspace this client is itself
+jumping inside). The durable answer is a pane on `workspace.switch`, which is a
+wire change and belongs to a plan.
+
+**3. The status line's queue-head age advances only when something else
+repaints** (m4-live-smoke §4.4). Seven samples over 14 s of a quiet session all
+read `0s`; a resize moves it. X11's clock is not what is standing still — it is a
+monotonic estimate that only moves forward and is right the instant the line is
+rebuilt. What is missing is a reason to rebuild it: X14 added a 250 ms tick in
+`wired.rs` gated on the board being open and the status line has none, while §7's
+exit item 2 asks for an age that advances. `app/status/**` is nobody's in wave 5.
+
+**4. `prefix+d` does not reach a client with the agents view open**
+(m4-live-smoke §5.5). `Esc` first, then it detaches with exit 0. Small, and
+unpleasant on the surface D14 built for a phone.
+
+**5. The board's filter survives closing and reopening it** (m4-live-smoke §5.3).
+Reopening and typing appends to the old query, which reads as an empty board.
+Recorded rather than raised: it is arguably right, and it is certainly a
+surprise.
+
+X14's own finding — a peek of a tall pane reading as empty — was routed to
+**X18** before this boundary and is confirmed here from a second direction
+(m4-live-smoke §5.4): with the peeked pane shrunk to one column its characters
+appear one per row, centred, so the cells arrive and the blankness is the
+centre-crop. Nothing further is asked of X18 beyond the decision it already has.
+
+### The fifth flake, and it was the test
+
+`events_json_resumes_from_its_cursor_or_reports_the_gap`
+(`crates/amx/tests/wait_retry.rs`) failed once under parallel-agent load with a
+hole at seq 24 and no gap marker: delivered `[13..23, 25..31]`, subscribed at 12
+and then at 23. DR-19's four had owners; this one had none, and "it passed on a
+re-run" is not a diagnosis.
+
+**It is a defect in the assertion, and the shape of the failure says so.** The
+test's own name is *resumes from its cursor **or reports the gap***, and half one
+asserted contiguity over `seq` alone:
+
+```rust
+let seqs: Vec<u64> = lines.iter().filter_map(|l| l["seq"].as_u64()).collect();
+assert!(seqs.windows(2).all(|p| p[1] == p[0] + 1), …);
+```
+
+A `gap` delivery carries `from`/`to` and **no `seq`**, so a legal gap is invisible
+in that vector *and* in the failure message it prints — which is why the failure
+read as a silent hole. The gap is legal, and under load it is likely: the
+successor's bus continues the sequence space but starts with an **empty replay
+ring** (`Bus::new_at`, whose doc says exactly that), so an event the exporter
+published after the manifest was captured is inside the successor's head and
+behind its ring, and a relay resuming from its own cursor gets the contract's
+other answer.
+
+**Reproduced deliberately rather than waited for.** A real relay driven across a
+real `session.handoff` while the session published continuously: caught up, the
+swap is invisible (7619 deliveries, 0 gaps, 0 holes, two subscriptions). Paused
+with `SIGSTOP` so that it is behind when the socket changes hands, the same run
+gives
+
+```
+deliveries: 8236 events, 1 gaps [(733, 1787)]
+holes in the event sequence: [(732, 1788)]
+every hole is bridged by a gap delivery: True
+```
+
+— one gap, naming exactly the missing range. The reported failure is the same
+thing one sequence wide: `Gap{24,24}`.
+
+**The fix asserts the contract instead of half of it.** Every line is folded into
+the sequence range it accounts for — an event its own `seq`, a gap the range it
+names — and those ranges must tile without a hole. That is stronger where it
+matters: a silent skip still fails, and it now fails saying so. **Verified to
+bite** by mutating the relay to drop one delivery in seven (`cmd/events.rs`,
+reverted): the suite failed naming `(23,23),(25,25)`, the exact shape the flake
+was mistaken for. **Verified green** at X04's load: 40 runs at 8 copies × 8 test
+threads pinned to one core, 0 failures.
+
+Two things beside it, neither taken:
+
+- **`amx events --json` is the one consumer in the tree that subscribes without
+  `collect_notifications()` first.** The doc comment on that method names the
+  hazard — "the subscription's first deliveries can reach the socket ahead of its
+  own reply, and a session that started collecting afterwards would have dropped
+  them" — and both other consumers obey it with comments explaining why
+  (`app/events.rs:91-95`, `agents/watch.rs:203`). The relay reads raw frames
+  instead. Sixteen attempts to lose a delivery that way (a 40-event backlog at
+  the resume point, the server pinned to one core) produced none, so it is a
+  latent hazard rather than this flake's cause — but it is one line from being
+  closed, and the shape it would produce is the shape this test was just taught
+  to catch.
+- The reproduction needed the relay's stdout to be a **file**: through a 64 KiB
+  pipe with nothing draining it the relay blocks on `write` and looks exactly
+  like a relay that stopped at the swap. Two of this boundary's runs read that
+  way before the harness was fixed — a note for whoever writes the next driver.
+
+### DR-11's watch
+
+Three more stops with an observed exit status, all **0**, no drain census file
+and no census line in any server's stderr, plus one live handoff whose successor
+took the session cleanly. **Fourteen clean stops across the milestone.** Two
+further stops in these runs were of servers this driver had not spawned; their
+exit status is not observable and they are not counted, which is the rule §1.7
+set.
+
+### What this boundary hands wave 5 and the exit
+
+- **X18** — nothing new; the crop decision it already owns is confirmed from a
+  second instrument (m4-live-smoke §5.4).
+- **X20** — two things. The reference notifier is the last field-ledger row's
+  missing reader, and `examples/` is X20's. And X14's two shipped bindings
+  (`prefix+g`, `prefix+A`) want documenting as `agents` and `attention-here`.
+- **X00's own exit (wave 6)** — §7's by-hand list, the five findings above, and
+  the question §7 item 1 cannot answer on stand-ins: whether a real Claude Code
+  permission dialog also goes stale in thirty seconds. It emits a `Notification`
+  at the block, which pushes the deadline out once and not again, so the answer
+  is probably yes — worth watching for rather than assuming.

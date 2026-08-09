@@ -26,6 +26,15 @@ DR-17's `--help` clause (R-M4-6) makes three in twenty-one. Each was
 re-verified against the tree and the commit graph before it was struck, and
 each is recorded as *found already done* rather than as work the milestone did.
 
+**M4 waves 3 and 4 (2026-08-09, `b698c51`).** D15's three surfaces and D14's two
+landed: `agent.list`, the status-line breakdown, the narrow projection, the mouse
+path, scoped `next-attention`, the agents view, the peek and `amx agents`. They
+carry no register row of their own — the D14/D15 implementation never did — so
+what changed below is DR-1's residual (still X18's), DR-11's count, DR-19's
+addendum, and the budget snapshot. Both waves were smoked in one run against the
+real binary ([m4-live-smoke.md](m4-live-smoke.md) §4, §5), which found five
+things nothing in this register predicted; they are listed at the end.
+
 **Overall verdict.** No architectural mistake found. The bets 04 makes are
 sound and the measured spikes (scrollback identity, hook coverage, shutdown
 wedge) validated the risky ones. The budget holds (zero files over hard
@@ -197,9 +206,12 @@ mechanism was still never caught in the act — keep the watch until a census
 either fires or a milestone of field time passes clean.
 **M4 is that milestone of field time, and the count is kept**: every live-smoke
 run records each `session stop`'s exit status, the presence of a `drain-census`
-file and any census log line. Eleven clean stops through wave 2, over sessions
-of 2, 3, 4, 25 and 26 panes, plus three handoffs whose exporters all exited 0
-([m4-live-smoke.md](m4-live-smoke.md) §1.7, §2.7, §3.9); nothing has fired.
+file and any census log line. **Fourteen clean stops through wave 4**, over
+sessions of 2, 3, 4, 25 and 26 panes, plus four handoffs whose successors took
+the session and whose exporters exited 0 where that was observable
+([m4-live-smoke.md](m4-live-smoke.md) §1.7, §2.7, §3.9, §4.9); nothing has fired.
+Stops of servers a driver did not spawn are not counted, since their exit status
+cannot be read.
 R-M4-10 is what turns that from an impression into a record.
 
 **DR-12 — `frame on unbound channel` under flood.** `resolved (M4, X08)`
@@ -332,6 +344,22 @@ Four owners, three code changes, and two rows that were not what they said.
   runs. The mechanism was not in doubt, so the write tolerates `BrokenPipe` and
   a new case forces the race every time.
 
+**A fifth, found at the wave-3/4 boundary and not in the same file.**
+`events_json_resumes_from_its_cursor_or_reports_the_gap`
+(`crates/amx/tests/wait_retry.rs`) failed once under parallel-agent load with a
+hole at seq 24 and no gap marker. **The defect was the assertion**: half one
+asserted contiguity over `seq` alone, and a `gap` delivery carries `from`/`to`
+and no `seq` — so the answer the test's own name promises ("*or reports the
+gap*") was invisible both to the assertion and to the message it printed. The gap
+is legal and, under load, likely: the successor's bus continues the sequence
+space with an **empty replay ring** (`Bus::new_at`), so an event published after
+the manifest was captured is inside its head and behind its ring. Reproduced
+deliberately by pausing a relay across a real handoff (one gap, naming exactly
+the missing range), fixed by folding every delivery into the range it accounts
+for and requiring those to tile, verified to bite against a mutated relay, and
+verified green at X04's load (40 runs, 8 copies × 8 threads, one core).
+[m4-wave-outcomes.md](m4-wave-outcomes.md), "the fifth flake".
+
 **Two more, in the same file, that this register never named**:
 `no_client_grid_is_corrupted_after_coalescing` (16 failures in 16 runs under the
 pinned load) and `server_memory_is_bounded_under_a_stalled_client` — same
@@ -368,6 +396,17 @@ when it was written: `actor/core/restore.rs` 499 → 536, which X05 grew, and
 `todo!()` count in src: **0**, and `tests/hygiene/unfinished.rs` fails if it ever
 stops being 0, rather than leaving it to a snapshot in a note.
 
+Budget snapshot after M4 waves 3 and 4 (`b698c51`): **34 files over soft, 0 over
+hard**. Three `src` files are over: `actor/core/restore.rs` 536 and
+`remote/ssh.rs` 516, both carried from wave 1, and `crates/amx/src/agents/watch.rs`
+530, which X16 landed there. `amx-client/src/app/mod.rs` — the file wave 2's
+snapshot named as the next one the R-M1-3 rule would want split, at 498 with four
+surfaces still to land in that directory — came out at **470**: X14 moved the
+resize debounce into `app/resize.rs` rather than growing it, and
+`crates/amx-client/tests/modules.rs` is what caught the overrun. Two suites were
+split for the *hard* budget as they landed (`agents.rs` at 1102 lines became
+three files), which is the rule biting in the direction it was written for.
+
 Budget snapshot after M4 wave 2 (`335cc27`): 30 files over soft, **0 over hard**.
 The two `src` files over are the two wave 1 left there — `actor/core/restore.rs`
 536 and `remote/ssh.rs` 516 — both unchanged by wave 2, and every file X02 split
@@ -383,21 +422,38 @@ DR-19 flake paydown → DR-4/DR-5 written into the M4 plan → D14/D15
 implementation (~2 weeks, [10-attention-surfaces.md](../10-attention-surfaces.md))
 → DR-17/DR-18/DR-20/DR-21 as M4 scope decisions.
 
-**Taken, as of M4 wave 2**: DR-4, DR-5, DR-6, DR-7, DR-9, DR-10, DR-12, DR-13,
+**Taken, as of M4 wave 4**: DR-4, DR-5, DR-6, DR-7, DR-9, DR-10, DR-12, DR-13,
 DR-15, DR-16 and DR-19 are struck above — the whole of the order's first six
 steps. What is left of the register is three `open` rows (DR-17 and DR-20, both
 X19 in wave 5; DR-18, declined with a condition), one `open (optional)` (DR-21,
 declined with a measurement §7 records), one `watch` (DR-11, whose count is now
-eleven clean stops) and one `no action` (DR-14). The D14/D15 implementation is
-waves 3–5 and carries no register row of its own. Progress against this order is
-recorded per wave in [m4-wave-outcomes.md](m4-wave-outcomes.md), and each wave's
-run of the real binary in [m4-live-smoke.md](m4-live-smoke.md).
+fourteen clean stops) and one `no action` (DR-14). The D14/D15 implementation is
+waves 3–5 and carries no register row of its own; the last step of the order that
+is still open in code is DR-1's residual, which is X18's in wave 5. Progress
+against this order is recorded per wave in
+[m4-wave-outcomes.md](m4-wave-outcomes.md), and each wave's run of the real
+binary in [m4-live-smoke.md](m4-live-smoke.md).
 
-**Two findings this register has no row for**, both from the wave-2 boundary
-smoke and both outside every remaining task's file scope: a session can be handed
-over only once (the importer assembles no export path), and the non-`--takeover`
-`amx attach --pane` can start blank under load. Neither is a regression and
-neither blocks M4. They are written up in
-[m4-wave-outcomes.md](m4-wave-outcomes.md) under "X00 — the wave-2 boundary"
-with their mechanisms and citations, and they want a plan decision rather than a
-row invented by the integration owner.
+**Seven findings this register has no row for**, none a regression, none
+blocking M4, every one outside every remaining task's file scope. From the
+wave-2 boundary: a session can be handed over only once (the importer assembles
+no export path), and the non-`--takeover` `amx attach --pane` can start blank
+under load. From the wave-3/4 boundary:
+
+- **a blocked agent goes idle 30 s after its last paint** and leaves the
+  attention queue, while its dialog is on screen and the manifest rule still
+  matches it — the largest of the five, because D15's whole subject is who is
+  waiting and the phone case is the one with nobody attached to keep repainting
+  (m4-live-smoke §4.8);
+- **the agents view's `Enter` lands on the workspace's remembered pane**, not on
+  the selected agent (§5.5);
+- **the status line's queue-head age advances only when something else
+  repaints** (§4.4);
+- **`prefix+d` does not reach a client with the agents view open** (§5.5);
+- **the board's filter survives closing and reopening it** (§5.3).
+
+All seven are written up in [m4-wave-outcomes.md](m4-wave-outcomes.md) under the
+boundary that found them, with mechanisms and citations. They want plan decisions
+rather than rows invented by the integration owner — and the first of them wants
+one before M4's exit criteria are read as met, since §7's items 1–5 are all
+measured inside the thirty seconds it is talking about.

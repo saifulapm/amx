@@ -331,14 +331,33 @@ async fn events_json_resumes_from_its_cursor_or_reports_the_gap() {
         .lines()
         .map(|line| serde_json::from_str(line).expect("a delivery per line"))
         .collect();
-    let seqs: Vec<u64> = lines
-        .iter()
-        .filter_map(|line| line["seq"].as_u64())
-        .collect();
+    // Every line, in order, as the sequence range it accounts for: an event
+    // accounts for its own seq, a gap for the range it names. The stream is
+    // whole when those ranges tile without a hole — which is the contract, and
+    // is *not* "the seq numbers are contiguous". A relay that is behind when
+    // the socket changes hands resumes into a successor whose replay ring
+    // starts empty (`Bus::new_at`), so the events the exporter published after
+    // the manifest was captured are inside the successor's head and behind its
+    // ring: the honest answer is a gap, and this half of the test is named for
+    // it. Asserting contiguity over `seq` alone forbade that answer, and since
+    // a gap carries `from`/`to` and no `seq` it was invisible in the failure
+    // message too — a hole with no gap in sight, under load, roughly once a
+    // milestone.
+    let mut covered: Vec<(u64, u64)> = Vec::new();
+    for line in &lines {
+        if let Some(seq) = line["seq"].as_u64() {
+            covered.push((seq, seq));
+        } else if line["delivery"] == json!("gap") {
+            let from = line["from"].as_u64().expect("a gap names where it starts");
+            let to = line["to"].as_u64().expect("a gap names where it ends");
+            assert!(from <= to, "a gap is never empty: {line}");
+            covered.push((from, to));
+        }
+    }
     assert!(
-        seqs.windows(2).all(|pair| pair[1] == pair[0] + 1),
-        "the sequence space continued across the swap without a hole: \
-         {seqs:?}\n{}",
+        covered.windows(2).all(|pair| pair[1].0 == pair[0].1 + 1),
+        "the stream accounted for every sequence across the swap, as events or \
+         as the gap that names them: {covered:?}\n{}",
         streamed.stderr
     );
     assert!(
