@@ -304,15 +304,40 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 self.model.apply_agent_identified(pane, kind.clone(), seq),
                 Effect::Full,
             ),
-            Event::AttentionEnqueued { pane, .. } => {
+            // The identity block is folded before the queue, and whatever the
+            // queue makes of the event: `reason` and `since` describe the state
+            // the pane is in now, and they are the only path by which a live
+            // client learns a wall-clock stamp for a transition it watched
+            // happen — `agent_status` carries neither, and `session.state` is
+            // not re-read for a block. An enqueue this client already has is
+            // still worth folding for them (a stamp can arrive with a replay
+            // after a gap); the notification is not, which is why only the
+            // queue's own answer gates it.
+            Event::AttentionEnqueued {
+                pane,
+                ref reason,
+                since,
+                ..
+            } => {
+                let stamped =
+                    self.model
+                        .apply_attention_identity(pane, reason.as_deref(), since, seq);
                 if !self.model.enqueue_attention(pane) {
-                    return Folded::Nothing;
+                    return folded(stamped, Effect::Full);
                 }
                 self.notify_attention(pane);
                 Folded::Applied(Effect::Full)
             }
-            Event::AttentionDequeued { pane, .. } => {
-                folded(self.model.dequeue_attention(pane), Effect::Full)
+            Event::AttentionDequeued {
+                pane,
+                ref reason,
+                since,
+                ..
+            } => {
+                let stamped =
+                    self.model
+                        .apply_attention_identity(pane, reason.as_deref(), since, seq);
+                folded(self.model.dequeue_attention(pane) || stamped, Effect::Full)
             }
             // Focus is server state and every client hears every move of it:
             // a `pane.focus` from this client or another, a `workspace.switch`,
