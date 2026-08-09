@@ -619,6 +619,345 @@ panes. Nothing has fired.
    ledger, and every reader is wave 2 or later. The ledger is walked and
    non-empty; X00 closes no row at this boundary.
 
+## 3. The wave-2 delta — 2026-08-09
+
+**Subject.** amx at `335cc27` — wave 2 merged: X06's hub facts, X07's
+keybindings-as-config, X08's retired `Scrolled` surface and unbound-channel
+decision, X09's one client `Effect` and retriable refusal. Same machine, same
+isolation, same driver: §1's six items are re-run *unchanged* beside the wave's
+own new surface.
+
+`cargo test --workspace` on this tree: **128 suites, 854 passed, 0 failed**;
+`cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean.
+
+### 3.1 Verdict
+
+| # | What | Result |
+|---|---|---|
+| 1–6 | §1's baseline, re-run whole | **holds** — every item, every number inside §2's spread (§3.2) |
+| 7 | X06: `reason` names the detector that fired | **holds** — the hook event on a hook-asserted entry, the manifest rule on a screen-owned one, absent for a probe-derived state (§3.3) |
+| 8 | X06: `since` is an entry edge, not a clock tick | **holds** — unmoved across 1.5 s of re-evaluation, moved by a real transition (§3.3) |
+| 9 | X06: an attention event renders with no follow-up call | **holds** — `api/tests blocked (PermissionRequest)` off one event (§3.4) |
+| 10 | X06: the names mirror survives a cold restore | **holds** — R-M4-4's load-bearing seed, measured on a restored pane (§3.4) |
+| 11 | X07: `amx keys`, a rebound prefix, a malformed section | **holds** — all three, the last one inert as the lenient rule promises (§3.5) |
+| 12 | X07: the rebound prefix takes effect on a real pty | **holds** — `ctrl+a d` does nothing, `ctrl+t d` detaches with 0 (§3.5) |
+| 13 | X08: a client under an 8 MiB flood | **holds** — alive, still painting, history window advanced (§3.6) |
+| 14 | X09: `attach --pane` rides a server swap | **holds** — DR-16's headline claim, live (§3.7) |
+| 15 | DR-11's watch | **holds** — five more clean stops, no census (§3.9) |
+
+Three findings came out of it, none of them a wave-2 regression and all three
+outside any wave-3 task's scope: §3.7's second handoff, §3.8's dropped first
+keyframe, and §3.5's two prefixes. They are in
+[m4-wave-outcomes.md](m4-wave-outcomes.md) under this boundary.
+
+### 3.2 The baseline, re-run
+
+```
+                          §1 (0721ac2)      §2 (6f4fb5d)       §3 (335cc27)
+session.state x7          7 8 8 8 8 9 10    7 8 9 11 12 13 14  9 9 11 11 11 13 13 ms
+agent.next x3             5 6 6             10 8 10            6 6 7 ms
+state + 25 pane.read      161 ms            214 ms             164 ms
+close api-4, start api-6  short 31          short 1            short 1
+```
+
+Twenty-five agents ready in 0.5 s, the same five-blocked distribution across
+four workspaces, both ptys, the same letterbox — `api-1` at 17×21 inside a
+45-column client while `api-5` keeps the 47×10 it was last commanded
+(`crates/amx-server/src/actor/core/view.rs:192-198`, deliberate) — the event
+stream 1234 lines with 0 gaps and 0 non-NDJSON, every short number unchanged
+across the restart, both servers exit 0. Nothing wave 2 landed moved any of it.
+
+### 3.3 `reason` and `since`, on the wire
+
+The `agent` block on `session.state`, as three reads found it:
+
+```
+idle, straight after agent.start
+  {"cause":"probe","kind":"fake","since":1786233621913,"state":"idle","transition_seq":25}
+
+blocked, after `ask`
+  {"attention":0,"cause":"hook","kind":"fake","reason":"PermissionRequest",
+   "since":1786233622088,"state":"blocked","transition_seq":76}
+
+idle again, after `stop`
+  state idle, reason 'prompt_box_idle', since 1786233623735
+```
+
+Three things worth naming, because a doc reading D15's sketch would guess two of
+them wrong.
+
+**`reason` is the detector's own name and the detector that won is the hook.**
+D-M4-3 says the string is "the winning manifest rule for a screen-owned state,
+the hook event for a hook-asserted entry", and that is exactly what arrived:
+`PermissionRequest` — the `HookEvent` variant
+(`crates/amx-core/src/agent/mod.rs`'s `reason`, written by the hub) — and not
+the `permission_dialog` rule that 10 §D15's sketch and this plan's own D-M4-3
+example both use. Both are correct and they are different strings for the same
+screen: tier 1 gets there first (V01 §3 M3 measured the hook 8–14 ms ahead of
+the paint), so on any agent that emits a `PermissionRequest` hook the wire will
+say `PermissionRequest`. `permission_dialog` is what a pane that blocks *without
+a hook* will report. §7's by-hand item 1 — "every `reason` names the rule or
+hook that actually fired" — should be read expecting both vocabularies, and
+X14's and X16's renderers must not assume the manifest one.
+
+**A probe-derived state carries no `reason`.** The opening `idle` above has
+`cause: probe` and no `reason` at all, and the `idle` after a real `stop` has
+`prompt_box_idle`. Absent-for-tier-3 is what D-M4-3 asked for; absent-for-probe
+is the same rule reaching one case the decision did not name.
+
+**`since` is an entry edge.** Held at `…622088` across 1.5 s and a `pane.read`
+that re-evaluated the screen, moved to `…623735` by the transition to idle.
+
+### 3.4 An attention event a notifier can render alone, restore included
+
+```
+attention_enqueued  {"name":"backend","pane":"31f2…","reason":"PermissionRequest",
+                     "since":1786233622088,
+                     "workspace":{"id":"871e…","name":"api"}}
+attention_dequeued  {"name":"backend","pane":"31f2…","reason":"prompt_box_idle",
+                     "since":1786233623735,
+                     "workspace":{"id":"871e…","name":"api"}}
+attention_enqueued  {"name":"tests","pane":"03b6…","reason":"PermissionRequest",
+                     "since":1786233623809,
+                     "workspace":{"id":"871e…","name":"api"}}
+
+rendered from the event alone: 'api/tests blocked (PermissionRequest)'
+```
+
+D15's requirement, met: no follow-up query. The dequeue carries the identity
+block too, and carries the *new* reason and entry edge rather than the ones the
+pane was queued with — which is the honest reading of "what its status was
+asserted by when it left the queue".
+
+**R-M4-4's load-bearing half, measured.** The plan says a label that only
+arrives by rename event would be absent for every restored pane, and that the
+seed at `PaneStarted`/`inherit` is therefore load-bearing rather than a
+convenience. The session was stopped, restarted from the snapshot, and the
+restored pane blocked again:
+
+```
+attention_enqueued  {"name":"backend","reason":"PermissionRequest",
+                     "workspace":{"id":"871e…","name":"api"}}
+  a restored pane renders as: api/backend (PermissionRequest)
+```
+
+Both names came back. Nothing in this session ever sent a rename after the
+restore, so the mirror is being seeded on the import path and not folded off a
+`PaneRenamed` that never came.
+
+**And `since` after a cold restore is the restore, said out loud.** The restored
+pane's block reads `since 1786233634350`, which is when the new server derived
+the status — not when the agent went idle before the stop. That is R-M4-4's
+"since this server started tracking it" fallback, and it is what the wire now
+carries. A surface rendering `now − since` will say a freshly restored agent has
+been idle for seconds. Correct for the field's definition, and worth one
+sentence wherever an age is rendered (X11, X14, X16).
+
+### 3.5 `amx keys`, and a prefix that is data
+
+```
+$ amx keys                                    $ amx keys        # with [keys]
+prefix ctrl+a, from shipped                   prefix ctrl+t, from config.toml
+
+key     action            source              key     action            source
+ctrl+a  literal           prefix escape       ctrl+t  literal           prefix escape
+a       next-attention    shipped             a       next-attention    shipped
+d       detach            shipped             d       detach            config.toml
+p       picker            shipped             j       picker            config.toml
+v       split-vertical    shipped             p       picker            shipped
+w       navigate          shipped             v       split-vertical    shipped
+x       split-horizontal  shipped             w       navigate          shipped
+z       zoom              shipped             x       split-horizontal  shipped
+                                              z       zoom              shipped
+```
+
+The prefix moved, the escape row moved with it, and the source column says which
+line came from the file. 04 §7's promise, finally answerable by a command.
+
+**A malformed section is inert, and says so.** With `prefix = 42` and
+`bind = "not a table"`:
+
+```
+prefix ctrl+a, from shipped
+… the shipped table, unchanged …
+keys: invalid type: string "not a table", expected a map
+  in `bind`
+```
+
+`amx keys --json` either side differs in exactly one key — `rejected` — and not
+in a single binding. That is the config module's lenient per-section rule
+(`crates/amx-core/src/config/mod.rs:8-23`) working through a second reader, and
+the diagnostic is on the surface rather than in a log.
+
+**On a real pty**, with `prefix = "ctrl+t"` and a 24×100 client attached:
+`ctrl+a` then `d` left the client running — the old prefix is an ordinary byte
+now — and `ctrl+t` then `d` detached it with exit **0**. With no `[keys]` at all,
+`ctrl+a ctrl+a` still forwards one literal prefix and does not detach.
+
+**Two prefixes now exist and only one of them is data.** `amx attach --pane`
+runs no mode machine and recognises its own chord out of two constants —
+`PREFIX = 0x01` and `DETACH_PANE = b'q'`
+(`crates/amx/src/cmd/detach.rs:12-15`) — which X07 did not make configurable and
+was not asked to. So a user who rebinds the prefix to `ctrl+t` rebinds it for
+`amx attach` and not for `amx attach --pane`, where it stays `ctrl+a q`.
+Verified from both sides: `ctrl+a q` detached a `--pane` client with exit 0 on
+this tree, with and without a swap in between. Recorded for X20, which documents
+the `[keys]` section, and for whoever owns `detach.rs` next.
+
+### 3.6 A client under flood, after the `Scrolled` retirement
+
+DR-12's original symptom was a frame on a channel the client did not know, three
+rounds in thirty, under an 8 MiB flood. The refusal it now gets is a reader-level
+one (`NetError::UnboundChannel`) and the drop is `apply`'s
+(`crates/amx-client/src/stream.rs:13-43`), and both are CI's —
+`crates/amx-client/tests/unbound_channel.rs`. What the smoke can watch from
+outside is the consequence, so it watched that: an attached 30×120 client while
+8 MB of `/dev/urandom` went through `od -c` in a neighbouring pane.
+
+```
+8 MiB of flood: the client is alive: True; it took 1075838 bytes
+backend's history window before: head 229 floor 108
+backend's history window after:  head 367 floor 240
+```
+
+Alive, still painting, and the committed window advanced and evicted under it —
+which is the path DR-7's retired `Scrolled` notice used to feed and that
+`history.committed` now feeds alone (`stream.rs`'s `apply_grid`, whose scroll arm
+went with the tag). No client died in any run of this note's driver.
+
+### 3.7 `attach --pane` rides a swap, and the second swap that is refused
+
+A `--pane` client on a 30×100 pty, a `session.handoff` to a staged copy of the
+same binary, and `pane.run`s issued in a loop while it ran:
+
+```
+`session handoff` exit 0: {"accepted": true, "seq": 392}
+3 `pane.run`s issued across the swap, 1 failed
+  (1, 'amx: the session went away while pane.run was in flight, and re-issuing
+       it could repeat what it already did: … Broken pipe (os error 32)')
+the exporter exited 0
+ms      path_exists  listening
+    95  True        True
+session id before ffa357a7-… after ffa357a7-… (same: True)
+the --pane client survived the swap: True
+  a post-swap paint reached the client: True
+```
+
+DR-16's headline claim, live: the single-pane attach came back on the successor,
+was repainted, and a sentinel painted *after* the swap reached the screen — so it
+is live rather than frozen, which is the M3 failure this milestone inherited the
+memory of. `prefix+q` detached it afterwards with exit 0.
+
+**The one failure is the documented refusal, not a defect.** `pane.run` is
+deliberately not re-issued across a lost connection — its first act is to type
+into a pane and a dead socket cannot say whether it typed
+(`crates/amx/src/cmd/call.rs`'s `reissuable`) — and the message says exactly
+that. The *other* half of DR-16, the server's retriable code
+(`RETRIABLE = -32001`, `crates/amx-proto/src/rpc.rs:187`), was not caught by
+hand: it needs the call to reach a quiesced server rather than a dead socket,
+and that window is the same milliseconds-wide one M3 could not aim at either.
+CI owns it; the smoke records that it did not see it.
+
+**A session can be handed over once.** Run from a clean start, twice in a row:
+
+```
+handoff 1: accepted true   → ping answers, same session id, no losses
+handoff 2: accepted false  → "this server was assembled without a handoff path"
+           the session is still answering; `session report` names the refusal
+```
+
+`session/serve.rs:193` calls `set_handoff`; `session/import.rs` does not, so a
+server that arrived by import has no export path and refuses the next handoff
+(`crates/amx-server/src/actor/core/handoff.rs:106-112`). The refusal costs
+nothing — it is a pre-flight, the panes are untouched, and `session report` says
+outcome, stage, binary and reason — but it means `amx update apply` succeeds once
+per server lineage and refuses until the session is restarted. M3's smoke did one
+upgrade and could not have seen it. Nothing in M4's plan depends on a second
+upgrade; recorded because "amx upgrades without dropping a pane" is a sentence a
+reader will apply twice.
+
+### 3.8 A first keyframe that can be dropped, and the load that shows it
+
+Found chasing a blank `attach --pane` screen, and worth the chase for what it
+turned out **not** to be. Under load, `amx attach --pane` shows an empty terminal
+until the pane next paints:
+
+```
+                                    unloaded   under 12 busy loops
+amx at 335cc27 (wave 2)             6/6        2/8 painted on attach
+amx at 6f4fb5d (wave 1)             —          1/8 painted on attach
+```
+
+Both binaries clean-built from their own trees, same driver, same session shape.
+**It is not a wave-2 regression**: `bind()` in `crates/amx/src/cmd/viewport.rs`
+is byte-identical at `6f4fb5d` and `335cc27`, and both fail the same way.
+
+The mechanism is in the client, and it is one line of policy. A `--pane` attach
+binds two streams through `Session::call`, whose `on_frame` is `|_, _| {}`
+(`crates/amx-client/src/net/mod.rs:296-301,328-330`) — so a stream frame that
+arrives *while a control reply is outstanding* is read and discarded. The grid
+stream is bound first and the raw stream second, so the pane's first keyframe has
+a whole round trip in which to land and be thrown away. Nothing recovers it: the
+next paint is the next thing the pane does, which for a quiet agent is never.
+`--takeover` always paints because its viewport declaration resizes the pane and
+buys a fresh keyframe.
+
+**The full client does not have this bug**, and the contrast is the fix written
+out: `App::call` uses `call_with` and applies the frame, folding the result into
+the client's `Effect` (`crates/amx-client/src/app/wired.rs:349-355`) — which is
+X09's type doing exactly the job DR-10 argues for. So X15's peek, which binds a
+grid stream for a non-focused pane on the full client, is not exposed to this.
+`crates/amx/src/cmd/viewport.rs` is the only caller that binds the bare way, and
+no wave-3 task owns it.
+
+Recorded here rather than fixed, and one process note with it: the first four
+measurements of this were taken while two `cargo build`s were running on the same
+box, and they said the opposite thing — that wave 2 had broken a path wave 1
+rendered fine. The repeat-count protocol above is what turned a plausible
+regression into a pre-existing race. This machine's own recorded lesson about
+load-sensitive reads applies to the smoke as much as to the suites.
+
+### 3.9 DR-11's watch: five more clean stops
+
+| Run | Stops | Exit | `drain-census` | Census log line |
+|---|---|---|---|---|
+| §3.2's baseline re-run | 2 | **0**, **0** | absent | none |
+| §3.3–3.4's delta session (restart in the middle) | 2 | **0**, **0** | absent | none |
+| §3.7's double-handoff session | 1 | **0** | absent | none |
+
+Eleven clean stops across the milestone, over sessions of 2, 3, 4, 25 and 26
+panes, plus three handoffs whose exporters all exited 0. Nothing has fired.
+
+### 3.10 The two ledgers at this boundary
+
+**The seam ledger stays open with one row, correctly.** `SEAM_LEDGER` names
+`amx-server/src/actor/core/route.rs`, owed by X10 — wave 3, running now. The
+`agent.list` row still answers by name and refuses through the seam helper, as
+§2.4 recorded; nothing wave 2 landed touched it.
+
+**The field ledger stays at six rows, and three of them changed state without
+being closable.** A row is deleted when its *reader* lands, not when the field
+does, so:
+
+| Field | Writer | Reader | This boundary |
+|---|---|---|---|
+| `AgentSnapshot.reason` | X06 ✔ | X10, X11, X14, X16 | written and on the wire (§3.3); no reader yet |
+| `AgentSnapshot.since` | X06 ✔ | X10, X11, X14, X16 | written and on the wire (§3.3); no reader yet |
+| attention `workspace` | X06 ✔ | X16, `examples/notify.sh` | folded and on the wire (§3.4); no reader yet |
+| `PaneState.mouse` | X13 | X13 | wave 3, gated (below) |
+| `agent.list` `now` | X10 | X14, X16 | wave 3 |
+| `NextParams.workspace` | X17 | X17 | wave 3 |
+
+Three fields went from frozen to *written and observed over a socket* at this
+boundary, which is the half of D-M4-10 the smoke can prove. No row is struck.
+
+**X13's gate is still shut.** `m4-mouse-path.md` §7.3 has no dated heading:
+this machine's graphical session is still locked (`LockedHint=yes`), so the
+by-hand wheel observation X01 left as the one unobserved hop has not happened,
+and X01's own outcome entry says X13 does not merge before it exists. X13 is
+building against the outcome-(c) fallback. The gate is X00's to hold and it is
+recorded open here so wave 3's boundary has to answer it.
+
 ---
 
 ## Re-running this
