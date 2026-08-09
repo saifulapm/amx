@@ -30,6 +30,7 @@ fn running() -> Config {
         },
         client: ClientConfig {
             narrow_cols: Some(48),
+            mouse: Some(true),
         },
         keys: KeysConfig {
             prefix: Some("ctrl+t".to_owned()),

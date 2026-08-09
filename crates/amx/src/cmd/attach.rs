@@ -221,6 +221,11 @@ async fn full(ctx: &Ctx) -> anyhow::Result<ExitCode> {
     // milestone the field did (D-M4-10), and this line is the whole of the
     // path between the two.
     app.set_narrow_cols(settings.narrow_cols);
+    // After the bindings and for the same reason: the terminal is taken by
+    // `App::attach` and the configuration is read here, so this is where the
+    // two meet. Off unless `[client] mouse` says otherwise — X01's outcome (b),
+    // with the measurement behind it at `amx_core::config::DEFAULT_MOUSE`.
+    app.set_mouse_tracking(settings.mouse);
 
     let mut out = std::io::stdout();
     let sigwinch = Sigwinch::install().context("watch for terminal resizes")?;

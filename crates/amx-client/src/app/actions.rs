@@ -20,11 +20,12 @@
 use std::io::Write;
 use std::os::fd::AsFd;
 
-use amx_core::{Direction, Effect, PaneId, WorkspaceId};
+use amx_core::{Direction, Effect, PaneId, Rect, WorkspaceId};
 use amx_proto::control::{Call, pane as pane_proto};
 
 use super::App;
-use crate::input::{self, Action, InputEvent};
+use crate::input::{self, Action, InputEvent, Wheel};
+use crate::render::chrome;
 
 impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// Turn one decoded [`Action`] into its consequence: bytes to the pane,
@@ -79,24 +80,10 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 });
                 Effect::Nothing
             }
-            Action::Mouse { start, end } => {
-                if self.input.mouse_enabled(pane) {
-                    sink(InputEvent::Forward {
-                        pane,
-                        bytes: &bytes[start..end],
-                    });
-                }
-                Effect::Nothing
+            Action::Mouse { start, end, wheel } => {
+                self.mouse_report(pane, Some(&bytes[start..end]), wheel, sink)
             }
-            Action::CarriedMouse => {
-                if self.input.mouse_enabled(pane) {
-                    sink(InputEvent::Forward {
-                        pane,
-                        bytes: self.input.carried(),
-                    });
-                }
-                Effect::Nothing
-            }
+            Action::CarriedMouse(wheel) => self.mouse_report(pane, None, wheel, sink),
             Action::CarriedBytes => {
                 sink(InputEvent::Forward {
                     pane,
@@ -198,6 +185,62 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 Effect::Nothing
             }
         }
+    }
+
+    /// What becomes of one whole SGR mouse report (D9, D14).
+    ///
+    /// `report` is the bytes when they came out of the fed slice, and `None`
+    /// when they arrived split across two reads and live in the machine's own
+    /// carry. Three outcomes, in the order they are decided:
+    ///
+    /// 1. **The pane asked for SGR reports**: relay it, with the coordinates
+    ///    moved into that pane's frame. The pane was chosen by focus long
+    ///    before any number was read, and a report landing outside its interior
+    ///    is dropped — see `crate::input`'s `mouse` submodule for why that is
+    ///    not a hit test.
+    /// 2. **The pane asked, but not for SGR**: drop it. It is expecting the X10
+    ///    encoding and SGR bytes would be noise to it (X01 F-2). The drop is
+    ///    recorded where the mode is folded (`super::events`) rather than here,
+    ///    because a held drag is a report every few milliseconds and a log line
+    ///    per report is not a record, it is a flood.
+    /// 3. **The pane asked for nothing**: D14's exception. A wheel-up opens
+    ///    copy mode over this pane's cached scrollback; everything else — every
+    ///    click, drag, release, and the sideways wheel — is dropped. A
+    ///    wheel-down here is already at the live edge and has nowhere to go.
+    fn mouse_report(
+        &mut self,
+        pane: PaneId,
+        report: Option<&[u8]>,
+        wheel: Option<Wheel>,
+        sink: &mut impl FnMut(InputEvent<'_>),
+    ) -> Effect {
+        if self.input.mouse_enabled(pane) {
+            let Some(inner) = self.pane_interior(pane) else {
+                return Effect::Nothing;
+            };
+            let relayed = match report {
+                Some(report) => self.input.relay(report, inner.x, inner.y, inner.w, inner.h),
+                None => self.input.relay_carried(inner.x, inner.y, inner.w, inner.h),
+            };
+            if let Some(bytes) = relayed {
+                sink(InputEvent::Forward { pane, bytes });
+            }
+            return Effect::Nothing;
+        }
+        if self.input.mouse_mode(pane).is_some() || wheel != Some(Wheel::Up) {
+            return Effect::Nothing;
+        }
+        self.wheel_into_copy()
+    }
+
+    /// The focused pane's drawable interior, if this terminal is drawing it.
+    fn pane_interior(&self, pane: PaneId) -> Option<Rect> {
+        let rect = self
+            .pane_rects
+            .iter()
+            .find(|(id, _)| *id == pane)
+            .map(|(_, rect)| chrome::inset(*rect))?;
+        (rect.w > 0 && rect.h > 0).then_some(rect)
     }
 
     /// The focused workspace's geometric neighbour of `pane`, over the same

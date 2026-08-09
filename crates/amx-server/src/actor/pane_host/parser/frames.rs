@@ -48,6 +48,29 @@ impl Parser {
                 self.send(event);
             }
         }
+        // After the effects and not among them: no `TerminalEvent` variant
+        // announces a mode change, so the mouse mode is *polled* on the one
+        // thread that may read the terminal at all. `super::super::mouse` has
+        // the cost, which is one FFI getter for a pane that asked for nothing —
+        // that is, for very nearly every pane, very nearly always.
+        self.observe_mouse();
+    }
+
+    /// Report the pane's mouse mode if it moved since the last look.
+    ///
+    /// A fact, not a transition: it leaves as a [`HostEvent`] the pane actor
+    /// turns into a report for `Core` to fold, and nothing publishes an
+    /// `Event` for it. `session.state` then answers `PaneState.mouse` out of
+    /// that fold, synchronously, with no parser round trip on the query path —
+    /// which is the whole of `docs/notes/m4-mouse-path.md` §3, and the same
+    /// shape the history window already has.
+    pub(super) fn observe_mouse(&mut self) {
+        let now = super::super::mouse::mouse_mode(&self.terminal);
+        if now == self.mouse {
+            return;
+        }
+        self.mouse = now;
+        self.send(HostEvent::Mouse(now));
     }
 
     /// Resize the grid, bump the generation, then resize the pty the child

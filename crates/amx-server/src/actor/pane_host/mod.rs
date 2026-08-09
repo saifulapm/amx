@@ -41,6 +41,7 @@ mod export;
 mod feed;
 pub mod keys;
 mod mailbox;
+mod mouse;
 mod parser;
 mod probe;
 

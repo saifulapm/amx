@@ -120,6 +120,12 @@ pub struct Core {
     /// can answer synchronously: `head` is one past the newest committed row,
     /// `floor` the oldest still fetchable.
     history: HashMap<PaneId, (RowId, RowId)>,
+    /// What each pane's application asks its terminal to report about the
+    /// mouse, folded from its reports so `session.state` can answer
+    /// synchronously — the history window's shape, for the history window's
+    /// reason (`docs/notes/m4-mouse-path.md` §3). A pane with no entry asked
+    /// for nothing.
+    mouse: HashMap<PaneId, amx_proto::control::session::MouseMode>,
     /// Each tracked pane's fused agent status, mirrored here by `AgentHub`.
     ///
     /// The slow read model of `docs/08-m2-plan.md` §3. `session.state`, the
@@ -196,6 +202,7 @@ impl Core {
             panes: HashMap::new(),
             draining: Vec::new(),
             history: HashMap::new(),
+            mouse: HashMap::new(),
             agent_status: HashMap::new(),
             attention: Vec::new(),
             agent: None,

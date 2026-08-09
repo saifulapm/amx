@@ -48,6 +48,7 @@ use std::time::{Duration, Instant};
 
 use amx_core::platform::{ProcessId, WinSize};
 use amx_core::{PaneId, RowId, RowRange};
+use amx_proto::control::session::MouseMode;
 use amx_vt::{Effects, RenderState, Snapshots, Terminal};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::warn;
@@ -108,6 +109,12 @@ pub(super) struct Parser {
     /// The encoder and buffer driven input is built with (04 §8), idle until
     /// something drives this pane.
     driver: Driver,
+    /// What the application last asked its terminal to report about the mouse
+    /// (`super::mouse`). Held so the observation after each parse can report a
+    /// *change* rather than a value: a pane painting at full rate would
+    /// otherwise put a message on the event channel per parsed chunk for a fact
+    /// that moves once in a session.
+    mouse: Option<MouseMode>,
 }
 
 mod frames;
@@ -167,6 +174,7 @@ impl Parser {
             found: Vec::new(),
             transfers: VecDeque::new(),
             driver: Driver::default(),
+            mouse: None,
         };
         if let Some(seed) = seed {
             parser.adopt(&seed);
@@ -204,6 +212,13 @@ impl Parser {
         self.history = HistoryTracker::resume(seed.size.cols, seed.size.rows, seed.head, floor);
         self.write_quietly(&seed.screen);
         self.write_quietly(&seed.modes);
+        // The carried modes are where an inherited pane's mouse reporting comes
+        // back (`?1000`, `?1002`, `?1003`, `?1006` are all in `CARRIED_MODES`),
+        // and the writes above are `write_quietly`, which drains no effects. So
+        // the observation is made here explicitly: without it a pane that
+        // crossed an upgrade with the mouse enabled would read as disabled
+        // until it next printed something.
+        self.observe_mouse();
         // Publish rather than wait for a frame boundary: an inherited pane may
         // produce no output at all for minutes, and the first reader must not
         // see an empty grid until it does. `track_history` is deliberately not

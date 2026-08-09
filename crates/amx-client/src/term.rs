@@ -8,6 +8,14 @@
 //! `restore()` call from [`crate::app`]'s `SIGTERM` arm before it returns,
 //! since a signal is not unwinding and nothing drops on its own until control
 //! actually leaves the scope that owns the guard.
+//!
+//! Mouse tracking rides the same seam and is off unless asked for
+//! ([`TerminalGuard::request_mouse`]). "The way it found it" is meant
+//! literally there: the guard resets the two modes it set and no others, so a
+//! mode the terminal had already chosen — `?1007`, alternate scroll, set by
+//! default in both terminals X01 measured — survives amx rather than being
+//! cleared by a client tidying up after itself
+//! (`docs/notes/m4-mouse-path.md` F-4).
 
 use std::fmt;
 use std::io::{self, Write};
@@ -25,6 +33,35 @@ pub const ALT_SCREEN_ENTER: &[u8] = b"\x1b[?1049h\x1b[?25l";
 /// The exact reverse of [`ALT_SCREEN_ENTER`], written in the opposite order:
 /// the cursor is shown before the screen it was hidden on goes away.
 pub const ALT_SCREEN_LEAVE: &[u8] = b"\x1b[?25h\x1b[?1049l";
+
+/// Bytes that ask the host terminal to report mouse events (D14, off by
+/// default — see [`TerminalGuard::request_mouse`]).
+///
+/// Exactly these two modes, in this order, and no others. `?1006` selects the
+/// SGR encoding `crate::input`'s scanner recognises and `?1000` asks for press
+/// and release; that pair, `1006` first, is what every installed terminal's own
+/// terminfo entry names as the enable string (`XM=\E[?1006;1000%?…`, X01 §2.1).
+///
+/// **Never `?1002`.** It is motion-while-pressed, which amx has no use for, and
+/// a terminal's mouse event mode is one enum rather than a set of flags — X01
+/// asked for `1000` and `1002` together and watched `1000` come back *reset*
+/// (§2.2, and `vendor/libghostty-vt/src/terminal/mouse.zig:7-13` spells the
+/// same exclusivity out).
+///
+/// **Never `?1007`.** Alternate scroll is *already set* in both terminals X01
+/// measured, before amx asks for anything, and a client that resets every mode
+/// it wrote would clear a mode the user's terminal had chosen for itself (X01
+/// F-4). This pair is the whole of what amx touches, in both directions, which
+/// is what makes "leaving amx leaves the terminal as it was found" true rather
+/// than aspirational.
+pub const MOUSE_TRACK_ENTER: &[u8] = b"\x1b[?1006h\x1b[?1000h";
+
+/// Bytes that stop mouse reporting.
+///
+/// The reverse of [`MOUSE_TRACK_ENTER`] in the opposite order: tracking stops
+/// before the encoding it was reporting in goes away, so no report can be
+/// emitted in an encoding nothing is still asking for.
+pub const MOUSE_TRACK_LEAVE: &[u8] = b"\x1b[?1000l\x1b[?1006l";
 
 /// A terminal operation on the controlling tty failed.
 #[derive(Debug, Error)]
@@ -110,6 +147,10 @@ pub struct TerminalGuard<Fd: AsFd, W: Write> {
     out: W,
     saved: Termios,
     active: bool,
+    /// Whether this guard asked for mouse tracking, and therefore owes the
+    /// terminal the reset. Nothing else is tracked because nothing else is
+    /// touched: restoring only what was actually set is the whole of X01's F-4.
+    mouse: bool,
 }
 
 impl<Fd: AsFd, W: Write> TerminalGuard<Fd, W> {
@@ -128,12 +169,47 @@ impl<Fd: AsFd, W: Write> TerminalGuard<Fd, W> {
             out,
             saved,
             active: true,
+            mouse: false,
         })
     }
 
     /// The terminal's current size.
     pub fn size(&self) -> Result<TermSize, TermError> {
         window_size(self.fd.as_fd())
+    }
+
+    /// Ask the host terminal for SGR mouse reporting (D14's wheel exception,
+    /// and D9's forwarding).
+    ///
+    /// **Not called unless the user turned it on.** X01's outcome (b): asking
+    /// costs the user their terminal's own selection — with an application
+    /// holding the mouse, an ordinary drag-select becomes shift-drag in both
+    /// terminals the spike measured, documented in each one's manual
+    /// (foot's `selection-override-modifiers`, alacritty's `Shift`
+    /// suppression) — and the cost is paid all the time rather than where it
+    /// buys something, because the wheel exception exists precisely for panes
+    /// that did *not* ask for the mouse and so cannot be scoped to the panes
+    /// that did. `[client] mouse` therefore defaults off and the phone profile
+    /// is where it is turned on: the people who need touch-scroll are the
+    /// people not selecting text with a mouse.
+    ///
+    /// Idempotent, and paired with [`Self::restore`] on all three paths the
+    /// guard already covers — `Drop`, a panic unwind, and the explicit
+    /// `restore()` the `SIGTERM` arm makes — which is what keeps the release
+    /// a property of one seam instead of four call sites.
+    pub fn request_mouse(&mut self) {
+        if self.mouse || !self.active {
+            return;
+        }
+        let _ = self.out.write_all(MOUSE_TRACK_ENTER);
+        let _ = self.out.flush();
+        self.mouse = true;
+    }
+
+    /// Whether this guard is currently holding the terminal's mouse.
+    #[must_use]
+    pub const fn mouse_requested(&self) -> bool {
+        self.mouse
     }
 
     /// Leave the alternate screen and restore the saved attributes.
@@ -146,6 +222,12 @@ impl<Fd: AsFd, W: Write> TerminalGuard<Fd, W> {
     pub fn restore(&mut self) {
         if !self.active {
             return;
+        }
+        // Before the alt screen goes, and only if this guard asked: the reverse
+        // of the order they were written in, and nothing the guard did not set.
+        if self.mouse {
+            let _ = self.out.write_all(MOUSE_TRACK_LEAVE);
+            self.mouse = false;
         }
         let _ = self.out.write_all(ALT_SCREEN_LEAVE);
         let _ = self.out.flush();
@@ -164,6 +246,7 @@ impl<Fd: AsFd, W: Write> fmt::Debug for TerminalGuard<Fd, W> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TerminalGuard")
             .field("active", &self.active)
+            .field("mouse", &self.mouse)
             .finish_non_exhaustive()
     }
 }
