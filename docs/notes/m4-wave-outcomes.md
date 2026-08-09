@@ -948,3 +948,116 @@ from 500 lines to 511 for an eleven-line rig method (`next_attention_in`) and a
 second workspace id; splitting a shared rig to absorb eleven lines is the churn
 X02 declined to make for the same reason, so it was left at 511 and is recorded
 here rather than silently.
+---
+## X10 — `agent.list` on the server
+
+### The measurement the entry asks for
+
+X00's baseline priced the surface this replaces at **161 ms** — one
+`session.state` plus one `pane.read` per pane, the only way to assemble D15's
+table before the method existed (m4-live-smoke §1.4). Measured the same way, on
+the same instrument (the real binary, the real socket, one CLI invocation per
+call, a wall clock around each), at 25 agents across 5 workspaces with 5
+blocked, root shells closed so the session is exactly the 25 panes:
+
+```
+session.state x7:  15 14 17 15 15 14 15 ms
+agent.next   x3:   8 9 6 ms
+agent.list   x7:   14 16 14 12 14 12 13 ms
+agent.list scoped: 10 ms
+session.state + 25 pane.read (the shape it replaces): 265 ms
+```
+
+**`agent.list` costs what `session.state` costs, and one nineteenth of what the
+hand-assembled table costs.** The absolute figures run about twice X00's
+because this box was busier than that one; the ratio is the load-invariant
+statement and it matches — the baseline's own `161 / 8` is the same twenty.
+A second run under heavier load read `23–35 ms` for `session.state`, `21–28 ms`
+for `agent.list` and `482 ms` for the assembled table: every number moved and
+the shape did not.
+
+The same run checked the two things a number cannot: all 25 `last_line` strings
+were byte-identical to the bottom non-empty row `pane.read` served for the same
+pane, and `agent.list`'s `attention` was the same list in the same order as
+`session.state`'s. The queue head's `now − since` read 620 ms, against a block
+submitted about that long before.
+
+**No timing assertion landed in the suite.** A wall-clock bound is the shape
+X04 spent a task removing from four tests, and this machine reproduces why —
+the same call read 12 ms and 35 ms an hour apart. What landed instead is the
+structural pin: `the_whole_reply_is_answered_by_a_core_with_no_runtime_under_it`
+drives a `Core` with no Tokio runtime, no pane actors and no hub, and gets a
+complete reply. `Core::absorb` cannot await, so a handler that asked a pane or
+a sibling for anything could not be written there at all — which is D-M4-2's
+claim stated as something that either passes or does not compile.
+
+### Divergences from §5
+
+**An unknown `workspace` filter is refused, not answered with an empty list.**
+Neither the §5 entry nor `ListParams`' doc comment decides this. It is refused
+with `INVALID_PARAMS`, by the same `Core::no_such_workspace` every other
+`workspace` parameter uses, because "that project is not in this session" and
+"that project has no agents" are different facts and a caller holding a stale
+id is entitled to learn which one it holds. **X16** resolves `--workspace api`
+client-side against `session.state` (X02's note), so this is the answer a
+CLI whose resolution went stale between two calls will see, and re-resolving is
+the right response to it.
+
+**Two test files outside the entry's list, both of which name X10 in their own
+prose.** The §5 entry scopes X10 to `actor/core/agents.rs`,
+`dispatch/agent.rs` and server tests, and §6 gives `tests/hygiene.rs` to X00
+from wave 2 onward and `tests/skew.rs` to X02. But wiring the row makes both
+files fail, and both say so where they are written:
+
+- `tests/hygiene/ledgers.rs`'s `SEAM_LEDGER` doc says "X10 replaces the arm and
+  deletes the helper, this row and the exemption together", and its second
+  assertion fails the moment the helper goes. The ledger is closed: the
+  constant, the exemption branch and the reverse-direction loop are gone, and
+  the ban is now unconditional. `FIELD_LEDGER` is untouched — its six rows each
+  name readers X10 is not (X11, X14, X16), so none of them is struck yet.
+- `tests/skew/rows.rs`'s `method_golden_and_skew_arm_cover_agent_list` says "X10
+  wires it, and when it does this test flips". It flipped, in the shape W06 used
+  for `session.handoff`: the seam code became forbidden, and the arm now asserts
+  both directions of the row — the bogus-workspace sample is refused by name,
+  and an unscoped call on the same connection answers with a list carrying its
+  `seq` and the server's `now`.
+
+**X00** owns the register and both files; this is named rather than assumed.
+
+**`dispatch/agent/` needed nothing, as X02 said.** The arm was finished in wave
+1 and the refusal lived one file over, in `actor/core/route.rs`. That file is
+therefore what X10 edited, and X02's hand-off is closed exactly as written.
+
+**The suite landed as two files.** `crates/amx-server/tests/agent_list.rs` came
+to 513 lines — over the soft budget on the day it was written, which R-M1-3 says
+not to do — so the round-trip pin and the `Core`-without-a-runtime helpers went
+to `agent_list/direct.rs` before it landed. The split is by responsibility and
+not by size: everything in the parent drives the real socket path, and nothing
+in the child does.
+
+### Notes for the tasks that read this reply
+
+**Row order is `session.state`'s pane order — by short number, creation
+order.** Every display order D15 asks for (blocked-oldest-first, then working,
+then idle; grouped by workspace or by state) is a re-sort of this one, done
+where the grouping is. The server does not sort for a renderer, because two
+renderers want two orders and the queue is the only order that is a fact.
+
+**`last_line` is the empty string for a pane with no live process behind it**,
+as well as for a pane whose screen is blank. A restored pane whose process has
+not started has no screen; saying so with the same bytes a blank screen says is
+honest, since neither has a bottom line. Nothing distinguishes the two on the
+wire and nothing should — a renderer draws an empty cell either way.
+
+**`reason` is whatever tier answered, and both tiers were observed.** In the
+25-agent run the blocked panes carried `PermissionRequest` — the hook event's
+name, because the stand-in agent emits hooks and tier 1 asserted the entry —
+while the same screen under a screen-only agent carries `permission_dialog`,
+the manifest rule's name. Both are shipped detector identifiers, exactly as
+D-M4-3 and X06's note say. A renderer must not translate either.
+
+**`wall_clock` is a deliberate second copy.** The hub has one
+(`actor/agent_hub/commit.rs`) and it returns an `Option`, because a *stamp* may
+honestly be missing; `ListReply::now` owes an answer, so this one has a floor.
+Widening a private function in an actor X06 owns for a five-line body was the
+worse trade. If a third caller appears, `amx-core` is where it belongs.
