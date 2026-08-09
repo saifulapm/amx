@@ -16,7 +16,7 @@ mod grid;
 
 use std::collections::HashMap;
 
-use amx_core::agent::{AgentKind, AgentSnapshot, AgentState, StatusCause};
+use amx_core::agent::{AgentKind, AgentSnapshot, AgentState, EpochMillis, StatusCause};
 use amx_core::{Layout, PaneId, Rect, Seq, WorkspaceId};
 use amx_proto::control::session::RestoreSummary;
 
@@ -119,6 +119,19 @@ impl ClientModel {
         self.workspaces.keys().copied()
     }
 
+    /// One mirrored workspace, label and layout together.
+    ///
+    /// Beside [`Self::workspace_label`] rather than replacing it: the label
+    /// alone is what the picker wants and a clone is nothing on a keystroke,
+    /// while the status line's per-workspace breakdown asks a question about
+    /// *membership* — which workspace holds the pane at the head of the
+    /// attention queue — on every repaint, and cloning a label to answer it
+    /// would allocate on the frame path.
+    #[must_use]
+    pub fn workspace(&self, id: WorkspaceId) -> Option<&WorkspaceModel> {
+        self.workspaces.get(&id)
+    }
+
     /// The label of a mirrored workspace, if it has one.
     #[must_use]
     pub fn workspace_label(&self, id: WorkspaceId) -> Option<String> {
@@ -192,6 +205,16 @@ impl ClientModel {
         self.agents.get(&pane)
     }
 
+    /// Every tracked pane's agent status, with the pane it belongs to.
+    ///
+    /// In no particular order, like [`Self::panes`]: the caller that walks them
+    /// all is the status line reading the wall-clock stamps every snapshot
+    /// carries, and the newest stamp in a set does not depend on the order the
+    /// set is read in.
+    pub fn agents(&self) -> impl Iterator<Item = (PaneId, &AgentSnapshot)> {
+        self.agents.iter().map(|(&pane, agent)| (pane, agent))
+    }
+
     /// Fold an `agent_status` event: the pane moved to `state` at `seq`.
     ///
     /// Returns whether anything changed. The sequence is the guard that makes
@@ -200,6 +223,16 @@ impl ClientModel {
     /// not be applied a second time on top of a newer one. An event's bus
     /// sequence *is* the transition's sequence — the hub publishes at the
     /// transition — so comparing the two is comparing like with like.
+    ///
+    /// A real move of the state drops [`AgentSnapshot::reason`] and
+    /// [`AgentSnapshot::since`]. Both describe *one edge* — the name of what
+    /// asserted the state and the wall clock it was entered at — and
+    /// `agent_status` carries neither, so keeping them would leave the previous
+    /// state's stamp attached to the new one and a status line would render an
+    /// age for a wait that had just ended. Absent is what the two fields
+    /// already mean when nothing named the transition; the identity block on
+    /// the attention events ([`Self::apply_attention_identity`]) and the next
+    /// `session.state` fold are what fill them again.
     pub fn apply_agent_status(
         &mut self,
         pane: PaneId,
@@ -214,11 +247,55 @@ impl ClientModel {
         if entry.transition_seq > seq {
             return false;
         }
+        if entry.state != state {
+            entry.reason = None;
+            entry.since = None;
+        }
         let unchanged = entry.state == state && entry.cause == cause;
         entry.state = state;
         entry.cause = cause;
         entry.transition_seq = seq;
         !unchanged
+    }
+
+    /// Fold the identity block an attention event carries: what asserted the
+    /// pane's current state, and when it entered it.
+    ///
+    /// The two fields the hub puts on `attention_enqueued` and
+    /// `attention_dequeued` so a consumer needs no follow-up query
+    /// (`docs/11-m4-plan.md` D-M4-6). Both describe the state the pane is in
+    /// *now* — on a dequeue that is the state it left the queue in, not the
+    /// block it left — so folding them is how a live client learns a wall-clock
+    /// stamp for a transition it watched happen, without waiting for the next
+    /// `session.state`.
+    ///
+    /// Guarded by the same sequence rule as [`Self::apply_agent_status`], for
+    /// the same reason: a replayed enqueue after a gap must not put an older
+    /// stamp on top of a newer one. Returns whether anything changed.
+    pub fn apply_attention_identity(
+        &mut self,
+        pane: PaneId,
+        reason: Option<&str>,
+        since: Option<EpochMillis>,
+        seq: Seq,
+    ) -> bool {
+        let Some(entry) = self.agents.get_mut(&pane) else {
+            // No mirrored status to stamp: the pane's own `agent_status` has
+            // not been folded yet, and the snapshot it creates carries the
+            // state this stamp would describe. The next one, or the next
+            // resync, brings both together.
+            return false;
+        };
+        if entry.transition_seq > seq {
+            return false;
+        }
+        let unchanged = entry.reason.as_deref() == reason && entry.since == since;
+        if unchanged {
+            return false;
+        }
+        entry.reason = reason.map(str::to_owned);
+        entry.since = since;
+        true
     }
 
     /// Fold an `agent_identified` event: the pane is running `kind`.
