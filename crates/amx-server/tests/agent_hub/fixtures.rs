@@ -323,6 +323,19 @@ impl Rig {
             .expect("a report is never an error")
     }
 
+    /// Ask why a pane is in the state it is in.
+    pub async fn explain(&self, pane: PaneId) -> proto::ExplainReply {
+        let (reply, answer) = oneshot::channel();
+        self.agent
+            .send(AgentCommand::Explain { pane, reply })
+            .await
+            .expect("the hub is running");
+        answer
+            .await
+            .expect("the hub answers")
+            .expect("the pane is tracked")
+    }
+
     /// Ask for the head of the attention queue.
     pub async fn next_attention(&self) -> proto::NextReply {
         self.next_attention_in(None).await

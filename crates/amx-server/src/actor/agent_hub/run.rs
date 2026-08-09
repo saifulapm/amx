@@ -254,6 +254,17 @@ impl AgentHub {
             if let Some(tracked) = self.panes.get_mut(&pane) {
                 tracked.deadlines.remove(&deadline);
             }
+            // Tier 2, asked on the way out. The staleness exit is for a pane
+            // nothing can see, and whether this is one of those is a question
+            // only an evaluation can answer: the last one ran when the screen
+            // last changed, and for a dialog waiting on a human that was before
+            // the block. An evaluation that settles it here — by corroborating
+            // the state, or by contradicting it outright with a `visible_idle`
+            // rule — is the deadline's answer, and it is a better one than the
+            // clock's because it names the rule that gave it.
+            if deadline == Deadline::Staleness {
+                self.corroborate(pane, now);
+            }
             let directives = self.apply(pane, Input::Deadline(deadline));
             self.absorb(pane, &directives);
         }
