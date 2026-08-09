@@ -195,6 +195,13 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// it. There is no set-focus-to-this-pane op on the table — `pane.focus`
     /// speaks directions — so the pane half stays local, exactly as a numeric
     /// jump's does.
+    ///
+    /// Staying local is a claim and not a hope: the switch this makes is
+    /// answered with the pane that workspace was already remembering, so the
+    /// jump is recorded ([`App::note_jump`](super::App::note_jump)) and the fold
+    /// that would otherwise overwrite it asks
+    /// [`App::jump_outranks`](super::App::jump_outranks) first. Before the local
+    /// focus moves, because what is recorded is the focus being replaced.
     fn agents_enter(&mut self, sink: &mut impl FnMut(InputEvent<'_>)) {
         match self.agents.visible.get(self.agents.at).copied() {
             Some(rows::Line::Collapsed { group, .. }) => {
@@ -211,6 +218,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 self.agents.open = false;
                 self.agents.peek = None;
                 self.model.focus_workspace(workspace);
+                self.note_jump(workspace, pane);
                 self.focus.insert(workspace, pane);
                 sink(InputEvent::Call(Call::WorkspaceSwitch(
                     workspace::SwitchParams { workspace },

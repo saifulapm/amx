@@ -72,8 +72,13 @@
 //! for the hard limit): the state and its lifecycle here, what one key press
 //! does to it in [`keys`], the ordering and the collapse in [`rows`], the paint
 //! and the reserved region in [`draw`].
+//!
+//! [`jump`] came out of it when the M4 exit smoke found that `Enter` landed on
+//! the wrong pane: which of two disagreeing focuses wins is a rule of its own,
+//! and it is read with `app/events.rs` rather than with the board.
 
 mod draw;
+mod jump;
 mod keys;
 mod rows;
 
@@ -87,6 +92,7 @@ use amx_core::{Effect, PaneId};
 use amx_proto::control::Method;
 use amx_proto::control::agent::{ListParams, ListReply};
 
+use self::jump::Jump;
 use self::keys::Key;
 use super::status::ServerClock;
 use super::{App, AppError};
@@ -179,6 +185,9 @@ pub struct AgentsUi {
     /// anything else disarms, which is what makes "press twice" a confirmation
     /// without a dialog to confirm in.
     armed: Option<PaneId>,
+    /// The jump `Enter` last made, while it still outranks what the session
+    /// says about the workspace it landed in ([`jump`]).
+    jumped: Option<Jump>,
     /// The pane the board wants peeked, if `Space` has asked for one.
     ///
     /// An intent and not a stream: the key table is synchronous and opening a
@@ -241,6 +250,9 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         self.agents.peek = None;
         self.agents.entry = None;
         self.agents.armed = None;
+        // The jump named a pane of a session that is gone; a claim against a
+        // dead id could only refuse the successor's own focus.
+        self.agents.jumped = None;
         self.agents.rows.clear();
         self.agents.visible.clear();
         self.agents.queued = 0;
