@@ -28,7 +28,7 @@
 //!   (`amx-proto/src/stream/mod.rs`). The server's half is already built and
 //!   already pinned — `crates/amx-server/tests/flow_control.rs`'s
 //!   `a_paused_stream_with_pending_damage_sleeps_until_a_flow_signal` and the
-//!   pause arm of `two_clients_at_different_speeds_each_stay_consistent`. A
+//!   pause arm of `resync_request_emits_a_keyframe`. A
 //!   re-peek of the same pane resumes the stream it already has rather than
 //!   binding a second one, so the streams this connection holds are bounded by
 //!   the panes it has ever peeked and not by how often the selection moved.
