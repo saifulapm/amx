@@ -22,9 +22,10 @@
 //!   (`ctrl+a` as shipped) enters prefix.
 //! - **prefix** (one-shot): `w` enters navigate, a second press of the prefix
 //!   sends the literal byte to the pane, `x`/`v` split, `z` zooms, `d`
-//!   detaches, `p` opens the picker, `a` jumps to the next agent waiting on
-//!   the user (04 §7 lists `next-attention` among the prefix one-shots; 03:
-//!   "One key jumps to the next blocked agent"); any other key is swallowed
+//!   detaches, `p` opens the picker, `g` opens the agents view, `a` jumps to
+//!   the next agent waiting on the user (04 §7 lists `next-attention` among the
+//!   prefix one-shots; 03: "One key jumps to the next blocked agent") and `A`
+//!   does the same inside the shown workspace alone; any other key is swallowed
 //!   and the mode falls back to terminal. Closing a pane is navigate's `d`,
 //!   deliberately not prefix's: the detach verb owns the prefix chord (04 §7
 //!   lists detach among the prefix one-shots) and a destroy verb must not sit
@@ -145,12 +146,22 @@ pub enum Action {
     Detach,
     /// Prefix `p`: open the picker.
     Picker,
+    /// Prefix `g`: open the agents view (D15 surface 2).
+    Agents,
     /// Prefix `a`: focus the head of the attention queue.
     ///
     /// One key for "handle the next one" is the point of the queue existing at
     /// all (03), so this needs no focused pane and no non-empty workspace: the
     /// server holds the queue and answers an empty one honestly.
     NextAttention,
+    /// Prefix `A`: focus the oldest blocked agent in the shown workspace.
+    ///
+    /// [`Self::NextAttention`] scoped to one project (D15). Beside it rather
+    /// than a flag on it because they are two keys, and a client with no
+    /// workspace focused sends the unscoped call — which the server already
+    /// reads as "the whole queue", so the scope narrows the answer without ever
+    /// making the key do nothing.
+    AttentionHere,
     /// A digit: jump focus to the n-th pane (1-based, layout order).
     Jump(u8),
 }
@@ -344,7 +355,9 @@ impl Input {
             PrefixAction::Zoom => out.push(Action::Zoom),
             PrefixAction::Detach => out.push(Action::Detach),
             PrefixAction::Picker => out.push(Action::Picker),
+            PrefixAction::Agents => out.push(Action::Agents),
             PrefixAction::NextAttention => out.push(Action::NextAttention),
+            PrefixAction::AttentionHere => out.push(Action::AttentionHere),
         }
         Mode::Terminal
     }

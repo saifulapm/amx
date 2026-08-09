@@ -311,7 +311,7 @@ fn holds(model: &ClientModel, workspace: WorkspaceId, pane: PaneId) -> bool {
 }
 
 /// Write `label`, or a prefix of the id of whatever nobody has named.
-fn push_name(out: &mut String, label: Option<&str>, id: impl std::fmt::Display) {
+pub(in crate::app) fn push_name(out: &mut String, label: Option<&str>, id: impl std::fmt::Display) {
     if let Some(label) = label
         && !label.is_empty()
     {

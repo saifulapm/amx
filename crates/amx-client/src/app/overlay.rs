@@ -321,6 +321,10 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
 
     /// Draw whichever overlay is active. Runs after the pane grids, before
     /// the status line, so overlays paint over content but never chrome.
+    ///
+    /// The agents view is last of the three because it is the only full-screen
+    /// one (`super::agents`), and because the region it reserves for X15's peek
+    /// is meant to be overdrawn by whatever paints after this.
     pub(super) fn draw_overlays(&mut self) {
         if let Some(ui) = self.copy.take() {
             self.draw_copy(&ui);
@@ -330,6 +334,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             self.draw_picker(&ui);
             self.picker = Some(ui);
         }
+        self.draw_agents();
     }
 
     /// Copy mode fills the focused pane's interior with cached rows.

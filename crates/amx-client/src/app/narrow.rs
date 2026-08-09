@@ -140,7 +140,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// to: the tiled one is `super::status::place_cursor`, and the two differ by
     /// exactly the border this projection does not draw.
     pub(super) fn place_cursor_full_bleed(&mut self, pane: PaneId) {
-        if self.picker.is_some() || self.copy.is_some() {
+        if self.overlay_open() {
             self.writer.set_cursor_visible(false);
             return;
         }

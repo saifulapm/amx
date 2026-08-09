@@ -138,9 +138,12 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 Lost(crate::net::NetError),
                 Winch,
                 Settle,
+                /// The agents view's refresh window elapsed (D15, R-M4-7).
+                Agents,
                 Gone,
             }
             let resizing = self.pending_resize.is_some();
+            let boarding = self.agents_open();
             // Every arm resolves to a `Wake` without touching `self` beyond
             // the one disjoint field its future borrows, so the handling
             // below runs with the borrows already released.
@@ -166,6 +169,12 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                     None => Wake::Gone,
                 },
                 () = tokio::time::sleep(RESIZE_DEBOUNCE), if resizing => Wake::Settle,
+                // The one clock in this loop. It runs only while the board is
+                // up, so a client that never opens it wakes exactly as often as
+                // it did before — and while it is up, the detail lines and the
+                // ages move on a session where nothing else is happening, which
+                // no other wake would give them.
+                () = tokio::time::sleep(super::AGENTS_REFRESH), if boarding => Wake::Agents,
             };
 
             // The whole round is fallible in one place so a transport failure
@@ -199,6 +208,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                         self.note_resize(size);
                     }
                     Wake::Settle => self.settle_resize_wired().await?,
+                    Wake::Agents => self.refresh_agents().await?,
                     Wake::Gone => return Ok(Flow::Detach),
                 }
 
@@ -294,6 +304,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// Feed stdin bytes through the modal layer and act on every consequence.
     pub async fn handle_bytes(&mut self, bytes: &[u8]) -> Result<Flow, AppError> {
         let picker_was_open = self.picker_open();
+        let board_was_open = self.agents_open();
         let mut events: Vec<OwnedEvent> = Vec::new();
         self.handle_input(bytes, &mut |event| {
             events.push(match event {
@@ -314,6 +325,19 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             let effect = self.open_picker();
             self.absorb(effect);
         }
+
+        // A board that just opened is drawn from the last reply it held and
+        // corrected here, rather than waiting up to a quarter second for its own
+        // window to come round. `refresh_agents` is a no-op inside the window,
+        // so this cannot make the second call R-M4-7 forbids.
+        if !board_was_open && self.agents_open() {
+            self.refresh_agents().await?;
+        }
+        // Seam 5's client half, after every read: the board's key table records
+        // which pane it wants peeked and this is what binds or releases the
+        // stream (`super::agents`). A read that touched neither costs one
+        // comparison.
+        self.settle_peek().await?;
 
         let mut resync = false;
         for event in events {

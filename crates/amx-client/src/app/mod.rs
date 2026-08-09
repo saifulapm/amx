@@ -16,9 +16,9 @@
 //! model, [`paint`] is whether a frame is owed and what one draws, [`narrow`] is
 //! D14's small-screen projection, [`reconnect`] is what the loop does when that
 //! socket ends under it, [`overlay`] is the picker and copy-mode surfaces drawn
-//! over the panes, [`peek`] is D15's read-only look at a pane this terminal is
-//! not drawing, and [`status`] is the status line and the cursor a repaint
-//! finishes with.
+//! over the panes, [`agents`] is D15's board over every tracked agent, [`peek`]
+//! is its read-only look at a pane this terminal is not drawing, and [`status`]
+//! is the status line and the cursor a repaint finishes with.
 //!
 //! # Dirtiness is a value (D2)
 //!
@@ -32,6 +32,7 @@
 //! drawing repainted it anyway. [`App::frame_due`] is what the fold buys.
 
 mod actions;
+mod agents;
 mod binds;
 mod events;
 mod narrow;
@@ -56,6 +57,7 @@ use crate::net::{NetError, Session};
 use crate::render::FrameWriter;
 use crate::term::{TermError, TermSize, TerminalGuard};
 
+pub use agents::{AGENTS_REFRESH, AgentsUi, Grouping};
 pub use events::Folded;
 pub use narrow::Projection;
 pub use overlay::{CopyUi, PickTarget, PickerUi};
@@ -149,6 +151,9 @@ pub struct App<Fd: AsFd, W: Write> {
     /// bound", and releasing a stream turns on the different question of whether
     /// this surface is the one that opened it ([`peek`]'s header).
     peek_streams: HashMap<PaneId, peek::PeekStream>,
+    /// D15's agents view: its rows while it is open, and the filter, grouping
+    /// and selection it keeps while it is not ([`agents`]).
+    agents: AgentsUi,
     /// Bytes owed to the client's own terminal outside the frame: OSC 52 from
     /// copy mode, OSC 9 from an attention enqueue ([`events`]).
     emit: Vec<u8>,
@@ -250,6 +255,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             copy: None,
             peeked: None,
             peek_streams: HashMap::new(),
+            agents: AgentsUi::default(),
             emit: Vec::new(),
             events: Vec::new(),
             frame: Vec::new(),
@@ -300,6 +306,9 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         self.picker = None;
         self.copy = None;
         self.forget_peek();
+        // The rows named panes the predecessor minted; the grouping and the
+        // filter are this terminal's own and outlive any server (04 §6).
+        self.close_agents();
         self.mode = Mode::default();
         self.pane_rects.clear();
         self.wanted_history.clear();
@@ -369,6 +378,11 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// focus has moved — the server's focus stays canonical and the echo
     /// keeps the two from silently diverging.
     pub fn handle_input(&mut self, bytes: &[u8], sink: &mut impl FnMut(InputEvent<'_>)) {
+        if self.agents_open() {
+            let effect = self.agents_input(bytes, sink);
+            self.absorb(effect);
+            return;
+        }
         if self.picker.is_some() {
             let effect = self.picker_input(bytes, sink);
             self.absorb(effect);

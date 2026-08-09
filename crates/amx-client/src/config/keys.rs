@@ -40,8 +40,17 @@ pub enum PrefixAction {
     Detach,
     /// Open the picker.
     Picker,
+    /// Open the agents view (D15 surface 2).
+    Agents,
     /// Focus the head of the attention queue.
     NextAttention,
+    /// Focus the oldest blocked agent in the workspace this client is showing.
+    ///
+    /// D15's scoped cycling: the queue itself stays global and block-time
+    /// ordered, and this narrows only which end of it is walked, so clearing one
+    /// project's queue never yanks focus into another. The server half is X17's;
+    /// the difference here is one `workspace` on the same call.
+    AttentionHere,
 }
 
 impl PrefixAction {
@@ -54,7 +63,9 @@ impl PrefixAction {
         Self::Zoom,
         Self::Detach,
         Self::Picker,
+        Self::Agents,
         Self::NextAttention,
+        Self::AttentionHere,
     ];
 
     /// The name a config file spells this action with.
@@ -68,7 +79,13 @@ impl PrefixAction {
             Self::Zoom => "zoom",
             Self::Detach => "detach",
             Self::Picker => "picker",
+            Self::Agents => "agents",
             Self::NextAttention => "next-attention",
+            // Not `next-attention-here`: `amx keys` pads its action column to
+            // the widest name, so a name longer than `split-horizontal` would
+            // put four columns of trailing space on every shipped table for the
+            // sake of one row.
+            Self::AttentionHere => "attention-here",
         }
     }
 
@@ -134,8 +151,15 @@ pub const SHIPPED_PREFIX: u8 = 0x01;
 
 /// The prefix table amx ships, in key order.
 const SHIPPED: &[(u8, PrefixAction)] = &[
+    // `A` is `a` with shift held, which is as neighbouring as a key gets: X17
+    // asked for the scoped cycle "on a key neighbouring the existing
+    // `prefix+a`", and one jumps to the head of the whole queue while the other
+    // jumps to the head of this project's.
+    (b'A', PrefixAction::AttentionHere),
     (b'a', PrefixAction::NextAttention),
     (b'd', PrefixAction::Detach),
+    // `g` for the agents board: `a` and `A` jump, `g` surveys before jumping.
+    (b'g', PrefixAction::Agents),
     (b'p', PrefixAction::Picker),
     (b'v', PrefixAction::SplitVertical),
     (b'w', PrefixAction::Navigate),
