@@ -102,6 +102,30 @@ impl AgentHub {
         self.absorb(pane, &directives);
     }
 
+    /// Ask tier 2 about `pane` because its staleness deadline is firing.
+    ///
+    /// The one evaluation in this module that no damage asked for, and the
+    /// reason it is worth an exception: the deadline is about to decide whether
+    /// a held state survives, and the machine decides that from what tier 2 can
+    /// see (`fusion::STALENESS`). Every other evaluation is scheduled by a
+    /// screen *change*, which is exactly the thing a pane waiting on a human
+    /// stops producing — so without this, the answer the deadline consults
+    /// could be older than the block it is about, or absent entirely for a pane
+    /// whose manifest was bound after its last damage.
+    ///
+    /// It costs a manifest pass over a frame already in memory, into a
+    /// `ScreenBuf` this pane already owns: no I/O, no allocation, and only for
+    /// a pane actually holding a state.
+    pub(super) fn corroborate(&mut self, pane: PaneId, now: Instant) {
+        let held = self
+            .panes
+            .get(&pane)
+            .is_some_and(|tracked| tracked.tracker.state.is_held());
+        if held {
+            self.evaluate(pane, now);
+        }
+    }
+
     /// Evaluate every tracked pane that owes one at `now`.
     pub(super) fn evaluate_due(&mut self, now: Instant) {
         let due: Vec<PaneId> = self

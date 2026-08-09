@@ -15,7 +15,10 @@
 //!    *before* the dialog paints. What hooks get wrong is silence, never a lie.
 //! 3. **A held state is left only through an [`ExitAuthority`]**: three screen
 //!    verdicts agreeing against it, one `visible_idle` verdict, the staleness
-//!    deadline, or — for a [`CoverageClass::Full`] agent alone — a hook.
+//!    deadline, or — for a [`CoverageClass::Full`] agent alone — a hook. The
+//!    staleness one is narrower than the other three: it is the exit for a pane
+//!    *nobody can see*, and a pane tier 2 is reading is not one of those
+//!    ([`STALENESS`], and [`Sight`], which is what says which kind this is).
 //! 4. **Tier 3 never moves a held state and never contradicts an identified
 //!    agent.** It cannot spell `blocked` (04 §5) and it has no authority to
 //!    end a turn.
@@ -42,6 +45,27 @@ struct Pending {
     /// How many consecutive evaluations have asserted it, capped at
     /// [`CONFIRMATIONS`] — the next one commits.
     seen: u32,
+}
+
+/// What tier 2 can see of this pane, as of its last evaluation.
+///
+/// Written by every screen verdict and read by exactly one thing: the staleness
+/// deadline, which may not take a held state away from a screen somebody is
+/// reading. [`STALENESS`] carries the rule and the reasoning; this is the datum
+/// it turns on, and the reason it is a datum at all is that the machine has no
+/// way to look at a screen for itself — the hub evaluates and the machine
+/// decides, which is the same division deadlines already keep.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Sight {
+    /// No verdict has ever reached this tracker: no manifest is bound, or none
+    /// has run against this pane's screen. Nothing here will ever contradict a
+    /// held state, which is the pane 04 §5's clause (c) exists for.
+    Blind,
+    /// Tier 2 looked and had no opinion — nothing matched, or a
+    /// `skip_state_update` rule did. Not a verdict that a held state ended.
+    Silent,
+    /// Tier 2's last verdict asserted a state.
+    Asserted(AgentState),
 }
 
 /// Which deadlines the hub is holding a timer for on this pane's behalf.
@@ -132,6 +156,8 @@ pub struct Tracker {
     session_ref: Option<SessionRef>,
     /// A screen contradiction accumulating against a held state.
     pending: Option<Pending>,
+    /// What tier 2 last saw here, which is what the staleness exit consults.
+    sight: Sight,
     /// The timers the hub is holding for this pane.
     armed: Armed,
     /// Whether a [`Status`](Directive::Status) has ever been emitted, so the
@@ -155,6 +181,7 @@ impl Tracker {
             grace: IDENTITY_GRACE,
             session_ref: None,
             pending: None,
+            sight: Sight::Blind,
             armed: Armed {
                 confirmation: false,
                 staleness: false,
@@ -198,6 +225,13 @@ impl Tracker {
     /// the earlier value by the exporter. And no identity grace is armed: the
     /// grace exists so a booting TUI's splash is not read as evidence, and an
     /// inherited agent booted on somebody else's clock long ago.
+    ///
+    /// What is *not* carried is [`Sight`]: no evaluation has run in this
+    /// process, so tier 2 has seen nothing here yet and the successor says so
+    /// rather than inheriting the exporter's word for it. The screen is read
+    /// again on the first damage, and failing that by the staleness deadline
+    /// itself, which is the path that matters for a pane that crossed the swap
+    /// blocked on a dialog nobody has touched since.
     ///
     /// Returns the directives the hub owes the wheel — a held state still needs
     /// its staleness deadline, or a block that ends during the swap would be

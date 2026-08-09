@@ -38,6 +38,8 @@ mod facts;
 mod fixtures;
 #[path = "agent_hub/scope.rs"]
 mod scope;
+#[path = "agent_hub/staleness.rs"]
+mod staleness;
 #[path = "agent_hub/stamps.rs"]
 mod stamps;
 mod support;

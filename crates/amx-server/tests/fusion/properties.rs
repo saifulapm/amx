@@ -165,6 +165,49 @@ proptest! {
         }
     }
 
+    /// The staleness exit belongs to a pane nobody can see, over every
+    /// interleaving there is.
+    ///
+    /// The scenarios show the two shapes the M4 exit measured; this shows that
+    /// no order of hooks, verdicts, probes and fires can produce a third. The
+    /// replay tracks the one fact the rule turns on — has a verdict reached this
+    /// tracker under the rules it is running now — from outside the machine,
+    /// off the inputs and the two public fields that move it, so a machine that
+    /// started deciding on something else would fail here rather than pass by
+    /// agreeing with itself.
+    #[test]
+    fn staleness_only_demotes_a_pane_tier_2_has_never_read(
+        (mut tracker, _) in any_tracker(),
+        script in script(),
+    ) {
+        let mut read = false;
+        for input in script {
+            // Both read before the input, because both are what the machine
+            // saw when it decided: a verdict inside the startup grace is not
+            // evidence about anything, and the identity that will judge the
+            // *next* verdict is the one in place after this input.
+            let blind = tracker.is_armed(Deadline::IdentityGrace);
+            let kind = tracker.kind.clone();
+            let effects = tracker.apply(input.clone());
+            if matches!(input, Input::Screen(_)) && !blind {
+                read = true;
+            }
+            if tracker.kind != kind {
+                read = false;
+            }
+            for effect in &effects {
+                if let Directive::Status { cause: StatusCause::Staleness, from, to } = effect {
+                    prop_assert!(
+                        !read,
+                        "staleness took {:?} to {:?} on a pane tier 2 is reading",
+                        from,
+                        to,
+                    );
+                }
+            }
+        }
+    }
+
     /// 04 §5: "**Exits from working/blocked are confirmed**, not trusted."
     ///
     /// The rule as a property, over every class: a pane leaves `Working` or
