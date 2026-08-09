@@ -10,6 +10,7 @@
 
 use amx_core::platform::WinSize;
 use amx_core::{GridGeneration, InvalidationCause, RowHash, RowId, RowRange};
+use amx_proto::control::session::MouseMode;
 use amx_vt::SnapshotRef;
 use tokio::sync::oneshot;
 
@@ -128,6 +129,13 @@ pub(super) enum HostEvent {
         /// Oldest row still fetchable.
         oldest_row: RowId,
     },
+    /// The application changed what it asks its terminal to report about the
+    /// mouse — or asked for nothing, which is what `None` means.
+    ///
+    /// Sent only when the answer *moved*, so a pane producing output at full
+    /// rate does not put a message on this channel per parsed chunk. See
+    /// [`super::mouse`] for the read behind it.
+    Mouse(Option<MouseMode>),
     /// The child process ended.
     Exited(ChildExit),
 }

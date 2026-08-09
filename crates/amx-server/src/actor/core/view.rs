@@ -90,12 +90,12 @@ impl Core {
                     cols,
                     history_head: head,
                     history_floor: floor,
-                    // X13 owes this file the fold that fills it, from the mode
-                    // its parser thread reads off the pane's own terminal
-                    // (`docs/notes/m4-mouse-path.md` §3); the line rides X12's
-                    // commit, per `docs/11-m4-plan.md` §5. Absent means "do not
-                    // forward", which is what every pane means today.
-                    mouse: None,
+                    // What the pane's parser thread read off its own terminal,
+                    // folded here by `Core::handle_pane_report` so this reply
+                    // stays synchronous (`docs/notes/m4-mouse-path.md` §3).
+                    // Absent means the application asked for nothing, which a
+                    // client turns into "do not relay".
+                    mouse: self.mouse_of(pane),
                     // From the status summaries `AgentHub` mirrors into `Core`
                     // with `try_send` during normal operation
                     // (`docs/08-m2-plan.md` §3's second read model — the slower

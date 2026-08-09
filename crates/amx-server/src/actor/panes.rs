@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 
 use amx_core::{GridGeneration, InvalidationCause, RowHash, RowId, RowRange};
+use amx_proto::control::session::MouseMode;
 use amx_vt::SnapshotRef;
 use bytes::Bytes;
 use thiserror::Error;
@@ -146,6 +147,17 @@ pub enum PaneReport {
     },
     /// The application rang the bell.
     Bell,
+    /// What the application asks its terminal to report about the mouse
+    /// changed; `None` means it now asks for nothing.
+    ///
+    /// The exception that proves the rule above it: this is reported and *not*
+    /// published, where every other variant here is both. A mouse mode is not a
+    /// transition — nothing about the session moved, no client has to redraw,
+    /// and 04 §2 gives sequence numbers to transitions. What it is is a fact
+    /// `session.state` has to be able to answer synchronously, which is exactly
+    /// the case the fold beside it exists for (`docs/notes/m4-mouse-path.md`
+    /// §3).
+    Mouse(Option<MouseMode>),
     /// The child process ended.
     Exited {
         /// Exit status, or `None` if it was signalled.

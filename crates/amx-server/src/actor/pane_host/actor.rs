@@ -287,6 +287,11 @@ impl Actor {
                 });
             }
             HostEvent::Bell => self.report(PaneReport::Bell).await,
+            // Reported and not published, unlike everything below it. The
+            // vocabulary of the bus is transitions; a pane's mouse mode is a
+            // fact `session.state` has to answer synchronously, and `Core`'s
+            // fold is where such facts live (`docs/notes/m4-mouse-path.md` §3).
+            HostEvent::Mouse(mode) => self.report(PaneReport::Mouse(mode)).await,
             HostEvent::Resized {
                 rows,
                 cols,

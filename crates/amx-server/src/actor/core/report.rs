@@ -33,6 +33,7 @@
 //! than being asked for it on the way down (`docs/08-m2-plan.md` §3, R-M1-2).
 
 use amx_core::{Effect, Event, PaneId, RowId};
+use amx_proto::control::session::MouseMode;
 
 use super::Core;
 use crate::actor::{AgentCall, AgentCommand, PaneHost, PaneReport};
@@ -46,6 +47,16 @@ impl Core {
             .entry(pane)
             .or_insert((RowId::from_raw(0), RowId::from_raw(0)));
         (&mut entry.0, &mut entry.1)
+    }
+
+    /// What `pane`'s application asks its terminal to report about the mouse,
+    /// as the pane last told this actor.
+    ///
+    /// The reader `session.state` answers `PaneState.mouse` from. Absent means
+    /// "asked for nothing", which is what every pane running a shell means and
+    /// what a client turns into "do not relay".
+    pub(in crate::actor) fn mouse_of(&self, pane: PaneId) -> Option<MouseMode> {
+        self.mouse.get(&pane).copied()
     }
 
     /// Fold one report from `pane`.
@@ -80,6 +91,21 @@ impl Core {
             // publish. Flagged in T09's report rather than added there —
             // extending `Event` is T01's file.
             PaneReport::Bell => {}
+            // The history window's shape, for the same reason: `session.state`
+            // answers synchronously, so it cannot ask a pane's parser thread
+            // what its application asked for. `Core` keeps the answer instead,
+            // moving it as the pane reports it (`docs/notes/m4-mouse-path.md`
+            // §3). No `Effect` and no `Event`: nothing on any screen changed,
+            // and D-M3-2 gives sequence numbers to transitions rather than to
+            // facts.
+            PaneReport::Mouse(mode) => match mode {
+                Some(mode) => {
+                    self.mouse.insert(pane, mode);
+                }
+                None => {
+                    self.mouse.remove(&pane);
+                }
+            },
             PaneReport::Exited { .. } => {
                 // The actor that reported this is on its way down: nothing
                 // left to send it, but its task is still ours to join, so the
@@ -87,6 +113,11 @@ impl Core {
                 if let Some(host) = self.panes.remove(&pane) {
                     self.draining.push(host);
                 }
+                // A dead pane asks for nothing. Dropped here rather than left
+                // to `session.state`'s pane walk, because the walk is what
+                // would otherwise have to know that a pane can outlive its
+                // process.
+                self.mouse.remove(&pane);
                 self.effects.absorb(Effect::PaneDamage(pane));
             }
         }
