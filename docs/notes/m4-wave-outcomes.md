@@ -3019,3 +3019,50 @@ untaken.
   alone among the tree's three consumers of that call. Latent, one line.
 - 05's M4 section still describes a milestone twice this size (R-M4-11); this
   plan built the D14/D15 half.
+
+## Y03 — the exit defect 3 fix: the jump lands on the agent
+
+[m4-live-smoke.md](m4-live-smoke.md) §6.4's verb, repaired inside `amx-client`:
+`crates/amx-client/src/app/agents/jump.rs` is the new home of the one rule the
+defect turned out to be about, and `app/events.rs` asks it before either of the
+two folds that were overwriting the jump.
+
+**Which focus wins, and why the other reading is wrong.** The jump wins, because
+"take me to the agent that needs me" is what D15 built the board for and a jump
+that lands somewhere else is not a slower version of the verb, it is a different
+verb. Letting the session win would have meant deleting the promise: the server
+cannot be *told* which pane to focus — `pane.focus` speaks directions and
+`workspace.switch` carries no pane — so a client that deferred to it could only
+ever land on whatever that workspace happened to remember.
+
+**Why the answer is content and not order.** The two cheap repairs §5.5 named
+are both timing: applying the local focus after the switch reply loses to the
+`FocusChanged` that arrives afterwards, and ignoring `FocusChanged` for the
+workspace being jumped into does nothing about `session.state`, which
+`mutates_layout` re-reads after the same call and which carries the same stale
+pane. The rule shipped instead is about what a report *says*: the jump records
+the focus this client already had for that workspace, and a report restating it
+is refused however often and by whichever path it arrives, while a report naming
+anything else is news, is folded, and drops the jump with it. `agent.next`,
+another client's `pane.focus` and a restore therefore all still move this
+terminal, which is the half a workspace-wide veto would have broken.
+
+### Left open, and out of this task's files
+
+- **One coincidence the content rule cannot see**: `agent.next` immediately after
+  a jump, when the head of the queue is *exactly* the pane that workspace was
+  remembering before the jump, reads as the switch's own echo and is refused.
+  One line closes it — `self.agents.jumped = None` (or a `forget_jump()` beside
+  `note_jump`) in `Action::NextAttention`'s arm of
+  `crates/amx-client/src/app/actions.rs`, which is outside this task's file list
+  and was not made. Nothing else in the tree moves focus without writing the
+  local focus first, so this is the whole residual.
+- **The durable repair is still a wire change**: a pane argument on
+  `workspace.switch`, which would let the session's focus and this terminal's
+  agree instead of diverging. §5.5 called it a plan's job and it still is; the
+  client-side rule above is what M4 can carry until then.
+- **The divergence a jump creates is pre-existing and unchanged**: after any
+  local-only pane focus — a numeric jump, the picker's pane row, now the board's
+  — `hjkl` resolves its neighbour from this terminal's pane and the server
+  resolves its own from a different one. `actions.rs` has said so since M0 and
+  the same wire change is what ends it.
