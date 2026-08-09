@@ -25,7 +25,6 @@ use amx_proto::control::{Call, pane as pane_proto};
 
 use super::App;
 use crate::input::{self, Action, InputEvent, Wheel};
-use crate::render::chrome;
 
 impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// Turn one decoded [`Action`] into its consequence: bytes to the pane,
@@ -215,7 +214,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         sink: &mut impl FnMut(InputEvent<'_>),
     ) -> Effect {
         if self.input.mouse_enabled(pane) {
-            let Some(inner) = self.pane_interior(pane) else {
+            let Some(inner) = self.interior_of(pane) else {
                 return Effect::Nothing;
             };
             let relayed = match report {
@@ -234,12 +233,16 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     }
 
     /// The focused pane's drawable interior, if this terminal is drawing it.
-    fn pane_interior(&self, pane: PaneId) -> Option<Rect> {
+    ///
+    /// The inset is the projection's to decide, not this call's: a pane drawn
+    /// full-bleed under D14 has no border to step inside of, so the geometry
+    /// comes from `narrow::pane_interior` rather than from `chrome::inset`.
+    fn interior_of(&self, pane: PaneId) -> Option<Rect> {
         let rect = self
             .pane_rects
             .iter()
             .find(|(id, _)| *id == pane)
-            .map(|(_, rect)| chrome::inset(*rect))?;
+            .map(|(_, rect)| self.pane_interior(*rect))?;
         (rect.w > 0 && rect.h > 0).then_some(rect)
     }
 
