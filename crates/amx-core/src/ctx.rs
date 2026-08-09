@@ -58,8 +58,34 @@ impl SessionName {
 
     /// Validate `name` as a session name.
     ///
-    /// Rejects the empty string, `.`, `..`, anything containing `/` or a NUL
-    /// byte, and anything over [`MAX_SESSION_NAME`] bytes.
+    /// Rejects the empty string, `.`, `..`, anything containing `/` or a
+    /// backslash, anything holding an ASCII control character, and anything
+    /// over [`MAX_SESSION_NAME`] bytes.
+    ///
+    /// # Why control characters, when a POSIX filename may hold them
+    ///
+    /// Because a session name is not only a directory component: it is also the
+    /// one caller-supplied string that crosses to another machine. `amx
+    /// --remote` sends `amx _bridge --session <name>` as a command string for
+    /// the remote **login** shell to split into words, and csh and tcsh have no
+    /// spelling for a literal newline inside a word — quoted or not, they answer
+    /// `Unmatched '''.` (measured against tcsh 6.24, and recorded in full where
+    /// the quoting lives — `amx`'s `remote::ssh::sq`).
+    ///
+    /// The alternative to refusing is an encoding, and an encoding is refused
+    /// here for a reason that has nothing to do with taste: **the far side's amx
+    /// is a different binary of an unknown version.** Anything this end encoded,
+    /// the other end would have to decode, and an older amx there would take the
+    /// encoded form literally and serve a *different session* under a name
+    /// nobody asked for — a silent wrong answer where a refusal is a sentence
+    /// the user can act on. A newline in a session name has no use that pays for
+    /// that.
+    ///
+    /// Newline is the character that forces the decision; the rule is every
+    /// ASCII control character, because a name is also printed back — into
+    /// `session list`, into the client's status line — and there is no reason to
+    /// admit `\r` or `\x1b` while refusing `\n`. NUL was already refused, as a
+    /// character no path may hold.
     pub fn new(name: impl Into<String>) -> Result<Self, SessionNameError> {
         let name = name.into();
         if name.is_empty() {
@@ -71,7 +97,10 @@ impl SessionName {
                 max: MAX_SESSION_NAME,
             });
         }
-        if name == "." || name == ".." || name.contains(['/', '\\', '\0']) {
+        if name.chars().any(|c| c.is_ascii_control()) {
+            return Err(SessionNameError::Control { name });
+        }
+        if name == "." || name == ".." || name.contains(['/', '\\']) {
             return Err(SessionNameError::NotAComponent { name });
         }
         Ok(Self(name))

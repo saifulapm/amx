@@ -20,14 +20,30 @@ pub struct IdParseError {
 /// Session names become directory components under `$XDG_RUNTIME_DIR/amx/` and
 /// `$XDG_STATE_HOME/amx/`, so they are validated at construction rather than at
 /// use: a name that cannot be a directory component is never allowed to exist.
+/// They also cross to another machine as a word in a remote command, which is
+/// what [`Self::Control`] is about.
 #[derive(Debug, Error)]
 pub enum SessionNameError {
     /// The name was empty.
     #[error("session name is empty")]
     Empty,
-    /// The name contained a path separator, `.`, `..`, or a NUL byte.
+    /// The name contained a path separator, `.` or `..`.
     #[error("session name {name:?} is not a valid directory component")]
     NotAComponent {
+        /// The rejected name.
+        name: String,
+    },
+    /// The name held an ASCII control character — a newline, a NUL, an escape.
+    ///
+    /// Refused rather than encoded: see
+    /// [`SessionName::new`](crate::ctx::SessionName::new) for the decision and
+    /// the shell that forces it. The name is reported `Debug`-escaped, since
+    /// printing the character itself is the thing being refused.
+    #[error(
+        "session name {name:?} holds a control character; a name has to cross \
+         to a remote login shell as one word, and csh has no spelling for one"
+    )]
+    Control {
         /// The rejected name.
         name: String,
     },

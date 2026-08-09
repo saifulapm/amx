@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 use amx_core::ctx::CONFIG_NAME;
-use amx_core::{Ctx, Env, SessionName};
+use amx_core::{Ctx, Env, SessionName, SessionNameError};
 
 fn env_at(root: &str) -> Env {
     let root = PathBuf::from(root);
@@ -101,4 +101,49 @@ fn a_relative_or_absent_config_root_is_refused() {
         ..env_at("/amx-test-ctx/nothing")
     };
     assert!(Ctx::for_session(SessionName::default(), &nothing).is_err());
+}
+
+#[test]
+fn a_session_name_may_hold_a_shell_metacharacter_but_not_a_control_character() {
+    // Everything a path component may be, and amx keeps: a name is quoted
+    // wherever it is used, never escaped by hand, so `$`, a space and a quote
+    // are ordinary characters here.
+    for legal in ["work", "two words", "it's", "$(rm -rf ~)", "bang!"] {
+        assert!(
+            SessionName::new(legal).is_ok(),
+            "{legal:?} is a legal directory component and amx quotes it",
+        );
+    }
+
+    // And the rule DR-17's third clause settled. A newline is legal in a POSIX
+    // filename and cannot cross to a csh login shell in any spelling, so it is
+    // refused where the name is made rather than encoded where it is sent; the
+    // rest of the control characters go with it, since a name is printed back
+    // into a terminal as well as sent to one.
+    for refused in [
+        "two\nlines",
+        "carriage\rreturn",
+        "esc\u{1b}[2J",
+        "nul\0byte",
+    ] {
+        let err = SessionName::new(refused).expect_err("a control character");
+        assert!(
+            matches!(err, SessionNameError::Control { .. }),
+            "{refused:?} was refused for the wrong reason: {err}",
+        );
+        // The message names the character class and shows none of it: a
+        // rejected name is printed `Debug`-escaped, so a name carrying an
+        // escape sequence cannot repaint the screen that reports it.
+        assert!(
+            !err.to_string().contains(|c: char| c.is_ascii_control()),
+            "the refusal printed the character it refused: {err}",
+        );
+    }
+
+    // The bounds either side of it are unchanged.
+    assert!(SessionName::new("").is_err());
+    assert!(SessionName::new("..").is_err());
+    assert!(SessionName::new("a/b").is_err());
+    assert!(SessionName::new("x".repeat(65)).is_err());
+    assert!(SessionName::new("x".repeat(64)).is_ok());
 }
