@@ -16,6 +16,16 @@ reference to this register, which had not landed yet; the milestone simply
 built what the register asked for. New M3-era findings are DR-15…DR-21 at
 the end.
 
+**M4 wave 1 (2026-08-09, `6f4fb5d`).** The milestone
+([11-m4-plan.md](../11-m4-plan.md)) took this register as its work list. Wave 1
+closes DR-4, DR-5, DR-6, DR-9, DR-13, DR-15 and DR-19; statuses below are
+struck by the standing integration owner (X00) from each task's report, one
+editor rather than five. Two more rows turned out to have been paid before they
+were scheduled — DR-9's R3 clause and DR-19's `agent_verbs` clause — which with
+DR-17's `--help` clause (R-M4-6) makes three in twenty-one. Each was
+re-verified against the tree and the commit graph before it was struck, and
+each is recorded as *found already done* rather than as work the milestone did.
+
 **Overall verdict.** No architectural mistake found. The bets 04 makes are
 sound and the measured spikes (scrollback identity, hook coverage, shutdown
 wedge) validated the risky ones. The budget holds (zero files over hard
@@ -36,10 +46,10 @@ two numbers is amx's reason to exist, and it was earned by verification
 The codec is real: length-prefixed `put_cells` / `read_rows`
 (`amx-proto/src/stream/grid.rs:242,379`) over a per-cell layout in
 `amx-proto/src/stream/cell.rs`; no `todo!()` remains in amx-proto.
-Residuals: `amx-client/src/model/grid.rs:33` still *says* "both bodies are
-still `todo!()`" (stale prose → DR-15), and the client's `Attrs` remains a
-reduced projection — check styling completeness before calling the
-smart-client rendering claim finished.
+Residuals: the stale comment at `amx-client/src/model/grid.rs:33` is corrected
+(M4/X03, under DR-15), and it now states the gap it used to hide — the client's
+`Attrs` remains a reduced projection, six of the wire's ten attributes.
+Widening it is scheduled as M4's X18.
 
 **DR-2 — History delivery is unwired.** `resolved (M3)`
 The full path exists: client requests (`app/binds.rs:151`
@@ -59,7 +69,17 @@ Matches 04 §8's wording as amended.
 
 ## Process
 
-**DR-4 — The unowned integration seam, paid for four times.** `open`
+**DR-4 — The unowned integration seam, paid for four times.**
+`resolved (M4, structurally)`
+The fix asked for is in place and running: [11-m4-plan.md](../11-m4-plan.md) §6
+gives M4 a standing integration owner from wave 1 (X00) holding five named
+cross-crate seams, and the live smoke is a gate at every wave boundary rather
+than an exit step — [m4-live-smoke.md](m4-live-smoke.md) §1 is the baseline
+recorded before wave 2 opened, §2 the first delta. It found the wave's own
+integration break to be one the compiler catches (§2.6) and two seams measured
+before either half of them is built. Whether the practice pays is answerable at
+M4's exit; that the structure exists is answerable now, which is what this row
+asked for.
 The wave/file-ownership scheme that makes parallel execution safe leaves
 cross-crate joins owned by nobody, by construction. T19, U10, V17 and now
 W14 are four retrofits of the same hole; M2's W-1 (hub and gateway "both
@@ -69,7 +89,12 @@ fourth. Fix structurally in the M4 plan: a standing integration owner per
 milestone, and the live end-to-end smoke running from wave 1 — not as an
 exit gate.
 
-**DR-5 — Over-planning at test-name granularity.** `open`
+**DR-5 — Over-planning at test-name granularity.** `resolved (M4 plan)`
+11-m4-plan.md carries no acceptance-test names and no agent prompt drafts, and
+says so in its own preamble; each §5 entry states scope, dependencies, owned
+files and what must be true, and leaves the tests to the implementer. What it
+keeps is what this row said to keep — a decision register (§1), a risk table
+(§8) and spike-first gating (X01 gates X13).
 Pre-drafted acceptance-test names invited satisfying the name over the
 intent (T18: "identical grid" asserted against possibly-blank screens), and
 pre-specified items were later withdrawn as misreadings (R-M2-2, R-M3-9).
@@ -78,17 +103,48 @@ test names and prompt drafts.
 
 ## Contract-before-consumer debt
 
-**DR-6 — ShortNumbers.** `open`
-`todo!()` at two sites in `amx-core/src/id.rs`, routed around in
-`cmd/attach.rs`, and the snapshot persists a documented stand-in — quietly
-shaping the eventual implementation's constraints from disk. Pay down
-before more snapshots accumulate. ~1–2 days.
+**DR-6 — ShortNumbers.** `resolved (M4, X05)`
+Both bodies implemented as 04 §6 specifies — lowest free number, reused after
+release — adopted by `Core`, read by `attach --pane`, and joined to the
+UUID-then-label resolution order. Two things make it more than a `todo!()`
+paydown. A shipped test was asserting the *stand-in's* behaviour and was
+rewritten, and a collision the stand-in could produce during restore was found
+and fixed while porting it. And the claim that most needed evidence — that a
+snapshot the stand-in wrote still restores correctly — was measurable exactly
+once: the wave-1 baseline smoke left such a file behind before X05 merged, and
+[m4-live-smoke.md](m4-live-smoke.md) §2.3 restores it, keeps all 25 numbers and
+then fills its six holes in lowest-free order. No `todo!()` remains in
+`crates/*/src`, and `tests/hygiene/unfinished.rs` now enforces that rather than
+stating it.
 
-**DR-7 — `GridMessage::Scrolled` is dead wire surface.** `open`
-Defined, golden-tested, client-decoded, never emitted (deferred since M1).
-Delete it (re-add when a scroll-region optimization wants it) or emit it.
-Golden tests protecting unexercised surface is how skew guarantees rot.
-~0.5 day.
+**DR-7 — `GridMessage::Scrolled` is dead wire surface.** `resolved (M4, X08)`
+Decided by deletion: the variant, its tag, the codec arms, the golden and the
+client's decode arm are all gone, and **tag 2 is retired rather than
+renumbered** — an older build is entitled to go on reading 3 as the cursor — with
+`decode` refusing it like any other unknown tag and two tests pinning that. The
+reason emission lost is structural rather than budgetary and is worth keeping in
+the register: a client binds a grid stream only for the panes of its *focused*
+workspace, so a commit notice on that stream never reaches a pane in any other
+one, and under D14's narrow projection the bound set shrinks to a single pane. A
+fact the scrollback cache depends on cannot ride the narrowest channel in the
+protocol when `history.committed` already carries it on the widest, with the
+bus's ordering, typed `gap` and resumable cursor. What tag 2 alone carried — the
+per-row hash — has no client-side reader to compare it against, because a served
+row is decoded into a `String` and its packing dropped; that is the revisit
+condition, written where the variant used to be. Golden `stream/grid_scrolled.json`
+is gone, so the harm this row actually named is paid.
+
+**Owed, and named here because no task owns the file.** 04 §3's fourth
+scrollback-identity bullet (`docs/04-architecture.md:112-114`) still says rows
+scrolling out "are announced on the pane's delta stream (id + content hash…)".
+After X08 that sentence is false, and stale prose in the binding architecture doc
+is DR-15's disease at its worst. X03 held 04 in wave 1 and has landed; no wave-3,
+-4 or -5 task lists it. The correction is one bullet: the announcement is
+`history.committed` on the event bus, with the per-row hash recorded as what the
+delta-stream form would have added and the condition under which it returns. The
+same paragraph's "content push for panes the client is actively scrolled back in"
+is unbuilt and unrelated. Carried as an owed correction rather than taken by the
+integration owner, which is a doc-truth task's job and not an integration seam.
 
 **DR-8 — Tier-3 probe walk has no caller.** `resolved (M3)`
 `identify` (`agent/identity.rs:267`) is now reached in production through
@@ -97,31 +153,36 @@ injected from `pane_host`; tests in `tests/identity.rs`.
 
 ## Doc drift (04 is binding per HACKING.md — it must stay true)
 
-**DR-9 — Owed corrections.** `partially resolved`
+**DR-9 — Owed corrections.** `resolved (M4, X03)`
 - `resolved on main`: 04 §6 now reads `history/<pane-uuid>.rows`.
-- `resolved on this branch`: README milestone label updated (was "this is
-  M0" after M3 landed).
-- Still open: 04 §2/§10 "broadcast event bus" (lines 48, 420) → the
-  implementation is a bespoke cursor-over-replay-ring bus (typed `gap`,
-  resumable cursors — better than the promised primitive; the word is
-  what's wrong); and the R3 correction from the M0 plan (herdr's bindings
-  *are* bindgen-generated; its defect is the missing regeneration check).
-- New, same family: two stale SSH passages — 09-m3-plan §7 clause 3 and the
-  wave-outcomes "one unverified exit clause" paragraph both predate
-  m3-live-smoke §5, which records the SSH criterion verified on a second
-  machine (aarch64). See also DR-15.
-Hours, one PR.
+- `resolved before M3 merged`: README milestone label.
+- `resolved (X03)`: 04 §2/§10's "broadcast event bus" now names what is built —
+  a cursor-over-replay-ring bus with typed gaps and resumable cursors, which is
+  better than the promised primitive; the word was what was wrong.
+- `resolved (X03)`: both stale SSH passages — 09-m3-plan §7 clause 3 and the
+  wave-outcomes paragraph beside it — now record m3-live-smoke §5's second
+  machine.
+- **Already paid when it was written.** The R3 clause (herdr's bindings *are*
+  bindgen-generated; the defect is the missing regeneration check) was corrected
+  by `261e33b`, *docs: correct the herdr FFI drift description*, on 2026-08-06 —
+  an ancestor of `b727786`, the tree this register says it re-verified against.
+  04 §3 and 02's W10 have said so since. Struck as found, not as work X03 did.
 
 **DR-10 — Three unrelated `Effect` enums; client dirtiness is ad-hoc.**
-`open`
-`amx-core::effect::Effect`, `agent/fusion`'s `Effect`, and
-`amx-vt::callbacks`' `Effect` shadow each other. And `amx-client` never
-consumes the structural dirtiness type at all — it uses two plain booleans
-(`app/mod.rs:131,139`), the exact failure mode D2 exists to prevent. The
-server side consumes the core type properly (post-M3: `pane_host/actor.rs`,
-`core/pane.rs`, `core/report.rs`), so the gap is client-only. Rename the
-two shadows; either adopt `Effect` client-side or write the exemption into
-04. ~1 day.
+`resolved (M4, X06 + X09)`
+Both halves, split by file ownership as D-M4-9 planned. The shadows are gone:
+`agent/fusion`'s went with X06 — the tracker now returns *directives* rather
+than effects — and `amx-vt::callbacks`' is `TerminalEvent`, which is what it
+always was (X09). `amx-client`'s two booleans are one folded
+`amx_core::Effect`, adopted **before** the four surfaces that would each have
+set one, which is the whole of why it was scheduled in wave 2 rather than after.
+The live evidence that it was the right type is in
+[m4-live-smoke.md](m4-live-smoke.md) §3.8, from the opposite direction: the one
+client path that does *not* fold its stream frames into `Effect` —
+`amx attach --pane`, which binds through the bare `Session::call` — drops the
+pane's first keyframe under load and shows a blank terminal, while the full
+client, which folds through `App::call`, does not. Same bug class, same
+milestone, one path converted and one not.
 
 ## Watch items (instrumented, not schedulable)
 
@@ -134,24 +195,43 @@ lock before awaiting (no guard held across an await), and the drain census
 names the holder when a drain overruns (`tests/runtime.rs`). The field
 mechanism was still never caught in the act — keep the watch until a census
 either fires or a milestone of field time passes clean.
+**M4 is that milestone of field time, and the count is kept**: every live-smoke
+run records each `session stop`'s exit status, the presence of a `drain-census`
+file and any census log line. Eleven clean stops through wave 2, over sessions
+of 2, 3, 4, 25 and 26 panes, plus three handoffs whose exporters all exited 0
+([m4-live-smoke.md](m4-live-smoke.md) §1.7, §2.7, §3.9); nothing has fired.
+R-M4-10 is what turns that from an impression into a record.
 
-**DR-12 — `frame on unbound channel` under flood.** `watch — partial`
-W08 landed generation-carrying binds (`conn/streams.rs:122-145`,
-`conn/resume.rs`) and R-M3-14's retraction made resumed binds repaint
-(`59f6ed8`) — that closes the stale-grid-on-rebind hole. The unbound-channel
-race itself (3/30 rounds under flood) has no named test, and the client's
-current handling of an unknown channel appears to be a silent
-`Applied::Nothing` (`amx-client/src/stream.rs`) — decide deliberately
-whether refusal or silence is intended: the old refusal was the check that
-caught a desynchronised peer (see notes/frame-read-cancellation.md).
+**DR-12 — `frame on unbound channel` under flood.** `resolved (M4, X08)`
+Decided, and not as a choice between refusal and silence: the two layers answer
+differently because only one of them can tell the cases apart. The reader
+refuses a channel this connection *never* bound —
+`NetError::UnboundChannel` (`amx-client/src/net/read.rs:147-148`), deliberately
+not a transport error, so no redial swallows it — which keeps the check that
+caught a desynchronised peer (notes/frame-read-cancellation.md). By the time a
+header reaches `stream::apply` the reader has already vouched that the
+connection bound the channel, so what is left is a route this client let go of,
+and dropping that frame is the only answer that does not kill a live session
+over a frame that was correct when it was written. Both routes to the drop —
+`Bindings::forget_pane` and an inbound frame on a raw channel — are latent
+today, and the module header says so rather than claiming a live case. The named
+test the row asked for is `crates/amx-client/tests/unbound_channel.rs`, whose
+flood half reproduces the actual shape of the 3-in-30 failures — the client's own
+read cancelled mid-frame and resuming out of step, so a payload byte was read as
+a channel — at 60 frames with every read cancelled at least once, rather than at
+whatever load happened to be running. Watched from outside too: a client
+attached through an 8 MiB flood stayed alive and kept painting
+([m4-live-smoke.md](m4-live-smoke.md) §3.6).
 
 ## Accepted trades to state out loud
 
-**DR-13 — Remote latency honesty.** `open (one sentence in 03)`
+**DR-13 — Remote latency honesty.** `resolved (M4, X03)`
 The p99 < 5 ms key→echo budget is local and round-trip by design; over SSH,
 typing feel is tmux-class, and local-echo smart clients (Superlogical) will
 beat it there. Predictive echo stays a capability-gated extension (04 §4).
-The trade is right; 03 should own it explicitly.
+The trade is right; 03 should own it explicitly — and now does, in its own
+words, beside the budget it qualifies. Nothing about the trade changed; the
+doc stopped leaving it unsaid.
 
 **DR-14 — Fusion does not eliminate screen scraping.** `no action`
 Both shipped agents measured `edges`: tier 2 owns every user-initiated exit,
@@ -167,26 +247,62 @@ removal. Recorded so nobody resells the differentiator as more than it is.
 
 ## M3 addendum — new findings (re-verification at `b727786`)
 
-**DR-15 — Stale in-tree prose contradicting shipped code.** `open`
-Comments asserting things M3 made false: `amx-client/src/model/grid.rs:33`
-("both bodies are still `todo!()`" — the codec exists),
-`amx-client/tests/scrollback.rs:5` ("no wire path delivers" — it does), and
-the two stale SSH passages named under DR-9. Cheap and worth doing
-promptly: in a repo whose discipline is "never guess, verify against
-source", stale prose is actively poisonous. Hours.
+**DR-15 — Stale in-tree prose contradicting shipped code.**
+`resolved (M4, X03)`
+All four corrected: `amx-client/src/model/grid.rs:33` (which now states the real
+gap — four of ten attributes plus two colours — instead of a `todo!()` that no
+longer exists), `amx-client/tests/scrollback.rs:5` (which now names the delivery
+path file by file), and the two SSH passages under DR-9. X03 went further than
+the row asked in one place worth recording: `crates/amx-client/tests/cell_style.rs`
+pins the corrected comment to the decode, so the claim cannot go stale silently
+again — a staleness guard rather than a regression test, and X18 has to update
+both together.
 
-**DR-16 — Reconnect coverage is uneven (W09's untaken hand-offs).** `open`
-The attached client rides a server swap, but: `cmd/viewport.rs`
-(`attach --pane`) never reconnects; a bridged (SSH) client cannot redial
-(needs a respawned ssh child — `remote/`'s business); and
-`DriveError::NotAccepting` surfaces as `INVALID_PARAMS`, so D-M3-6's
-"caller's retry" is unactionable — a distinct error code would make every
-mutating verb retriable across handoff, including `agent.prompt`. The last
-one is wire-adjacent: decide before more callers bake in the ambiguity.
+**One new instance, from wave 2, recorded under DR-7.** X08's deletion of the
+scroll notice made 04 §3's fourth scrollback-identity bullet false. The row is
+struck for what X03 fixed, not for the class, and the class keeps producing:
+this is the second milestone in which shipped code outran a sentence in the
+binding architecture doc.
 
-**DR-17 — Remote UX edges.** `open`
-`amx --help` never mentions `--remote` (kept out of clap by design; the
-help text still owes the flag a line). A newline-containing session name
+**DR-16 — Reconnect coverage is uneven (W09's untaken hand-offs).**
+`resolved (M4, X09) — two of three; the third declined with a condition`
+- `resolved (X09)`: **`attach --pane` reconnects.** It shares the full client's
+  redial rather than growing a second one (`reconnect::dial_until`, so both
+  agree how long a swap may take), rebinds both streams on the successor and
+  re-declares the viewport when it holds size authority. Watched live in
+  [m4-live-smoke.md](m4-live-smoke.md) §3.7: the single-pane client came back on
+  the successor with the session id unchanged, a sentinel painted *after* the
+  swap reached its screen, and `prefix+q` detached it with exit 0.
+- `resolved (X09)`: **`NotAccepting` has a code of its own.**
+  `RpcError::RETRIABLE = -32001`, the second occupant of amx's own
+  −32000..=−32099 range, and the reader is `cmd::call::one_shot` — the redial
+  loop every generated and hand-written verb already goes through, which is why
+  X09 took `cmd/call.rs` outside its listed scope and said so. The smoke did
+  **not** catch the refusal by hand: it needs a call to reach a quiesced server
+  rather than a dead socket, and that window is the same milliseconds-wide one
+  M3's mid-restore kill could not aim at either. CI owns it; §3.7 records the
+  miss rather than rounding it up.
+- **Declined, with a revisit condition** (11-m4-plan §4): the bridged (SSH)
+  client's redial needs a respawned ssh child, which is `remote/`'s mechanism
+  and not this row's. Revisit when a remote attach is a daily path rather than a
+  smoke step.
+
+One thing the row did not name and the smoke found: the non-`--takeover`
+`attach --pane` can start on a blank screen under load, because it binds through
+the bare `Session::call` and the pane's first keyframe is discarded while the
+second bind's reply is outstanding. Pre-existing — identical at `6f4fb5d` and
+`335cc27` — and unowned. [m4-live-smoke.md](m4-live-smoke.md) §3.8 has the
+measurement and the one-line shape of the fix.
+
+**DR-17 — Remote UX edges.** `open — one clause of three was already paid`
+~~`amx --help` never mentions `--remote`~~ — it does, and did before this row
+was written: `8e508c1` declared the flag documentary in clap with the reason,
+and it is an ancestor of `b727786`, the tree this register re-verified against.
+Confirmed against the shipped binary at `6f4fb5d`: `amx --help` prints
+`--remote <HOST>`. R-M4-6 records this as the first of the three already-paid
+rows.
+
+The two clauses that are real are M4's X19. A newline-containing session name
 cannot cross to a csh login shell (needs a wire encoding — interface
 change, so decide, don't drift). `$MISE_INSTALLS_DIR` is deliberately
 unread, so a relocated mise root misclassifies as Standalone (one `Env`
@@ -198,12 +314,31 @@ smoke 0.1.0→0.1.1 over a `file://` channel) but the default channel 404s.
 Fine until the first external user; the risk stays "a stub read as a
 service".
 
-**DR-19 — Recorded flakes, unowned.** `open`
-`flow_control::two_clients_at_different_speeds` (1×), `agent_verbs` (2 in
-~12 runs), the `urandom` 8 MiB machine-speed threshold (fails under 8-way
-load every time — turn it into rate-over-observed-time), and `_hook`'s
-BrokenPipe self-race (tolerate BrokenPipe on the payload write). Each has
-its mechanism written down; none has an owner.
+**DR-19 — Recorded flakes, unowned.** `resolved (M4, X04)`
+Four owners, three code changes, and two rows that were not what they said.
+
+- `flow_control::two_clients_at_different_speeds` — **fixed**; the paced reader
+  was only slow while the round was faster than its nap.
+- the `urandom` 8 MiB threshold — **half stale, half fixed**. `f09a87c` had
+  already replaced the fixed *window* with a wait and **is** an ancestor of
+  `18c9261`, this register's re-verification, so "fails under 8-way load every
+  time" was recorded against a tree where it no longer did. The fixed
+  *quantity* was real; X04 replaced it with rate-over-observed-time.
+- `agent_verbs` — **already paid**. `aba0877`, *wait for the fact, not for the
+  call that starts it*, fixed both named sites; it is **not** an ancestor of
+  `18c9261` (both branch from `08a4257`), so the register could not have seen
+  it. Re-measured at the reproduction that once gave 22/320: nothing left.
+- `_hook`'s BrokenPipe self-race — **fixed**, and it did not reproduce in 18
+  runs. The mechanism was not in doubt, so the write tolerates `BrokenPipe` and
+  a new case forces the race every time.
+
+**Two more, in the same file, that this register never named**:
+`no_client_grid_is_corrupted_after_coalescing` (16 failures in 16 runs under the
+pinned load) and `server_memory_is_bounded_under_a_stalled_client` — same
+mechanism, a wall clock standing in for a rate. Recorded as found: a row struck
+only for what it listed would leave those two looking like they had always been
+green. Verification is per-suite at the load each was reproduced under
+(`taskset`-pinned, 8 copies × 8 threads, 160 runs each): 0 failures.
 
 **DR-20 — SSH exit clause residuals.** `open`
 m3-live-smoke §5 verified the criterion on a second machine, but: the
@@ -223,6 +358,23 @@ largest src `pane_host/parser.rs` 532, then `remote/ssh.rs` 516,
 `fusion/tracker.rs` 511, `pane_host/mod.rs` 501 — all with recorded
 reasons. `todo!()` count in src: 2, both DR-6.
 
+Budget snapshot after M4 wave 1 (`6f4fb5d`): 0 files over hard; the four `src`
+files this snapshot named over soft were all split by X02 before the waves
+pressed them (`pane_host/parser.rs`, `fusion/tracker.rs`, `pane_host/mod.rs`,
+`dispatch/agent.rs`, plus `cli.rs` and `control/agent.rs` ahead of growth). Two
+`src` files went the other way in the same wave and this entry did not say so
+when it was written: `actor/core/restore.rs` 499 → 536, which X05 grew, and
+`remote/ssh.rs`, still 516 and X19's in wave 5.
+`todo!()` count in src: **0**, and `tests/hygiene/unfinished.rs` fails if it ever
+stops being 0, rather than leaving it to a snapshot in a note.
+
+Budget snapshot after M4 wave 2 (`335cc27`): 30 files over soft, **0 over hard**.
+The two `src` files over are the two wave 1 left there — `actor/core/restore.rs`
+536 and `remote/ssh.rs` 516 — both unchanged by wave 2, and every file X02 split
+is still under. `amx-client/src/app/mod.rs` is at 498 with four wave-3
+and wave-4 surfaces still to land in that directory, which is the next file the
+R-M1-3 rule will want split and the reason to say so here rather than at 1000.
+
 ## Suggested order (post-M3)
 
 DR-15 (hours, do first — stale prose misleads every next task) → DR-6 →
@@ -230,3 +382,22 @@ DR-16's error-code decision (wire-adjacent) → DR-7/DR-9/DR-10 batched →
 DR-19 flake paydown → DR-4/DR-5 written into the M4 plan → D14/D15
 implementation (~2 weeks, [10-attention-surfaces.md](../10-attention-surfaces.md))
 → DR-17/DR-18/DR-20/DR-21 as M4 scope decisions.
+
+**Taken, as of M4 wave 2**: DR-4, DR-5, DR-6, DR-7, DR-9, DR-10, DR-12, DR-13,
+DR-15, DR-16 and DR-19 are struck above — the whole of the order's first six
+steps. What is left of the register is three `open` rows (DR-17 and DR-20, both
+X19 in wave 5; DR-18, declined with a condition), one `open (optional)` (DR-21,
+declined with a measurement §7 records), one `watch` (DR-11, whose count is now
+eleven clean stops) and one `no action` (DR-14). The D14/D15 implementation is
+waves 3–5 and carries no register row of its own. Progress against this order is
+recorded per wave in [m4-wave-outcomes.md](m4-wave-outcomes.md), and each wave's
+run of the real binary in [m4-live-smoke.md](m4-live-smoke.md).
+
+**Two findings this register has no row for**, both from the wave-2 boundary
+smoke and both outside every remaining task's file scope: a session can be handed
+over only once (the importer assembles no export path), and the non-`--takeover`
+`amx attach --pane` can start blank under load. Neither is a regression and
+neither blocks M4. They are written up in
+[m4-wave-outcomes.md](m4-wave-outcomes.md) under "X00 — the wave-2 boundary"
+with their mechanisms and citations, and they want a plan decision rather than a
+row invented by the integration owner.
