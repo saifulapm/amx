@@ -16,7 +16,8 @@
 //! model, [`paint`] is whether a frame is owed and what one draws, [`narrow`] is
 //! D14's small-screen projection, [`reconnect`] is what the loop does when that
 //! socket ends under it, [`overlay`] is the picker and copy-mode surfaces drawn
-//! over the panes, and [`status`] is the status line and the cursor a repaint
+//! over the panes, [`peek`] is D15's read-only look at a pane this terminal is
+//! not drawing, and [`status`] is the status line and the cursor a repaint
 //! finishes with.
 //!
 //! # Dirtiness is a value (D2)
@@ -36,6 +37,7 @@ mod events;
 mod narrow;
 mod overlay;
 mod paint;
+mod peek;
 pub mod reconnect;
 mod status;
 mod wired;
@@ -57,6 +59,7 @@ use crate::term::{TermError, TermSize, TerminalGuard};
 pub use events::Folded;
 pub use narrow::Projection;
 pub use overlay::{CopyUi, PickTarget, PickerUi};
+pub use peek::PeekLayout;
 pub use reconnect::{Reattached, ReconnectPolicy};
 
 /// Interaction mode the client is in (04 §7).
@@ -132,6 +135,20 @@ pub struct App<Fd: AsFd, W: Write> {
     picker: Option<PickerUi>,
     /// The live copy-mode engine while [`Mode::Copy`] is active.
     copy: Option<CopyUi>,
+    /// The pane the peek region is showing, if the agents view opened one.
+    ///
+    /// A pane, not a surface: the peek has no state of its own beyond which
+    /// pane it names — the cells come from the same mirror every other pane's
+    /// do, and the region it fills is derived from the projection ([`peek`]).
+    peeked: Option<PaneId>,
+    /// Grid streams this client opened *for* a peek, and whether the server is
+    /// still sending on each.
+    ///
+    /// Beside [`Self::bindings`] rather than inside it because what it records
+    /// is ownership, not routing: the binding table answers "is this pane
+    /// bound", and releasing a stream turns on the different question of whether
+    /// this surface is the one that opened it ([`peek`]'s header).
+    peek_streams: HashMap<PaneId, peek::PeekStream>,
     /// Bytes owed to the client's own terminal outside the frame: OSC 52 from
     /// copy mode, OSC 9 from an attention enqueue ([`events`]).
     emit: Vec<u8>,
@@ -231,6 +248,8 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             caches: HashMap::new(),
             picker: None,
             copy: None,
+            peeked: None,
+            peek_streams: HashMap::new(),
             emit: Vec::new(),
             events: Vec::new(),
             frame: Vec::new(),
@@ -280,6 +299,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         self.focus.clear();
         self.picker = None;
         self.copy = None;
+        self.forget_peek();
         self.mode = Mode::default();
         self.pane_rects.clear();
         self.wanted_history.clear();
