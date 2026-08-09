@@ -114,9 +114,29 @@ impl Fixture {
 
     /// `amx agents --watch` on a 45-column terminal.
     fn watch(&self, args: &[&str]) -> Terminal {
+        self.watch_wide(args, COLS)
+    }
+
+    /// The same watch on a terminal `cols` across.
+    ///
+    /// The footer is one line and its last clause is a sentence about an agent,
+    /// so the tests that read that clause ask for a window it fits in rather
+    /// than asserting on the part of it a phone would have kept.
+    fn watch_wide(&self, args: &[&str], cols: u16) -> Terminal {
         let mut argv = vec!["agents", "--watch"];
         argv.extend_from_slice(args);
-        self.env.spawn_on_tty(&argv, ROWS, COLS)
+        self.env.spawn_on_tty(&argv, ROWS, cols)
+    }
+
+    /// The pane of the one blocked stand-in.
+    fn blocked_pane(&self) -> String {
+        let reply = self.json();
+        let rows = reply["agents"].as_array().expect("rows").clone();
+        rows.iter()
+            .find(|row| row["status"] == "blocked")
+            .and_then(|row| row["pane"].as_str())
+            .expect("a blocked agent")
+            .to_owned()
     }
 }
 
@@ -342,7 +362,7 @@ fn watch_refreshes_when_an_agent_moves() {
     // Nothing tells the watch to look: a delivery lands on the subscription it
     // opened, and one `agent.list` per refresh window answers for every row.
     rig.env
-        .run(&["workspace", "switch", "--params", &focus_docs(&rig)])
+        .run(&["workspace", "switch", "--params", &focus(&rig, "docs")])
         .ok();
     rig.agent(WORKING, "second");
     screen.wait_for(b"docs/second");
@@ -350,11 +370,133 @@ fn watch_refreshes_when_an_agent_moves() {
     assert_eq!(screen.wait(), Some(0));
 }
 
-/// The `workspace.switch` parameters that land in `docs`.
-fn focus_docs(rig: &Fixture) -> String {
+// -------------------------------------------------- the footer's own reader
+
+#[test]
+fn watch_names_the_agent_that_blocked_and_the_detector_that_said_so() {
+    let rig = Fixture::start("ag9");
+    let mut screen = rig.watch_wide(&[], 100);
+    screen.wait_for(b"api/backend");
+
+    // A second blocked agent, in a workspace the watch is already showing. The
+    // enqueue this causes carries D15's identity block, and the footer is where
+    // that block is read: workspace, name and the detector's own reason, in the
+    // sentence the block was frozen to make possible.
+    rig.env
+        .run(&["workspace", "switch", "--params", &focus(&rig, "api")])
+        .ok();
+    rig.agent(BLOCKED, "deploy");
+
+    screen.wait_output("the footer to name the agent that blocked", |seen| {
+        footer(seen).is_some_and(|line| line.contains("api/deploy blocked"))
+    });
+    let line = footer(screen.output()).expect("a footer");
+    assert!(
+        line.contains("(permission_dialog)"),
+        "the reason rides the event, and is said the detector's own way: {line:?}"
+    );
+    // The parenthesised form is the footer's and only the footer's: the table
+    // has a REASON column, so a test that matched the word alone would pass
+    // against a watch that read nothing at all.
+    assert!(
+        !rig.table().contains("(permission_dialog)"),
+        "the table spells a reason as a column, never as a clause"
+    );
+
+    screen.send(b"q");
+    assert_eq!(screen.wait(), Some(0));
+}
+
+#[test]
+fn watch_names_an_agent_that_left_the_queue_by_exiting() {
+    let rig = Fixture::start("ag10");
+    let pane = rig.blocked_pane();
+    let mut screen = rig.watch_wide(&[], 100);
+    screen.wait_for(b"api/backend");
+
+    // Closing the blocked pane dequeues it, and the hub forgets a pane's label
+    // only *after* publishing that dequeue
+    // (`crates/amx-server/src/actor/agent_hub/names.rs`'s `forget_pane`). So
+    // the delivery names an agent that no `agent.list` from here on has a row
+    // for — which is what makes this a fact the watch could not have re-queried
+    // for, and the reason the identity block exists at all.
+    rig.env
+        .run(&[
+            "pane",
+            "close",
+            "--params",
+            &format!(r#"{{"pane":"{pane}"}}"#),
+        ])
+        .ok();
+
+    screen.wait_output(
+        "the footer to name the agent that stopped waiting",
+        |seen| footer(seen).is_some_and(|line| line.contains("api/backend cleared")),
+    );
+    // And the proof that it came off the delivery: the name is gone from the
+    // surface a re-query reads.
+    wait_until("the closed agent to leave `agent.list`", || {
+        !rig.table().contains("api/backend")
+    });
+
+    screen.send(b"q");
+    assert_eq!(screen.wait(), Some(0));
+}
+
+#[test]
+fn a_scoped_watch_announces_its_own_workspace_and_no_other() {
+    let rig = Fixture::start("ag11");
+    let mut screen = rig.watch_wide(&["--workspace", "docs"], 100);
+    screen.wait_for(b"docs/notes");
+
+    // An enqueue in `api`, which this watch is not about. It still refreshes —
+    // every delivery means "ask again" for the table — but the workspace id on
+    // the block is what says the sentence belongs to somebody else's screen.
+    rig.env
+        .run(&["workspace", "switch", "--params", &focus(&rig, "api")])
+        .ok();
+    rig.agent(BLOCKED, "deploy");
+    wait_until("the enqueue to reach the session", || {
+        rig.json()["attention"]
+            .as_array()
+            .is_some_and(|queue| queue.len() == 2)
+    });
+
+    // Then one in `docs`, which is. Waiting for the second is what makes the
+    // first a proven absence rather than an untimed one: the deliveries are
+    // ordered, so a footer showing `docs/` has already had `api/`'s past it.
+    rig.env
+        .run(&["workspace", "switch", "--params", &focus(&rig, "docs")])
+        .ok();
+    rig.agent(BLOCKED, "review");
+    screen.wait_output("the footer to name this workspace's agent", |seen| {
+        footer(seen).is_some_and(|line| line.contains("docs/review blocked"))
+    });
+    assert!(
+        !String::from_utf8_lossy(screen.output()).contains("api/deploy"),
+        "a scoped watch says nothing about another project, on the footer or in \
+         the table"
+    );
+
+    screen.send(b"q");
+    assert_eq!(screen.wait(), Some(0));
+}
+
+/// The last footer this watch painted, if it has painted one.
+///
+/// The footer is the row carrying `q quits`, and it is rewritten in place on
+/// every repaint, so the *last* one in the output is the one on screen.
+fn footer(output: &[u8]) -> Option<String> {
+    painted(output)
+        .into_iter()
+        .rfind(|line| line.starts_with("q quits"))
+}
+
+/// The `workspace.switch` parameters that land in the workspace `label` names.
+fn focus(rig: &Fixture, label: &str) -> String {
     let json: Value = serde_json::from_str(
         rig.env
-            .run(&["agents", "--workspace", "docs", "--json"])
+            .run(&["agents", "--workspace", label, "--json"])
             .ok(),
     )
     .expect("a JSON reply");
