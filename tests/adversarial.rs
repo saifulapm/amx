@@ -32,6 +32,16 @@ fn painted(screen: &Screen) -> bool {
     (0..COLS).all(|col| screen.contains_key(&(ROWS - 1, col)))
 }
 
+/// A rasterized screen without its status line: the content area, which is the
+/// whole terminal minus one row of chrome.
+fn panes_of(screen: &Screen) -> Screen {
+    screen
+        .iter()
+        .filter(|&(&(row, _), _)| row + 1 < ROWS)
+        .map(|(&at, &ch)| (at, ch))
+        .collect()
+}
+
 /// The session id `amx ping` reports for this environment.
 fn session_id(env: &Env) -> String {
     let reply: serde_json::Value =
@@ -355,14 +365,22 @@ async fn flow_control_urandom_pane_with_stalled_client_bounds_memory_and_preserv
         );
     }
 
-    // No attached client's screen was corrupted by three seconds of urandom:
-    // the live client still shows exactly the frame it painted, and detaches
+    // No attached client's grid was corrupted by three seconds of urandom: the
+    // live client still shows exactly the panes it painted, and detaches
     // cleanly, terminal restored.
+    //
+    // The panes and not the whole screen, because the status line is
+    // session-wide by design: D15's breakdown names *every* workspace, so the
+    // flood's own workspace joins it on every attached client the moment it is
+    // created (`amx-client/src/app/status.rs`). That is a chrome line following
+    // session state, which is what it is for; what owes the flood pane nothing
+    // is the grid this client is drawing, which is what "uncorrupted" has
+    // always been about here.
     live.drain();
     assert_eq!(
-        rasterize(live.output()),
-        baseline_screen,
-        "the flood must not leak into another client's screen"
+        panes_of(&rasterize(live.output())),
+        panes_of(&baseline_screen),
+        "the flood must not leak into another client's panes"
     );
     live.chord(b'd');
     assert_eq!(live.wait(), Some(0), "the live client detaches cleanly");
