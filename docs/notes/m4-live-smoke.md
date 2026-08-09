@@ -958,6 +958,456 @@ and X01's own outcome entry says X13 does not merge before it exists. X13 is
 building against the outcome-(c) fallback. The gate is X00's to hold and it is
 recorded open here so wave 3's boundary has to answer it.
 
+## 4. The wave-3 delta — 2026-08-09
+
+**Subject.** amx at `b698c51`, and that commit is wave **4**. Waves 3 and 4 both
+merged before either was smoked, so this section and §5 are one run of one tree,
+split by what they exercise rather than by what was in the binary. Saying so is
+the point: §6's rule is a delta per boundary, and this milestone owes two of them
+at once. Nothing below distinguishes a wave-3 regression from a wave-4 one, and
+where that matters it is named.
+
+Same machine, same isolation, same driver, with two repairs the run itself
+forced (both in "Re-running this"): the scratch `HOME` now carries a `.zshrc`
+and `SHELL=/bin/sh`, because a restored pane is a shell that types its agent's
+argv (D-M2-7) and zsh's newuser wizard was eating it — for two runs that looked
+exactly like a restore that had stopped bringing agents back.
+
+`cargo test --workspace` on this tree: **141 suites, 966 passed, 0 failed**;
+`cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean; the
+module budget 34 over soft, 0 over hard.
+
+### 4.1 Verdict
+
+| # | What | Result |
+|---|---|---|
+| 1–6 | §1's baseline, re-run whole | **holds** — every item (§4.2) |
+| 16 | X10: `agent.list` answers with every field, in queue order, `last_line` matching `pane.read` | **holds** — 25/25 identical, and it costs 10–13 ms where the shape it replaces costs 230 (§4.3) |
+| 17 | X11: a per-workspace breakdown whose counts sum to the global one | **holds** — and the compact form at 45 columns (§4.4) |
+| 18 | X11: the queue head with an age that advances | **holds only while something is painting** — frozen at `0s` for 14 s on a quiet session (§4.4) |
+| 19 | X12: a 45-column client renders one pane at 45 columns | **holds** — 45×19, not a 28-column grid letterboxed, and crossing back mutates no layout (§4.5) |
+| 20 | X13: a pane that asked for reports gets them, one that did not gets none | **holds** — byte for byte, in the pane's own frame (§4.6) |
+| 21 | X13: wheel-up scrolls copy mode, wheel-down at the live edge leaves it | **holds** — and no positional value is parsed on that path (§4.6) |
+| 22 | X17: `next-attention --workspace` clears one project's queue without leaving it | **holds** — three calls, `waiting` 2 → 1 → 0, focus never leaves (§4.7) |
+| — | the attention queue itself | **a finding, and not a small one** (§4.8) |
+
+### 4.2 The baseline, re-run
+
+```
+                          §1 (0721ac2)   §2 (6f4fb5d)   §3 (335cc27)   §4 (b698c51)
+session.state x7          7 8 8 8 8 9 10 7 8 9 11 12 13 9 9 11 11 11 13 12 13 13 13 14 14
+agent.list x7             —              —              —              10 11 11 12 12 12 13
+state + 25 pane.read      161 ms         214 ms         164 ms         230 ms
+25 agents ready in        0.5 s          0.5 s          0.5 s          0.4 s
+short numbers over a restart  all kept   all kept       all kept       25/25 kept
+```
+
+Twenty-five agents across five workspaces, five blocked in the same distribution
+(`docs` with none, `infra` with two), the queue in block order, both ptys, the
+event stream **1061 deliveries, 0 gaps, 0 non-NDJSON lines and 0 sequence
+discontinuities**, and the restart restoring 25 panes with every short number and
+every workspace number unchanged, the stand-ins recording 25 resumes, and
+`agent.list` back at 25 rows by the first read after the restore. Both servers
+exited 0 with no drain census.
+
+### 4.3 X10 — the reply, and what it costs
+
+Every row carries `pane`, `name`, `kind`, `status`, `since`, `last_line` and
+`workspace`; `reason` is on the five that a hook named and absent on the twenty
+that nothing did, which is the blank column D-M4-3 asks a renderer for. The
+`last_line` of all 25 is byte-identical to the bottom non-empty row `pane.read`
+returns for the same pane, taken pane by pane.
+
+The cost is the news. One `agent.list` at 25 agents is **10–13 ms**; the
+`session.state` + 25 × `pane.read` shape it replaces is **230 ms** in the same
+run on the same session. R-M4-7's arithmetic — that a per-pane refresh at 4 Hz
+would be 100 calls a second each walking 25 panes — is the trap this reply
+exists to avoid, and both surfaces that render it refresh once per window for all
+rows (§5.2, §5.3).
+
+### 4.4 X11 — the breakdown, and the age that stands still
+
+At 200×50, verbatim:
+
+```
+ [api ⚑1] [docs] [exp ⚑1] [infra] [web ⚑1] · api-5 · idle ⚑3 api/api-1 0s
+```
+
+The per-workspace counts sum to the global `⚑3`, `docs` renders with no count at
+all, and the head named at the end is the pane `agent.next` walks to. At 45
+columns the same line is the compact form:
+
+```
+ api ⚑3 api/api-1 4s
+```
+
+**The age advances only when something else repaints.** Seven samples two
+seconds apart on an otherwise quiet session all read `0s`, and a keystroke that
+changes nothing does not move it; a resize does (`0s` → `7s` → `9s` in the same
+attach). X11's clock is not what is standing still — it is a monotonic estimate
+that only moves forward, and it is right the instant the line is rebuilt. What is
+missing is a reason to rebuild it: X14 put a 250 ms tick in `wired.rs` gated on
+the agents view being open, and the status line has none. §7's exit item 2 asks
+for "an age that advances", and on a session where nothing is happening — which
+is exactly the session a user glances at — it does not. **Unowned**: `app/status`
+was X11's in wave 3 and is nobody's in wave 5.
+
+### 4.5 X12 — forty-five columns
+
+```
+api's five panes at 200×50   98x47  48x47  23x47  11x47  10x47
+the same client at 45×20     98x47  48x47  23x47  11x47  45x19
+back at 200×50               98x47  48x47  23x47  11x47  10x47
+```
+
+The focused pane is sized to the whole content area — **45 columns wide, not 28
+letterboxed inside 45** — and the four the projection does not draw keep the size
+they were last commanded, which is the rule X12's outcome states. The screen
+shows one pane's dialog and the compact status line and nothing else. The
+`workspaces` block of `session.state`, serialized and compared before the first
+crossing and after the second, is **identical**: crossing the threshold in either
+direction mutates no layout, which is the half of D-M4-7 that a phone would
+otherwise cost every other client in the session.
+
+### 4.6 X13 — the mouse path, end to end
+
+The gate §7.3 asks for is closed (`m4-mouse-path.md` §7.3, dated heading of
+2026-08-09): both installed emulators send wheel-up as button 64 and wheel-down
+as 65 in SGR, so this is outcome (b) and the row below is the one §7 item 7
+licenses in full.
+
+**What the server says about a pane's own mode**, over a real socket:
+
+```
+  plain-shell  1db07c12…  mouse=null
+  mouse-app    fe23828a…  mouse={"events": "normal", "format": "sgr"}  118x17
+```
+
+**What the client asks its host terminal for**, every DEC private mode it wrote
+in order, over a whole attach:
+
+```
+  no [client] mouse       ?1049h ?25l ?25h
+  [client] mouse = true   ?1049h ?25l ?1006h ?1000h … ?1000l ?1006l ?25h ?1049l
+```
+
+The default asks for nothing; the request is released *before* the alt screen it
+was asked for on top of; `1007` appears nowhere in either direction.
+
+**What the pane that asked actually receives.** A 120×40 client with the
+mouse app focused in the lower pane, reports fed into the client's pty:
+
+```
+  press   inside             '\x1b[<0;30;25M'   -> '^[[<0;29;4M'
+  release inside             '\x1b[<0;30;25m'   -> '^[[<0;29;4m'
+  wheel-up inside            '\x1b[<64;30;25M'  -> '^[[<64;29;4M'
+  wheel-down inside          '\x1b[<65;30;25M'  -> '^[[<65;29;4M'
+  press   in the other pane  '\x1b[<0;30;10M'   -> ''
+  press   on the status line '\x1b[<0;30;40M'   -> ''
+```
+
+Same grammar, same button, coordinates moved into that pane's frame and nothing
+else; a report outside the focused pane's interior is dropped rather than
+delivered somewhere. A sweep down every other row of the terminal produced bytes
+for rows 23–37 and silence everywhere else, which is the interior and its border
+measured rather than asserted.
+
+**And over a pane that asked for nothing**, the wheel is the exception and only
+the wheel:
+
+```
+  before        '… docs-5 · idle'
+  wheel-up      '… docs-5 · idle COPY'
+  wheel-down 1  '… docs-5 · idle COPY'
+  wheel-down 2  '… docs-5 · idle'
+```
+
+Copy mode opens on the turn, leaves when the second turn puts it back at the
+live edge, and a click while it is open does nothing at all.
+
+### 4.7 X17 — one workspace's queue, cleared without leaving it
+
+```
+  next --workspace infra -> infra/infra-3  waiting=2  focused=infra  queue=[api-1, web-2, infra-3, infra-4, exp-1]
+  next --workspace infra -> infra/infra-4  waiting=1  focused=infra  queue=[api-1, web-2, infra-4, exp-1]
+  next --workspace infra -> none           waiting=0  focused=infra  queue=[api-1, web-2, exp-1]
+```
+
+`waiting` counts the scope it was asked about and not the queue; the focused
+workspace never moves; the three panes waiting in other projects are still
+waiting when infra has nothing left. §7's exit item 5, measured.
+
+### 4.8 A blocked agent goes idle after thirty seconds, and the queue empties under nobody
+
+This is the finding of the boundary, it is not wave 3's or wave 4's, and it is
+worth every line below because three of the four surfaces those waves built are
+answers to "who needs me" and this is the thing that makes them answer "nobody".
+
+**Measured.** One agent, blocked on a real permission dialog, watched once a
+second and touched by nothing:
+
+```
+  [  0.0s] status=blocked reason=PermissionRequest queued=True
+  [ 30.4s] status=idle    reason=None              queued=False
+  explain: cause=staleness state=idle matched=permission_dialog
+  the dialog is still the bottom of the screen: '  (esc to cancel)'
+```
+
+Thirty seconds after its last paint the pane is `idle`, it has left the
+attention queue, its `reason` is gone — and `agent explain` on the same pane, in
+the same second, still reports that the shipped `permission_dialog` rule matches
+the screen it is looking at.
+
+**And it comes back the moment anything repaints it.** One `amx attach` at a
+size the panes were not already at, which resizes them and so produces damage:
+
+```
+  panes showing a dialog: api-1 idle, web-2 idle, infra-3 idle, exp-1 idle
+  queue before attach: 0
+  after one attach:    api-1 blocked permission_dialog, web-2 blocked …, exp-1 blocked …
+  queue after attach:  3
+```
+
+Three of the four flipped straight back to `blocked`; the fourth is the one
+whose size did not change, which is the mechanism stated by the exception.
+
+**The mechanism, named.** `Deadline::Staleness` fires 30 s
+(`fusion::STALENESS`) after the last thing that agreed with a held state, and
+its arm transitions to `Idle` unconditionally
+(`crates/amx-server/src/agent/fusion/tracker/inputs.rs:196-205`) — it does not
+ask tier 2 on the way out. Tier 2 is evaluated on *damage*, and a permission
+dialog waiting for a human produces none. So the module's own words for the
+deadline — "a pane the screen keeps confirming as `Working` is never cleared for
+staleness" (`fusion/mod.rs:124-126`) — cannot hold for a screen that has stopped
+changing: "no new evidence" is being read as "no evidence". Every transition into
+a held state arms it, so a *screen*-derived block decays the same way a
+hook-asserted one does.
+
+**Why no earlier smoke saw it.** M2's live smoke recorded that "the staleness
+deadline was never reached on any transition in this run" — a real agent's screen
+kept moving. M4 is the first milestone whose surfaces are read minutes after the
+block, by a person who is deliberately *not* attached (D14's phone, `amx agents`
+with no client). Every measurement in §1–§3 of this file, and every one in this
+section, was taken inside the window because the run had just blocked the agents;
+it is only the runs that left the session alone that found it.
+
+**What it costs, concretely**: `amx agents` on a phone reports "no agents
+blocked" about a session where four are; `⚑N` counts down to nothing; the agents
+view's blocked band empties; `next-attention` finds nothing to jump to; and when
+a repaint does revive the row, `since` is the repaint, so "blocked for 11m" reads
+`0s`.
+
+**Not taken.** `agent/fusion/**` and `actor/agent_hub/**` were X06's in wave 2
+and are in no wave-5 task's list, and this predates M4. The cheap fix is one
+that costs no I/O — on the staleness fire, evaluate the screen the tracker
+already has and demote only if it does not corroborate — but it is a change to
+the fusion state machine, which is a plan decision and not an integration
+repair. Recorded in [m4-wave-outcomes.md](m4-wave-outcomes.md) under this
+boundary with the same citations.
+
+### 4.9 DR-11's watch
+
+| Run | Stops | Exit | `drain-census` | Census log line |
+|---|---|---|---|---|
+| §4.2's restart | 1 | **0** | absent | none |
+| §4.2's teardown | 1 | **0** | absent | none |
+| the §5 session's teardown | 1 | **0** | absent | none |
+
+Three more clean stops with an observed exit status, plus one live handoff whose
+successor took the session (§5.2) and two stops of servers this driver had not
+spawned, whose exit status is therefore not observable and which are not counted.
+**Fourteen clean stops across the milestone**; nothing has fired.
+
+## 5. The wave-4 delta — 2026-08-09
+
+Same tree, same session, same run as §4. What is new here is that D15's three
+surfaces are attachable for the first time, so the things §7 asks about them can
+be driven rather than reasoned about.
+
+### 5.1 Verdict
+
+| # | What | Result |
+|---|---|---|
+| 23 | X16: `amx agents`, `--json`, `--workspace`, `--watch`, with no client attached | **holds**, all four (§5.2) |
+| 24 | X16: `--watch` survives a server swap without ending its stream | **holds** — one frame of `reconnecting…`, then the same table with continuous ages (§5.2) |
+| 25 | X14: the board opens, filters, groups, collapses, prompts, renames and kills on the second press | **holds**, every one (§5.3) |
+| 26 | X14: it jumps | **fails** — it lands on the workspace's remembered pane, not on the selected agent (§5.5) |
+| 27 | X15: peek shows a live pane from another workspace and forwards no keystroke | **holds** — and the cells arrive; what a peek of a tall pane *shows* is its middle, which is blank (§5.4) |
+| 28 | detaching from the board | **fails** — `prefix+d` does not reach a client with the board open (§5.5) |
+
+### 5.2 X16 — `amx agents`, in four forms
+
+With no client attached anywhere in the session:
+
+```
+25 agents · 3 blocked
+AGENT          STATUS   REASON             AGE  LAST LINE
+api/api-1      blocked  PermissionRequest   1s  (esc to cancel)
+web/web-2      blocked  PermissionRequest   1s  (esc to cancel)
+exp/exp-1      blocked  PermissionRequest   1s  (esc to cancel)
+api/api-2      idle                        11m  )
+…
+```
+
+`--workspace api` scopes both the table and its count — `5 agents · 1 blocked`,
+which is the queue counted *on the table* rather than the global queue described
+in a two-row sentence. `--json` prints the reply verbatim, `now` and all.
+`--watch --json` is refused with the spelling that works, which is the
+documentation D15 already wrote:
+
+```
+--json prints one reply; --watch is the live screen. For a live machine-readable
+stream use `amx events --json` and re-query on a `gap`, which is the contract
+--watch packages for a person.
+```
+
+**Across a live handoff**, `--watch` on a pty while the session is handed to a
+staged binary:
+
+```
+  footer before: q quits · seq 4808
+  footer after:  q quits · seq 4862
+  api/api-1  blocked  PermissionRequest  1s → 2s   (the same rows, ages continuous)
+```
+
+No `the session restarted` note, because it is the same session; the ages keep
+counting because `since` is absolute and rides the manifest. `q` exits 0. §7's
+exit item 4, both clauses.
+
+### 5.3 X14 — the board
+
+`prefix+g`, on a 120×40 attach, verbatim:
+
+```
+agents — 25 · ⚑3 · by workspace
+api/api-1        ⚑ blocked PermissionRequest 3s   │   (esc to cancel)
+  4 idle
+web/web-2        ⚑ blocked PermissionRequest 3s   │   (esc to cancel)
+  4 idle
+exp/exp-1        ⚑ blocked PermissionRequest 3s   │   (esc to cancel)
+  4 idle
+  5 idle
+  5 idle
+ [api ⚑1] [docs] [exp ⚑1] [infra] [web ⚑1] · api-1 · blocked (PermissionRequest) ⚑3 api/api-1 3s
+```
+
+Blocked rows sort above idle ones and the projects holding them sort first; the
+idle runs are collapsed; the board's age and the status line's age for the same
+head agree, which is the disagreement seam 5 exists to catch, measured. Typing
+`web` narrows to one project; `ctrl+b` narrows to the three blocked;
+`ctrl+s` regroups to `by state` and collapses `22 idle` into one line.
+
+`ctrl+r` opens the header as a rename line **prefilled with the current name** —
+`rename web/web-1> web-1` — which is worth knowing before you type: ten
+backspaces then `webby` leaves the pane labelled `webby` on the server, and
+typing without erasing appends. `ctrl+p` opens `prompt …>` empty and a submitted
+`stop` reached the agent without attaching: it went from `blocked` to `idle` with
+the prompt box on its screen. `ctrl+x` arms — `kill docs/docs-5? ctrl+x again` —
+and the pane count goes 25 → 24 only on the second press.
+
+One thing a later surface should know: **the filter survives closing and
+reopening the board.** Reopening with `prefix+g` and typing again appends to the
+query that was there, which reads as "the board is showing nothing" until you
+clear it.
+
+### 5.4 X15 — the peek, and why it looks empty
+
+`Space` on a row whose pane lives in a workspace this terminal is not drawing
+opens the region, and the region is a bordered box with nothing in it. It is not
+empty, and the proof is the pane's own geometry: `render::grid::blit`
+centre-crops content taller than its slot, the stand-in agents write their
+screens at the *bottom* after scrolling everything else off, and a 28-row peek of
+a 47-row pane shows rows 10–37 — all of them genuinely blank on that pane.
+
+The decisive measurement, because "the crop" and "no cells arrive" look
+identical from outside: shrink the peeked pane to **one column**, so its content
+is one character per row and reaches the top of its own grid, and peek it again:
+
+```
+┌───────────────────────────────────────────────┐
+│                       e                       │
+│                       d                       │
+│                       ?                       │
+│                       ❯                       │
+│                       1                       │
+…
+```
+
+The cells arrive, and they are centred in both axes. So the finding X14 raised
+and routed to **X18** is exactly what it said it was — a crop rule, not a
+delivery failure — and this is a second instrument agreeing with it.
+
+**The peek forwards no keystroke**: with a peek open on a blocked agent, typing
+`zzz` left its status, its `since` and the bottom line of its screen unchanged.
+Typing goes to the filter, which is the surface's own rule.
+
+### 5.5 Two defects at the join
+
+**The board's `Enter` jumps to the workspace, not to the agent.** Selected
+`exp/exp-3`, pressed `Enter`: the focused workspace became `exp` and the focused
+pane was `exp-5`, the pane that workspace happened to remember. Repeated with
+`exp-2` selected while `exp` was *already* the focused workspace: same answer,
+`exp-5`. The mechanism is one line meeting another:
+`agents_enter` sets the client's local focus for that workspace and then calls
+`workspace.switch` (`app/agents/keys.rs:206-219`, whose comment says the pane
+half stays local because no set-focus-to-pane op exists on the table); the server
+answers by publishing `FocusChanged { workspace, pane }` naming the workspace's
+*remembered* pane, and `app/events.rs:364-367` folds that over the local insert.
+The local half is correct and is overwritten a few milliseconds later by the
+call it makes itself.
+
+It is a wave-4 defect in a shipped D15 surface — "jump to the agent that needs
+you" is what the board is for — and it is nobody's in wave 5. Two cheap repairs
+exist entirely inside `amx-client`: apply the local focus *after* the switch
+reply (`SwitchReply.focused_pane` is already returned), or ignore a
+`FocusChanged` for a workspace this client is itself jumping inside. The durable
+one is a pane argument on `workspace.switch`, which is a wire change and belongs
+in a plan rather than in an integration fix.
+
+**`prefix+d` does not reach a client with the board open.** Measured: with the
+board up, `ctrl+a d` does nothing and the client stays; `Esc` then `ctrl+a d`
+detaches with exit 0. Small, and unpleasant exactly where D14 says this surface
+matters — a phone whose user opened the board and wants out. Same ownership as
+above.
+
+### 5.6 The two ledgers at this boundary
+
+**The seam ledger is closed in code and stayed closed**: `SEAM_LEDGER`'s one row
+(`actor/core/route.rs`) went with X10 in wave 3, and
+`no_dispatch_seam_outlives_the_milestone_that_opened_it` now asserts that no
+`seam(…)` call site exists at all.
+
+**The field ledger loses five of its six rows here, each struck against the
+running binary rather than against a call site:**
+
+| Field | Reader | Struck on |
+|---|---|---|
+| `AgentSnapshot.reason` | X10, X11, X14, X16 | a column on three surfaces (§4.3, §5.2, §5.3) |
+| `AgentSnapshot.since` | X10, X11, X14, X16 | an age on three surfaces, agreeing across two (§4.4, §5.3) |
+| `PaneState.mouse` | X13 | the gate on a relay watched delivering bytes (§4.6) |
+| `agent.list` `now` | X14, X16 | every age on the board and the table (§5.2, §5.3) |
+| `NextParams.workspace` | X17 | a scoped cycle driven to the end of a queue (§4.7) |
+
+**The sixth stays open, and it is the row the ledger exists for.** The identity
+block on `attention_enqueued`/`attention_dequeued` is written and on the wire —
+
+```
+{"event":"attention_enqueued","pane":"c336a545…","workspace":{"id":"f054855f…","name":"api"},
+ "name":"api-1","reason":"PermissionRequest","since":1786251938774}
+```
+
+— and **neither reader the row named reads it**. `amx agents --watch` takes
+`envelope.seq` off a delivery and re-queries `agent.list`
+(`crates/amx/src/agents/watch.rs`'s `drain`), which is the right design for that
+surface and reads none of the block; `examples/notify.sh` still prints
+`pane <uuid> needs input`. D-M4-6 froze the block so that a notifier could render
+`api/backend blocked (permission_dialog)` without a follow-up call, and nothing
+in the tree does. That is the R-M4-14 failure mode — a field frozen ahead of a
+reader that never came — caught by the instrument built to catch it, one wave
+before the exit rather than one milestone after. `examples/` is **X20**'s in wave
+5, and a two-line change to the reference notifier is the whole demonstration the
+field was frozen for.
+
 ---
 
 ## Re-running this
@@ -993,3 +1443,27 @@ not disposable is already a verb. What it does, in order:
 7. **Keep the event subscriber's stdout and stderr apart.** Merged, the relay's
    own stderr lines look like corrupt NDJSON, and the run would report a defect
    that belongs to the harness.
+
+Three more the wave-3/4 runs added, each because the harness produced a false
+finding before it produced a true one:
+
+8. **Give the scratch `HOME` a `.zshrc`, and set `SHELL=/bin/sh`.** A restored
+   pane is a shell that types its agent's argv (D-M2-7). With no rc file, zsh's
+   newuser wizard owns that shell's stdin and eats the type-in, so a restart
+   restores 25 panes and 0 agents — which reads exactly like a restore that has
+   stopped bringing agents back, and cost two runs before it was named. With the
+   rc file: 25 panes, 25 shorts, 25 recorded resumes, `agent.list` back at 25.
+9. **Never give a long-lived relay a pipe nothing is draining.** `amx events
+   --json` writes a line per delivery and flushes; through a 64 KiB pipe read
+   only at the end it blocks on `write` after about 560 lines and looks precisely
+   like a relay that stopped at a server swap. Redirect it to a file.
+10. **A pane whose input you want to read must set `stty raw -echo` first, and
+    its reader must be unbuffered.** In canonical mode the line discipline holds
+    a mouse report — no newline in it — until something submits a line, and
+    `cat` block-buffers into a file. Both make a working relay look dead: the
+    first cost a wrong "the relay delivers nothing" reading, and the second cost
+    the run that checked it.
+
+**Read the queue within thirty seconds of a paint, or with a client attached.**
+Every measurement of `attention`, `⚑N` or a blocked count in this file is inside
+that window; §4.8 is what is outside it.
