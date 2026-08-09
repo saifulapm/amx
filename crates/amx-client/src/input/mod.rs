@@ -44,27 +44,39 @@
 //!   the mode, so the byte that ends it (`y`, `Esc`, `q`) is decided in the
 //!   same table the engine reads and the two cannot drift.
 //!
-//! SGR mouse reports are recognised in every mode and never interpreted:
-//! in terminal mode they are forwarded to the focused pane iff it enabled
-//! mouse reporting, in every other mode they are dropped whole — chrome
-//! neither acts on a click nor mistakes a report's bytes for mode keys (D9).
-//! *Forwarded*, not *relayed unchanged*: a report's coordinates are viewport
-//! absolute and a pane's application reads them as pane-local, so the two
-//! differ by the pane's origin and X01's spike measured tmux rewriting them
-//! for exactly that reason (`docs/notes/m4-mouse-path.md`). What amx does
-//! about the offset is X13's; this machine's job stops at recognising the
-//! report's extent.
+//! SGR mouse reports are recognised in every mode, and a report's bytes are
+//! never mistaken for mode keys (D9). What happens to one then depends on the
+//! mode and on the pane:
+//!
+//! - **terminal mode, pane asked for reports**: relayed to it, with the
+//!   coordinates rewritten into the pane's own frame — the `mouse` submodule
+//!   has why "unchanged" cannot mean "byte-for-byte" and what the fence is
+//!   instead.
+//! - **terminal mode, pane did not ask**: D14's wheel exception. A wheel turn
+//!   becomes an [`Action::Mouse`] carrying only the [`Wheel`] it decoded;
+//!   every other report is dropped whole.
+//! - **chrome modes**: [`Input::feed_chrome`] is what the picker and copy mode
+//!   read their bytes through, so a report never reaches a surface's key table
+//!   as an `Esc` that cancels it. Copy mode acts on the wheel and nothing
+//!   else; the picker acts on nothing.
+//!
+//! No column and no row is read on any path but the relay's, and the relay
+//! neither chooses a pane by position nor interprets what it carries.
 
 mod mouse;
+mod reports;
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use amx_core::{Direction, PaneId};
 use amx_proto::control::Call;
 use amx_proto::control::pane::{MoveDirection, SplitDirection};
+use amx_proto::control::session::MouseMode;
 
 use crate::app::Mode;
 use crate::config::{Bindings, PrefixAction};
+
+pub use reports::{Chrome, Wheel};
 
 /// The prefix key amx ships, `ctrl+a` (04 §7).
 ///
@@ -94,17 +106,24 @@ pub enum Action {
         /// One past its end.
         end: usize,
     },
-    /// `bytes[start..end]` is one whole SGR mouse report: forward it only if
-    /// the focused pane enabled mouse reporting, otherwise drop it.
+    /// `bytes[start..end]` is one whole SGR mouse report.
+    ///
+    /// Relayed to the focused pane if it enabled SGR reporting; otherwise
+    /// `wheel` is the whole of what may be acted on, and a report that is not
+    /// a wheel turn is dropped.
     Mouse {
         /// Start of the report.
         start: usize,
         /// One past its final byte.
         end: usize,
+        /// The wheel turn this report describes, if it is one. Decoded from
+        /// the button alone.
+        wheel: Option<Wheel>,
     },
     /// A report carried across a read boundary completed; its bytes are in
-    /// [`Input::carried`]. Gated like [`Action::Mouse`].
-    CarriedMouse,
+    /// [`Input::carried`]. Gated like [`Action::Mouse`], and carrying the same
+    /// wheel decode.
+    CarriedMouse(Option<Wheel>),
     /// Carried bytes turned out not to be a mouse report; [`Input::carried`]
     /// holds them and they forward verbatim.
     CarriedBytes,
@@ -175,8 +194,14 @@ pub struct Input {
     bindings: Bindings,
     /// `s` was pressed in navigate; the next direction key names the swap.
     pending_swap: bool,
-    /// Panes that enabled mouse reporting, per the server's pane state.
-    mouse_panes: HashSet<PaneId>,
+    /// What each pane's application asked its terminal to report about the
+    /// mouse, folded from `session.state`'s `PaneState.mouse`.
+    ///
+    /// A pane with no entry asked for nothing, which is every pane running a
+    /// shell — and the two cases a reader cares about are "relay to it" and
+    /// "do not", so an absent entry and an entry in an encoding this client
+    /// cannot produce both land on the second.
+    mouse_modes: HashMap<PaneId, MouseMode>,
     /// An unterminated SGR report candidate carried across a read boundary.
     carry: Vec<u8>,
     /// The last resolved carry, kept readable until the next feed so the
@@ -185,6 +210,12 @@ pub struct Input {
     done: Vec<u8>,
     /// Reused action buffer, so a keystroke allocates nothing steady-state.
     scratch: Vec<Action>,
+    /// [`Self::scratch`]'s counterpart for [`Self::feed_chrome`].
+    chrome: Vec<Chrome>,
+    /// Where a relayed report is rewritten. Reused for the same reason
+    /// [`Self::scratch`] is: 04's performance rule names event dispatch, and a
+    /// wheel held down is a report every few milliseconds.
+    relay: Vec<u8>,
 }
 
 impl Input {
@@ -218,32 +249,6 @@ impl Input {
         self.bindings.prefix()
     }
 
-    /// Record whether `pane` has mouse reporting enabled.
-    ///
-    /// Fed from pane state updates; until the event subscription that would
-    /// deliver those exists, tests (and the future state path) call it
-    /// directly.
-    pub fn set_mouse_reporting(&mut self, pane: PaneId, enabled: bool) {
-        if enabled {
-            self.mouse_panes.insert(pane);
-        } else {
-            self.mouse_panes.remove(&pane);
-        }
-    }
-
-    /// Whether `pane` has mouse reporting enabled.
-    #[must_use]
-    pub fn mouse_enabled(&self, pane: PaneId) -> bool {
-        self.mouse_panes.contains(&pane)
-    }
-
-    /// The bytes behind the latest [`Action::CarriedMouse`] or
-    /// [`Action::CarriedBytes`]. Valid until the next [`Input::feed`].
-    #[must_use]
-    pub fn carried(&self) -> &[u8] {
-        &self.done
-    }
-
     /// Take the reusable action buffer (empty, capacity kept).
     pub(crate) fn take_scratch(&mut self) -> Vec<Action> {
         std::mem::take(&mut self.scratch)
@@ -272,6 +277,7 @@ impl Input {
                             out.push(Action::Mouse {
                                 start: i,
                                 end: i + len,
+                                wheel: mouse::wheel_of(&bytes[i..i + len]),
                             });
                         }
                         i += len;
@@ -311,41 +317,6 @@ impl Input {
             out.push(Action::forward(run, bytes.len()));
         }
         mode
-    }
-
-    /// Continue an SGR report candidate left over from the previous read.
-    /// Returns how many of `bytes` it consumed.
-    fn resume_carry(&mut self, mode: Mode, bytes: &[u8], out: &mut Vec<Action>) -> usize {
-        if self.carry.is_empty() {
-            return 0;
-        }
-        for (at, &b) in bytes.iter().enumerate() {
-            if mouse::param_byte(b) && self.carry.len() < mouse::MAX_REPORT {
-                self.carry.push(b);
-                continue;
-            }
-            return if b == b'M' || b == b'm' {
-                self.carry.push(b);
-                self.resolve_carry(mode, Action::CarriedMouse, out);
-                at + 1
-            } else {
-                // Not a report after all: release what was held, and let the
-                // byte that broke the pattern keep its normal meaning.
-                self.resolve_carry(mode, Action::CarriedBytes, out);
-                at
-            };
-        }
-        bytes.len()
-    }
-
-    /// Move a finished carry into [`Self::carried`] and, in terminal mode,
-    /// emit the action that forwards it; chrome modes swallow it whole.
-    fn resolve_carry(&mut self, mode: Mode, action: Action, out: &mut Vec<Action>) {
-        std::mem::swap(&mut self.done, &mut self.carry);
-        self.carry.clear();
-        if mode == Mode::Terminal {
-            out.push(action);
-        }
     }
 
     /// One-shot prefix commands, looked up in the resolved table.

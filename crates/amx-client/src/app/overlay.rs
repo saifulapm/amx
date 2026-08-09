@@ -18,7 +18,7 @@ use amx_proto::control::{Call, workspace as workspace_proto};
 use super::{App, Mode};
 use crate::cache::RowSlot;
 use crate::copy::{CopyMode, Outcome};
-use crate::input::{Action, InputEvent};
+use crate::input::{Action, Chrome, InputEvent};
 use crate::model::{Attrs, Cell};
 use crate::picker::{Picker, PickerEvent};
 use crate::render::chrome;
@@ -115,42 +115,54 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         bytes: &[u8],
         sink: &mut impl FnMut(InputEvent<'_>),
     ) -> Effect {
-        for &byte in bytes {
-            let Some(ui) = self.picker.as_mut() else {
-                return Effect::Full;
+        // Through the machine's chrome split rather than byte by byte: a mouse
+        // report's leading `ESC` is the picker's cancel key, so a wheel turn
+        // over an open picker would close it. The picker interprets no mouse
+        // event at all, so every report — wheel included — is dropped here.
+        let mut pieces = self.input.take_chrome();
+        self.input.feed_chrome(bytes, &mut pieces);
+        'pieces: for &piece in &pieces {
+            let Chrome::Keys { start, end } = piece else {
+                continue;
             };
-            match ui.picker.key(byte) {
-                PickerEvent::Continue => {}
-                PickerEvent::Cancelled => {
-                    self.picker = None;
-                }
-                PickerEvent::Chosen(index) => {
-                    let target = ui.targets.get(index).copied();
-                    self.picker = None;
-                    match target {
-                        Some(PickTarget::Workspace(id)) => {
-                            self.model.focus_workspace(id);
-                            sink(InputEvent::Call(Call::WorkspaceSwitch(
-                                workspace_proto::SwitchParams { workspace: id },
-                            )));
-                        }
-                        Some(PickTarget::Pane(pane)) => {
-                            if let Some(ws) = self.model.focused_workspace_id() {
-                                self.focus.insert(ws, pane);
+            for &byte in &bytes[start..end] {
+                let Some(ui) = self.picker.as_mut() else {
+                    break 'pieces;
+                };
+                match ui.picker.key(byte) {
+                    PickerEvent::Continue => {}
+                    PickerEvent::Cancelled => {
+                        self.picker = None;
+                    }
+                    PickerEvent::Chosen(index) => {
+                        let target = ui.targets.get(index).copied();
+                        self.picker = None;
+                        match target {
+                            Some(PickTarget::Workspace(id)) => {
+                                self.model.focus_workspace(id);
+                                sink(InputEvent::Call(Call::WorkspaceSwitch(
+                                    workspace_proto::SwitchParams { workspace: id },
+                                )));
                             }
+                            Some(PickTarget::Pane(pane)) => {
+                                if let Some(ws) = self.model.focused_workspace_id() {
+                                    self.focus.insert(ws, pane);
+                                }
+                            }
+                            Some(PickTarget::Command(action)) => {
+                                // Folded into this call's own `Full` rather
+                                // than returned: the picker closing already
+                                // invalidates the frame, and nothing an action
+                                // can report is stronger than that.
+                                let _ = self.apply_action(action, &[], sink);
+                            }
+                            None => {}
                         }
-                        Some(PickTarget::Command(action)) => {
-                            // Folded into this call's own `Full` rather than
-                            // returned: the picker closing already invalidates
-                            // the frame, and nothing an action can report is
-                            // stronger than that.
-                            let _ = self.apply_action(action, &[], sink);
-                        }
-                        None => {}
                     }
                 }
             }
         }
+        self.input.put_chrome(pieces);
         Effect::Full
     }
 
@@ -176,27 +188,59 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     }
 
     /// Route bytes to the copy engine, mirroring the machine's `mode_after`.
+    ///
+    /// Through the chrome split for the reason the picker is: an SGR report's
+    /// bytes are `ESC`, `[`, `<`, digits and `M` — which this mode's own table
+    /// reads as leave, then junk, then junk, then a column move. A wheel turn
+    /// reaches the engine as a wheel turn; every other report is dropped before
+    /// it can be mistaken for a keystroke.
     #[must_use]
     pub(super) fn copy_input(&mut self, bytes: &[u8]) -> Effect {
-        for &byte in bytes {
-            let Some(mut ui) = self.copy.take() else {
-                self.mode = Mode::Terminal;
-                return Effect::Full;
-            };
-            let cache = self.caches.entry(ui.pane).or_default();
-            match ui.engine.key(byte, cache) {
-                Outcome::Continue => {
-                    self.queue_copy_misses(&ui);
-                    self.copy = Some(ui);
+        let mut pieces = self.input.take_chrome();
+        self.input.feed_chrome(bytes, &mut pieces);
+        for &piece in &pieces {
+            match piece {
+                Chrome::Keys { start, end } => {
+                    for &byte in &bytes[start..end] {
+                        if !self.copy_key(byte) {
+                            break;
+                        }
+                    }
                 }
-                Outcome::Exit => self.mode = Mode::Terminal,
-                Outcome::Yank(osc) => {
-                    self.emit.extend_from_slice(&osc);
-                    self.mode = Mode::Terminal;
-                }
+                // Where D14's wheel exception acts. Until it lands, a wheel
+                // turn is dropped like every other report: chrome interprets
+                // no mouse event, which is the rule the exception is the one
+                // exception to.
+                Chrome::Wheel(_) => {}
             }
         }
+        self.input.put_chrome(pieces);
         Effect::Full
+    }
+
+    /// One byte through the engine; answers whether copy mode is still open.
+    fn copy_key(&mut self, byte: u8) -> bool {
+        let Some(mut ui) = self.copy.take() else {
+            self.mode = Mode::Terminal;
+            return false;
+        };
+        let cache = self.caches.entry(ui.pane).or_default();
+        match ui.engine.key(byte, cache) {
+            Outcome::Continue => {
+                self.queue_copy_misses(&ui);
+                self.copy = Some(ui);
+                true
+            }
+            Outcome::Exit => {
+                self.mode = Mode::Terminal;
+                false
+            }
+            Outcome::Yank(osc) => {
+                self.emit.extend_from_slice(&osc);
+                self.mode = Mode::Terminal;
+                false
+            }
+        }
     }
 
     /// Queue the viewport's cache misses for the wired loop to fetch.

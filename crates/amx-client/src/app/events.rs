@@ -176,6 +176,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         for pane in &state.panes {
             self.model.set_pane_label(pane.pane, pane.label.clone());
             self.model.set_pane_agent(pane.pane, pane.agent.clone());
+            self.fold_mouse_mode(pane);
             let cache = self.caches.entry(pane.pane).or_default();
             let known = cache.head().get();
             let head = pane.history_head.get();
@@ -337,6 +338,42 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 folded(showing, Effect::Layout)
             }
             _ => Folded::Nothing,
+        }
+    }
+
+    /// Record what `pane`'s application asked its terminal about the mouse, and
+    /// say so once when the answer changes.
+    ///
+    /// This fold is the whole of how the per-pane gate is fed. Until M4 it had
+    /// no production writer at all and every pane read as "mouse disabled" to a
+    /// live client (`docs/11-m4-plan.md` D-M4-1); the server now reads the mode
+    /// off the pane's own terminal and carries it on `PaneState.mouse`, and
+    /// this is its reader.
+    ///
+    /// **It moves at `session.state`'s cadence, not the pane's.** A pane that
+    /// enables reporting between two folds is not noticed until the next one,
+    /// because X01 §3 settled that a mode change is a *fact* rather than a
+    /// transition and publishes no event — so nothing wakes a client that is
+    /// only watching the bus. That is a latency, not a loss: every resync
+    /// carries the current answer and the mirror converges. It is recorded in
+    /// `docs/notes/m4-wave-outcomes.md` rather than papered over here.
+    ///
+    /// The `debug!` is X01 F-2's "drop recorded rather than silent": a pane
+    /// that asked for a non-SGR encoding gets no reports and the reason is said
+    /// out loud once, where the mode arrives — not per report, which under a
+    /// held drag would be a flood rather than a record.
+    fn fold_mouse_mode(&mut self, pane: &session::PaneState) {
+        if !self.input.set_mouse_mode(pane.pane, pane.mouse) {
+            return;
+        }
+        match pane.mouse {
+            Some(mode) if mode.format != session::MouseFormat::Sgr => tracing::debug!(
+                pane = %pane.pane,
+                events = ?mode.events,
+                format = ?mode.format,
+                "pane asked for an encoding this client does not produce; reports are dropped",
+            ),
+            _ => {}
         }
     }
 

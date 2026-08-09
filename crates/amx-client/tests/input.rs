@@ -19,7 +19,7 @@ use amx_client::input::{InputEvent, PREFIX, RESIZE_STEP};
 use amx_client::model::WorkspaceModel;
 use amx_core::{Direction, Layout as BspLayout, PaneId, WorkspaceId};
 use amx_proto::ClientInfo;
-use amx_proto::control::{Call, pane as pane_proto};
+use amx_proto::control::{Call, pane as pane_proto, session};
 use serde_json::json;
 
 type TestApp = App<std::fs::File, Vec<u8>>;
@@ -90,6 +90,10 @@ async fn fixture(tag: &str) -> Fixture {
     // The attach already folded and focused the server's seeded workspace;
     // these tests navigate their own mirror instead.
     app.model().focus_workspace(ws);
+    // One repaint before anything drives it, so the pane rects exist: relaying
+    // a mouse report needs the focused pane's own box, and nothing but a
+    // repaint computes one.
+    app.repaint();
 
     Fixture {
         server,
@@ -239,8 +243,16 @@ async fn hjkl_moves_focus_and_HJKL_resizes() {
     fx.server.shutdown().await;
 }
 
+/// The mode a pane running an SGR-speaking application reports.
+fn sgr() -> session::MouseMode {
+    session::MouseMode {
+        events: session::MouseEvents::Normal,
+        format: session::MouseFormat::Sgr,
+    }
+}
+
 #[tokio::test]
-async fn sgr_mouse_event_is_forwarded_only_when_the_pane_enabled_reporting() {
+async fn sgr_mouse_event_is_relayed_only_when_the_pane_enabled_reporting() {
     let mut fx = fixture("mouse").await;
     let app = &mut fx.app;
     let left = fx.left;
@@ -252,21 +264,72 @@ async fn sgr_mouse_event_is_forwarded_only_when_the_pane_enabled_reporting() {
         "reporting off: the report is dropped, not leaked: {evs:?}"
     );
 
-    app.input().set_mouse_reporting(left, true);
+    // The left pane's box is the left half of a 80x23 content area, and its
+    // interior starts at (1, 1) inside that — so viewport column 4 row 3 is the
+    // pane's own column 3 row 2. Relayed, not repeated: a report's coordinates
+    // are viewport-absolute and the pane's application reads them as pane-local
+    // (`docs/notes/m4-mouse-path.md` F-1).
+    assert!(app.input().set_mouse_mode(left, Some(sgr())));
     let evs = drive(app, press);
-    assert_eq!(evs, vec![Ev::Fwd(left, press.to_vec())]);
+    assert_eq!(evs, vec![Ev::Fwd(left, b"\x1b[<0;3;2M".to_vec())]);
 
-    // A report split across two reads is reassembled and still gated whole.
+    // A report split across two reads is reassembled, gated whole, and
+    // translated the same way.
     let evs_a = drive(app, b"\x1b[<0;4");
     assert!(evs_a.is_empty());
     let evs_b = drive(app, b";3m");
-    assert_eq!(evs_b, vec![Ev::Fwd(left, b"\x1b[<0;4;3m".to_vec())]);
+    assert_eq!(evs_b, vec![Ev::Fwd(left, b"\x1b[<0;3;2m".to_vec())]);
 
     // ... and dropped whole once reporting is off again.
-    app.input().set_mouse_reporting(left, false);
+    assert!(app.input().set_mouse_mode(left, None));
     drive(app, b"\x1b[<0;4");
     let evs = drive(app, b";3m");
     assert!(evs.is_empty());
+
+    fx.server.shutdown().await;
+}
+
+/// X01 F-2: a pane that enabled `?1000` without `?1006` expects the X10
+/// encoding, and an SGR report is bytes it cannot parse. The honest answer is
+/// to drop, not to guess at a translation.
+#[tokio::test]
+async fn a_pane_that_did_not_ask_for_sgr_is_relayed_nothing() {
+    let mut fx = fixture("mouse-x10").await;
+    let app = &mut fx.app;
+
+    app.input().set_mouse_mode(
+        fx.left,
+        Some(session::MouseMode {
+            events: session::MouseEvents::Normal,
+            format: session::MouseFormat::X10,
+        }),
+    );
+    let evs = drive(app, b"\x1b[<0;4;3M");
+    assert!(evs.is_empty(), "X10 pane was sent SGR bytes: {evs:?}");
+
+    // And it does not get the wheel exception either: it asked for the mouse,
+    // so its wheel is its own business even though amx cannot deliver it.
+    let evs = drive(app, b"\x1b[<64;4;3M");
+    assert!(evs.is_empty());
+    assert_eq!(app.mode(), Mode::Terminal);
+
+    fx.server.shutdown().await;
+}
+
+/// A report addressed at the focused pane but landing outside it is dropped
+/// rather than clamped: the pane is chosen by focus, and a coordinate the pane
+/// has no cell for is not a coordinate to send it.
+#[tokio::test]
+async fn a_report_outside_the_focused_pane_is_dropped() {
+    let mut fx = fixture("mouse-outside").await;
+    let app = &mut fx.app;
+    app.input().set_mouse_mode(fx.left, Some(sgr()));
+
+    // Column 60 is in the right pane; row 24 is past the content area.
+    for report in [&b"\x1b[<0;60;3M"[..], b"\x1b[<0;4;24M"] {
+        let evs = drive(app, report);
+        assert!(evs.is_empty(), "{report:?} was relayed: {evs:?}");
+    }
 
     fx.server.shutdown().await;
 }
@@ -280,7 +343,7 @@ async fn chrome_never_interprets_a_mouse_event() {
     assert_eq!(app.mode(), Mode::Navigate);
     // Even a pane that enabled reporting gets nothing while chrome owns the
     // keys: forwarding from inside a chrome mode would be interpretation.
-    app.input().set_mouse_reporting(fx.left, true);
+    app.input().set_mouse_mode(fx.left, Some(sgr()));
 
     let repaints = app.repaints;
     // A report whose payload bytes spell navigate verbs if misread: `2`
