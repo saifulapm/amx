@@ -1,5 +1,5 @@
-//! M4's two ledgers: the handler seam that is open, and the fields frozen
-//! ahead of their readers.
+//! M4's two ledgers: the handler seam, closed by X10, and the fields still
+//! frozen ahead of a reader.
 //!
 //! A child module of [`super`] rather than a second suite, because both guards
 //! are the same idea at two granularities and both are struck by the same task
@@ -15,28 +15,26 @@ use std::path::Path;
 
 use super::rust_files;
 
-/// M4's seam ledger: the files a `seam(…)` may live in, and who owes each.
+/// M4's seam ledger, **closed**: no `seam(…)` may live in `crates/*/src`.
 ///
 /// A row that lands before its wiring is answered through a `seam` helper
 /// rather than `METHOD_NOT_FOUND`, because telling a client a method is unknown
 /// tells it to stop offering it — and three of D15's surfaces are built on
-/// `agent.list`. The helper is therefore a milestone's tool, and the test below
-/// is what keeps it one: while a milestone is being built this list is
-/// non-empty and every call site must live in a file it names; when the last
-/// row is answered, the helper, this list and the exemption go together.
+/// `agent.list`. The helper is therefore a milestone's tool, and this test is
+/// what keeps it one: while a milestone is being built the ledger is non-empty
+/// and every call site must live in a file it names; when the last row is
+/// answered, the helper, the list and the exemption go together.
 ///
-/// That has happened three times. U01 introduced the helper with M1's two rows,
-/// U06 and U07 closed them. V02 brought both back for M2's twelve; V12 closed
-/// four, V09 one, V11 three, V13 two, and V17 closed the last two. W03 reopened
-/// it for M3's one, `session.handoff`, and W06 wired it.
+/// That has now happened four times. U01 introduced the helper with M1's two
+/// rows, U06 and U07 closed them. V02 brought both back for M2's twelve; V12
+/// closed four, V09 one, V11 three, V13 two, and V17 closed the last two. W03
+/// reopened it for M3's one, `session.handoff`, and W06 wired it. X02 reopened
+/// it for M4's one, in `actor/core/route.rs` rather than in the dispatch tree —
+/// the dispatch arm was *finished* and it was the answer that was owed — and
+/// **X10 wired it**, which took the helper and the exemption with it.
 ///
-/// **X02 reopens it for M4's one.** The helper is in `actor/core/route.rs` and
-/// not in the dispatch tree, because the dispatch arm is *finished* — it routes
-/// the call to the actor D-M4-2 puts the answer in — and it is the answer that
-/// is owed. X10 replaces the arm and deletes the helper, this row and the
-/// exemption together.
-const SEAM_LEDGER: &[(&str, &str)] = &[("amx-server/src/actor/core/route.rs", "X10")];
-
+/// So the assertion below has no exemption left to make. The next milestone
+/// that tables a row ahead of its handler writes its own list here.
 /// D-M4-10's other half: a *field* frozen in M4 names the task that reads it.
 ///
 /// R-M3-12 recorded the qualified version — "freezing a field ahead of its
@@ -109,12 +107,6 @@ fn no_dispatch_seam_outlives_the_milestone_that_opened_it() {
                 if !line.contains(call) || line.trim_start().starts_with("//") {
                     continue;
                 }
-                if SEAM_LEDGER
-                    .iter()
-                    .any(|(file, _)| where_it_is.ends_with(file))
-                {
-                    continue;
-                }
                 found.push(format!("{where_it_is}:{}: {}", n + 1, line.trim()));
             }
         }
@@ -122,31 +114,15 @@ fn no_dispatch_seam_outlives_the_milestone_that_opened_it() {
 
     assert!(
         found.is_empty(),
-        "a `seam(…)` call site outside M4's ledger can only be a row that \
-         landed without wiring. Implement it, or add its file and its owner to \
-         SEAM_LEDGER:\n{}",
+        "M4's seam ledger is closed, so a `seam(…)` call site can only be a row \
+         that landed without wiring. Implement it, or reopen the ledger above \
+         with the file and the task that owes it:\n{}",
         found.join("\n")
     );
     assert!(
         scanned >= 50,
         "the crates scan read too few source files ({scanned}) to be believed"
     );
-
-    // The other direction: a ledger row whose file no longer holds a seam is a
-    // row somebody closed and forgot to strike, and a ledger that lies about
-    // what is open is worse than no ledger.
-    for (file, owner) in SEAM_LEDGER {
-        let path = crates.join(file);
-        let text = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("SEAM_LEDGER names {file}, which cannot be read: {e}"));
-        assert!(
-            text.lines()
-                .any(|line| line.contains(call) && !line.trim_start().starts_with("//")),
-            "SEAM_LEDGER says {owner} owes a seam in {file} and there is none \
-             left; strike the row, delete the helper, and close the milestone's \
-             ledger",
-        );
-    }
 }
 
 /// D-M4-10: every field M4 froze still exists where the ledger says it does.

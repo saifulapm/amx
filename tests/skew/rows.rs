@@ -1,5 +1,5 @@
-//! The per-milestone row ledgers: every tabled row answers, and only the open
-//! one answers a seam.
+//! The per-milestone row ledgers: every tabled row answers, and none of them
+//! answers a seam.
 //!
 //! A child module of [`super`], sharing its table, its [`sample_params`] and
 //! its fixtures — a second harness with a second notion of what a bogus pane id
@@ -8,7 +8,8 @@
 //!
 //! What [`super`] proves is that *negotiation* holds across a version window
 //! and across the bridge transport. What this proves is narrower and moves
-//! every milestone: which rows are wired, and which one is not yet.
+//! every milestone: which rows are wired, and which one is not yet. As of X10
+//! the answer is all of them.
 
 use amx_proto::control::Method;
 use amx_proto::rpc::RpcError;
@@ -33,11 +34,12 @@ use super::sample_params;
 /// the bottom of the range: the permanent codes fill it from the top, the
 /// temporary one from the bottom, and they cannot meet before it is deleted.
 ///
-/// Two tests read it, in opposite directions:
-/// [`skew_calls_every_m2_row_and_none_is_method_not_found`] asserts no M2 or M3
-/// row answers it — those ledgers are closed and stay closed — and
-/// [`method_golden_and_skew_arm_cover_agent_list`] asserts M4's one row *does*,
-/// until X10 lands.
+/// Every test here reads it in the same direction now: no row answers it. M2's
+/// twelve and M3's one were closed before this milestone started, and
+/// [`method_golden_and_skew_arm_cover_agent_list`] joined them when X10 wired
+/// `agent.list`. The constant stays because the *ban* is what the ledgers are
+/// worth — a row that starts answering it has been un-implemented — and because
+/// the next milestone's first seam will be spelled the same way.
 const SEAM_CODE: i32 = -32099;
 
 /// The twelve rows M2 added, by wire name.
@@ -176,13 +178,18 @@ async fn method_golden_and_skew_arm_cover_session_handoff() {
 /// The other half of the goldens law of `docs/11-m4-plan.md` §3: a method
 /// golden freezes the *shape*, and this freezes that the shape is reachable —
 /// the table routes `agent.list`, the server owns it, and the whole path from
-/// decode to `Core`'s mailbox to a reply channel runs from wave 1.
+/// decode to `Core`'s mailbox to a reply channel runs.
 ///
-/// It answers the seam code today, which is the permitted answer for a tabled
-/// row whose wiring has not landed: `METHOD_NOT_FOUND` would tell a client to
-/// stop offering the method three of D15's surfaces are built on. **X10 wires
-/// it**, and when it does this test flips — the seam assertion becomes the ban
-/// M2's twelve rows already live under, and the reply becomes a list.
+/// W03's shape, one milestone on. This was written against the seam code, the
+/// permitted answer for a tabled row whose wiring had not landed —
+/// `METHOD_NOT_FOUND` would tell a client to stop offering the method three of
+/// D15's surfaces are built on. **X10 wired the row**, so the answer is now
+/// behavior, and the seam code has become forbidden here the way it already was
+/// for M2's twelve and M3's one. M4's ledger is empty.
+///
+/// Both directions, because the sample is deliberately scoped at a workspace no
+/// session has: the *scoped* call is refused by name, and an unscoped one on
+/// the same connection answers with a list.
 #[tokio::test]
 async fn method_golden_and_skew_arm_cover_agent_list() {
     let env = Env::new("skew-agents");
@@ -199,19 +206,35 @@ async fn method_golden_and_skew_arm_cover_agent_list() {
     assert_ne!(
         err.code,
         RpcError::METHOD_NOT_FOUND,
-        "a row without wiring must not disown itself: {err:?}",
+        "the server disowned its own method: {err:?}",
+    );
+    assert_ne!(
+        err.code, SEAM_CODE,
+        "agent.list answers the seam code; M4's ledger is empty and the row \
+         owes real behavior: {err:?}",
     );
     assert_eq!(
-        err.code, SEAM_CODE,
-        "until X10 lands, the row answers the seam and says so: {err:?}",
-    );
-    assert!(
-        err.message.contains("X10"),
-        "a seam names who owes it: {err:?}",
+        err.code,
+        RpcError::INVALID_PARAMS,
+        "a filter naming a workspace this session does not have is refused, so \
+         a caller can tell a stale id from a project with no agents: {err:?}",
     );
 
-    // And the connection, and the session, are exactly what they were: an
-    // unwired row is a refusal, never a disconnect.
+    // Unscoped, the same row answers: an empty session has no agents and no
+    // queue, and says so with the two fields that are never empty — the seq it
+    // was captured at and the server's own wall clock, which is what every
+    // surface renders an age against (D-M4-4).
+    let unscoped = wire.request(method.wire_name(), json!({})).await;
+    let listed = result_of(&unscoped);
+    assert!(listed["seq"].is_u64(), "the reply names its seq: {listed}");
+    assert!(
+        listed["now"]
+            .as_u64()
+            .is_some_and(|now| now > 1_700_000_000_000),
+        "and the server's own now, in epoch milliseconds: {listed}",
+    );
+
+    // And the connection, and the session, are exactly what they were.
     let alive = wire.request("ping", json!({})).await;
     assert!(result_of(&alive)["seq"].is_u64());
     assert!(server.alive());
