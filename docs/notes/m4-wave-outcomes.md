@@ -970,3 +970,117 @@ payload byte `b'o'` was read as channel 111 — at 60 frames with *every* read
 cancelled at least once, rather than at whatever load happened to be running.
 `tests/reader.rs` keeps its two resume-point tests; this is the count they were
 missing.
+
+---
+
+## X00 — the wave-2 boundary
+
+Four task reports above, folded. The delta smoke is
+[m4-live-smoke.md](m4-live-smoke.md) §3; the register was struck in
+[design-review.md](design-review.md). What follows is only what a later wave
+would otherwise have to reconstruct.
+
+### The merge was clean, and that is the news
+
+Wave 1's merge needed one integration fix from the orchestrator (§2.6 of the
+smoke). Wave 2's needed none: X06, X07, X08 and X09 met in `main` with no
+conflict outside this file and no compile break, which is what the wave scheme
+is supposed to buy and the first time this milestone has been paid it. The two
+places it could have gone wrong were both declared in advance and both held —
+X07 and X09 are disjoint by directory inside `amx-client` because X07 hands its
+bindings through the public `App::input` rather than editing `app/`, and DR-10's
+two renames were split by file ownership (X06 took the fusion shadow, X09 the vt
+one, and `amx_vt::Effect` is now `TerminalEvent`).
+
+### Three findings with no owner in wave 3
+
+None is a wave-2 regression; all three are things the smoke found because it runs
+the binary rather than the suites, and none falls inside a wave-3 task's scope.
+
+**A session can be handed over exactly once.** `session/serve.rs:193` calls
+`Core::set_handoff`; `session/import.rs` never does, so a server that arrived by
+import has no export path and refuses the next handoff with "this server was
+assembled without a handoff path"
+(`crates/amx-server/src/actor/core/handoff.rs:106-112`). Measured twice from a
+clean start (m4-live-smoke §3.7): the first handoff commits, the second is
+refused at pre-flight, the session stays up and `session report` names the
+outcome, the stage and the reason. The refusal is safe and honest — it costs no
+panes — but it means `amx update apply` works once per server lineage and then
+needs a restart, which is not what "amx upgrades without dropping a pane" leads a
+reader to expect. M3's live smoke did one upgrade, so it could not have seen
+this. **No task in M4's DAG owns `session/import.rs`** and nothing in this
+milestone depends on a second upgrade; it wants a plan decision rather than a
+wave-3 edit.
+
+**`amx attach --pane` can start blank, and it is a client-side policy, not a
+race in the server.** Under `nproc`-wide load the single-pane attach paints
+nothing until the pane next paints: 2 runs in 8 painted on attach at `335cc27`,
+1 in 8 at `6f4fb5d`, 6 in 6 unloaded. `bind()` in
+`crates/amx/src/cmd/viewport.rs` binds through `Session::call`, whose `on_frame`
+is `|_, _| {}` (`crates/amx-client/src/net/mod.rs:296-301,328-330`), so a grid
+frame that lands while the *second* bind's reply is outstanding is read and
+discarded — and for a quiet agent the next paint never comes. `--takeover`
+always recovers because its viewport declaration buys a fresh keyframe. **The
+full client is not affected**: `App::call` uses `call_with` and applies the
+frame, folding the result into X09's `Effect`
+(`crates/amx-client/src/app/wired.rs:349-355`), which is DR-10's argument
+working. That is also why **X15's peek is not exposed** — it binds on the full
+client. `viewport.rs` was X09's file in wave 2 and is nobody's in wave 3.
+
+**Two prefixes exist and only one of them is data.** X07 made the full client's
+prefix and prefix table configurable; `amx attach --pane` recognises its own
+chord out of two constants, `PREFIX = 0x01` and `DETACH_PANE = b'q'`
+(`crates/amx/src/cmd/detach.rs:12-15`), which X07 was not asked to touch. So
+rebinding the prefix to `ctrl+t` rebinds it for `amx attach` and not for
+`amx attach --pane`, where `ctrl+a q` still detaches — verified both ways on a
+real pty. **X20** documents the `[keys]` section in wave 5 and is where this has
+to be either said or fixed; saying it is cheaper and this note is the record.
+
+### What wave 2 put on the wire, and what a renderer must not assume
+
+**`reason` will say `PermissionRequest`, not `permission_dialog`, on every agent
+that emits the hook.** D-M4-3 designed for both vocabularies — the manifest
+rule's name for a screen-owned state, the hook event's name for a hook-asserted
+one — and tier 1 wins the permission entry edge by 8–14 ms (V01 §3 M3), so the
+hook name is what the wire carries in the common case. 10 §D15's sketch and
+D-M4-3's own example both use `permission_dialog`, which is what a pane that
+blocks *without* a hook reports. **X11, X14 and X16 must render whatever string
+arrives** and must not switch on a known set; §7's by-hand exit item 1 should be
+read expecting both. Observed in m4-live-smoke §3.3.
+
+**A probe-derived status carries no `reason` at all.** `cause: probe` states —
+the opening `idle` after `agent.start`, and every status a cold restore
+re-derives — arrive with the field absent, beside the tier-3 `busy`/`quiet`
+absence D-M4-3 named. A renderer needs a blank column, not a fallback string.
+
+**`since` after a cold restore is the restore.** R-M4-4 asked X06 to state which
+it did and to say the fallback out loud: it is "since this server started
+tracking it". Measured (§3.4) — a restored pane's `since` is the instant the new
+server derived the status, so a surface rendering `now − since` will say a
+freshly restored agent has been idle for four seconds when it has been idle all
+night. Correct for the field's definition and worth one sentence wherever an age
+is rendered (X11, X14, X16).
+
+**The names mirror survives a cold restore.** The other half of R-M4-4, and the
+half that could have quietly failed: a restored pane that blocks publishes
+`attention_enqueued` carrying both its own label and its workspace's, with no
+rename event anywhere in the session. The seed on the import path is doing the
+work the risk row said it had to.
+
+### The ledgers
+
+The **seam ledger** keeps its one row: `actor/core/route.rs`, owed by X10, wave
+3. The **field ledger** keeps all six. Three of them — `reason`, `since` and the
+attention identity block — moved from *frozen* to *written and observed over a
+socket* at this boundary, which is the half D-M4-10 asks the owner to see; none
+is struck, because a row is deleted when its reader lands and every reader is
+wave 3 or wave 4.
+
+### X13's gate is still shut
+
+`m4-mouse-path.md` §7.3 still has no dated heading. The graphical session on this
+machine is locked (`LockedHint=yes`), a lock surface takes every pointer event,
+and X01's own entry in this file says X13 does not merge before that heading
+exists. X13 is building against the outcome-(c) fallback, which is the right
+answer to a gate nobody can open today. Carried into wave 3's boundary as the
+one thing this owner is holding that no test can close.
