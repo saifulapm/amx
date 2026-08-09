@@ -37,8 +37,8 @@ mod properties;
 mod reason;
 
 use harness::{
-    agent, claude, drive, edge, hold, hook, no_match, notification, report, screen, session,
-    status, subagent, visible_idle,
+    agent, claude, drive, edge, hold, hook, named_screen, no_match, notification, report, screen,
+    session, status, subagent, visible_idle,
 };
 
 /// The entry edges, applied the instant they arrive.
@@ -234,13 +234,18 @@ fn visible_idle_bypasses_the_confirmation_hold() {
     assert_eq!(status(&tracker.apply(screen(AgentState::Idle))), None);
 }
 
-/// 04 §5's third exit, and V01 §7 edge case 13.
+/// 04 §5's third exit, and V01 §7 edge case 13 — the pane it is *for*.
 ///
 /// A Codex approval the user answered "No, and tell Codex what to do
 /// differently" produces nothing further — no `PostToolUse`, no `Stop`, for as
-/// long as the spike watched. A pane with no screen coverage (no manifest match
-/// on a redesigned UI, say) would hold `Blocked` forever. The staleness
-/// deadline is the only thing that ends it.
+/// long as the spike watched. A pane with no screen coverage at all, which is a
+/// stanza that names no manifest, would hold `Blocked` for the life of the
+/// session: nothing is reading its screen, so no verdict is ever coming. The
+/// staleness deadline is the only thing that can end it, and it does.
+///
+/// The scope of that is the point, and it is narrower than this test used to
+/// read: "no screen coverage" is *nobody is looking*, not *nobody recognised
+/// what they saw*. The two tests below are the other side of the same rule.
 #[test]
 fn staleness_deadline_clears_a_hook_held_state_with_no_screen_coverage() {
     let mut tracker = agent(CoverageClass::Edges);
@@ -273,6 +278,155 @@ fn staleness_deadline_clears_a_hook_held_state_with_no_screen_coverage() {
             deadline: Deadline::Staleness,
             after: STALENESS,
         }]
+    );
+}
+
+/// The M4 exit's first defect, at the machine: a block the screen is still
+/// showing is not demoted by the clock.
+///
+/// `docs/notes/m4-live-smoke.md` §4.8 measured this against a stand-in — a pane
+/// whose permission dialog was still on screen, whose `agent explain` still
+/// reported the shipped `permission_dialog` rule matching it, and which the
+/// deadline called `idle` 30.4 s after its last paint anyway. Tier 2 runs on
+/// damage and a dialog waiting for a human produces none, so the last verdict
+/// is the last *change*, and the deadline was reading the silence after it as
+/// evidence.
+///
+/// What the fire does instead is nothing at all, loudly: the state stands, the
+/// clock starts again, and the whole of its output is the re-arm — so the
+/// attention queue keeps the pane and nothing is published about a pane that
+/// did not move.
+#[test]
+fn staleness_holds_a_block_the_screen_is_still_showing() {
+    let mut tracker = agent(CoverageClass::Edges);
+    tracker.apply(hook(HookEvent::PermissionRequest));
+    tracker.apply(named_screen(AgentState::Blocked, "permission_dialog"));
+    assert_eq!(tracker.state, AgentState::Blocked);
+
+    // Thirty seconds in which the dialog sat there and nothing repainted it.
+    let effects = tracker.apply(Input::Deadline(Deadline::Staleness));
+    assert_eq!(status(&effects), None, "nobody said the block ended");
+    assert_eq!(
+        effects,
+        vec![Directive::Arm {
+            deadline: Deadline::Staleness,
+            after: STALENESS,
+        }],
+        "the clock starts again and nothing else happens",
+    );
+    assert_eq!(tracker.state, AgentState::Blocked);
+    assert_eq!(tracker.reason.as_deref(), Some("PermissionRequest"));
+    assert!(tracker.is_armed(Deadline::Staleness));
+
+    // And it is not one reprieve: the next thirty seconds go the same way, and
+    // the one after that, for as long as the dialog is what the screen shows.
+    for _ in 0..4 {
+        assert_eq!(
+            tracker.apply(Input::Deadline(Deadline::Staleness)),
+            vec![Directive::Arm {
+                deadline: Deadline::Staleness,
+                after: STALENESS,
+            }]
+        );
+    }
+    assert_eq!(tracker.state, AgentState::Blocked);
+
+    // The exit is still there. It belongs to the screen, which is where 04 §5
+    // puts an `edges` agent's exits, and it names the rule that took it.
+    let effects = tracker.apply(visible_idle(AgentState::Idle));
+    assert_eq!(
+        status(&effects),
+        Some((
+            Some(AgentState::Blocked),
+            AgentState::Idle,
+            StatusCause::Screen
+        ))
+    );
+    assert!(effects.contains(&Directive::Dequeue));
+    assert_eq!(tracker.reason.as_deref(), Some("idle.prompt_box"));
+}
+
+/// The same rule where it is hardest: tier 2 is looking and cannot read the
+/// screen.
+///
+/// `docs/notes/m4-live-smoke.md` §6.8 is this with a real agent. The dialog was
+/// a Write confirmation — *"Do you want to overwrite exit-probe.txt?"* — which
+/// the shipped `permission_dialog` rule does not match, so `agent explain`
+/// answered `matched: null` with the dialog plainly on the pane, the hook was
+/// the only detector there was, and 35.4 s later `amx agent next` said
+/// `waiting: 0`.
+///
+/// Silence from a detector that is looking is not a verdict. A screen tier 2
+/// cannot name is a screen nobody has said anything about, and "nobody has said
+/// anything" is the condition this deadline used to treat as proof — which is
+/// exactly backwards for a pane whose block is the reason its screen stopped
+/// moving.
+#[test]
+fn staleness_holds_a_block_tier_2_is_looking_at_and_cannot_name() {
+    for verdict in [no_match(), hold()] {
+        let mut tracker = agent(CoverageClass::Edges);
+        tracker.apply(hook(HookEvent::PermissionRequest));
+        tracker.apply(verdict);
+        assert_eq!(tracker.state, AgentState::Blocked);
+
+        let effects = tracker.apply(Input::Deadline(Deadline::Staleness));
+        assert_eq!(status(&effects), None);
+        assert_eq!(
+            effects,
+            vec![Directive::Arm {
+                deadline: Deadline::Staleness,
+                after: STALENESS,
+            }]
+        );
+        assert_eq!(tracker.state, AgentState::Blocked);
+    }
+
+    // The same for a held `Working`: an interrupted turn whose screen no rule
+    // matches is a turn amx cannot see the end of, not a turn that ended.
+    let mut tracker = agent(CoverageClass::Edges);
+    tracker.apply(hook(HookEvent::UserPromptSubmit));
+    tracker.apply(no_match());
+    assert_eq!(
+        status(&tracker.apply(Input::Deadline(Deadline::Staleness))),
+        None
+    );
+    assert_eq!(tracker.state, AgentState::Working);
+}
+
+/// A verdict from the *previous* agent's manifest is not coverage of this one.
+///
+/// Identity can move — tier 3 names a program the argv guess got wrong, or a
+/// hook report claims a different agent — and the manifest moves with it. The
+/// screen the old rules read has not been read by the new ones, so the pane is
+/// back to having no witness but the clock until something evaluates it, and
+/// the machine says so rather than crediting the old verdict.
+#[test]
+fn a_re_identified_pane_has_not_been_read_by_its_new_manifest() {
+    let mut tracker = agent(CoverageClass::Edges);
+    tracker.apply(hook(HookEvent::PermissionRequest));
+    tracker.apply(named_screen(AgentState::Blocked, "permission_dialog"));
+    assert_eq!(
+        status(&tracker.apply(Input::Deadline(Deadline::Staleness))),
+        None,
+        "read by claude's rules, and held",
+    );
+
+    tracker.apply(Input::Identified {
+        kind: harness::codex(),
+    });
+    assert_eq!(
+        tracker.state,
+        AgentState::Blocked,
+        "identity moves no state"
+    );
+    assert_eq!(
+        status(&tracker.apply(Input::Deadline(Deadline::Staleness))),
+        Some((
+            Some(AgentState::Blocked),
+            AgentState::Idle,
+            StatusCause::Staleness
+        )),
+        "and codex's rules have never seen this screen",
     );
 }
 

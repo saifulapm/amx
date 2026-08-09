@@ -15,7 +15,7 @@ use super::super::edge::{EdgeEffect, HookEdge, PERMISSION_PROMPT, precedence};
 use super::super::{
     CONFIRMATION_CAP, CONFIRMATIONS, Deadline, Directive, STALENESS, ScreenVerdict,
 };
-use super::{Pending, Tracker};
+use super::{Pending, Sight, Tracker};
 
 impl Tracker {
     /// A hook report reached this pane.
@@ -66,6 +66,12 @@ impl Tracker {
         if self.armed.grace {
             return;
         }
+        // Somebody is reading this pane's screen, and *that* is a fact the
+        // staleness exit needs separately from anything the verdict asserts:
+        // its whole question is whether this pane has a witness other than the
+        // clock. Recorded before the early return below, because a tier 2 with
+        // no opinion is still a tier 2 that is looking.
+        self.sight = verdict.asserts.map_or(Sight::Silent, Sight::Asserted);
         // `skip_state_update` and "nothing matched" alike: tier 2 has no
         // opinion, which neither confirms a held state nor contradicts one.
         let Some(asserts) = verdict.asserts else {
@@ -127,6 +133,11 @@ impl Tracker {
             return;
         }
         self.kind = Some(kind.clone());
+        // A different agent is a different manifest, so whatever tier 2 last
+        // saw here it saw with somebody else's rules. The pane has not been
+        // read by the rules that will decide its next verdict, and the
+        // staleness exit is entitled to know that.
+        self.sight = Sight::Blind;
         directives.push(Directive::Identified { kind });
         if !self.grace.is_zero() {
             self.arm(Deadline::IdentityGrace, self.grace, directives);
@@ -189,19 +200,36 @@ impl Tracker {
                     );
                 }
             }
-            // Nothing named this one: it is 04 §5's third exit, taken because
-            // *no* detector said anything for 30 s. `cause: stale` is the whole
-            // of the answer, and a reason here would be a detector's name on a
-            // transition no detector caused.
+            // 04 §5's third exit, and the only arm here that consults something
+            // the tracker did not work out for itself. `STALENESS` carries the
+            // table and the reasoning; the rule is that this exit belongs to a
+            // pane *nobody can see*, and `Sight` is what says whether this is
+            // one.
             Deadline::Staleness => {
-                if self.state.is_held() {
-                    self.transition(
-                        AgentState::Idle,
-                        ExitAuthority::from_staleness().cause(),
-                        None,
-                        directives,
-                    );
+                if !self.state.is_held() {
+                    return;
                 }
+                if self.sight != Sight::Blind {
+                    // Tier 2 is reading this pane, so tier 2 owns its exits —
+                    // 04 §5's clause (b), which is where an `edges` agent's
+                    // exits live anyway. The state stands and the clock starts
+                    // again. No status directive, because nothing moved: a
+                    // fold of timers alone publishes nothing and writes
+                    // nothing, so a dialog waiting all night costs one wakeup
+                    // every 30 s and not one event.
+                    self.arm(Deadline::Staleness, STALENESS, directives);
+                    return;
+                }
+                // Nothing named this one, because nothing said anything at all:
+                // no manifest is bound here, so no verdict is coming, ever.
+                // `cause: stale` is the whole of the answer, and a reason would
+                // be a detector's name on a transition no detector caused.
+                self.transition(
+                    AgentState::Idle,
+                    ExitAuthority::from_staleness().cause(),
+                    None,
+                    directives,
+                );
             }
         }
     }

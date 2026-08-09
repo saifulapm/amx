@@ -29,6 +29,11 @@ pub fn claude() -> AgentKind {
     AgentKind::new("claude").unwrap()
 }
 
+/// The other shipped agent, for the scenarios about identity *moving*.
+pub fn codex() -> AgentKind {
+    AgentKind::new("codex").unwrap()
+}
+
 /// A tracker for an identified agent of `class`, past its startup grace.
 ///
 /// The grace is zero rather than lapsed-by-deadline so a scenario that is not

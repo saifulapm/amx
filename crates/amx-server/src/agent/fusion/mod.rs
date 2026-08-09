@@ -121,9 +121,60 @@ pub const CONFIRMATION_CAP: Duration = Duration::from_millis(700);
 ///
 /// Measured from the last thing that agreed with the state, not from the
 /// transition into it: a hook re-assertion, a screen verdict that concurs, and
-/// a `permission_prompt` notification each push it out again. A pane the screen
-/// keeps confirming as `Working` is never cleared for staleness; a pane nothing
-/// has said anything about for 30 s always is.
+/// a `permission_prompt` notification each push it out again.
+///
+/// # What it is a timeout on
+///
+/// **Evidence, not the state**, and the difference is the whole of the M4 exit's
+/// first defect. Until then the fire demoted a held state to `Idle` the moment
+/// it arrived, on the reading that thirty seconds with nothing corroborating a
+/// block is thirty seconds of a block that is over. But tier 2 is evaluated on
+/// *damage*, and a permission dialog waiting for a human produces none: the
+/// screen that proves the block sits there unchanged, and therefore silent. So
+/// the deadline was reading "no new evidence" as "no evidence", and
+/// `docs/notes/m4-live-smoke.md` §4.8 and §6.8 measured what that costs — a real
+/// Claude Code session blocked on a real dialog was called `idle` 35.4 s later,
+/// `amx agents` reported five idle agents, the board showed no flag, and
+/// `amx agent next` answered `waiting: 0` with the dialog plainly on the screen.
+///
+/// The fire therefore asks tier 2 before it takes anything away, and the answer
+/// decides:
+///
+/// | What tier 2 can see, at the fire | What the deadline does |
+/// |---|---|
+/// | a state — the held one or another | the state stands, and the clock starts again: a pane whose screen is being read leaves a held state through the screen, under the confirmation window, and not here |
+/// | nothing: [`Verdict::NoMatch`](super::manifest::Verdict::NoMatch) or a `skip_state_update` hold | the state stands, and the clock starts again. A detector that is looking and has no opinion has not said the block ended |
+/// | nothing at all, because no manifest is bound | **the exit is taken.** This is 04 §5's clause (c), and the pane it was written for |
+///
+/// That last row is the one that has to keep working: V01's edge case 13 is a
+/// Codex approval the user denied, which emits nothing further for as long as
+/// anyone watched, so a pane with no screen coverage has no other way out and
+/// would hold `Blocked` for the life of the session. The rows above it are
+/// panes somebody *is* watching, and for those 04 §5 already puts the exit on
+/// tier 2 — clause (b), not clause (c). The narrowing is between the clauses of
+/// one rule, not away from it.
+///
+/// # Why holding is the right way to be wrong
+///
+/// The rule is deliberately asymmetric, because the two failures are not
+/// comparable. A block amx still reports after it has ended is a wrong row a
+/// person sees, jumps to, and clears in one keystroke — and the first repaint
+/// clears it without them. A block amx has *forgotten* is a phone that says
+/// nobody is waiting. D14 and D15 build four surfaces whose entire subject is
+/// who needs a human, and a surface that under-reports is worse than one that
+/// over-reports, because it is trusted and it is silent.
+///
+/// What it costs: a pane blocked all night now re-arms every 30 s instead of
+/// demoting once, which is one wakeup and one evaluation of a frame already in
+/// memory per 30 s per *blocked* pane. 03 §5's promise is about idle agents and
+/// they still cost nothing — an unheld state arms nothing at all.
+///
+/// What it leaves standing: an agent whose idle screen no rule matches will hold
+/// its last state until something repaints into a rule that does. Both shipped
+/// manifests match their own prompt box — on Claude Code that is
+/// `prompt_box_idle`, the most carefully guarded rule in the file — so the gap
+/// is a manifest that has fallen behind its agent's UI, and it is visible in
+/// `agent explain` rather than silent in the queue.
 pub const STALENESS: Duration = Duration::from_secs(30);
 
 /// The default grace before a freshly spawned pane's screen is believed.
@@ -174,6 +225,12 @@ pub enum Deadline {
     /// [`CONFIRMATION_CAP`] elapsed with a screen verdict pending.
     Confirmation,
     /// [`STALENESS`] elapsed on a held state nothing has corroborated.
+    ///
+    /// The one deadline whose arm consults something other than the tracker's
+    /// own bookkeeping: it may not take a held state away from a screen tier 2
+    /// is reading, so the hub evaluates the pane's current frame on the way to
+    /// firing this and the machine decides from what came back. [`STALENESS`]
+    /// has the table.
     Staleness,
     /// The identity grace elapsed; the screen may be believed now.
     IdentityGrace,
