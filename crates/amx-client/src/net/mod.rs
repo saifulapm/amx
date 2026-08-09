@@ -271,6 +271,21 @@ impl Session {
         std::mem::take(&mut self.notifications_lost)
     }
 
+    /// Send one JSON-RPC notification and wait for nothing.
+    ///
+    /// The client→server half of the id-less path, and the only shape flow
+    /// control has: `stream.flow` is defined as a notification because a pause
+    /// is a statement about what this client wants rather than a question about
+    /// the stream, and the server's reader routes it without answering
+    /// (`amx-server/src/conn/reader.rs`). Nothing is read here — a caller that
+    /// waited for a reply to a notification would wait for the next frame the
+    /// server happened to send.
+    pub async fn notify(&mut self, notification: &Notification) -> Result<(), NetError> {
+        let payload = serde_json::to_vec(notification)
+            .map_err(|_| NetError::Malformed("encode notification"))?;
+        self.write_control(&payload).await
+    }
+
     /// Make one JSON-RPC call and wait for its reply, handing every stream
     /// frame that arrives meanwhile to `on_frame`.
     ///
