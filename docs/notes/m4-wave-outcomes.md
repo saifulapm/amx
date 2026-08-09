@@ -2886,3 +2886,136 @@ set.
   permission dialog also goes stale in thirty seconds. It emits a `Notification`
   at the block, which pushes the deadline out once and not again, so the answer
   is probably yes — worth watching for rather than assuming.
+
+---
+
+## X00 — the M4 exit
+
+Wave 5's three reports above are folded; the exit itself is
+[m4-live-smoke.md](m4-live-smoke.md) §6, run item by item, and the register's
+final state is in [design-review.md](design-review.md). What follows is what a
+later milestone would otherwise have to reconstruct.
+
+**The answer to the question the wave-3/4 boundary left open is yes**, and it
+was worth asking rather than assuming: a real Claude Code, blocked on a real
+permission dialog, is called `idle` **35.4 seconds** after it blocked, with the
+dialog still on its screen. The `Notification` the wave-4 note guessed would
+push the deadline out once did not save it. That measurement is the exit's
+headline and it is in §6.8.
+
+### The three integration breaks, and what M5's plan should inherit
+
+The wave-3/4 boundary recorded them; the exit is where the lesson belongs,
+because it is a *planning* lesson and M5 is where it gets used.
+
+| # | The collision | Fixed by |
+|---|---|---|
+| a | X11 and X12 both defined `set_narrow_cols` on `App` | one setter feeding both consumers (`a241e56`, `ed22923`) |
+| b | X12 and X13 both defined `pane_interior` on `App` | X13's now delegates to X12's (`c5c3293`) |
+| c | X13 and X12 both appended a settings line to `cmd/attach.rs` | both kept |
+
+All three were between tasks whose **files never overlapped**, which is exactly
+the hole DR-4 names and exactly what §6's file-ownership check cannot see: it
+enumerates files, and these were collisions over *names inside* files two tasks
+each owned a different part of.
+
+**Could the D-M4-10 field ledger have caught any of them? No — and the reason is
+the lesson, not the answer.** The field ledger is a list of *(file, declaration,
+reader)* triples; it asserts that a named field still exists where its row claims
+(`tests/hygiene/ledgers.rs`). These were same-type, different-file collisions
+over methods and lines, in files no row names, and in two of the three both
+definitions were individually correct code. A field ledger does not see that
+class and was never built to.
+
+What did see them was the compiler: (a) and (b) were build failures at the merge,
+named at their definition sites, which is the right instrument working. (c) is
+the one nothing mechanical would have caught — two tasks appending different,
+individually correct lines to the same settings block — and it took a person
+reading the merge.
+
+**So M5's plan should inherit three things, not one.**
+
+1. **Keep the field ledger and keep it for what it does.** It caught the failure
+   no compiler can: a field that compiles perfectly, ships, and is read by
+   nobody (below). That is R-M4-14's failure mode, and this milestone found a
+   fifth instance of it *before* the exit instead of a milestone later.
+2. **Do not expect it to cover the seam.** A file-ownership scheme plus a field
+   ledger still leaves same-type different-file collisions to the compiler and
+   to the owner's eyes. Both worked here; both are load-bearing; neither is a
+   list. The cheapest addition, if M5 wants one, is not a bigger ledger but a
+   *declared-surface* note per wave: each task naming the methods it adds to a
+   shared type, which is what would have made (a) and (b) visible at planning
+   time rather than at merge time. Two lines per task entry.
+3. **Budget the owner's merge reading as work.** Three breaks in one wave, all
+   caught, none escaping — at a cost of one afternoon. DR-4 asked whether the
+   standing-owner structure pays; the honest answer from M4 is that it paid for
+   itself at the wave-3 merge alone, and that the live smoke found more than the
+   merges did.
+
+### The field ledger's last row, and what it says about D-M4-10
+
+Five of six rows were struck at the wave-3/4 boundary against the running
+binary. The sixth is still open at the exit: the identity block D-M4-6 froze on
+`attention_enqueued`/`attention_dequeued` is written, is on the wire, and has no
+reader. `amx agents --watch` takes `envelope.seq` off a delivery and re-queries
+`agent.list` — the right design for that surface, and it reads none of the
+block — and `examples/notify.sh` still prints `pane <uuid> needs input`. X20
+owned `examples/` in wave 5 and did not take it.
+
+**The exit does not strike that row, and the exit owner did not quietly close it
+either.** A two-line change to the reference notifier would have made §7 item 8
+read green by the hand of the person checking it, which is the trap D-M4-10 was
+written to avoid. It is recorded as not met, with the fix named.
+
+### The five findings this milestone leaves open
+
+Every one is written up with its mechanism and citations in the smoke; every one
+is outside every M4 task's file scope; none is a wave-5 regression.
+
+1. **Staleness demotes a held state without asking tier 2** — the blocked agent
+   that goes idle in thirty seconds and takes the whole attention queue with it
+   (m4-live-smoke §4.8, §6.8). Measured on stand-ins at 30.4 s and on a real
+   Claude Code at 35.4 s.
+2. **The shipped `claude.toml` sees only one phrasing of a permission dialog** —
+   `contains = ["do you want to proceed?"]`, which a Write/Edit dialog does not
+   say. For that class of block tier 2 has no opinion at all, so there is nothing
+   for a corrected staleness rule to consult (§6.8). Fixing 1 without 2 leaves
+   this class exactly where it is.
+3. **The agents view's `Enter` lands on the workspace's remembered pane**, not
+   on the selected agent (§5.5, §6.4).
+4. **The agents view repaints every cell four times a second** —
+   `apply_agent_list` ends in `absorb(Effect::Full)`; 82 KB/s at 160×44 and
+   9 KB/s at 45×20, against nothing at all with the board closed (§6.8). D14's
+   subject is a phone over SSH and X16 built a per-line diff for exactly this.
+5. **The status line's queue-head age advances only when the drawn workspace
+   paints** (§4.4, §6.3).
+
+Two smaller ones beside them: `prefix+d` does not reach a client with the board
+open, and the board's filter survives closing and reopening it.
+
+And one older gap this exit saw a new face of: `amx session stop` returns before
+the snapshot lands (m3-wave-outcomes, "the restart that raced its own
+snapshot"), and the final capture is a `try_send` that a full mailbox drops by
+design (`actor/core/mod.rs`'s `push_final_capture`). At 26 panes it cost a
+*killed workspace coming back* after a restart — observed once in the exit run
+and not reproduced in four targeted attempts, which is consistent with a
+mailbox-full race rather than with a rule. The D-decision M3 asked for is still
+untaken.
+
+### For M5's plan, in one place
+
+- The four numbered findings above want owners; 1 and 2 are the same user story
+  and should be one task, not two.
+- **§7's by-hand item 2 is unrun** and stays unrun until someone attaches from a
+  phone. The procedure is in §6.8. It is not a test that can be written.
+- **DR-20's two clauses stay unrun** for want of a second machine; X19's
+  procedures stand and the machine that answered during wave 5 no longer answers
+  at all.
+- **DR-21 now has a number** for the part measurable from outside (six
+  keyframes, ~180 KB of extra terminal traffic across a swap at 160×44) and a
+  one-line instrument that would give it the wire figure it actually asked for:
+  a counter in `damage/keyframe.rs`.
+- **`amx events --json` still subscribes without `collect_notifications()`**,
+  alone among the tree's three consumers of that call. Latent, one line.
+- 05's M4 section still describes a milestone twice this size (R-M4-11); this
+  plan built the D14/D15 half.
