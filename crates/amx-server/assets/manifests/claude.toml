@@ -1,8 +1,10 @@
 # Claude Code's screen manifest.
 #
 # Written against screens captured from Claude Code 2.1.224 on 2026-08-07 —
-# the version `docs/notes/hook-coverage.md` measured. The captures are the
-# fixtures under `crates/amx-server/tests/fixtures/manifest/`, and
+# the version `docs/notes/hook-coverage.md` measured — and revised against
+# 2.1.226 on 2026-08-09, when the M4 exit smoke found the permission rule blind
+# to every dialog but one. The captures are the fixtures under
+# `crates/amx-server/tests/fixtures/manifest/`, and
 # `crates/amx-server/tests/manifest.rs` asserts every rule below against them,
 # so a rule here that stops matching the real UI fails the build rather than a
 # user's status line.
@@ -15,7 +17,7 @@
 # idle rule is the most carefully guarded one in the file.
 
 id = "claude"
-version = "2026.08.07"
+version = "2026.08.09"
 
 # The window title carries a braille spinner for exactly as long as a turn is
 # running, and is the one region that keeps saying "working" while the grid is
@@ -43,15 +45,48 @@ regex = ['^[\x{2800}-\x{28FF}]']
 # foot of the screen, and because the same words in a scrolled-back transcript
 # must not match: a previous turn's permission dialog is still text on the
 # screen after it has been answered.
+#
+# **The anchor is the answer list, not the question.** Until 2026-08-09 this
+# rule required `do you want to proceed?`, which is what a Bash dialog asks and
+# what the only recorded dialog said. It is not what the others ask. Seven
+# dialog classes were driven on 2.1.226 on 2026-08-09 and these are their
+# questions, each quoted off the screen it was read from:
+#
+#   Do you want to proceed?                                  bash
+#   Do you want to proceed?                                  web search
+#   Do you want to create exit-probe.txt?                    write, new file
+#   Do you want to overwrite exit-probe.txt?                 write, existing
+#   Do you want to make this edit to exit-probe.txt?         edit
+#   Do you want to allow Claude to fetch this content?       fetch
+#   Claude has written up a plan and is ready to execute.
+#     Would you like to proceed?                             plan approval
+#
+# So four of the seven name the file or the resource, one asks a different
+# question entirely, and a rule keyed on the first saw none of them: the write
+# and edit dialogs — the ones a user leaves sitting longest — were invisible to
+# tier 2, and `agent explain` answered `matched: null` with the dialog on the
+# screen. Six are fixtures; web search is not, because it asks bash's question
+# word for word and its screen would be a second copy of one already recorded.
+#
+# What all seven share is the numbered answer list, whose first option is
+# `1. Yes` in every one of them, with `❯` on whichever line the selection is
+# resting on. That is the shape of the widget rather than the wording of one
+# tool, so it is the required matcher; the question line is one of three
+# corroborating witnesses under it. `1. Yes` also keeps this away from the
+# TUI's *other* numbered pickers — a model or theme list does not offer a yes.
+#
+# The question pattern is the family, not the seven lines: `Do you want to …?`
+# or `… Would you like to …?` on one line, unanchored at the front because the
+# plan dialog puts a sentence before it.
 [[rule]]
 name = "permission_dialog"
 state = "blocked"
 priority = 900
 region = "bottom_non_empty_lines(8)"
-contains = ["do you want to proceed?"]
+line_regex = ['^\s*❯?\s*1\.\s*Yes']
 any = [
-  { line_regex = ['^\s*❯?\s*1\.\s*Yes'] },
-  { line_regex = ['^\s*2\.\s*No'] },
+  { line_regex = ['(?:^|\s)(?:Do you want|Would you like) to .*\?\s*$'] },
+  { line_regex = ['^\s*[23]\.\s*(?:No|Tell Claude)'] },
   { contains = ["esc to cancel"] },
 ]
 
@@ -95,6 +130,11 @@ line_regex = ['^\s*\S+ \S+… \(\d+s']
 # The composer's separator after `❯` is U+00A0, not a space — the capture on
 # 2.1.224 shows `❯\u{a0}Try "refactor <filepath>"` — so the pattern matches any
 # whitespace or an end of line, never a literal space.
+#
+# The second `not` is the same discriminator the dialog rule leans on, read the
+# other way: an answer list is indented and the composer's `❯` is at column 0,
+# so `^\s+` before it excludes every dialog and no live prompt box. It replaced
+# a guard on `do you want to proceed?`, which named one dialog in seven.
 [[rule]]
 name = "prompt_box_idle"
 state = "idle"
@@ -107,5 +147,5 @@ line_regex = [
 ]
 not = [
   { contains = ["esc to interrupt"] },
-  { contains = ["do you want to proceed?"] },
+  { line_regex = ['^\s+❯?\s*1\.\s*Yes'] },
 ]
