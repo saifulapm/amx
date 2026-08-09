@@ -35,7 +35,6 @@ use amx_core::Effect;
 use amx_core::agent::EpochMillis;
 
 use super::{App, Mode};
-use crate::config::NarrowCols;
 use crate::render::chrome;
 
 pub(super) use line::StatusLine;
