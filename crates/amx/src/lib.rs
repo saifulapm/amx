@@ -19,6 +19,7 @@ use std::process::ExitCode;
 use amx_core::{Ctx, Env, SessionName};
 use anyhow::Context as _;
 
+pub mod agents;
 pub mod cli;
 pub mod cmd;
 pub mod git;

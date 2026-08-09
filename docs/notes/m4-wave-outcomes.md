@@ -1921,3 +1921,165 @@ until the next resync, and the bind is what makes cells arrive regardless. It
 converges and never lies; no label is drawn in the region at all, deliberately,
 because the row the user selected in X14's list already names the agent and two
 spellings of one identity is the seam-5 disagreement in miniature.
+---
+## X16 — `amx agents`
+
+### Seam 5: the two tables do not share code, and the reason is a dependency
+### direction
+
+X00's seam 5 asks that `amx agents --watch` and the agents view (X14) not become
+two implementations of one table, and the brief said to share the rendering or
+say why not. They do not share code. Three facts decided it, and the first is
+the one that closes the question:
+
+1. **`amx-client` cannot reach `crates/amx`.** The client crate is *below* the
+   binary crate (`crates/amx/Cargo.toml` depends on `amx-client`; nothing
+   depends the other way, and nothing can). So a shared renderer cannot live
+   where §5 puts this task's — `crates/amx/src/agents/**`, "the table renderer
+   both forms use", where "both forms" is the one-shot and `--watch`. It would
+   have to be a **new module inside `amx-client`**, which is in neither X14's
+   file list nor X16's, landed in the middle of the wave in which X14 is
+   building against something else. A module a task in flight cannot know about
+   is not a shared module; it is a second one with an optimistic name.
+2. **§5's own words for this task are "sharing its rendering with nothing and
+   duplicating nothing"**, and the scope line reads "`crates/amx/src/agents/**`
+   (the table renderer both forms use)". The plan already scoped the sharing to
+   the two forms of this verb. Seam 5 is the owner's standing watch over the
+   result, not an instruction to cross the crate boundary.
+3. **The drawing is genuinely different and the semantics genuinely are not.**
+   X14 composes picker entries into a cell grid with a reserved peek region and
+   per-client filter, grouping and selection state; this writes bytes to a
+   terminal it took itself, or to a pipe with no width at all. What the two have
+   to agree about is not pixels but *facts*, and every one of those is already
+   in one place: the reply, `attention`'s order, and `ListReply::now` against
+   `AgentEntry::since`.
+
+**What was done instead, so the agreement is checkable rather than hoped for.**
+`crates/amx/src/agents/` is written as a pure renderer — no I/O, no terminal, no
+`SystemTime`, `ListReply` in and `Vec<String>` out — so lifting it into
+`amx-client` later is a file move and a `pub use`. `agents::ordered` and
+`agents::age` are the two functions a second surface would want, and both are
+public. **If X00 wants one table rather than two, the cheap version is: move
+`crates/amx/src/agents/{mod,table}.rs` to `amx-client/src/agents.rs` in wave 5
+and have both callers use it.** Nothing in either file knows it is in this
+crate.
+
+**Three rules the two surfaces must not disagree about, whether or not the code
+is ever shared** — each is implemented here and each is a line X14 should check
+against:
+
+- The blocked band is ordered by **`ListReply::attention`**, not by `since`. A
+  re-block goes to the tail of the queue (D-M2-8) while its `since` is the
+  newest, so the two orders differ, and the queue is the one `agent.next` walks.
+  A table whose top row is not the pane the jump key would take you to is the
+  status-line trap X11 pinned, one surface over.
+- The blocked **count** is read off the queue, not off a tally of rows whose
+  state reads `blocked`. Same reason. Under `--workspace` it counts the queued
+  panes *on the table* — the queue stays global on purpose, and "2 agents · 5
+  blocked" over a two-row table would be two scopes in one sentence.
+- An **age** is `now − since` from inside one reply.
+  `crates/amx/src/agents/` never calls `SystemTime::now`; `--watch` advances the
+  reply's own `now` by monotonic elapsed time between refreshes. X11 built
+  `App::note_server_clock(now)` for exactly this and asked X14 and X16 to feed
+  it `ListReply::now`; X16 has no `App` to feed, and this is the same rule
+  arrived at independently.
+
+### The cadence `--watch` chose, and what it costs
+
+**One `agent.list` per 250 ms window, for every row, and only when the session
+published something.** Every delivery on the subscription marks the table
+pending; the window turns any number of them into one call. R-M4-7's arithmetic
+is what rules out the other shape: a refresh per damaged pane at 4 Hz with 25
+agents is 100 calls a second each walking 25 panes. X10 measured the call at
+12–16 ms with 25 agents on a busy box (and 21–28 ms under heavier load), against
+265 ms for the `session.state` + 25 × `pane.read` shape it replaces, so a full
+window's worth is a few percent of a core — and an idle session spends none of
+it, because a window with no delivery in it makes no call.
+
+The 1 Hz half is free: the window re-renders the lines every tick and paints
+only what differs, so an age crossing `59s` → `1m` is one changed row and one
+`\x1b[3;1H…` on the wire, while a session where nothing is happening paints
+nothing at all. That per-line diff is a bandwidth property, not a nicety: the
+whole point of this surface is a phone over SSH.
+
+### The X00 hand-off about a cold restart, answered
+
+X00's wave-1 boundary handed this task the question of whether a full-screen
+`--watch` needs more than `amx events --json` gives: a cold restart begins the
+sequence space again, the relay says so on *stderr*, and stdout goes from seq
+1093 to seq 122 with nothing between.
+
+**It needs less, not more.** `--watch` holds no model of the session, so it has
+no cursor to resume and nothing to reconcile: a gap, a swap and a restart are
+one answer — ask again. What it *adds* is that all three are said where a person
+is looking. The footer carries `q quits · seq N`, plus `stale · reconnecting…`
+while the socket is between owners and `the session restarted` when the
+successor is a different server. Measured, at both ends of the range:
+
+```
+  a cold restart (session stop, fresh server):
+    q quits · seq 34 · stale · reconnecting…
+    q quits · seq 11 · the session restarted        # the table is now `no agents`
+  a live handoff (session handoff --binary <staged>):
+    q quits · seq 34 · stale · reconnecting…
+    q quits · seq 36                                 # no restart note: same session
+    api/backend  blocked  permission_dialog   7s     # the age kept counting
+```
+
+The second block is §7 exit item 4's second clause smoked against the real
+binary: the swap is one frame of `reconnecting…` and then the same table, and
+the agent's age is continuous across it because `since` is absolute and rides
+the handoff manifest.
+
+### Divergences from §5
+
+**`--watch --json` is refused rather than given a meaning.** The two flags mean
+opposite things — `--json` is the machine surface, `--watch` is the human
+packaging of a contract machines already have — and D15 names the machine
+spelling in the same paragraph: "live consumers that want a stream use
+`amx events --json` plus re-query on `gap`". The refusal quotes it. Inventing an
+NDJSON-per-refresh stream would have been a third contract for a job the second
+one already does.
+
+**`amx-core/src/lib.rs` still has no re-exports, and this task did not need
+them.** X02 recorded the absence; `amx_core::agent::EpochMillis` and friends are
+reached at their module paths here, as X02 said every consumer does.
+
+**One file outside `crates/amx/src/agents/**`, `cmd/agents.rs` and
+`crates/amx/tests/**`: `crates/amx/src/lib.rs`, one line.** `pub mod agents;` —
+the module §5 scopes to this task cannot exist without it. In no wave-4 task's
+list.
+
+### For X00 — the field ledger
+
+**`ListReply::now` has its second reader and `AgentSnapshot::{reason,since}`
+their last.** `now` dates every age this surface renders (`agents::age`, and
+`watch`'s monotonic advance of it); `reason` is a column; `since` is the age.
+All three are exercised over a real socket in
+`crates/amx/tests/agents_cli.rs`, against a real `agent.list` from a real
+server. X14 is the reader still owed on the `reason`/`since` rows.
+
+### Two things a later task should know
+
+**A tier-3 pane never reaches `Core.agent_status`, so `amx agents` does not list
+an ordinary shell.** Observed against the real binary before this task wrote a
+line: a plain pane's tracker holds `state: quiet, cause: probe` — `agent explain`
+answers with it — while `session.state`'s pane block carries no `agent` at all
+and `agent.list` has no row for it. The mechanism is that `AgentHub::track`
+seeds the initial status without going through `absorb`, and only `absorb`
+mirrors into `Core` (`agent_hub/commit.rs` returns early when a commit produced
+no events). This **predates M4** — `session.state`'s `agent` block has always
+been absent for a pane that never transitioned — and it is in no wave-4 task's
+files, so it is recorded rather than fixed. It is not obviously a defect: the
+surfaces D15 feeds answer "which agents need me", and a row per shell is what
+`agent.list`'s own doc comment says it is deliberately not. But *nothing* says
+so, and the first user to run `amx agents` on a session of ordinary panes will
+read "no agents" about a session with five panes in it. **X00** for a row.
+
+**A stand-in agent now exists for `crates/amx/tests/**`.**
+`crates/amx/tests/support/stand_in.rs` — three shell scripts painting screens the
+shipped `claude.toml` rules key on, planted through the registry override
+D-M2-2 calls the test seam. It is the small sibling of the workspace rig's
+`tests/support/agent.rs`, which cannot be reached from this package. Any later
+CLI suite that needs a session with real statuses in it should use it rather
+than writing a fourth one.
