@@ -201,8 +201,13 @@ fn a_workspace_label_resolves_client_side_and_an_unknown_one_is_refused() {
     let scoped = scoped.ok();
     assert!(scoped.contains("docs/notes"), "{scoped}");
     assert!(!scoped.contains("api/backend"), "{scoped}");
+    // And the count line is about the table it is over. The one blocked agent
+    // in this session is in `api`, and a scoped table saying "1 agent · 1
+    // blocked" about a workspace with no blocked agent in it would be two
+    // scopes in one sentence.
+    assert_eq!(scoped.lines().next(), Some("1 agent"), "{scoped}");
 
-    // The queue is *not* narrowed with it — a filtered queue would answer a
+    // The queue itself is *not* narrowed — a filtered queue would answer a
     // different question than the one `agent.next` acts on.
     let json: Value = serde_json::from_str(
         rig.env

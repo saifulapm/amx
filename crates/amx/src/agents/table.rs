@@ -78,19 +78,31 @@ pub fn render(reply: &ListReply, now: EpochMillis, width: Option<usize>) -> Vec<
 
 /// The count line: how many agents, and how many of them are waiting.
 ///
-/// The blocked count is the *queue's* length and not a tally of rows in the
-/// `blocked` state, for the reason X11 pinned on the status line: the number a
-/// person reads and the queue `agent.next` walks have to be one number.
+/// The blocked count is read off the **queue** and not off a tally of rows
+/// whose state says `blocked`, for the reason X11 pinned on the status line: the
+/// number a person reads and the queue `agent.next` walks have to be one
+/// number.
+///
+/// It counts the queued panes that are *on this table*, which is the same thing
+/// unscoped — every queued pane is a blocked pane and every blocked pane is a
+/// row — and the honest thing under `--workspace`, where the queue stays global
+/// on purpose. "2 agents · 5 blocked" over a table with one blocked row in it
+/// would be two scopes in one sentence.
 fn summary(reply: &ListReply) -> String {
     let agents = reply.agents.len();
     if agents == 0 {
         return "no agents".to_owned();
     }
     let noun = if agents == 1 { "agent" } else { "agents" };
-    if reply.attention.is_empty() {
+    let blocked = reply
+        .attention
+        .iter()
+        .filter(|pane| reply.agents.iter().any(|entry| entry.pane == **pane))
+        .count();
+    if blocked == 0 {
         return format!("{agents} {noun}");
     }
-    format!("{agents} {noun} · {} blocked", reply.attention.len())
+    format!("{agents} {noun} · {blocked} blocked")
 }
 
 /// One entry's cells, before anything knows how wide they may be.

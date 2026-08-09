@@ -384,3 +384,25 @@ fn the_count_line_counts_the_queue_and_not_the_rows_that_look_blocked() {
     );
     assert_eq!(lines[0], "1 agent");
 }
+
+#[test]
+fn a_scoped_table_counts_the_queue_it_is_showing_and_not_the_whole_of_it() {
+    // `--workspace` narrows the rows and deliberately does *not* narrow the
+    // queue: a filtered queue would answer a different question than the one
+    // `agent.next` acts on. So the count line has to say how many of the panes
+    // it is *showing* are waiting, or a two-row table reads "2 agents · 5
+    // blocked" — two scopes in one sentence.
+    let shown = agent("docs", "writer", AgentState::Blocked, 60);
+    let elsewhere = agent("api", "backend", AgentState::Blocked, 120);
+    let lines = amx::agents::table::render(
+        &ListReply {
+            seq: 1,
+            now: NOW,
+            attention: vec![elsewhere.pane, shown.pane],
+            agents: vec![shown],
+        },
+        NOW,
+        None,
+    );
+    assert_eq!(lines[0], "1 agent · 1 blocked");
+}

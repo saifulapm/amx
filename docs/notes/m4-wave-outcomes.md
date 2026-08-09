@@ -1818,8 +1818,10 @@ against:
   newest, so the two orders differ, and the queue is the one `agent.next` walks.
   A table whose top row is not the pane the jump key would take you to is the
   status-line trap X11 pinned, one surface over.
-- The blocked **count** is the queue's length, not a tally of rows whose state
-  reads `blocked`. Same reason.
+- The blocked **count** is read off the queue, not off a tally of rows whose
+  state reads `blocked`. Same reason. Under `--workspace` it counts the queued
+  panes *on the table* — the queue stays global on purpose, and "2 agents · 5
+  blocked" over a two-row table would be two scopes in one sentence.
 - An **age** is `now − since` from inside one reply.
   `crates/amx/src/agents/` never calls `SystemTime::now`; `--watch` advances the
   reply's own `now` by monotonic elapsed time between refreshes. X11 built
