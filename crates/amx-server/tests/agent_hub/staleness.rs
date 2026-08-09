@@ -45,24 +45,24 @@ use crate::support::TempDir;
 /// is 30 s, on a clock that is paused — so the cost of asking is nothing.
 const PAST_STALENESS: Duration = Duration::from_secs(31);
 
-/// The Write/Edit permission dialog, as §6.8 recorded it off a real session.
+/// A block with nothing on screen for tier 2 to recognise.
 ///
-/// The shipped `permission_dialog` rule requires `contains = ["do you want to
-/// proceed?"]` and this dialog does not say that — it names the file instead —
-/// so tier 2 has no opinion about the screen at all. That gap is a manifest
-/// fix and is not this task's; what *is* this task's is that a block amx cannot
-/// corroborate is still a block amx was told about.
-const WRITE_DIALOG: &str = "\
- Write file
+/// This was the real Write/Edit permission dialog, which the shipped rules
+/// could not read; Y02 taught them that family, so the screen was replaced
+/// rather than the assertion weakened - the note below asked for exactly that.
+/// What is left is a block with no numbered options at all: a tool waiting on
+/// free text, which `permission_dialog` cannot match (it requires a `1. Yes`
+/// line) and which no working rule claims either. The pane is blocked, the hook
+/// says so, and the screen says nothing - which is the condition the rule under
+/// test exists for, and it outlives any one dialog's wording.
+const UNREADABLE_BLOCK: &str = "\
+ Bash command
 
-   exit-probe.txt
+   deploy.sh --target prod
 
- Do you want to overwrite exit-probe.txt?
- ❯ 1. Yes
-   2. Yes, and don't ask again this session
-   3. No
+ Enter the deployment token to continue:
 
- Esc to cancel · Tab to amend";
+ > ";
 
 /// A `claude` whose stanza names a manifest that is not there.
 ///
@@ -178,17 +178,17 @@ async fn a_block_tier_2_cannot_name_outlives_the_deadline() {
     let hook = token("unread");
 
     rig.started(&pane, &hook, Some("claude")).await;
-    pane.paint(WRITE_DIALOG).await;
+    pane.paint(UNREADABLE_BLOCK).await;
     wait_for(
         || rig.probe.evaluations() > 0,
         "the painted dialog was never evaluated",
     )
     .await;
 
-    // The gap, asserted from this side so that closing it is visible here: the
-    // dialog is on the screen and the shipped rules have nothing to say about
-    // it. If a later manifest learns this phrasing, this line fails and the
-    // screen above wants replacing with one the rules still cannot read.
+    // Asserted from this side so that a rule which learns this screen shows up
+    // here as a failure rather than as a silently weaker test: tier 2 is bound,
+    // it is looking, and it has nothing to say. If a later manifest learns this
+    // screen, replace the screen again - never this assertion.
     let explained = rig.explain(pane.pane).await;
     assert_eq!(
         explained.manifest.as_deref(),
@@ -197,7 +197,7 @@ async fn a_block_tier_2_cannot_name_outlives_the_deadline() {
     );
     assert_eq!(
         explained.matched, None,
-        "and it cannot see a Write dialog: `contains = [\"do you want to proceed?\"]`",
+        "and it has no rule for a block with no numbered options",
     );
 
     rig.report(report(
