@@ -94,6 +94,25 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         Ok(app)
     }
 
+    /// Ask the host terminal for mouse reporting, if the user turned it on.
+    ///
+    /// Off by default and for a measured reason — `[client] mouse`, and
+    /// `amx_core::config::DEFAULT_MOUSE` is where the reason is written down.
+    /// Called by whoever read the configuration, after [`Self::attach`] has
+    /// taken the terminal, in the same breath as the bindings: `attach` cannot
+    /// do it itself because it does not know where the configuration lives, and
+    /// this is the same seam `Input::set_bindings` already uses for the same
+    /// reason.
+    ///
+    /// Releasing it is not a second call. The guard resets what it set on
+    /// normal exit, on a panic unwind and from the `SIGTERM` arm, which is what
+    /// makes leaving amx leave the terminal as it was found.
+    pub fn set_mouse_tracking(&mut self, on: bool) {
+        if on {
+            self.term.request_mouse();
+        }
+    }
+
     /// Run until the user detaches or the server goes away, flushing every
     /// repaint through `flush`.
     pub async fn run(
