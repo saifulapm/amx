@@ -217,6 +217,10 @@ async fn full(ctx: &Ctx) -> anyhow::Result<ExitCode> {
     .await
     .context("attach to the session")?;
     app.input().set_bindings(settings.bindings);
+    // `[client] narrow_cols`, the D14 threshold. Its reader lands in the same
+    // milestone the field did (D-M4-10), and this line is the whole of the
+    // path between the two.
+    app.set_narrow_cols(settings.narrow_cols);
 
     let mut out = std::io::stdout();
     let sigwinch = Sigwinch::install().context("watch for terminal resizes")?;
