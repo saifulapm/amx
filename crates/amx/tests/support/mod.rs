@@ -19,6 +19,8 @@
 //! - [`rig`] — the same machine, for a binary at an **arbitrary path**. W10
 //!   wrote it inline for `update.rs` and recorded that W11 and W12 would both
 //!   want it; W11 lifted it here.
+//! - [`stand_in`] — scripted agents, for the suites that need a session whose
+//!   panes have real statuses in them. X16 added it for `amx agents`.
 //!
 //! Everything is re-exported from this module, so a suite writes
 //! `use support::Env` and does not care which file it came from.
@@ -34,6 +36,7 @@
 pub mod env;
 pub mod procs;
 pub mod rig;
+pub mod stand_in;
 pub mod tty;
 
 pub use env::{
@@ -42,4 +45,5 @@ pub use env::{
 };
 pub use procs::server_processes;
 pub use rig::{Done, Rig};
+pub use stand_in::StandIns;
 pub use tty::{ALT_ENTER, ALT_LEAVE, PREFIX, Pty, Terminal, open_pty, termios_of};
