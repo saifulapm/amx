@@ -175,10 +175,41 @@ pub struct ClientConfig {
     /// place.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub narrow_cols: Option<u16>,
+    /// Whether the client asks its host terminal for mouse reporting (D14).
+    ///
+    /// An override like the threshold above, and [`DEFAULT_MOUSE`] is where the
+    /// default and its reason live. Read it through
+    /// [`mouse`](Self::mouse).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouse: Option<bool>,
 }
 
 /// The default [`ClientConfig::narrow_cols`], from 10 §D14.
 pub const DEFAULT_NARROW_COLS: u16 = 60;
+
+/// The default [`ClientConfig::mouse`]: **off**, from the M4 spike's outcome
+/// (b) (`docs/notes/m4-mouse-path.md` §5).
+///
+/// Asking for mouse reporting costs the user their own terminal's selection,
+/// measured rather than assumed: foot's `selection-override-modifiers` "are
+/// used to enable selecting text with the mouse irrespective of whether a
+/// client application currently has the mouse grabbed … Default: Shift", and
+/// alacritty documents the same `Shift` suppression. So with tracking on, every
+/// ordinary drag-select in the user's terminal becomes shift-drag.
+///
+/// And the cost is paid all the time rather than where it buys something: the
+/// wheel exception exists for panes that did *not* ask for the mouse, so the
+/// request cannot be scoped to the panes that did — which is exactly what a
+/// multiplexer mirroring a pane's own request can do and this cannot (X01 §2.3
+/// watched tmux hold no tracking at all until a pane asked). What it buys is
+/// smaller than 10 §D14 first assumed, too: mode `1007` is set by default in
+/// both terminals the spike measured, so the wheel already produces
+/// cursor-up/down keys today and the exception buys an *unambiguous* wheel
+/// rather than a working one.
+///
+/// The phone profile is where it is turned on, which is the right place: the
+/// people who need touch-scroll are the people not selecting text with a mouse.
+pub const DEFAULT_MOUSE: bool = false;
 
 impl ClientConfig {
     /// The narrow threshold this configuration asks for.
@@ -187,6 +218,15 @@ impl ClientConfig {
         match self.narrow_cols {
             Some(cols) => cols,
             None => DEFAULT_NARROW_COLS,
+        }
+    }
+
+    /// Whether this configuration asks for mouse reporting.
+    #[must_use]
+    pub const fn mouse(&self) -> bool {
+        match self.mouse {
+            Some(on) => on,
+            None => DEFAULT_MOUSE,
         }
     }
 }

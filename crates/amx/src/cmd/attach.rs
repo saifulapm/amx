@@ -217,6 +217,11 @@ async fn full(ctx: &Ctx) -> anyhow::Result<ExitCode> {
     .await
     .context("attach to the session")?;
     app.input().set_bindings(settings.bindings);
+    // After the bindings and for the same reason: the terminal is taken by
+    // `App::attach` and the configuration is read here, so this is where the
+    // two meet. Off unless `[client] mouse` says otherwise — X01's outcome (b),
+    // with the measurement behind it at `amx_core::config::DEFAULT_MOUSE`.
+    app.set_mouse_tracking(settings.mouse);
 
     let mut out = std::io::stdout();
     let sigwinch = Sigwinch::install().context("watch for terminal resizes")?;

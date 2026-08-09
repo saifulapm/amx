@@ -47,6 +47,13 @@ pub struct Settings {
     /// Read by the narrow-viewport projection (D14): below this width the
     /// client shows one pane full-screen and declares that in its viewport.
     pub narrow_cols: NarrowCols,
+    /// `[client] mouse`: whether to ask the host terminal for mouse reports.
+    ///
+    /// A bare `bool` and not a newtype, because here the `Default` a bare
+    /// `bool` gives — `false` — *is* the shipped answer
+    /// (`amx_core::config::DEFAULT_MOUSE`, which carries the measurement that
+    /// chose it). Read by `amx attach`, which hands it to the terminal guard.
+    pub mouse: bool,
     /// `[keys]`, resolved.
     pub bindings: Bindings,
 }
@@ -113,6 +120,7 @@ pub fn resolve(config: &Config) -> (Settings, Vec<ConfigDiagnostic>) {
     let (bindings, diagnostics) = bindings_of(&config.keys);
     let settings = Settings {
         narrow_cols: NarrowCols(config.client.narrow_cols()),
+        mouse: config.client.mouse(),
         bindings,
     };
     (settings, diagnostics)

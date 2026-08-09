@@ -43,6 +43,11 @@ fn an_absent_section_resolves_to_exactly_what_amx_ships() {
         "a file with no [keys] leaves the shipped table alone"
     );
     assert_eq!(settings.narrow_cols.0, 60, "10 §D14's threshold");
+    assert!(
+        !settings.mouse,
+        "X01's outcome (b): asking for the mouse costs the user their \
+         terminal's own selection, so it is not the default",
+    );
     assert_eq!(settings.bindings.prefix(), 0x01, "ctrl+a, 04 §7");
     assert_eq!(settings.bindings.prefix_source(), Source::Shipped);
 }
@@ -240,6 +245,28 @@ fn the_narrow_threshold_is_read_and_overridable() {
     assert_eq!(settings.narrow_cols.0, 45);
     assert!(settings.narrow_cols.is_narrow(44));
     assert!(!settings.narrow_cols.is_narrow(45));
+}
+
+/// D14's wheel exception is opt-in, and the opt-in is one key. The phone
+/// profile is what sets it (X20), which is the right place: the people who need
+/// touch-scroll are the people not selecting text with a mouse.
+#[test]
+fn the_mouse_switch_is_off_until_a_file_turns_it_on() {
+    let (shipped, diagnostics) = resolve("[client]\nnarrow_cols = 45\n");
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert!(
+        !shipped.mouse,
+        "a [client] section that says nothing about \
+        the mouse must not turn it on"
+    );
+
+    let (asked, diagnostics) = resolve("[client]\nmouse = true\n");
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert!(asked.mouse);
+    assert_eq!(
+        asked.narrow_cols.0, 60,
+        "the other key in the section keeps its default",
+    );
 }
 
 #[test]
