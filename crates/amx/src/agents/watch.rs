@@ -6,19 +6,33 @@
 //! re-query on `gap`", the contract [`crate::cmd::events`] already documents
 //! and implements. Nothing here is a second contract.
 //!
-//! # Why re-query and never fold
+//! # Why the table is re-queried and never folded
 //!
 //! This loop holds no model of the session. Every delivery — a status change, a
-//! pane's damage, a `gap`, a dropped notification — means exactly one thing:
-//! *ask again*. That is what makes the awkward cases free rather than handled.
-//! A `gap` is loss the consumer is told about and this consumer's whole
-//! response to loss is a fresh `agent.list`, so it can be neither swallowed nor
-//! mishandled. A cold restart begins the sequence space again — the case X00's
-//! wave-1 boundary handed to this task after watching `amx events` print seq
-//! 1093 then seq 122 with nothing between — and a loop that resumed from a
-//! cursor would silently skip everything the new server published first. This
-//! one subscribes from wherever the successor is and asks again; the restart is
-//! *said* on the footer rather than inferred from a hole in the numbers.
+//! pane's damage, a `gap`, a dropped notification — means exactly one thing for
+//! the table: *ask again*. That is what makes the awkward cases free rather
+//! than handled. A `gap` is loss the consumer is told about and this consumer's
+//! whole response to loss is a fresh `agent.list`, so it can be neither
+//! swallowed nor mishandled. A cold restart begins the sequence space again —
+//! the case X00's wave-1 boundary handed to this task after watching
+//! `amx events` print seq 1093 then seq 122 with nothing between — and a loop
+//! that resumed from a cursor would silently skip everything the new server
+//! published first. This one subscribes from wherever the successor is and asks
+//! again; the restart is *said* on the footer rather than inferred from a hole
+//! in the numbers.
+//!
+//! # What is read off the delivery, and why that is not folding
+//!
+//! The footer's last clause is not re-queried, because no query answers it. An
+//! attention delivery carries D15's identity block, and
+//! [`Announcement`](super::announce::Announcement) turns it into the sentence
+//! that block was frozen for: `api/backend blocked 4s (permission_dialog)`. A
+//! block that clears between two refresh windows is on no table this watch ever
+//! draws, and a dequeue caused by a pane exiting names an agent the next
+//! `agent.list` has no row for — both are things only the delivery says. That
+//! module's header states the division: the block answers *what just happened*
+//! about one agent and can never answer *what is on screen now* about the rest,
+//! which is why it lands on the footer and not in a row.
 //!
 //! # One call per window, never one per pane (R-M4-7)
 //!
@@ -48,8 +62,8 @@ use amx_client::net::{self, NetError, Session};
 use amx_client::render::FrameWriter;
 use amx_client::term::{Sigwinch, TermSize, TerminalGuard};
 use amx_core::agent::EpochMillis;
-use amx_core::{Ctx, Delivery, SessionId};
-use amx_proto::control::agent::ListReply;
+use amx_core::{Ctx, Delivery, SessionId, WorkspaceId};
+use amx_proto::control::agent::{ListParams, ListReply};
 use amx_proto::control::wait::{EVENT_METHOD, SubscribeReply};
 use amx_proto::rpc::Notification;
 use anyhow::Context as _;
@@ -57,6 +71,7 @@ use serde_json::json;
 use tokio::io::AsyncReadExt as _;
 use tokio::signal::unix::{SignalKind, signal};
 
+use super::announce::Announcement;
 use super::scope::Scope;
 use super::table;
 use crate::cmd::attach::{client_info, flush};
@@ -120,11 +135,16 @@ async fn watch(ctx: &Ctx, scope: &Scope, screen: &mut Screen) -> anyhow::Result<
         // A restart is a different server behind the same path. Nothing here
         // resumes from a cursor, so it costs no correctness — but a reader
         // watching a table blink is owed the reason.
-        view.note = if server.is_some_and(|was| was != welcome) {
-            Some("the session restarted")
+        if server.is_some_and(|was| was != welcome) {
+            view.note = Some("the session restarted");
+            // A restart is a different session's panes under the same path, so
+            // the agent the footer was naming is not one this server has heard
+            // of. Announcements do not survive it; the table does not either,
+            // and the difference is that the table is about to be re-read.
+            view.announced = None;
         } else {
-            None
-        };
+            view.note = None;
+        }
         server = Some(welcome);
 
         // Every step of taking a session up can meet the socket dying under it
@@ -213,6 +233,12 @@ async fn open(
     // session whose workspace ids are new too, and a watch holding the old one
     // would ask the successor about a workspace it has never heard of.
     let params = scope.params(session).await.map_err(Refused::from)?;
+    // Read back out of the parameters rather than resolved a second time:
+    // whatever this watch is about to ask `agent.list` for is exactly the scope
+    // an announcement has to belong to, and two resolutions could differ.
+    view.scope = serde_json::from_value::<ListParams>(params.clone())
+        .ok()
+        .and_then(|params| params.workspace);
     view.take(query(session, &params).await?);
     Ok(params)
 }
@@ -285,6 +311,11 @@ impl From<anyhow::Error> for Refused {
 /// Everything does — that is the point of the module header — so the return is
 /// "was there anything at all", including a queue that overflowed, which
 /// [`Session::take_notifications`] reports as the gap it is.
+///
+/// The deliveries are also *read* on the way past, which is the other half of
+/// that header: an attention transition puts its identity block on the footer
+/// here, and the `agent.list` the return value asks for answers a different
+/// question about the same delivery.
 fn drain(session: &mut Session, into: &mut Vec<Notification>, view: &mut View) -> bool {
     let lost = session.take_notifications(into);
     for notification in into.iter() {
@@ -299,7 +330,16 @@ fn drain(session: &mut Session, into: &mut Vec<Notification>, view: &mut View) -
             continue;
         };
         match delivery {
-            Delivery::Event(envelope) => view.seq = Some(envelope.seq),
+            Delivery::Event(envelope) => {
+                view.seq = Some(envelope.seq);
+                // Only an attention transition answers with anything, and only
+                // then is the footer's sentence replaced: an announcement is
+                // the last thing that happened to the queue, not the last thing
+                // that happened.
+                if let Some(said) = Announcement::of(&envelope.event, view.scope) {
+                    view.announced = Some(said);
+                }
+            }
             // Said out loud rather than absorbed silently: the re-query below
             // is the recovery the contract names, and a reader is entitled to
             // know their stream lost something even though their table did
@@ -307,6 +347,13 @@ fn drain(session: &mut Session, into: &mut Vec<Notification>, view: &mut View) -
             Delivery::Gap { to, .. } => {
                 view.seq = Some(to);
                 view.note = Some("the event stream gapped; re-queried");
+                // The table recovers by asking again; the sentence cannot. What
+                // was lost is exactly the deliveries that would have replaced
+                // it, so the agent the footer names may have stopped waiting
+                // inside the hole. Dropped rather than left standing: a
+                // consumer that has been told it lost events should not be
+                // shown one it might no longer be entitled to.
+                view.announced = None;
             }
         }
     }
@@ -376,6 +423,20 @@ struct View {
     seq: Option<amx_core::Seq>,
     /// A sentence for the footer: a gap, a restart, a redial in progress.
     note: Option<&'static str>,
+    /// The last attention transition, said from the delivery that carried it.
+    ///
+    /// D15's identity block, and this is its reader. Kept until another
+    /// transition replaces it, so a reader who looked away still learns what
+    /// moved — with an age beside it, since a sentence that stays on screen has
+    /// to say how old it is.
+    announced: Option<Announcement>,
+    /// The workspace `--workspace` narrowed this watch to, if it did.
+    ///
+    /// Only [`announced`](Self::announced) reads it: the table is narrowed by
+    /// the server, which is asked with these same parameters, and a second
+    /// opinion about the scope held on this side is a second opinion that can
+    /// disagree.
+    scope: Option<WorkspaceId>,
     /// Whether the table on screen is known to be behind the session.
     stale: bool,
 }
@@ -420,12 +481,20 @@ impl View {
         lines
     }
 
-    /// The last row: how to leave, where the stream is, and anything that has
-    /// happened to it.
+    /// The last row: how to leave, where the stream is, what last moved on the
+    /// queue, and anything that has happened to the stream itself.
+    ///
+    /// The announcement sits ahead of `stale` and the note because it is the
+    /// only clause carrying a fact rather than a condition, and a 45-column
+    /// window has room for about one of them. The two behind it describe a
+    /// screen a reader can already see is not moving.
     fn footer(&self, width: usize) -> String {
         let mut out = String::from("q quits");
         if let Some(seq) = self.seq {
             out.push_str(&format!(" · seq {seq}"));
+        }
+        if let Some(said) = &self.announced {
+            out.push_str(&format!(" · {}", said.line(self.now())));
         }
         if self.stale {
             out.push_str(" · stale");

@@ -13,6 +13,10 @@
 //!   `amx events --json`, against a real session, with a stub `notify-send`
 //!   first on `$PATH`. 04 §8's claim is that "any program can `amx events
 //!   --json`"; the only way to check a claim about *any program* is to be one.
+//!   What it is asserted to *say* is D15's own sentence — `api/backend blocked
+//!   (permission_dialog)` — because the identity block on `attention_enqueued`
+//!   was frozen for exactly that and a field with no reader is a field that
+//!   rots.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
@@ -324,7 +328,7 @@ exec sleep 300
 const STUB_NOTIFY_SEND: &str = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$AMX_TEST_NOTIFY_LOG\"\n";
 
 #[test]
-fn notifier_emits_one_desktop_notification_per_attention_enqueue() {
+fn notifier_emits_one_notification_naming_the_agent_and_the_reason() {
     let env = Env::new("notify");
     let mut server = env
         .command()
@@ -372,9 +376,25 @@ fn notifier_emits_one_desktop_notification_per_attention_enqueue() {
         1,
         "one enqueue is one notification, not one per event: {notified:?}"
     );
+
+    // The sentence D15 froze the identity block to make possible, and the
+    // notifier made it **from the delivery alone**: the workspace's label, the
+    // agent's name and the detector that asserted the block, none of which the
+    // pre-M4 event carried and none of which this script asks a session for.
     assert!(
-        notified.contains(&pane),
-        "the notification names the pane that needs input: {notified:?}"
+        notified.contains(&format!("{PROJECT}/{AGENT} blocked")),
+        "the notification names the project and the agent: {notified:?}"
+    );
+    assert!(
+        notified.contains("(permission_dialog)"),
+        "and the detector that said so, by its own name: {notified:?}"
+    );
+    // Proof that it is the event and not a query: the pane uuid is the only
+    // thing `session.state`'s queue would have given, and it is not what a
+    // reader is shown any more.
+    assert!(
+        !notified.contains(&pane),
+        "a uuid is what the block replaced: {notified:?}"
     );
 
     // And the queue the notifier consumed is the queue everything else reads —
@@ -468,8 +488,19 @@ fn home(env: &Env) -> PathBuf {
 
 /// Open a workspace and split off a pane running `program`, answering with its
 /// UUID.
+/// The workspace and the pane label the notifier is expected to read back off
+/// the event, and the sentence it makes of them.
+const PROJECT: &str = "api";
+const AGENT: &str = "backend";
+
 fn split(env: &Env, program: &Path) -> String {
-    env.run(&["workspace", "create", "--params", "{}"]).ok();
+    env.run(&[
+        "workspace",
+        "create",
+        "--params",
+        &json!({ "label": PROJECT }).to_string(),
+    ])
+    .ok();
     let root = state(env)["panes"][0]["pane"]
         .as_str()
         .expect("the new workspace has a pane")
@@ -484,10 +515,22 @@ fn split(env: &Env, program: &Path) -> String {
             .ok(),
     )
     .expect("pane.split replies with JSON");
-    reply["pane"]
+    let pane = reply["pane"]
         .as_str()
         .expect("a split names its new pane")
-        .to_owned()
+        .to_owned();
+    // Named before it blocks, and by the ordinary verb. The hub learns a label
+    // by folding the `pane_renamed` the rename publishes — it never asks a
+    // sibling for one (`docs/11-m4-plan.md` D-M4-6) — so a pane renamed after
+    // its enqueue would leave that enqueue anonymous, correctly.
+    env.run(&[
+        "pane",
+        "rename",
+        "--params",
+        &json!({ "pane": &pane, "label": AGENT }).to_string(),
+    ])
+    .ok();
+    pane
 }
 
 /// The session's state.
