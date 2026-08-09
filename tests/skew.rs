@@ -13,6 +13,25 @@
 //! every method this build *does* table must answer, whatever the reply. Any
 //! of those turning into a disconnect fails the row, because a dropped
 //! connection is exactly how skew intolerance would present.
+//!
+//! # The two things this table does not vary, said plainly (DR-20)
+//!
+//! A skew harness is worth exactly what it varies, and this one varies one
+//! thing: the version *window a client offers*. Two dimensions it does not
+//! vary, both of which read as covered if nobody writes them down:
+//!
+//! - **Protocol version: current against current.** Only version 1 exists, so
+//!   [`ROWS`] is that version against itself plus a client-from-the-future.
+//!   `the_table_is_current_against_current_until_a_second_version_exists` fails
+//!   the day that stops being true, so the label cannot go stale quietly.
+//! - **Build: one tree, one binary.** Every process in this file is the binary
+//!   under test. The far side of the bridge row can be pointed at another one
+//!   with [`FAR_BINARY`], which is how an independently *versioned* far side is
+//!   run — but a binary another **machine** built for its own architecture is
+//!   not something any test here can produce. m3-live-smoke §5 attached across
+//!   two architectures with the far side cross-built *here*, which is the same
+//!   tree by another name, and that residual is the M4 exit's smoke step
+//!   ([11-m4-plan.md](../docs/11-m4-plan.md) §7), not this suite's.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "test")]
 
@@ -50,6 +69,106 @@ const ROWS: &[Row] = &[
         expect: PROTO_MAX,
     },
 ];
+
+/// An amx to run the whole far side of the bridge row from, instead of the
+/// binary under test.
+///
+/// The bridge row's far side is a *machine*: `amx server` serving the session
+/// and `amx _bridge` splicing stdio to it. Both come from this variable when it
+/// is set, so pointing it at a differently-versioned build makes the row this
+/// tree's client against that build's server — the one dimension of DR-20's
+/// first residual that a single machine can supply.
+///
+/// Unset in CI and unset by default, because a second build is something a
+/// person makes on purpose: bump `[workspace.package] version`, `cargo build -p
+/// amx`, copy the binary aside, put the version back
+/// ([m3-live-smoke.md](../docs/notes/m3-live-smoke.md) §7 step 1 is the same
+/// recipe), then run this suite with `AMX_SKEW_FAR_BINARY=<that copy>`.
+const FAR_BINARY: &str = "AMX_SKEW_FAR_BINARY";
+
+/// The far side's own binary, or `None` when it is this build.
+fn far_binary() -> Option<std::path::PathBuf> {
+    std::env::var_os(FAR_BINARY)
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
+/// What the far side answers `--version` with — this build, unless
+/// [`FAR_BINARY`] names another.
+///
+/// Read by running the binary rather than assumed, because it is the one thing
+/// that proves the row ran against the binary it says it did: the version in
+/// the `Welcome` came off the process serving the socket, and this came off the
+/// file that process was spawned from.
+fn far_version() -> String {
+    let Some(far) = far_binary() else {
+        return env!("CARGO_PKG_VERSION").to_owned();
+    };
+    let out = std::process::Command::new(&far)
+        .arg("--version")
+        .output()
+        .expect("run the far binary's --version");
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .last()
+        .expect("a version in `amx --version`")
+        .to_owned()
+}
+
+/// A command for the far side, carrying `env`'s roots whichever binary it runs.
+fn far_command(env: &Env) -> std::process::Command {
+    let base = env.command();
+    let Some(far) = far_binary() else {
+        return base;
+    };
+    assert!(
+        far.is_file(),
+        "${FAR_BINARY} names no file: {}",
+        far.display()
+    );
+    let mut command = std::process::Command::new(&far);
+    for (key, value) in base.get_envs() {
+        match value {
+            Some(value) => command.env(key, value),
+            None => command.env_remove(key),
+        };
+    }
+    command
+}
+
+/// The far side's session server: [`far_command`] plus `server`.
+///
+/// The bridge row starts its own rather than taking [`Env::server`]'s, because
+/// under [`FAR_BINARY`] the process serving the session has to be the far
+/// side's too. A server left running would be inherited by the next test with
+/// the same roots, so this ends with the struct that owns it.
+struct FarServer {
+    child: std::process::Child,
+}
+
+impl FarServer {
+    fn start(env: &Env) -> Self {
+        let child = far_command(env)
+            .arg("server")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn the far side's amx server");
+        let socket = env.socket();
+        rig::wait_until("the far side's server to answer its socket", || {
+            amx_server::session::probe::probe(&socket).is_ok_and(|p| p.is_running())
+        });
+        Self { child }
+    }
+}
+
+impl Drop for FarServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
 
 /// Example params for every method in the table.
 ///
@@ -271,10 +390,15 @@ async fn a_peer_with_no_common_version_is_refused_without_a_welcome() {
 /// this proves the bridge negotiates and answers, not that it has been tested
 /// across versions. It inherits that limit from the M0 harness above, and a
 /// second version lands here as a second row in [`ROWS`] and nothing else.
+///
+/// **Same-build**, equally honestly, unless [`FAR_BINARY`] says otherwise: the
+/// server and the splice below are the binary under test until that variable
+/// names another one. The module header says which residual each of those two
+/// labels belongs to.
 #[tokio::test]
 async fn every_skew_sample_row_answers_over_the_bridge_transport() {
     let env = Env::new("skew-bridge");
-    let server = env.server();
+    let server = FarServer::start(&env);
 
     for row in ROWS {
         // Spawned exactly as ssh would run it — `amx _bridge`, stdio and
@@ -287,6 +411,16 @@ async fn every_skew_sample_row_answers_over_the_bridge_transport() {
         assert_eq!(
             welcome.proto, row.expect,
             "{}: the bridge negotiated the wrong version",
+            row.name
+        );
+        // Which build answered, checked rather than assumed: with no
+        // `$AMX_SKEW_FAR_BINARY` this is the tautology that keeps the label
+        // honest, and with one it is the whole claim — the session on the other
+        // side of the splice is served by *that* binary.
+        assert_eq!(
+            welcome.server.version,
+            far_version(),
+            "{}: the far side is not the binary it was spawned from",
             row.name
         );
 
@@ -347,7 +481,8 @@ async fn every_skew_sample_row_answers_over_the_bridge_transport() {
 /// Spawn `amx _bridge` with a socketpair as its stdin and stdout.
 ///
 /// The one place ssh is replaced, and it is replaced by the two descriptors ssh
-/// would have handed the same process.
+/// would have handed the same process. Which amx runs is [`far_command`]'s
+/// answer, so a differently-built far side splices as well as serves.
 fn bridge_child(env: &Env) -> (std::process::Child, tokio::net::UnixStream) {
     use std::os::fd::OwnedFd;
     use std::os::unix::net::UnixStream as StdUnixStream;
@@ -356,8 +491,7 @@ fn bridge_child(env: &Env) -> (std::process::Child, tokio::net::UnixStream) {
     let (mine, theirs) = StdUnixStream::pair().expect("socketpair");
     let stdin = OwnedFd::from(theirs.try_clone().expect("dup the bridge socket"));
     let stdout = OwnedFd::from(theirs);
-    let child = env
-        .command()
+    let child = far_command(env)
         .arg("_bridge")
         .stdin(Stdio::from(stdin))
         .stdout(Stdio::from(stdout))
@@ -367,6 +501,31 @@ fn bridge_child(env: &Env) -> (std::process::Child, tokio::net::UnixStream) {
     mine.set_nonblocking(true).expect("non-blocking");
     let local = tokio::net::UnixStream::from_std(mine).expect("adopt the bridge socket");
     (child, local)
+}
+
+/// The label's tripwire: it says current-against-current, and this fails when
+/// that stops being the truth (DR-20).
+///
+/// A label is worth nothing if the thing it describes can change underneath it,
+/// and this one describes a table of two rows that both offer the same version.
+/// The day a second protocol version lands, [`ROWS`] owes a
+/// current-against-previous row and three doc comments owe a rewrite — and this
+/// is what says so, at the moment it becomes true, rather than a reader
+/// noticing later that the harness never ran the case it is named for.
+#[test]
+fn the_table_is_current_against_current_until_a_second_version_exists() {
+    assert_eq!(
+        PROTO_MIN, PROTO_MAX,
+        "a second protocol version exists, so this table is no longer \
+         current-against-current by construction: add the row that offers \
+         ({PROTO_MIN}, {PROTO_MIN}) against this server to ROWS, and rewrite \
+         the labels on this module, on the bridge row and on \
+         tests/handoff_exit.rs that call the coverage current-vs-current",
+    );
+    assert!(
+        ROWS.iter().all(|row| row.client.0 == PROTO_MIN),
+        "every row offers the one version there is",
+    );
 }
 
 #[test]

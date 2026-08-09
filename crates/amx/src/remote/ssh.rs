@@ -316,10 +316,25 @@ fn bridge_script(session: &SessionName) -> String {
 /// same thing in all of them.
 ///
 /// The one character with no answer here is a newline, and only against csh:
-/// csh has no spelling for a literal newline inside a word. amx's own scripts
-/// hold none by construction ([`via_sh`] asserts it in test), so this is a
-/// session name that contains one — legal, since a name is validated as a path
-/// component — reaching sh, bash, zsh and fish and not csh.
+/// csh has no spelling for a literal newline inside a word, quoted or not
+/// (`Unmatched '''.`, tcsh 6.24). **That case is refused at the boundary rather
+/// than encoded, and the refusal is [`SessionName::new`]'s** — an ASCII control
+/// character is not a legal session name, so no caller can hand one to this
+/// function. Two things settled that, and the second is the load-bearing one:
+///
+/// - There is no encoding both `sh` and csh read as the same word. Building the
+///   byte on the far side (`"$(printf …)"`) moves the problem into the *inner*
+///   script, where it is `sh`'s to expand — and command substitution eats
+///   trailing newlines, so a name ending in one would still arrive wrong.
+/// - Any encoding needs the far side to decode it, and **the far side's amx is
+///   a different binary of an unknown version**. An older one would take the
+///   encoded form literally and serve a *different session* under a name nobody
+///   asked for. A refusal here is a sentence the user can act on; that is a
+///   silent wrong answer.
+///
+/// So what crosses is what a session name may hold, and everything it may hold
+/// is quoted above. amx's own scripts hold no newline either, by construction —
+/// [`assert_one_simple_command`] asserts it.
 #[must_use]
 pub fn sq(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
@@ -447,6 +462,34 @@ mod tests {
         // fish gives `\` a meaning inside single quotes and nothing else does,
         // so it leaves too — this is what makes `via_sh`'s nesting portable.
         assert_eq!(sq(r"a\b"), r"'a'\\'b'");
+    }
+
+    #[test]
+    fn a_name_no_login_shell_could_carry_is_refused_before_it_reaches_the_quoting() {
+        // The decision `sq` records: the newline case is closed at the
+        // boundary, not encoded here. Every one of these is a name a POSIX
+        // filesystem would take and csh could not — and none of them can be
+        // built, so `bridge_script` cannot hold one.
+        for hostile in [
+            "two\nlines",
+            "carriage\rreturn",
+            "esc\u{1b}[2J",
+            "nul\0byte",
+        ] {
+            let refused = SessionName::new(hostile);
+            assert!(
+                refused.is_err(),
+                "{hostile:?} became a session name, and this module has no way \
+                 to send it: {refused:?}",
+            );
+        }
+        // And the refusal says which character it was about, without printing
+        // the character into the terminal reading the message.
+        let said = SessionName::new("two\nlines")
+            .expect_err("refused")
+            .to_string();
+        assert!(said.contains("control character"), "{said}");
+        assert!(!said.contains('\n'), "{said:?}");
     }
 
     #[test]

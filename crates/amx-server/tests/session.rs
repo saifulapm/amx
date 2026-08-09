@@ -47,6 +47,7 @@ fn env_under(root: &Path) -> Env {
         home: Some(root.join("home")),
         session: None,
         tmpdir: Some(root.join("tmp")),
+        mise_installs_dir: None,
     }
 }
 
