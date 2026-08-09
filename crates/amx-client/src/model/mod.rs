@@ -20,7 +20,7 @@ use amx_core::agent::{AgentKind, AgentSnapshot, AgentState, EpochMillis, StatusC
 use amx_core::{Layout, PaneId, Rect, Seq, WorkspaceId};
 use amx_proto::control::session::RestoreSummary;
 
-pub use grid::{Attrs, Cell, Color, PaneGrid};
+pub use grid::{Attrs, Cell, Color, PaneGrid, Underline};
 
 /// One workspace's layout, mirrored client-side.
 #[derive(Clone, Debug)]
