@@ -88,6 +88,28 @@ pub fn screen(name: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()))
 }
 
+/// Every recorded screen whose name starts with `prefix`, sorted.
+///
+/// Reading the directory rather than listing the names in the suite is
+/// deliberate: the M4 exit found a dialog class nobody had recorded, and the
+/// cheapest way to stop that recurring is that *recording* one is enough to put
+/// it under test. A fixture dropped in here with no line of Rust to go with it
+/// is still asserted against the shipped manifest.
+pub fn fixtures(prefix: &str) -> Vec<String> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/manifest");
+    let mut names: Vec<String> = fs::read_dir(&dir)
+        .unwrap_or_else(|err| panic!("read {}: {err}", dir.display()))
+        .map(|entry| entry.expect("a readable directory entry").file_name())
+        .filter_map(|name| {
+            let name = name.to_string_lossy().into_owned();
+            let stem = name.strip_suffix(".txt")?;
+            stem.starts_with(prefix).then(|| stem.to_owned())
+        })
+        .collect();
+    names.sort();
+    names
+}
+
 /// The state `manifest` reads off `grid` with `title`, or `None`.
 pub fn state_of(manifest: &Manifest, grid: &str, title: &str) -> Option<AgentState> {
     let mut buf = ScreenBuf::new();

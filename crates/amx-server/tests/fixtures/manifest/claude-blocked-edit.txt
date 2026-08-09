@@ -1,0 +1,29 @@
+
+❯ Use the Write tool to write the single word goodbye to exit-probe.txt, replacing it entirely.
+
+● Write(exit-probe.txt)
+  ⎿  Added 1 line, removed 1 line
+      1 -hello
+      1 +goodbye
+
+● exit-probe.txt now contains goodbye.
+
+✻ Crunched for 3s
+
+❯ Use the Edit tool to change the word goodbye in exit-probe.txt to farewell.
+
+● Update(exit-probe.txt)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Edit file
+ exit-probe.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ 1 -goodbye
+ 1 +farewell
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to make this edit to exit-probe.txt?
+ ❯ 1. Yes
+   2. Yes, allow all edits during this session (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend

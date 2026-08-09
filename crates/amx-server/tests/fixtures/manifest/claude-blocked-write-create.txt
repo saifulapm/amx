@@ -1,0 +1,26 @@
+ ▐▛███▜▌   Claude Code v2.1.226
+▝▜█████▛▘  Opus 5 (1M context) · Claude Max
+  ▘▘ ▝▝    /home/saiful/.claude/jobs/41686070/tmp/probe/proj
+
+ ▎ Fable 5 is now a standard part of your Max plan
+ ▎ You can use up to 50% of your weekly usage limit on Fable 5. If you hit your limit, you can
+ ▎ continue on Fable 5 with usage credits. Fable 5 draws down usage faster than Opus 5. Run /model
+ ▎ and select Fable to use it. Learn more:
+ ▎ https://support.claude.com/en/articles/15424964-claude-fable-5-promotional-access
+
+❯ Use the Write tool to create exit-probe.txt containing the single word hello. Nothing else.
+
+● Write(exit-probe.txt)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Create file
+ exit-probe.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+  1 hello
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to create exit-probe.txt?
+ ❯ 1. Yes
+   2. Yes, allow all edits during this session (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend

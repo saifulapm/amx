@@ -33,7 +33,9 @@ use amx_server::agent::manifest::{
 #[path = "manifest/harness.rs"]
 mod harness;
 
-use harness::{Counting, GRAMMAR, allocations, parse, reject, screen, state_of, winner_of};
+use harness::{
+    Counting, GRAMMAR, allocations, fixtures, parse, reject, screen, state_of, winner_of,
+};
 
 /// The counter the non-allocation acceptance rests on; see [`harness`].
 #[global_allocator]
@@ -291,7 +293,7 @@ fn explain_reports_every_rule_with_match_evidence_and_region_preview() {
     let explanation = manifest.explain(buf.screen(""));
 
     assert_eq!(explanation.manifest, "bundled:claude.toml");
-    assert_eq!(explanation.manifest_version.as_deref(), Some("2026.08.07"));
+    assert_eq!(explanation.manifest_version.as_deref(), Some("2026.08.09"));
     assert_eq!(explanation.matched.as_deref(), Some("permission_dialog"));
     assert_eq!(
         explanation.rules.len(),
@@ -311,8 +313,8 @@ fn explain_reports_every_rule_with_match_evidence_and_region_preview() {
         dialog
             .evidence
             .as_ref()
-            .is_some_and(|why| why.contains("do you want to proceed?")),
-        "evidence names what made it match: {:?}",
+            .is_some_and(|why| why.contains("1. Yes")),
+        "evidence quotes the line that made it match: {:?}",
         dialog.evidence,
     );
 
@@ -390,6 +392,127 @@ fn claude_manifest_matches_captured_idle_working_and_blocked_screens() {
         ),
         Some(AgentState::Idle),
         "the resting title asserts nothing, and the screen decides",
+    );
+}
+
+/// The M4 exit's second finding, as a test.
+///
+/// `docs/notes/m4-live-smoke.md` §6.8 item 1 found the shipped
+/// `permission_dialog` rule keyed on `do you want to proceed?`, which is what a
+/// Bash dialog asks and what the one recorded dialog said. A `Write` asks
+/// `Do you want to overwrite exit-probe.txt?`, so tier 2 could not see the
+/// dialog at all and `agent explain` answered `matched: null` with it on the
+/// screen — while the suite stayed green, because the suite owned one fixture.
+///
+/// So this walks the directory rather than a list: every recorded dialog must
+/// read `blocked`, and must read it off the dialog rule rather than by
+/// accident. Recording a new class is enough to cover it.
+#[test]
+fn every_recorded_permission_dialog_reads_blocked_from_the_dialog_rule() {
+    let manifest = Manifest::load_bundled("claude").expect("the bundled manifest compiles");
+    let recorded = fixtures("claude-blocked-");
+
+    assert!(
+        recorded.len() >= 6,
+        "six dialog classes are recorded, one file each: {recorded:?}",
+    );
+
+    for name in &recorded {
+        let grid = screen(name);
+        assert_eq!(
+            state_of(&manifest, &grid, ""),
+            Some(AgentState::Blocked),
+            "{name} is a user being waited on",
+        );
+        assert_eq!(
+            winner_of(&manifest, &grid, "").as_deref(),
+            Some("permission_dialog"),
+            "{name} must be seen by the rule that exists for it",
+        );
+    }
+}
+
+/// What each recorded dialog actually says, quoted.
+///
+/// A fixture is a file, and files get copied; this is what stops the six from
+/// collapsing into six copies of the easy one. Each literal here was read off a
+/// real 2.1.226 screen, and together they are the evidence for the comment in
+/// `claude.toml` that says the question wording varies by tool. A seventh class
+/// was driven and not recorded: a `WebSearch` asks `Do you want to proceed?`,
+/// word for word what the bash dialog asks, so it would be a second copy of a
+/// screen already here.
+#[test]
+fn the_recorded_dialogs_are_six_different_questions() {
+    for (fixture, question) in [
+        ("claude-blocked-permission", "Do you want to proceed?"),
+        (
+            "claude-blocked-write-create",
+            "Do you want to create exit-probe.txt?",
+        ),
+        (
+            "claude-blocked-write-overwrite",
+            "Do you want to overwrite exit-probe.txt?",
+        ),
+        (
+            "claude-blocked-edit",
+            "Do you want to make this edit to exit-probe.txt?",
+        ),
+        (
+            "claude-blocked-fetch",
+            "Do you want to allow Claude to fetch this content?",
+        ),
+        ("claude-blocked-plan", "Would you like to proceed?"),
+    ] {
+        assert!(
+            screen(fixture).contains(question),
+            "{fixture} is the screen that asks {question:?}",
+        );
+    }
+
+    // One of the six says "proceed", which is the whole finding: the rule was
+    // keyed on the wording of a single dialog, and the fixture that carried
+    // that wording was the single dialog anyone had recorded.
+    let proceeding = fixtures("claude-blocked-")
+        .iter()
+        .filter(|name| screen(name).contains("Do you want to proceed?"))
+        .count();
+    assert_eq!(
+        proceeding, 1,
+        "the bash dialog, and no other recorded screen"
+    );
+}
+
+/// The other half of the fix: nothing that is *not* a dialog became one.
+///
+/// Widening a blocked rule is the change most likely to put an idle agent in
+/// the attention queue and keep it there, so the idle and working screens are
+/// re-asserted against the widened rule rather than assumed.
+#[test]
+fn widening_the_dialog_rule_leaves_the_idle_and_working_screens_alone() {
+    let manifest = Manifest::load_bundled("claude").expect("the bundled manifest compiles");
+
+    for fixture in [
+        "claude-idle-prompt",
+        "claude-idle-after-interrupt",
+        "claude-working-stream",
+        "claude-working-spinner",
+    ] {
+        assert_ne!(
+            state_of(&manifest, &screen(fixture), ""),
+            Some(AgentState::Blocked),
+            "{fixture} has nobody waiting on it",
+        );
+    }
+
+    // The composer is the case the `1. Yes` anchor has to be careful about: a
+    // user may type anything into it, including the answer to a dialog that is
+    // no longer there. The dialog's list is indented and the composer's `❯`
+    // sits at column 0, so the idle rule's guard reads the indentation.
+    let typed = screen("claude-idle-prompt").replace("❯\u{a0}Try", "❯\u{a0}1. Yes — Try");
+    assert_eq!(
+        state_of(&manifest, &typed, ""),
+        Some(AgentState::Idle),
+        "an idle screen with `1. Yes` typed into the composer is still idle",
     );
 }
 

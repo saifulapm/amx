@@ -1,0 +1,29 @@
+ ▎ https://support.claude.com/en/articles/15424964-claude-fable-5-promotional-access
+
+❯ Use the Write tool to create exit-probe.txt containing the single word hello. Nothing else.
+
+● Write(exit-probe.txt)
+  ⎿  Wrote 1 line to exit-probe.txt
+      1 hello
+
+● Created exit-probe.txt containing hello.
+
+✻ Sautéed for 4s
+
+❯ Use the Write tool to write the single word goodbye to exit-probe.txt, replacing it entirely.
+
+● Write(exit-probe.txt)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Overwrite file
+ exit-probe.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+  1 -hello
+  1 +goodbye
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to overwrite exit-probe.txt?
+ ❯ 1. Yes
+   2. Yes, allow all edits during this session (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend
