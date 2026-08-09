@@ -24,7 +24,9 @@ use std::sync::{Arc, Mutex};
 
 use amx_core::agent::{AgentKind, HookToken, RefSource};
 use amx_core::platform::{PlatformError, ProcessId, PtySession, WinSize};
-use amx_core::{Bus, Ctx, Event, GridGeneration, PaneId, SessionName, WorkspaceId};
+use amx_core::{
+    Bus, Ctx, Delivery, Event, GridGeneration, PaneId, SessionName, Subscription, WorkspaceId,
+};
 use amx_proto::control::agent as proto;
 use amx_server::actor::agent_hub::inherit::InheritedPane;
 use amx_server::actor::agent_hub::{AgentHub, AgentProbe, AgentReport};
@@ -458,6 +460,35 @@ fn spawn_core(mut mailbox: mpsc::Receiver<CoreCommand>) -> Spy {
 }
 
 // ------------------------------------------------------------------ payloads
+
+/// Everything `AgentHub` has published on `subscription`, and nothing else.
+///
+/// The four kinds the hub is the only publisher of (04 §2's one-publisher rule,
+/// read per event kind). A test that wants to say "the hub published nothing"
+/// has to say it about these: the bus is a session's, and the panes a suite
+/// starts publish their own damage on it, off a parser thread whose timing is
+/// nobody's to promise.
+///
+/// Drains until the bus goes quiet for [`TICK`], which is a bound on how long a
+/// straggler may take to arrive rather than a nap: the assertion this feeds is
+/// an emptiness one, so a window that closes early would make it pass wrongly.
+pub async fn agent_events(subscription: &mut Subscription) -> Vec<Event> {
+    let mut published = Vec::new();
+    while let Ok(Some(Delivery::Event(envelope))) =
+        tokio::time::timeout(TICK, subscription.recv()).await
+    {
+        if matches!(
+            envelope.event,
+            Event::AgentStatus { .. }
+                | Event::AgentIdentified { .. }
+                | Event::AttentionEnqueued { .. }
+                | Event::AttentionDequeued { .. }
+        ) {
+            published.push(envelope.event);
+        }
+    }
+    published
+}
 
 /// An agent name that parses.
 pub fn kind(name: &str) -> AgentKind {

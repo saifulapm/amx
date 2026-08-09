@@ -45,7 +45,8 @@ mod stamps;
 mod support;
 
 use fixtures::{
-    FakePane, IMPATIENT_CLAUDE, Rig, kind, pane_id, report, screen, token, wait_for, workspace_id,
+    FakePane, IMPATIENT_CLAUDE, Rig, agent_events, kind, pane_id, report, screen, token, wait_for,
+    workspace_id,
 };
 use support::TempDir;
 
@@ -501,7 +502,23 @@ async fn shutdown_after_cancel_sends_no_sibling_request() {
     .await;
     rig.settle().await;
     let before = rig.spy.seen();
-    let head = rig.ctx.bus.head();
+    // Everything published from here on, kept rather than counted.
+    //
+    // The count this used to take — `bus.head()`, before and after, expected to
+    // move by exactly the test's own two publishes — is not a measurement of
+    // this actor. The pane is a publisher too: `PaneHost` publishes its own
+    // `PaneDamage` off the parser's `frames.changed()`
+    // (`actor/pane_host/actor.rs:86,132`), and `paint` returns when the
+    // snapshot command answers, not when that wakeup has been folded. Under
+    // load the second one lands *after* the hub has been joined and the head
+    // is one higher than the arithmetic allows — a failure whose message
+    // accuses the hub of publishing after cancellation, in a run where the hub
+    // published nothing at all and was already gone.
+    //
+    // So the assertion below is about the events the hub is the only publisher
+    // of (04 §2's rule, read per kind), which is the property this test exists
+    // to defend and is not a hostage to what else shares the bus.
+    let mut published = rig.ctx.bus.subscribe();
     let evaluations = rig.probe.evaluations();
     let transitions = rig.probe.transitions();
     assert!(!before.statuses.is_empty(), "the mirror was filled live");
@@ -525,7 +542,7 @@ async fn shutdown_after_cancel_sends_no_sibling_request() {
         "a report after cancellation is unaccepted, and silently so",
     );
 
-    let (spy, bus) = (rig.spy.clone(), std::sync::Arc::clone(&rig.ctx.bus));
+    let spy = rig.spy.clone();
     let outcome = tokio::time::timeout(fixtures::PATIENCE, rig.stop())
         .await
         .expect("the hub returns promptly once its mailbox closes");
@@ -535,11 +552,10 @@ async fn shutdown_after_cancel_sends_no_sibling_request() {
         (before.statuses.len(), 0, 0),
         "a cancelled hub tells Core nothing — Core is draining too (R-M1-2)",
     );
-    assert_eq!(
-        bus.head(),
-        head + 2,
-        "the only two sequence numbers issued are this test's own damage and \
-         exit — a cancelled hub publishes nothing of its own",
+    let hub_events = agent_events(&mut published).await;
+    assert!(
+        hub_events.is_empty(),
+        "a cancelled hub publishes nothing of its own: {hub_events:#?}",
     );
     assert_eq!(
         outcome.transitions, transitions,
@@ -550,4 +566,78 @@ async fn shutdown_after_cancel_sends_no_sibling_request() {
         "and evaluates nothing: the panes are on their way down",
     );
     pane.stop().await;
+}
+
+/// The same discipline where the test above cannot reach: a wakeup that was
+/// ready in the *same poll* as the cancellation.
+///
+/// The test above cancels and then settles, so the hub has already left its
+/// loop before anything else arrives — which is the ordinary case and is why
+/// it passes. It is not the only case. The select is deliberately not
+/// `biased`, so when a delivery and the cancellation are both ready tokio picks
+/// between them at random, and the discipline would hold only as often as the
+/// coin came down right.
+///
+/// Forcing it is a matter of not yielding: `publish` and `cancel` are both
+/// synchronous, so on a current-thread runtime the hub cannot run between them
+/// and its next poll has both branches ready. The delivery is a `PaneExited`
+/// for a blocked pane, which is the most expensive thing the bus can hand this
+/// actor — `retire` publishes an `agent_status` and an `attention_dequeued` and
+/// tells `Core` about both.
+///
+/// Twenty-four rounds because one proves nothing about a coin: a loop that
+/// takes the wrong branch half the time survives a single round with
+/// probability 1/2 and this run with probability 2⁻²⁴.
+#[tokio::test]
+async fn a_cancelled_hub_ignores_a_wakeup_that_was_ready_in_the_same_poll() {
+    for round in 0..24 {
+        let root = TempDir::new("samepoll");
+        let rig = Rig::under(&root).registry(IMPATIENT_CLAUDE).start();
+        let pane = FakePane::start(&rig.ctx.bus, pane_id(0));
+        let token = token("samepoll");
+
+        rig.started(&pane, &token, Some("claude")).await;
+        rig.report(report(
+            pane.pane,
+            &token,
+            "claude",
+            HookEvent::PermissionRequest,
+        ))
+        .await;
+        rig.settle().await;
+        assert_eq!(
+            rig.view.get(pane.pane).map(|status| status.state),
+            Some(AgentState::Blocked),
+            "round {round}: the pane never blocked, so there is no race to lose",
+        );
+        let mut published = rig.ctx.bus.subscribe();
+        let mirrored = rig.spy.seen().statuses.len();
+        let transitions = rig.probe.transitions();
+
+        // No `.await` between these two, which is the whole of the setup.
+        rig.publish(Event::PaneExited {
+            pane: pane.pane,
+            status: Some(0),
+        });
+        rig.ctx.cancel.cancel();
+        rig.settle().await;
+
+        let spy = rig.spy.clone();
+        let outcome = rig.stop().await;
+        let hub_events = agent_events(&mut published).await;
+        assert!(
+            hub_events.is_empty(),
+            "round {round}: a cancelled hub folded the exit it raced: {hub_events:#?}",
+        );
+        assert_eq!(
+            spy.seen().statuses.len(),
+            mirrored,
+            "round {round}: and told Core about it",
+        );
+        assert_eq!(
+            outcome.transitions, transitions,
+            "round {round}: and moved a status on the way out",
+        );
+        pane.stop().await;
+    }
 }
