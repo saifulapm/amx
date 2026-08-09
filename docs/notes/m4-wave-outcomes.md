@@ -2066,14 +2066,66 @@ action names in a `[keys] bind` row are `agents` and `attention-here`. The
 vocabulary rule X07 recorded still holds — a bindable key is one byte — so the
 phone profile can move either of these to a key a phone keyboard can emit.
 
-**X00 — seam 5 is closed from this side, and one thing about it is worth a smoke
-step.** The two surfaces share one layout function and one clock, and neither
-computes the other's geometry. What no test in either crate can see is the join
-the plan's §7 item 3 names: the board open, a peek of a pane in *another*
-workspace showing that pane's real cells, and no keystroke reaching it. Both
-halves are pinned separately (`crates/amx-client/tests/{agents,peek}.rs`) and the
-meeting is the smoke's.
+**X00 — seam 5 is closed from this side, and the join has a test after all.**
+The two surfaces share one layout function and one clock, and neither computes
+the other's geometry. The join §7 item 3 names — the board open, `Space` on a row
+whose pane is in a workspace this terminal is not drawing, and that pane's own
+cells arriving — is
+`space_on_a_row_brings_that_panes_own_cells_to_this_client`
+(`crates/amx-client/tests/agents.rs`), over a real socket with a real second
+workspace. It is here rather than in `peek.rs` because the *key* was the missing
+half; X15's suite already proves `open_peek` called directly.
 
 **X00 — the field ledger's X14 rows are read.** `AgentSnapshot::reason` and
 `::since` are rendered per row and dated against `ListReply::now`, all three out
 of `agent.list`. X16 is still owed.
+
+### Smoked against the real binary, and the one thing it found
+
+Green tests are not the exit (§7), and this milestone's own subject is why. The
+board was driven over a real `amx attach` on a pty at 30×110, against a real
+session holding five scripted agents (`tests/support/agent.rs`'s script and its
+registry stanza, planted into an isolated `XDG_*` root) across three labelled
+workspaces, two of them blocked by a real `PermissionRequest` hook. Verbatim:
+
+```
+agents — 5 · ⚑2 · by workspace
+api/api0         ⚑ blocked PermissionRequest 2s   │   (esc to cancel)
+api/api1         ⚑ blocked PermissionRequest 1s   │   (esc to cancel)
+web/web1         · idle                      2s   │ r shortcuts
+web/web0         · idle    prompt_box_idle   1s   │ o interrupt · ← for agents
+docs/docs0       · idle                      2s   │   ⏸ manual mode on · ? for shortcuts
+ [api ⚑2] [docs] [web] [068046f3] ⚑2 api/api0 2s
+```
+
+Read off that rather than argued: the blocked agents sort above the idle ones
+and the project holding them sorts first; `reason` carries **both** vocabularies
+in one session (`PermissionRequest` from the hook, `prompt_box_idle` from the
+manifest rule), exactly as X00's wave-2 note predicted; and the board's `2s` and
+the status line's `2s` for the same head come from the same clock. `ctrl+s`
+regrouped to `by state` and collapsed five idle agents to `5 idle` when they
+were all idle; `ctrl+b` narrowed to the two blocked; typing `api` narrowed
+further; `Space` opened the region; `Esc` closed the peek and then the board;
+`prefix+d` detached with exit 0.
+
+**The one thing it found, and it is not a defect.** A peek of a tall pane looked
+*empty*. It is not: `render::grid::blit` centre-crops content taller than its
+slot (`fit`, X15's rule and the same one a letterboxed pane already follows), and
+a scripted agent paints its dialog at the **bottom** of a 27-row screen after
+scrolling everything else off. The peek's half of a 30-row terminal is 12 rows,
+so the crop showed rows 7–18 — all of them blank, all of them genuinely blank on
+that pane. Verified by `pane read` on the same pane in the same run: 19 empty
+rows, then the dialog. Nothing here is wrong, and the same run showed the cells
+*do* arrive (instrumented once, then removed; the durable form is the join test
+above). It is worth one line somewhere a user reads, because "peek shows
+nothing" is what it looks like: **a peek shorter than the pane shows the pane's
+middle, and an agent's screen is written at its bottom.** Anchoring the crop to
+the bottom for a peek would be a change to `render/grid.rs`, which is **X18**'s
+in wave 5 and X15's rule to amend; raised, not taken.
+
+Two smaller observations from the same run, neither this task's to act on: a
+pane created in a workspace no client is drawing keeps a small default size (25
+columns here, so its own dialog wraps mid-word — X12's "a pane squeezed out of
+visible space keeps its last size", one workspace further out), and `last_line`
+faithfully reports the bottom row of *that* wrapped screen, which is why the
+detail column reads `(esc to cancel)` rather than the whole prompt.

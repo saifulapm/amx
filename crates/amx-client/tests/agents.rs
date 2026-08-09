@@ -16,10 +16,14 @@
 
 mod support;
 
+use std::path::Path;
+use std::time::Duration;
+
 use amx_client::app::App;
 use amx_client::config::NarrowCols;
 use amx_client::input::{InputEvent, PREFIX};
 use amx_client::model::WorkspaceModel;
+use amx_client::net::{self, Session};
 use amx_client::term::TermSize;
 use amx_core::agent::{AgentState, AgentWorkspace, EpochMillis};
 use amx_core::{Layout as BspLayout, PaneId, WorkspaceId};
@@ -80,7 +84,7 @@ fn agent(
 }
 
 /// A reply carrying `agents`, with the blocked ones queued oldest first.
-fn reply(agents: Vec<AgentEntry>) -> ListReply {
+fn reply_of(agents: Vec<AgentEntry>) -> ListReply {
     let mut queue: Vec<&AgentEntry> = agents
         .iter()
         .filter(|entry| entry.status == AgentState::Blocked)
@@ -163,6 +167,25 @@ fn board(app: &mut TestApp) -> Vec<String> {
     rows
 }
 
+/// Which cells of the content area the last frame actually wrote.
+///
+/// Distinct from [`board`], which reads an unwritten cell as a space: on a real
+/// terminal an unwritten cell is not a space but whatever was under it, so a
+/// board with fewer rows than the screen would show the panes it is covering
+/// through its own blank tail. Only the written set can tell the two apart.
+fn written(app: &TestApp) -> Vec<(u16, u16)> {
+    let cells = support::rasterize(app.frame());
+    let mut missing = Vec::new();
+    for row in 0..ROWS - 1 {
+        for col in 0..COLS {
+            if !cells.contains_key(&(row, col)) {
+                missing.push((row, col));
+            }
+        }
+    }
+    missing
+}
+
 /// The board's rows with the header dropped: what the list itself says.
 fn list(app: &mut TestApp) -> Vec<String> {
     let mut rows = board(app);
@@ -196,7 +219,7 @@ async fn the_top_row_is_always_whoever_needs_the_user_most() {
     press(&mut app, &[PREFIX, b'g']);
     // `web` holds the oldest block; `api` holds a newer one plus a working and
     // an idle agent. Inside `api`, blocked sorts above working above idle.
-    app.apply_agent_list(reply(vec![
+    app.apply_agent_list(reply_of(vec![
         agent(
             (api, "api"),
             panes[0],
@@ -267,6 +290,47 @@ async fn the_top_row_is_always_whoever_needs_the_user_most() {
 }
 
 #[tokio::test]
+async fn an_open_board_owns_every_cell_of_the_content_area() {
+    let server = support::Server::start("agents-cover").await;
+    let pty = support::open_pty();
+    let workspace = WorkspaceId::new_v4();
+    let panes: Vec<PaneId> = (0..2).map(|_| PaneId::new_v4()).collect();
+    let mut app = attached(&server, pty.slave, &[(workspace, &panes)]).await;
+
+    // A short list under a tall screen, which is the case a blank tail hides:
+    // the panes are painted before the board, so a row the board does not write
+    // shows the pane border it is supposed to be covering.
+    press(&mut app, &[PREFIX, b'g']);
+    app.apply_agent_list(reply_of(vec![agent(
+        (workspace, "api"),
+        panes[0],
+        "backend",
+        AgentState::Blocked,
+        Some(NOW - 1_000),
+        "Allow Bash(ls)? (y/n)",
+    )]));
+    app.repaint();
+    assert!(
+        written(&app).is_empty(),
+        "the board left cells for the panes underneath to show through: {:?}",
+        &written(&app)[..written(&app).len().min(8)],
+    );
+
+    // And with nothing at all to list, which is what a fresh client sees for
+    // its first refresh window.
+    app.apply_agent_list(reply_of(Vec::new()));
+    app.repaint();
+    assert!(
+        written(&app).is_empty(),
+        "an empty board still owns the screen: {:?}",
+        &written(&app)[..written(&app).len().min(8)],
+    );
+
+    drop(app);
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn more_than_three_idle_agents_collapse_to_one_row_that_enter_expands() {
     let server = support::Server::start("agents-idle").await;
     let pty = support::open_pty();
@@ -293,7 +357,7 @@ async fn more_than_three_idle_agents_collapse_to_one_row_that_enter_expands() {
             "$",
         ));
     }
-    app.apply_agent_list(reply(entries));
+    app.apply_agent_list(reply_of(entries));
 
     assert_eq!(
         names(&mut app),
@@ -338,7 +402,7 @@ async fn ctrl_s_regroups_and_ctrl_b_keeps_only_what_is_waiting() {
     .await;
 
     press(&mut app, &[PREFIX, b'g']);
-    app.apply_agent_list(reply(vec![
+    app.apply_agent_list(reply_of(vec![
         agent(
             (api, "api"),
             panes[0],
@@ -413,7 +477,7 @@ async fn typing_filters_on_the_name_and_has_no_syntax() {
     let mut app = attached(&server, pty.slave, &[(workspace, &panes)]).await;
 
     press(&mut app, &[PREFIX, b'g']);
-    app.apply_agent_list(reply(vec![
+    app.apply_agent_list(reply_of(vec![
         agent(
             (workspace, "api"),
             panes[0],
@@ -466,7 +530,7 @@ async fn ctrl_p_prompts_the_selected_agent_and_ctrl_r_renames_it() {
     let mut app = attached(&server, pty.slave, &[(workspace, &panes)]).await;
 
     press(&mut app, &[PREFIX, b'g']);
-    app.apply_agent_list(reply(vec![
+    app.apply_agent_list(reply_of(vec![
         agent(
             (workspace, "api"),
             panes[0],
@@ -541,7 +605,7 @@ async fn ctrl_x_kills_only_on_the_second_press() {
     let mut app = attached(&server, pty.slave, &[(workspace, &panes)]).await;
 
     press(&mut app, &[PREFIX, b'g']);
-    app.apply_agent_list(reply(vec![
+    app.apply_agent_list(reply_of(vec![
         agent(
             (workspace, "api"),
             panes[0],
@@ -603,7 +667,7 @@ async fn enter_jumps_to_the_agents_pane_and_closes_the_board() {
     app.model().focus_workspace(api);
 
     press(&mut app, &[PREFIX, b'g']);
-    app.apply_agent_list(reply(vec![agent(
+    app.apply_agent_list(reply_of(vec![agent(
         (web, "web"),
         panes[1],
         "frontend",
@@ -664,7 +728,7 @@ async fn the_filter_the_grouping_and_the_selection_survive_a_close_and_reopen() 
         ),
     ];
     press(&mut app, &[PREFIX, b'g']);
-    app.apply_agent_list(reply(rows.clone()));
+    app.apply_agent_list(reply_of(rows.clone()));
     press(&mut app, &[CTRL_S]);
     press(&mut app, b"a");
     press(&mut app, DOWN);
@@ -676,7 +740,7 @@ async fn the_filter_the_grouping_and_the_selection_survive_a_close_and_reopen() 
     assert!(calls.is_empty(), "and told the server nothing");
 
     press(&mut app, &[PREFIX, b'g']);
-    app.apply_agent_list(reply(rows));
+    app.apply_agent_list(reply_of(rows));
     assert_eq!(names(&mut app), before, "the filter and grouping came back");
     let header = board(&mut app)[0].clone();
     assert!(
@@ -760,13 +824,13 @@ async fn a_refresh_moves_the_detail_lines_and_nothing_else() {
         ]
     };
     press(&mut app, &[PREFIX, b'g']);
-    app.apply_agent_list(reply(rows("compiling amx-core")));
+    app.apply_agent_list(reply_of(rows("compiling amx-core")));
     press(&mut app, b"al");
     press(&mut app, DOWN);
     assert_eq!(names(&mut app), vec!["api/alpha"]);
     assert!(list(&mut app)[0].contains("compiling amx-core"));
 
-    app.apply_agent_list(reply(rows("compiling amx-client")));
+    app.apply_agent_list(reply_of(rows("compiling amx-client")));
     assert_eq!(
         names(&mut app),
         vec!["api/alpha"],
@@ -791,7 +855,7 @@ async fn space_hands_the_selected_pane_to_the_peek_and_the_board_keeps_off_it() 
     let mut app = attached(&server, pty.slave, &[(workspace, &panes)]).await;
 
     press(&mut app, &[PREFIX, b'g']);
-    app.apply_agent_list(reply(
+    app.apply_agent_list(reply_of(
         // Distinct block times, so the row order is the pane order and a
         // selection move is unambiguous about which pane it landed on.
         ["backend", "writer", "tests"]
@@ -881,7 +945,7 @@ async fn the_arrows_move_the_selection_and_a_wheel_turn_does_not_close_the_board
     let mut app = attached(&server, pty.slave, &[(workspace, &panes)]).await;
 
     press(&mut app, &[PREFIX, b'g']);
-    app.apply_agent_list(reply(
+    app.apply_agent_list(reply_of(
         ["alpha", "beta", "gamma"]
             .iter()
             .zip(&panes)
@@ -945,6 +1009,93 @@ async fn prefix_a_cycles_the_whole_queue_and_prefix_shift_a_cycles_this_project(
         ),
         other => panic!("one agent.next: {other:?}"),
     }
+
+    drop(app);
+    server.shutdown().await;
+}
+
+/// How long the join below waits for the session to send what it asked for.
+const DEADLINE: Duration = Duration::from_secs(10);
+
+/// A connection of its own, for the calls this test makes on the session rather
+/// than through the client under test.
+async fn side_channel(socket: &Path) -> Session {
+    let stream = net::connect(socket).await.expect("a second connection");
+    let (session, _welcome) = Session::attach(stream, client_info(), false, None)
+        .await
+        .expect("negotiate the second connection");
+    session
+}
+
+/// Seam 5's join, end to end: the board lists an agent in a workspace this
+/// terminal is not drawing, `Space` peeks it, and that pane's own cells arrive
+/// at a client whose viewport never named it.
+///
+/// The two surfaces are pinned separately — this suite for the board, X15's
+/// `peek.rs` for the stream — and this is the one place they meet: the key that
+/// names the pane, the seam that turns it into a bind, and the cells that come
+/// back. It is here rather than in `peek.rs` because the *key* is the half that
+/// was missing, and a test that called `open_peek` directly would prove the half
+/// that already had a test.
+#[tokio::test]
+async fn space_on_a_row_brings_that_panes_own_cells_to_this_client() {
+    let server = support::Server::start("agents-join").await;
+    let pty = support::open_pty();
+    let mut app = App::attach(server.socket(), pty.slave, Vec::new(), client_info())
+        .await
+        .expect("attach to the real server over the real socket");
+
+    // A workspace this client is not showing, with a live root pane in it.
+    let mut side = side_channel(server.socket()).await;
+    let made = side
+        .call(
+            "workspace.create",
+            serde_json::json!({ "label": "elsewhere" }),
+        )
+        .await
+        .expect("workspace.create");
+    let elsewhere: WorkspaceId =
+        serde_json::from_value(made["workspace"].clone()).expect("the workspace id");
+    app.resync_state().await.expect("fold the new workspace");
+    let watched = app
+        .model()
+        .workspace(elsewhere)
+        .expect("the workspace is mirrored")
+        .layout
+        .panes()[0];
+    assert_ne!(
+        app.model().focused_workspace_id(),
+        Some(elsewhere),
+        "the peeked pane must be in a workspace this terminal is not drawing",
+    );
+    assert!(
+        app.model().pane(watched).is_none(),
+        "and one this client holds no cells for",
+    );
+
+    press(&mut app, &[PREFIX, b'g']);
+    app.apply_agent_list(reply_of(vec![agent(
+        (elsewhere, "elsewhere"),
+        watched,
+        "backend",
+        AgentState::Blocked,
+        Some(NOW - 1_000),
+        "Allow Bash(ls)? (y/n)",
+    )]));
+    press(&mut app, b" ");
+    app.settle_peek().await.expect("open the peek");
+    assert_eq!(app.peeked(), Some(watched));
+
+    let arrived = tokio::time::timeout(DEADLINE, async {
+        while app.model().pane(watched).is_none() {
+            app.step_frame().await.expect("read one server frame");
+        }
+    })
+    .await;
+    assert!(
+        arrived.is_ok(),
+        "the peeked pane never sent its cells to the client that bound it",
+    );
 
     drop(app);
     server.shutdown().await;
