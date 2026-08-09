@@ -146,10 +146,12 @@ async fn the_peek_region_holds_the_peeked_panes_own_cells() {
     assert_eq!(drawn, expected, "the peek region must hold the peeked pane");
 
     // And the pane this terminal is actually drawing keeps the rows above it:
-    // the peek is a region, not a takeover.
+    // the peek is a region, not a takeover. Its grid is one row taller than the
+    // interior it is drawn in, so what shows at the top is its *second* row —
+    // a clip keeps the bottom of a grid (X18, `render::grid`'s header).
     assert_eq!(
         rendered.get(&(1, 1)).copied(),
-        Some(glyph(0, 0, 0)),
+        Some(glyph(0, 1, 0)),
         "the shown pane still owns the top of the screen",
     );
 

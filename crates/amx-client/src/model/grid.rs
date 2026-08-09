@@ -13,6 +13,8 @@
 use amx_core::GridGeneration;
 use amx_proto::stream::{Cursor, CursorShape, DamageRect};
 
+pub use amx_proto::stream::Underline;
+
 /// A cell's foreground or background color.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Color {
@@ -25,34 +27,54 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
-/// The SGR-ish attributes carried on one cell.
+/// The SGR attributes carried on one cell.
 ///
-/// A reduced projection of the server's per-cell attribute set. The wire
-/// carries ten attributes on `amx_proto::stream::CellStyle` — bold, italic,
-/// faint, blink, inverse, invisible, strikethrough, overline, the underline
-/// *style* and its colour (`amx-proto/src/stream/cell.rs:123-144`) — and the
-/// decode keeps four of them plus the two colours
-/// (`amx-client/src/stream.rs:244-251`), collapsing the underline style to a
-/// boolean and dropping the rest. The frame writer emits the same four
-/// (`render/mod.rs:89-100`).
+/// Every attribute `amx_proto::stream::CellStyle` carries
+/// (`amx-proto/src/stream/cell.rs:123-144`), in the wire's own vocabulary: the
+/// underline is [`Underline`] rather than a boolean, and its colour sits beside
+/// the foreground and the background. The decode fills all of them
+/// (`stream::cell_of`) and the frame writer emits all of them
+/// (`render::FrameWriter::set_attrs`), so nothing `CellStyle` can express is
+/// dropped between the socket and the terminal.
 ///
-/// So "the client renders the server's cells" is, today, a claim about six of
-/// ten attributes. Widening this to the wire's full set is follow-up work; it
-/// is a change to this struct, the decode and the frame writer together.
+/// Two reductions are left in the cell model, and neither is an attribute:
+///
+/// - **A colour arrives resolved or not at all.** The wire carries direct RGB
+///   or nothing (`CellRef::foreground`), and a palette-indexed *underline*
+///   colour is flattened to nothing a crate earlier, where the palette that
+///   would resolve it does not exist (`amx-vt/src/render/rows.rs:387-399`).
+///   [`Color::Indexed`] is therefore a colour this client can render and never
+///   receives.
+/// - **A cell's text is one `char`.** A multi-codepoint grapheme cluster keeps
+///   its first scalar (`stream::cell_of`), which is a property of [`Cell`]
+///   rather than of these attributes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Attrs {
     /// Foreground color.
     pub fg: Color,
     /// Background color.
     pub bg: Color,
+    /// Underline color. [`Color::Default`] follows the foreground, which is
+    /// what the wire's absent underline colour means.
+    pub underline_color: Color,
+    /// Underline style.
+    pub underline: Underline,
     /// Bold.
     pub bold: bool,
+    /// Faint.
+    pub faint: bool,
     /// Italic.
     pub italic: bool,
-    /// Underline.
-    pub underline: bool,
+    /// Blink.
+    pub blink: bool,
     /// Foreground/background swapped.
     pub reverse: bool,
+    /// Invisible.
+    pub invisible: bool,
+    /// Struck through.
+    pub strikethrough: bool,
+    /// Overlined.
+    pub overline: bool,
 }
 
 /// One cell of a pane's grid.

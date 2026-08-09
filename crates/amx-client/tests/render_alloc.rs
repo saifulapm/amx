@@ -235,3 +235,97 @@ async fn the_status_breakdown_does_not_allocate_after_the_first_frame() {
     drop(app);
     server.shutdown().await;
 }
+
+/// X18's half: the widened SGR differ, painting its full sequence on every
+/// cell.
+///
+/// The grid alternates two styles per cell, so the equality guard never holds
+/// and `set_attrs` writes a reset plus twelve attributes and three direct
+/// colours for all 1638 of them. Every one of those writes goes into the frame
+/// buffer through `write!`, which is exactly where a widened struct could have
+/// started allocating per frame — the property the acceptance names, measured
+/// rather than argued.
+#[tokio::test]
+async fn a_full_style_paint_does_not_allocate_after_the_first_frame() {
+    use amx_client::model::{Color, Underline};
+
+    let server = support::Server::start("style-alloc").await;
+    let pty = support::open_pty();
+
+    let mut app = App::attach(
+        server.socket(),
+        pty.slave,
+        Vec::new(),
+        ClientInfo {
+            name: "amx-render-alloc-test".to_owned(),
+            version: "0.0.0".to_owned(),
+            term: None,
+        },
+    )
+    .await
+    .expect("attach to the real server over the real socket");
+
+    let pane = PaneId::new_v4();
+    app.adopt_workspace(
+        WorkspaceId::new_v4(),
+        WorkspaceModel {
+            label: Some("work".to_owned()),
+            layout: BspLayout::with_root(pane),
+        },
+    );
+
+    let dressed = Attrs {
+        fg: Color::Rgb(200, 30, 40),
+        bg: Color::Rgb(1, 2, 3),
+        underline_color: Color::Rgb(4, 5, 6),
+        underline: Underline::Curly,
+        bold: true,
+        faint: true,
+        italic: true,
+        blink: true,
+        reverse: true,
+        invisible: true,
+        strikethrough: true,
+        overline: true,
+    };
+    let plain = Attrs {
+        underline: Underline::Dashed,
+        ..Attrs::default()
+    };
+    let (rows, cols) = (21_u16, 78_u16);
+    let source: Vec<Cell> = (0..u32::from(rows) * u32::from(cols))
+        .map(|i| Cell {
+            ch: char::from(b'a' + (i % 26) as u8),
+            attrs: if i % 2 == 0 { dressed } else { plain },
+        })
+        .collect();
+    app.model().pane_mut(pane, rows, cols).apply_reset(
+        GridGeneration::FIRST.next(),
+        rows,
+        cols,
+        &source,
+        Cursor {
+            row: 0,
+            col: 0,
+            visible: true,
+            shape: CursorShape::default(),
+            blink: false,
+        },
+    );
+
+    for _ in 0..8 {
+        app.repaint();
+    }
+    let before = allocs();
+    for _ in 0..8 {
+        app.repaint();
+    }
+    assert_eq!(
+        allocs(),
+        before,
+        "a frame that repaints every attribute of every cell must not allocate"
+    );
+
+    drop(app);
+    server.shutdown().await;
+}

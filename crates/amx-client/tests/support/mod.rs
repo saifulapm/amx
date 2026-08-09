@@ -234,7 +234,10 @@ pub fn rasterize(bytes: &[u8]) -> HashMap<(u16, u16), char> {
         let mut params = String::new();
         let mut terminator = '\0';
         for c2 in chars.by_ref() {
-            if c2.is_ascii_digit() || c2 == ';' {
+            // `:` because an extended underline is a sub-parameter group
+            // (`\x1b[4:3m`); without it the colon would read as the sequence's
+            // terminator and its shape would rasterize as two cells of text.
+            if c2.is_ascii_digit() || c2 == ';' || c2 == ':' {
                 params.push(c2);
             } else {
                 terminator = c2;

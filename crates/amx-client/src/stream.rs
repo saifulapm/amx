@@ -265,9 +265,14 @@ fn push_row(row: &[PackedCell], width: u16, out: &mut Vec<Cell>) {
 
 /// One wire cell as the render model holds it.
 ///
-/// The model is char-cell simple in M0: a multi-codepoint grapheme keeps its
-/// first scalar, and a wide cell's spacer tail becomes the zero char, which
-/// the frame writer skips so the wide glyph keeps both of its columns.
+/// Every attribute of the wire's [`CellStyle`](amx_proto::stream::CellStyle)
+/// crosses, field for field — [`Attrs`] is the same vocabulary, so this is a
+/// copy and not a projection.
+///
+/// The text is where the model is still simpler than the wire: it is char-cell
+/// simple in M0, so a multi-codepoint grapheme keeps its first scalar, and a
+/// wide cell's spacer tail becomes the zero char, which the frame writer skips
+/// so the wide glyph keeps both of its columns.
 fn cell_of(cell: &PackedCell) -> Cell {
     let ch = match cell.wide {
         CellWide::SpacerTail => '\0',
@@ -278,10 +283,16 @@ fn cell_of(cell: &PackedCell) -> Cell {
         attrs: Attrs {
             fg: color_of(cell.foreground),
             bg: color_of(cell.background),
+            underline_color: color_of(cell.style.underline_color),
+            underline: cell.style.underline,
             bold: cell.style.bold,
+            faint: cell.style.faint,
             italic: cell.style.italic,
-            underline: cell.style.underline != amx_proto::stream::Underline::None,
+            blink: cell.style.blink,
             reverse: cell.style.inverse,
+            invisible: cell.style.invisible,
+            strikethrough: cell.style.strikethrough,
+            overline: cell.style.overline,
         },
     }
 }
