@@ -860,3 +860,175 @@ payload byte `b'o'` was read as channel 111 — at 60 frames with *every* read
 cancelled at least once, rather than at whatever load happened to be running.
 `tests/reader.rs` keeps its two resume-point tests; this is the count they were
 missing.
+---
+## X13 — the mouse path end to end, and wheel → copy mode
+
+Built to X01's outcome (b), **including the wheel exception**, and
+[m4-mouse-path.md](m4-mouse-path.md) §7.3 has no dated heading yet, so the
+branch is finished and **not merged**. What (c) would cost is at the bottom of
+this entry, named commit by commit.
+
+### Edits outside the §5 file list
+
+Four files, taken rather than handed off, and one that was contested and was
+taken anyway. Each is named because none is in the entry's scope.
+
+**`amx-server/src/actor/core/view.rs` — the declared hand-off was taken, not
+handed.** §5 says "the one-line `mouse:` fill in `core/view.rs`'s
+`session_state` rides X12's commit". It could not: the line is
+`mouse: self.mouse_of(pane)`, and `mouse_of` and the map behind it are on *this*
+branch, so X12 had nothing to call. Leaving it as `mouse: None` would also have
+left `mouse_of` with no caller in the tree, which is a `dead_code` warning and
+therefore a red `clippy -D warnings` — and, much worse, it would have shipped
+D-M4-1's exact failure a second time: a mouse path that is green in a unit test
+and dead in a running amx. **The whole diff is the one line X12 was to write**,
+plus the comment above it; a conflict with X12's `view.rs` resolves by keeping
+both sides. **X00**: this is seam 3, and it is the one place this task stepped
+into another wave-3 task's file.
+
+**`amx-client/src/app/{actions,events,overlay,wired}.rs` — uncontested in wave
+3, the X09 precedent.** §5 scopes X13 to `input/**`, `term.rs`, `copy.rs` and
+the server, but the chain has to *arrive* somewhere: `events.rs` folds
+`PaneState.mouse` into the machine's gate, `actions.rs` decides relay-or-wheel,
+`overlay.rs` routes chrome bytes through the report split, and `wired.rs`
+carries `App::set_mouse_tracking`. None of the four is in X11's or X12's list
+(`app/status.rs` and `app/{narrow,mod,binds}.rs` respectively), so they are
+sequential rather than contested. `app/mod.rs` was deliberately *not* touched —
+which is why `enter_copy` became idempotent rather than `handle_input` gaining a
+branch.
+
+**`amx-core/src/config/mod.rs` and `amx-client/src/config/mod.rs` — the switch
+X13's acceptance requires.** X02 froze `[client]` with `narrow_cols` and no
+mouse key, and the entry's acceptance asks for "the config switch X01
+recommends … with the reason quoted where the default is set". `[client] mouse`
+is that key; `DEFAULT_MOUSE` is where the reason is quoted, at length, from
+X01 §5. Neither file has a wave-3 owner.
+
+**`crates/amx/src/cmd/attach.rs` — three lines in a file X17 nominally owns.**
+The configuration is read there and the terminal is taken inside `App::attach`,
+so `app.set_mouse_tracking(settings.mouse)` beside the existing
+`app.input().set_bindings(...)` is the only seam the switch can cross; without
+it the `[client] mouse` key has no reader and the acceptance is unmet. X02's own
+outcome records that X17 has **nothing left to do** in `crates/amx/src/cmd/**`
+("the flag is already built"), so the contest is nominal. **X17/X00**: the diff
+is one comment and one call, immediately after `set_bindings`.
+
+### Divergences from §5
+
+**"Forwarded byte-identical" is not what shipped, and could not be.** The entry
+says "a pane that enables mouse reporting receives SGR reports byte-identical".
+X01's F-1 hand-off — which postdates the entry — establishes that it cannot:
+coordinates are viewport-absolute, a pane's application reads them as
+pane-local, and amx's panes are never at the viewport origin. What shipped is a
+**relay**: `input/mouse.rs`'s `relocate` subtracts the focused pane's interior
+origin and re-emits the report, and a report landing outside that interior is
+dropped rather than clamped. Unchanged in *meaning*, which costs three numbers
+rewritten.
+
+That is not a hit test and the file says so twice. Which pane a report goes to
+is decided by **focus**, upstream and before any coordinate is read — the rule
+`app/actions.rs:72-87` already followed and X01 §4 endorsed. Nothing searches a
+rect list for a point.
+
+**So the fence is two fences, and the acceptance's "no column or row is parsed
+anywhere in the client" holds for the path it was written about.** The wheel
+path — the pane that asked for *nothing*, which is the whole of D14's exception
+— reads the button and stops at the first `;`. `the_chrome_path_sees_no_positional_value_at_all`
+(`crates/amx-client/tests/wheel.rs`) feeds four reports with the same button and
+coordinates that agree about nothing and asserts they do the same thing, and
+`the_wheel_parse_cannot_see_a_coordinate` does the same at the parse. The relay
+path reads coordinates because relaying them is its entire job.
+
+**The wheel moves the view, not the cursor.** `CopyMode::wheel` is not a row of
+`decode`'s table: `hjkl` move the cursor and the view follows, and a wheel does
+the opposite. "The live edge" is therefore the *view* already showing the newest
+committed row, which is what makes the exit gesture the one D14 describes — keep
+scrolling down and the turn after you arrive gives the pane back.
+
+**A non-SGR pane gets neither the relay nor the wheel.** X01 F-2's first cut,
+taken literally: a pane that asked for `?1000` without `?1006` is expecting the
+X10 encoding, so SGR bytes are refused — and it is *not* given the wheel
+exception either, because it asked for the mouse and its wheel is its own
+business even though amx cannot deliver it. The drop is recorded once per
+change, in `app/events.rs` where the mode is folded, rather than once per report
+— under a held drag a log line per report is a flood, not a record.
+
+**`input/mod.rs` split.** 443 lines before this task and 639 after it, so
+`input/reports.rs` came out (the gate, the relay, the carry, the chrome split);
+`mod.rs` is 414. R-M1-3's rule, applied on the day rather than at the hard
+limit.
+
+### Findings
+
+**F-A — the client learns a pane's mouse mode at `session.state`'s cadence, and
+nothing wakes it.** X01 §3 settled that a mode change is a *fact* rather than a
+transition: it publishes no `Event`, and §3 of the plan freezes "no new event
+kinds". Both are implemented as written. The consequence is that a pane which
+enables reporting between two state folds is not noticed until the next one, and
+a client that is only watching the bus may not fold for a while — the folds are
+attach, a gap, `PaneCreated`/`LayoutChanged`, and this client's own
+layout-mutating calls. It converges and never lies, but "vim started and the
+mouse works" can be a resync away. Cheap answers if it matters: fold
+`Event::PaneTitle` as a resync trigger (noisy), or give the mode an event kind
+in a later milestone. **Raised, not taken** — taking it would contradict a
+decision X01 and X02 both landed on. For **X00**'s seam 3 and the live smoke,
+which is where a human would first notice it.
+
+**F-B — `events` can name a more capable mode than the terminal will send.**
+libghostty-vt resolves the four event modes into one enum
+(`flags.mouse_event`, `stream_terminal.zig:618-644`) and exports only the four
+*bits* to C (`c/terminal.zig:859-862`); the resolved enum has no accessor. An
+application that sets `?1000` and later `?1002` without resetting the first
+leaves both bits standing, and `pane_host/mouse.rs` answers with the more
+capable of them. For the single-mode case every real application produces this
+is exact. Where it is not: a wrong `events` is inert — nothing reads it but a
+human — and the same ambiguity on the *format* side errs toward **dropping**
+reports amx could have relayed rather than sending an encoding the pane cannot
+read. Closing it properly needs a libghostty-vt C accessor, which is vendored
+and not this task's to add.
+
+**F-C — the picker and copy mode would have misread a mouse report as keys.**
+Latent until now because no report could arrive; live the moment `[client]
+mouse` is turned on. A report's bytes are `ESC`, `[`, `<`, digits and `M` — the
+picker's cancel key, then junk; copy mode's leave key, then a column move. Both
+surfaces now read through `Input::feed_chrome`, which takes every report out of
+the stream before the surface sees a byte. Pinned by
+`the_picker_survives_a_wheel_turn`.
+
+### For X00 — the seam ledger
+
+`PaneState.mouse` has its reader. Server: `pane_host/mouse.rs` reads it off the
+terminal, `HostEvent::Mouse` → `PaneReport::Mouse` → `Core.mouse` →
+`session_state`. Client: `app/events.rs` folds it into `Input`'s per-pane gate,
+which `app/actions.rs` reads on every report. Proven over a real pty in
+`crates/amx-server/tests/mouse_mode.rs` (five tests, four of which fail with the
+`view.rs` line reverted) and through the real input machine in
+`crates/amx-client/tests/wheel.rs`.
+
+### If §7.3 comes back negative — outcome (c)
+
+Reverting is three commits and nothing else, and the commits are cut for
+exactly that: §3's chain — D9's forwarding working for the first time — is the
+bottom two and stands without the top three.
+
+| Commit | Under (c) |
+|---|---|
+| `server: a pane's own mouse mode reaches session.state` | **keep** — this *is* §3's chain |
+| `client: the pane's mouse mode gates a relay into its own frame` | **keep** — D9's forwarding, the honest half |
+| `client: ask the host terminal for mouse tracking, when asked to` | **revert** — nothing asks, so nothing arrives |
+| `config: [client] mouse, off by default` | **revert** — the switch has nothing left to switch |
+| `client: wheel-up opens copy mode, wheel-down at the live edge leaves it` | **revert** — the exception itself |
+
+The three reverts are clean and in that reverse order. **`git revert` of the
+wheel commit alone was built and tested as a state** — it is where this branch
+sat between the second and fifth commits — and it is green under `cargo test`
+and `clippy -D warnings` with nothing left over: the wheel *decode*
+(`wheel_of`, `Wheel`, `Chrome::Wheel`) survives as an inert classification that
+`feed_chrome` still produces and copy mode drops, rather than as dead code. It
+can stay there with this note as its written revisit condition, or go with a
+follow-up; nothing depends on which.
+
+[§7](../11-m4-plan.md#7-the-m4-exit)'s row 7 then keeps its first clause ("a
+pane that asked for reports gets them … and one that did not gets none") and
+loses its second. `docs/10-attention-surfaces.md` §D14 needs its wheel clause
+struck and 03 §1's amendment with it — both are X03's files and X00's to grant.
