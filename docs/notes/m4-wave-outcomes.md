@@ -860,3 +860,146 @@ payload byte `b'o'` was read as channel 111 — at 60 frames with *every* read
 cancelled at least once, rather than at whatever load happened to be running.
 `tests/reader.rs` keeps its two resume-point tests; this is the count they were
 missing.
+---
+## X11 — The status line
+
+### The gap the §5 entry did not have: an age needs a clock, and this surface has none
+
+The entry's acceptance asks for a queue-head age that "advances between
+refreshes without a new call and is **right across a remote link** (D-M4-4)",
+and its dependency note says the surface needs no new wire. Those two do not
+meet in the tree. D-M4-4 makes an age `now − since` **from inside one reply**,
+and the only reply that carries a server `now` is `agent.list`
+(`amx-proto/src/control/agent/list.rs`), which D-M4-5 and the entry both keep
+this surface away from. `session.state` carries `since` and no `now`, and
+nothing else on the wire carries a server wall clock — not `Welcome`, not
+`ping`, not an event envelope (checked: `EpochMillis` appears on
+`AgentSnapshot`, the two attention events and `ListReply` and nowhere else).
+
+**What landed instead**, in `app/status/clock.rs`, with the bound written where
+it lives: the client keeps the newest server stamp it has seen — from any
+mirrored snapshot — beside the *monotonic* instant it read it at, and renders
+`estimate − since`. The estimate only ever moves forward, so a stamp replayed
+out of the event ring after a gap cannot drag it back. It is a **lower bound**
+on the server's clock: an age is never overstated, and it is understated by at
+most the time since the last transition this client has seen anywhere in the
+session — which in D15's own scenario (25 agents) is seconds. No
+`SystemTime::now()` is read anywhere on the path, which is what makes the answer
+identical on both ends of an SSH link.
+
+`App::note_server_clock(now)` is the seam for a real `now`, and it supersedes
+the estimate the moment one is in hand. **X14 and X16 should call it with
+`ListReply::now`** when an `agent.list` reply lands; the ages on the status line
+then come from the same clock as the ages in the agents view, which is the
+disagreement seam 5 exists to catch.
+
+### Edits outside the entry's file list
+
+**`crates/amx-client/src/app/events.rs` and `src/model/mod.rs` — the identity
+block had no reader, and without one the age is a lie.** X06 fills `reason` and
+`since` on `attention_enqueued`/`attention_dequeued`; the client dropped both
+(`Event::AttentionEnqueued { pane, .. }`) and folded neither. A live client
+never re-reads `session.state` for a block, so without this fold the head's
+`since` is whatever the last resync said — absent for every pane that blocked
+after the attach, which is every pane the surface exists for. Three changes,
+all in files no wave-3 task lists:
+
+1. `ClientModel::apply_attention_identity` records `reason`/`since` under the
+   same `transition_seq` guard `apply_agent_status` already uses, and
+   `apply_event` calls it *before* the queue decides anything, so a replayed
+   enqueue still carries its stamp home.
+2. `apply_agent_status` now **clears** `reason` and `since` when the state
+   actually moves. `agent_status` carries neither, so keeping them would leave
+   the previous state's stamp on the new one and caption an idle pane
+   `permission_dialog (4m)`. Absent is what both fields already mean when
+   nothing named the transition.
+3. Two read-only accessors, `ClientModel::workspace` and `::agents`. The
+   breakdown has to answer "which workspace holds this queued pane" on every
+   repaint and the existing `workspace_label` clones a `String` to answer half
+   of it; `agents` is how the clock above sees every stamp without
+   `Layout::panes()` allocating a `Vec` per workspace per frame.
+
+**`tests/adversarial.rs` — the flood test compared a whole screen and now
+compares the panes.** `flow_control_urandom_…` captures a client's screen before
+the flood's workspace exists and asserts it is unchanged afterwards. D15's
+breakdown names *every* workspace, so the flood's own workspace legitimately
+joins the status line the moment it is created, on every attached client. The
+assertion is now over the content area, with the reason in place; what it was
+ever about — a grid corrupted by three seconds of urandom — is untouched. X04's
+file in wave 1, in no wave-3 task's list.
+
+### Divergences from §5
+
+**`app/status.rs` became `app/status/{mod,line,clock}.rs`.** The entry names one
+file; the breakdown, the compact form and the clock took it to 580 lines, which
+is R-M1-3's "no split waits for the hard limit" and X07's precedent (its
+`config.rs` landed as a directory for the same reason). `mod.rs` is what a
+repaint does, `line.rs` is the line, `clock.rs` is what its ages are dated
+against. `crates/amx-client/tests/modules.rs` asserted the old path and now
+asserts the three; the suite split the same way — `status.rs` keeps U07/V14's
+labels, counts and indicators, `status_agents.rs` holds M4's agent surfaces.
+A file becoming a directory needs no parent edit, so `app/mod.rs` — X12's this
+wave — is untouched.
+
+**The cache guard is the rendered line, not a list of its inputs.** The module
+documented its own trap ("a field added to the rendered text and not to the
+equality guard renders once and then freezes, silently") and the entry asks for
+that trap to be respected. It is respected by removing it: the line is rebuilt
+into a scratch buffer every repaint and swapped in only when it differs, so
+every input is in the guard by construction and no eighth input can be added
+without one. The guard covers the emphasis range as well as the text, because
+moving focus between two identically-spelled segments changes what is drawn and
+not what it says — found by the test, not by reading. The allocation property
+the old cache existed for is unchanged and now measured on the full surface:
+`the_status_breakdown_does_not_allocate_after_the_first_frame`
+(`tests/render_alloc.rs`), which fails if any buffer here is reallocated rather
+than refilled.
+
+**The active workspace is marked by attribute, not by a glyph.** The status row
+is reverse video, so the active segment is drawn *out* of the bar — D15's
+"active workspace highlighted", at a cost of zero columns, which is what D14's
+compact form on a phone can afford. `chrome::status_line` therefore takes a byte
+range to draw plainly; it is the only caller and the only emphasis this line
+has.
+
+**The compact form keeps the mode tag and the loss indicator.** D14 says the
+narrow line is "global `⚑N` + active workspace name + queue head only". Both of
+the extras are empty when they have nothing to say — the mode tag is the empty
+string in `Mode::Terminal` and `⚠N` only exists after a lossy restore — so
+neither costs the phone a column in the ordinary case, and dropping the mode
+would leave a user in copy mode with no way to tell.
+
+### Hand-offs
+
+**X12 — `App::set_narrow_cols` is where the configured threshold goes.** X07
+resolved `Settings::narrow_cols` and handed the threading to whoever owns
+`app/mod.rs`, which is X12 this wave. `amx attach`'s `full()` already has the
+`Settings`; one line beside the existing `app.input().set_bindings(…)`
+(`crates/amx/src/cmd/attach.rs`, X17's file this wave) makes the configured
+value take effect. Until then the shipped default applies —
+`amx_core::config::DEFAULT_NARROW_COLS`, 60 — so the policy works out of the box
+and only a user's override is unread. The status line reads the *client's*
+width for the decision and nothing else, so it needs nothing from X12's
+projection.
+
+**X12 or X15 — the age advances on repaints, and an idle session does not
+repaint.** `draw_status` runs when a frame is owed, so the head's age moves as
+soon as anything else does (a keystroke, a delta, an event) and holds its last
+value on a session where nothing at all is happening. Nothing on this surface
+can fix that: the cadence belongs to `app/mod.rs` and `app/wired.rs`. A ~1 Hz
+tick in the wired loop's select would be the whole of it, and D15's agents view
+wants one anyway for its 4 Hz detail lines.
+
+**X00 — the field ledger's two X11 rows are read.** `AgentSnapshot::reason` is
+rendered beside a blocked focused pane's state, `::since` dates the queue head.
+X10, X14 and X16 are still owed, so the rows stay.
+
+### One thing the next waves should not re-litigate
+
+**Every count on the line comes from the mirrored attention queue.** A segment
+counts the queued panes its workspace's layout holds and the global `⚑N` is the
+queue's length; the per-pane `AgentState::Blocked` is deliberately *not* a
+second source, because the two can disagree for a frame and 04 §5's point is
+that the number a user reads and the queue `next-attention` walks are one
+number. The test that pins it parses both off the rendered row and compares
+them, so a future breakdown that tallied snapshots instead fails there.
