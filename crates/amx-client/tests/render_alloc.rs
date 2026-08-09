@@ -158,3 +158,80 @@ async fn repaint_does_not_allocate_after_the_first_frame() {
     drop(app);
     server.shutdown().await;
 }
+
+/// X11's half of the same property, and the reason the status line's cache
+/// could stop being a list of its inputs.
+///
+/// The line is rebuilt into a scratch buffer on every repaint now — the guard
+/// compares the *rendered text*, which is what makes it impossible to add an
+/// input and forget the guard — so the buffers it is rebuilt in have to survive
+/// the frame. This is a status line with everything on it: several workspaces
+/// to order and tally, a queue to walk, a head to name and an age to date, all
+/// of which run on every repaint.
+#[tokio::test]
+async fn the_status_breakdown_does_not_allocate_after_the_first_frame() {
+    use amx_core::agent::{AgentSnapshot, AgentState, EpochMillis, StatusCause};
+
+    const SINCE: EpochMillis = 1_754_650_000_000;
+
+    let server = support::Server::start("status-alloc").await;
+    let pty = support::open_pty();
+
+    let mut app = App::attach(
+        server.socket(),
+        pty.slave,
+        Vec::new(),
+        ClientInfo {
+            name: "amx-render-alloc-test".to_owned(),
+            version: "0.0.0".to_owned(),
+            term: None,
+        },
+    )
+    .await
+    .expect("attach to the real server over the real socket");
+
+    for (n, label) in ["api", "web", "infra"].into_iter().enumerate() {
+        let pane = PaneId::new_v4();
+        app.adopt_workspace(
+            WorkspaceId::new_v4(),
+            WorkspaceModel {
+                label: Some(label.to_owned()),
+                layout: BspLayout::with_root(pane),
+            },
+        );
+        app.model().set_pane_label(pane, Some(format!("agent-{n}")));
+        app.model().set_pane_agent(
+            pane,
+            Some(AgentSnapshot {
+                kind: None,
+                state: AgentState::Blocked,
+                cause: StatusCause::Screen,
+                transition_seq: 1,
+                attention: None,
+                session_ref: None,
+                reason: Some("permission_dialog".to_owned()),
+                since: Some(SINCE + n as u64 * 1_000),
+            }),
+        );
+        assert!(app.model().enqueue_attention(pane));
+    }
+    // A fixed anchor, so the age on the line is the same string every frame
+    // whatever the machine is doing: this measures allocation, not the clock.
+    app.note_server_clock(SINCE + 240_000);
+
+    for _ in 0..8 {
+        app.repaint();
+    }
+    let before = allocs();
+    for _ in 0..8 {
+        app.repaint();
+    }
+    assert_eq!(
+        allocs(),
+        before,
+        "the per-workspace breakdown must be rebuilt in buffers it keeps"
+    );
+
+    drop(app);
+    server.shutdown().await;
+}
