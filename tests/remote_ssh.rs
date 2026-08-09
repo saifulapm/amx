@@ -18,6 +18,32 @@
 //! attach works anyway; see [`Sshd::force_command`] for how, and
 //! [`refuses_posix`] for why the list is measured rather than trusted.
 //!
+//! # A handoff over the link, and the two clauses this suite cannot reach
+//!
+//! DR-20 records that no handoff and no `amx update apply` had ever run over
+//! the remote link. One of them does now:
+//! [`a_handoff_over_the_ssh_link_swaps_the_session_and_ends_the_bridged_client`]
+//! swaps the session under a client attached through real ssh. Two clauses are
+//! still open, and neither is open because nobody got round to them:
+//!
+//! - **A far side that built its own binary.** Everything here is one machine
+//!   and one tree. The versioned half of that is reachable without a second
+//!   machine — `tests/skew.rs`'s `AMX_SKEW_FAR_BINARY` runs the bridge row
+//!   against another build — but a binary a *different machine* compiled for
+//!   its own architecture is not something a test can produce. m3-live-smoke §5
+//!   cross-built the far side here, which is the same tree by another name.
+//! - **`amx update apply` over the link.** The verb replaces the binary it is
+//!   running. Run against a remote host that is a real machine, that is the
+//!   host's own file; run against this loopback one, it is the binary under
+//!   test. Neither is a test's to overwrite, so what is exercised here is the
+//!   swap `apply` ends with — `session.handoff` — and not `apply` itself.
+//!   `crates/amx/tests/update.rs` drives `apply` end to end against a planted
+//!   copy, locally.
+//!
+//! Both are the M4 exit's by-hand smoke step
+//! ([docs/11-m4-plan.md](../docs/11-m4-plan.md) §7), and what closes them is
+//! stated there rather than implied here.
+//!
 //! # Where it runs, and why not everywhere
 //!
 //! Linux only, and only when `AMX_TEST_SSHD` is set (R-M3-6). darwin runners
@@ -451,6 +477,154 @@ fn loopback_ssh_attaches_through_a_login_shell_that_cannot_parse_sh() {
     for shell in &shells {
         attaches_through(shell);
     }
+}
+
+// ------------------------------------------------- a handoff over the link
+
+/// DR-20's second residual, as far as one machine can take it.
+///
+/// The register's complaint is that no handoff and no `amx update apply` had
+/// ever run over the remote link — every upgrade in the record is local. This
+/// runs one: a client attached through **real ssh**, and the session under it
+/// handed to another process while the client is watching.
+///
+/// **What it proves and what it does not.** The transport is real — a real
+/// sshd, a real ssh, a real login shell, a real `amx _bridge` splicing a socket
+/// pair the client cannot tell from a socket. The *machine* is not: both ends
+/// are this one, and the successor is a build of this tree, so this is the
+/// remote link crossed by a handoff, not two hosts and two builds. The second
+/// machine stays the M4 exit's smoke step ([11-m4-plan.md] §7 by-hand item 3),
+/// and `amx update apply` over the link stays unrun here for the reason its own
+/// verb gives: it replaces the binary it is running, which on a remote host is
+/// the far side's own file and not something a test may write.
+///
+/// **The client does not survive it, and this is the first record of what that
+/// looks like.** The exporter retires its gateway partway through the protocol,
+/// so every attached connection dies; a local client redials the socket path it
+/// was given, and a bridged one has no path to redial — reconnecting it means
+/// respawning an ssh child, which DR-16 declined with its reason. What the
+/// person at the terminal gets is therefore **exit 1 and `amx: run the attached
+/// client: the server closed the connection`**, where a local client would have
+/// shown them nothing at all. The session is fine — a second `amx --remote`
+/// reaches the successor with the pane's content still on it — but "upgrade the
+/// far side and your remote client survives it" is not true today, and this is
+/// where that is written down rather than assumed either way.
+#[test]
+fn a_handoff_over_the_ssh_link_swaps_the_session_and_ends_the_bridged_client() {
+    const NAME: &str = "a_handoff_over_the_ssh_link_swaps_the_session_and_ends_the_bridged_client";
+    if let Some(reason) = skipped() {
+        eprintln!("{NAME}: skipped — {reason}");
+        return;
+    }
+
+    let mut env = Env::new("sshh");
+    fs::write(env.config_path(), "[terminal]\nshell = \"/bin/sh\"\n")
+        .expect("write the remote config");
+    let exe = env.exe();
+    let bin_dir = exe.parent().expect("the binary's directory").to_path_buf();
+    let sshd = Sshd::start(&env, &bin_dir.display().to_string(), None);
+    env.set_var(
+        "PATH",
+        &format!(
+            "{}:{}",
+            sshd.wrapper_dir().display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+
+    let mut term = env.attach_on_tty(&["--remote", ALIAS], ROWS, COLS);
+    term.wait_for(ALT_ENTER);
+    term.wait_output("a remote pane to render its prompt", |seen| {
+        shows(seen, "$")
+    });
+    // Content on the pane, so "the successor kept the session" is a claim about
+    // this screen and not about a socket answering.
+    term.type_line("printf 'across-%s\\n' the-handoff");
+    term.wait_output("the remote child's output to render", |seen| {
+        shows(seen, "across-the-handoff")
+    });
+
+    let before = server_pid_of(&env.socket()).expect("a server pid before the swap");
+    let accepted = hand_over(&env.socket(), &exe);
+    assert_eq!(
+        accepted["accepted"],
+        serde_json::json!(true),
+        "the session refused a handoff to the binary it is running: {accepted}; \
+         sshd said:\n{}",
+        sshd.log(),
+    );
+
+    // The successor, by pid: a different process serving the same socket is the
+    // only observation that means the swap landed — the same one `amx update
+    // apply` polls on, and the reason a version comparison is not used here.
+    wait_until("a different process to serve the session", || {
+        server_pid_of(&env.socket()).is_some_and(|pid| pid != before)
+    });
+
+    // The client attached over ssh ends — and ends *saying so*, which is the
+    // part that matters to whoever is sitting in front of it. Exit 1 and one
+    // sentence, not a hang on a connection that will never answer again and
+    // not a silent exit that reads like a detach. Measured, not chosen: this is
+    // what a bridged client does today, and the assertion is here so that
+    // giving it a redial is a change this test notices.
+    assert_eq!(
+        term.wait(),
+        Some(1),
+        "the bridged client did not end on the swap. Screen:\n{}\nsshd said:\n{}",
+        rig::screen::render(&rig::rasterize(term.output())),
+        sshd.log(),
+    );
+    assert!(
+        shows(term.output(), "the server closed the connection"),
+        "the client ended without telling anyone why. Screen:\n{}",
+        rig::screen::render(&rig::rasterize(term.output())),
+    );
+
+    // And the session it was attached to is the session that survived: a second
+    // `--remote` attach reaches the successor over a second ssh connection, and
+    // the pane still holds what was typed before the swap.
+    let mut again = env.attach_on_tty(&["--remote", ALIAS], ROWS, COLS);
+    again.wait_for(ALT_ENTER);
+    again.wait_output(
+        "the successor's pane to render what outlived the swap",
+        |seen| shows(seen, "across-the-handoff"),
+    );
+    again.chord(b'd');
+    assert_eq!(again.wait(), Some(0), "sshd said:\n{}", sshd.log());
+}
+
+/// The pid serving `socket`, or `None` if nothing is.
+fn server_pid_of(socket: &Path) -> Option<u32> {
+    blocking(async { amx_server::session::probe::server_pid(socket).await.ok()? })
+}
+
+/// Ask the session on `socket` to hand over to `binary`, and return the reply.
+///
+/// Over the local socket rather than through the bridge, because what is under
+/// test is the *swap* happening beneath a bridged client — not another route to
+/// asking for one. `--remote` carries no verbs (`remote::run` refuses them), so
+/// this is also the only way to ask.
+fn hand_over(socket: &Path, binary: &Path) -> serde_json::Value {
+    blocking(async {
+        let mut wire = rig::Wire::connect(socket).await;
+        wire.hello(amx_proto::version::window()).await;
+        let reply = wire
+            .request(
+                "session.handoff",
+                serde_json::json!({ "binary": binary.to_string_lossy() }),
+            )
+            .await;
+        rig::result_of(&reply).clone()
+    })
+}
+
+/// Run one async fragment from these otherwise synchronous cases.
+fn blocking<T>(work: impl Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime")
+        .block_on(work)
 }
 
 /// Attach over the loopback sshd with `shell` reading amx's remote command.
