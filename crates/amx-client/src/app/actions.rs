@@ -24,7 +24,7 @@ use amx_core::{Direction, Effect, PaneId, Rect, WorkspaceId};
 use amx_proto::control::{Call, pane as pane_proto};
 
 use super::App;
-use crate::input::{self, Action, InputEvent};
+use crate::input::{self, Action, InputEvent, Wheel};
 use crate::render::chrome;
 
 impl<Fd: AsFd, W: Write> App<Fd, W> {
@@ -80,10 +80,10 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 });
                 Effect::Nothing
             }
-            Action::Mouse { start, end, .. } => {
-                self.mouse_report(pane, Some(&bytes[start..end]), sink)
+            Action::Mouse { start, end, wheel } => {
+                self.mouse_report(pane, Some(&bytes[start..end]), wheel, sink)
             }
-            Action::CarriedMouse(_) => self.mouse_report(pane, None, sink),
+            Action::CarriedMouse(wheel) => self.mouse_report(pane, None, wheel, sink),
             Action::CarriedBytes => {
                 sink(InputEvent::Forward {
                     pane,
@@ -203,15 +203,15 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     ///    recorded where the mode is folded (`super::events`) rather than here,
     ///    because a held drag is a report every few milliseconds and a log line
     ///    per report is not a record, it is a flood.
-    /// 3. **The pane asked for nothing**: dropped. This is where D14's wheel
-    ///    exception goes, and it is deliberately a separate change: the chain
-    ///    above is D9's forwarding working for the first time and stands on its
-    ///    own, and X01's last hypothesis is still unobserved
-    ///    (`docs/notes/m4-mouse-path.md` §7.3).
+    /// 3. **The pane asked for nothing**: D14's exception. A wheel-up opens
+    ///    copy mode over this pane's cached scrollback; everything else — every
+    ///    click, drag, release, and the sideways wheel — is dropped. A
+    ///    wheel-down here is already at the live edge and has nowhere to go.
     fn mouse_report(
         &mut self,
         pane: PaneId,
         report: Option<&[u8]>,
+        wheel: Option<Wheel>,
         sink: &mut impl FnMut(InputEvent<'_>),
     ) -> Effect {
         if self.input.mouse_enabled(pane) {
@@ -227,7 +227,10 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             }
             return Effect::Nothing;
         }
-        Effect::Nothing
+        if self.input.mouse_mode(pane).is_some() || wheel != Some(Wheel::Up) {
+            return Effect::Nothing;
+        }
+        self.wheel_into_copy()
     }
 
     /// The focused pane's drawable interior, if this terminal is drawing it.

@@ -18,7 +18,7 @@ use amx_proto::control::{Call, workspace as workspace_proto};
 use super::{App, Mode};
 use crate::cache::RowSlot;
 use crate::copy::{CopyMode, Outcome};
-use crate::input::{Action, Chrome, InputEvent};
+use crate::input::{Action, Chrome, InputEvent, Wheel};
 use crate::model::{Attrs, Cell};
 use crate::picker::{Picker, PickerEvent};
 use crate::render::chrome;
@@ -168,8 +168,17 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
 
     /// Enter copy mode over the focused pane's cache, or fall straight back
     /// to terminal mode when there is no history to browse.
+    ///
+    /// A no-op when the mode is already open, which is what lets the wheel
+    /// exception open it *and scroll it* inside one round of input: the entry
+    /// point calls this again once the machine's actions have run, and a second
+    /// entry that reset the engine to the bottom would undo the scroll that
+    /// asked for it.
     #[must_use]
     pub(super) fn enter_copy(&mut self) -> Effect {
+        if self.copy.is_some() {
+            return Effect::Nothing;
+        }
         let opened = (|| {
             let pane = self.focused_pane()?;
             let height = self.copy_height(pane);
@@ -207,11 +216,9 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                         }
                     }
                 }
-                // Where D14's wheel exception acts. Until it lands, a wheel
-                // turn is dropped like every other report: chrome interprets
-                // no mouse event, which is the rule the exception is the one
-                // exception to.
-                Chrome::Wheel(_) => {}
+                Chrome::Wheel(wheel) => {
+                    self.copy_wheel(wheel);
+                }
             }
         }
         self.input.put_chrome(pieces);
@@ -241,6 +248,52 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 false
             }
         }
+    }
+
+    /// One wheel turn through the engine (D14). A wheel-down at the live edge
+    /// ends the mode, which is the exit the exception is built around.
+    fn copy_wheel(&mut self, wheel: Wheel) {
+        let Some(mut ui) = self.copy.take() else {
+            self.mode = Mode::Terminal;
+            return;
+        };
+        let cache = self.caches.entry(ui.pane).or_default();
+        match ui.engine.wheel(wheel, cache) {
+            Outcome::Continue => {
+                self.queue_copy_misses(&ui);
+                self.copy = Some(ui);
+            }
+            // The engine's wheel never yanks; `Exit` is the live edge.
+            Outcome::Exit | Outcome::Yank(_) => self.mode = Mode::Terminal,
+        }
+    }
+
+    /// D14's wheel exception: a wheel-up in a pane that asked for no mouse
+    /// reports opens copy mode over that pane's cached scrollback and scrolls
+    /// it one notch, so the turn that asked for history is the turn that shows
+    /// it rather than merely opening an unmoved view.
+    ///
+    /// A pane with nothing fetchable does not enter at all — `enter_copy` puts
+    /// the mode straight back — which is the same answer navigate's `c` gives
+    /// and the honest one: there is no scrollback to look at.
+    #[must_use]
+    pub(super) fn wheel_into_copy(&mut self) -> Effect {
+        self.mode = Mode::Copy;
+        let effect = self.enter_copy();
+        if self.copy.is_some() {
+            self.copy_wheel(Wheel::Up);
+        }
+        effect
+    }
+
+    /// The live copy-mode view, when one is open.
+    ///
+    /// Public because where the scrollback is parked is the observable half of
+    /// D14's wheel exception, and a test that could only see the *mode* would
+    /// be asserting that copy mode opened rather than that the wheel scrolled.
+    #[must_use]
+    pub const fn copy_view(&self) -> Option<&CopyUi> {
+        self.copy.as_ref()
     }
 
     /// Queue the viewport's cache misses for the wired loop to fetch.

@@ -16,6 +16,13 @@
 //! selection anchor and the view top, moves them over a [`Scrollback`], and
 //! turns `y` into an OSC 52 write for the client's own terminal.
 //!
+//! The wheel is the one input here that is not a byte. [`CopyMode::wheel`]
+//! takes a turn already decoded from a report's button — never from a
+//! coordinate — and scrolls; a wheel-down at the live edge leaves the mode.
+//! It is beside [`decode`] rather than in it because the two answer different
+//! questions, and D14's fence is the reason: a key is a byte the table names,
+//! a wheel turn is a button and nothing else.
+//!
 //! Keys: `hjkl` movement, `0`/`$` line start/end, `g`/`G` oldest/newest,
 //! `v` toggles the selection anchor, `y` yanks and leaves, `Esc`/`q` leave.
 //! `e` (scrollback in `$EDITOR`, 04 §7) needs process spawning the client
@@ -26,11 +33,19 @@ use amx_core::{RowId, RowRange};
 
 use crate::app::Mode;
 use crate::cache::{RowSlot, Scrollback};
+use crate::input::Wheel;
 
 /// The navigate-layer key that enters copy mode (04 §7: copy mode is entered
 /// from navigate). Owned here so the entry key and the mode's own key table
 /// live in one file.
 pub const ENTER: u8 = b'c';
+
+/// How many rows one wheel click moves the view (D14's wheel exception).
+///
+/// Three, the conventional notch, and a constant rather than a setting: the
+/// exception is one interpreted event class and a knob on it would be the
+/// second.
+const WHEEL_ROWS: u64 = 3;
 
 /// `Esc`.
 const ESC: u8 = 0x1b;
@@ -238,6 +253,56 @@ impl CopyMode {
             Key::Other => {}
         }
         self.follow_cursor();
+        Outcome::Continue
+    }
+
+    /// Apply one wheel turn (D14's wheel exception).
+    ///
+    /// Deliberately not a row of [`decode`]'s table: a wheel turn is not a
+    /// byte, it arrives already decoded from a report's *button*, and the
+    /// caller has already established that no coordinate was read to get here.
+    ///
+    /// Wheel-down **at the live edge leaves the mode**, which is the exit D14
+    /// names and the reason the exception is usable at all: the gesture that
+    /// got the user into the scrollback is the gesture that gets them out, with
+    /// no key to know. The live edge is the *view* already showing the newest
+    /// committed row, so a user who has scrolled back keeps scrolling forward
+    /// until they arrive there, and only the turn after that ends the mode.
+    pub fn wheel(&mut self, wheel: Wheel, cache: &Scrollback) -> Outcome {
+        let Some(newest) = cache.newest() else {
+            // Nothing fetchable: there is no view to move and no honest way to
+            // stay, which is the same answer `open` gives.
+            return Outcome::Exit;
+        };
+        let floor = cache.floor().0.get();
+        // The view moves and the cursor rides it — the opposite of `hjkl`,
+        // where the cursor moves and the view follows. That is what a wheel
+        // *is*, and it is why this is not a row of the key table.
+        let span = u64::from(self.height) - 1;
+        match wheel {
+            Wheel::Up => {
+                self.top = RowId::from_raw(self.top.get().saturating_sub(WHEEL_ROWS).max(floor));
+            }
+            Wheel::Down => {
+                if self.top.get().saturating_add(span) >= newest.get() {
+                    return Outcome::Exit;
+                }
+                let last = newest.get().saturating_sub(span).max(floor);
+                self.top = RowId::from_raw(self.top.get().saturating_add(WHEEL_ROWS).min(last));
+            }
+        }
+        // The cursor is what `y` anchors on and what the render highlights, so
+        // a view that scrolled out from under it would leave the selection
+        // being built off screen.
+        let bottom = self.top.get().saturating_add(span);
+        self.cursor.row = RowId::from_raw(
+            self.cursor
+                .row
+                .get()
+                .clamp(self.top.get(), bottom)
+                .clamp(floor, newest.get()),
+        );
+        self.clamp_col(cache);
         Outcome::Continue
     }
 
