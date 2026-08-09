@@ -15,13 +15,12 @@ use amx_core::{Effect, PaneId, RowId, WorkspaceId};
 use amx_proto::control::pane::SplitDirection;
 use amx_proto::control::{Call, workspace as workspace_proto};
 
-use super::{App, Mode};
+use super::{App, Mode, Projection};
 use crate::cache::RowSlot;
 use crate::copy::{CopyMode, Outcome};
 use crate::input::{Action, InputEvent};
 use crate::model::{Attrs, Cell};
 use crate::picker::{Picker, PickerEvent};
-use crate::render::chrome;
 
 /// What a picker row stands for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -218,7 +217,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         self.pane_rects
             .iter()
             .find(|(id, _)| *id == pane)
-            .map(|(_, rect)| chrome::inset(*rect).h)
+            .map(|(_, rect)| self.pane_interior(*rect).h)
             .filter(|h| *h > 0)
             .unwrap_or(1)
     }
@@ -241,7 +240,10 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         let Some(&(_, rect)) = self.pane_rects.iter().find(|(id, _)| id == &ui.pane) else {
             return;
         };
-        let inner = chrome::inset(rect);
+        // The interior the *projection* leaves, not the border's: D14's
+        // single-pane projection draws no border, so insetting for one would
+        // put copy mode's rows a cell in from a frame nothing drew.
+        let inner = self.pane_interior(rect);
         if inner.w == 0 || inner.h == 0 {
             return;
         }
@@ -273,31 +275,46 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         }
     }
 
-    /// The picker draws as a query line plus its best matches, top of screen.
+    /// The picker draws as a query line plus its best matches, top of screen —
+    /// and, under D14's narrow projection, over the whole content area.
+    ///
+    /// 10 §D14: "picker and agents view render full-screen instead of as an
+    /// overlay region". A terminal wide enough to tile can spare the rows below
+    /// the list to the panes underneath; one that is showing a single pane
+    /// because it has no width to spare cannot, and eight rows of list over
+    /// twelve rows of a pane the user cannot read is the region the policy
+    /// exists to replace.
     fn draw_picker(&mut self, ui: &PickerUi) {
         let width = self.model.term.w;
-        if width == 0 {
+        let content = self.model.content_area().h;
+        let height = match self.projection() {
+            Projection::Single(_) => content,
+            Projection::Tiled => (PICKER_ROWS + 1).min(content),
+        };
+        if width == 0 || height == 0 {
             return;
         }
         let query = format!("> {}", ui.picker.query());
         draw_line(self, 0, width, &query, false);
         let selected = ui.picker.selected();
-        for (line, &item) in ui
+        let mut row = 1_u16;
+        for &item in ui
             .picker
             .matches()
             .iter()
-            .take(usize::from(PICKER_ROWS))
-            .enumerate()
+            .take(usize::from(height.saturating_sub(1)))
         {
             let label = &ui.picker.items()[item];
-            // Rows start below the query line; the cast is bounded by
-            // PICKER_ROWS.
-            #[allow(clippy::cast_possible_truncation, reason = "line < PICKER_ROWS")]
-            let row = 1 + line as u16;
-            if row >= self.model.term.h.saturating_sub(1) {
-                break;
-            }
             draw_line(self, row, width, label, selected == Some(item));
+            row += 1;
+        }
+        // Only the full-screen form pads: the overlay form is *supposed* to
+        // leave the panes below it showing, and blanking down to the status
+        // line would turn every short match list into a full-height dialog.
+        if matches!(self.projection(), Projection::Single(_)) {
+            for blank in row..height {
+                draw_line(self, blank, width, "", false);
+            }
         }
     }
 }

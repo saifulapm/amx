@@ -191,6 +191,12 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         }
 
         self.bind_visible().await?;
+        // The layout the projection is computed from has just been replaced,
+        // and under D14 the projection is what the server sizes panes by
+        // (`super::narrow`). Declared here rather than by the caller because
+        // this is the one place the tree moves; it is a no-op when the
+        // declaration would repeat itself.
+        self.declare_projection().await?;
         // A snapshot replaces the layout tree and every label on it, so the
         // rects are recomputed whether or not the tree actually moved: a fold
         // cannot tell, and the alternative is comparing two trees to save one

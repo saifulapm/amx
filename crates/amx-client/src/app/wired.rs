@@ -189,6 +189,13 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 // session's queue now.
                 self.drain_events().await?;
                 self.fetch_wanted_history().await?;
+                // Last, and after every wake: under D14's narrow projection
+                // the pane this terminal shows is the pane the server sizes to
+                // it, and focus can move without any call this client resyncs
+                // after — a numeric jump, a pane chosen in the picker, another
+                // client's `pane.focus`. A wide client stops at one comparison
+                // (`super::binds`).
+                self.redeclare_shown_pane().await?;
                 Ok(Flow::Continue)
             }
             .await;

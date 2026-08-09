@@ -7,15 +7,17 @@
 //! [`Mode::Copy`]'s keys are owned by `crate::copy`: the `Mode::Copy` arm in
 //! `input` dispatches through that module's key table.
 //!
-//! The module splits by responsibility: this file is the presentation core —
-//! model, layout, repaint — [`actions`] turns one decoded key into what leaves
-//! the client, [`wired`] is the live loop over the session socket (frames in,
-//! input and calls out), [`binds`] is the streams that loop opens and the
-//! viewport it declares, [`events`] is the state the server pushes and what it
-//! does to the model, [`reconnect`] is what the loop does when that socket ends
-//! under it, [`overlay`] is the picker and copy-mode surfaces drawn over the
-//! panes, and [`status`] is the status line and the cursor a repaint finishes
-//! with.
+//! The module splits by responsibility: this file is the app's shape and its
+//! lifecycle — the struct, the attach, the accessors, the input entry and the
+//! resize — [`actions`] turns one decoded key into what leaves the client,
+//! [`wired`] is the live loop over the session socket (frames in, input and
+//! calls out), [`binds`] is the streams that loop opens and the viewport it
+//! declares, [`events`] is the state the server pushes and what it does to the
+//! model, [`paint`] is whether a frame is owed and what one draws, [`narrow`] is
+//! D14's small-screen projection, [`reconnect`] is what the loop does when that
+//! socket ends under it, [`overlay`] is the picker and copy-mode surfaces drawn
+//! over the panes, and [`status`] is the status line and the cursor a repaint
+//! finishes with.
 //!
 //! # Dirtiness is a value (D2)
 //!
@@ -31,7 +33,9 @@
 mod actions;
 mod binds;
 mod events;
+mod narrow;
 mod overlay;
+mod paint;
 pub mod reconnect;
 mod status;
 mod wired;
@@ -41,18 +45,17 @@ use std::fmt;
 use std::io::Write;
 use std::os::fd::AsFd;
 
-use amx_core::{
-    Effect, EffectSet, Level, PaneId, Rect, RowRange, Scheduled, Seq, SessionId, WorkspaceId,
-};
+use amx_core::{Effect, EffectSet, PaneId, Rect, RowRange, Scheduled, Seq, SessionId, WorkspaceId};
 
 use crate::cache::Scrollback;
 use crate::input::{Input, InputEvent};
 use crate::model::{ClientModel, WorkspaceModel};
 use crate::net::{NetError, Session};
-use crate::render::{FrameWriter, chrome, grid};
+use crate::render::FrameWriter;
 use crate::term::{TermError, TermSize, TerminalGuard};
 
 pub use events::Folded;
+pub use narrow::Projection;
 pub use overlay::{CopyUi, PickTarget, PickerUi};
 pub use reconnect::{Reattached, ReconnectPolicy};
 
@@ -166,6 +169,22 @@ pub struct App<Fd: AsFd, W: Write> {
     focus: HashMap<WorkspaceId, PaneId>,
     /// The modal byte machine behind [`Self::handle_input`].
     input: Input,
+    /// Below how many columns this client shows one pane full-screen (D14).
+    ///
+    /// `[client] narrow_cols`, resolved by [`crate::config`] and handed over by
+    /// whoever built this app; the shipped threshold until one does, so a
+    /// caller that never mentions it still gets the documented behaviour rather
+    /// than a threshold of zero. [`narrow`] is the whole of what reads it.
+    narrow: crate::config::NarrowCols,
+    /// The viewport this client last declared, so a declaration that would say
+    /// what the server already believes is not made.
+    ///
+    /// Kept rather than recomputed because the narrow projection can change
+    /// without any call this client would resync after — a jump, a picker
+    /// choice, another client's `pane.focus` — so something has to notice, and
+    /// noticing by comparison is the only way that does not need every focus
+    /// write to remember to announce itself. See [`binds`].
+    declared: Option<amx_proto::control::client::Viewport>,
     /// The rendered status line, cached against the inputs it was built from
     /// (see [`status`]).
     status: status::StatusLine,
@@ -224,6 +243,8 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             pane_rects: Vec::new(),
             focus: HashMap::new(),
             input: Input::new(),
+            narrow: crate::config::NarrowCols::default(),
+            declared: None,
             status: status::StatusLine::default(),
             repaints: 0,
             resyncs: 0,
@@ -246,36 +267,6 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         self.effects.absorb(effect);
     }
 
-    /// Whether the next [`repaint`](Self::repaint) would put something new on
-    /// this terminal.
-    ///
-    /// What the fold buys over the boolean it replaced. Pane damage names its
-    /// pane, and a pane this terminal is not drawing owes it no frame: stream
-    /// bindings are per *connection*, not per workspace, so a grid stream bound
-    /// while a workspace was on screen keeps delivering after this client has
-    /// switched away from it, and every one of those deltas used to repaint a
-    /// screen they could not appear on. Anything at [`Level::Layout`] or above
-    /// is owed unconditionally — the chrome, the status line and the rects are
-    /// not any pane's.
-    ///
-    /// Exposed for the same reason [`Self::repaints`] is: what a client decided
-    /// not to draw is invisible in the frame and exact here.
-    #[must_use]
-    pub fn frame_due(&self) -> bool {
-        match self.effects.level() {
-            Level::Nothing => false,
-            Level::PaneDamage => self.effects.panes().iter().any(|&pane| self.showing(pane)),
-            Level::Layout | Level::Full => true,
-        }
-    }
-
-    /// Whether `pane` is in the workspace this terminal is drawing.
-    fn showing(&self, pane: PaneId) -> bool {
-        self.model
-            .focused_workspace()
-            .is_some_and(|ws| ws.layout.contains(pane))
-    }
-
     /// Forget everything that only meant something to the server that is gone.
     ///
     /// The grids, the scrollback caches, the mirrored workspaces and this
@@ -292,6 +283,10 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         self.mode = Mode::default();
         self.pane_rects.clear();
         self.wanted_history.clear();
+        // A declaration is a thing this connection told a server. The
+        // successor was never told, and the panes it names were minted by the
+        // predecessor, so it is dropped with the rest of that server's ids.
+        self.declared = None;
         self.absorb(Effect::Full);
         if let Some(origin) = self.origin.as_mut() {
             origin.adopt(session);
@@ -409,6 +404,20 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         &mut self.input
     }
 
+    /// Take the configured narrow threshold (D14).
+    ///
+    /// Beside [`Self::input`] and for the same reason: `amx-client` reads no
+    /// configuration itself — the path is the CLI's `Ctx` — so what the file
+    /// resolved to arrives through a setter after the attach rather than
+    /// through a constructor argument every test would have to carry.
+    pub fn set_narrow_cols(&mut self, narrow: crate::config::NarrowCols) {
+        self.narrow = narrow;
+        // The threshold decides the projection, and the projection decides the
+        // declaration: a client told the threshold after it declared owes the
+        // server a fresh one, and the next fold is what makes it.
+        self.absorb(Effect::Layout);
+    }
+
     /// Note that a resize happened; does not yet act on it.
     ///
     /// Called once per `SIGWINCH` in [`Self::run`]. A burst of signals
@@ -442,45 +451,6 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         report(size);
         self.repaint();
         true
-    }
-
-    /// Redraw everything: chrome and every visible pane's grid.
-    ///
-    /// Drains one batch of folded effects and draws it. The frame itself is
-    /// always whole — this client emits absolute cursor moves into a buffer it
-    /// rebuilds per frame, and there is no partial-frame path to take — so what
-    /// the batch decides is the *layout*: recomputing the rects is the one
-    /// thing a repaint can skip, and [`Level::Layout`] is when it must not.
-    ///
-    /// Allocation-free once the layout has settled: the only thing that can
-    /// grow a buffer here is [`FrameWriter`]'s own `Vec<u8>` reaching a new
-    /// high-water mark, which happens at most once per distinct frame size.
-    pub fn repaint(&mut self) {
-        self.effects.drain_into(&mut self.scheduled);
-        self.writer.begin_frame();
-        if self.scheduled.level() >= Level::Layout {
-            let content = self.model.content_area();
-            let rects = self.model.pane_rects(content);
-            self.pane_rects.clear();
-            self.pane_rects.extend_from_slice(&rects);
-        }
-        for &(pane, rect) in &self.pane_rects {
-            chrome::draw_border(&mut self.writer, rect);
-            let inner = chrome::inset(rect);
-            if let Some(pane_grid) = self.model.pane(pane) {
-                grid::blit(&mut self.writer, pane_grid, inner);
-            }
-        }
-        self.draw_overlays();
-        self.draw_status();
-        self.place_cursor();
-        self.repaints += 1;
-    }
-
-    /// The bytes the last [`Self::repaint`] produced.
-    #[must_use]
-    pub fn frame(&self) -> &[u8] {
-        self.writer.bytes()
     }
 }
 

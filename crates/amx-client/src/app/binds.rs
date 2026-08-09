@@ -128,23 +128,81 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
         Ok(Some(reply))
     }
 
-    /// Declare this client's size and visible panes.
+    /// Declare this client's size and the panes its projection draws.
+    ///
+    /// The third field is not decoration: since D-M4-7 the server reads it, and
+    /// a declaration naming one pane of a larger layout is what makes the
+    /// narrow projection's pane the size of the screen rather than the size of
+    /// a slot nobody is drawing ([`super::narrow`] has both halves).
     pub async fn report_viewport(&mut self) -> Result<(), AppError> {
-        let panes = self
-            .model
-            .focused_workspace()
-            .map(|ws| ws.layout.panes())
-            .unwrap_or_default();
-        let params = serde_json::to_value(client_proto::Viewport {
-            rows: self.model.term.h,
-            cols: self.model.term.w,
-            panes,
-        })
-        .map_err(|_| AppError::BadState("unencodable viewport"))?;
+        let declaration = self.declaration();
+        let params = serde_json::to_value(&declaration)
+            .map_err(|_| AppError::BadState("unencodable viewport"))?;
         let _ = self
             .call(Method::ClientViewport.wire_name(), params)
             .await?;
+        // After the call, not before: a declaration the server never received
+        // is not one it believes, and recording it early would suppress the
+        // re-declaration that a failed call makes owed.
+        self.declared = Some(declaration);
         Ok(())
+    }
+
+    /// What this client would declare right now.
+    fn declaration(&self) -> client_proto::Viewport {
+        let panes = match self.projection() {
+            super::Projection::Single(pane) => vec![pane],
+            super::Projection::Tiled => self
+                .model
+                .focused_workspace()
+                .map(|ws| ws.layout.panes())
+                .unwrap_or_default(),
+        };
+        client_proto::Viewport {
+            rows: self.model.term.h,
+            cols: self.model.term.w,
+            panes,
+        }
+    }
+
+    /// Declare the projection if it is no longer what the server was told.
+    ///
+    /// Called from the state fold, which is where every declaration input but
+    /// one moves: the layout tree, the focused workspace and this terminal's
+    /// size all reach the client through a snapshot or a resize, and both of
+    /// those already pass through here. The exception is
+    /// [`Self::redeclare_shown_pane`].
+    pub(super) async fn declare_projection(&mut self) -> Result<(), AppError> {
+        if self.declared.as_ref() == Some(&self.declaration()) {
+            return Ok(());
+        }
+        self.report_viewport().await
+    }
+
+    /// Re-declare when the *shown* pane moved under the narrow projection.
+    ///
+    /// The one input a state fold does not catch. Focus moves inside a
+    /// workspace without the layout changing — a numeric jump, a pane chosen in
+    /// the picker, another client's `pane.focus` arriving as `focus_changed` —
+    /// and under [`Projection::Single`](super::Projection::Single) that changes
+    /// which pane the declaration names and therefore which pane the server
+    /// sizes to the screen. Under the tiled projection it changes nothing, and
+    /// the check ends at the threshold comparison without touching the layout:
+    /// the loop calls this after every wake, and a wide client watching
+    /// twenty-five agents must not pay for a policy it is not under.
+    pub(super) async fn redeclare_shown_pane(&mut self) -> Result<(), AppError> {
+        let super::Projection::Single(pane) = self.projection() else {
+            return Ok(());
+        };
+        let fresh = self.declared.as_ref().is_some_and(|declared| {
+            declared.rows == self.model.term.h
+                && declared.cols == self.model.term.w
+                && declared.panes.as_slice() == [pane]
+        });
+        if fresh {
+            return Ok(());
+        }
+        self.report_viewport().await
     }
 
     /// Turn copy mode's cache misses into `pane.history` calls.

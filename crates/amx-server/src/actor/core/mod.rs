@@ -130,10 +130,11 @@ pub struct Core {
     /// The attention queue in queue order, mirrored by `AgentHub` beside the
     /// statuses (D-M2-8 — `session.state` *is* the query for the queue).
     attention: Vec<PaneId>,
-    /// The active client's declared terminal size (rows, cols), if any client
-    /// has declared one. Last writer wins — the pane grid follows the
-    /// most-recently-active client (04 §3).
-    viewport: Option<(u16, u16)>,
+    /// The active client's declared projection — its terminal size, and the
+    /// pane it is drawing when it declared exactly one (D14) — if any client
+    /// has declared one. Last writer wins: the pane grid follows the
+    /// most-recently-active client (04 §3). [`view`] is what reads it.
+    viewport: Option<self::view::Viewport>,
     /// The size (rows, cols) each pane was last commanded to, so reconciling
     /// after a layout change only disturbs panes whose cell rect moved.
     pane_sizes: HashMap<PaneId, (u16, u16)>,
