@@ -1954,6 +1954,15 @@ knowing:
 
 ### Divergences from §5
 
+**The suite is two files and a shared harness, for the same reason the module is
+four.** `crates/amx-client/tests/agents.rs` crossed the *hard* budget at 1102
+lines, which `crates/amx/tests/repo.rs`'s module-size check fails on rather than
+warns about; it is now `agents.rs` (what the board shows), `agents_verbs.rs`
+(what it does — the calls, the keys, the peek, the refresh rate) and
+`agents/harness.rs`, shared by `#[path]` the way X09's `attach_pane_swap.rs`
+borrows `wait_retry/harness.rs`. The `#[path]` harness has two readers from the
+day it lands, which is worth knowing before editing it.
+
 **`app/agents.rs` landed as `app/agents/{mod,keys,rows,draw}.rs`.** The four
 come to 1391 lines together, so one file would have been past the *hard* budget
 and not merely the soft one; it was split by responsibility before it landed
