@@ -2083,3 +2083,220 @@ D-M2-2 calls the test seam. It is the small sibling of the workspace rig's
 `tests/support/agent.rs`, which cannot be reached from this package. Any later
 CLI suite that needs a session with real statuses in it should use it rather
 than writing a fourth one.
+---
+## X14 — the agents view
+
+### Seam 5, taken as X15 defined it
+
+X15 merged first and exported the split rather than guessing at one; this task
+built against it and invented nothing beside it. `App::peek_layout()` is the
+only thing the board measures the screen with, `open_peek`/`close_peek`/`peeked`
+are the only things it does about a peek, and `app/agents/draw.rs` paints inside
+`PeekLayout::list` and never inside `PeekLayout::peek` — not even to blank it,
+because `draw_peek` runs after the overlays and paints that rect whole. Both of
+X15's owed items are paid: `Space`/`Esc` reach the surface, and the cursor is
+hidden while the board is up.
+
+**The boundary needed one thing X15's table does not have, and it is on this
+side.** `open_peek` and `close_peek` are `async`; the key table is not, because
+`App::handle_input` is synchronous and every other surface in the client decodes
+a read without awaiting. So the board records an *intent* — which pane it wants
+peeked — and **`App::settle_peek`** is the one place that turns it into X15's
+calls, run from `wired.rs` after every read of stdin. Two consequences worth
+knowing:
+
+- **The rebind is the move, one key later.** `Space`, a selection move under an
+  open peek and the `Esc` that closes one all take effect in the same round as
+  the key, before the frame is drawn — but a caller that drives `handle_input`
+  directly (every test in `crates/amx-client/tests/agents.rs`) has to call
+  `settle_peek` itself. It is public and documented for exactly that.
+- **A collapsed row peeks nothing.** `Space` on an `N idle` row has no pane to
+  name, so it asks for none rather than for whichever agent the cursor last
+  passed.
+
+### Divergences from §5
+
+**The suite is two files and a shared harness, for the same reason the module is
+four.** `crates/amx-client/tests/agents.rs` crossed the *hard* budget at 1102
+lines, which `crates/amx/tests/repo.rs`'s module-size check fails on rather than
+warns about; it is now `agents.rs` (what the board shows), `agents_verbs.rs`
+(what it does — the calls, the keys, the peek, the refresh rate) and
+`agents/harness.rs`, shared by `#[path]` the way X09's `attach_pane_swap.rs`
+borrows `wait_retry/harness.rs`. The `#[path]` harness has two readers from the
+day it lands, which is worth knowing before editing it.
+
+**`app/agents.rs` landed as `app/agents/{mod,keys,rows,draw}.rs`.** The four
+come to 1391 lines together, so one file would have been past the *hard* budget
+and not merely the soft one; it was split by responsibility before it landed
+rather than after (R-M1-3, and X07's `config/`
+and X11's `status/` precedents): the state and its lifecycle in `mod.rs`, what
+one key press does in `keys.rs`, the ordering/grouping/collapse in `rows.rs`, the
+paint in `draw.rs`. Nothing outside `app/agents/` knows there are four files.
+
+**Five files outside the entry's list, each one edit, none in another wave-4
+task's scope.**
+
+- `app/mod.rs` — the module declaration, one field, its initializer, one line in
+  `forget_session` and the input routing. X15's note recorded eight lines of
+  headroom before the soft budget; this needed fourteen, so **`app/resize.rs` is
+  new**: `note_resize`, `has_pending_resize`, `settle_resize` and
+  `RESIZE_DEBOUNCE`, the one responsibility in that file that nothing else in it
+  reads. `mod.rs` is 470. `crates/amx-client/tests/modules.rs` asserts the bound
+  and is what caught it.
+- `app/wired.rs` — three edits: a `Wake::Agents` arm on a 250 ms timer gated on
+  the board being open, the refresh on open (the picker's `sync_state` shape),
+  and the `settle_peek` above. The timer is the only clock in that loop and it
+  runs only while the board is up, so a client that never opens it wakes exactly
+  as often as it did before. X11 asked for a tick "anyway for its 4 Hz detail
+  lines"; this is it, and it is scoped to the surface that needs it rather than
+  to the loop.
+- `app/actions.rs` — the two new `Action` arms.
+- `app/status/{mod,clock,line}.rs` — three visibility widenings and two
+  re-exports: `ServerClock`, `push_age` and `push_name` go from `pub(super)` to
+  `pub(in crate::app)`. The board dates its rows against the same estimate the
+  status line does and names an unlabelled workspace the same way; a second copy
+  of either rule is how one surface comes to say `4m` while the other says `3m`
+  about the same wait, which is seam 5's disagreement one file over. No
+  behaviour changed in any of the three.
+- `app/{narrow,status/mod}.rs` — one line each: the two cursor placements ask
+  `App::overlay_open()` instead of `picker.is_some() || copy.is_some()`, which is
+  X15's owed item and removes a predicate that was already duplicated.
+
+**`config/keys.rs` and `input/mod.rs` gained two rows, not one.** X07's hand-off
+("a new prefix binding is a `PrefixAction` plus one row in `SHIPPED` plus one arm
+in `Input::prefix_key`") was followed literally for both the board and X17's
+scoped cycle. The keys are **`g`** for the board and **`A`** for
+`attention-here`; `A` is `a` with shift held, which is the "key neighbouring the
+existing `prefix+a`" X17 asked for. The action is named `attention-here` and not
+`next-attention-here` because `amx keys` pads its action column to the widest
+name and `split-horizontal` (16) is currently that width — a longer name would
+put four columns of trailing space on every shipped table and break
+`crates/amx/tests/keys.rs`, which is X16's file this wave.
+
+**The scoped call is X17's, unchanged.** `Action::AttentionHere` sends
+`NextParams { workspace: self.model.focused_workspace_id() }` from `actions.rs`'s
+*first* group — the verbs that need no focused pane — exactly as X17's hand-off
+specifies, so a client with no workspace focused sends `None` and the server
+reads it as the whole queue.
+
+### Decisions the next waves should not re-litigate
+
+**The picker is the matcher, not the order.** The board uses
+`Picker::matches()` as a *set* and sorts it by urgency itself. A monitor whose
+rows reshuffle by fuzzy score as the user types cannot be read, and D15's
+ordering (blocked-oldest-first → working → idle) is a property of the surface
+rather than of the query. Groups are ordered by their most urgent member, which
+is what keeps "the top row is always who needs me most" true under *workspace*
+grouping as well as state grouping — §5 states the within-group rule and is
+silent on the between-group one, and without it the first group could be a
+project with nothing waiting.
+
+**Collapse yields to a query.** An idle run is only collapsed while the filter is
+empty: typing is already a way of asking for fewer rows, and hiding a match
+behind `12 idle` would answer a different question than the one asked.
+`ctrl+b` needs no such rule — a blocked-only list has no idle rows.
+
+**`ctrl+p` and `ctrl+r` open a line, and that line is the header.** D15 asks to
+prompt and to rename from the board and its fence rejects forms. What landed is
+the header row wearing a different hat for as long as one key press asked it to:
+`prompt api/backend> …`, `Esc` puts the header back, an empty submission is a
+refusal rather than a call. It is not a second dialog type and nothing else can
+be typed into it.
+
+**The board draws full-screen under both projections.** The picker is a chooser
+and can spare its lower rows to the panes; this is a monitor whose value is
+seeing 25 agents at once, and 10 §D14 asks for the same thing from the narrow
+side. Under `Projection::Single` *with a peek open*, X15's layout leaves the list
+zero rows and the board therefore draws nothing at all — including its header.
+That is "peek replaces the list rather than sharing the width" taken literally,
+and it is X15's rule rather than a choice made here.
+
+**`Space` is a key, so a query cannot contain one.** What is matched is
+`workspace/name` and neither half holds a space, so the cost is nil — but a later
+surface that wanted a space in its filter would have to take the peek key
+somewhere else.
+
+### Hand-offs
+
+**X16 — call `App::note_server_clock`'s equivalent, and expect both `reason`
+vocabularies.** The board renders whatever string `reason` carries and switches
+on nothing; X00's wave-2 note records that a hook-asserted block says
+`PermissionRequest` where the design sketch says `permission_dialog`, and a
+renderer with a known set prints nothing for the next rule anybody writes. Ages
+are `now − since` from inside one reply and never against this machine's clock,
+which is what makes a remote `amx agents` as accurate as a local one.
+
+**X18 — the board's detail column is the only place a pane's screen text is
+drawn as text.** Everything else goes through `render::grid::blit`. The column is
+`AgentEntry::last_line`, SGR-stripped by the server, so widening `Attrs` neither
+affects it nor is affected by it.
+
+**X20 — two shipped bindings to document, and one naming rule.** `prefix+g`
+opens the agents view and `prefix+A` cycles the shown workspace's queue; the
+action names in a `[keys] bind` row are `agents` and `attention-here`. The
+vocabulary rule X07 recorded still holds — a bindable key is one byte — so the
+phone profile can move either of these to a key a phone keyboard can emit.
+
+**X00 — seam 5 is closed from this side, and the join has a test after all.**
+The two surfaces share one layout function and one clock, and neither computes
+the other's geometry. The join §7 item 3 names — the board open, `Space` on a row
+whose pane is in a workspace this terminal is not drawing, and that pane's own
+cells arriving — is
+`space_on_a_row_brings_that_panes_own_cells_to_this_client`
+(`crates/amx-client/tests/agents.rs`), over a real socket with a real second
+workspace. It is here rather than in `peek.rs` because the *key* was the missing
+half; X15's suite already proves `open_peek` called directly.
+
+**X00 — the field ledger's X14 rows are read.** `AgentSnapshot::reason` and
+`::since` are rendered per row and dated against `ListReply::now`, all three out
+of `agent.list`. X16 is still owed.
+
+### Smoked against the real binary, and the one thing it found
+
+Green tests are not the exit (§7), and this milestone's own subject is why. The
+board was driven over a real `amx attach` on a pty at 30×110, against a real
+session holding five scripted agents (`tests/support/agent.rs`'s script and its
+registry stanza, planted into an isolated `XDG_*` root) across three labelled
+workspaces, two of them blocked by a real `PermissionRequest` hook. Verbatim:
+
+```
+agents — 5 · ⚑2 · by workspace
+api/api0         ⚑ blocked PermissionRequest 2s   │   (esc to cancel)
+api/api1         ⚑ blocked PermissionRequest 1s   │   (esc to cancel)
+web/web1         · idle                      2s   │ r shortcuts
+web/web0         · idle    prompt_box_idle   1s   │ o interrupt · ← for agents
+docs/docs0       · idle                      2s   │   ⏸ manual mode on · ? for shortcuts
+ [api ⚑2] [docs] [web] [068046f3] ⚑2 api/api0 2s
+```
+
+Read off that rather than argued: the blocked agents sort above the idle ones
+and the project holding them sorts first; `reason` carries **both** vocabularies
+in one session (`PermissionRequest` from the hook, `prompt_box_idle` from the
+manifest rule), exactly as X00's wave-2 note predicted; and the board's `2s` and
+the status line's `2s` for the same head come from the same clock. `ctrl+s`
+regrouped to `by state` and collapsed five idle agents to `5 idle` when they
+were all idle; `ctrl+b` narrowed to the two blocked; typing `api` narrowed
+further; `Space` opened the region; `Esc` closed the peek and then the board;
+`prefix+d` detached with exit 0.
+
+**The one thing it found, and it is not a defect.** A peek of a tall pane looked
+*empty*. It is not: `render::grid::blit` centre-crops content taller than its
+slot (`fit`, X15's rule and the same one a letterboxed pane already follows), and
+a scripted agent paints its dialog at the **bottom** of a 27-row screen after
+scrolling everything else off. The peek's half of a 30-row terminal is 12 rows,
+so the crop showed rows 7–18 — all of them blank, all of them genuinely blank on
+that pane. Verified by `pane read` on the same pane in the same run: 19 empty
+rows, then the dialog. Nothing here is wrong, and the same run showed the cells
+*do* arrive (instrumented once, then removed; the durable form is the join test
+above). It is worth one line somewhere a user reads, because "peek shows
+nothing" is what it looks like: **a peek shorter than the pane shows the pane's
+middle, and an agent's screen is written at its bottom.** Anchoring the crop to
+the bottom for a peek would be a change to `render/grid.rs`, which is **X18**'s
+in wave 5 and X15's rule to amend; raised, not taken.
+
+Two smaller observations from the same run, neither this task's to act on: a
+pane created in a workspace no client is drawing keeps a small default size (25
+columns here, so its own dialog wraps mid-word — X12's "a pane squeezed out of
+visible space keeps its last size", one workspace further out), and `last_line`
+faithfully reports the bottom row of *that* wrapped screen, which is why the
+detail column reads `(esc to cancel)` rather than the whole prompt.

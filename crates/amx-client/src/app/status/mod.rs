@@ -37,7 +37,16 @@ use amx_core::agent::EpochMillis;
 use super::{App, Mode};
 use crate::render::chrome;
 
+/// The clock and the two writers every age and every name in `app/` is rendered
+/// through.
+///
+/// Widened past this module by X14: the agents view dates its rows against the
+/// same estimate and names an unlabelled workspace the same way, and two copies
+/// of either rule is how one surface comes to say `4m` while the other says `3m`
+/// about the same wait — which is the disagreement seam 5 exists to catch.
+pub(in crate::app) use clock::{ServerClock, push_age};
 pub(super) use line::StatusLine;
+pub(in crate::app) use line::push_name;
 
 impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// Refresh the cached status line and draw it across the bottom row.
@@ -89,7 +98,7 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     /// Park the terminal cursor on the focused pane's cursor cell, when it is
     /// visible; hide it otherwise so chrome never shows a stray block.
     pub(super) fn place_cursor(&mut self) {
-        if self.picker.is_some() || self.copy.is_some() {
+        if self.overlay_open() {
             self.writer.set_cursor_visible(false);
             return;
         }

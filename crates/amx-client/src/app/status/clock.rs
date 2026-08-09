@@ -30,7 +30,7 @@ use amx_core::agent::EpochMillis;
 
 /// The client's own estimate of the server's wall clock.
 #[derive(Debug, Default)]
-pub(super) struct ServerClock {
+pub(in crate::app) struct ServerClock {
     /// The newest server instant this client has been told about, and the local
     /// monotonic instant it was read at.
     anchor: Option<(EpochMillis, Instant)>,
@@ -51,14 +51,14 @@ impl ServerClock {
     /// reached it by the time the value arrived — so the useful anchor is the
     /// highest bound seen, and a stamp replayed out of an event ring after a
     /// gap is one this estimate has already passed.
-    pub(super) fn observe_at(&mut self, stamp: EpochMillis, at: Instant) {
+    pub(in crate::app) fn observe_at(&mut self, stamp: EpochMillis, at: Instant) {
         if self.read_at(at).is_none_or(|now| stamp > now) {
             self.anchor = Some((stamp, at));
         }
     }
 
     /// How long ago `since` was, in milliseconds, if this clock is anchored.
-    pub(super) fn age_at(&self, since: EpochMillis, at: Instant) -> Option<u64> {
+    pub(in crate::app) fn age_at(&self, since: EpochMillis, at: Instant) -> Option<u64> {
         Some(self.read_at(at)?.saturating_sub(since))
     }
 }
@@ -68,7 +68,7 @@ impl ServerClock {
 /// One unit and no fractions. The question the line answers is "who has waited
 /// longest", and a second digit of precision on a four-minute wait is width
 /// spent on nothing.
-pub(super) fn push_age(out: &mut String, ms: u64) {
+pub(in crate::app) fn push_age(out: &mut String, ms: u64) {
     const MINUTE: u64 = 60;
     const HOUR: u64 = 60 * MINUTE;
     const DAY: u64 = 24 * HOUR;

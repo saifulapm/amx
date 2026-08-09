@@ -15,6 +15,27 @@
 //! and tighter matches rank first, ties keep source order — because a picker
 //! driven by a few typed characters needs predictability more than
 //! cleverness.
+//!
+//! # The one extension: a second column
+//!
+//! `docs/10-attention-surfaces.md` §D15 licenses exactly one addition to this
+//! primitive — "entries may carry a live detail line" — and that sentence is
+//! the whole of it. An entry may carry a *detail*: a second string beside its
+//! label, replaceable without disturbing the query, the match set or anything
+//! the caller has selected. Two rules keep it from becoming a second dialog
+//! type:
+//!
+//! - **The detail is never matched.** [`score`] reads the label and nothing
+//!   else, so typing filters on what the row *is* and never on what it is
+//!   currently saying. A detail that participated in the match would be a
+//!   filter syntax nobody wrote down, which D15 rejects by name.
+//! - **The detail is not the picker's business to draw.** It is held here so
+//!   one surface can refresh every entry's second column in one call; where
+//!   the column goes, how wide it is and what it says are the caller's.
+//!
+//! Its reader is the agents view (`crate::app::agents`), whose detail is the
+//! agent's last screen line as `agent.list` reports it, refreshed at up to
+//! 4 Hz while the list itself sits still.
 
 /// `Esc`.
 const ESC: u8 = 0x1b;
@@ -40,12 +61,26 @@ pub enum PickerEvent {
 pub struct Picker {
     /// The labels, in the order the source produced them.
     items: Vec<String>,
+    /// One optional second column per item, same order and same length.
+    ///
+    /// Empty until a caller sets one, which is what makes the extension free
+    /// for the sources that do not want it: every picker in the tree but the
+    /// agents view holds an empty `Vec` here and nothing about it changes.
+    details: Vec<String>,
     /// The typed filter.
     query: String,
     /// Indices into `items` that match `query`, best first.
     matches: Vec<usize>,
     /// Position in `matches` the selection is on.
     selected: usize,
+}
+
+/// A picker over nothing, which is what a surface holds before its source has
+/// answered.
+impl Default for Picker {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
 }
 
 impl Picker {
@@ -56,6 +91,7 @@ impl Picker {
         let matches = (0..items.len()).collect();
         Self {
             items,
+            details: Vec::new(),
             query: String::new(),
             matches,
             selected: 0,
@@ -66,6 +102,26 @@ impl Picker {
     #[must_use]
     pub fn items(&self) -> &[String] {
         &self.items
+    }
+
+    /// Replace every entry's second column, leaving the query, the match set
+    /// and the selection exactly where they were.
+    ///
+    /// The whole point of the extension: a live detail line is refreshed on a
+    /// cadence of its own while the user is typing into the list it belongs to,
+    /// and a refresh that rebuilt the picker would throw the query away four
+    /// times a second. Extra details are dropped and missing ones read as
+    /// absent, so a caller whose row count changed under it cannot desynchronise
+    /// the two lists — it gets a stale-but-aligned column until it rebuilds.
+    pub fn set_details(&mut self, details: Vec<String>) {
+        self.details = details;
+        self.details.truncate(self.items.len());
+    }
+
+    /// The second column of the item at `index`, if it has one.
+    #[must_use]
+    pub fn detail(&self, index: usize) -> Option<&str> {
+        self.details.get(index).map(String::as_str)
     }
 
     /// The current query.

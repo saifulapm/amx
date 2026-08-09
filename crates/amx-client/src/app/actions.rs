@@ -51,15 +51,23 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 return Effect::Nothing;
             }
             Action::Picker => return self.open_picker(),
+            Action::Agents => return self.open_agents(),
             // Focus moves server-side and comes back as `FocusChanged`, which
             // `app::events` folds — the same path every other client's focus
             // change reaches this one by. Nothing is moved locally here.
-            Action::NextAttention => {
+            //
+            // Two keys, one call. `prefix+a` walks the whole queue and
+            // `prefix+A` walks this project's end of it; the queue itself is
+            // global and block-time ordered either way, and a scoped call never
+            // reorders it (X17). A client with no workspace focused sends
+            // `None`, which the server already reads as the whole queue — so the
+            // scoped key degrades to the unscoped one rather than to nothing.
+            Action::NextAttention | Action::AttentionHere => {
+                let workspace = (action == Action::AttentionHere)
+                    .then(|| self.model.focused_workspace_id())
+                    .flatten();
                 sink(InputEvent::Call(Call::AgentNext(
-                    // Unscoped: the prefix key cycles the whole queue, and the
-                    // workspace-scoped variant D15 asks for is a neighbouring
-                    // key X14 binds (X17 reads the scope server-side).
-                    amx_proto::control::agent::NextParams { workspace: None },
+                    amx_proto::control::agent::NextParams { workspace },
                 )));
                 return Effect::Nothing;
             }
@@ -166,7 +174,11 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
                 Effect::Nothing
             }
             // Handled above, before the focused-pane requirement.
-            Action::Detach | Action::Picker | Action::NextAttention => Effect::Nothing,
+            Action::Detach
+            | Action::Picker
+            | Action::Agents
+            | Action::NextAttention
+            | Action::AttentionHere => Effect::Nothing,
             // Interim numbering until short numbers reach the client: n-th
             // pane in layout order. Local-only — `pane.focus` speaks
             // directions, and a direct set-focus core op does not exist yet.
