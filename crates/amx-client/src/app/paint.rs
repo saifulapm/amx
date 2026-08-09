@@ -48,12 +48,28 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
 
     /// Whether this terminal is drawing `pane`.
     ///
+    /// The projection's answer, widened by the one surface that draws a pane the
+    /// projection does not: D15's peek binds a pane outside the focused
+    /// workspace on purpose, so its keyframe and every delta after it fold as
+    /// damage to a pane [`Self::projects`] says no to, and the region would stay
+    /// blank rather than repaint (X09's hand-off to X15).
+    fn showing(&self, pane: PaneId) -> bool {
+        self.peeked() == Some(pane) || self.projects(pane)
+    }
+
+    /// Whether this client's *projection* draws `pane` — [`Self::showing`]
+    /// without the peek.
+    ///
     /// Under [`Projection::Single`] that is one pane and not the workspace's
     /// whole layout: the grid streams for the panes D14 does not draw stay
     /// bound ([`super::narrow`]'s header says why), so on the phone that
     /// projection exists for, a flooding agent in a pane nobody is looking at
     /// would otherwise repaint the screen at its own rate.
-    fn showing(&self, pane: PaneId) -> bool {
+    ///
+    /// Separate from `showing` because the peek needs the narrower question
+    /// too: a stream it owns for a pane the projection has since taken over
+    /// must not be paused when the peek closes ([`super::peek`]).
+    pub(super) fn projects(&self, pane: PaneId) -> bool {
         match self.projection() {
             Projection::Single(shown) => shown == pane,
             Projection::Tiled => self
@@ -107,6 +123,11 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             }
         }
         self.draw_overlays();
+        // After the overlays and before the chrome: the peek is a region the
+        // agents view reserved out of the same content area it draws its list
+        // in ([`super::peek`]), so it goes over whatever that list drew and
+        // never over the status line.
+        self.draw_peek();
         self.draw_status();
         match projection {
             Projection::Single(pane) => self.place_cursor_full_bleed(pane),

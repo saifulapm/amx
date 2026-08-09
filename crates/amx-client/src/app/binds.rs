@@ -71,6 +71,13 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
             .unwrap_or_default();
         for pane in visible {
             if self.bindings.has_grid(pane) {
+                // Bound is not the same as being sent on. A peek that was closed
+                // released its stream by pausing it, and a pane that has since
+                // come on screen has to be given it back — the table says it is
+                // bound, so nothing here would ever bind it again
+                // ([`super::peek`]). A no-op for every pane no peek ever owned,
+                // which is every pane on a client that has not opened the view.
+                self.resume_peek_stream(pane).await?;
                 continue;
             }
             // Presented on the call rather than left to the hello's block,
@@ -110,7 +117,11 @@ impl<Fd: AsFd, W: Write> App<Fd, W> {
     ///
     /// `Ok(None)` when the server refuses the bind itself (the pane died
     /// between the state snapshot and now) — a race, not a failure.
-    async fn bind_at(
+    ///
+    /// Reachable from [`super::peek`], which binds a grid stream for a pane
+    /// outside the projection and needs the reply's `stream` as well as its
+    /// channel: a flow signal names the stream, not the channel it rides.
+    pub(super) async fn bind_at(
         &mut self,
         kind: StreamKind,
         generation: Option<GridGeneration>,

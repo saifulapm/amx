@@ -41,6 +41,41 @@ pub fn blit(writer: &mut FrameWriter, grid: &PaneGrid, target: Rect) {
     }
 }
 
+/// Paint `target` blank, with `text` centered on its middle row.
+///
+/// What a slot shows when there is no grid to blit into it. D15's peek region
+/// has two such cases and they are not the same fact: a pane the session no
+/// longer holds, which is told (`text`), and a pane whose first keyframe is
+/// still a round trip away, which is not (`text` empty) — a message that
+/// flashed for one frame every time a peek opened would call every healthy
+/// agent dead.
+///
+/// The region is repainted whole either way, for [`blit`]'s own reason: a slot
+/// that stopped being drawn would leave the previous frame's cells under it.
+/// A `text` wider than `target` is clipped rather than wrapped — this is a slot,
+/// not a paragraph.
+pub fn blit_absent(writer: &mut FrameWriter, target: Rect, text: &str) {
+    let label = text.chars().take(usize::from(target.w)).collect::<Vec<_>>();
+    let width = u16::try_from(label.len()).unwrap_or(target.w);
+    let row = target.h / 2;
+    let pad = (target.w - width) / 2;
+    let blank = Cell::default();
+
+    for line in 0..target.h {
+        writer.move_to(target.y + line, target.x);
+        for col in 0..target.w {
+            let at = (line == row && col >= pad).then(|| label.get(usize::from(col - pad)));
+            match at.flatten() {
+                Some(&ch) => writer.write_cell(&Cell {
+                    ch,
+                    ..Cell::default()
+                }),
+                None => writer.write_cell(&blank),
+            }
+        }
+    }
+}
+
 /// How much of `content` fits in `avail`, where in `avail` it starts, and
 /// where in `content` it starts reading from.
 ///

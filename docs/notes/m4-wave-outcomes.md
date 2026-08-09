@@ -1765,3 +1765,159 @@ and X01's own entry in this file says X13 does not merge before that heading
 exists. X13 is building against the outcome-(c) fallback, which is the right
 answer to a gate nobody can open today. Carried into wave 3's boundary as the
 one thing this owner is holding that no test can close.
+
+---
+## X15 — the peek region
+
+### Seam 5, defined here because X14 had not merged
+
+§6 gives the region to two tasks — "X14 reserves the region, X15 fills it" —
+and there was nothing to take the boundary from: as this landed X14 had no
+commit in `main` and none on `worktree-x14-agents-view` either
+(`git log main..worktree-x14-agents-view` is empty), and
+`crates/amx-client/src/app/agents.rs` does not exist. So there is no reserved
+region to fill and no shape to match. Rather than guess one, X15 **defines the
+split and exports it**:
+`App::peek_layout() -> PeekLayout { list, peek: Option<Rect> }`, computed once
+from the content area and the projection, so the two surfaces cannot disagree
+about the seam between them. It answers `list = content, peek = None` when no
+peek is open, which is exactly what a view that never opens one wants.
+
+**What X14 calls, exactly.** Four public methods on `App`, all in
+`amx-client/src/app/peek.rs`:
+
+| Call | When |
+|---|---|
+| `open_peek(pane).await -> Effect` | `Space`, and again on every selection move — it *is* the move |
+| `close_peek().await -> Effect` | `Esc` with a peek open (D15: Esc closes the peek, else the view) |
+| `peeked() -> Option<PaneId>` | whether the region is open |
+| `peek_layout() -> PeekLayout` | how many rows the list has, before drawing it |
+
+Both mutating calls are `async` because they cross the socket, and both return
+the `Effect` the caller absorbs (X09's rule: a surface that changes the screen
+says so). Drawing is not X14's: `paint::repaint` calls `draw_peek` after
+`draw_overlays`, so the view draws its list into `PeekLayout::list` and the peek
+paints its own region over whatever is under it.
+
+**Two things X14 owes that X15 could not do.** The key is one of them: `Space`
+and `Esc` reach the view through `input/mod.rs` and `app/overlay.rs`, both
+X14's this wave, so **nothing in the shipped binary opens a peek yet**. That is
+the plan's own shape rather than a divergence — §6 says the view is the surface
+the peek hangs off — but it is D-M4-1's failure mode until X14 lands, and X00's
+seam 5 is where it stops being one. The other is the cursor: the picker hides it
+while it is open (`narrow::place_cursor_full_bleed`, `status::place_cursor`) and
+the agents view should do the same, or a cursor parked on a focused pane will
+land inside a read-only region.
+
+### The release, and what is proven where
+
+The plan's entry says "closing the peek releases the stream and the pane stops
+costing this client traffic". **There is no `stream.unbind` on the wire** —
+bindings are per connection and die with it
+(`amx-server/src/conn/streams.rs:17-21`), and the method table has `stream.bind`
+and no counterpart (`amx-proto/src/control/mod.rs`). The release is therefore
+`FlowControl::Pause`, which is what that signal was defined for, and it needs no
+server change: `ConnStreams::control` routes it and `GridStream::control` sets
+`paused`, after which `flush` sends nothing and damage accumulates into the
+per-client dirty set (`amx-server/src/damage/stream.rs:319`,
+`amx-server/src/damage/mod.rs:181-182`).
+
+**A re-peek resumes rather than re-binds.** Channels are a byte wide and are
+never reused on a connection, so releasing by burning the channel would make
+walking a list of 25 agents cost 25 channels. What a connection holds is
+therefore one bound stream per pane it has *ever* peeked, at most one of them
+live. Recorded as the bound it is: a client that peeked 255 distinct panes on
+one connection would exhaust the channel space and `stream.bind` would refuse
+with the message it already has. Nobody has watched that happen and no test
+forces it.
+
+**What is proven, and where — this is the one claim worth reading carefully.**
+
+- *That the client releases* — `crates/amx-client/tests/peek.rs`'s
+  `moving_the_selection_moves_the_stream_rather_than_accumulating_them`, over a
+  real socket with three real panes in three workspaces. It reads `[a]`, `[b]`,
+  `[c]`, `[a]`, `[]`; without the release it reads `[a]`, `[a,b]`, `[a,b,c]`.
+- *That the signal is the one the server reads* — an inline test on the pure
+  builder in `app/peek.rs`: method `stream.flow`, params that decode back into
+  the same `FlowControl` variant naming the same stream. Inline because it is a
+  pure helper (HACKING.md's rule) and because a notification has no reply for a
+  wrong one to fail on.
+- *That the server honours it* — already pinned, in
+  `crates/amx-server/tests/flow_control.rs`
+  (`a_paused_stream_with_pending_damage_sleeps_until_a_flow_signal`, and the
+  pause arm of `resync_request_emits_a_keyframe`, which pauses, damages the
+  pane, and asserts the stream sends nothing and keeps the damage).
+- *That a flow signal from this client crosses the wire and moves the stream* —
+  `a_released_stream_comes_back_when_its_pane_comes_on_screen` waits for a
+  resize to arrive on a stream that was released and then resumed. A resume that
+  never reached the server hangs there and the test fails on its deadline.
+
+**What is not proven, stated rather than implied:** no test asserts that a
+*paused* stream sends nothing to *this* client. Everything available to assert
+it is a negative over a wall clock — "no frame arrived within N" — which is the
+shape X04 spent a whole task removing from four tests, and which fails in the
+wrong direction: under load a live stream is also quiet, so the test would go
+green on a broken release. The two halves are pinned where each can be, and the
+join is X00's smoke to see.
+
+### Edits outside the entry's file list
+
+§5 scopes X15 to `app/peek.rs`, `app/binds.rs`, `render/grid.rs` and client
+tests. Four more files, each named because none is in that list and none is in
+another wave-4 task's (X14: `app/agents.rs`, `app/overlay.rs`, `picker.rs`,
+`input/mod.rs`; X16: `crates/amx/**`).
+
+- **`amx-client/src/app/paint.rs`** — `showing` gains the peek arm and the
+  `draw_peek` call. Both were handed here in advance: X09's "the peek will not
+  paint until it widens `App::showing`" and X12's "what X15 does owe is
+  `showing`: it now has two arms to widen, not one". It is one early return
+  rather than two arms — `self.peeked() == Some(pane) || self.projects(pane)` —
+  because the peek is drawn under both projections and the projection's own
+  answer is the same question either way. `projects` is the old body, now
+  `pub(super)`, because the peek needs the narrower question too: a stream it
+  owns for a pane the projection has since taken over must not be paused when
+  the peek closes. X12 split this file out of `app/mod.rs` in wave 3 and no
+  wave-4 task lists it.
+- **`amx-client/src/app/mod.rs`** — the two fields, the module declaration, and
+  one line in `forget_session`. X12's this wave and nobody's in wave 4. It is
+  492 lines after this: **eight lines of headroom before the soft budget**, which
+  is worth knowing for whoever adds the next field.
+- **`amx-client/src/net/mod.rs`** — `Session::notify`. There was no way to write
+  a control frame without waiting for a reply, and a notification has none.
+  X09's in wave 2 and nobody's in wave 4; it is its own commit.
+- **`crates/amx-client/tests/peek.rs`, `peek_render.rs`** — two files rather than
+  one, split by responsibility rather than by size: everything in the first
+  drives a real socket and nothing in the second does. The second fabricates its
+  cells into the client's mirror, the shape `tests/letterbox.rs` established,
+  because a shell's prompt is not a fact about amx.
+
+### Notes for the tasks that meet this
+
+**X18 — the peek and a focused pane already render identically, by
+construction.** Both go through `render::grid::blit`, and the peek's region is
+`pane_interior` of its rect exactly as a pane's is, so X18's "a peeked pane and
+a focused pane render the same cells identically" needs nothing from this
+surface beyond not forking it. `render/grid.rs` gained one function,
+`blit_absent`, which paints a slot that has no grid — X18 owns that file in wave
+5.
+
+**X14 and X16 — `App::note_server_clock` is still owed a real `now`.** X11's
+hand-off asks whoever lands an `agent.list` reply to call it with
+`ListReply::now`. The peek makes no `agent.list` call of its own — it is handed
+a pane id — so this is untouched and still X14's and X16's.
+
+**X08's fold is still unwritten.** X08 handed "the client's committed head only
+moves on a `session.state` resync" to whoever owns `app/events.rs`, naming X09
+"and X15's neighbourhood after that". X15 does not own that file and its own
+surface does not read the scrollback cache — the peek draws the *live* grid, not
+history — so the fold is not taken here and is still owed. It is a copy-mode
+correctness gap, not a peek one.
+
+**A peeked pane whose workspace this client never mirrors has no cells and no
+label.** The peek asks the mirror for the pane's grid and, for the "pane closed"
+case, whether any mirrored layout still holds it. A client whose
+`session.state` fold is stale therefore shows an empty region for a live pane
+until the next resync, and the bind is what makes cells arrive regardless. It
+converges and never lies; no label is drawn in the region at all, deliberately,
+because the row the user selected in X14's list already names the agent and two
+spellings of one identity is the seam-5 disagreement in miniature.
