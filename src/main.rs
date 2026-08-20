@@ -10,6 +10,8 @@ mod exit;
 mod ids;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod paths;
+#[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
+mod tmux;
 
 use clap::Parser;
 use std::process::ExitCode;
