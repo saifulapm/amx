@@ -22,6 +22,7 @@ mod spawn;
 mod store;
 #[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod tmux;
+mod tui;
 mod verbs;
 mod worktree;
 

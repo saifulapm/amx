@@ -12,13 +12,13 @@
 //! makes whether that is before the cockpit or long after it.
 
 use anyhow::{Context, Result};
-use std::io::{BufRead, IsTerminal, Write};
+use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::spawn::{self, PRIVATE};
 use crate::store::now;
 use crate::tmux::{Server, SessionId, Spawn, WindowId};
-use crate::{exit, paths, verbs};
+use crate::{exit, paths, tui, verbs};
 
 /// The window the view lives in.
 pub const VIEW: &str = "amx-view";
@@ -53,29 +53,10 @@ pub fn from_env() -> Result<i32> {
 
     match door(std::io::stdout().is_terminal(), inside.as_deref()) {
         Door::Table => verbs::ls::run(&root, false, now(), &mut std::io::stdout().lock()),
-        Door::View => view(
-            &root,
-            &mut std::io::stdout().lock(),
-            &mut std::io::stdin().lock(),
-        ),
+        Door::View => tui::run(&root),
         // The view's pane runs amx again, and lands on the door above: inside
         // tmux by then, because that is what the room is made of.
         Door::Cockpit => open(&root, &std::env::current_exe().context("finding amx")?),
-    }
-}
-
-/// The view: what every agent is doing, in the terminal that asked.
-fn view(root: &Path, out: &mut impl Write, typed: &mut impl BufRead) -> Result<i32> {
-    loop {
-        verbs::ls::run(root, false, now(), out)?;
-        writeln!(out, "\nenter to look again, q to close")?;
-        out.flush()?;
-
-        let mut line = String::new();
-        // Nobody there to type: what was read once is the whole answer.
-        if typed.read_line(&mut line)? == 0 || line.trim() == "q" {
-            return Ok(exit::OK);
-        }
     }
 }
 
@@ -159,8 +140,6 @@ fn attach(server: &Server, session: &SessionId) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
-    use tempfile::TempDir;
 
     #[test]
     fn cockpit_the_door_is_chosen_by_where_the_command_was_typed() {
@@ -179,34 +158,5 @@ mod tests {
         // behind empty.
         assert_eq!(door(true, None), Door::Cockpit);
         assert_eq!(door(true, Some("")), Door::Cockpit);
-    }
-
-    #[test]
-    fn cockpit_the_view_stays_until_the_person_is_done_with_it() {
-        let root = TempDir::new().unwrap();
-        let mut out = Vec::new();
-        // A look, another look, and then away.
-        let mut typed = Cursor::new(b"\nq\n".to_vec());
-
-        assert_eq!(view(root.path(), &mut out, &mut typed).unwrap(), exit::OK);
-        let printed = String::from_utf8(out).unwrap();
-        assert_eq!(printed.matches("no agents").count(), 2, "{printed}");
-        assert!(printed.contains("q to close"), "{printed}");
-    }
-
-    #[test]
-    fn cockpit_the_view_ends_when_there_is_nobody_to_type() {
-        let root = TempDir::new().unwrap();
-        let mut out = Vec::new();
-
-        assert_eq!(
-            view(root.path(), &mut out, &mut Cursor::new(Vec::new())).unwrap(),
-            exit::OK
-        );
-        assert_eq!(
-            String::from_utf8(out).unwrap().matches("no agents").count(),
-            1,
-            "the answer was read once, not asked for again"
-        );
     }
 }

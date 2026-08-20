@@ -1,0 +1,9 @@
+# A turn that is still running, with the line the vendor spins while it works.
+# The hooks go quiet inside a turn, so this is what the screen has to say for
+# itself once they have.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "port the importer"}
+print I'll port the importer.
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+print ✽ Porting… (15s · still thinking with xhigh effort)
+sleep 600000
