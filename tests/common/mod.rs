@@ -191,6 +191,20 @@ impl Harness {
         read(&self.agent_dir(id).join("state.json")).unwrap_or_else(|| json!({}))
     }
 
+    /// Put the record where the test needs it — an agent that has not been
+    /// heard from for an hour, without an hour of waiting.
+    pub fn set_state(&self, id: &str, state: Value) {
+        write(&self.agent_dir(id).join("state.json"), &state);
+    }
+
+    /// The pane the record names.
+    pub fn pane_of(&self, id: &str) -> String {
+        self.meta(id)["pane"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no pane recorded for {id}"))
+            .to_string()
+    }
+
     pub fn meta(&self, id: &str) -> Value {
         read(&self.agent_dir(id).join("meta.json")).unwrap_or_else(|| json!({}))
     }

@@ -1,0 +1,7 @@
+# A pane with nothing on it that amx knows how to read: the vendor exited and
+# left a shell, or something else entirely is running there. No rule claims
+# this screen, and `unknown` is the honest answer.
+print $ ls
+print Cargo.toml  README.md  src  tests
+print $
+sleep 600000

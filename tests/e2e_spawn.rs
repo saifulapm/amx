@@ -398,6 +398,23 @@ fn vendor_arguments_reach_the_vendor_untouched() {
 }
 
 #[test]
+fn a_directory_that_is_not_there_is_said_so_before_anything_is_made() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let refused = new(
+        &amx,
+        "happy-turn",
+        &["--dir", "/nowhere/at/all", "--agent", &mock, "fix it"],
+    );
+
+    assert!(!refused.status.success());
+    assert!(
+        !amx.state_root().exists() || amx.state_root().read_dir().unwrap().next().is_none(),
+        "a dispatch that failed leaves no half-made agent behind"
+    );
+}
+
+#[test]
 fn attach_says_so_when_there_is_no_such_agent() {
     let amx = Harness::new();
     let out = amx.amx(&["attach", "never-made-abc"]);

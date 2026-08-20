@@ -1,5 +1,7 @@
 mod cli;
 mod config;
+mod derive;
+mod gc;
 
 // The verbs are stubs, so outside their own tests parts of these have no
 // caller yet. `expect` rather than `allow`: the day every item is reached, the
@@ -56,6 +58,8 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Hook) => hook::from_env(&mut std::io::stdin().lock(), config),
         Some(cli::Command::Exit { id, code }) => hook::exited_from_env(id, *code, config),
         Some(cli::Command::New(args)) => finish(verbs::new::from_env(config, args)),
+        Some(cli::Command::Ls { json }) => finish(verbs::ls::from_env(*json)),
+        Some(cli::Command::Status { id, json }) => finish(verbs::status::from_env(id, *json)),
         Some(cli::Command::Attach { id }) => finish(verbs::attach::from_env(id)),
         Some(cli::Command::Boot { id }) => finish(spawn::boot_from_env(id)),
         Some(cli::Command::Doctor { fix }) => finish(verbs::doctor::from_env(config, *fix)),
@@ -107,7 +111,9 @@ mod tests {
 
     #[test]
     fn a_stub_run_fails_rather_than_reporting_success() {
-        let cli = cli::Cli::try_parse_from(["amx", "ls"]).unwrap();
+        // A verb with nothing behind it yet, and one that reads nothing while
+        // it says so.
+        let cli = cli::Cli::try_parse_from(["amx", "diff", "fix-login-a1b"]).unwrap();
         assert_eq!(run(&cli, &config::Config::default()), exit::FAILURE);
     }
 }
