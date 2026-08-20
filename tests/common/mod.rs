@@ -74,8 +74,39 @@ impl Harness {
         command
             .args(args)
             .env("AMX_STATE_DIR", self.state.path())
-            .env("HOME", self.home.path());
+            .env("HOME", self.home.path())
+            // A machine with XDG_CONFIG_HOME set would otherwise hand the test
+            // the developer's own config, however carefully HOME was pinned.
+            .env("XDG_CONFIG_HOME", self.home.path().join(".config"))
+            // amx's own tmux server, pinned to this harness: a test must not
+            // reach the developer's agents, and must not be reached by them.
+            .env("AMX_TMUX_SOCKET", &self.socket)
+            // Whether the suite itself is being run from inside tmux is not a
+            // test's business; the tests that care say so themselves.
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE");
         command
+    }
+
+    /// The environment a person who is already inside tmux would have.
+    pub fn inside_tmux(&self) -> Vec<(String, String)> {
+        let pane = self.tmux(&[
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "--",
+            "sh",
+            "-c",
+            "while :; do sleep 0.05; done",
+        ]);
+        let socket = self.tmux(&["display-message", "-p", "-t", &pane, "#{socket_path}"]);
+        let pid = self.tmux(&["display-message", "-p", "-t", &pane, "#{pid}"]);
+        vec![
+            ("TMUX".to_string(), format!("{socket},{pid},0")),
+            ("TMUX_PANE".to_string(), pane),
+        ]
     }
 
     // ── tmux ─────────────────────────────────────────────────────────────────
@@ -162,6 +193,60 @@ impl Harness {
 
     pub fn meta(&self, id: &str) -> Value {
         read(&self.agent_dir(id).join("meta.json")).unwrap_or_else(|| json!({}))
+    }
+
+    /// What the pane was handed at birth: its environment, its command, and
+    /// the task.
+    pub fn handoff(&self, id: &str) -> Value {
+        read(&self.agent_dir(id).join("handoff.json"))
+            .unwrap_or_else(|| panic!("no handoff for {id}"))
+    }
+
+    /// Write this harness's config file.
+    pub fn config(&self, text: &str) {
+        let path = self.home.path().join(".config/amx/config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("the config directory");
+        std::fs::write(&path, text).expect("writing the config");
+    }
+
+    /// A git repository with one commit in it, for the agents that want a
+    /// worktree.
+    pub fn a_repo(&self) -> PathBuf {
+        let repo = self.home.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("the repository");
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .env("GIT_AUTHOR_NAME", "amx tests")
+                .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
+                .env("GIT_COMMITTER_NAME", "amx tests")
+                .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
+                .output()
+                .expect("running git");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.name", "amx tests"]);
+        git(&["config", "user.email", "tests@example.invalid"]);
+        std::fs::write(repo.join("README.md"), "before\n").expect("a file to commit");
+        git(&["add", "README.md"]);
+        git(&["commit", "-m", "first"]);
+        repo
+    }
+
+    /// The vendor's stand-in, as a command line.
+    pub fn mock(&self) -> String {
+        fixtures()
+            .join("mock-claude")
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// Everything that has happened to the agent, oldest first.

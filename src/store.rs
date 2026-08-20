@@ -204,7 +204,10 @@ impl Agent {
     /// Make the directory and write the opening record.
     pub fn create(root: &Path, meta: &Meta) -> Result<Agent> {
         let dir = crate::paths::agent_dir_in(root, &meta.id)?;
-        if dir.exists() {
+        // The record is the document, not the directory: `new` makes the
+        // directory first, puts the pane's handoff in it, and only writes the
+        // record once there is a pane to record.
+        if dir.join(META).exists() {
             bail!("agent `{}` already has a record", meta.id);
         }
         // A task and the answers to it are the owner's business alone.
@@ -467,6 +470,26 @@ mod tests {
         assert_eq!(reopened.meta().unwrap(), written);
         assert_eq!(reopened.state().unwrap().state, Phase::Starting);
         assert!(reopened.events().unwrap().is_empty());
+    }
+
+    #[test]
+    fn store_writes_a_record_into_a_directory_that_is_waiting_for_it() {
+        // Spawning makes the directory before there is anything to record in
+        // it, so a directory is not a record and does not stand in for one.
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join("fix-login-a1b");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("handoff.json"), "{}").unwrap();
+
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        assert_eq!(agent.meta().unwrap().task, "fix the login bug");
+        assert!(
+            dir.join("handoff.json").exists(),
+            "and nothing was swept up"
+        );
+
+        // Twice is a mistake worth naming.
+        assert!(Agent::create(root.path(), &meta("fix-login-a1b")).is_err());
     }
 
     #[test]

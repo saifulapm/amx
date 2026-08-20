@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use std::io::Write;
 use std::path::Path;
 
-use crate::{exit, install, paths, store, tmux};
+use crate::{exit, install, paths, store};
 
 /// Run the verb against the machine's own paths.
 pub fn from_env() -> Result<i32> {
@@ -21,7 +21,7 @@ pub fn from_env() -> Result<i32> {
 
 /// Run the verb, with everything it touches named.
 pub fn run(state_root: &Path, settings: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
-    let live = running(state_root)?;
+    let live = crate::spawn::live(state_root)?;
     if !live.is_empty() {
         writeln!(
             out,
@@ -44,24 +44,6 @@ pub fn run(state_root: &Path, settings: &Path, now: u64, out: &mut impl Write) -
         writeln!(out, "removed {}", state_root.display())?;
     }
     Ok(exit::OK)
-}
-
-/// The agents that are still going: their record says they have not finished,
-/// and their pane is still there on the server it was recorded on.
-fn running(state_root: &Path) -> Result<Vec<String>> {
-    let mut live = Vec::new();
-    for id in store::list(state_root)? {
-        let agent = store::Agent::open(state_root, &id)?;
-        if agent.state()?.state.is_terminal() {
-            continue;
-        }
-        let meta = agent.meta()?;
-        if tmux::Server::from_socket(meta.socket).pane_alive(&meta.pane) {
-            live.push(id);
-        }
-    }
-    live.sort();
-    Ok(live)
 }
 
 #[cfg(test)]

@@ -7,7 +7,6 @@ mod config;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod exit;
 mod hook;
-#[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod ids;
 mod install;
 mod notify;
@@ -15,6 +14,7 @@ mod notify;
 mod paths;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod rules;
+mod spawn;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod store;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
@@ -55,6 +55,9 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
     match &cli.command {
         Some(cli::Command::Hook) => hook::from_env(&mut std::io::stdin().lock(), config),
         Some(cli::Command::Exit { id, code }) => hook::exited_from_env(id, *code, config),
+        Some(cli::Command::New(args)) => finish(verbs::new::from_env(config, args)),
+        Some(cli::Command::Attach { id }) => finish(verbs::attach::from_env(id)),
+        Some(cli::Command::Boot { id }) => finish(spawn::boot_from_env(id)),
         Some(cli::Command::Doctor { fix }) => finish(verbs::doctor::from_env(config, *fix)),
         Some(cli::Command::Uninstall) => finish(verbs::uninstall::from_env()),
         _ => {
