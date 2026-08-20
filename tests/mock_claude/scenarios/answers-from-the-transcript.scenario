@@ -1,0 +1,10 @@
+# A turn whose Stop hook carries no answer — the vendor does that when the
+# turn ended in a way it has nothing to summarise. The answer is then in the
+# transcript, which is the second place amx looks.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "summarise the change"}
+transcript {"type":"user","timestamp":"@NOW@","message":{"content":"summarise the change"}}
+transcript {"type":"assistant","timestamp":"@NOW@","sessionId":"@SESSION@","message":{"content":[{"type":"text","text":"the importer now retries"}]}}
+hook Stop {"stop_hook_active": false}
+print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+sleep 600000

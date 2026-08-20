@@ -1,0 +1,15 @@
+# An agent that stops on a permission question and waits to be answered.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "remove the build directory"}
+sleep 50
+hook Notification {"message": "Claude needs your permission to use Bash"}
+# The permission box, as a live claude draws it: a full-width rule with the
+# request under it, and no mode footer anywhere beneath.
+print ────────────────────────────────────────────────
+print  Bash command
+print    rm -rf build
+print  Do you want to proceed?
+print  ❯ 1. Yes
+print    2. No
+print  Esc to cancel · Tab to amend · ctrl+e to explain
+sleep 600000

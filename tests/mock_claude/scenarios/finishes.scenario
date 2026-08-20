@@ -1,0 +1,7 @@
+# An agent that answers and then ends of its own accord.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "say hello"}
+print hello
+hook Stop {"last_assistant_message": "hello"}
+sleep 50
+exit 0

@@ -1,0 +1,7 @@
+# An agent whose command ends badly, without a Stop hook to announce it.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "port the importer"}
+print connecting to the api...
+sleep 50
+print error: could not reach the api
+exit 2

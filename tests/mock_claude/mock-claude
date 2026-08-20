@@ -1,0 +1,143 @@
+#!/bin/sh
+# A stand-in for the vendor, replaying a scenario of timed steps.
+#
+# Every end-to-end test drives a pane running this instead of claude, so the
+# suite exercises the real path — real tmux, real panes, real `amx _hook`
+# invocations — with no API key and nothing on the network.
+#
+# It is deliberately a shell script rather than a Rust helper. What is under
+# test is amx's handling of a *foreign* program in the pane; a fixture sharing
+# amx's own code would only ever prove that amx agrees with itself.
+#
+# Steps, one per line. Blank lines and `#` comments are ignored.
+#
+#   hook <Event> <json>   deliver a hook payload the way claude delivers one:
+#                         on `amx _hook`'s stdin. `<json>` is the rest of the
+#                         payload and may be left out; `session_id` and
+#                         `transcript_path` are filled in unless it names them.
+#   print <text>          write a line to the pane, backslash escapes and all,
+#                         because the thing this stands in for repaints its
+#                         screen rather than only appending to it.
+#   sleep <ms>            wait. A long trailing sleep is how a scenario keeps
+#                         its agent alive for the test driving it.
+#   transcript <json>     append a line to the transcript the hooks announced.
+#   exit <code>           end, with this code.
+#
+# Placeholders substituted when the scenario is read: @SESSION@, @SESSION2@,
+# @TRANSCRIPT@, @TRANSCRIPT2@. @NOW@ is substituted as each line is written,
+# since it stands for the moment of writing.
+#
+# Environment:
+#   MOCK_CLAUDE_SCENARIO      the scenario to replay (required)
+#   MOCK_CLAUDE_SESSION       the session id it announces
+#   MOCK_CLAUDE_SESSION_2     the id a resumed session announces
+#   MOCK_CLAUDE_TRANSCRIPT    the transcript it writes
+#   MOCK_CLAUDE_TRANSCRIPT_2  the one a resumed session writes
+#   MOCK_CLAUDE_MAX_SLEEP_MS  cap every sleep, for tests that replay a whole
+#                             scenario in milliseconds
+#   AMX_BIN                   the amx the hooks are delivered through
+#   AMX_ID                    inherited from the pane; `amx _hook`'s business
+
+set -u
+
+scenario=${MOCK_CLAUDE_SCENARIO:-}
+if [ -z "$scenario" ]; then
+	echo "mock-claude: \$MOCK_CLAUDE_SCENARIO names the scenario to replay" >&2
+	exit 64
+fi
+if [ ! -r "$scenario" ]; then
+	echo "mock-claude: cannot read the scenario $scenario" >&2
+	exit 66
+fi
+
+amx=${AMX_BIN:-amx}
+session=${MOCK_CLAUDE_SESSION:-6f1c9f4e-0d5b-4a51-9f6e-2b1f0c3d4e5a}
+session2=${MOCK_CLAUDE_SESSION_2:-b7d2a5c8-3e14-4f9a-8c26-0d5b1a7e3f42}
+transcript=${MOCK_CLAUDE_TRANSCRIPT:-${TMPDIR:-/tmp}/mock-claude-$$.jsonl}
+transcript2=${MOCK_CLAUDE_TRANSCRIPT_2:-$transcript.2}
+max_sleep=${MOCK_CLAUDE_MAX_SLEEP_MS:-}
+
+# One hook, delivered the way claude delivers one: the payload on stdin, and
+# the environment saying which agent it belongs to.
+deliver() {
+	event=${1%% *}
+	json=${1#"$event"}
+	json=${json# }
+	[ -n "$json" ] || json='{}'
+
+	fields="\"hook_event_name\":\"$event\""
+	case "$json" in
+	*'"session_id"'*) ;;
+	*) fields="$fields,\"session_id\":\"$session\"" ;;
+	esac
+	case "$json" in
+	*'"transcript_path"'*)
+		# The scenario moved the transcript; later `transcript` steps follow.
+		transcript=$(printf '%s' "$json" |
+			sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+		;;
+	*) fields="$fields,\"transcript_path\":\"$transcript\"" ;;
+	esac
+
+	interior=$(printf '%s' "$json" |
+		sed -e 's/^[[:space:]]*{[[:space:]]*//' -e 's/[[:space:]]*}[[:space:]]*$//')
+	[ -z "$interior" ] || fields="$fields,$interior"
+
+	printf '%s' "{$fields}" | "$amx" _hook
+}
+
+# Milliseconds, because a scenario's interesting waits are shorter than a
+# second.
+nap() {
+	ms=$1
+	if [ -n "$max_sleep" ] && [ "$ms" -gt "$max_sleep" ]; then
+		ms=$max_sleep
+	fi
+	[ "$ms" -gt 0 ] || return 0
+	sleep "$((ms / 1000)).$(printf '%03d' "$((ms % 1000))")"
+}
+
+# The stamp claude puts on every transcript line: ISO-8601 UTC to the
+# millisecond. `%3N` is GNU date; where it is unsupported the field comes back
+# literal, so fall back to `.000` rather than write a stamp nothing can order.
+now() {
+	stamp=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null)
+	case $stamp in
+	*'%3N'* | '') stamp=$(date -u +%Y-%m-%dT%H:%M:%S.000Z) ;;
+	esac
+	printf '%s' "$stamp"
+}
+
+steps=$(mktemp "${TMPDIR:-/tmp}/mock-claude-steps.XXXXXX")
+trap 'rm -f "$steps"' EXIT
+sed -e "s|@TRANSCRIPT2@|$transcript2|g" \
+	-e "s|@TRANSCRIPT@|$transcript|g" \
+	-e "s|@SESSION2@|$session2|g" \
+	-e "s|@SESSION@|$session|g" \
+	"$scenario" >"$steps"
+
+while IFS= read -r line || [ -n "$line" ]; do
+	case "$line" in
+	'' | '#'*) continue ;;
+	esac
+	verb=${line%% *}
+	rest=${line#"$verb"}
+	rest=${rest# }
+
+	case "$verb" in
+	hook) deliver "$rest" ;;
+	print) printf '%b\n' "$rest" ;;
+	sleep) nap "$rest" ;;
+	transcript)
+		mkdir -p "$(dirname "$transcript")"
+		printf '%s\n' "$(printf '%s' "$rest" | sed "s|@NOW@|$(now)|g")" >>"$transcript"
+		;;
+	exit) exit "$rest" ;;
+	*)
+		echo "mock-claude: $scenario: no step called \`$verb\`" >&2
+		exit 65
+		;;
+	esac
+done <"$steps"
+
+exit 0

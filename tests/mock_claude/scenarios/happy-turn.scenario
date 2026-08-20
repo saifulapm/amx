@@ -1,0 +1,20 @@
+# A turn the way claude runs one: a prompt, a tool call, an answer, and then
+# the vendor sitting at its prompt with nothing to do.
+hook SessionStart {"source": "startup"}
+print I'll run the tests.
+hook UserPromptSubmit {"prompt": "run the tests"}
+sleep 50
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+print Running: cargo test
+sleep 50
+transcript {"type":"assistant","timestamp":"@NOW@","sessionId":"@SESSION@","message":{"content":[{"type":"text","text":"the tests pass now"}]}}
+print the tests pass now
+hook Stop {"last_assistant_message": "the tests pass now"}
+# The idle screen, as claude draws it: the composer and the mode footer under
+# it. This is what the screen rules read when the hooks go quiet.
+print ❯
+print   Opus 5 (1M context) │ ◈ 2% │ mock-claude (amx/fix-login-a1b) │ ◖ xhigh
+print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+# The turn is over and the agent is still there, the way claude is: whoever is
+# driving this scenario decides when it ends.
+sleep 600000
