@@ -1,0 +1,6 @@
+/target
+
+# Worktrees amx makes for its own agents, and the ones tooling makes here.
+/.amx/
+/.worktrees/
+/.claude/worktrees/
