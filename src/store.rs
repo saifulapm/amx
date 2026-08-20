@@ -273,6 +273,12 @@ impl Agent {
         }
     }
 
+    /// Where the log itself is, for a reader that tails it rather than reading
+    /// it whole.
+    pub fn events_path(&self) -> PathBuf {
+        self.dir.join(EVENTS)
+    }
+
     /// Everything that has happened, oldest first. A line that does not parse
     /// is skipped: a damaged tail must not cost a reader the whole history.
     pub fn events(&self) -> Result<Vec<Event>> {

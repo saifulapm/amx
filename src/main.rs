@@ -22,7 +22,6 @@ mod store;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod tmux;
 mod verbs;
-#[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod worktree;
 
 use anyhow::Result;
@@ -64,6 +63,8 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Answer { id, key }) => finish(verbs::answer::from_env(id, key)),
         Some(cli::Command::Result { id, timeout }) => finish(verbs::result::from_env(id, *timeout)),
         Some(cli::Command::Attach { id }) => finish(verbs::attach::from_env(id)),
+        Some(cli::Command::Diff { id }) => finish(verbs::diff::from_env(id)),
+        Some(cli::Command::Events { ids, follow }) => finish(verbs::events::from_env(ids, *follow)),
         Some(cli::Command::Boot { id }) => finish(spawn::boot_from_env(id)),
         Some(cli::Command::Stop(args)) => finish(verbs::stop::from_env(args)),
         Some(cli::Command::Doctor { fix }) => finish(verbs::doctor::from_env(config, *fix)),
@@ -117,7 +118,7 @@ mod tests {
     fn a_stub_run_fails_rather_than_reporting_success() {
         // A verb with nothing behind it yet, and one that reads nothing while
         // it says so.
-        let cli = cli::Cli::try_parse_from(["amx", "diff", "fix-login-a1b"]).unwrap();
+        let cli = cli::Cli::try_parse_from(["amx", "resume", "fix-login-a1b"]).unwrap();
         assert_eq!(run(&cli, &config::Config::default()), exit::FAILURE);
     }
 }
