@@ -6,10 +6,12 @@ mod config;
 // compiler asks for the attribute back.
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod exit;
+mod hook;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod ids;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod install;
+mod notify;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod paths;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
@@ -30,12 +32,16 @@ fn main() -> ExitCode {
     let code = match cli::Cli::try_parse_from(std::env::args_os()) {
         Ok(parsed) => {
             // Config is a convenience, so anything wrong with it is said once
-            // and the verb runs anyway.
-            let (_config, warnings) = config::load();
-            for warning in warnings {
-                eprintln!("amx: {warning}");
+            // and the verb runs anyway — except in the verbs amx runs against
+            // itself inside an agent's pane, which say nothing at all.
+            let (config, warnings) = config::load();
+            let internal = parsed.verb().is_some_and(|verb| verb.starts_with('_'));
+            if !internal {
+                for warning in warnings {
+                    eprintln!("amx: {warning}");
+                }
             }
-            run(&parsed)
+            run(&parsed, &config)
         }
         Err(err) => {
             let _ = err.print();
@@ -46,8 +52,10 @@ fn main() -> ExitCode {
 }
 
 /// Run the parsed command line and answer with its exit code.
-fn run(cli: &cli::Cli) -> i32 {
+fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
     match &cli.command {
+        Some(cli::Command::Hook) => hook::from_env(&mut std::io::stdin().lock(), config),
+        Some(cli::Command::Exit { id, code }) => hook::exited_from_env(id, *code, config),
         Some(cli::Command::Uninstall) => finish(verbs::uninstall::from_env()),
         _ => {
             eprintln!("{}", stub_line(cli.verb()));
@@ -97,6 +105,6 @@ mod tests {
     #[test]
     fn a_stub_run_fails_rather_than_reporting_success() {
         let cli = cli::Cli::try_parse_from(["amx", "ls"]).unwrap();
-        assert_eq!(run(&cli), exit::FAILURE);
+        assert_eq!(run(&cli, &config::Config::default()), exit::FAILURE);
     }
 }
