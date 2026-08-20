@@ -89,6 +89,9 @@ pub struct Spawn<'a> {
     /// A name for the session or window: convenience for a person reading the
     /// status line, never how amx addresses the thing afterwards.
     pub name: Option<&'a str>,
+    /// A name for the window a new session brings with it. Unnamed, tmux calls
+    /// it after whatever the pane is running, which changes under it.
+    pub window: Option<&'a str>,
     /// The working directory the new pane starts in.
     pub cwd: Option<&'a Path>,
     /// The command the pane runs. Empty means the user's shell.
@@ -215,6 +218,10 @@ impl Server {
             args.push("-s".to_string());
             args.push(name.to_string());
         }
+        if let Some(window) = spawn.window {
+            args.push("-n".to_string());
+            args.push(window.to_string());
+        }
         push_spawn(&mut args, spawn);
 
         let printed = self.run(&borrow(&args))?;
@@ -259,6 +266,35 @@ impl Server {
         ];
         push_spawn(&mut args, spawn);
         PaneId::new(self.run(&borrow(&args))?)
+    }
+
+    /// The session with this name, or `None`.
+    ///
+    /// A server nothing is listening on is a server with no sessions in it,
+    /// which is that same `None` and not a failure.
+    ///
+    /// Names are listed and looked through rather than targeted: a name is
+    /// what a person reads on a status line, and the id beside it is the only
+    /// thing that addresses the session again.
+    pub fn session_named(&self, name: &str) -> Result<Option<SessionId>> {
+        let listed = match self.run(&["list-sessions", "-F", "#{session_id} #{session_name}"]) {
+            Ok(listed) => listed,
+            Err(e) if is_no_server(&e) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        named(&listed, name).map(SessionId::new).transpose()
+    }
+
+    /// The window with this name in `session`, or `None`.
+    pub fn window_named(&self, session: &SessionId, name: &str) -> Result<Option<WindowId>> {
+        let listed = self.run(&[
+            "list-windows",
+            "-t",
+            session.as_str(),
+            "-F",
+            "#{window_id} #{window_name}",
+        ])?;
+        named(&listed, name).map(WindowId::new).transpose()
     }
 
     /// Re-lay a window's panes — `tiled` is the wall's layout.
@@ -400,6 +436,14 @@ fn borrow(args: &[String]) -> Vec<&str> {
     args.iter().map(String::as_str).collect()
 }
 
+/// The id tmux listed beside `name`, in a listing of `<id> <name>` lines.
+fn named<'a>(listed: &'a str, name: &str) -> Option<&'a str> {
+    listed.lines().find_map(|line| {
+        let (id, listed) = line.split_once(' ')?;
+        (listed == name).then_some(id)
+    })
+}
+
 /// tmux quotes an option value when it has to; take the quotes back off.
 fn unquote(value: &str) -> String {
     value
@@ -409,8 +453,14 @@ fn unquote(value: &str) -> String {
         .to_string()
 }
 
+/// Whether tmux is saying nothing is listening, which it says three ways: a
+/// socket that was never there at all, one with no server behind it any more,
+/// and a server that went while it was being asked.
 fn is_no_server(err: &anyhow::Error) -> bool {
-    format!("{err:#}").contains("no server running")
+    let said = format!("{err:#}");
+    said.contains("error connecting to")
+        || said.contains("no server running")
+        || said.contains("server exited")
 }
 
 /// The installed tmux's version, as major and minor.
@@ -643,6 +693,47 @@ mod tests {
             "off"
         );
         assert!(server.pane_alive(&pane));
+    }
+
+    #[test]
+    fn tmux_finds_a_session_and_a_window_by_the_name_they_wear() {
+        let server = TestServer::new();
+        // A socket nothing has ever listened on holds no sessions, and saying
+        // so is not a failure. Nor is a server that has gone since — tmux has
+        // a different sentence for each, and neither is an error to a question
+        // about what sessions there are.
+        assert_eq!(server.session_named("amx").unwrap(), None);
+
+        let (session, _) = server
+            .new_session(&Spawn {
+                name: Some("amx"),
+                ..idle()
+            })
+            .unwrap();
+        assert_eq!(
+            server.session_named("amx").unwrap().as_ref(),
+            Some(&session)
+        );
+        assert_eq!(server.session_named("elsewhere").unwrap(), None);
+
+        assert_eq!(server.window_named(&session, "amx-wall").unwrap(), None);
+        let (window, _) = server
+            .new_window(
+                &session,
+                &Spawn {
+                    name: Some("amx-wall"),
+                    ..idle()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            server.window_named(&session, "amx-wall").unwrap().as_ref(),
+            Some(&window)
+        );
+
+        server.kill().unwrap();
+        until("the server to go", || !server.is_alive());
+        assert_eq!(server.session_named("amx").unwrap(), None);
     }
 
     #[test]

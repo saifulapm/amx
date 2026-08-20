@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::store::{Agent, Meta};
-use crate::tmux::{PaneId, Server, SessionId, WindowId};
+use crate::tmux::{PaneId, Server, SessionId};
 
 /// What the pane is handed at birth.
 pub const HANDOFF: &str = "handoff.json";
@@ -197,7 +197,7 @@ fn wall(server: &Server, cwd: &Path, command: &[String], lock: &Path) -> Result<
         None => return open_wall_session(server, cwd, command),
     };
 
-    match find_wall(server, &session)? {
+    match server.window_named(&session, WALL)? {
         Some(window) => {
             let mut args = vec![
                 "split-window".to_string(),
@@ -249,17 +249,7 @@ fn session_for_wall(server: &Server) -> Result<Option<SessionId>> {
     }
 
     // Otherwise amx's own session, if this server is running one.
-    let Ok(listed) = server.run(&["list-sessions", "-F", "#{session_id} #{session_name}"]) else {
-        return Ok(None);
-    };
-    for line in listed.lines() {
-        if let Some((id, name)) = line.split_once(' ')
-            && name == PRIVATE
-        {
-            return Ok(Some(SessionId::new(id)?));
-        }
-    }
-    Ok(None)
+    server.session_named(PRIVATE)
 }
 
 /// The first agent on amx's own server: everything at once.
@@ -282,28 +272,15 @@ fn open_wall_session(server: &Server, cwd: &Path, command: &[String]) -> Result<
     PaneId::new(server.run(&borrow(&args))?)
 }
 
-/// The wall window in this session, by the name it was made with — read as a
-/// name, addressed by its id, which is the only thing a target can rely on.
-fn find_wall(server: &Server, session: &SessionId) -> Result<Option<WindowId>> {
-    let listed = server.run(&[
-        "list-windows",
-        "-t",
-        session.as_str(),
-        "-F",
-        "#{window_id} #{window_name}",
-    ])?;
-    for line in listed.lines() {
-        if let Some((id, name)) = line.split_once(' ')
-            && name == WALL
-        {
-            return Ok(Some(WindowId::new(id)?));
-        }
-    }
-    Ok(None)
+/// The lock everything that could build a wall takes first — an agent
+/// arriving, and a person opening the cockpit. It is one lock or it is no
+/// lock at all, so the path lives here rather than at each caller.
+pub fn wall_lock(root: &Path) -> PathBuf {
+    root.join("wall.lock")
 }
 
 /// Hold a lock for as long as the returned value lives.
-fn hold(path: &Path) -> Result<nix::fcntl::Flock<std::fs::File>> {
+pub fn hold(path: &Path) -> Result<nix::fcntl::Flock<std::fs::File>> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;

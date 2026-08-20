@@ -109,6 +109,53 @@ impl Harness {
         command
     }
 
+    /// Run amx in a pane of this harness's server, and answer with the pane.
+    ///
+    /// Some of what amx answers to is not on its command line at all: whether
+    /// anybody is looking at a terminal, and whether that terminal is already
+    /// inside tmux. A pane is a real terminal, so this is the only way to ask
+    /// those questions honestly.
+    ///
+    /// A variable given an empty value is unset rather than set — the pane is
+    /// inside tmux by birth, and a test that wants a terminal outside one says
+    /// so by clearing tmux's own two.
+    pub fn in_a_terminal(&self, env: &[(&str, &str)], args: &[&str]) -> String {
+        let config = self.home.path().join(".config");
+        let mut pairs = vec![
+            ("AMX_STATE_DIR", self.state.path().to_string_lossy()),
+            ("HOME", self.home.path().to_string_lossy()),
+            ("XDG_CONFIG_HOME", config.to_string_lossy()),
+            ("AMX_TMUX_SOCKET", self.socket.as_str().into()),
+        ];
+        pairs.extend(env.iter().map(|(name, value)| (*name, (*value).into())));
+
+        // Every `-u` first: `env` reads its own flags only until the first
+        // assignment.
+        let mut line = String::from("exec env");
+        for (name, _) in pairs.iter().filter(|(_, value)| value.is_empty()) {
+            line.push_str(&format!(" -u {name}"));
+        }
+        for (name, value) in pairs.iter().filter(|(_, value)| !value.is_empty()) {
+            line.push_str(&format!(" {name}={}", quoted(value)));
+        }
+        line.push_str(&format!(" {}", quoted(AMX)));
+        for arg in args {
+            line.push_str(&format!(" {}", quoted(arg)));
+        }
+
+        self.tmux(&[
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "--",
+            "sh",
+            "-c",
+            &line,
+        ])
+    }
+
     /// The environment a person who is already inside tmux would have.
     pub fn inside_tmux(&self) -> Vec<(String, String)> {
         let pane = self.tmux(&[
@@ -376,6 +423,11 @@ impl Default for Harness {
 /// Where the vendor's stand-in and its scenarios live.
 pub fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mock_claude")
+}
+
+/// A word a shell reads as one word, whatever is in it.
+fn quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', r"'\''"))
 }
 
 fn write(path: &Path, value: &Value) {

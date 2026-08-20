@@ -1,4 +1,5 @@
 mod cli;
+mod cockpit;
 mod config;
 mod derive;
 mod gc;
@@ -69,6 +70,7 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Stop(args)) => finish(verbs::stop::from_env(args)),
         Some(cli::Command::Doctor { fix }) => finish(verbs::doctor::from_env(config, *fix)),
         Some(cli::Command::Uninstall) => finish(verbs::uninstall::from_env()),
+        None => finish(cockpit::from_env()),
         _ => {
             eprintln!("{}", stub_line(cli.verb()));
             exit::FAILURE
@@ -108,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn the_front_door_is_a_stub_too() {
+    fn a_verb_amx_cannot_name_still_says_something() {
         let line = stub_line(None);
         assert!(line.contains("amx"), "{line}");
         assert!(line.contains("not implemented"), "{line}");

@@ -118,7 +118,7 @@ fn start(
         "_boot".to_string(),
         id.to_string(),
     ];
-    let pane = spawn::place(&server, placement, id, &cwd, &boot, &root.join("wall.lock"))?;
+    let pane = spawn::place(&server, placement, id, &cwd, &boot, &spawn::wall_lock(root))?;
 
     spawn::record(
         root,
