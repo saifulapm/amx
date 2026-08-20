@@ -62,6 +62,7 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Status { id, json }) => finish(verbs::status::from_env(id, *json)),
         Some(cli::Command::Attach { id }) => finish(verbs::attach::from_env(id)),
         Some(cli::Command::Boot { id }) => finish(spawn::boot_from_env(id)),
+        Some(cli::Command::Stop(args)) => finish(verbs::stop::from_env(args)),
         Some(cli::Command::Doctor { fix }) => finish(verbs::doctor::from_env(config, *fix)),
         Some(cli::Command::Uninstall) => finish(verbs::uninstall::from_env()),
         _ => {

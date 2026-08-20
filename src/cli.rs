@@ -183,6 +183,12 @@ pub enum Disposition {
     Delete,
 }
 
+impl Disposition {
+    pub fn is_keep(self) -> bool {
+        self == Disposition::Keep
+    }
+}
+
 /// The exit code for a command line clap refused to parse.
 ///
 /// `--help` and `--version` arrive here as errors too, and they are not

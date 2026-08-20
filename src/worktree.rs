@@ -43,6 +43,23 @@ pub fn repo_root(dir: &Path) -> Result<Option<PathBuf>> {
     }
 }
 
+/// The repository a worktree belongs to.
+///
+/// Not the same question as [`repo_root`], which answers with the tree it was
+/// asked in — for a linked worktree that is the worktree itself. What a branch
+/// is deleted from, and what a tree is removed from, is the repository they
+/// share, and it outlives both.
+pub fn main_repo(worktree: &Path) -> Result<PathBuf> {
+    let common = git(
+        worktree,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    Path::new(&common)
+        .parent()
+        .map(Path::to_path_buf)
+        .with_context(|| format!("{common} is not inside a repository"))
+}
+
 /// The branch amx gives an agent's tree.
 pub fn branch_for(id: &str) -> String {
     format!("amx/{id}")
@@ -275,6 +292,23 @@ mod tests {
         assert_eq!(
             setup(&tree.path, &["rev-parse", "--abbrev-ref", "HEAD"]),
             "amx/fix-login-a1b"
+        );
+    }
+
+    #[test]
+    fn worktree_knows_the_repository_it_belongs_to() {
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+
+        assert_eq!(
+            std::fs::canonicalize(main_repo(&tree.path).unwrap()).unwrap(),
+            std::fs::canonicalize(repo.path()).unwrap(),
+            "a branch is deleted from the repository, not from the tree that holds it"
+        );
+        assert_eq!(
+            std::fs::canonicalize(repo_root(&tree.path).unwrap().unwrap()).unwrap(),
+            std::fs::canonicalize(&tree.path).unwrap(),
+            "which is not what the tree itself answers"
         );
     }
 

@@ -1,0 +1,8 @@
+# An agent that does not answer when it is asked to stop — a vendor wedged in
+# a syscall, or one that traps the signal and keeps going. Being asked nicely
+# is the first rung of the ladder, not the whole of it.
+ignore TERM
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "keep going"}
+print working, and not listening
+sleep 600000

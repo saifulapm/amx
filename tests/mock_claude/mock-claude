@@ -21,6 +21,8 @@
 #   sleep <ms>            wait. A long trailing sleep is how a scenario keeps
 #                         its agent alive for the test driving it.
 #   transcript <json>     append a line to the transcript the hooks announced.
+#   ignore <signal>       stop answering this signal, so a test can prove what
+#                         happens to an agent that will not stop when asked.
 #   exit <code>           end, with this code.
 #
 # Placeholders substituted when the scenario is read: @SESSION@, @SESSION2@,
@@ -128,6 +130,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 	hook) deliver "$rest" ;;
 	print) printf '%b\n' "$rest" ;;
 	sleep) nap "$rest" ;;
+	ignore) trap '' "$rest" ;;
 	transcript)
 		mkdir -p "$(dirname "$transcript")"
 		printf '%s\n' "$(printf '%s' "$rest" | sed "s|@NOW@|$(now)|g")" >>"$transcript"

@@ -69,6 +69,27 @@ impl Harness {
         self.amx_command(args).output().expect("running amx")
     }
 
+    /// Run amx with something typed at it.
+    pub fn amx_with_input(&self, args: &[&str], typed: &str) -> Output {
+        use std::io::Write;
+        use std::process::Stdio;
+
+        let mut child = self
+            .amx_command(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("running amx");
+        child
+            .stdin
+            .take()
+            .expect("stdin was asked for")
+            .write_all(typed.as_bytes())
+            .expect("typing at amx");
+        child.wait_with_output().expect("waiting for amx")
+    }
+
     pub fn amx_command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(AMX);
         command
