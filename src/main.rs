@@ -9,6 +9,8 @@ mod exit;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod ids;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
+mod install;
+#[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod paths;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod rules;
@@ -16,9 +18,11 @@ mod rules;
 mod store;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod tmux;
+mod verbs;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod worktree;
 
+use anyhow::Result;
 use clap::Parser;
 use std::process::ExitCode;
 
@@ -43,8 +47,25 @@ fn main() -> ExitCode {
 
 /// Run the parsed command line and answer with its exit code.
 fn run(cli: &cli::Cli) -> i32 {
-    eprintln!("{}", stub_line(cli.verb()));
-    exit::FAILURE
+    match &cli.command {
+        Some(cli::Command::Uninstall) => finish(verbs::uninstall::from_env()),
+        _ => {
+            eprintln!("{}", stub_line(cli.verb()));
+            exit::FAILURE
+        }
+    }
+}
+
+/// A verb's outcome as an exit code: what it decided, or a failure with the
+/// reason on stderr.
+fn finish(outcome: Result<i32>) -> i32 {
+    match outcome {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("amx: {e:#}");
+            exit::FAILURE
+        }
+    }
 }
 
 /// What a verb says while it has no implementation behind it.
