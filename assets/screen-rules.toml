@@ -39,7 +39,8 @@
 # claude asks this before its prompt exists, so nothing else it draws can be
 # underneath — which is why it comes first.
 #
-# Measured against v2.1.226 on 2026-08-12 at 220 and 54 columns:
+# Measured against v2.1.226 on 2026-08-12 at 220 and 54 columns, reconfirmed
+# byte for byte against v2.1.237 on 2026-08-21 at the same two widths:
 #
 #   Quick safety check: Is this a project you created or one you trust? (Like
 #   your own code, …). If not, take a moment to review what's in this folder
@@ -73,6 +74,13 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 # columns. It takes forcing: a machine whose claude runs in auto mode approves
 # every probe without asking, and `--permission-mode manual` with an `ask` rule
 # for `Bash` is what finally produced one.
+#
+# Reconfirmed against v2.1.237 on 2026-08-21 at 220 columns, this time without
+# forcing: cycling to manual mode with shift+tab and asking for an edit drew
+# the same box, unchanged, for a Write, an Edit, and a Bash command in turn —
+# `Do you want to create LICENSE?`, `Do you want to make this edit to
+# README.md?`, `Do you want to proceed?`. The tool differs the wording after
+# `do you want to`, which is exactly the fragment this rule does not anchor on.
 #
 #   ────────────────────────────────────────────
 #    Bash command
@@ -132,6 +140,12 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 # live trust screen, neither of which carries the glyph on any of its 49 rows.
 # The hint stays as an alternative: it costs nothing and an older vendor may
 # print it where the glyph is absent.
+#
+# Reconfirmed against v2.1.237 on 2026-08-21: auto, manual, accept-edits and
+# plan mode all print the same six lines verbatim, and the truncation points
+# hold at the three widths re-checked — intact at 46 columns, `(shift+tab to`
+# at 40, gone by 30. Bypass-permissions and don't-ask were not re-driven this
+# round; nothing about this vendor bump touched the footer's wording.
 [[rule]]
 name = "permission_prompt"
 state = "waiting"
@@ -172,12 +186,60 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 # is no height a bound can be sized to, so the window is the floor's own and
 # the weight is carried by `not_below`, which does not depend on the box's
 # height. Not one of the forty captures carries a mode-footer glyph anywhere.
+#
+# Reconfirmed against v2.1.237 on 2026-08-21 at 220 columns: a real
+# AskUserQuestion call (`Which license should the LICENSE file contain?`)
+# drew the same shape — checkbox, question, numbered options, separator,
+# `N. Chat about this`, and the footer `Enter to select · ↑/↓ to navigate ·
+# Esc to cancel` unchanged to the letter. The eight-width, five-mode matrix
+# above is a rendering fact about how this vendor wraps text, not wording it
+# could silently change; it was not redriven this round.
 [[rule]]
 name = "ask_menu"
 state = "waiting"
 all = ["enter to select"]
 any = ["❯ 1.", "esc to cancel"]
 within = 24
+not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
+
+# The fourth blocking prompt: the approval box claude's ExitPlanMode tool
+# draws once a plan is ready. Measured against v2.1.237 on 2026-08-21 at 220,
+# 54 and 24 columns, seen live by entering plan mode and asking for a plan:
+#
+#   Claude has written up a plan and is ready to execute. Would you like to
+#   proceed?
+#
+#   ❯ 1. Yes, and use auto mode
+#     2. Yes, manually approve edits
+#     3. Tell Claude what to change
+#        shift+tab to approve with this feedback
+#
+#   ctrl+g to edit in Kak · ~/.claude/plans/write-a-one-paragraph-plan-snug-russell.md
+#
+# Neither rule above reaches it: the sentence carries neither `do you want to`
+# nor `enter to select`, and its own footer names the editor rather than
+# offering `enter to confirm` or `esc to cancel`. Without this rule an agent
+# parked on its own plan approval read `unknown`, with the question — accept,
+# revise, or hand back control of the run — gone from the row.
+#
+# Both halves of the sentence break under this vendor's wrap, and at
+# different widths: at 54 columns it splits between `to` and `execute.`, so
+# `ready to execute` cannot anchor; at 24 columns it splits between `to` and
+# `proceed?` instead, so `would you like to proceed` cannot either. What
+# survives both is the pair of single words neither break touches — `ready`
+# and `execute` land on the same row at every width measured, and `all` does
+# not require its entries to share a row, only to be near enough for `within`
+# to hold, which four rows of options comfortably are.
+#
+# The box ends at its own footer with nothing beneath, the same as the other
+# three blocking screens, so `not_below` carries the same weight here: a
+# quotation of this box would need to reproduce that absence too.
+[[rule]]
+name = "plan_approval"
+state = "waiting"
+all = ["ready", "execute"]
+any = ["❯ 1."]
+within = 16
 not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 
 # A turn is running. v2.1.226 spins one line just above the input box:
@@ -200,6 +262,14 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 # in principle carry both fragments, and a wrong match here does not only
 # mislabel a row — naming a screen as non-blocking also clears a pending
 # question off it. It is the first rule to re-measure on a vendor bump.
+#
+# Re-measured against v2.1.237 on 2026-08-21, live across a thinking turn, a
+# Bash call and an AskUserQuestion round: `✢ Forging…`, `✶ Forging… (9s ·
+# thinking with xhigh effort)`, `· Forging… (22s · ↓ 1.3k tokens)`, `*
+# Smooshing… (7s · thinking with xhigh effort)`, `✢ Smooshing… (31s · ↓ 1.8k
+# tokens · thought for 1s)`. New gerunds, same glyph set, same two punctuation
+# fragments in every sample; the finished line `✻ Sautéed for 1m 2s` still
+# carries neither.
 [[rule]]
 name = "spinner"
 state = "working"
@@ -233,6 +303,13 @@ all = ["… (", "s · "]
 # turn as finished 51 seconds before its Stop hook arrived. The longest
 # mid-turn stillness measured at the floor's own rate is ten seconds, at the
 # tail of a turn after the answer had finished streaming.
+#
+# The glyph itself was seen live against v2.1.237 on 2026-08-21 — the welcome
+# box now reads `Claude Code v2.1.237` — in all four modes reachable by
+# shift+tab (auto, manual, accept edits, plan) at 220, 46, 40 and 30 columns,
+# unchanged from the table above. The stillness timings were not re-measured
+# this round; nothing about a version bump changes how long a model takes to
+# pause between tokens.
 [[rule]]
 name = "idle_prompt"
 state = "idle"

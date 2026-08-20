@@ -369,6 +369,66 @@ mod tests {
  Enter to confirm · Esc to cancel
 ";
 
+    /// The plan-mode approval screen claude's ExitPlanMode tool draws once a
+    /// plan is ready, at 220 columns. v2.1.237, 2026-08-21, seen live by
+    /// entering plan mode and asking for a plan.
+    const PLAN_APPROVAL_220: &str = "\
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Claude has written up a plan and is ready to execute. Would you like to proceed?
+
+ ❯ 1. Yes, and use auto mode
+   2. Yes, manually approve edits
+   3. Tell Claude what to change
+      shift+tab to approve with this feedback
+
+ ctrl+g to edit in Kak · ~/.claude/plans/write-a-one-paragraph-plan-snug-russell.md
+";
+
+    /// The same screen at 54 columns. The message wraps between `to` and
+    /// `execute.` — the fragment `ready to execute` cannot be the anchor, it
+    /// breaks right here.
+    const PLAN_APPROVAL_54: &str = "\
+──────────────────────────────────────────────────
+ Claude has written up a plan and is ready to
+ execute. Would you like to proceed?
+
+ ❯ 1. Yes, and use auto mode
+   2. Yes, manually approve edits
+   3. Tell Claude what to change
+      shift+tab to approve with this feedback
+
+ ctrl+g to edit in Kak · ~/.claude/plans/write-a-
+ one-paragraph-plan-snug-russell.md
+";
+
+    /// The same screen at 24 columns. Here the vendor wraps the other way —
+    /// between `to` and `proceed?` — so `would you like to proceed` cannot be
+    /// the anchor either. Only single words survive both widths.
+    const PLAN_APPROVAL_24: &str = "\
+────────────────────
+ Claude has written
+ up a plan and is
+ ready to execute.
+ Would you like to
+ proceed?
+
+ ❯ 1. Yes, and use
+      auto mode
+   2. Yes, manually
+      approve edits
+   3. Tell Claude
+      what to change
+      shift+tab to
+      approve with
+      this feedback
+
+ ctrl+g to edit in
+ Kak · ~/.claude/pl
+ ans/write-a-one-pa
+ ragraph-plan-snug-
+ russell.md
+";
+
     /// A live permission box: v2.1.226, 2026-08-12, 220 columns, forced out of
     /// the vendor with manual permissions and an ask rule for Bash. A full
     /// width rule with the request under it, and no mode footer anywhere.
@@ -573,6 +633,7 @@ $
                 "folder_trust",
                 "permission_prompt",
                 "ask_menu",
+                "plan_approval",
                 "spinner",
                 "idle_prompt"
             ],
@@ -597,7 +658,7 @@ $
     }
 
     #[test]
-    fn rules_the_three_blocking_prompts_rule_waiting() {
+    fn rules_the_four_blocking_prompts_rule_waiting() {
         let rules = bundled();
         for (what, screen) in [
             ("trust at 220 columns", TRUST_SCREEN_220),
@@ -605,6 +666,9 @@ $
             ("a live permission box", PERMISSION_BOX),
             ("the ask menu at 80 columns", ASK_MENU_80),
             ("the ask menu at 24 columns", ASK_MENU_24),
+            ("the plan approval screen at 220 columns", PLAN_APPROVAL_220),
+            ("the plan approval screen at 54 columns", PLAN_APPROVAL_54),
+            ("the plan approval screen at 24 columns", PLAN_APPROVAL_24),
         ] {
             let claimed = claim(rules, screen, Phase::Working);
             assert_eq!(
