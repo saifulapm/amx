@@ -5,8 +5,8 @@ mod gc;
 
 // The verbs are stubs, so outside their own tests parts of these have no
 // caller yet. `expect` rather than `allow`: the day every item is reached, the
-// compiler asks for the attribute back.
-#[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
+// compiler asks for the attribute back — as every exit code now has a verb
+// that answers with it.
 mod exit;
 mod hook;
 mod ids;
@@ -60,6 +60,9 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::New(args)) => finish(verbs::new::from_env(config, args)),
         Some(cli::Command::Ls { json }) => finish(verbs::ls::from_env(*json)),
         Some(cli::Command::Status { id, json }) => finish(verbs::status::from_env(id, *json)),
+        Some(cli::Command::Send { id, text }) => finish(verbs::send::from_env(id, text)),
+        Some(cli::Command::Answer { id, key }) => finish(verbs::answer::from_env(id, key)),
+        Some(cli::Command::Result { id, timeout }) => finish(verbs::result::from_env(id, *timeout)),
         Some(cli::Command::Attach { id }) => finish(verbs::attach::from_env(id)),
         Some(cli::Command::Boot { id }) => finish(spawn::boot_from_env(id)),
         Some(cli::Command::Stop(args)) => finish(verbs::stop::from_env(args)),

@@ -191,6 +191,11 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             state.state = Phase::Working;
             state.summary = None;
             state.question = None;
+            // A new turn retires the last one's answer. A turn that ends
+            // without one would otherwise leave the previous answer on the
+            // record, and `result` would hand it to a caller as this turn's.
+            state.result = None;
+            state.source = None;
             None
         }
 
@@ -311,6 +316,28 @@ mod tests {
         assert_eq!(state.state, Phase::Working);
         assert_eq!(state.question, None, "a new turn answers the old question");
         assert_eq!(notice, None, "a turn starting is not worth an interruption");
+    }
+
+    #[test]
+    fn hook_a_new_turn_retires_the_last_turns_answer() {
+        // A turn that ends with nothing to say leaves whatever the last one
+        // said on the record, and `result` reads that record.
+        let mut state = State {
+            state: Phase::Idle,
+            result: Some("the tests pass now".to_string()),
+            source: Some(Source::Payload),
+            ..State::default()
+        };
+        let mut meta = meta();
+
+        apply(
+            &json!({ "hook_event_name": "UserPromptSubmit", "prompt": "and now the linter" }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(state.state, Phase::Working);
+        assert_eq!(state.result, None);
+        assert_eq!(state.source, None);
     }
 
     #[test]

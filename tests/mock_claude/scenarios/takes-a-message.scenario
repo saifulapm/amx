@@ -1,0 +1,16 @@
+# An agent that answers, sits at its prompt, and then takes what somebody
+# sends it. The second UserPromptSubmit is the vendor's own word that the text
+# arrived; the second Stop is the answer that belongs to it.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "run the tests"}
+hook Stop {"last_assistant_message": "the tests pass now"}
+print ❯
+print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+sleep 2000
+hook UserPromptSubmit {"prompt": "and now the linter"}
+print working on the linter
+sleep 1500
+hook Stop {"last_assistant_message": "the linter is clean"}
+print ❯
+print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+sleep 600000
