@@ -9,7 +9,6 @@ mod exit;
 mod hook;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod ids;
-#[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod install;
 mod notify;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
@@ -56,6 +55,7 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
     match &cli.command {
         Some(cli::Command::Hook) => hook::from_env(&mut std::io::stdin().lock(), config),
         Some(cli::Command::Exit { id, code }) => hook::exited_from_env(id, *code, config),
+        Some(cli::Command::Doctor { fix }) => finish(verbs::doctor::from_env(config, *fix)),
         Some(cli::Command::Uninstall) => finish(verbs::uninstall::from_env()),
         _ => {
             eprintln!("{}", stub_line(cli.verb()));
