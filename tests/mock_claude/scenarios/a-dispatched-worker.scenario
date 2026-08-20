@@ -1,0 +1,15 @@
+# A worker as a program dispatches one: it says how it was called, works
+# through the brief it was pointed at, answers in more than one line, and then
+# sits at its prompt for whoever wants to look in on it.
+argv
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "read the brief and execute it exactly"}
+print Reading the brief.
+sleep 50
+hook PreToolUse {"tool_name": "Read", "tool_input": {"file_path": "brief.md"}}
+print Running: cargo test
+sleep 50
+hook Stop {"last_assistant_message": "the importer is ported\n\n- four endpoints moved\n- the tests pass"}
+print ❯
+print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+sleep 600000
