@@ -15,6 +15,7 @@ use anyhow::{Context, Result};
 use std::io::IsTerminal;
 use std::path::Path;
 
+use crate::config::Config;
 use crate::spawn::{self, PRIVATE};
 use crate::store::now;
 use crate::tmux::{Server, SessionId, Spawn, WindowId};
@@ -47,13 +48,13 @@ pub fn door(terminal: bool, inside: Option<&str>) -> Door {
 }
 
 /// Open the front door against the machine.
-pub fn from_env() -> Result<i32> {
+pub fn from_env(config: &Config) -> Result<i32> {
     let root = paths::state_root()?;
     let inside = std::env::var("TMUX").ok();
 
     match door(std::io::stdout().is_terminal(), inside.as_deref()) {
         Door::Table => verbs::ls::run(&root, false, now(), &mut std::io::stdout().lock()),
-        Door::View => tui::run(&root),
+        Door::View => tui::run(&root, config),
         // The view's pane runs amx again, and lands on the door above: inside
         // tmux by then, because that is what the room is made of.
         Door::Cockpit => open(&root, &std::env::current_exe().context("finding amx")?),

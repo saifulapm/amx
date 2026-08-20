@@ -119,6 +119,11 @@ impl Harness {
     /// A variable given an empty value is unset rather than set — the pane is
     /// inside tmux by birth, and a test that wants a terminal outside one says
     /// so by clearing tmux's own two.
+    ///
+    /// The terminal opens in this harness's own home. Where a terminal is
+    /// matters — anything it starts starts there — and inheriting the
+    /// directory the suite was run from would put a test's agents in the
+    /// developer's own repository.
     pub fn in_a_terminal(&self, env: &[(&str, &str)], args: &[&str]) -> String {
         let config = self.home.path().join(".config");
         let mut pairs = vec![
@@ -146,6 +151,8 @@ impl Harness {
         self.tmux(&[
             "new-session",
             "-d",
+            "-c",
+            &self.home.path().to_string_lossy(),
             "-P",
             "-F",
             "#{pane_id}",

@@ -5,6 +5,13 @@
 //! need, the cursor walks them, space looks closer at one, and enter puts it in
 //! front of the terminal.
 //!
+//! What can be done from here is what can be done from a shell prompt — start
+//! one, say something to one, stop one, see what one has changed — because a
+//! person watching a wall of agents should not have to leave the screen that
+//! told them something needed doing. Every one of those is a key, and every
+//! key that types text puts the view in a mode that says so: a list whose keys
+//! are also letters cannot have a composer that swallows them.
+//!
 //! Nothing here is in the byte path. A peek is a `capture-pane`, and attaching
 //! is tmux bringing the agent's own window forward — the view stays where it
 //! is, in its window, for whoever comes back to it.
@@ -12,6 +19,7 @@
 //! The reading is taken from disk on a clock rather than pushed at the view by
 //! anything: nothing amx runs stays resident, so there is nobody to push.
 
+mod act;
 mod paint;
 mod rows;
 
@@ -22,10 +30,12 @@ use ratatui::backend::Backend;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::config::Config;
 use crate::derive::{self, View};
-use crate::store::now;
+use crate::store::{Phase, now};
 use crate::tmux::{PaneId, Server, SessionId};
 use crate::{exit, rules};
+use act::{Asking, Composer};
 use paint::Peek;
 use rows::List;
 
@@ -74,10 +84,47 @@ enum Doing {
     Close,
 }
 
+/// What the keys are doing at the moment.
+#[derive(Default)]
+enum Mode {
+    /// Walking the agents.
+    #[default]
+    List,
+    /// Typing a line: a task for a new agent, or a reply to one of them.
+    Typing(Composer),
+    /// The keys themselves, on the screen.
+    Keys,
+}
+
+/// What the closer look is showing.
+#[derive(Default, PartialEq, Eq)]
+enum Look {
+    /// Nothing: nobody asked for one.
+    #[default]
+    Away,
+    /// The agent's own screen, taken again with every reading.
+    Screen,
+    /// What the agent has changed, as it stood when somebody asked.
+    Changes,
+}
+
+/// The view as it stands: what was read, where the cursor is, what the keys
+/// are doing, and what the view last had to say for itself.
+#[derive(Default)]
+struct Screen {
+    list: List,
+    mode: Mode,
+    look: Look,
+    peek: Option<Peek>,
+    notice: Option<String>,
+    /// When the agents were last read.
+    read: Option<Instant>,
+}
+
 /// Open the view on this terminal and hold it until somebody closes it.
-pub fn run(root: &Path) -> Result<i32> {
+pub fn run(root: &Path, config: &Config) -> Result<i32> {
     let mut terminal = ratatui::try_init().context("taking the terminal")?;
-    let outcome = watch(root, &mut terminal, &mut Keyboard, Here::read());
+    let outcome = watch(root, config, &mut terminal, &mut Keyboard, Here::read());
     // Whatever happened, the screen goes back the way it was found.
     ratatui::restore();
     outcome
@@ -86,6 +133,7 @@ pub fn run(root: &Path) -> Result<i32> {
 /// The view itself: draw what is there, act on what is typed, read again.
 fn watch<B>(
     root: &Path,
+    config: &Config,
     terminal: &mut Terminal<B>,
     keys: &mut impl Keys,
     here: Option<Here>,
@@ -94,34 +142,19 @@ where
     B: Backend,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
-    let mut list = List::default();
-    let mut peek: Option<Peek> = None;
-    let mut notice: Option<String> = None;
-    let mut peeking = false;
-    let mut read: Option<Instant> = None;
+    let mut screen = Screen::default();
 
     loop {
-        let fresh = read.is_none_or(|at| at.elapsed() >= REFRESH);
-        if fresh {
-            list.show(derive::views(root, rules::bundled(), now())?);
-            read = Some(Instant::now());
+        if screen.read.is_none_or(|at| at.elapsed() >= REFRESH) {
+            screen.reread(root)?;
         }
-
-        // The peek follows the cursor, and is taken again with every reading:
-        // what an agent is doing is what its pane is showing now.
-        let wanted = peeking.then(|| list.selected()).flatten().map(View::id);
-        if fresh || peek.as_ref().map(|peek| peek.id.as_str()) != wanted {
-            peek = peeking.then(|| list.selected()).flatten().map(look);
-        }
-
-        terminal.draw(|frame| paint::draw(frame, &list, peek.as_ref(), notice.as_deref()))?;
+        terminal.draw(|frame| paint::draw(frame, &screen))?;
 
         match keys.next(TICK) {
             Typed::Nothing => {}
             Typed::Gone => return Ok(exit::OK),
             Typed::Key(key) => {
-                if let Doing::Close = act(key, &mut list, &mut peeking, &mut notice, here.as_ref())?
-                {
+                if let Doing::Close = screen.act(key, root, config, here.as_ref())? {
                     return Ok(exit::OK);
                 }
             }
@@ -129,38 +162,192 @@ where
     }
 }
 
-/// What one key does.
-fn act(
-    key: KeyEvent,
-    list: &mut List,
-    peeking: &mut bool,
-    notice: &mut Option<String>,
-    here: Option<&Here>,
-) -> Result<Doing> {
-    // Whatever the view had to say, it was about the last key.
-    *notice = None;
+impl Screen {
+    /// Read the agents again.
+    fn reread(&mut self, root: &Path) -> Result<()> {
+        self.list
+            .show(derive::views(root, rules::bundled(), now())?);
+        self.read = Some(Instant::now());
+        self.follow_the_cursor();
+        Ok(())
+    }
 
-    match key.code {
-        // A terminal in raw mode has no interrupt of its own, and a view
-        // nobody can get out of the usual way is a trap.
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+    /// Take the closer look again, when it is the kind that follows the
+    /// cursor: what an agent is doing is what its pane is showing now.
+    fn follow_the_cursor(&mut self) {
+        match self.look {
+            Look::Away => self.peek = None,
+            Look::Screen => self.peek = self.list.selected().map(look),
+            // A diff was taken when somebody asked for it, and stays as it was
+            // until they ask again.
+            Look::Changes => {}
+        }
+    }
+
+    /// What one key does.
+    fn act(
+        &mut self,
+        key: KeyEvent,
+        root: &Path,
+        config: &Config,
+        here: Option<&Here>,
+    ) -> Result<Doing> {
+        // Whatever the view had to say, it was about the last key.
+        self.notice = None;
+
+        // Before the modes, whatever the view is in the middle of: a terminal
+        // in raw mode has no interrupt of its own, and a view nobody can get
+        // out of the usual way is a trap.
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return Ok(Doing::Close);
         }
-        KeyCode::Char('q') => return Ok(Doing::Close),
-        KeyCode::Down => list.down(),
-        KeyCode::Up => list.up(),
-        KeyCode::Char(' ') => *peeking = !*peeking,
-        KeyCode::Esc => *peeking = false,
-        KeyCode::Enter | KeyCode::Right => {
-            if list.on_fold() {
-                list.unfold();
-            } else if let Some(view) = list.selected() {
-                *notice = attach(here, view)?;
-            }
+
+        match self.mode {
+            Mode::Typing(_) => self.typed(key, root, config),
+            Mode::Keys => Ok(self.reading_the_keys(key)),
+            Mode::List => self.pressed(key, root, here),
         }
-        _ => {}
     }
-    Ok(Doing::Carry)
+
+    /// A key on the list.
+    fn pressed(&mut self, key: KeyEvent, root: &Path, here: Option<&Here>) -> Result<Doing> {
+        match key.code {
+            KeyCode::Char('q') => return Ok(Doing::Close),
+            KeyCode::Down => {
+                self.list.down();
+                self.moved();
+            }
+            KeyCode::Up => {
+                self.list.up();
+                self.moved();
+            }
+            KeyCode::Char(' ') => {
+                self.look = match self.look {
+                    Look::Away => Look::Screen,
+                    _ => Look::Away,
+                };
+                self.follow_the_cursor();
+            }
+            KeyCode::Esc => {
+                self.look = Look::Away;
+                self.follow_the_cursor();
+            }
+            KeyCode::Enter | KeyCode::Right => {
+                if self.list.on_fold() {
+                    self.list.unfold();
+                } else if let Some(view) = self.list.selected() {
+                    self.notice = attach(here, view)?;
+                }
+            }
+            KeyCode::Char('?') => self.mode = Mode::Keys,
+            KeyCode::Char('n') => self.mode = Mode::Typing(Composer::new(Asking::Task)),
+            // What a reply is depends on what the agent is doing: an agent
+            // that has stopped on a question is answered with one of the keys
+            // its prompt reads, and anything else is a message.
+            KeyCode::Char('r') => {
+                if let Some(view) = self.list.selected() {
+                    self.mode = Mode::Typing(Composer::new(Asking::Reply {
+                        id: view.id().to_string(),
+                        question: view.phase() == Phase::Waiting,
+                    }));
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(view) = self.list.selected() {
+                    match act::changes(root, view) {
+                        Ok(peek) => {
+                            self.peek = Some(peek);
+                            self.look = Look::Changes;
+                        }
+                        Err(e) => self.notice = Some(format!("{e:#}")),
+                    }
+                }
+            }
+            KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(view) = self.list.selected() {
+                    self.notice = said(act::end(root, view));
+                    self.acted();
+                }
+            }
+            _ => {}
+        }
+        Ok(Doing::Carry)
+    }
+
+    /// A key while somebody is typing a line.
+    ///
+    /// The composer is taken out of the mode for the length of the keypress
+    /// and put back unless the key was the end of it, which is what makes
+    /// entering and cancelling the same one move: the line is gone either way.
+    fn typed(&mut self, key: KeyEvent, root: &Path, config: &Config) -> Result<Doing> {
+        let Mode::Typing(mut composer) = std::mem::take(&mut self.mode) else {
+            return Ok(Doing::Carry);
+        };
+
+        match key.code {
+            // Cancelled: the line goes, and nothing was done with it.
+            KeyCode::Esc => return Ok(Doing::Carry),
+            KeyCode::Enter => {
+                if !composer.text.trim().is_empty() {
+                    self.notice = said(match &composer.asking {
+                        Asking::Task => act::start(root, config, &composer.text, composer.hidden),
+                        Asking::Reply { id, .. } => act::reply(root, id, &composer.text),
+                    });
+                    self.acted();
+                }
+                return Ok(Doing::Carry);
+            }
+            KeyCode::Backspace => {
+                composer.text.pop();
+            }
+            KeyCode::Tab => composer.hidden = !composer.hidden,
+            // A key held down with control or alt is somebody reaching for
+            // something else, not a character they meant to type.
+            KeyCode::Char(typed)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                composer.text.push(typed);
+            }
+            _ => {}
+        }
+
+        self.mode = Mode::Typing(composer);
+        Ok(Doing::Carry)
+    }
+
+    /// A key while the keys themselves are on the screen. Any of them puts the
+    /// agents back, because that is what somebody came here for — except the
+    /// one that closes the view, which means that wherever it is pressed.
+    fn reading_the_keys(&mut self, key: KeyEvent) -> Doing {
+        self.mode = Mode::List;
+        match key.code {
+            KeyCode::Char('q') => Doing::Close,
+            _ => Doing::Carry,
+        }
+    }
+
+    /// The cursor has moved. A diff belongs to the agent it was taken of, so
+    /// it does not follow the cursor onto the next one.
+    fn moved(&mut self) {
+        if self.look == Look::Changes {
+            self.look = Look::Screen;
+        }
+        self.follow_the_cursor();
+    }
+
+    /// Something was done to an agent, so what the list says about it is a
+    /// moment out of date.
+    fn acted(&mut self) {
+        self.read = None;
+    }
+}
+
+/// What an action had to say, including when it could not be done at all: a
+/// view that closed itself because git was busy would be a poor view.
+fn said(outcome: Result<String>) -> Option<String> {
+    Some(outcome.unwrap_or_else(|e| format!("{e:#}")))
 }
 
 /// A closer look at one agent: what it is asking, and the screen it is asking
@@ -179,6 +366,7 @@ fn look(view: &View) -> Peek {
         body: screen
             .or_else(|| view.state.result.clone())
             .unwrap_or_default(),
+        changes: false,
     }
 }
 
@@ -287,6 +475,11 @@ mod tests {
         )
     }
 
+    /// The keys of a word, one at a time, the way somebody types it.
+    fn word(text: &str) -> Vec<KeyCode> {
+        text.chars().map(KeyCode::Char).collect()
+    }
+
     /// An agent whose command ended `ago` seconds back: no pane, and nothing
     /// to ask tmux about.
     fn finished(root: &Path, id: &str, result: &str, ago: u64) {
@@ -329,7 +522,14 @@ mod tests {
     /// and answer with what it exited with and what was last on the screen.
     fn held(root: &Path, keys: &[KeyCode]) -> (i32, String) {
         let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
-        let code = watch(root, &mut terminal, &mut typing(keys), None).unwrap();
+        let code = watch(
+            root,
+            &Config::default(),
+            &mut terminal,
+            &mut typing(keys),
+            None,
+        )
+        .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let screen = (0..10)
             .map(|row| {
@@ -386,5 +586,47 @@ mod tests {
             screen.contains("run `amx attach first-a1b`"),
             "outside tmux there is no client to hand it to: {screen}"
         );
+    }
+
+    #[test]
+    fn a_line_being_typed_has_the_keys_of_the_list_in_it() {
+        // Every one of these is a key the list acts on. While somebody is
+        // typing they are letters, or the composer could not be used at all.
+        let root = TempDir::new().unwrap();
+        let mut keys = vec![KeyCode::Char('n')];
+        keys.extend(word("drop the queue and quit"));
+        keys.push(KeyCode::Char('q'));
+
+        let (code, screen) = held(root.path(), &keys);
+        assert_eq!(code, exit::OK, "and the view did not close on any of them");
+        assert!(screen.contains("drop the queue and quitq"), "{screen}");
+    }
+
+    #[test]
+    fn a_line_nobody_entered_does_nothing_at_all() {
+        let root = TempDir::new().unwrap();
+        let mut keys = vec![KeyCode::Char('n')];
+        keys.extend(word("port the importer"));
+        keys.push(KeyCode::Esc);
+        keys.push(KeyCode::Char('q'));
+
+        let (code, screen) = held(root.path(), &keys);
+        assert_eq!(code, exit::OK, "and q is the list's key again");
+        assert!(
+            !screen.contains("port the importer"),
+            "the line is gone with it: {screen}"
+        );
+        assert!(
+            crate::store::list(root.path()).unwrap().is_empty(),
+            "and nothing was started"
+        );
+    }
+
+    #[test]
+    fn the_keys_are_on_the_screen_for_the_asking() {
+        let root = TempDir::new().unwrap();
+        let (_, screen) = held(root.path(), &[KeyCode::Char('?'), KeyCode::Char('q')]);
+        assert!(screen.contains("ctrl+x"), "{screen}");
+        assert!(screen.contains("stop it"), "{screen}");
     }
 }

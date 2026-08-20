@@ -9,6 +9,7 @@ mod common;
 
 use common::Harness;
 use serde_json::json;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Epoch seconds, for the records a test writes as though they had just
@@ -40,6 +41,68 @@ fn finished(amx: &Harness, id: &str, state: &str, ago: u64) {
 /// What is on the view's screen now.
 fn screen(amx: &Harness, pane: &str) -> String {
     amx.capture(pane)
+}
+
+/// Every agent amx holds a record for.
+fn agents(amx: &Harness) -> Vec<String> {
+    let mut ids: Vec<String> = std::fs::read_dir(amx.state_root())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Type a line at the view, as a person types one.
+fn types(amx: &Harness, view: &str, text: &str) {
+    amx.tmux(&["send-keys", "-t", view, "-l", text]);
+}
+
+fn press(amx: &Harness, view: &str, key: &str) {
+    amx.tmux(&["send-keys", "-t", view, key]);
+}
+
+/// A view on a terminal that can start agents of its own: the vendor's
+/// stand-in as the agent command, and the scenario it plays.
+fn a_view_that_dispatches(amx: &Harness, scenario: &str) -> String {
+    amx.config(&format!("agent = \"{}\"\nworktrees = false\n", amx.mock()));
+    let scenario = amx.scenario(scenario).to_string_lossy().into_owned();
+    let transcript = amx
+        .home()
+        .join("composed.jsonl")
+        .to_string_lossy()
+        .into_owned();
+
+    let view = amx.in_a_terminal(
+        &[
+            ("MOCK_CLAUDE_SCENARIO", &scenario),
+            ("MOCK_CLAUDE_TRANSCRIPT", &transcript),
+        ],
+        &[],
+    );
+    amx.until("the view", || {
+        screen(amx, &view).contains("no agents").then_some(())
+    });
+    view
+}
+
+/// The one agent the view started, once its record is whole.
+///
+/// The directory comes before the record in it: `new` starts the pane first,
+/// so that the record it writes can name the pane.
+fn composed(amx: &Harness) -> String {
+    amx.until("the agent to be started", || {
+        let started = agents(amx);
+        let id = (started.len() == 1).then(|| started[0].clone())?;
+        amx.meta(&id)["pane"].as_str().map(|_| id)
+    })
+}
+
+fn pane_field(amx: &Harness, pane: &str, format: &str) -> String {
+    amx.tmux(&["display-message", "-p", "-t", pane, format])
 }
 
 #[test]
@@ -190,6 +253,247 @@ fn enter_puts_the_agent_in_front_of_the_terminal() {
         amx.pane_alive(&view),
         "the view is still there to come back to"
     );
+}
+
+#[test]
+fn the_composer_starts_an_agent_where_the_view_is() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches(&amx, "happy-turn");
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "port the importer");
+    amx.until("the task on the screen", || {
+        screen(&amx, &view)
+            .contains("port the importer")
+            .then_some(())
+    });
+    press(&amx, &view, "Enter");
+
+    let id = composed(&amx);
+    assert!(id.starts_with("port-the-importer"), "{id}");
+
+    let meta = amx.meta(&id);
+    assert_eq!(meta["task"], "port the importer");
+    assert_eq!(
+        meta["dir"],
+        amx.home().to_string_lossy().as_ref(),
+        "an agent starts where the view was opened"
+    );
+
+    let pane = meta["pane"].as_str().expect("a pane").to_string();
+    assert_eq!(
+        pane_field(&amx, &pane, "#{window_name}"),
+        "amx-wall",
+        "and tiles into the wall of the session the view is in"
+    );
+
+    // It is a real agent: it runs, and it appears in the list the composer was
+    // opened from.
+    amx.until_state(&id, "idle");
+    amx.until("the agent's own row", || {
+        screen(&amx, &view).contains(&id).then_some(())
+    });
+}
+
+#[test]
+fn an_agent_can_be_composed_out_of_sight() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches(&amx, "happy-turn");
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "watch the log");
+    press(&amx, &view, "Tab");
+    amx.until("the composer to say where it is going", || {
+        screen(&amx, &view).contains("out of sight").then_some(())
+    });
+    press(&amx, &view, "Enter");
+
+    let id = composed(&amx);
+    let pane = amx.meta(&id)["pane"].as_str().expect("a pane").to_string();
+    assert_ne!(
+        pane_field(&amx, &pane, "#{window_name}"),
+        "amx-wall",
+        "an agent started out of sight is not on the wall"
+    );
+    assert_eq!(
+        pane_field(&amx, &pane, "#{session_name}"),
+        format!("amx-{id}"),
+        "it has a session nobody is attached to"
+    );
+    amx.until_state(&id, "idle");
+}
+
+#[test]
+fn a_reply_answers_the_question_the_agent_stopped_on() {
+    let amx = Harness::new();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("ask-a1b").then_some(())
+    });
+
+    // Looked at closely first, which is where somebody decides what to answer.
+    press(&amx, &view, "Space");
+    amx.until("the peek", || {
+        screen(&amx, &view).contains("rm -rf build").then_some(())
+    });
+
+    types(&amx, &view, "r");
+    amx.until("the line to be addressed to the agent", || {
+        screen(&amx, &view).contains("answer ask-a1b").then_some(())
+    });
+    types(&amx, &view, "9");
+    press(&amx, &view, "Enter");
+
+    amx.until("the key to reach the agent's pane", || {
+        amx.capture(&amx.pane_of("ask-a1b"))
+            .contains('9')
+            .then_some(())
+    });
+    amx.until("the question to stop being pending", || {
+        (amx.state("ask-a1b")["state"] != "waiting").then_some(())
+    });
+}
+
+#[test]
+fn a_reply_to_an_agent_between_turns_is_a_message() {
+    let amx = Harness::new();
+    amx.play("fix-login-a1b", "takes-a-message");
+    amx.until_state("fix-login-a1b", "idle");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+    });
+
+    types(&amx, &view, "r");
+    amx.until("the line to be addressed to the agent", || {
+        screen(&amx, &view)
+            .contains("message to fix-login-a1b")
+            .then_some(())
+    });
+    types(&amx, &view, "and now the linter");
+    press(&amx, &view, "Enter");
+
+    amx.until("the message to reach the agent's pane", || {
+        amx.capture(&amx.pane_of("fix-login-a1b"))
+            .contains("and now the linter")
+            .then_some(())
+    });
+    assert!(
+        amx.state("fix-login-a1b")["seq"].as_u64().unwrap_or(0) > 0,
+        "and the send is on the record, the way the verb records one"
+    );
+}
+
+#[test]
+fn ctrl_x_stops_the_agent_and_then_forgets_it() {
+    let amx = Harness::new();
+    let pane = amx.play("watch-log-e5f", "works-without-end");
+    amx.until_state("watch-log-e5f", "working");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("watch-log-e5f").then_some(())
+    });
+
+    press(&amx, &view, "C-x");
+    amx.until("the agent to stop", || {
+        (amx.state("watch-log-e5f")["state"] == "stopped").then_some(())
+    });
+    // The record says stopped before the signal is sent, so that the exit it
+    // causes reads as a stop rather than a failure. The pane going is the
+    // stopping itself, and it happens a moment after.
+    amx.until("its pane to go with it", || {
+        (!amx.pane_alive(&pane)).then_some(())
+    });
+
+    // Again on the same row: an agent that has already ended is forgotten.
+    press(&amx, &view, "C-x");
+    amx.until("the record to go", || agents(&amx).is_empty().then_some(()));
+    amx.until("the view to have nothing left to show", || {
+        screen(&amx, &view).contains("no agents").then_some(())
+    });
+}
+
+#[test]
+fn d_shows_what_the_agent_has_changed() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let out = amx
+        .amx_command(&[
+            "new",
+            "--name",
+            "fix-login-a1b",
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            &amx.mock(),
+            "fix the login bug",
+        ])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"))
+        .output()
+        .expect("running amx new");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let tree = PathBuf::from(
+        amx.meta("fix-login-a1b")["worktree"]
+            .as_str()
+            .expect("a worktree"),
+    );
+    std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+    });
+
+    types(&amx, &view, "d");
+    let shown = amx.until("the diff", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("+after").then_some(drawn)
+    });
+    assert!(shown.contains("-before"), "{shown}");
+    assert!(
+        shown.contains("what it has changed"),
+        "and the panel says what it is showing: {shown}"
+    );
+}
+
+#[test]
+fn the_keys_are_on_the_screen_for_the_asking() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the view", || {
+        screen(&amx, &view).contains("no agents").then_some(())
+    });
+
+    types(&amx, &view, "?");
+    let keys = amx.until("the keys", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("ctrl+x").then_some(drawn)
+    });
+    for does in [
+        "start an agent",
+        "reply",
+        "what it has changed",
+        "stop it",
+        "close the view",
+    ] {
+        assert!(keys.contains(does), "{does} is not among the keys:\n{keys}");
+    }
+
+    // And back to the agents, which is what the view is for.
+    press(&amx, &view, "Escape");
+    amx.until("the list again", || {
+        screen(&amx, &view).contains("no agents").then_some(())
+    });
 }
 
 #[test]

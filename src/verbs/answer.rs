@@ -21,7 +21,7 @@ use std::path::Path;
 
 use crate::derive;
 use crate::store::{Agent, Event, Phase};
-use crate::tmux::Server;
+use crate::tmux::{PaneId, Server};
 use crate::verbs::send::nothing_more_is_coming;
 use crate::{exit, paths, rules, store};
 
@@ -50,18 +50,30 @@ pub fn run(root: &Path, id: &str, key: &str) -> Result<i32> {
         return Ok(exit::BLOCKED);
     }
 
-    Server::from_socket(view.meta.socket.clone()).send_keys(&view.meta.pane, &[&pressed])?;
+    let agent = Agent::open(root, id)?;
+    let server = Server::from_socket(view.meta.socket.clone());
+    press(&agent, &server, &view.meta.pane, &pressed)?;
+    Ok(exit::OK)
+}
+
+/// Type one key of the grammar at the agent, and record that it was typed.
+///
+/// The record is what stops the question being answered twice: the vendor says
+/// nothing when a prompt is dismissed, so until its next hook arrives the only
+/// thing that knows the question is dealt with is this. The view answers
+/// through here for the same reason.
+pub fn press(agent: &Agent, server: &Server, pane: &PaneId, pressed: &str) -> Result<()> {
+    server.send_keys(pane, &[pressed])?;
 
     // The question is answered; the agent is getting on with it. What it is
     // really doing is the next hook's business, and the screen's after that.
-    let agent = Agent::open(root, id)?;
     let writer = agent.writer()?;
     writer.append(&Event::new("answer", serde_json::json!({ "key": pressed })))?;
     writer.update_state(|state| {
         state.state = Phase::Working;
         state.question = None;
     })?;
-    Ok(exit::OK)
+    Ok(())
 }
 
 /// One key of the grammar, under the name tmux knows it by.
@@ -70,7 +82,7 @@ pub fn run(root: &Path, id: &str, key: &str) -> Result<i32> {
 /// the letters would type a word at the agent. Case and surrounding space are
 /// a typo, not a different intent. `enter` earns its place because a prompt
 /// with a highlighted default takes it and nothing else.
-fn named(key: &str) -> Option<String> {
+pub fn named(key: &str) -> Option<String> {
     let key = key.trim().to_ascii_lowercase();
     match key.as_str() {
         "y" | "n" => Some(key),

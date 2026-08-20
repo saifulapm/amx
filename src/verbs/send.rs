@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use crate::derive;
 use crate::store::{Agent, Event, Phase};
-use crate::tmux::Server;
+use crate::tmux::{PaneId, Server};
 use crate::{exit, paths, rules, store};
 
 /// The event amx records for a message it sent.
@@ -75,17 +75,8 @@ pub fn run(
     let agent = Agent::open(root, id)?;
     let taken = submissions(&agent.events()?);
 
-    // Before a byte is typed, and under the writer's lock: the record is what
-    // tells a reader in another process that the answer it can see belongs to
-    // the turn before this message.
-    let writer = agent.writer()?;
-    writer.append(&Event::new(SEND, serde_json::json!({ "text": text })))?;
-    writer.update_state(|state| state.seq += 1)?;
-    drop(writer);
-
     let server = Server::from_socket(view.meta.socket.clone());
-    server.paste(&view.meta.pane, text)?;
-    server.send_keys(&view.meta.pane, &["Enter"])?;
+    deliver(&agent, &server, &view.meta.pane, text)?;
 
     // An agent that is mid-turn will not submit this until the turn it is on
     // ends, which is not a stall and may be a long way off.
@@ -102,6 +93,22 @@ pub fn run(
         CONFIRM.as_secs()
     );
     Ok(exit::FAILURE)
+}
+
+/// Put the text in front of the agent, recorded before it is typed.
+///
+/// The record comes first, under the writer's lock, because it is what tells a
+/// reader in another process that the answer it can see belongs to the turn
+/// before this message. The view acts through this too: what is shared is the
+/// order, which is the part that must not be got wrong twice.
+pub fn deliver(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Result<()> {
+    let writer = agent.writer()?;
+    writer.append(&Event::new(SEND, serde_json::json!({ "text": text })))?;
+    writer.update_state(|state| state.seq += 1)?;
+    drop(writer);
+
+    server.paste(pane, text)?;
+    server.send_keys(pane, &["Enter"])
 }
 
 /// Wait for the vendor to say it took the message.

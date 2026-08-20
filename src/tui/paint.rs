@@ -1,9 +1,10 @@
 //! Drawing the view.
 //!
-//! Four bands, top to bottom: what there is, the agents themselves, a closer
-//! look at one of them when somebody asked for one, and the keys. Everything
-//! here is a function of what it is handed, so what the screen says can be
-//! read back in a test without a terminal anywhere near it.
+//! Five bands, top to bottom: what there is, the agents themselves, a closer
+//! look at one of them when somebody asked for one, the line somebody is
+//! typing when they are typing one, and the keys. Everything here is a
+//! function of what it is handed, so what the screen says can be read back in
+//! a test without a terminal anywhere near it.
 //!
 //! A row is one line, always: an agent's answer is a paragraph, and a
 //! paragraph in a list is how a list stops being one.
@@ -14,12 +15,28 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
+use super::act::{Asking, Composer};
 use super::rows::{Group, Item, List};
+use super::{Mode, Screen};
 use crate::derive::View;
 use crate::store::Phase;
 
-/// What the keys do, on the screen where somebody can see them.
-const KEYS: &str = "space peek · enter attach · q quit";
+/// The keys with nowhere else to be said, on the screen where somebody can see
+/// them. The rest are one keypress away, which is what `?` is for.
+const KEYS: &str = "space peek · enter attach · ? keys · q quit";
+
+/// Every key, for whoever asked what they are.
+const HELP: [(&str, &str); 9] = [
+    ("↑ ↓", "walk the agents"),
+    ("space", "look closer at one"),
+    ("enter", "bring its window forward"),
+    ("n", "start an agent · tab starts it out of sight"),
+    ("r", "reply: a message, or the key a question wants"),
+    ("d", "what it has changed"),
+    ("ctrl+x", "stop it · again to forget it"),
+    ("?", "these keys"),
+    ("q", "close the view"),
+];
 
 /// A closer look at one agent.
 pub struct Peek {
@@ -27,28 +44,47 @@ pub struct Peek {
     pub phase: Phase,
     /// What it is waiting to be told, when it is waiting to be told anything.
     pub question: Option<String>,
-    /// The screen it is sitting on, or the answer it left behind.
+    /// The screen it is sitting on, the answer it left behind, or what it has
+    /// changed.
     pub body: String,
+    /// Whether the body is that diff, which is read from the top down rather
+    /// than from the bottom up.
+    pub changes: bool,
 }
 
 /// Draw everything.
-pub fn draw(frame: &mut Frame, list: &List, peek: Option<&Peek>, notice: Option<&str>) {
+pub fn draw(frame: &mut Frame, screen: &Screen) {
     let area = frame.area();
-    let panel = peek.map_or(0, |_| peek_height(area.height));
-    let [top, middle, bottom, keys] = Layout::vertical([
+    let helping = matches!(screen.mode, Mode::Keys);
+    let panel = match (helping, &screen.peek) {
+        (false, Some(_)) => peek_height(area.height),
+        _ => 0,
+    };
+    let composing = matches!(screen.mode, Mode::Typing(_));
+
+    let [top, middle, bottom, line, keys] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(panel),
+        Constraint::Length(u16::from(composing)),
         Constraint::Length(1),
     ])
     .areas(area);
 
-    frame.render_widget(Paragraph::new(header(list)), top);
-    agents(frame, list, middle);
-    if let Some(peek) = peek {
+    frame.render_widget(Paragraph::new(header(&screen.list)), top);
+    match &screen.mode {
+        Mode::Keys => help(frame, middle),
+        _ => agents(frame, &screen.list, middle),
+    }
+    if panel > 0
+        && let Some(peek) = &screen.peek
+    {
         look(frame, peek, bottom);
     }
-    frame.render_widget(Paragraph::new(footer(notice)), keys);
+    if let Mode::Typing(composer) = &screen.mode {
+        composing_line(frame, composer, line);
+    }
+    frame.render_widget(Paragraph::new(footer(screen)), keys);
 }
 
 /// How much of the screen a peek takes: about half, and never so much that
@@ -143,13 +179,13 @@ fn row(view: &View, selected: bool, names: usize, width: usize) -> Line<'static>
 }
 
 /// A closer look at one agent: what it is asking, over the screen it is
-/// asking it on.
+/// asking it on — or, when that is what was asked for, what it has changed.
 fn look(frame: &mut Frame, peek: &Peek, area: Rect) {
-    let block = Block::new().borders(Borders::TOP).title(format!(
-        " {} · {} ",
-        peek.id,
-        peek.phase.as_str()
-    ));
+    let title = match peek.changes {
+        true => format!(" {} · what it has changed ", peek.id),
+        false => format!(" {} · {} ", peek.id, peek.phase.as_str()),
+    };
+    let block = Block::new().borders(Borders::TOP).title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -168,19 +204,73 @@ fn look(frame: &mut Frame, peek: &Peek, area: Rect) {
             asking,
         );
     }
-    let lines: Vec<Line> = tail(&peek.body, screen.height as usize)
+    // A screen is read from the bottom, where the newest of it is; a diff is
+    // read from the top, where the first file it touched is.
+    let rows = screen.height as usize;
+    let body = match peek.changes {
+        true => peek.body.lines().take(rows).collect(),
+        false => tail(&peek.body, rows),
+    };
+    let lines: Vec<Line> = body
         .into_iter()
         .map(|text| Line::styled(text.to_string(), dim()))
         .collect();
     frame.render_widget(Paragraph::new(lines), screen);
 }
 
+/// Every key and what it does.
+fn help(frame: &mut Frame, area: Rect) {
+    let lines: Vec<Line> = HELP
+        .iter()
+        .map(|(key, does)| {
+            Line::from(vec![
+                Span::styled(
+                    format!("{key:<7}"),
+                    Style::new().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled((*does).to_string(), dim()),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// The line somebody is typing, with the terminal's own cursor at the end of
+/// it: something being typed into should look like it.
+fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect) {
+    let prompt = format!("{} ▸ ", composer.prompt());
+    let width = area.width as usize;
+    let room = width.saturating_sub(prompt.chars().count() + 1);
+    // The end of the line, because the end is where somebody is typing.
+    let typed = end_of(&composer.text, room);
+
+    let at = prompt.chars().count() + typed.chars().count();
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(prompt, Style::new().fg(Color::Yellow)),
+            Span::raw(typed),
+        ])),
+        area,
+    );
+    frame.set_cursor_position((area.x + at.min(width.saturating_sub(1)) as u16, area.y));
+}
+
 /// The keys, or whatever the view has to say for itself instead.
-fn footer(notice: Option<&str>) -> Line<'static> {
-    match notice {
-        Some(said) => Line::styled(said.to_string(), Style::new().fg(Color::Yellow)),
-        None => Line::styled(KEYS, dim()),
+fn footer(screen: &Screen) -> Line<'static> {
+    if let Some(said) = &screen.notice {
+        return Line::styled(said.clone(), Style::new().fg(Color::Yellow));
     }
+    Line::styled(
+        match &screen.mode {
+            Mode::List => KEYS.to_string(),
+            Mode::Keys => "any key goes back · q quits".to_string(),
+            Mode::Typing(composer) => match composer.asking {
+                Asking::Task => "enter starts it · tab out of sight · esc cancels".to_string(),
+                Asking::Reply { .. } => "enter sends it · esc cancels".to_string(),
+            },
+        },
+        dim(),
+    )
 }
 
 /// How wide the column of names has to be. Capped, because one long name must
@@ -241,6 +331,13 @@ fn fit(text: &str, width: usize) -> String {
         1 => "…".to_string(),
         _ => text.chars().take(width - 1).chain(['…']).collect(),
     }
+}
+
+/// The last `width` characters of `text`, which is the part of a line
+/// somebody typing it is looking at.
+fn end_of(text: &str, width: usize) -> String {
+    let over = text.chars().count().saturating_sub(width);
+    text.chars().skip(over).collect()
 }
 
 /// Where the cursor is.
@@ -327,14 +424,18 @@ mod tests {
         }
     }
 
-    /// What the view puts on a screen of this size, line by line.
-    fn drawn(views: Vec<View>, peek: Option<Peek>, size: (u16, u16)) -> Vec<String> {
-        let mut list = List::default();
-        list.show(views);
+    /// The view, with a reading in it.
+    fn showing(views: Vec<View>, peek: Option<Peek>) -> Screen {
+        let mut screen = Screen::default();
+        screen.list.show(views);
+        screen.peek = peek;
+        screen
+    }
+
+    /// What a view of this size puts on the screen, line by line.
+    fn painted(screen: &Screen, size: (u16, u16)) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
-        terminal
-            .draw(|frame| draw(frame, &list, peek.as_ref(), None))
-            .unwrap();
+        terminal.draw(|frame| draw(frame, screen)).unwrap();
 
         let buffer = terminal.backend().buffer().clone();
         (0..size.1)
@@ -346,6 +447,11 @@ mod tests {
                     .to_string()
             })
             .collect()
+    }
+
+    /// What the view puts on a screen of this size, line by line.
+    fn drawn(views: Vec<View>, peek: Option<Peek>, size: (u16, u16)) -> Vec<String> {
+        painted(&showing(views, peek), size)
     }
 
     #[test]
@@ -438,6 +544,7 @@ mod tests {
                 phase: Phase::Waiting,
                 question: Some("Claude needs your permission to use Bash".to_string()),
                 body: "$ rm -rf build\nDo you want to proceed?\n\n\n".to_string(),
+                changes: false,
             }),
             (60, 12),
         );
@@ -458,23 +565,63 @@ mod tests {
 
     #[test]
     fn view_says_what_it_could_not_do_where_the_keys_are() {
-        let mut list = List::default();
-        list.show(Vec::new());
-        let mut terminal = Terminal::new(TestBackend::new(60, 6)).unwrap();
-        terminal
-            .draw(|frame| {
-                draw(
-                    frame,
-                    &list,
-                    None,
-                    Some("fix-login-a1b has no pane any more"),
-                )
-            })
-            .unwrap();
+        let mut screen = showing(Vec::new(), None);
+        screen.notice = Some("fix-login-a1b has no pane any more".to_string());
 
-        let buffer = terminal.backend().buffer().clone();
-        let last: String = (0..60).map(|c| buffer[(c, 5)].symbol()).collect();
-        assert_eq!(last.trim_end(), "fix-login-a1b has no pane any more");
+        let painted = painted(&screen, (60, 6));
+        assert_eq!(painted[5], "fix-login-a1b has no pane any more");
+    }
+
+    #[test]
+    fn view_shows_what_an_agent_changed_from_the_top_of_the_patch() {
+        let patch = (0..40)
+            .map(|n| format!("+ line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let screen = drawn(
+            vec![view("fix-login-a1b", Phase::Working, None, 3)],
+            Some(Peek {
+                id: "fix-login-a1b".to_string(),
+                phase: Phase::Working,
+                question: None,
+                body: patch,
+                changes: true,
+            }),
+            (60, 14),
+        );
+
+        let all = screen.join("\n");
+        assert!(all.contains("fix-login-a1b · what it has changed"), "{all}");
+        assert!(
+            all.contains("+ line 0"),
+            "the first of it, not the last: {all}"
+        );
+        assert!(!all.contains("+ line 39"), "{all}");
+    }
+
+    #[test]
+    fn view_shows_the_line_being_typed_and_what_entering_it_will_do() {
+        let mut screen = showing(Vec::new(), None);
+        let mut composer = Composer::new(Asking::Task);
+        composer.text = "port the importer".to_string();
+        screen.mode = Mode::Typing(composer);
+
+        let painted = painted(&screen, (60, 6));
+        assert_eq!(painted[4], "task ▸ port the importer");
+        assert!(painted[5].contains("enter starts it"), "{:?}", painted[5]);
+        assert!(painted[5].contains("tab out of sight"), "{:?}", painted[5]);
+    }
+
+    #[test]
+    fn view_lists_every_key_when_somebody_asks_for_them() {
+        let mut screen = showing(Vec::new(), None);
+        screen.mode = Mode::Keys;
+
+        let painted = painted(&screen, (60, 12)).join("\n");
+        for (key, does) in HELP {
+            assert!(painted.contains(key), "{key} is missing:\n{painted}");
+            assert!(painted.contains(does), "{does} is missing:\n{painted}");
+        }
     }
 
     #[test]
