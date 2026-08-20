@@ -117,6 +117,23 @@ pub fn remove(repo: &Path, worktree: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Put a tree back where it was, on the branch it already had.
+///
+/// What `remove` took away, for the agent that is being started again. The
+/// branch is not created: this is a tree for work that already exists, and a
+/// branch that has gone with it is a reason to say so rather than to make a
+/// new one.
+pub fn restore(repo: &Path, worktree: &Path, branch: &str) -> Result<()> {
+    // git keeps its own record of a tree until somebody tells it the tree is
+    // gone, and it refuses to add a tree it believes is already there.
+    git(repo, &["worktree", "prune"])?;
+    git(
+        repo,
+        &["worktree", "add", &worktree.to_string_lossy(), branch],
+    )?;
+    Ok(())
+}
+
 /// Delete a branch and whatever is on it. Only ever on request.
 pub fn delete_branch(repo: &Path, branch: &str) -> Result<()> {
     git(repo, &["branch", "-D", branch])?;

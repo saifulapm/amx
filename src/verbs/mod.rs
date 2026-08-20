@@ -8,6 +8,7 @@ pub mod events;
 pub mod ls;
 pub mod new;
 pub mod result;
+pub mod resume;
 pub mod send;
 pub mod status;
 pub mod stop;

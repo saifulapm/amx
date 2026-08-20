@@ -4,23 +4,23 @@ mod config;
 mod derive;
 mod gc;
 
-// The verbs are stubs, so outside their own tests parts of these have no
-// caller yet. `expect` rather than `allow`: the day every item is reached, the
-// compiler asks for the attribute back — as every exit code now has a verb
-// that answers with it.
+// Parts of these are reached only by the tests that pin them: a store field
+// nothing reads back yet, a tmux call no verb has needed. `expect` rather than
+// `allow`: the day every item has a caller, the compiler asks for the
+// attribute back.
 mod exit;
 mod hook;
 mod ids;
 mod install;
 mod notify;
-#[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
+#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod paths;
-#[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
+#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod rules;
 mod spawn;
-#[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
+#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod store;
-#[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
+#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod tmux;
 mod verbs;
 mod worktree;
@@ -65,16 +65,15 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Result { id, timeout }) => finish(verbs::result::from_env(id, *timeout)),
         Some(cli::Command::Attach { id }) => finish(verbs::attach::from_env(id)),
         Some(cli::Command::Diff { id }) => finish(verbs::diff::from_env(id)),
+        Some(cli::Command::Resume { id, all }) => {
+            finish(verbs::resume::from_env(config, id.as_deref(), *all))
+        }
         Some(cli::Command::Events { ids, follow }) => finish(verbs::events::from_env(ids, *follow)),
         Some(cli::Command::Boot { id }) => finish(spawn::boot_from_env(id)),
         Some(cli::Command::Stop(args)) => finish(verbs::stop::from_env(args)),
         Some(cli::Command::Doctor { fix }) => finish(verbs::doctor::from_env(config, *fix)),
         Some(cli::Command::Uninstall) => finish(verbs::uninstall::from_env()),
         None => finish(cockpit::from_env()),
-        _ => {
-            eprintln!("{}", stub_line(cli.verb()));
-            exit::FAILURE
-        }
     }
 }
 
@@ -90,37 +89,18 @@ fn finish(outcome: Result<i32>) -> i32 {
     }
 }
 
-/// What a verb says while it has no implementation behind it.
-fn stub_line(verb: Option<&str>) -> String {
-    match verb {
-        Some(verb) => format!("amx {verb}: not implemented yet"),
-        None => "amx: not implemented yet".to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_stub_names_the_verb_and_says_it_does_nothing_yet() {
-        let line = stub_line(Some("status"));
-        assert!(line.contains("status"), "{line}");
-        assert!(line.contains("not implemented"), "{line}");
-    }
-
-    #[test]
-    fn a_verb_amx_cannot_name_still_says_something() {
-        let line = stub_line(None);
-        assert!(line.contains("amx"), "{line}");
-        assert!(line.contains("not implemented"), "{line}");
-    }
-
-    #[test]
-    fn a_stub_run_fails_rather_than_reporting_success() {
-        // A verb with nothing behind it yet, and one that reads nothing while
-        // it says so.
-        let cli = cli::Cli::try_parse_from(["amx", "resume", "fix-login-a1b"]).unwrap();
-        assert_eq!(run(&cli, &config::Config::default()), exit::FAILURE);
+    fn a_verb_that_cannot_reach_its_agent_fails_with_the_reason() {
+        // Every verb is behind `finish`, which is what turns anything that
+        // went wrong into an exit code and a line saying so.
+        assert_eq!(finish(Ok(exit::BLOCKED)), exit::BLOCKED);
+        assert_eq!(
+            finish(Err(anyhow::anyhow!("no agent `fix-login-a1b`"))),
+            exit::FAILURE
+        );
     }
 }

@@ -1,0 +1,7 @@
+# A session the vendor was asked to continue rather than start: it says how it
+# was called, announces the id it opens for the continued session — the one
+# thing a resume changes about an agent — and carries on where it left off.
+argv
+hook SessionStart {"source": "resume", "session_id": "@SESSION2@", "transcript_path": "@TRANSCRIPT2@"}
+print continuing where we left off
+sleep 600000

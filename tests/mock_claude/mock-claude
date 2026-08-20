@@ -11,6 +11,9 @@
 #
 # Steps, one per line. Blank lines and `#` comments are ignored.
 #
+#   argv                  write the arguments this stand-in was given to the
+#                         pane, so a test can read what the vendor was asked
+#                         for rather than only what amx recorded asking.
 #   hook <Event> <json>   deliver a hook payload the way claude delivers one:
 #                         on `amx _hook`'s stdin. `<json>` is the rest of the
 #                         payload and may be left out; `session_id` and
@@ -127,6 +130,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 	rest=${rest# }
 
 	case "$verb" in
+	argv) printf 'argv: %s\n' "$*" ;;
 	hook) deliver "$rest" ;;
 	print) printf '%b\n' "$rest" ;;
 	sleep) nap "$rest" ;;
