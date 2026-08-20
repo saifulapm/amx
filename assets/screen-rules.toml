@@ -1,0 +1,240 @@
+# What amx can recognise on an agent's screen.
+#
+# When the hooks have gone quiet, a reader looks at the bottom of the pane and
+# matches it against these rules. This file is the whole of what amx knows how
+# to see: claude's three blocking prompts, the line it spins while a turn runs,
+# and the furniture it leaves under an idle prompt. It is deliberately small. A
+# screen no rule claims is reported as `unknown` rather than guessed at — a
+# missing rule costs a row that says "I can't tell", a sloppy one costs a lie.
+#
+# Rules are ORDERED: the first whose conditions hold decides, so the more
+# specific screens come first. A rule holds when every string in `all` appears
+# and — if `any` is given — at least one of those appears too. Matching is done
+# against the capture with its control characters replaced and its case folded,
+# so a colour change in the middle of a word cannot hide a rule.
+#
+# ── The anchor law ───────────────────────────────────────────────────────────
+# Every string here was read off a live claude, and where it was measured is
+# recorded beside it. Two things this law has cost, and one it protects:
+#
+# A MULTI-WORD ANCHOR DIES TO WORD WRAP AT SOME WIDTH. The floor keeps the
+# rows separated by newlines, so a phrase the vendor wrapped across two rows
+# can never match as one substring. `you trust` breaks between `you` and
+# `trust` at 61–67 columns — three panes across a 200-column terminal, a shape
+# amx's own tiling produces. `shift+tab to cycle` is gone below 46 columns and
+# absent in manual mode at every width. Anchor on the fragment the vendor
+# cannot break: a single word, or the fragment a row OPENS with.
+#
+# A STRING RECOGNISED FROM A REFERENCE TREE IS NOT A MEASUREMENT. An earlier
+# ruleset anchored `working` on `esc to interrupt` and `idle` on
+# `? for shortcuts`, both taken from source rather than from a running vendor.
+# Measured against claude v2.1.226 on 2026-08-12: zero occurrences across 60
+# mid-turn captures and the idle screen. An agent parked at its prompt read
+# `unknown` for 183 consecutive samples, and turns flapped working → unknown →
+# working.
+#
+# So: any string recognising the vendor's UI is measured across its MODES and
+# WIDTHS, with the capture and the date recorded beside it, or it is wrong.
+
+# claude asks this before its prompt exists, so nothing else it draws can be
+# underneath — which is why it comes first.
+#
+# Measured against v2.1.226 on 2026-08-12 at 220 and 54 columns:
+#
+#   Quick safety check: Is this a project you created or one you trust? (Like
+#   your own code, …). If not, take a moment to review what's in this folder
+#   first.
+#   ❯ 1. Yes, I trust this folder
+#     2. No, exit
+#   Enter to confirm · Esc to cancel
+#
+# The wording drifted between 2026-08-11 and 2026-08-12 — a `Quick safety
+# check:` prefix appeared, the guidance merged onto one row — and the single
+# word `trust` survived it. At 54 columns the vendor wraps the sentence between
+# `you` and `trust`, so the two-word anchor this used to carry would have gone
+# silent exactly where amx tiles its own wall.
+#
+# The word alone is not a prompt: an agent discussing a registry it trusts
+# writes it every day. What makes it a prompt is the widget — `❯ 1.`, the
+# selection marker in front of the first option, which claude draws only in a
+# choice box — or the box's own confirm footer. `within` says the two have to
+# be in the same box rather than merely on the same screen: 16 rows is the
+# widest one measured, the trust screen at 54 columns, where eleven rows of
+# wrapped guidance sit between the word and the marker.
+[[rule]]
+name = "folder_trust"
+state = "waiting"
+all = ["trust"]
+any = ["❯ 1.", "enter to confirm"]
+within = 16
+not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
+
+# claude's permission box, measured live against v2.1.226 on 2026-08-12 at 220
+# columns. It takes forcing: a machine whose claude runs in auto mode approves
+# every probe without asking, and `--permission-mode manual` with an `ask` rule
+# for `Bash` is what finally produced one.
+#
+#   ────────────────────────────────────────────
+#    Bash command
+#      rm -f b.txt
+#    Permission rule Bash requires confirmation for this command.
+#    Do you want to proceed?
+#    ❯ 1. Yes
+#      2. No
+#    Esc to cancel · Tab to amend · ctrl+e to explain
+#
+# Two things that capture settles: the box is a full-width rule with the
+# request under it and not a `╭─╮` box, and it draws NO mode footer.
+#
+# ── Why a bare `❯` is not evidence, and `not_below` is ───────────────────────
+# `❯` used to stand in `any` as the affordance. It is a no-op: `❯` is the
+# composer chevron and it is on every screen this vendor draws, mid-turn and
+# idle alike. With it, each rule collapsed to one generic substring over the
+# agent's own visible output, and an ordinary answer carrying "do you want to"
+# above a markdown numbered list was ruled `waiting` — with a question invented
+# from a sentence that was not one. Worse than `unknown` twice over: `send`
+# then refuses, and a caller branching on the blocked exit code answers by
+# typing a key into a running turn.
+#
+# But no anchor string can tell a widget from a QUOTATION of that widget. An
+# agent that pastes another agent's `capture-pane` as a tool result — which is
+# what amx's own callers do — reproduces the box character for character, and
+# one plain English sentence does it too: "pick the folder you trust, press
+# Enter to confirm" carries both of the trust rule's fragments on one row.
+#
+# What a quotation cannot reproduce is the vendor's LAYOUT. claude draws no
+# input box under a blocking prompt: both blocking screens end at their confirm
+# footer with nothing beneath. Quoted chrome is always sitting in a turn, so
+# the composer and the mode footer are drawn below it. A modal choice and an
+# input box are mutually exclusive states of the same program, so a widget with
+# a composer under it is text ABOUT a widget.
+#
+# `not_below` names the mode footer, not the composer's own row: `❯` is on that
+# row and also in front of every option, and `send` can leave `❯ 1. …` staged
+# in the composer itself, so no content test on that row tells an input box
+# from a widget.
+#
+# The footer is anchored on the glyph it opens with. Measured across six modes
+# and ten widths, 24 to 220 columns, on 2026-08-12:
+#
+#   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+#   ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents
+#   ⏸ plan mode on (shift+tab to cycle) · ← for agents
+#   ⏸ manual mode on · ← for agents               ← no hint at any width
+#   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+#   ⏵⏵ don't ask on (shift+tab to cycle) · ← for agents
+#
+# and the vendor truncates from the right as the pane narrows: in auto mode the
+# hint is intact at 46 columns, `(shift+tab to` at 40, `(shift+tab` at 34, gone
+# by 30. Four agents on a 160-column terminal is 40 columns each. `⏵⏵` and `⏸`
+# are present in all six modes at every width, contiguous in the capture, and
+# on neither blocking screen — verified against a live permission box and a
+# live trust screen, neither of which carries the glyph on any of its 49 rows.
+# The hint stays as an alternative: it costs nothing and an older vendor may
+# print it where the glyph is absent.
+[[rule]]
+name = "permission_prompt"
+state = "waiting"
+all = ["do you want to"]
+any = ["❯ 1.", "esc to cancel"]
+within = 16
+not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
+
+# The third blocking prompt: the menu claude's AskUserQuestion tool draws.
+# Measured against v2.1.229 on 2026-08-15 in five modes at eight widths from 24
+# to 191 columns — forty captures. The sixth mode is a vendor fact rather than
+# a gap: `dontAsk` blocks the tool outright, so the screen it leaves is an
+# ordinary idle one.
+#
+#    ☐ Indentation
+#   Should this project be indented with spaces or tabs?
+#   ❯ 1. Spaces
+#        Indent with spaces (most common default).
+#     2. Tabs
+#     3. Type something.
+#   ──────────────────────────────────────────────────────
+#     4. Chat about this
+#   Enter to select · ↑/↓ to navigate · Esc to cancel
+#
+# Neither rule above can reach it — `trust` and `do you want to` are both
+# absent — and `all` decides, so without this rule the floor matched nothing
+# and an agent parked on a menu read `unknown` with no question on its row.
+#
+# `enter to select` is intact at every one of those forty cells, because it is
+# what the row OPENS with: this footer wraps rather than truncating. At 24
+# columns it reads `Enter to select · ↑/↓ to` / `navigate · Esc to` / `cancel`,
+# which is also why `esc to cancel` rides in `any` as an alternative and never
+# as the anchor.
+#
+# `within` is 24 here rather than 16 because the box's height is the agent's
+# own choice — the tool names its options and writes their descriptions — and
+# at 24 columns eighteen rows already sit between `❯ 1.` and the footer. There
+# is no height a bound can be sized to, so the window is the floor's own and
+# the weight is carried by `not_below`, which does not depend on the box's
+# height. Not one of the forty captures carries a mode-footer glyph anywhere.
+[[rule]]
+name = "ask_menu"
+state = "waiting"
+all = ["enter to select"]
+any = ["❯ 1.", "esc to cancel"]
+within = 24
+not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
+
+# A turn is running. v2.1.226 spins one line just above the input box:
+#
+#   ✽ Nesting… (15s · still thinking with xhigh effort)
+#   · Infusing… (2m 2s · ↓ 6.9k tokens)          (during a 40s Bash call)
+#
+# — a cycling glyph (`✻ ✽ ✢ ✶ · *`), a rotating gerund, and always `…` + ` (`
+# + an elapsed `<n>s` + ` · `. Anchoring on the two punctuation fragments
+# rather than on any word is what survives the vendor renaming the gerund,
+# changing the glyph set, or swapping the detail after the `·`.
+#
+# What this must not match is the line claude leaves behind when the turn is
+# over — `✻ Brewed for 1m 22s`, same glyph, no ellipsis and no parenthesis.
+# That line sits on the idle screen, so a rule that matched it would report a
+# finished agent as working forever.
+#
+# This is the weakest rule in the file: two punctuation fragments, no `within`,
+# no `not_below`. The floor reads the bottom rows, so an agent's own output can
+# in principle carry both fragments, and a wrong match here does not only
+# mislabel a row — naming a screen as non-blocking also clears a pending
+# question off it. It is the first rule to re-measure on a vendor bump.
+[[rule]]
+name = "spinner"
+state = "working"
+all = ["… (", "s · "]
+
+# claude is drawn and waiting for a human to type. This is the mode footer
+# under the input box, and the glyph it opens with is what every mode and every
+# width have in common — see the permission rule above for the measurement.
+# Anchoring `idle` on the cycle hint instead made a manual-mode agent, and any
+# agent on a pane under about 40 columns, match no rule at all.
+#
+# `? for shortcuts` is claude's pre-2.1 hint, kept as an alternative so amx is
+# not blind against an older vendor.
+#
+# `quiescent` is the whole point of this entry, and names the trap it exists
+# for: THIS FOOTER IS ON THE SCREEN WHILE CLAUDE WORKS, TOO. Not similarly —
+# identically. With the control characters stripped, a capture taken mid-turn
+# and one taken after the same turn's Stop hook differ only in the transcript
+# above them. While a long answer streams the vendor drops its spinner line
+# entirely (203 of 203 samples across one 207-second turn), so there is no
+# positive mark to anchor on and nothing but TIME separates an idle screen from
+# a pause between two chunks of output.
+#
+# So a quiescent rule may not end a turn that is on the record as running until
+# the screen has held still across a run of consecutive looks. From a state
+# with nothing outstanding — starting, or unknown — it decides at once, which
+# is what gets a parked agent named inside ten seconds.
+#
+# Without that gate the rule calls a working agent idle, which is strictly
+# worse than `unknown`: measured at two consecutive looks, it reported a live
+# turn as finished 51 seconds before its Stop hook arrived. The longest
+# mid-turn stillness measured at the floor's own rate is ten seconds, at the
+# tail of a turn after the answer had finished streaming.
+[[rule]]
+name = "idle_prompt"
+state = "idle"
+quiescent = true
+any = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]

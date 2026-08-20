@@ -11,6 +11,8 @@ mod ids;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod paths;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
+mod rules;
+#[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod store;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod tmux;

@@ -1,0 +1,823 @@
+//! Reading an agent's screen when its hooks have gone quiet.
+//!
+//! Hooks are precise and win while they flow. When they stop — the vendor was
+//! interrupted with Escape, or nothing has happened for a while — the pane
+//! itself is the only witness left, and this is what amx knows how to see in
+//! it: the rules in `assets/screen-rules.toml`, matched against the bottom of
+//! the capture.
+//!
+//! The ruleset is small on purpose. A screen no rule claims is `unknown`, and
+//! `unknown` with its age shown is a better answer than a confident wrong one:
+//! naming a screen also clears any question off the row, so a wrong match can
+//! delete a question a person is being asked.
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
+use std::sync::OnceLock;
+
+use crate::store::Phase;
+
+/// How many rows up from the bottom of the capture a rule may see. The
+/// vendor's chrome sits at the bottom; the rest is the agent's own output,
+/// which is not evidence about the vendor's state.
+pub const FLOOR_LINES: usize = 24;
+
+/// How many consecutive unchanged looks a quiescent rule needs before it may
+/// end a turn that is on the record as running.
+///
+/// The idle screen and a mid-turn pause are the same bytes, so only time tells
+/// them apart. The longest mid-turn stillness measured at one look a second is
+/// ten seconds, at the tail of a turn after the answer stopped streaming and
+/// before the Stop hook arrived; this is three times that.
+pub const SETTLED_LOOKS: usize = 30;
+
+/// The rules, in the order they are asked.
+#[derive(Debug, Deserialize)]
+pub struct Ruleset {
+    #[serde(rename = "rule")]
+    rules: Vec<Rule>,
+}
+
+/// One screen amx can recognise.
+#[derive(Debug, PartialEq, Eq, Deserialize)]
+pub struct Rule {
+    /// What this screen is called, for `status` to name its evidence.
+    pub name: String,
+    /// What the screen means.
+    pub state: Phase,
+    /// Every one of these must appear.
+    #[serde(default)]
+    pub all: Vec<String>,
+    /// At least one of these must appear — the widget that makes prose a
+    /// prompt.
+    #[serde(default)]
+    pub any: Vec<String>,
+    /// How many rows the matched strings may span. A blocking prompt is a box,
+    /// not two things that happen to share a screen.
+    #[serde(default)]
+    pub within: Option<usize>,
+    /// None of these may appear below the match. claude draws no composer
+    /// under a blocking prompt, so a widget with the mode footer beneath it is
+    /// a quotation of a widget rather than one.
+    #[serde(default)]
+    pub not_below: Vec<String>,
+    /// Whether this rule needs the screen to have held still before it may end
+    /// a running turn.
+    #[serde(default)]
+    pub quiescent: bool,
+}
+
+/// What the screen had to say.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Claim<'a> {
+    /// This rule claims the screen, and may say so.
+    Ruled(&'a Rule),
+    /// This rule claims the screen, but a turn is on the record as running and
+    /// the screen has not held still long enough to end it.
+    Unsettled(&'a Rule),
+    /// Nothing amx knows accounts for this screen.
+    Unclaimed,
+}
+
+impl Claim<'_> {
+    /// The state to report, when there is one.
+    pub fn phase(&self) -> Option<Phase> {
+        match self {
+            Claim::Ruled(rule) => Some(rule.state),
+            _ => None,
+        }
+    }
+
+    /// Which rule spoke, for `status` to name.
+    pub fn rule_name(&self) -> Option<&str> {
+        match self {
+            Claim::Ruled(rule) | Claim::Unsettled(rule) => Some(rule.name.as_str()),
+            Claim::Unclaimed => None,
+        }
+    }
+}
+
+/// The ruleset amx ships with.
+pub fn bundled() -> &'static Ruleset {
+    static BUNDLED: OnceLock<Ruleset> = OnceLock::new();
+    BUNDLED.get_or_init(|| {
+        Ruleset::parse(include_str!("../assets/screen-rules.toml"))
+            .expect("the bundled ruleset is part of the binary")
+    })
+}
+
+impl Ruleset {
+    pub fn parse(text: &str) -> Result<Ruleset> {
+        toml::from_str(text).context("reading the screen rules")
+    }
+
+    pub fn rules(&self) -> &[Rule] {
+        &self.rules
+    }
+
+    /// Ask the screen what it is.
+    ///
+    /// `recorded` is the state amx has on file and `still_looks` is how many
+    /// consecutive looks have found this same screen — together they decide
+    /// whether a quiescent rule is allowed to end a turn.
+    pub fn claim(&self, capture: &str, recorded: Phase, still_looks: usize) -> Claim<'_> {
+        let screen = Screen::new(capture);
+        // Ordered: the first rule that holds decides, and the rest are not
+        // asked. A screen the specific rules have named is not also the
+        // furniture underneath them.
+        let Some(rule) = self.rules.iter().find(|rule| rule.holds(&screen)) else {
+            return Claim::Unclaimed;
+        };
+        if rule.may_decide(recorded, still_looks) {
+            Claim::Ruled(rule)
+        } else {
+            Claim::Unsettled(rule)
+        }
+    }
+}
+
+impl Rule {
+    /// Whether this rule's conditions hold on the screen.
+    fn holds(&self, screen: &Screen) -> bool {
+        let mut matched = Vec::with_capacity(self.all.len() + 1);
+        for needle in &self.all {
+            match screen.row_of(needle) {
+                Some(row) => matched.push(row),
+                None => return false,
+            }
+        }
+
+        if !self.any.is_empty() {
+            // The affordance: the highest row any of them is on. Everything
+            // below it is the rest of the box — or, on a quotation, the
+            // vendor's own chrome, which is what gives the guard something to
+            // find.
+            match self.any.iter().filter_map(|n| screen.row_of(n)).min() {
+                Some(row) => matched.push(row),
+                None => return false,
+            }
+        }
+
+        let (Some(&first), Some(&last)) = (matched.iter().min(), matched.iter().max()) else {
+            // A rule with no conditions at all claims nothing.
+            return false;
+        };
+
+        if let Some(within) = self.within
+            && last - first > within
+        {
+            return false;
+        }
+
+        !screen.any_below(last, &self.not_below)
+    }
+
+    /// Whether this rule may speak, given what amx already believes.
+    ///
+    /// A rule that is not quiescent always may. A quiescent one may end a turn
+    /// only once the screen has held still; from a state with nothing
+    /// outstanding it decides at once, which is what gets a parked agent named
+    /// rather than left at `starting`.
+    fn may_decide(&self, recorded: Phase, still_looks: usize) -> bool {
+        if !self.quiescent {
+            return true;
+        }
+        match recorded {
+            // Nothing is outstanding, so there is no turn to end.
+            Phase::Starting | Phase::Unknown => true,
+            _ => still_looks >= SETTLED_LOOKS,
+        }
+    }
+}
+
+/// The part of a capture a rule is allowed to look at: the bottom rows, case
+/// folded.
+struct Screen {
+    rows: Vec<String>,
+}
+
+impl Screen {
+    fn new(capture: &str) -> Screen {
+        let all: Vec<&str> = capture.lines().collect();
+        let floor = all.len().saturating_sub(FLOOR_LINES);
+        Screen {
+            rows: all[floor..].iter().map(|row| row.to_lowercase()).collect(),
+        }
+    }
+
+    /// The topmost row carrying `needle`.
+    fn row_of(&self, needle: &str) -> Option<usize> {
+        self.rows.iter().position(|row| row.contains(needle))
+    }
+
+    /// Whether any of `needles` appears below `row`.
+    fn any_below(&self, row: usize, needles: &[String]) -> bool {
+        self.rows
+            .iter()
+            .skip(row + 1)
+            .any(|line| needles.iter().any(|needle| line.contains(needle)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Screens measured off a live claude ───────────────────────────────────
+    // Every capture below came off a running vendor, at the version, date and
+    // width named with it. They are the evidence these rules are answerable
+    // to: a rule that only matches a screen amx made up is a transcription,
+    // not a measurement.
+
+    /// The turn is over, claude's own summary line is still on the transcript,
+    /// and the prompt is waiting for a person. v2.1.226, auto mode.
+    const IDLE_SCREEN: &str = "\
+  It ran for the full 40 seconds and exited cleanly.
+
+✻ Worked for 2m 26s
+
+──────────────────────────────────────── amx ──
+❯
+────────────────────────────────────────────────
+  Opus 5 (1M context) │ ◈ 4% │ fix-login-a1b (amx/fix-login-a1b) │ ◖ xhigh
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+";
+
+    /// The same screen in manual mode, captured 2026-08-12 at 220 columns —
+    /// identical but for the footer, which carries no cycle hint in this mode
+    /// at any width.
+    const IDLE_SCREEN_MANUAL: &str = "\
+● I'll run that command.
+  Ran 1 shell command
+
+✻ Cooked for 1m 23s
+
+────────────────────────────────────── round5 ──
+❯
+────────────────────────────────────────────────
+  Opus 5 (1M context) │ ◈ 2% │ scratch2 (HEAD*) │ ◖ xhigh
+  ⏸ manual mode on · ← for agents
+";
+
+    /// claude mid-turn while an answer streams. The vendor drops its spinner
+    /// line entirely while output flows, so with the control characters
+    /// stripped this differs from the idle screen only in the transcript above
+    /// it. Nothing here says whether a turn is running.
+    const STREAMING_SCREEN: &str = "\
+  5. BBR (2016): Loss Is the Wrong Signal
+
+  Tahoe, Reno and CUBIC share an assumption: loss means congestion.
+
+  First, bufferbloat. Router buffers grew to hundreds of milliseconds.
+
+──────────────────────────────────────── amx ──
+❯
+────────────────────────────────────────────────
+  Opus 5 (1M context) │ ◈ 2% │ fix-login-a1b (amx/fix-login-a1b) │ ◖ xhigh
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+";
+
+    /// A promptless boot left alone: the welcome box, an empty prompt, and
+    /// rows of nothing between them. An earlier ruleset read this as `unknown`
+    /// for 183 consecutive samples.
+    const PARKED_SCREEN: &str = "\
+╭─── Claude Code v2.1.226 ─────────────────────╮
+│             Welcome back Saiful Islam!       │
+│   Opus 5 (1M context) with xhig… · Claude    │
+│          /…/repo/.amx/worktrees/agent-ivu    │
+╰──────────────────────────────────────────────╯
+
+
+
+
+──────────────────────────────────────── amx ──
+❯
+────────────────────────────────────────────────
+  Opus 5 (1M context) │ ◈ 0% │ agent-ivu (amx/agent-ivu) │ ◖ xhigh
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+";
+
+    /// Mid-turn with the spinner up, 1m 54s into a turn whose Bash call has
+    /// been sleeping for ten seconds. The mode footer is on this screen too,
+    /// which is why rule order and not the footer decides.
+    const WORKING_SCREEN: &str = "\
+  Now running the command you asked for:
+● Running 1 shell command · 12s…
+  ⎿  $ bash -c \"sleep 40; echo finished-sleeping\" (10s)
+✢ Infusing… (1m 54s · ↓ 6.9k tokens)
+  ⎿  Tip: Did you know you can drag and drop image files into your terminal?
+──────────────────────────────────────── amx ──
+❯
+────────────────────────────────────────────────
+  Opus 5 (1M context) │ ◈ 3% │ fix-login-a1b (amx/fix-login-a1b) │ ◖ xhigh
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+";
+
+    /// The same turn thinking rather than running a tool: the other spinner
+    /// wording the rule has to survive.
+    const THINKING_SCREEN: &str = "\
+✽ Nesting… (15s · still thinking with xhigh effort)
+──────────────────────────────────────── amx ──
+❯
+────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+";
+
+    /// The folder-trust screen as v2.1.226 renders it on a 220-column pane,
+    /// captured 2026-08-12.
+    const TRUST_SCREEN_220: &str = "\
+────────────────────────────────────────────────
+ Accessing workspace:
+
+ /tmp/amx-repo/repo/.amx/worktrees/fix-login-a1b
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ 1. Yes, I trust this folder
+   2. No, exit
+
+ Enter to confirm · Esc to cancel
+";
+
+    /// The same screen on a 54-column pane — five agents tiled on one wall,
+    /// which is a shape amx creates by itself. The vendor wraps the sentence
+    /// across four rows, and the break falls between `you` and `trust`.
+    const TRUST_SCREEN_54: &str = "\
+──────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /tmp/amx-repo/repo/.amx/worktrees/fix-login-a1b
+
+ Quick safety check: Is this a project you created or
+ one you trust? (Like your own code, a well-known
+ open source project, or work from your team). If
+ not, take a moment to review what's in this folder
+ first.
+
+ Claude Code'll be able to read, edit, and execute
+ files here.
+
+ Security guide
+
+ ❯ 1. Yes, I trust this folder
+   2. No, exit
+
+ Enter to confirm · Esc to cancel
+";
+
+    /// A live permission box: v2.1.226, 2026-08-12, 220 columns, forced out of
+    /// the vendor with manual permissions and an ask rule for Bash. A full
+    /// width rule with the request under it, and no mode footer anywhere.
+    const PERMISSION_BOX: &str = "\
+────────────────────────────────────────────────
+ Bash command
+   rm -f b.txt
+   Remove b.txt
+ Permission rule Bash requires confirmation for this command.
+ /permissions to update rules
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+ Esc to cancel · Tab to amend · ctrl+e to explain
+";
+
+    /// The AskUserQuestion menu at 80 columns. v2.1.229, 2026-08-15.
+    const ASK_MENU_80: &str = "\
+────────────────────────────────────────────────────────────────────────────────
+ ☐ Indentation
+
+Should this project be indented with spaces or tabs?
+
+❯ 1. Spaces
+     Indent with spaces (most common default across JS/TS, PHP/Laravel, and
+     Python codebases).
+  2. Tabs
+     Indent with tab characters — accessible, since each reader can set their
+     own display width.
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
+    /// The same menu at 24 columns, where the footer wraps: `esc to cancel` is
+    /// no longer a contiguous substring, and eighteen rows separate the
+    /// selection marker from the footer.
+    const ASK_MENU_24: &str = "\
+────────────────────────
+ ☐ Indentation
+
+Should this project be
+indented with spaces or
+tabs?
+
+❯ 1. Spaces
+     Indent with spaces
+     (most common
+     default across
+     JS/TS, PHP/Laravel,
+     and Python
+     codebases).
+  2. Tabs
+     Indent with tab
+     characters —
+     accessible, since
+     each reader can set
+     their own display
+     width.
+  3. Type something.
+────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to
+navigate · Esc to
+cancel
+";
+
+    /// An agent quoting another agent's pane back as a tool result — which is
+    /// what amx's own callers have agents do. The quotation is the widget,
+    /// character for character.
+    const QUOTED_PERMISSION_BOX: &str = "\
+  I read the other agent's pane and it is asking this:
+
+  ╭──────────────────────────────────────────╮
+  │ Bash command                             │
+  │ Do you want to proceed?                  │
+  │ ❯ 1. Yes                                 │
+  │   2. No, and tell Claude what to do      │
+  ╰──────────────────────────────────────────╯
+    esc to cancel
+
+  I will answer it once you say which.
+
+──────────────────────────────────────── amx ──
+❯
+────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+";
+
+    /// The same attack under a manual-mode footer, captured live 2026-08-12
+    /// off the pane of an agent asked to quote a permission box. The cycle
+    /// hint the layout guard once keyed on is absent here; the glyph is not.
+    const QUOTED_BOX_UNDER_A_MANUAL_FOOTER: &str = "\
+❯ Print this block back to me verbatim inside a fenced code block.
+
+● ╭────────────╮
+  │ Bash command │
+  │ rm -rf build │
+  │ Do you want to proceed? │
+  │ ❯ 1. Yes │
+  │   2. No │
+  ╰────────────╯
+  Esc to cancel
+
+────────────────────────────────────── round5 ──
+❯
+────────────────────────────────────────────────
+  Opus 5 (1M context) │ ◈ 2% │ scratch2 (HEAD*) │ ◖ xhigh
+  ⏸ manual mode on · ← for agents
+";
+
+    /// An ordinary answer that happens to carry `do you want to` above a
+    /// markdown numbered list — the two things a markdown answer produces
+    /// every day. The `❯` on its own row is the composer, which is on every
+    /// screen this vendor draws.
+    const PROSE_THAT_LOOKS_LIKE_A_QUESTION: &str = "\
+  Here is the plan I would follow.
+
+  1. Add the parser
+  2. Wire the CLI
+
+  Do you want to proceed with this plan, or should I keep going?
+
+──────────────────────────────────────── amx ──
+❯
+────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+";
+
+    /// The other anchor in the same shape: an answer discussing trust.
+    const PROSE_ABOUT_TRUST: &str = "\
+  The lockfile is only as good as the registry you trust, so I would
+  pin the digest rather than the tag.
+
+  1. Pin the digest
+  2. Leave the tag
+
+──────────────────────────────────────── amx ──
+❯
+────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+";
+
+    /// One plain English sentence carrying both of the trust rule's fragments
+    /// on a single row. No widget, no list, and no string anchor can tell it
+    /// from a prompt.
+    const PROSE_WITH_A_CONFIRM_FOOTER_IN_IT: &str = "\
+  Pick the folder you trust, press Enter to confirm, and it takes care of
+  the rest.
+
+──────────────────────────────────────── amx ──
+❯
+────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+";
+
+    /// A numbered plan staged in the composer — what `send` leaves when the
+    /// paste lands and the submit does not. The composer row then IS
+    /// `❯ 1. …`, the widget's own option shape, carrying the anchor word too.
+    const A_PLAN_STAGED_IN_THE_COMPOSER: &str = "\
+  Working through the migration now.
+
+──────────────────────────────────────── amx ──
+❯ 1. Update the trust store before the rollout
+────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+";
+
+    /// The auto-mode footer on a 40-column pane — four agents on a 160-column
+    /// terminal. The vendor truncates its own hint from the right.
+    const FOOTER_AUTO_40: &str = "\
+  Ran the migration.
+
+──────────────────────────────────────
+❯
+──────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to      ·
+";
+
+    /// Nothing this ruleset knows: an ordinary shell, which is what a pane
+    /// shows when the vendor has exited.
+    const A_SHELL: &str = "\
+$ ls
+Cargo.toml  README.md  src  tests
+$
+";
+
+    fn claim<'a>(rules: &'a Ruleset, screen: &str, recorded: Phase) -> Claim<'a> {
+        rules.claim(screen, recorded, SETTLED_LOOKS)
+    }
+
+    #[test]
+    fn rules_the_bundled_file_is_the_ruleset() {
+        let rules = bundled();
+        let names: Vec<_> = rules.rules().iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "folder_trust",
+                "permission_prompt",
+                "ask_menu",
+                "spinner",
+                "idle_prompt"
+            ],
+            "order decides, so it is part of the data"
+        );
+    }
+
+    #[test]
+    fn rules_every_anchor_is_folded_the_way_the_screen_is() {
+        // Matching folds the capture's case; an anchor with a capital in it
+        // could never match, and would fail silently.
+        for rule in bundled().rules() {
+            for needle in rule.all.iter().chain(&rule.any).chain(&rule.not_below) {
+                assert_eq!(
+                    needle,
+                    &needle.to_lowercase(),
+                    "{}: {needle:?} must be written folded",
+                    rule.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rules_the_three_blocking_prompts_rule_waiting() {
+        let rules = bundled();
+        for (what, screen) in [
+            ("trust at 220 columns", TRUST_SCREEN_220),
+            ("trust at 54 columns", TRUST_SCREEN_54),
+            ("a live permission box", PERMISSION_BOX),
+            ("the ask menu at 80 columns", ASK_MENU_80),
+            ("the ask menu at 24 columns", ASK_MENU_24),
+        ] {
+            let claimed = claim(rules, screen, Phase::Working);
+            assert_eq!(
+                claimed.phase(),
+                Some(Phase::Waiting),
+                "{what} must rule waiting, ruled {claimed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rules_a_quotation_of_a_widget_is_not_a_widget() {
+        // No anchor string can tell these from the real thing; the layout can.
+        // claude draws no composer under a blocking prompt, so a widget with
+        // the mode footer beneath it is text about a widget.
+        let rules = bundled();
+        for (what, screen) in [
+            ("a quoted permission box", QUOTED_PERMISSION_BOX),
+            (
+                "the same under a manual footer",
+                QUOTED_BOX_UNDER_A_MANUAL_FOOTER,
+            ),
+            (
+                "prose that reads like a question",
+                PROSE_THAT_LOOKS_LIKE_A_QUESTION,
+            ),
+            ("prose about trust", PROSE_ABOUT_TRUST),
+            (
+                "a sentence with a confirm footer in it",
+                PROSE_WITH_A_CONFIRM_FOOTER_IN_IT,
+            ),
+            (
+                "a plan staged in the composer",
+                A_PLAN_STAGED_IN_THE_COMPOSER,
+            ),
+        ] {
+            let claimed = claim(rules, screen, Phase::Working);
+            assert_ne!(
+                claimed.phase(),
+                Some(Phase::Waiting),
+                "{what} must not rule waiting, ruled {claimed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rules_the_spinner_rules_working() {
+        let rules = bundled();
+        for (what, screen) in [
+            ("a tool call", WORKING_SCREEN),
+            ("thinking", THINKING_SCREEN),
+        ] {
+            assert_eq!(
+                claim(rules, screen, Phase::Idle).phase(),
+                Some(Phase::Working),
+                "{what} must rule working"
+            );
+        }
+
+        // The line claude leaves behind when the turn is over is the same
+        // glyph without the ellipsis and the parenthesis.
+        assert_ne!(
+            claim(rules, IDLE_SCREEN, Phase::Idle).phase(),
+            Some(Phase::Working),
+            "`✻ Worked for 2m 26s` is not a spinner"
+        );
+    }
+
+    #[test]
+    fn rules_idle_furniture_rules_idle_in_every_mode_and_width() {
+        let rules = bundled();
+        for (what, screen) in [
+            ("auto mode", IDLE_SCREEN),
+            ("manual mode, no cycle hint", IDLE_SCREEN_MANUAL),
+            ("auto mode truncated at 40 columns", FOOTER_AUTO_40),
+            ("a promptless boot", PARKED_SCREEN),
+        ] {
+            assert_eq!(
+                claim(rules, screen, Phase::Starting).phase(),
+                Some(Phase::Idle),
+                "{what} must rule idle"
+            );
+        }
+    }
+
+    #[test]
+    fn rules_a_screen_nothing_knows_claims_nothing() {
+        let rules = bundled();
+        for (what, screen) in [
+            ("a shell", A_SHELL),
+            ("an empty pane", ""),
+            (
+                "a pager",
+                "  1 use std::io;\n  2 fn main() {}\n~\n~\n\"src/main.rs\" 2L\n",
+            ),
+        ] {
+            assert_eq!(
+                claim(rules, screen, Phase::Working),
+                Claim::Unclaimed,
+                "{what} must claim nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn rules_a_still_screen_is_what_ends_a_running_turn() {
+        let rules = bundled();
+
+        // Mid-turn and idle are the same bytes, so a turn on the record is not
+        // ended by the screen until it has held still.
+        assert_eq!(
+            rules.claim(STREAMING_SCREEN, Phase::Working, 1).rule_name(),
+            Some("idle_prompt")
+        );
+        assert!(
+            rules
+                .claim(STREAMING_SCREEN, Phase::Working, 1)
+                .phase()
+                .is_none(),
+            "one look at a screen that looks idle must not end a turn"
+        );
+        assert!(
+            rules
+                .claim(STREAMING_SCREEN, Phase::Working, SETTLED_LOOKS - 1)
+                .phase()
+                .is_none()
+        );
+        assert_eq!(
+            rules
+                .claim(STREAMING_SCREEN, Phase::Working, SETTLED_LOOKS)
+                .phase(),
+            Some(Phase::Idle)
+        );
+
+        // With nothing outstanding there is no turn to end, so it decides at
+        // once — which is what gets a parked agent out of `starting`.
+        for recorded in [Phase::Starting, Phase::Unknown] {
+            assert_eq!(
+                rules.claim(PARKED_SCREEN, recorded, 1).phase(),
+                Some(Phase::Idle),
+                "{recorded} has nothing to wait for"
+            );
+        }
+
+        // A rule that is not quiescent never waits.
+        assert_eq!(
+            rules.claim(WORKING_SCREEN, Phase::Idle, 1).phase(),
+            Some(Phase::Working)
+        );
+    }
+
+    #[test]
+    fn rules_only_the_bottom_of_the_capture_is_evidence() {
+        // The agent's own output scrolls; the vendor's chrome does not. A
+        // spinner line far above the floor is transcript, not state.
+        let rules = bundled();
+        let old_news = format!(
+            "✢ Infusing… (1m 54s · ↓ 6.9k)\n{}{}",
+            "\n".repeat(40),
+            A_SHELL
+        );
+        assert_eq!(claim(rules, &old_news, Phase::Idle), Claim::Unclaimed);
+    }
+
+    #[test]
+    fn rules_matching_folds_case() {
+        let rules = bundled();
+        let shouted = PERMISSION_BOX.to_uppercase();
+        assert_eq!(
+            claim(rules, &shouted, Phase::Working).phase(),
+            Some(Phase::Waiting)
+        );
+    }
+
+    #[test]
+    fn rules_a_box_and_a_widget_have_to_share_a_screen() {
+        // `within` is what keeps two unrelated things on one screen from
+        // adding up to a prompt.
+        let ruleset = Ruleset::parse(
+            r#"
+            [[rule]]
+            name = "boxed"
+            state = "waiting"
+            all = ["do you want to"]
+            any = ["❯ 1."]
+            within = 3
+            "#,
+        )
+        .unwrap();
+
+        let together = "do you want to proceed?\n❯ 1. yes\n";
+        let apart = format!("do you want to proceed?\n{}❯ 1. yes\n", "\n".repeat(6));
+        assert_eq!(
+            ruleset.claim(together, Phase::Working, 1).phase(),
+            Some(Phase::Waiting)
+        );
+        assert_eq!(
+            ruleset.claim(&apart, Phase::Working, 1),
+            Claim::Unclaimed,
+            "six rows apart is not one box"
+        );
+    }
+
+    #[test]
+    fn rules_a_ruleset_that_is_not_one_is_an_error() {
+        assert!(
+            Ruleset::parse("[[rule]]\nname = \"x\"\n").is_err(),
+            "no state"
+        );
+        assert!(
+            Ruleset::parse("[[rule]]\nname = \"x\"\nstate = \"pondering\"\n").is_err(),
+            "not a state amx has"
+        );
+        assert!(Ruleset::parse("rule = ").is_err(), "not TOML");
+    }
+}
