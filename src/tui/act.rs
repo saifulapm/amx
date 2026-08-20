@@ -103,13 +103,13 @@ pub fn reply(root: &Path, id: &str, text: &str) -> Result<String> {
         Phase::Waiting => {
             let Some(key) = verbs::answer::named(text) else {
                 return Ok(format!(
-                    "{id} is asking — y, n, 1-9, enter or esc answers it"
+                    "{id} is asking; y, n, 1-9, enter or esc answers it"
                 ));
             };
             verbs::answer::press(&agent, &server, &view.meta.pane, &key)?;
             Ok(format!("answered {id}"))
         }
-        phase if phase.is_terminal() => Ok(format!("{id} is {phase} — nothing is listening")),
+        phase if phase.is_terminal() => Ok(format!("{id} is {phase}; nothing is listening")),
         _ => {
             verbs::send::deliver(&agent, &server, &view.meta.pane, text)?;
             Ok(format!("sent to {id}"))

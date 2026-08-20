@@ -29,7 +29,7 @@ pub fn run(root: &Path, id: &str, out: &mut impl Write) -> Result<i32> {
 
     let (Some(tree), Some(base)) = (&meta.worktree, &meta.base) else {
         bail!(
-            "`{id}` has no worktree of its own — it works in {}, \
+            "`{id}` has no worktree of its own; it works in {}, \
              so there is nothing to compare it against",
             meta.dir.display()
         );

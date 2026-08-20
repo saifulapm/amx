@@ -81,7 +81,7 @@ pub fn run(
     // An agent that is mid-turn will not submit this until the turn it is on
     // ends, which is not a stall and may be a long way off.
     if phase == Phase::Working {
-        eprintln!("amx: {id} is working — the message is queued behind the turn it is on");
+        eprintln!("amx: {id} is working; the message is queued behind the turn it is on");
         return Ok(exit::OK);
     }
 
@@ -89,7 +89,7 @@ pub fn run(
         return Ok(exit::OK);
     }
     eprintln!(
-        "amx: {id} did not start working within {}s — the message may not have reached it",
+        "amx: {id} did not start working within {}s; the message may not have reached it",
         CONFIRM.as_secs()
     );
     Ok(exit::FAILURE)
@@ -151,7 +151,7 @@ pub fn waiting_on_a_question(
         line(&rendered(question, to_terminal), out)?;
     }
     eprintln!(
-        "amx: {id} is waiting on a question — answer it with \
+        "amx: {id} is waiting on a question. answer it with \
          `amx answer {id} <y|n|1-9|enter|esc>`"
     );
     Ok(exit::BLOCKED)
@@ -159,7 +159,7 @@ pub fn waiting_on_a_question(
 
 /// Exit `FAILURE`: this agent is not going to answer anybody.
 pub fn nothing_more_is_coming(id: &str, phase: Phase) -> i32 {
-    eprintln!("amx: {id} is {phase} — {}", remedy(id, phase));
+    eprintln!("amx: {id} is {phase}. {}", remedy(id, phase));
     exit::FAILURE
 }
 

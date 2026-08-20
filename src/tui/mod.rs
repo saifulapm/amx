@@ -419,7 +419,7 @@ fn attach(here: Option<&Here>, view: &View) -> Result<Option<String>> {
     }
     if server.pane_field(&view.meta.pane, "#{pid}")? != here.pid {
         return Ok(Some(format!(
-            "{} is on another tmux — {elsewhere}",
+            "{} is on another tmux. {elsewhere}",
             view.id()
         )));
     }

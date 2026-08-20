@@ -36,7 +36,7 @@ pub fn run(root: &Path, id: &str, key: &str) -> Result<i32> {
     // Before anything is opened, let alone typed: a key amx cannot name is a
     // mistake in the command line, and the agent must never see it.
     let Some(pressed) = named(key) else {
-        eprintln!("amx: `{key}` is not an answer — use y, n, 1-9, enter or esc");
+        eprintln!("amx: `{key}` is not an answer. use y, n, 1-9, enter or esc");
         return Ok(exit::USAGE);
     };
 
@@ -46,7 +46,7 @@ pub fn run(root: &Path, id: &str, key: &str) -> Result<i32> {
         return Ok(nothing_more_is_coming(id, phase));
     }
     if phase != Phase::Waiting {
-        eprintln!("amx: {id} has no pending question — nothing to answer");
+        eprintln!("amx: {id} has no pending question; nothing to answer");
         return Ok(exit::BLOCKED);
     }
 

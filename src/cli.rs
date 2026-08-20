@@ -52,7 +52,7 @@ pub enum Command {
 
     /// List agents and their states.
     Ls {
-        /// Print the stable JSON schema instead of the table.
+        /// Print the stable JSON instead of the table.
         #[arg(long)]
         json: bool,
     },
@@ -60,7 +60,7 @@ pub enum Command {
     /// Show one agent, and which signal that state came from.
     Status {
         id: String,
-        /// Print the stable JSON schema instead of the summary.
+        /// Print the stable JSON instead of the summary.
         #[arg(long)]
         json: bool,
     },
@@ -106,7 +106,7 @@ pub enum Command {
         follow: bool,
     },
 
-    /// Check tmux, the vendor, the config and the hook wiring.
+    /// Check tmux, the agent command, the config and the hook wiring.
     Doctor {
         /// Install what is missing.
         #[arg(long)]
@@ -150,12 +150,12 @@ pub struct NewArgs {
     #[arg(long)]
     pub no_worktree: bool,
 
-    /// The vendor command to run instead of the configured one.
+    /// The agent command to run instead of the configured one.
     #[arg(long)]
     pub agent: Option<String>,
 
-    /// Arguments passed to the vendor command verbatim.
-    #[arg(last = true, value_name = "VENDOR_ARGS")]
+    /// Arguments passed to the agent command verbatim.
+    #[arg(last = true, value_name = "AGENT_ARGS")]
     pub vendor_args: Vec<String>,
 }
 
@@ -163,7 +163,7 @@ pub struct NewArgs {
 pub struct StopArgs {
     pub id: String,
 
-    /// Take the default disposition for everything, asking nothing.
+    /// Take the defaults for everything, asking nothing.
     #[arg(long)]
     pub force: bool,
 

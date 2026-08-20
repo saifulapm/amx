@@ -70,7 +70,7 @@ fn one(
     // asked for.
     if !view.phase().is_terminal() {
         eprintln!(
-            "amx resume: {id} is {} — stop it before starting it again",
+            "amx resume: {id} is {}. stop it before starting it again",
             view.phase()
         );
         return Ok(exit::BLOCKED);
@@ -137,7 +137,7 @@ fn bring_back(root: &Path, meta: &Meta, env: &BTreeMap<String, String>) -> Resul
     let id = &meta.id;
     let Some(session) = meta.session.as_deref() else {
         bail!(
-            "no session was ever recorded for {id}, so there is nothing to continue — \
+            "no session was ever recorded for {id}, so there is nothing to continue. \
              start a fresh agent with `amx new`"
         );
     };
