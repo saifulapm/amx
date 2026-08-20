@@ -16,6 +16,8 @@ mod rules;
 mod store;
 #[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
 mod tmux;
+#[cfg_attr(not(test), expect(dead_code, reason = "the verbs are still stubs"))]
+mod worktree;
 
 use clap::Parser;
 use std::process::ExitCode;
