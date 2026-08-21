@@ -27,7 +27,7 @@ use crate::store::Phase;
 const KEYS: &str = "space peek · enter attach · ctrl+s axis · ? keys · q quit";
 
 /// Every key, for whoever asked what they are.
-const HELP: [(&str, &str); 11] = [
+const HELP: [(&str, &str); 12] = [
     ("↑ ↓", "walk the agents"),
     ("space", "look closer at one"),
     ("enter", "bring its window forward · shut a group"),
@@ -36,6 +36,7 @@ const HELP: [(&str, &str); 11] = [
     ("d", "what it has changed"),
     ("ctrl+x", "stop it · again to forget it"),
     ("ctrl+s", "gather them by state or by project"),
+    ("alt+enter", "a newline in the line, without sending it"),
     ("s: a:", "narrow by state or name, on the task line"),
     ("?", "these keys"),
     ("q", "close the view"),
@@ -76,13 +77,16 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         (false, Some(_)) => peek_height(area.height),
         _ => 0,
     };
-    let composing = matches!(screen.mode, Mode::Typing(_));
+    let composing = match &screen.mode {
+        Mode::Typing(composer) => composer_height(composer, area, panel),
+        _ => 0,
+    };
 
     let [top, middle, bottom, line, keys] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(panel),
-        Constraint::Length(u16::from(composing)),
+        Constraint::Length(composing),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -372,7 +376,7 @@ fn help(frame: &mut Frame, area: Rect) {
         .map(|(key, does)| {
             Line::from(vec![
                 Span::styled(
-                    format!("{key:<7}"),
+                    format!("{key:<10}"),
                     Style::new().add_modifier(Modifier::BOLD),
                 ),
                 Span::styled((*does).to_string(), dim()),
@@ -382,24 +386,90 @@ fn help(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// How tall the composer may grow before it stops and scrolls instead: ten
+/// rows, or a third of the screen where that is less. A composer that could
+/// take the whole terminal would be a list nobody could see past the task
+/// they are typing at it.
+const COMPOSER_CAP: usize = 10;
+
+/// What the composer's rows begin with: the prompt on the first of them, and
+/// the same width of nothing under it, so a line that wrapped reads as one
+/// line.
+fn gutter(composer: &Composer) -> String {
+    format!("{} ▸ ", composer.prompt())
+}
+
+/// How wide the text itself is drawn, which is the same on every row of the
+/// composer whether the prompt or the indent is in front of it.
+fn composer_room(composer: &Composer, width: u16) -> usize {
+    (width as usize)
+        .saturating_sub(gutter(composer).chars().count())
+        .max(1)
+}
+
+/// The line being typed, cut into the rows a screen this wide draws it on.
+///
+/// A newline starts a row, pasted or typed, and anything past the width
+/// carries onto the next one. An empty paragraph is a row of its own: it is
+/// where the cursor sits after a newline, and a row nobody drew would put the
+/// cursor on the line above.
+fn composer_lines(text: &str, room: usize) -> Vec<String> {
+    let room = room.max(1);
+    let mut rows = Vec::new();
+    for paragraph in text.split('\n') {
+        let chars: Vec<char> = paragraph.chars().collect();
+        match chars.is_empty() {
+            true => rows.push(String::new()),
+            false => rows.extend(chars.chunks(room).map(|row| row.iter().collect())),
+        }
+    }
+    rows
+}
+
+/// How many rows the composer takes on this screen: as many as the line needs,
+/// up to the cap, and never so many that the list it was opened from is gone.
+fn composer_height(composer: &Composer, area: Rect, panel: u16) -> u16 {
+    // The header, the keys, and one row of the list.
+    let room = area.height.saturating_sub(3 + panel) as usize;
+    let cap = COMPOSER_CAP.min(area.height as usize / 3).min(room).max(1);
+    composer_lines(&composer.text, composer_room(composer, area.width))
+        .len()
+        .clamp(1, cap) as u16
+}
+
 /// The line somebody is typing, with the terminal's own cursor at the end of
 /// it: something being typed into should look like it.
+///
+/// Past the cap it is the end of the line that is drawn, because the end is
+/// where somebody is typing — but the prompt stays on the top row however far
+/// the rest has scrolled. It is what says where enter will send this, and that
+/// is worth a gutter wherever the text has got to.
 fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect) {
-    let prompt = format!("{} ▸ ", composer.prompt());
+    let prompt = gutter(composer);
     let width = area.width as usize;
-    let room = width.saturating_sub(prompt.chars().count() + 1);
-    // The end of the line, because the end is where somebody is typing.
-    let typed = end_of(&composer.text, room);
+    let rows = composer_lines(&composer.text, composer_room(composer, area.width));
+    let from = rows.len().saturating_sub(area.height as usize);
+    let shown = &rows[from..];
 
-    let at = prompt.chars().count() + typed.chars().count();
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(prompt, Style::new().fg(role::WARNING)),
-            Span::raw(typed),
-        ])),
-        area,
-    );
-    frame.set_cursor_position((area.x + at.min(width.saturating_sub(1)) as u16, area.y));
+    let indent = " ".repeat(prompt.chars().count());
+    let lines: Vec<Line> = shown
+        .iter()
+        .enumerate()
+        .map(|(at, text)| {
+            let head = match at {
+                0 => Span::styled(prompt.clone(), Style::new().fg(role::WARNING)),
+                _ => Span::raw(indent.clone()),
+            };
+            Line::from(vec![head, Span::raw(text.clone())])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
+
+    let at = prompt.chars().count() + shown.last().map_or(0, |row| row.chars().count());
+    frame.set_cursor_position((
+        area.x + at.min(width.saturating_sub(1)) as u16,
+        area.y + shown.len().saturating_sub(1) as u16,
+    ));
 }
 
 /// The keys, or whatever the view has to say for itself instead.
@@ -418,8 +488,13 @@ fn footer(screen: &Screen) -> Line<'static> {
                 "enter narrows it · s: or a: alone clears · esc cancels".to_string()
             }
             Mode::Typing(composer) => match composer.asking {
-                Asking::Task => "enter starts it · tab out of sight · esc cancels".to_string(),
-                Asking::Reply { .. } => "enter sends it · esc cancels".to_string(),
+                Asking::Task => {
+                    "enter starts it · alt+enter newline · tab out of sight · esc cancels"
+                        .to_string()
+                }
+                Asking::Reply { .. } => {
+                    "enter sends it · alt+enter newline · esc cancels".to_string()
+                }
             },
         },
         dim(),
@@ -494,13 +569,6 @@ fn fit(text: &str, width: usize) -> String {
         1 => "…".to_string(),
         _ => text.chars().take(width - 1).chain(['…']).collect(),
     }
-}
-
-/// The last `width` characters of `text`, which is the part of a line
-/// somebody typing it is looking at.
-fn end_of(text: &str, width: usize) -> String {
-    let over = text.chars().count().saturating_sub(width);
-    text.chars().skip(over).collect()
 }
 
 /// What a row is indented by, so an agent reads as sitting under the heading
@@ -1289,6 +1357,115 @@ mod tests {
             "the first of it, not the last: {all}"
         );
         assert!(!all.contains("+ line 39"), "{all}");
+    }
+
+    /// A screen with room for the composer to reach its cap and a list above
+    /// it: ten rows is a third of thirty.
+    const TALL: (u16, u16) = (60, 30);
+
+    /// The view with somebody part way through typing this line.
+    fn typing(text: &str) -> Screen {
+        let mut screen = showing(Vec::new(), None);
+        let mut composer = Composer::new(Asking::Task);
+        composer.text = text.to_string();
+        screen.mode = Mode::Typing(composer);
+        screen
+    }
+
+    /// Where the terminal's own cursor was left, which is where the next
+    /// character somebody types will land.
+    fn caret(screen: &Screen, size: (u16, u16)) -> (u16, u16) {
+        let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
+        terminal.draw(|frame| draw(frame, screen)).unwrap();
+        let at = terminal.get_cursor_position().unwrap();
+        (at.x, at.y)
+    }
+
+    #[test]
+    fn composer_wraps_what_will_not_fit_and_starts_a_row_at_every_newline() {
+        assert_eq!(composer_lines("abcdef", 3), ["abc", "def"]);
+        assert_eq!(
+            composer_lines("port the importer\nand its tests", 40),
+            ["port the importer", "and its tests"]
+        );
+        assert_eq!(
+            composer_lines("a\n\nb", 8),
+            ["a", "", "b"],
+            "a paragraph with nothing in it is a row, because the cursor sits \
+             on it"
+        );
+        assert_eq!(composer_lines("", 8), [""]);
+    }
+
+    #[test]
+    fn composer_grows_a_row_at_a_time_as_the_line_it_holds_does() {
+        let one = painted(&typing("port the importer"), TALL);
+        assert_eq!(one[28], "task ▸ port the importer");
+        assert_eq!(one[27], "", "one line takes one row, at the foot of it all");
+
+        let three = painted(
+            &typing("port the importer\nand its tests\nand the docs"),
+            TALL,
+        );
+        assert_eq!(three[26], "task ▸ port the importer");
+        assert_eq!(
+            three[27], "       and its tests",
+            "a row under the first is indented to it, so a task reads as one \
+             thing"
+        );
+        assert_eq!(three[28], "       and the docs");
+        assert_eq!(
+            caret(&typing("port it\nand test it"), TALL),
+            (18, 28),
+            "and the cursor is at the end of the last of them"
+        );
+    }
+
+    #[test]
+    fn composer_wrapping_past_the_width_grows_it_the_same_way_a_newline_does() {
+        // Twice the room a sixty-column screen leaves beside the prompt.
+        let painted = painted(&typing(&"x".repeat(106)), TALL);
+        assert_eq!(painted[27], format!("task ▸ {}", "x".repeat(53)));
+        assert_eq!(painted[28], format!("       {}", "x".repeat(53)));
+    }
+
+    /// A line long enough to need more rows than any screen will give it.
+    fn twenty_rows() -> String {
+        (1..=20)
+            .map(|n| format!("row-{n:02}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn composer_stops_growing_at_its_cap_and_scrolls_the_line_inside_it() {
+        let screen = typing(&twenty_rows());
+        let painted = painted(&screen, TALL);
+
+        assert_eq!(
+            painted[19], "task ▸ row-11",
+            "the prompt is on the top row however far the rest has scrolled: \
+             {painted:?}"
+        );
+        assert_eq!(painted[28], "       row-20", "{painted:?}");
+        assert!(
+            !painted.iter().any(|line| line.contains("row-10")),
+            "and what scrolled past is off the screen: {painted:?}"
+        );
+        assert_eq!(caret(&screen, TALL), (13, 28));
+    }
+
+    #[test]
+    fn composer_leaves_the_list_it_was_opened_from_on_the_screen() {
+        // A third of eight rows is two, whatever the line is holding, and the
+        // agents are what the view is for.
+        let painted = painted(&typing(&twenty_rows()), (60, 8));
+        assert_eq!(painted[5], "task ▸ row-19");
+        assert_eq!(painted[6], "       row-20");
+        assert_eq!(
+            painted[1], "no agents",
+            "the list is still there above it: {painted:?}"
+        );
     }
 
     #[test]

@@ -319,6 +319,13 @@ impl Screen {
         match key.code {
             // Cancelled: the line goes, and nothing was done with it.
             KeyCode::Esc => return Ok(Doing::Carry),
+            // A newline in the line rather than the end of it. The one key
+            // that grows the composer by hand, and the one enter that does not
+            // dispatch: a composer where the plain one did not would be a
+            // composer nobody could send from.
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                composer.text.push('\n');
+            }
             KeyCode::Enter => {
                 // A line of nothing but filter tokens narrows the list, and
                 // starts nothing: the composer is where a person is already
@@ -728,6 +735,24 @@ mod tests {
         let (code, screen) = held(root.path(), &keys);
         assert_eq!(code, exit::OK, "and the view did not close on any of them");
         assert!(screen.contains("drop the queue and quitq"), "{screen}");
+    }
+
+    #[test]
+    fn composer_takes_a_newline_from_the_key_that_makes_one_and_stays_open() {
+        let root = TempDir::new().unwrap();
+        let mut keys = vec![KeyEvent::from(KeyCode::Char('n'))];
+        keys.extend(word("port the importer").into_iter().map(KeyEvent::from));
+        keys.push(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        keys.extend(word("and its tests").into_iter().map(KeyEvent::from));
+
+        let (code, screen) = pressing(root.path(), keys);
+        assert_eq!(code, exit::OK);
+        assert!(screen.contains("task ▸ port the importer"), "{screen}");
+        assert!(screen.contains("       and its tests"), "{screen}");
+        assert!(
+            crate::store::list(root.path()).unwrap().is_empty(),
+            "and the enter that makes a newline is the one that starts nothing"
+        );
     }
 
     #[test]
