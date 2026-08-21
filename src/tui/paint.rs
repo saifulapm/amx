@@ -17,7 +17,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::sync::OnceLock;
 
 use super::act::{Asking, Composer};
-use super::rows::{Axis, Group, Item, List, Under};
+use super::rows::{Axis, Group, Item, List, Tally, Under};
 use super::{Mode, Screen};
 use crate::derive::View;
 use crate::store::Phase;
@@ -30,7 +30,7 @@ const KEYS: &str = "space peek · enter attach · ctrl+s axis · ? keys · q qui
 const HELP: [(&str, &str); 11] = [
     ("↑ ↓", "walk the agents"),
     ("space", "look closer at one"),
-    ("enter", "bring its window forward"),
+    ("enter", "bring its window forward · shut a group"),
     ("n", "start an agent · tab starts it out of sight"),
     ("r", "reply: a message, or the key a question wants"),
     ("d", "what it has changed"),
@@ -190,13 +190,34 @@ fn line(
     beat: usize,
 ) -> Line<'static> {
     match item {
-        Item::Heading(under, _) => Line::styled(list.title(under), heading_colour(under)),
+        Item::Heading(under, tally) => heading(list.title(under), under, tally),
         Item::Fold(hidden) => Line::styled(format!("{}… {hidden} more", marker(selected)), dim()),
         Item::Agent(_) => match list.agent(item) {
             Some(view) => row(view, selected, columns, width, beat),
             None => Line::raw(""),
         },
     }
+}
+
+/// A heading: what it stands for, and what it is answerable for.
+///
+/// A group that is open has its rows on the screen, so counting them there
+/// would be a number beside the thing it counts. Shut, the count is the only
+/// thing standing in for them. The failures are said either way — that is the
+/// one number a heading is worth reading without opening it, because an agent
+/// that failed is the reason somebody came to the screen.
+fn heading(title: String, under: Under, tally: Tally) -> Line<'static> {
+    let counted = match (tally.shut, tally.failures) {
+        (false, 0) => String::new(),
+        (false, failures) => format!(" · {failures} failed"),
+        (true, 0) => format!(" {}", tally.members),
+        (true, failures) => format!(" {} · {failures} failed", tally.members),
+    };
+    let mut spans = vec![Span::styled(title, heading_colour(under))];
+    if !counted.is_empty() {
+        spans.push(Span::styled(counted, dim()));
+    }
+    Line::from(spans)
 }
 
 /// An agent's row: what state it is in, what it is called, what it is up to,
@@ -917,6 +938,57 @@ mod tests {
             !painted[5].contains("starts it"),
             "a hint that says the other thing is a hint that lies: {:?}",
             painted[5]
+        );
+    }
+
+    #[test]
+    fn headings_count_their_agents_only_while_they_are_holding_them_back() {
+        let mut screen = showing(
+            vec![
+                view("busy-a1b", Phase::Working, None, 3),
+                view("busy-b2c", Phase::Working, None, 5),
+            ],
+            None,
+        );
+
+        assert_eq!(
+            painted(&screen, (60, 8))[1],
+            "working",
+            "expanded, the rows are on the screen and counting them is noise"
+        );
+
+        screen.list.up();
+        screen.list.shut_or_open();
+        let painted = painted(&screen, (60, 8));
+        assert_eq!(painted[1], "working 2");
+        assert!(
+            !painted.iter().any(|line| line.contains("busy-a1b")),
+            "and the count is standing in for the rows: {painted:?}"
+        );
+    }
+
+    #[test]
+    fn headings_say_how_many_failed_whether_or_not_the_rows_are_under_them() {
+        let mut screen = showing(
+            vec![
+                view("done-a1b", Phase::Done, Some("did it"), 60),
+                view("broke-b2c", Phase::Failed, Some("could not"), 60),
+            ],
+            None,
+        );
+
+        assert_eq!(
+            painted(&screen, (60, 8))[1],
+            "completed · 1 failed",
+            "a screenful of headings says how it went without being opened"
+        );
+
+        screen.list.up();
+        screen.list.shut_or_open();
+        assert_eq!(
+            painted(&screen, (60, 8))[1],
+            "completed 2 · 1 failed",
+            "shutting a group hides the detail of a failure, never the fact"
         );
     }
 

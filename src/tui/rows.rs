@@ -22,18 +22,24 @@
 //! Either axis can be narrowed to part of the fleet. A hidden agent is not a
 //! member of anything: nothing counts it, no heading is drawn for a group it
 //! was the last of, and the cursor cannot land on it.
+//!
+//! A heading is a line of the list like the rows under it: the cursor stops on
+//! one, and shutting it puts its agents away and leaves the heading standing
+//! for them. What was shut is remembered against the group itself rather than
+//! against a line number, because the list is laid out again every second and
+//! line four is somebody else's by then.
 
 use crate::derive::View;
 use crate::store::{Meta, Phase};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// How many finished agents are shown before the rest fold into a count.
 pub const FOLD: usize = 3;
 
 /// What an agent is, to somebody deciding what to do next.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Group {
     /// Stopped on a question: nothing happens until somebody answers it.
     NeedsInput,
@@ -97,23 +103,44 @@ pub enum Under {
     Project(usize),
 }
 
-/// One line of the list.
+/// What a heading is answerable for: the agents gathered under it, the
+/// failures among them, and whether they are on the screen or put away behind
+/// it.
+///
+/// The counts are what a narrowing left, always: a heading may not claim
+/// members that opening it could not reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tally {
+    pub members: usize,
+    pub failures: usize,
+    pub shut: bool,
+}
+
+/// One line of the list. Every one of them is a place the cursor can stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {
-    /// A heading, and how many agents are under it.
-    Heading(Under, usize),
+    /// A heading, and what it answers for.
+    Heading(Under, Tally),
     /// The agent at this position of the reading behind the list.
     Agent(usize),
     /// How many finished agents the fold is holding back.
     Fold(usize),
 }
 
-impl Item {
-    /// Whether the cursor can rest on this line. A heading is a label, not a
-    /// thing to do something to.
-    pub fn selectable(self) -> bool {
-        !matches!(self, Item::Heading(..))
-    }
+/// A heading in terms that outlive the next reading. `Under` holds a project's
+/// place in a table that is built again every second, and what somebody shut
+/// has to be remembered against something that does not move under them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Key {
+    Group(Group),
+    Project(PathBuf),
+}
+
+/// What the cursor is on, in the same terms and for the same reason.
+enum On {
+    Agent(String),
+    Heading(Key),
+    Nothing,
 }
 
 /// One narrowing, as the change it makes. A line only changes what it names,
@@ -165,7 +192,12 @@ pub struct List {
     views: Vec<View>,
     items: Vec<Item>,
     cursor: usize,
+    /// Whether the cursor has been put on anything yet, which is what tells a
+    /// view that has just opened from one somebody is reading.
+    landed: bool,
     unfolded: bool,
+    /// The groups somebody has shut, by what they stand for.
+    shut: HashSet<Key>,
     axis: Axis,
     filters: Filters,
     /// The projects the headings name, in the order they are drawn.
@@ -189,7 +221,9 @@ impl Default for List {
             views: Vec::new(),
             items: Vec::new(),
             cursor: 0,
+            landed: false,
             unfolded: false,
+            shut: HashSet::new(),
             axis: Axis::default(),
             filters: Filters::default(),
             projects: Vec::new(),
@@ -214,16 +248,14 @@ impl List {
 
     /// Take a fresh reading.
     ///
-    /// The cursor holds onto the agent it was on rather than the line number it
-    /// was at: agents change groups while somebody is looking at them, and a
+    /// The cursor holds onto what it was on rather than the line number it was
+    /// at: agents change groups while somebody is looking at them, and a
     /// cursor that stayed on line four would end up on whoever moved into it.
     pub fn show(&mut self, views: Vec<View>) {
-        let held = self.selected().map(|view| view.id().to_string());
+        let held = self.on();
         self.views = views;
         self.rebuild();
-        if let Some(id) = held {
-            self.follow(&id);
-        }
+        self.follow(&held);
     }
 
     pub fn axis(&self) -> Axis {
@@ -234,15 +266,13 @@ impl List {
     /// because turning the axis is a question about the fleet and not about
     /// the one agent somebody was looking at.
     pub fn turn(&mut self) {
+        let held = self.on();
         self.axis = match self.axis {
             Axis::State => Axis::Project,
             Axis::Project => Axis::State,
         };
-        let held = self.selected().map(|view| view.id().to_string());
         self.rebuild();
-        if let Some(id) = held {
-            self.follow(&id);
-        }
+        self.follow(&held);
     }
 
     /// Narrow the list to part of the fleet, changing only what was named.
@@ -299,6 +329,29 @@ impl List {
         matches!(self.items.get(self.cursor), Some(Item::Fold(_)))
     }
 
+    /// Whether the cursor is on a heading rather than on anything under one.
+    pub fn on_heading(&self) -> bool {
+        matches!(self.items.get(self.cursor), Some(Item::Heading(..)))
+    }
+
+    /// Put the group the cursor is on away, or bring it back. The heading
+    /// stays either way: it is what stands for the agents while they are gone,
+    /// and what somebody presses again to have them back.
+    pub fn shut_or_open(&mut self) {
+        let Some(Item::Heading(under, _)) = self.items.get(self.cursor).copied() else {
+            return;
+        };
+        let Some(key) = self.key(under) else {
+            return;
+        };
+        if !self.shut.remove(&key) {
+            self.shut.insert(key);
+        }
+        let held = self.on();
+        self.rebuild();
+        self.follow(&held);
+    }
+
     /// Show the finished agents the fold was holding back, and keep showing
     /// them: somebody who opened it is going through them.
     pub fn unfold(&mut self) {
@@ -337,21 +390,14 @@ impl List {
         self.step(-1);
     }
 
-    /// Move to the next line the cursor can rest on, staying put at the ends.
+    /// Move to the next line, staying put at the ends. Every line is a stop,
+    /// headings included: a group is a thing somebody does something to.
     fn step(&mut self, by: isize) {
-        let mut at = self.cursor as isize;
-        loop {
-            at += by;
-            let Ok(next) = usize::try_from(at) else {
-                return;
-            };
-            let Some(item) = self.items.get(next) else {
-                return;
-            };
-            if item.selectable() {
-                self.cursor = next;
-                return;
-            }
+        let Some(next) = self.cursor.checked_add_signed(by) else {
+            return;
+        };
+        if next < self.items.len() {
+            self.cursor = next;
         }
     }
 
@@ -428,18 +474,41 @@ impl List {
                 continue;
             }
 
+            let shut = self.shut.contains(&Key::Group(group));
+            items.push(Item::Heading(
+                Under::Group(group),
+                self.tally(&members, shut),
+            ));
+            if shut {
+                continue;
+            }
+
             let shown = if group == Group::Completed && !self.unfolded {
                 FOLD.min(members.len())
             } else {
                 members.len()
             };
-            items.push(Item::Heading(Under::Group(group), members.len()));
             items.extend(members[..shown].iter().map(|&n| Item::Agent(n)));
             if shown < members.len() {
                 items.push(Item::Fold(members.len() - shown));
             }
         }
         items
+    }
+
+    /// What a heading answers for. The failures are counted whether the group
+    /// is open or shut: a group says how many of its agents failed even while
+    /// their rows are on the screen, because the count is what somebody
+    /// scanning a screenful of headings reads instead of the rows.
+    fn tally(&self, members: &[usize], shut: bool) -> Tally {
+        Tally {
+            members: members.len(),
+            failures: members
+                .iter()
+                .filter(|&&n| self.views[n].phase() == Phase::Failed)
+                .count(),
+            shut,
+        }
     }
 
     /// One heading per project somebody has an agent in.
@@ -474,35 +543,83 @@ impl List {
         let mut projects = Vec::new();
         let mut items = Vec::new();
         for (root, members) in roots {
-            items.push(Item::Heading(Under::Project(projects.len()), members.len()));
-            items.extend(members.into_iter().map(Item::Agent));
+            let shut = self.shut.contains(&Key::Project(root.clone()));
+            items.push(Item::Heading(
+                Under::Project(projects.len()),
+                self.tally(&members, shut),
+            ));
+            if !shut {
+                items.extend(members.into_iter().map(Item::Agent));
+            }
             projects.push(root);
         }
         (projects, items)
     }
 
-    /// Put the cursor back on the agent it was on.
-    fn follow(&mut self, id: &str) {
-        let found = self
-            .items
-            .iter()
-            .position(|item| self.agent(*item).is_some_and(|view| view.id() == id));
+    /// What a heading stands for, in terms that outlive the next reading.
+    fn key(&self, under: Under) -> Option<Key> {
+        match under {
+            Under::Group(group) => Some(Key::Group(group)),
+            Under::Project(n) => self.projects.get(n).cloned().map(Key::Project),
+        }
+    }
+
+    /// What the cursor is on now.
+    fn on(&self) -> On {
+        match self.items.get(self.cursor) {
+            Some(Item::Agent(n)) => match self.views.get(*n) {
+                Some(view) => On::Agent(view.id().to_string()),
+                None => On::Nothing,
+            },
+            Some(Item::Heading(under, _)) => match self.key(*under) {
+                Some(key) => On::Heading(key),
+                None => On::Nothing,
+            },
+            _ => On::Nothing,
+        }
+    }
+
+    /// Put the cursor back on what it was on, where that is still drawn.
+    fn follow(&mut self, held: &On) {
+        let found = match held {
+            On::Agent(id) => self
+                .items
+                .iter()
+                .position(|item| self.agent(*item).is_some_and(|view| view.id() == id)),
+            On::Heading(key) => self.items.iter().position(|item| match item {
+                Item::Heading(under, _) => self.key(*under).as_ref() == Some(key),
+                _ => false,
+            }),
+            On::Nothing => None,
+        };
         if let Some(at) = found {
             self.cursor = at;
         }
     }
 
-    /// Put the cursor somewhere it can rest: where it is, else the next line
-    /// down, else the last one above it.
+    /// Put the cursor somewhere there is a line: where it is, else the last
+    /// line there is.
     fn settle(&mut self) {
         if self.items.is_empty() {
             self.cursor = 0;
+            // Nothing to stand on. Whatever comes next is a view opening
+            // again, as far as the cursor is concerned.
+            self.landed = false;
             return;
         }
-        let at = self.cursor.min(self.items.len() - 1);
-        let below = (at..self.items.len()).find(|&n| self.items[n].selectable());
-        let above = (0..=at).rev().find(|&n| self.items[n].selectable());
-        self.cursor = below.or(above).unwrap_or(0);
+        if !self.landed {
+            self.landed = true;
+            // A view opens on an agent rather than on the heading over it:
+            // somebody who opened it came for the agents, and the heading is
+            // one step back up from the first of them.
+            self.cursor = self
+                .items
+                .iter()
+                .position(|item| matches!(item, Item::Agent(_)))
+                .unwrap_or(0);
+            return;
+        }
+        self.cursor = self.cursor.min(self.items.len() - 1);
     }
 }
 
@@ -635,7 +752,12 @@ mod tests {
         list.items()
             .iter()
             .map(|item| match item {
-                Item::Heading(under, count) => format!("{} ({count})", list.title(*under)),
+                Item::Heading(under, tally) => format!(
+                    "{} ({}){}",
+                    list.title(*under),
+                    tally.members,
+                    if tally.shut { " shut" } else { "" }
+                ),
                 Item::Agent(_) => list.agent(*item).unwrap().id().to_string(),
                 Item::Fold(hidden) => format!("… {hidden} more"),
             })
@@ -763,36 +885,12 @@ mod tests {
     }
 
     #[test]
-    fn view_moves_the_cursor_over_the_agents_and_past_the_headings() {
-        let mut list = listed(vec![
-            view("ask-a1b", Phase::Waiting, 10),
-            view("busy-b2c", Phase::Working, 20),
-        ]);
-
-        assert_eq!(list.selected().unwrap().id(), "ask-a1b");
-        assert_eq!(list.cursor(), 1, "not the heading above it");
-
-        list.down();
-        assert_eq!(list.selected().unwrap().id(), "busy-b2c");
-        list.down();
-        assert_eq!(
-            list.selected().unwrap().id(),
-            "busy-b2c",
-            "the end of the list is the end"
-        );
-
-        list.up();
-        assert_eq!(list.selected().unwrap().id(), "ask-a1b");
-        list.up();
-        assert_eq!(list.selected().unwrap().id(), "ask-a1b");
-    }
-
-    #[test]
     fn view_keeps_the_cursor_on_the_agent_when_the_list_moves_under_it() {
         let mut list = listed(vec![
             view("ask-a1b", Phase::Waiting, 10),
             view("busy-b2c", Phase::Working, 20),
         ]);
+        list.down();
         list.down();
         assert_eq!(list.selected().unwrap().id(), "busy-b2c");
 
@@ -811,7 +909,7 @@ mod tests {
     }
 
     #[test]
-    fn view_can_reach_the_fold_and_nothing_else_it_cannot_act_on() {
+    fn view_can_reach_the_fold_and_open_it_where_it_stands() {
         let mut list = listed(
             (0..5)
                 .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
@@ -963,6 +1061,7 @@ mod tests {
             at(view("busy-b2c", Phase::Working, 20), "/src/web"),
         ]);
         list.down();
+        list.down();
         assert_eq!(list.selected().unwrap().id(), "busy-b2c");
 
         list.turn();
@@ -1051,6 +1150,152 @@ mod tests {
 
         list.narrow(vec![Narrow::Name(None)]);
         assert!(list.selected().is_some(), "and it comes back on an agent");
+    }
+
+    #[test]
+    fn headings_are_stops_the_cursor_walks_like_any_other_line() {
+        let mut list = listed(vec![
+            view("ask-a1b", Phase::Waiting, 10),
+            view("busy-b2c", Phase::Working, 20),
+        ]);
+
+        // The view opens on an agent: somebody who opened it came to look at
+        // agents, and the heading is one step back up from the first of them.
+        assert_eq!(list.cursor(), 1);
+        assert_eq!(list.selected().unwrap().id(), "ask-a1b");
+
+        list.up();
+        assert!(list.on_heading(), "the heading over it is a stop");
+        assert!(list.selected().is_none(), "a heading is not an agent");
+        assert_eq!(list.cursor(), 0);
+
+        for want in [1, 2, 3] {
+            list.down();
+            assert_eq!(list.cursor(), want, "and the walk down takes every line");
+        }
+        list.down();
+        assert_eq!(list.cursor(), 3, "the end of the list is the end");
+    }
+
+    #[test]
+    fn headings_shut_the_group_under_them_and_open_it_again() {
+        let mut list = listed(vec![
+            view("ask-a1b", Phase::Waiting, 10),
+            view("busy-b2c", Phase::Working, 20),
+        ]);
+        list.up();
+
+        list.shut_or_open();
+        assert_eq!(
+            lines(&list),
+            ["needs input (1) shut", "working (1)", "busy-b2c"],
+            "the rows go and the heading stays"
+        );
+        assert!(list.on_heading(), "with the cursor still on it");
+
+        list.shut_or_open();
+        assert_eq!(
+            lines(&list),
+            ["needs input (1)", "ask-a1b", "working (1)", "busy-b2c"]
+        );
+    }
+
+    #[test]
+    fn headings_stay_shut_while_the_fleet_moves_under_them() {
+        let mut list = listed(vec![
+            view("done-a1b", Phase::Done, 10),
+            view("busy-b2c", Phase::Working, 20),
+        ]);
+        // Down off the working agent and onto the completed heading.
+        list.down();
+        list.shut_or_open();
+
+        list.show(vec![
+            view("done-a1b", Phase::Done, 10),
+            view("busy-b2c", Phase::Working, 20),
+            view("ask-c3d", Phase::Waiting, 30),
+        ]);
+        assert_eq!(
+            lines(&list),
+            [
+                "needs input (1)",
+                "ask-c3d",
+                "working (1)",
+                "busy-b2c",
+                "completed (1) shut",
+            ],
+            "a group somebody shut stays shut while the reading moves under it"
+        );
+        assert!(
+            list.on_heading(),
+            "and the cursor is on the heading it was on, not the line it was at"
+        );
+    }
+
+    #[test]
+    fn headings_count_the_agents_a_shut_group_is_holding_back() {
+        let mut list = listed(vec![
+            view("done-a1b", Phase::Done, 10),
+            view("failed-b2c", Phase::Failed, 20),
+            view("stopped-c3d", Phase::Stopped, 30),
+        ]);
+        let heading = |list: &List| match list.items()[0] {
+            Item::Heading(_, tally) => tally,
+            item => panic!("no heading: {item:?}"),
+        };
+        list.up();
+
+        assert_eq!(
+            heading(&list),
+            Tally {
+                members: 3,
+                failures: 1,
+                shut: false
+            }
+        );
+
+        list.shut_or_open();
+        assert_eq!(
+            heading(&list),
+            Tally {
+                members: 3,
+                failures: 1,
+                shut: true
+            },
+            "and it answers for the same agents when they are behind it"
+        );
+
+        list.narrow(vec![Narrow::State(Some("done".to_string()))]);
+        assert_eq!(
+            heading(&list).members,
+            1,
+            "a heading may not claim members opening it could not reach"
+        );
+    }
+
+    #[test]
+    fn headings_on_the_project_axis_shut_the_project_rather_than_a_place_in_the_list() {
+        let mut list = over_the_disk(vec![
+            at(view("ask-a1b", Phase::Waiting, 10), "/src/api"),
+            at(view("busy-b2c", Phase::Working, 20), "/src/web"),
+        ]);
+        list.up();
+        list.shut_or_open();
+        assert_eq!(
+            lines(&list),
+            ["/src/api (1) shut", "/src/web (1)", "busy-b2c"]
+        );
+
+        // The waiting agent answers, so its project is no longer the first one
+        // drawn. What was shut is the repository, not the line it was on.
+        list.show(vec![
+            at(view("ask-a1b", Phase::Idle, 10), "/src/api"),
+            at(view("busy-b2c", Phase::Working, 20), "/src/web"),
+        ]);
+        assert_eq!(
+            lines(&list),
+            ["/src/web (1)", "busy-b2c", "/src/api (1) shut"]
+        );
     }
 
     #[test]

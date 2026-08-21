@@ -253,8 +253,14 @@ impl Screen {
                 self.look = Look::Away;
                 self.follow_the_cursor();
             }
+            // The same key, read where the cursor is: a heading opens and
+            // shuts the group under it, the fold gives back what it is holding,
+            // and a row brings its agent forward.
             KeyCode::Enter | KeyCode::Right => {
-                if self.list.on_fold() {
+                if self.list.on_heading() {
+                    self.list.shut_or_open();
+                    self.follow_the_cursor();
+                } else if self.list.on_fold() {
                     self.list.unfold();
                 } else if let Some(view) = self.list.selected() {
                     self.notice = attach(here, view)?;

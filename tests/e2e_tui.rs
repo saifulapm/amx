@@ -366,6 +366,41 @@ fn completed_agents_fold_into_a_count_until_they_are_opened() {
 }
 
 #[test]
+fn enter_shuts_the_group_its_headings_stand_over_and_opens_it_again() {
+    let amx = Harness::new();
+    finished(&amx, "one-a1b", "done", 60);
+    finished(&amx, "two-b2c", "failed", 120);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let drawn = amx.until("both agents", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("one-a1b") && drawn.contains("two-b2c")).then_some(drawn)
+    });
+    assert!(
+        drawn.contains("completed · 1 failed"),
+        "a heading says how many failed with the rows still under it:\n{drawn}"
+    );
+
+    // Up off the first agent onto the heading over it, and shut the group.
+    press(&amx, &view, "Up");
+    press(&amx, &view, "Enter");
+    let shut = amx.until("the group to be put away", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("completed 2 · 1 failed").then_some(drawn)
+    });
+    assert!(
+        !shut.contains("one-a1b") && !shut.contains("two-b2c"),
+        "the rows are behind the count now:\n{shut}"
+    );
+
+    press(&amx, &view, "Enter");
+    amx.until("the agents back", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("one-a1b") && !drawn.contains("completed 2")).then_some(())
+    });
+}
+
+#[test]
 fn space_peeks_at_the_pane_and_at_what_it_is_asking() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
