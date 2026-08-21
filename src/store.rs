@@ -284,7 +284,6 @@ impl State {
 #[serde(default)]
 struct Wire {
     state: Phase,
-    #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     seq: u64,
     since: u64,

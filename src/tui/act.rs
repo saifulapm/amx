@@ -374,7 +374,7 @@ pub enum Renamed {
 /// The longest name a row will carry. Past this the column that holds it cuts,
 /// and a name that only reads whole in the line it was typed on is not a name
 /// on the wall.
-pub const NAME: usize = 24;
+const NAME: usize = 24;
 
 /// Call the agent under the cursor something else.
 ///
@@ -384,13 +384,19 @@ pub const NAME: usize = 24;
 /// nothing answers to. What a rename changes is the word on the row, which is
 /// the thing a person reads a hundred times a day.
 ///
-/// What is typed is made safe where it is written down rather than wherever it
-/// is drawn: a name goes on a row, in a notice and in a line somebody is
-/// editing, and a record that never holds a control character is one no reader
-/// has to remember to neutralise.
+/// What is typed is made safe where it is written down: a name goes on a row,
+/// into a notice and back into a line somebody is editing, and a record that
+/// never held a control character cannot hand one to any of them.
 pub fn rename(root: &Path, id: &str, typed: &str) -> Result<Renamed> {
-    let name: String = typed.chars().filter(|c| !c.is_control()).collect();
-    let name = name.trim();
+    // A control character becomes the space it stands in for rather than
+    // nothing at all: a name pasted over two lines is two words, and dropping
+    // the newline outright would run them into one.
+    let spaced: String = typed
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let name = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name = name.as_str();
     if name.is_empty() {
         return Ok(Renamed::No("a name is a word, not nothing".to_string()));
     }
@@ -611,6 +617,13 @@ mod tests {
             "fix-login-a1b",
             "the id is what everything else addresses, and a rename is not \
              about the id"
+        );
+
+        rename(root.path(), "fix-login-a1b", "auth\nfix").unwrap();
+        assert_eq!(
+            agent.state().unwrap().name.as_deref(),
+            Some("auth fix"),
+            "and a name pasted over two lines is the two words it is"
         );
     }
 
