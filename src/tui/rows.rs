@@ -430,9 +430,12 @@ impl List {
     ///
     /// The whole fleet's worth, whatever the list was narrowed to: the gate
     /// counts agents, and an agent somebody has filtered off the screen is
-    /// still in the way of the next one. Read from the records, which is what
-    /// the view has — the gate itself also asks tmux whether the pane is
-    /// there, and the view is not in that path.
+    /// still in the way of the next one.
+    ///
+    /// Counted off the reading rather than by asking tmux again, and it is the
+    /// same answer: the gate skips an agent whose pane has gone, and a reading
+    /// lists the panes once per server and has already settled such an agent
+    /// as stopped.
     pub fn live(&self) -> usize {
         self.views
             .iter()
@@ -1450,6 +1453,16 @@ mod tests {
             2,
             "and the gate counts the fleet rather than what is on the screen"
         );
+
+        // The reading has already asked tmux, so an agent whose pane went is
+        // stopped by the time the list sees it — and that is the agent the
+        // gate skips for having no pane, counted the same way here.
+        let mut gone = view("gone-e5f", Phase::Working, 50);
+        gone.verdict.phase = Phase::Stopped;
+        gone.verdict.evidence = Evidence::Gone;
+        list.narrow(vec![Narrow::State(None)]);
+        list.show(vec![view("busy-a1b", Phase::Working, 10), gone]);
+        assert_eq!(list.live(), 1);
     }
 
     #[test]
