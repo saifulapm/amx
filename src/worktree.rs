@@ -70,6 +70,23 @@ pub fn path_for(repo: &Path, id: &str) -> PathBuf {
     repo.join(WORKTREES).join(id)
 }
 
+/// Whether `path` is a tree amx made: `<repo>/.amx/worktrees/<id>`, spelled
+/// out from the root.
+///
+/// The question anything acting on a tree's behalf has to answer first. amx
+/// speaks for the trees it cut and for nothing else — not for the repository
+/// they sit in, and not for a directory somebody happened to point it at.
+pub fn is_amx_tree(path: &Path) -> bool {
+    path.is_absolute()
+        && path
+            .file_name()
+            .and_then(|id| id.to_str())
+            .is_some_and(crate::ids::is_valid)
+        && path
+            .parent()
+            .is_some_and(|holds| holds.ends_with(WORKTREES))
+}
+
 /// Cut a tree for `id` from the repository's current commit.
 pub fn create(repo: &Path, id: &str) -> Result<Worktree> {
     let base = git(repo, &["rev-parse", "HEAD"])
@@ -496,5 +513,24 @@ mod tests {
         let repo = a_repo();
         create(repo.path(), "fix-login-a1b").unwrap();
         assert!(create(repo.path(), "fix-login-a1b").is_err());
+    }
+
+    #[test]
+    fn worktree_knows_a_tree_it_made_from_any_other_directory() {
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+        assert!(is_amx_tree(&tree.path), "{}", tree.path.display());
+        assert!(is_amx_tree(Path::new("/src/app/.amx/worktrees/port-c3d")));
+
+        for other in [
+            "/src/app",                       // the repository itself
+            "/src/app/.amx/worktrees",        // where the trees live
+            "/src/app/.amx",                  // amx's own directory
+            "/src/app/worktrees/fix-a1b",     // somebody else's layout
+            "/src/app/.amx/worktrees/../etc", // not a name amx ever mints
+            ".amx/worktrees/fix-a1b",         // and never a relative one
+        ] {
+            assert!(!is_amx_tree(Path::new(other)), "{other}");
+        }
     }
 }

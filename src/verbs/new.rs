@@ -14,7 +14,7 @@ use crate::cli::NewArgs;
 use crate::config::Config;
 use crate::spawn::{self, Dials, Handoff, Placement};
 use crate::store::{Meta, now};
-use crate::{exit, ids, paths, registry, worktree};
+use crate::{exit, ids, paths, registry, trust, worktree};
 
 /// What this spawn launches: the vendor's command, and where its dials are
 /// pointed for this one agent.
@@ -161,7 +161,9 @@ pub fn run(
 
     // From here on a failure leaves nothing behind: an id that half exists is
     // worse than one that does not.
-    match start(root, &agent_dir, dir, env, config, args, &launch, &id) {
+    match start(
+        root, &agent_dir, dir, env, config, args, &launch, &id, problems,
+    ) {
         Ok(()) => {
             writeln!(out, "{id}")?;
             Ok(exit::OK)
@@ -183,12 +185,16 @@ fn start(
     args: &NewArgs,
     launch: &Launch,
     id: &str,
+    problems: &mut impl Write,
 ) -> Result<()> {
     let tree = cut_worktree(dir, id, config, args)?;
     let cwd = tree
         .as_ref()
         .map(|tree| tree.path.clone())
         .unwrap_or_else(|| dir.to_path_buf());
+    if let Some(tree) = &tree {
+        trust_the_tree(&env, &launch.agent, &tree.path, problems);
+    }
 
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
     spawn::write_handoff(
@@ -256,6 +262,34 @@ fn cut_worktree(
         return Ok(None);
     };
     Ok(Some(worktree::create(&repo, id)?))
+}
+
+/// Answer the vendor's folder-trust screen for the tree amx has just cut, so
+/// that the agent starts on the task instead of on a question nobody has to
+/// think about.
+///
+/// Never a reason to refuse the spawn. An agent that meets the screen is an
+/// agent somebody answers by hand, which is exactly where amx stood before it
+/// wrote anything at all, so a store amx cannot write is said once and the
+/// spawn goes on.
+fn trust_the_tree(
+    env: &std::collections::BTreeMap<String, String>,
+    agent: &str,
+    tree: &Path,
+    problems: &mut impl Write,
+) {
+    if !trust::is_vendor(agent) {
+        return;
+    }
+    let Some(store) = trust::store_in(env) else {
+        return;
+    };
+    // The vendor resolves a tree to the repository it belongs to, so that is
+    // what already covers it when the person has trusted the repository.
+    let inherits = worktree::main_repo(tree).ok();
+    if let Err(e) = trust::seed(&store, tree, inherits.as_deref(), now()) {
+        let _ = writeln!(problems, "amx new: {e:#}");
+    }
 }
 
 /// The agent's own directory, which nobody else has any business reading.
@@ -370,6 +404,68 @@ mod tests {
         .unwrap_err();
         assert!(refusal.contains("--model"), "{refusal}");
         assert!(refusal.contains("mock-claude"), "{refusal}");
+    }
+
+    /// A repository with a tree of amx's own in it, and a home to keep a
+    /// vendor's trust store in.
+    fn a_tree(dir: &tempfile::TempDir) -> (PathBuf, std::collections::BTreeMap<String, String>) {
+        let tree = dir.path().join("app/.amx/worktrees/fix-login-a1b");
+        std::fs::create_dir_all(&tree).unwrap();
+        let env = spawn::env_snapshot([(
+            "HOME".to_string(),
+            dir.path().join("home").to_string_lossy().into_owned(),
+        )]);
+        (tree, env)
+    }
+
+    #[test]
+    fn trust_is_answered_for_the_tree_a_claude_spawn_was_given() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (tree, env) = a_tree(&dir);
+        let mut problems = Vec::new();
+
+        trust_the_tree(&env, "claude", &tree, &mut problems);
+
+        let store = trust::store_in(&env).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+        assert!(trust::trusted(&written, &tree), "{written}");
+        assert!(
+            problems.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&problems)
+        );
+    }
+
+    #[test]
+    fn trust_is_never_answered_for_a_vendor_that_does_not_ask() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (tree, env) = a_tree(&dir);
+        let mut problems = Vec::new();
+
+        trust_the_tree(&env, "mock-claude --pane", &tree, &mut problems);
+
+        assert!(
+            !trust::store_in(&env).unwrap().exists(),
+            "a store amx invented for a vendor that keeps none"
+        );
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn trust_that_cannot_be_written_is_said_once_and_the_spawn_goes_on() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (tree, env) = a_tree(&dir);
+        let store = trust::store_in(&env).unwrap();
+        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+        std::fs::write(&store, "{ not json at all }").unwrap();
+        let mut problems = Vec::new();
+
+        trust_the_tree(&env, "claude", &tree, &mut problems);
+
+        let said = String::from_utf8(problems).unwrap();
+        assert!(said.contains("trust store amx can read"), "{said}");
+        assert_eq!(said.lines().count(), 1, "{said}");
     }
 
     #[test]
