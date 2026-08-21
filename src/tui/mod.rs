@@ -36,6 +36,7 @@ use crossterm::event::{
 use crossterm::execute;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -361,7 +362,67 @@ pub fn run(root: &Path, config: &Config) -> Result<i32> {
         let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     }
     ratatui::restore();
+
+    // Said onto the screen the view has just handed back, where there is
+    // room for it and nothing to answer. Not over a view that failed: what
+    // went wrong is the thing to read then.
+    if outcome.is_ok()
+        && let Some(offer) = offer_the_statusline(root)
+    {
+        println!("{offer}");
+    }
     outcome
+}
+
+/// What the view remembers between runs, beside the agents rather than among
+/// them: this is the reader's own file, and no agent has anything to do with
+/// it.
+const VIEW: &str = "view.json";
+
+/// The line somebody pastes, which is the verb amx already has with a clock
+/// beside it.
+const STATUSLINE: &str = "set -g status-right '#(amx statusline) | %H:%M'";
+
+/// What the view has to say the first time somebody closes it, if anything.
+///
+/// An offer and not an install. Where the counts would be useful is a corner
+/// of a terminal somebody was already using, which is a file of theirs, and
+/// nothing in amx writes it: the line is printed for them to paste, once,
+/// because a suggestion that comes back at every quit is an advertisement.
+fn offer_the_statusline(root: &Path) -> Option<String> {
+    let path = root.parent()?.join(VIEW);
+    let mut remembered: Remembered = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    if remembered.statusline {
+        return None;
+    }
+
+    // A file that will not be written costs the offer again next time, which
+    // is a better failure than an error over a screen that is already gone.
+    remembered.statusline = true;
+    let _ = serde_json::to_vec_pretty(&remembered)
+        .map_err(anyhow::Error::from)
+        .and_then(|mut bytes| {
+            bytes.push(b'\n');
+            crate::store::write_atomic(&path, &bytes)
+        });
+
+    Some(format!(
+        "amx can keep the fleet in the corner of your tmux status line:\n\n    \
+         {STATUSLINE}\n\nPaste that into your tmux config. amx will not write \
+         it for you."
+    ))
+}
+
+/// What the view remembers between runs. Every field defaults, so a file
+/// written by an older amx still reads.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct Remembered {
+    /// Whether the status line has been offered.
+    statusline: bool,
 }
 
 /// The view itself: draw what is there, act on what is typed, read again.
@@ -1522,6 +1583,34 @@ mod tests {
         assert!(screen.card.is_none(), "with no card over the list");
         let line = screen.banded().expect("a line of its own");
         assert_eq!(line.prompt(), "message to fix-login-b2c");
+    }
+
+    #[test]
+    fn acts_the_status_line_is_offered_once_and_never_written_anywhere() {
+        let state = TempDir::new().unwrap();
+        let root = state.path().join("agents");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let offer = offer_the_statusline(&root).expect("the first quit offers");
+        assert!(
+            offer.contains("set -g status-right '#(amx statusline) | %H:%M'"),
+            "it is pasted, so it is the whole line tmux takes: {offer}"
+        );
+        assert!(
+            offer.lines().count() > 1,
+            "and the line has a row to itself, to be copied off: {offer}"
+        );
+
+        assert_eq!(
+            offer_the_statusline(&root),
+            None,
+            "an offer that comes back every time is an advertisement"
+        );
+        assert!(
+            state.path().join(VIEW).exists(),
+            "and it is remembered beside the agents rather than among them, \
+             so the next view knows"
+        );
     }
 
     #[test]

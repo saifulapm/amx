@@ -683,7 +683,11 @@ fn to_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 
 /// Write `bytes` to `path` as a whole document: a reader sees what was there
 /// before, or all of this, and never a mixture.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+///
+/// Shared with the view, which keeps one small document of its own beside the
+/// agents: two views open at once, and the last one to quit must not publish
+/// half a file to the next one that starts.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
 

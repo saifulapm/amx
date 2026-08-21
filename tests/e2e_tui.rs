@@ -1459,6 +1459,39 @@ fn ctrl_x_stops_the_agent_and_then_forgets_it() {
 }
 
 #[test]
+fn acts_the_first_quit_offers_the_status_line_and_no_quit_after_it_does() {
+    let amx = Harness::new();
+
+    // Keep each pane after its command ends, so what it ended with can be
+    // read.
+    let closed = |view: &str| {
+        amx.tmux(&["set-option", "-w", "-t", view, "remain-on-exit", "on"]);
+        press(&amx, view, "q");
+        amx.until("the view to close", || {
+            let dead = amx.tmux(&["display-message", "-p", "-t", view, "#{pane_dead}"]);
+            (dead == "1").then_some(())
+        });
+        screen(&amx, view)
+    };
+
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+    let offered = closed(&view);
+    assert!(
+        offered.contains("set -g status-right '#(amx statusline)"),
+        "the line is pasted, so it is the whole line tmux takes:\n{offered}"
+    );
+
+    let again = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &again);
+    let quiet = closed(&again);
+    assert!(
+        !quiet.contains("amx statusline"),
+        "an offer that comes back every time is an advertisement:\n{quiet}"
+    );
+}
+
+#[test]
 fn acts_ctrl_x_on_a_heading_forgets_the_finished_and_keeps_the_work() {
     let amx = Harness::new();
     let repo = amx.a_repo();
