@@ -18,6 +18,10 @@
 //! every row carries the state the heading used to say. Both axes draw the
 //! agents in one order, so turning the axis never changes who a row's
 //! neighbours are.
+//!
+//! Either axis can be narrowed to part of the fleet. A hidden agent is not a
+//! member of anything: nothing counts it, no heading is drawn for a group it
+//! was the last of, and the cursor cannot land on it.
 
 use crate::derive::View;
 use crate::store::{Meta, Phase};
@@ -112,6 +116,49 @@ impl Item {
     }
 }
 
+/// One narrowing, as the change it makes. A line only changes what it names,
+/// so `a:port` on its own leaves the state narrowing where it was, and `s:`
+/// with nothing after it drops that one and leaves the rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Narrow {
+    State(Option<String>),
+    Name(Option<String>),
+}
+
+/// What the list is narrowed to. Every one that is set has to match, and
+/// nothing set keeps everything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Filters {
+    state: Option<String>,
+    name: Option<String>,
+}
+
+impl Filters {
+    fn keeps(&self, view: &View) -> bool {
+        let state = self
+            .state
+            .as_ref()
+            .is_none_or(|want| view.phase().as_str() == want);
+        let name = self
+            .name
+            .as_ref()
+            .is_none_or(|want| view.id().contains(want));
+        state && name
+    }
+
+    /// What was typed, read back.
+    fn label(&self) -> Option<String> {
+        let said: Vec<String> = [
+            self.state.as_ref().map(|want| format!("s:{want}")),
+            self.name.as_ref().map(|want| format!("a:{want}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        (!said.is_empty()).then(|| said.join(" "))
+    }
+}
+
 /// The agents, as lines with a cursor on one of them.
 #[derive(Debug)]
 pub struct List {
@@ -120,6 +167,7 @@ pub struct List {
     cursor: usize,
     unfolded: bool,
     axis: Axis,
+    filters: Filters,
     /// The projects the headings name, in the order they are drawn.
     projects: Vec<PathBuf>,
     /// Which project each agent belongs to, worked out once per agent: the
@@ -143,6 +191,7 @@ impl Default for List {
             cursor: 0,
             unfolded: false,
             axis: Axis::default(),
+            filters: Filters::default(),
             projects: Vec::new(),
             roots: HashMap::new(),
             probe: holds_a_repository,
@@ -194,6 +243,23 @@ impl List {
         if let Some(id) = held {
             self.follow(&id);
         }
+    }
+
+    /// Narrow the list to part of the fleet, changing only what was named.
+    pub fn narrow(&mut self, changes: Vec<Narrow>) {
+        for change in changes {
+            match change {
+                Narrow::State(state) => self.filters.state = state,
+                Narrow::Name(name) => self.filters.name = name,
+            }
+        }
+        self.rebuild();
+    }
+
+    /// What the list is narrowed to, in the words it was narrowed with, so
+    /// somebody who has forgotten why it is short can read why.
+    pub fn narrowing(&self) -> Option<String> {
+        self.filters.label()
     }
 
     /// What a heading says.
@@ -249,6 +315,7 @@ impl List {
                 let count = self
                     .views
                     .iter()
+                    .filter(|view| self.filters.keeps(view))
                     .filter(|view| Group::of(view.phase()) == group)
                     .count();
                 (count > 0).then_some((group, count))
@@ -256,7 +323,8 @@ impl List {
             .collect()
     }
 
-    /// Whether there is nothing on the screen.
+    /// Whether there is nothing on the screen — which is not the same as
+    /// having no agents, once a narrowing can hide every one of them.
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -320,7 +388,7 @@ impl List {
         self.roots.extend(fresh);
     }
 
-    /// Every agent, in the one order both axes draw them in:
+    /// Every agent a narrowing left, in the one order both axes draw them in:
     /// by what they need, and inside that the order they were started in —
     /// except the finished ones, where the newest ending comes first, because
     /// what just finished is what somebody scanning them came for.
@@ -329,7 +397,9 @@ impl List {
     /// agent does not change who it sits beside merely because the fleet was
     /// gathered a different way.
     fn ordered(&self) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..self.views.len()).collect();
+        let mut order: Vec<usize> = (0..self.views.len())
+            .filter(|&n| self.filters.keeps(&self.views[n]))
+            .collect();
         order.sort_by(|&a, &b| {
             rank(&self.views[a])
                 .cmp(&rank(&self.views[b]))
@@ -919,6 +989,68 @@ mod tests {
 
         list.turn();
         assert!(lines(&list).contains(&"… 2 more".to_string()));
+    }
+
+    #[test]
+    fn axis_narrows_the_list_to_the_agents_a_line_named() {
+        let mut list = listed(vec![
+            view("ask-a1b", Phase::Waiting, 10),
+            view("busy-b2c", Phase::Working, 20),
+            view("busy-c3d", Phase::Working, 30),
+        ]);
+
+        list.narrow(vec![Narrow::State(Some("working".to_string()))]);
+        assert_eq!(
+            lines(&list),
+            ["working (2)", "busy-b2c", "busy-c3d"],
+            "a hidden agent heads nothing, counts for nothing and is drawn nowhere"
+        );
+        assert_eq!(list.counts(), [(Group::Working, 2)]);
+        assert_eq!(list.narrowing().as_deref(), Some("s:working"));
+
+        list.narrow(vec![Narrow::Name(Some("c3d".to_string()))]);
+        assert_eq!(
+            lines(&list),
+            ["working (1)", "busy-c3d"],
+            "and a line only changes the narrowing it names"
+        );
+        assert_eq!(list.narrowing().as_deref(), Some("s:working a:c3d"));
+
+        list.narrow(vec![Narrow::State(None), Narrow::Name(None)]);
+        assert_eq!(lines(&list).len(), 5);
+        assert_eq!(list.narrowing(), None);
+    }
+
+    #[test]
+    fn axis_narrows_the_project_headings_with_the_agents_under_them() {
+        let mut list = over_the_disk(vec![
+            at(view("ask-a1b", Phase::Waiting, 10), "/src/api"),
+            at(view("busy-b2c", Phase::Working, 20), "/src/web"),
+        ]);
+
+        list.narrow(vec![Narrow::State(Some("waiting".to_string()))]);
+        assert_eq!(
+            lines(&list),
+            ["/src/api (1)", "ask-a1b"],
+            "a project whose last agent was hidden is not a project any more"
+        );
+    }
+
+    #[test]
+    fn axis_narrowed_to_nothing_leaves_the_cursor_somewhere_it_can_rest() {
+        let mut list = listed(vec![
+            view("ask-a1b", Phase::Waiting, 10),
+            view("busy-b2c", Phase::Working, 20),
+        ]);
+        list.down();
+
+        list.narrow(vec![Narrow::Name(Some("nobody".to_string()))]);
+        assert!(list.is_empty());
+        assert!(list.selected().is_none());
+        assert_eq!(list.cursor(), 0);
+
+        list.narrow(vec![Narrow::Name(None)]);
+        assert!(list.selected().is_some(), "and it comes back on an agent");
     }
 
     #[test]

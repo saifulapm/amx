@@ -27,7 +27,7 @@ use crate::store::Phase;
 const KEYS: &str = "space peek · enter attach · ctrl+s axis · ? keys · q quit";
 
 /// Every key, for whoever asked what they are.
-const HELP: [(&str, &str); 10] = [
+const HELP: [(&str, &str); 11] = [
     ("↑ ↓", "walk the agents"),
     ("space", "look closer at one"),
     ("enter", "bring its window forward"),
@@ -36,6 +36,7 @@ const HELP: [(&str, &str); 10] = [
     ("d", "what it has changed"),
     ("ctrl+x", "stop it · again to forget it"),
     ("ctrl+s", "gather them by state or by project"),
+    ("s: a:", "narrow by state or name, on the task line"),
     ("?", "these keys"),
     ("q", "close the view"),
 ];
@@ -122,6 +123,12 @@ fn header(list: &List) -> Line<'static> {
             group_colour(group),
         ));
     }
+    // What the list was narrowed to, in the words it was narrowed with, so
+    // somebody who has forgotten why it is short can read why.
+    if let Some(narrowing) = list.narrowing() {
+        spans.push(Span::raw(" · "));
+        spans.push(Span::styled(narrowing, dim()));
+    }
     Line::from(spans)
 }
 
@@ -138,7 +145,13 @@ struct Columns {
 /// The agents themselves.
 fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize) {
     if list.is_empty() {
-        frame.render_widget(Paragraph::new(Line::styled("no agents", dim())), area);
+        // Nothing to show is one thing while there are no agents, and another
+        // while a narrowing is holding every one of them back.
+        let said = match list.narrowing() {
+            Some(narrowing) => format!("nothing matches {narrowing}"),
+            None => "no agents".to_string(),
+        };
+        frame.render_widget(Paragraph::new(Line::styled(said, dim())), area);
         return;
     }
 
@@ -316,6 +329,9 @@ fn footer(screen: &Screen) -> Line<'static> {
         match &screen.mode {
             Mode::List => KEYS.to_string(),
             Mode::Keys => "any key goes back · q quits".to_string(),
+            Mode::Typing(composer) if composer.narrows() => {
+                "enter narrows it · s: or a: alone clears · esc cancels".to_string()
+            }
             Mode::Typing(composer) => match composer.asking {
                 Asking::Task => "enter starts it · tab out of sight · esc cancels".to_string(),
                 Asking::Reply { .. } => "enter sends it · esc cancels".to_string(),
@@ -534,6 +550,7 @@ fn dim() -> Style {
 
 #[cfg(test)]
 mod tests {
+    use super::super::rows::Narrow;
     use super::*;
     use crate::derive::{Evidence, Verdict};
     use crate::store::{Meta, State};
@@ -855,6 +872,55 @@ mod tests {
     }
 
     #[test]
+    fn axis_says_at_the_top_what_the_list_was_narrowed_to() {
+        let mut screen = showing(
+            vec![
+                view("busy-a1b", Phase::Working, None, 3),
+                view("done-b2c", Phase::Done, None, 60),
+            ],
+            None,
+        );
+        screen
+            .list
+            .narrow(vec![Narrow::State(Some("working".to_string()))]);
+
+        let painted = painted(&screen, (60, 8));
+        assert_eq!(painted[0], "amx · 1 working · s:working");
+        assert!(painted[2].contains("busy-a1b"), "{:?}", painted[2]);
+        assert!(
+            !painted.iter().any(|line| line.contains("done-b2c")),
+            "a hidden agent is not counted, not drawn and not headed: {painted:?}"
+        );
+    }
+
+    #[test]
+    fn axis_says_nothing_matches_rather_than_claiming_there_are_no_agents() {
+        let mut screen = showing(vec![view("busy-a1b", Phase::Working, None, 3)], None);
+        screen
+            .list
+            .narrow(vec![Narrow::Name(Some("nobody".to_string()))]);
+
+        assert_eq!(painted(&screen, (60, 8))[1], "nothing matches a:nobody");
+    }
+
+    #[test]
+    fn axis_says_a_line_that_narrows_will_narrow_rather_than_start_anything() {
+        let mut screen = showing(Vec::new(), None);
+        let mut composer = Composer::new(Asking::Task);
+        composer.text = "s:waiting".to_string();
+        screen.mode = Mode::Typing(composer);
+
+        let painted = painted(&screen, (60, 6));
+        assert_eq!(painted[4], "narrow ▸ s:waiting");
+        assert!(painted[5].contains("enter narrows it"), "{:?}", painted[5]);
+        assert!(
+            !painted[5].contains("starts it"),
+            "a hint that says the other thing is a hint that lies: {:?}",
+            painted[5]
+        );
+    }
+
+    #[test]
     fn view_says_when_there_is_nothing_to_show() {
         let screen = drawn(Vec::new(), None, (40, 6));
         assert_eq!(screen[0], "amx");
@@ -980,7 +1046,9 @@ mod tests {
         let mut screen = showing(Vec::new(), None);
         screen.mode = Mode::Keys;
 
-        let painted = painted(&screen, (60, 12)).join("\n");
+        // Tall enough for every key: the overlay is one column, and a screen
+        // shorter than the list cuts the end off it.
+        let painted = painted(&screen, (60, 14)).join("\n");
         for (key, does) in HELP {
             assert!(painted.contains(key), "{key} is missing:\n{painted}");
             assert!(painted.contains(does), "{does} is missing:\n{painted}");

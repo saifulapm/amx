@@ -20,6 +20,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use super::paint::Peek;
+use super::rows::Narrow;
 use crate::cli::{NewArgs, StopArgs};
 use crate::config::Config;
 use crate::derive::View;
@@ -54,14 +55,57 @@ impl Composer {
     }
 
     /// What the line calls itself, so nobody types a task at an agent.
+    ///
+    /// A task line renames itself the moment what is typed into it would
+    /// narrow the list instead: the one thing a person needs to know before
+    /// pressing enter is what enter is about to do.
     pub fn prompt(&self) -> String {
         match &self.asking {
+            Asking::Task if self.narrows() => "narrow".to_string(),
             Asking::Task if self.hidden => "task · out of sight".to_string(),
             Asking::Task => "task".to_string(),
             Asking::Reply { id, question: true } => format!("answer {id} · y n 1-9 enter esc"),
             Asking::Reply { id, .. } => format!("message to {id}"),
         }
     }
+
+    /// Whether entering this line narrows the list rather than starting
+    /// anything with it.
+    pub fn narrows(&self) -> bool {
+        matches!(self.asking, Asking::Task) && narrowing(&self.text).is_some()
+    }
+}
+
+/// A line of nothing but `s:` and `a:` tokens narrows the list; anything else
+/// is a task, colons and all.
+///
+/// Nothing but: "s:waiting is what to check" is a sentence somebody may well
+/// want an agent to act on, and a surface that guessed otherwise would be one
+/// nobody could type into.
+pub fn narrowing(line: &str) -> Option<Vec<Narrow>> {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    if tokens.is_empty()
+        || !tokens
+            .iter()
+            .all(|token| token.starts_with("s:") || token.starts_with("a:"))
+    {
+        return None;
+    }
+
+    Some(
+        tokens
+            .iter()
+            .map(|token| {
+                let (key, want) = token.split_at(2);
+                // A token with nothing after it drops that narrowing.
+                let want = (!want.is_empty()).then(|| want.to_string());
+                match key {
+                    "s:" => Narrow::State(want),
+                    _ => Narrow::Name(want),
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Start an agent on what was typed, where the view is.
@@ -229,6 +273,50 @@ mod tests {
             question: false,
         });
         assert_eq!(message.prompt(), "message to fix-login-b2c");
+    }
+
+    #[test]
+    fn axis_reads_a_line_of_nothing_but_tokens_as_a_narrowing() {
+        assert_eq!(
+            narrowing("s:working"),
+            Some(vec![Narrow::State(Some("working".to_string()))])
+        );
+        assert_eq!(
+            narrowing("a:port  s:waiting"),
+            Some(vec![
+                Narrow::Name(Some("port".to_string())),
+                Narrow::State(Some("waiting".to_string())),
+            ]),
+            "as many as were typed, in the order they were typed"
+        );
+        assert_eq!(
+            narrowing("s:"),
+            Some(vec![Narrow::State(None)]),
+            "and a token with nothing after it drops that one"
+        );
+    }
+
+    #[test]
+    fn axis_takes_a_line_with_a_colon_in_it_for_the_task_it_is() {
+        for line in [
+            "s:waiting is what to check",
+            "port the importer",
+            "fix s:waiting",
+            "",
+            "   ",
+        ] {
+            assert_eq!(narrowing(line), None, "{line:?} is a task, colons and all");
+        }
+    }
+
+    #[test]
+    fn axis_says_a_line_that_narrows_is_not_a_task() {
+        let mut composer = Composer::new(Asking::Task);
+        composer.text = "s:waiting".to_string();
+        assert_eq!(composer.prompt(), "narrow");
+
+        composer.text = "s:waiting is what to check".to_string();
+        assert_eq!(composer.prompt(), "task", "and a task still is one");
     }
 
     #[test]

@@ -277,6 +277,57 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
 }
 
 #[test]
+fn a_filter_line_narrows_the_axis_instead_of_starting_an_agent() {
+    let amx = Harness::new();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.play("fix-login-b2c", "happy-turn");
+    amx.until_state("ask-a1b", "waiting");
+    amx.until_state("fix-login-b2c", "idle");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both agents", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("ask-a1b") && drawn.contains("fix-login-b2c")).then_some(())
+    });
+
+    // The same line a task is typed on, which is where somebody's hands
+    // already are.
+    types(&amx, &view, "n");
+    types(&amx, &view, "s:waiting");
+    amx.until(
+        "the line to say it will narrow rather than start anything",
+        || screen(&amx, &view).contains("narrow ▸").then_some(()),
+    );
+    press(&amx, &view, "Enter");
+
+    // The line goes in the same frame the narrowing lands in, and it goes
+    // last: waiting on the words alone would match the screen that is already
+    // there, where they are still on the line somebody typed them on.
+    let drawn = amx.until("the narrowed list", || {
+        let drawn = screen(&amx, &view);
+        (!drawn.contains("narrow ▸") && drawn.contains("s:waiting")).then_some(drawn)
+    });
+    assert!(drawn.contains("ask-a1b"), "{drawn}");
+    assert!(
+        !drawn.contains("fix-login-b2c"),
+        "the rest of the fleet is held back:\n{drawn}"
+    );
+    assert_eq!(
+        agents(&amx).len(),
+        2,
+        "and nothing was started with the line"
+    );
+
+    // A token with nothing after it gives them back.
+    types(&amx, &view, "n");
+    types(&amx, &view, "s:");
+    press(&amx, &view, "Enter");
+    amx.until("the whole fleet again", || {
+        screen(&amx, &view).contains("fix-login-b2c").then_some(())
+    });
+}
+
+#[test]
 fn the_view_says_when_there_is_nothing_to_show() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);

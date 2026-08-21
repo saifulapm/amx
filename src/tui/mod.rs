@@ -314,6 +314,17 @@ impl Screen {
             // Cancelled: the line goes, and nothing was done with it.
             KeyCode::Esc => return Ok(Doing::Carry),
             KeyCode::Enter => {
+                // A line of nothing but filter tokens narrows the list, and
+                // starts nothing: the composer is where a person is already
+                // typing, so it is where they say which agents they want to
+                // see.
+                if let Asking::Task = composer.asking
+                    && let Some(narrowing) = act::narrowing(&composer.text)
+                {
+                    self.list.narrow(narrowing);
+                    self.follow_the_cursor();
+                    return Ok(Doing::Carry);
+                }
                 if !composer.text.trim().is_empty() {
                     self.notice = said(match &composer.asking {
                         Asking::Task => act::start(root, config, &composer.text, composer.hidden),
@@ -625,6 +636,31 @@ mod tests {
         assert!(
             drawn[0].contains("1 completed"),
             "what there is does not change with the way it is laid out:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn axis_narrows_the_list_from_the_line_a_task_is_typed_on() {
+        let root = TempDir::new().unwrap();
+        finished(root.path(), "first-a1b", "wrote the parser", 60);
+        finished(root.path(), "second-b2c", "wrote the tests", 120);
+
+        let mut keys = vec![KeyCode::Char('n')];
+        keys.extend(word("a:second"));
+        keys.push(KeyCode::Enter);
+        keys.push(KeyCode::Char('q'));
+
+        let (code, screen) = held(root.path(), &keys);
+        assert_eq!(code, exit::OK);
+        assert!(screen.contains("a:second"), "{screen}");
+        assert!(screen.contains("second-b2c"), "{screen}");
+        assert!(
+            !screen.contains("first-a1b"),
+            "the one that was named is the one that is left:\n{screen}"
+        );
+        assert!(
+            crate::store::list(root.path()).unwrap().len() == 2,
+            "and a line that narrows starts nothing"
         );
     }
 
