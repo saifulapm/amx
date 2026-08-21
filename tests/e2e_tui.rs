@@ -1715,6 +1715,32 @@ fn keymap_the_hint_row_says_what_the_line_under_the_cursor_answers_to() {
 }
 
 #[test]
+fn keymap_a_chord_the_view_never_bound_leaves_it_holding_the_screen() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+
+    // alt+q is somebody arranging their windows, and q on its own closes the
+    // view: a list whose keys answered to every chord that carried them would
+    // shut on the first of those.
+    press(&amx, &view, "M-q");
+
+    // There is nothing to wait for in a key that does nothing, so wait for
+    // something only a view still holding the screen could draw.
+    press(&amx, &view, "?");
+    amx.until("the keys", || {
+        screen(&amx, &view)
+            .contains("walk the agents")
+            .then_some(())
+    });
+    assert_eq!(
+        pane_field(&amx, &view, "#{pane_dead}"),
+        "0",
+        "and the pane the view was running in is still its own"
+    );
+}
+
+#[test]
 fn the_keys_are_on_the_screen_for_the_asking() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);

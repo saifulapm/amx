@@ -50,10 +50,17 @@ const MORE: &str = "? keys";
 const ANSWERS: &str = "enter answers it · esc closes it";
 
 /// Every key, for whoever asked what they are.
-const HELP: [(&str, &str); 19] = [
+///
+/// Every key the view binds, and the words it is bound under: a key column
+/// that names two keys names both, because what a person looks for here is
+/// the one they pressed. A test presses everything a terminal can send and
+/// holds what acted against this table, so a binding that is not here is a
+/// binding the screen would have to grow a row for.
+pub(super) const HELP: [(&str, &str); 20] = [
     ("↑ ↓", "walk the agents"),
     ("space", "the card: what one is asking, and the answer"),
-    ("enter", "bring its window forward · shut a group"),
+    ("enter →", "bring its window forward · shut a group"),
+    ("esc", "put the card away · leave a line alone"),
     ("n", "start an agent · tab starts it out of sight"),
     ("r", "reply: a message, or an answer on the card"),
     ("d", "what it has changed"),
@@ -72,7 +79,7 @@ const HELP: [(&str, &str); 19] = [
     ("m: p: w:", "model, permission and worktree, for one spawn"),
     ("agent:", "which vendor runs it, for one spawn"),
     ("?", "these keys"),
-    ("q", "close the view"),
+    ("q ctrl+c", "close the view"),
 ];
 
 /// What the view has to say for itself, and how loudly.
@@ -3002,7 +3009,8 @@ mod tests {
 
         // Tall enough for every key in one band, so each of them has the row
         // to itself and every description is whole.
-        let painted = painted(&screen, (60, 22)).join("\n");
+        let tall = HELP.len() as u16 + header_rows(24) + 1;
+        let painted = painted(&screen, (60, tall)).join("\n");
         for (key, does) in HELP {
             assert!(painted.contains(key), "{key} is missing:\n{painted}");
             assert!(painted.contains(does), "{does} is missing:\n{painted}");

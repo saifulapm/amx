@@ -312,6 +312,16 @@ fn effective(dial: Option<registry::DialSpec>, configured: Option<&str>) -> Stri
     }
 }
 
+/// Which of the two chords a key arrived under, if either.
+///
+/// Shift is not one of them. A terminal says shift by sending the character it
+/// typed, so asking about it would be asking about the keyboard rather than
+/// about the key. The one key it can be asked about is tab, which has no
+/// character of its own to arrive as.
+fn chord(key: KeyEvent) -> KeyModifiers {
+    key.modifiers & (KeyModifiers::CONTROL | KeyModifiers::ALT)
+}
+
 /// The next value a cycle offers. A value the cycle never names — a full model
 /// name out of config, say — starts the cycle over rather than ending it: the
 /// cycle is what the key offers, and it always begins at the sentinel.
@@ -544,6 +554,12 @@ impl Screen {
     /// making them press a second key to say so would be a screen that knows
     /// what they want and waits to be asked.
     fn look_closer(&mut self, root: &Path) {
+        // A card is a look at one agent, and a heading or the fold is not one:
+        // the key does nothing there rather than leaving the view looking at
+        // an agent it would find the next time the cursor moved.
+        let Some(id) = self.list.selected().map(|view| view.id().to_string()) else {
+            return;
+        };
         self.look = Look::Screen;
         self.follow_the_cursor();
         if let Some(card) = self.card.as_ref().filter(|card| card.asks()) {
@@ -557,10 +573,8 @@ impl Screen {
         // learns it here. A record that will not take the look costs a mark
         // that stays on a row somebody has read, which is not worth spending
         // the one line the view has to say things on.
-        if let Some(id) = self.list.selected().map(|view| view.id().to_string()) {
-            let _ = act::looked(root, &id);
-            self.acted();
-        }
+        let _ = act::looked(root, &id);
+        self.acted();
     }
 
     /// Put the card away, and the line it was holding with it.
@@ -583,7 +597,7 @@ impl Screen {
         // Before the modes, whatever the view is in the middle of: a terminal
         // in raw mode has no interrupt of its own, and a view nobody can get
         // out of the usual way is a trap.
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if key.code == KeyCode::Char('c') && chord(key) == KeyModifiers::CONTROL {
             return Ok(Doing::Close);
         }
 
@@ -611,7 +625,8 @@ impl Screen {
     /// claude's own screens cycle it with. Each one changes what the *next*
     /// agent will be started with and nothing about the ones already running.
     fn turned(&mut self, key: KeyEvent) -> bool {
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let alt = chord(key) == KeyModifiers::ALT;
+        let plain = chord(key).is_empty();
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
             KeyCode::Char('v') if alt => self.profile.cycle_vendor(),
@@ -619,34 +634,42 @@ impl Screen {
             KeyCode::Char('w') if alt => self.profile.toggle_worktree(),
             // Shift+tab is a key of its own where a terminal has one, and tab
             // with shift held where it does not.
-            KeyCode::BackTab => self.profile.cycle_permission(),
-            KeyCode::Tab if shift => self.profile.cycle_permission(),
+            KeyCode::BackTab if plain => self.profile.cycle_permission(),
+            KeyCode::Tab if plain && shift => self.profile.cycle_permission(),
             _ => return false,
         }
         true
     }
 
     /// A key on the list.
+    ///
+    /// Every key here is the one chord it is written under and no other, the
+    /// same law a line being typed reads its characters by: a key held down
+    /// with control or alt is somebody reaching for something else, and a list
+    /// whose plain keys answered to every chord that carried them would close
+    /// itself on the alt+q of somebody arranging their windows.
     fn pressed(&mut self, key: KeyEvent, root: &Path, here: Option<&Here>) -> Result<Doing> {
+        let plain = chord(key).is_empty();
+        let ctrl = chord(key) == KeyModifiers::CONTROL;
         match key.code {
-            KeyCode::Char('q') => return Ok(Doing::Close),
-            KeyCode::Down => {
+            KeyCode::Char('q') if plain => return Ok(Doing::Close),
+            KeyCode::Down if plain => {
                 self.list.down();
                 self.moved();
             }
-            KeyCode::Up => {
+            KeyCode::Up if plain => {
                 self.list.up();
                 self.moved();
             }
-            KeyCode::Char(' ') => match self.look {
+            KeyCode::Char(' ') if plain => match self.look {
                 Look::Away => self.look_closer(root),
                 _ => self.look_away(),
             },
-            KeyCode::Esc => self.look_away(),
+            KeyCode::Esc if plain => self.look_away(),
             // The same key, read where the cursor is: a heading opens and
             // shuts the group under it, the fold gives back what it is holding,
             // and a row brings its agent forward.
-            KeyCode::Enter | KeyCode::Right => {
+            KeyCode::Enter | KeyCode::Right if plain => {
                 if self.list.on_heading() {
                     self.list.shut_or_open();
                     self.follow_the_cursor();
@@ -656,13 +679,13 @@ impl Screen {
                     self.notice = attach(here, view)?;
                 }
             }
-            KeyCode::Char('?') => self.mode = Mode::Keys,
-            KeyCode::Char('n') => self.mode = Mode::Typing(Composer::new(Asking::Task)),
+            KeyCode::Char('?') if plain => self.mode = Mode::Keys,
+            KeyCode::Char('n') if plain => self.mode = Mode::Typing(Composer::new(Asking::Task)),
             // A name for the agent under the cursor, opened on the one it is
             // going by: what somebody wants is usually a word of the current
             // name, and a line that started empty would have them type the
             // part they were keeping.
-            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('r') if ctrl => {
                 if let Some(view) = self.list.selected() {
                     let mut composer = Composer::new(Asking::Name {
                         id: view.id().to_string(),
@@ -675,7 +698,7 @@ impl Screen {
             // that has stopped on a question is answered on the card, where
             // the choices it is offering are, and anything else is a message
             // on a line of its own.
-            KeyCode::Char('r') => {
+            KeyCode::Char('r') if plain => {
                 let asking = self
                     .list
                     .selected()
@@ -691,7 +714,7 @@ impl Screen {
                     None => {}
                 }
             }
-            KeyCode::Char('d') => {
+            KeyCode::Char('d') if plain => {
                 if let Some(view) = self.list.selected() {
                     match act::changes(root, view) {
                         Ok(card) => {
@@ -706,19 +729,17 @@ impl Screen {
             // agent's ending, and on a heading it is the finished agents under
             // it, which is the one place a person is looking at a group rather
             // than at an agent.
-            KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                match self.list.heading() {
-                    Some(under) => self.ask_to_sweep(under),
-                    None => {
-                        if let Some(view) = self.list.selected() {
-                            self.notice = said(act::end(root, view));
-                            self.acted();
-                        }
+            KeyCode::Char('x') if ctrl => match self.list.heading() {
+                Some(under) => self.ask_to_sweep(under),
+                None => {
+                    if let Some(view) = self.list.selected() {
+                        self.notice = said(act::end(root, view));
+                        self.acted();
                     }
                 }
-            }
+            },
             // The same agents, gathered the other way.
-            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('s') if ctrl => {
                 self.list.turn();
                 self.follow_the_cursor();
             }
@@ -1738,6 +1759,200 @@ mod tests {
         );
     }
 
+    /// Every key a terminal can send this view: the printable characters, the
+    /// keys with names of their own, and each of them under every chord that
+    /// can be held down in front of it.
+    fn every_key() -> Vec<KeyEvent> {
+        let named = [
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Insert,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+        ];
+        let chords = [
+            KeyModifiers::NONE,
+            KeyModifiers::SHIFT,
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ];
+        (' '..='~')
+            .map(KeyCode::Char)
+            .chain(named)
+            .chain((1..=12).map(KeyCode::F))
+            .flat_map(|code| chords.map(move |held| KeyEvent::new(code, held)))
+            .collect()
+    }
+
+    /// What the keys on the screen would call this one, so that what a brute
+    /// force found bound can be looked for among them.
+    fn named(key: KeyEvent) -> String {
+        let mut said = String::new();
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            said.push_str("ctrl+");
+        }
+        if key.modifiers.contains(KeyModifiers::ALT) {
+            said.push_str("alt+");
+        }
+        // Shift is worth naming on the one key a terminal sends it with.
+        // Everywhere else it arrives as the character it typed.
+        if key.code == KeyCode::BackTab
+            || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
+        {
+            said.push_str("shift+");
+        }
+        said.push_str(&match key.code {
+            KeyCode::Char(' ') => "space".to_string(),
+            KeyCode::Char(typed) => typed.to_string(),
+            KeyCode::Enter => "enter".to_string(),
+            KeyCode::Esc => "esc".to_string(),
+            KeyCode::Tab | KeyCode::BackTab => "tab".to_string(),
+            KeyCode::Up => "↑".to_string(),
+            KeyCode::Down => "↓".to_string(),
+            KeyCode::Left => "←".to_string(),
+            KeyCode::Right => "→".to_string(),
+            other => format!("{other:?}").to_lowercase(),
+        });
+        said
+    }
+
+    /// Whether the keys on the screen name this one.
+    fn listed(key: KeyEvent) -> bool {
+        let named = named(key);
+        paint::HELP
+            .iter()
+            .any(|(keys, _)| keys.split(' ').any(|key| key == named))
+    }
+
+    /// Everything one keypress could leave different, as something two
+    /// screens can be told apart by.
+    fn standing(screen: &Screen) -> String {
+        let mode = match &screen.mode {
+            Mode::List => "list".to_string(),
+            Mode::Keys => "keys".to_string(),
+            Mode::Confirming(sweep) => format!("confirming {}", sweep.question()),
+            Mode::Typing(composer) => format!("typing {} {}", composer.prompt(), composer.text),
+        };
+        let look = match screen.look {
+            Look::Away => "away",
+            Look::Screen => "screen",
+            Look::Changes => "changes",
+        };
+        let notice = match &screen.notice {
+            Some(Notice::Advice(said) | Notice::Failed(said)) => said.as_str(),
+            None => "",
+        };
+        let dials = &screen.profile;
+        format!(
+            "{mode} · {look} · {notice} · {:?} · {:?} · {} {} {} {}",
+            screen.list,
+            screen.card.as_ref().map(|card| (&card.id, card.changes)),
+            dials.agent,
+            dials.model,
+            dials.permission,
+            dials.worktree,
+        )
+    }
+
+    /// A fleet with somewhere for the cursor to stand on every kind of line
+    /// there is: an agent that is running, the headings over the groups, and
+    /// enough finished ones to put a fold under them.
+    fn a_wall() -> Vec<View> {
+        let mut views = vec![stopped_on_a_question("ask-a1b")];
+        views.extend((0..5).map(|n| {
+            reading(
+                &format!("done-{n}"),
+                Phase::Done,
+                State {
+                    state: Phase::Done,
+                    exit: Some(0),
+                    since: 1,
+                    last_event: 1,
+                    ..State::default()
+                },
+            )
+        }));
+        views
+    }
+
+    /// A place the cursor can stand, and what to call it in a failure.
+    type Standing = (&'static str, fn(&mut Screen));
+
+    /// Press one key on a view standing where `stand` puts it, and answer
+    /// whether the key did anything at all.
+    fn acts_on(key: KeyEvent, root: &Path, stand: fn(&mut Screen)) -> bool {
+        let mut screen = watching(a_wall());
+        stand(&mut screen);
+
+        let before = standing(&screen);
+        let closed = matches!(
+            screen.act(key, root, &Config::default(), None),
+            Ok(Doing::Close)
+        );
+        closed || standing(&screen) != before
+    }
+
+    #[test]
+    fn keymap_every_key_the_list_acts_on_is_named_among_the_keys() {
+        let root = TempDir::new().unwrap();
+        // Every kind of line the cursor stops on, because the same key does
+        // different things on each of them, and a card over the list, which is
+        // the other place the list's own keys are read.
+        let standing: [Standing; 4] = [
+            ("an agent's row", |_| {}),
+            ("a heading", |screen| screen.list.up()),
+            ("the fold", |screen| {
+                for _ in 0..5 {
+                    screen.list.down();
+                }
+            }),
+            ("a card", |screen| {
+                screen.look = Look::Screen;
+                screen.card = screen.list.selected().map(card_of);
+            }),
+        ];
+
+        for (where_it_is, stand) in standing {
+            for key in every_key() {
+                if !acts_on(key, root.path(), stand) {
+                    continue;
+                }
+                assert!(
+                    listed(key),
+                    "{} does something on {where_it_is} and is not among the \
+                     keys, so nobody who pressed it could find out what it did",
+                    named(key)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn keymap_a_chord_the_view_never_bound_reaches_none_of_its_keys() {
+        let root = TempDir::new().unwrap();
+        // Each of these carries a key the list does act on. Held down with
+        // something the list never asked for, they are somebody reaching past
+        // the view: alt+q is a window being arranged, not a view being closed.
+        for key in [alt('q'), ctrl('q'), alt('d'), ctrl('n'), alt('?')] {
+            assert!(
+                !acts_on(key, root.path(), |_| {}),
+                "{} is not a key of this view",
+                named(key)
+            );
+        }
+    }
+
     #[test]
     fn glyphs_and_notices_take_their_severity_from_the_writer() {
         assert!(
@@ -1966,7 +2181,10 @@ mod tests {
     fn the_keys_are_on_the_screen_for_the_asking() {
         let root = TempDir::new().unwrap();
         let (_, screen) = held(root.path(), &[KeyCode::Char('?'), KeyCode::Char('q')]);
-        assert!(screen.contains("ctrl+x"), "{screen}");
-        assert!(screen.contains("stop it"), "{screen}");
+        // Seven rows of overlay on a terminal this short, so the keys are in
+        // bands: the first of them down the left, and the next one beside it.
+        assert!(screen.contains("walk the agents"), "{screen}");
+        assert!(screen.contains("shift+tab"), "{screen}");
+        assert!(screen.contains("any key goes back"), "{screen}");
     }
 }
