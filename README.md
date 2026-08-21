@@ -42,8 +42,8 @@ front of the work. Every check that fails says what to do about it.
 `--fix` does the one repair amx can make safely: wiring amx's five hooks into
 `~/.claude/settings.json`, beside whatever is already there, after asking once
 and backing the file up. `amx uninstall` puts the backed-up bytes back and
-removes amx's records. It refuses while an agent is still running, because
-those records are the only place their answers are kept.
+removes amx's records. It refuses while any agent is still running: those
+records are the only place their answers are kept.
 
 Without the hooks amx falls back to reading panes, which is enough to say what
 an agent is doing but not enough to hand you what it said. Answers come from
@@ -208,7 +208,7 @@ Four questions, four commands, and the exit code is the answer:
 | `1`  | failed, stopped, or ended without an answer; nothing more is coming |
 | `2`  | blocked: `result` and `send` on an agent that is asking, `answer` with nothing pending, `new` at the agent cap |
 | `3`  | `result --timeout` expired |
-| `64` | the command line was wrong, an answer the question would not take included |
+| `64` | the command line was wrong, including an answer the question would not take |
 
 ```sh
 id=$(amx new --bg --no-worktree --dir "$dir" "Read $brief and execute it exactly." \
@@ -233,8 +233,8 @@ choices numbered under it, and the numbers are the ones `amx answer` takes.
 After a `send` it waits for the turn after that message, never handing back the
 previous turn's answer.
 
-A skill teaching that loop, for an agent doing the driving, is bundled at
-`skill/amx/SKILL.md`.
+When the caller is itself an agent, hand it `skill/amx/SKILL.md`, which is
+this loop written for one.
 
 `ls --json` and `status --json` are stable. Fields are added, never renamed or
 removed. Each row carries `id`, `state`, `evidence`, `rule`, `age`, `since`,
