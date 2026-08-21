@@ -11,6 +11,7 @@ use std::path::Path;
 
 use crate::derive::{self, View};
 use crate::store::now;
+use crate::verbs::send;
 use crate::{exit, gc, paths, rules};
 
 /// Run the verb against the machine.
@@ -45,17 +46,39 @@ fn table(views: &[View], out: &mut impl Write) -> Result<()> {
 
     let widest = views.iter().map(|view| view.id().len()).max().unwrap_or(0);
     for view in views {
-        let line = view.line().unwrap_or("");
         writeln!(
             out,
             "{:<8} {:<widest$}  {:>5}  {}",
             view.phase().as_str(),
             view.id(),
             age(view),
-            first_line(line),
+            doing(view),
         )?;
     }
     Ok(())
+}
+
+/// What this agent is up to, as a row can carry it: what it is waiting to be
+/// told, with the choices it is waiting to be told from, else what it is doing.
+///
+/// The choices ride the row because they are short, they are numbered, and the
+/// number is the whole of the answer — a person scanning a wall for the agent
+/// that is blocked can answer it without opening anything. There are none to
+/// carry unless a question is outstanding: they are cleared with it.
+fn doing(view: &View) -> String {
+    let mut said = inert(first_line(view.line().unwrap_or("")));
+    for choice in send::numbered(&view.state.options) {
+        said.push_str("  ");
+        said.push_str(&inert(&choice));
+    }
+    said
+}
+
+/// A string amx did not author, on one line and unable to drive the terminal
+/// it prints into. Both halves are the table's: a row is a row, and the bytes
+/// in it came from a program amx does not control.
+fn inert(text: &str) -> String {
+    crate::tmux::sanitize(first_line(text)).trim().to_string()
 }
 
 /// How long since anything was heard, in the shortest form that says it.

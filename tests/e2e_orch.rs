@@ -376,6 +376,21 @@ fn surfaces_status_prints_the_question_with_the_choices_under_it() {
 }
 
 #[test]
+fn surfaces_the_table_carries_the_choices_beside_the_question() {
+    let amx = Harness::new();
+    parked_on_the_box(&amx, "ask-a1b");
+
+    let out = amx.amx(&["ls"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let row = stdout(&out);
+    assert!(row.contains("Claude needs your permission"), "{row:?}");
+    assert!(row.contains("1. Yes"), "{row:?}");
+    assert!(row.contains("2. No"), "{row:?}");
+    assert_eq!(row.lines().count(), 1, "and a row is still a row: {row:?}");
+}
+
+#[test]
 fn the_orchestration_verbs_say_so_when_there_is_no_such_agent() {
     let amx = Harness::new();
     for args in [
