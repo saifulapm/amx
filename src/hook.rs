@@ -130,6 +130,11 @@ fn record_exit(agent: &Agent, code: i32, config: &Config) -> Result<()> {
 
     let state = writer.update_state(|state| {
         state.exit = Some(code);
+        // The pane goes with the command, so a question left on the record
+        // here is one nobody can answer and nothing can deliver an answer to.
+        // It would also be the last thing every reader said about this agent,
+        // in front of the answer it did give.
+        state.asks(None);
         // An agent somebody stopped exits with a signal's code moments later.
         // That is not how it ended; being stopped is.
         if state.state != Phase::Stopped {
@@ -931,6 +936,32 @@ mod tests {
         assert_eq!(state.state, Phase::Done);
         assert_eq!(state.result.as_deref(), Some(answer));
         assert_eq!(state.question, None);
+    }
+
+    #[test]
+    fn hook_coherence_a_command_that_has_ended_is_asking_nobody_anything() {
+        // The pane is gone with the command, so there is nothing left to
+        // answer and nowhere to send an answer. A question left here outlives
+        // every turn, and `line` puts it in front of the result for good.
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(root.path());
+        agent
+            .writer()
+            .unwrap()
+            .update_state(|state| {
+                state.state = Phase::Waiting;
+                state.question = Some("Which fixture should the port keep?".to_string());
+                state.options = vec!["the sqlite one".to_string()];
+                state.kind = Some(Kind::Question);
+            })
+            .unwrap();
+
+        exited(root.path(), agent.id(), 1, &quiet());
+        let state = agent.state().unwrap();
+        assert_eq!(state.state, Phase::Failed);
+        assert_eq!(state.question, None);
+        assert!(state.options.is_empty());
+        assert_eq!(state.kind, None);
     }
 
     #[test]
