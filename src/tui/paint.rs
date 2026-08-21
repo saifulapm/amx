@@ -1045,21 +1045,88 @@ fn answer_row(frame: &mut Frame, card: &Card, composer: &Composer, area: Rect) {
     ));
 }
 
-/// Every key and what it does.
+/// How narrow a band may be before a screen has no room for another one
+/// beside it: the widest key, and enough after it to be worth reading. Below
+/// that a band is a key column with a stub against it, which says less than
+/// the key it would have made room for.
+const BAND: usize = 24;
+
+/// Every key and what it does, in bands read down and then across.
+///
+/// The height decides how many bands there are and the width decides how much
+/// of each description survives, because what this screen is for is being
+/// complete: a key cut off the bottom is one the view has and nobody can find,
+/// where a description cut short still leaves its key where it can be read.
+///
+/// Down before across for the reason a list is a column. Somebody looking for
+/// one key runs their eye down a band and on to the next; a table filled the
+/// other way would put the second key beside the first and the rest of them
+/// anywhere at all.
 fn help(frame: &mut Frame, area: Rect) {
-    let lines: Vec<Line> = HELP
-        .iter()
-        .map(|(key, does)| {
-            Line::from(vec![
-                Span::styled(
-                    format!("{key:<10}"),
+    let bands = bands(area);
+    let share = (area.width as usize / bands.len().max(1)).max(1);
+    let deep = bands.first().map_or(0, Vec::len);
+
+    let lines: Vec<Line> = (0..deep.min(area.height as usize))
+        .map(|at| {
+            let mut spans = Vec::new();
+            let mut column = 0;
+            for (n, band) in bands.iter().enumerate() {
+                // A band that has run out of keys leaves the ones beside it
+                // where they were: the columns are what the eye follows down.
+                let Some((key, does)) = band.get(at) else {
+                    continue;
+                };
+                if n * share > column {
+                    spans.push(Span::raw(" ".repeat(n * share - column)));
+                }
+                column = n * share + key.chars().count() + does.chars().count();
+                spans.push(Span::styled(
+                    key.clone(),
                     Style::new().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled((*does).to_string(), dim()),
-            ])
+                ));
+                spans.push(Span::styled(does.clone(), dim()));
+            }
+            Line::from(spans)
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// The keys as the bands they are drawn in: as few bands as the height needs
+/// and the width will take, each key padded to line up under the one above it,
+/// and each description cut to what its own band was given.
+fn bands(area: Rect) -> Vec<Vec<(String, String)>> {
+    let width = area.width as usize;
+    let count = HELP
+        .len()
+        .div_ceil((area.height as usize).max(1))
+        .clamp(1, (width / BAND).max(1));
+    let deep = HELP.len().div_ceil(count);
+    let share = (width / count).max(1);
+
+    let bands: Vec<&[(&str, &str)]> = HELP.chunks(deep).collect();
+    bands
+        .iter()
+        .enumerate()
+        .map(|(n, keys)| {
+            let column = keys
+                .iter()
+                .map(|(key, _)| key.chars().count())
+                .max()
+                .unwrap_or(0)
+                + 1;
+            // The last band takes whatever the division left over, and every
+            // other one keeps a column of air between it and the next.
+            let room = match n + 1 == bands.len() {
+                true => width.saturating_sub(n * share + column),
+                false => share.saturating_sub(column + 1),
+            };
+            keys.iter()
+                .map(|(key, does)| (format!("{key:<column$}"), fit(does, room)))
+                .collect()
+        })
+        .collect()
 }
 
 /// How tall the composer may grow before it stops and scrolls instead: ten
@@ -1208,7 +1275,10 @@ fn hints(screen: &Screen) -> Vec<&'static str> {
                 true => "space closes it",
                 false => "space card",
             };
-            match list.selected().is_some_and(|view| view.phase().is_terminal()) {
+            match list
+                .selected()
+                .is_some_and(|view| view.phase().is_terminal())
+            {
                 true => vec![card, "ctrl+x forget"],
                 false => vec![card, "enter attach", "ctrl+x stop"],
             }
@@ -2930,13 +3000,62 @@ mod tests {
         let mut screen = showing(Vec::new(), None);
         screen.mode = Mode::Keys;
 
-        // Tall enough for every key: the overlay is one column, and a screen
-        // shorter than the list cuts the end off it.
+        // Tall enough for every key in one band, so each of them has the row
+        // to itself and every description is whole.
         let painted = painted(&screen, (60, 22)).join("\n");
         for (key, does) in HELP {
             assert!(painted.contains(key), "{key} is missing:\n{painted}");
             assert!(painted.contains(does), "{does} is missing:\n{painted}");
         }
+    }
+
+    /// The overlay on a screen this size, and the rows it was drawn on.
+    fn overlay(size: (u16, u16)) -> Vec<String> {
+        let mut screen = showing(Vec::new(), None);
+        screen.mode = Mode::Keys;
+        painted(&screen, size)
+    }
+
+    #[test]
+    fn keymap_the_keys_lay_out_down_one_band_and_on_to_the_next() {
+        // Two rows of header and one of keys leave twelve for the overlay,
+        // which is fewer than there are keys: they only all fit if the band
+        // that would have run off the bottom stands beside the first instead.
+        let painted = overlay((140, 15));
+        let all = painted.join("\n");
+        for (key, _) in HELP {
+            assert!(key.len() < 12, "{key} is wider than a band's key column");
+            assert!(all.contains(key), "{key} is missing:\n{all}");
+        }
+
+        // Down before across: the second key is under the first rather than
+        // beside it, which is the way a column is read.
+        assert!(painted[2].starts_with(HELP[0].0), "{:?}", painted[2]);
+        assert!(painted[3].starts_with(HELP[1].0), "{:?}", painted[3]);
+        assert!(
+            painted[2].chars().count() > 70,
+            "and the next band stands beside the first: {:?}",
+            painted[2]
+        );
+    }
+
+    #[test]
+    fn keymap_the_keys_give_up_what_they_say_before_they_give_up_a_key() {
+        // The same screen with no room for two whole bands. Every key is
+        // still on it, because a key nobody can find is worse than one whose
+        // line was cut short.
+        let painted = overlay((60, 15));
+        let all = painted.join("\n");
+        for (key, _) in HELP {
+            assert!(all.contains(key), "{key} is missing:\n{all}");
+        }
+        for line in &painted {
+            assert!(line.chars().count() <= 60, "{line:?}");
+        }
+        assert!(
+            all.contains('…'),
+            "and what was cut says it was cut:\n{all}"
+        );
     }
 
     #[test]
