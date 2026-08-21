@@ -23,13 +23,25 @@ use std::time::{Duration, Instant};
 
 use crate::registry;
 use crate::store::{Agent, Meta};
-use crate::tmux::{PaneId, Server, SessionId};
+use crate::tmux::{PaneId, Server, SessionId, Spawn, WindowId};
 
 /// What the pane is handed at birth.
 pub const HANDOFF: &str = "handoff.json";
 
 /// The window agents tile into.
 pub const WALL: &str = "amx-wall";
+
+/// The pane option marking amx's own pane on an empty wall, so the first agent
+/// knows which pane to take the place of.
+pub const PLACEHOLDER: &str = "@amx_placeholder";
+
+/// What an empty wall says, and what to type to fill it.
+///
+/// Two lines a person can act on, and nothing about tmux: somebody looking at
+/// an empty wall for the first time is being told how to start an agent, not
+/// which key moves between panes.
+const HINT: &str = "type a task";
+const EXAMPLE: &str = r#"amx new "fix the login bug""#;
 
 /// The socket amx's own server listens on, and the session it keeps the wall
 /// in.
@@ -240,6 +252,11 @@ fn wall(server: &Server, cwd: &Path, command: &[String], lock: &Path) -> Result<
 
     match server.window_named(&session, WALL)? {
         Some(window) => {
+            // A wall that was empty is amx's own pane saying so, and the first
+            // agent takes its place rather than splitting the wall beside it.
+            if let Some(hint) = placeholder_in(server, &window)? {
+                return replace(server, &hint, cwd, command);
+            }
             let mut args = vec![
                 "split-window".to_string(),
                 "-t".to_string(),
@@ -274,6 +291,111 @@ fn wall(server: &Server, cwd: &Path, command: &[String], lock: &Path) -> Result<
             PaneId::new(server.run(&borrow(&args))?)
         }
     }
+}
+
+/// The wall's empty state: amx's own pane, saying what to type.
+///
+/// A wall is opened far more often than an agent is started, and until one is
+/// there is nothing on it. What used to stand there was the person's login
+/// shell, which makes the first thing a new cockpit shows somebody's own
+/// prompt with no sign of what amx is waiting for.
+///
+/// The caller holds the wall lock: this finds and then creates, and between
+/// those two steps the answer to "is there a wall?" is still no.
+pub fn ensure_wall(server: &Server, session: &SessionId) -> Result<()> {
+    // A wall that exists has panes on it, and panes on the wall are agents or
+    // the hint that is already there. Either way there is nothing to put up.
+    if server.window_named(session, WALL)?.is_some() {
+        return Ok(());
+    }
+
+    let command = placeholder_command();
+    let (_, pane) = server.new_window(
+        session,
+        &Spawn {
+            name: Some(WALL),
+            command: &borrow(&command),
+            ..Spawn::default()
+        },
+    )?;
+    server.set_pane_option(&pane, PLACEHOLDER, "1")
+}
+
+/// What the empty wall's pane runs.
+///
+/// It prints the hint once and then waits for nothing, and the waiting is the
+/// point: a pane whose command ends is a pane tmux closes, and a window goes
+/// with its last pane — so a hint that returned would take the wall with it.
+///
+/// A shell rather than an amx verb of its own, because nothing amx starts
+/// stays resident. The hint is two lines of output and a wait, and an amx
+/// sitting in a pane forever to produce them would be the only resident amx
+/// there is.
+///
+/// The words travel as arguments, never in the script: `$0` and `$1` are the
+/// two lines, by the same law that keeps a task out of a shell's hands.
+fn placeholder_command() -> Vec<String> {
+    [
+        "sh",
+        "-c",
+        r#"printf '\n  %s\n\n  %s\n' "$0" "$1"; while :; do sleep 86400; done"#,
+        HINT,
+        EXAMPLE,
+    ]
+    .map(str::to_string)
+    .to_vec()
+}
+
+/// The empty state's pane on this wall, while it is still standing.
+fn placeholder_in(server: &Server, window: &WindowId) -> Result<Option<PaneId>> {
+    let listed = server.run(&[
+        "list-panes",
+        "-t",
+        window.as_str(),
+        "-F",
+        &format!("#{{pane_id}} #{{{PLACEHOLDER}}}"),
+    ])?;
+    marked(&listed).map(PaneId::new).transpose()
+}
+
+/// The marked pane in a `<pane id> <marker>` listing.
+///
+/// An unset user option expands to nothing, so the marker is read by position
+/// off a single-space split and never by counting words — and the last line of
+/// all has had its empty marker trimmed off it before this sees it.
+fn marked(listed: &str) -> Option<&str> {
+    listed
+        .lines()
+        .find(|line| line.split(' ').nth(1) == Some("1"))
+        .and_then(|line| line.split(' ').next())
+}
+
+/// The first agent takes the empty state's place.
+///
+/// `respawn-pane -k` rather than closing the hint and splitting what is left:
+/// the hint is the wall's only pane, and closing it would take the window with
+/// it. The pane keeps its id through the respawn, so the record names the pane
+/// the agent is really in.
+///
+/// The marker comes off before the respawn, and the order is the point. A pane
+/// left marked with an agent in it would be respawned over by the next `new`;
+/// the other way round costs a hint standing beside the agents until the wall
+/// empties again.
+fn replace(server: &Server, pane: &PaneId, cwd: &Path, command: &[String]) -> Result<PaneId> {
+    server.unset_pane_option(pane, PLACEHOLDER)?;
+
+    let mut args = vec![
+        "respawn-pane".to_string(),
+        "-k".to_string(),
+        "-c".to_string(),
+        cwd.to_string_lossy().into_owned(),
+        "-t".to_string(),
+        pane.as_str().to_string(),
+        "--".to_string(),
+    ];
+    args.extend(command.iter().cloned());
+    server.run(&borrow(&args))?;
+    Ok(pane.clone())
 }
 
 /// The session the wall belongs in: the caller's own when there is one, else
@@ -546,6 +668,35 @@ mod tests {
             "fix the login bug",
         );
         assert_eq!(command, ["mock-claude", "fix the login bug"]);
+    }
+
+    #[test]
+    fn spawn_the_placeholder_says_what_to_type_and_then_waits_for_nothing() {
+        let command = placeholder_command();
+        let script = &command[2];
+
+        assert_eq!(command[0], "sh");
+        assert!(
+            command[3..].contains(&HINT.to_string()),
+            "the words are arguments, so nothing a person reads is ever syntax"
+        );
+        assert!(!script.contains(HINT), "{script}");
+        assert!(
+            script.contains("while :"),
+            "a pane whose command ends is a pane tmux closes, and the wall goes with it"
+        );
+    }
+
+    #[test]
+    fn spawn_the_placeholder_is_found_by_its_marker_and_not_by_where_it_sits() {
+        assert_eq!(marked("%1 \n%2 \n%3 1"), Some("%3"));
+        assert_eq!(marked("%1 1\n%2 "), Some("%1"));
+        assert_eq!(marked("%1 \n%2 "), None, "a wall of agents is not empty");
+        assert_eq!(
+            marked("%1\n%2"),
+            None,
+            "the last line has had its empty marker trimmed off it"
+        );
     }
 
     #[test]

@@ -8,8 +8,10 @@
 //! machine is never the thing standing between them and their agents.
 //!
 //! The room is one session on amx's own server — the view in a window, and
-//! beside it the wall the agents tile into, which the first agent to arrive
-//! makes whether that is before the cockpit or long after it.
+//! beside it the wall the agents tile into. Either half can arrive first: an
+//! agent started from outside tmux makes the wall long before anybody looks
+//! in on it, and a cockpit opened before any agent makes a wall with nothing
+//! on it but amx's own pane saying what to type.
 
 use anyhow::{Context, Result};
 use std::io::IsTerminal;
@@ -76,19 +78,25 @@ fn open(root: &Path, view_command: &Path) -> Result<i32> {
 /// outside tmux has the session and the wall up already, and what that leaves
 /// out is the one pane a person types in.
 ///
+/// Whichever half is missing is put up here, and that includes a wall with no
+/// agents on it yet — an empty wall is amx's own pane saying what to type, and
+/// the room is not much of a room with only one half of it.
+///
 /// The lock is the wall's own. A cockpit and an agent arriving together must
 /// not make two rooms: finding and creating are two steps, and between them
 /// the answer to "is there a session?" is still no.
 fn ensure(server: &Server, view_command: &Path, lock: &Path) -> Result<SessionId> {
     let _held = spawn::hold(lock)?;
 
-    let Some(session) = server.session_named(PRIVATE)? else {
-        return open_session(server, view_command);
+    let session = match server.session_named(PRIVATE)? {
+        Some(session) => session,
+        None => open_session(server, view_command)?,
     };
     let window = match server.window_named(&session, VIEW)? {
         Some(window) => window,
         None => new_view(server, &session, view_command)?,
     };
+    spawn::ensure_wall(server, &session)?;
 
     // Whatever was last on the screen, `amx` was typed to be back at the view.
     server.run(&["select-window", "-t", window.as_str()])?;

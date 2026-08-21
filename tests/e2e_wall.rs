@@ -40,6 +40,38 @@ impl Private {
             .map(str::to_string)
             .collect()
     }
+
+    /// The wall's panes, each with whether amx has it marked as its own empty
+    /// state.
+    ///
+    /// The marker is read by position off a single-space split: an unset user
+    /// option expands to nothing, and the trailing space it leaves behind is
+    /// trimmed off the last line before this ever sees it.
+    fn wall(&self) -> Vec<(String, bool)> {
+        self.ask(&[
+            "list-panes",
+            "-a",
+            "-F",
+            "#{window_name} #{pane_id} #{@amx_placeholder}",
+        ])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.strip_prefix("amx-wall "))
+        .map(|rest| {
+            let mut field = rest.split(' ');
+            (
+                field.next().unwrap_or_default().to_string(),
+                field.next() == Some("1"),
+            )
+        })
+        .collect()
+    }
+
+    /// What is on one of its panes now.
+    fn capture(&self, pane: &str) -> String {
+        self.ask(&["capture-pane", "-p", "-J", "-t", pane])
+            .unwrap_or_default()
+    }
 }
 
 impl Drop for Private {
@@ -119,11 +151,16 @@ fn outside_tmux_the_front_door_opens_the_cockpit() {
 
     let pane = amx.in_a_terminal(&outside_tmux(&cockpit), &[]);
 
-    let windows = amx.until("the cockpit", || {
+    let mut windows = amx.until("the cockpit", || {
         let windows = cockpit.windows();
-        (!windows.is_empty()).then_some(windows)
+        (windows.len() == 2).then_some(windows)
     });
-    assert_eq!(windows, ["amx amx-view"], "one room, with the view in it");
+    windows.sort();
+    assert_eq!(
+        windows,
+        ["amx amx-view", "amx amx-wall"],
+        "one room, with both halves of it in it"
+    );
 
     // And the terminal the command was typed in is now looking at it.
     amx.until("the view to reach the terminal", || {
@@ -147,7 +184,7 @@ fn the_cockpit_is_the_room_the_agents_are_in() {
     // The cockpit first, and an agent into it afterwards.
     amx.in_a_terminal(&outside_tmux(&cockpit), &[]);
     amx.until("the cockpit", || {
-        (!cockpit.windows().is_empty()).then_some(())
+        (cockpit.windows().len() == 2).then_some(())
     });
 
     let out = amx
@@ -168,6 +205,15 @@ fn the_cockpit_is_the_room_the_agents_are_in() {
     });
     windows.sort();
     assert_eq!(windows, ["amx amx-view", "amx amx-wall"]);
+
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert!(
+        cockpit
+            .wall()
+            .iter()
+            .any(|(pane, _)| *pane == amx.pane_of(&id)),
+        "the agent went on the wall of the room that was already open"
+    );
 }
 
 #[test]
@@ -188,6 +234,7 @@ fn a_cockpit_opened_after_an_agent_joins_the_room_it_made() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(cockpit.windows(), ["amx amx-wall"]);
+    let wall = cockpit.wall();
 
     amx.in_a_terminal(&outside_tmux(&cockpit), &[]);
 
@@ -201,10 +248,15 @@ fn a_cockpit_opened_after_an_agent_joins_the_room_it_made() {
         ["amx amx-view", "amx amx-wall"],
         "one room, not a second one beside it"
     );
+    assert_eq!(
+        cockpit.wall(),
+        wall,
+        "a wall with an agent on it is not empty, and gets no hint beside it"
+    );
 }
 
 #[test]
-fn opening_the_cockpit_twice_leaves_one_view() {
+fn opening_the_cockpit_twice_leaves_one_view_and_one_placeholder() {
     let amx = Harness::new();
     let cockpit = Private::new();
 
@@ -216,7 +268,64 @@ fn opening_the_cockpit_twice_leaves_one_view() {
         let clients = cockpit.ask(&["list-clients", "-F", "#{client_tty}"])?;
         (clients.lines().count() == 2).then_some(())
     });
-    assert_eq!(cockpit.windows(), ["amx amx-view"]);
+    let mut windows = cockpit.windows();
+    windows.sort();
+    assert_eq!(windows, ["amx amx-view", "amx amx-wall"]);
+    assert_eq!(
+        cockpit.wall().len(),
+        1,
+        "the second cockpit found the empty state rather than putting another one up"
+    );
+}
+
+#[test]
+fn an_empty_wall_shows_a_placeholder_and_the_first_agent_replaces_it() {
+    let amx = Harness::new();
+    let cockpit = Private::new();
+    let mock = amx.mock();
+
+    amx.in_a_terminal(&outside_tmux(&cockpit), &[]);
+
+    // The wall is there before any agent is, and what stands on it is amx's
+    // own pane — marked, so amx can find it again — rather than somebody's
+    // login shell.
+    let pane = amx.until("the wall's empty state", || {
+        match cockpit.wall().as_slice() {
+            [(pane, true)] => Some(pane.clone()),
+            _ => None,
+        }
+    });
+    amx.until("the hint", || {
+        cockpit.capture(&pane).contains("type a task").then_some(())
+    });
+
+    let out = amx
+        .amx_command(&["new", "--no-worktree", "--agent", &mock, "look busy"])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"))
+        .env("AMX_TMUX_SOCKET", cockpit.socket())
+        .output()
+        .expect("running amx new");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    // The first agent takes that pane's place rather than splitting the wall
+    // beside it, and the hint's marker comes off with the hint.
+    assert_eq!(cockpit.wall(), [(pane.clone(), false)]);
+    assert_eq!(
+        amx.pane_of(&id),
+        pane,
+        "the record names the pane the agent is in"
+    );
+    // And the pane the hint was in is running the agent, hint and all gone:
+    // the respawn carries the handoff the same way a split does.
+    amx.until("the agent to say something", || {
+        let screen = cockpit.capture(&pane);
+        (screen.contains("watching the log") && !screen.contains("type a task")).then_some(())
+    });
 }
 
 #[test]
