@@ -69,8 +69,19 @@ pub enum Command {
     /// Send a message to a working or idle agent.
     Send { id: String, text: String },
 
-    /// Answer a waiting agent's question: y, n, 1-9, enter or esc.
-    Answer { id: String, key: String },
+    /// Answer a waiting agent's question: y, n, 1-9, enter, esc, or words.
+    ///
+    /// The grammar is the question's rather than amx's. A permission prompt
+    /// and the folder-trust screen read one key. A question the vendor asked
+    /// itself offers a field beside its choices, so words of your own are an
+    /// answer to that one and to nothing else.
+    Answer {
+        /// The agent that is waiting on one.
+        id: String,
+        /// One key of the grammar, or words of your own.
+        #[arg(value_name = "ANSWER")]
+        key: String,
+    },
 
     /// Wait for the agent's turn to end and print its answer.
     Result {
@@ -121,7 +132,12 @@ pub enum Command {
     /// plain text and prints nothing at all when no agent needs saying.
     Statusline,
 
-    /// Check tmux, the agent command, the config and the hook wiring.
+    /// Check what amx needs from this machine, and what is missing.
+    ///
+    /// Six things have to be true before an agent can run: tmux, the agent
+    /// command, the config, amx's hooks in the vendor's settings, a state
+    /// directory to keep records in, and no agent already stopped at a screen
+    /// the vendor puts in front of the work.
     Doctor {
         /// Install what is missing.
         #[arg(long)]
@@ -688,6 +704,91 @@ mod tests {
                 "the README's config file has no `{key}` in it"
             );
         }
+    }
+
+    /// What one verb's help offers, as `amx --help` lists it.
+    fn about(verb: &str) -> String {
+        use clap::CommandFactory;
+        Cli::command()
+            .get_subcommands()
+            .find(|listed| listed.get_name() == verb)
+            .and_then(|listed| listed.get_about().map(ToString::to_string))
+            .unwrap_or_else(|| panic!("nothing about `{verb}`"))
+    }
+
+    #[test]
+    fn docs_the_help_for_answer_offers_the_grammar_the_verb_reads() {
+        // The one verb whose help has to be a grammar rather than a sentence:
+        // what it takes is not guessable, and getting it wrong types something
+        // at an agent that cannot be taken back.
+        let (_, offered) = about("answer")
+            .split_once(": ")
+            .map(|(said, grammar)| (said.to_string(), grammar.to_string()))
+            .expect("the grammar it takes");
+        let offered: Vec<String> = offered
+            .trim_end_matches('.')
+            .split(", ")
+            .map(str::to_string)
+            .collect();
+
+        for key in ["y", "n", "1", "5", "9", "enter", "esc"] {
+            assert!(
+                crate::verbs::answer::named(key).is_some(),
+                "the verb no longer reads `{key}`"
+            );
+        }
+        for key in ["y", "n", "1-9", "enter", "esc"] {
+            assert!(
+                offered.iter().any(|word| word == key),
+                "the help does not offer `{key}`: {offered:?}"
+            );
+        }
+        assert!(
+            offered.iter().any(|word| word.contains("words")),
+            "words of your own answer the question that has a field for them, \
+             and the help never says so: {offered:?}"
+        );
+    }
+
+    #[test]
+    fn docs_the_help_and_the_readme_count_the_checks_doctor_makes() {
+        // Both of them write the number out, so both go stale silently. What
+        // is in the findings does not change how many checks are made of them.
+        let checks = crate::verbs::doctor::report(&crate::verbs::doctor::Findings {
+            tmux: None,
+            vendor: String::new(),
+            vendor_path: None,
+            config: PathBuf::new(),
+            config_warnings: Vec::new(),
+            settings: PathBuf::new(),
+            wired: Vec::new(),
+            settings_error: None,
+            command: String::new(),
+            state_root: PathBuf::new(),
+            state_error: None,
+            parked: Vec::new(),
+        });
+        let counted = ["no", "one", "two", "three", "four", "five", "six", "seven"]
+            .get(checks.len())
+            .expect("a count these have a word for");
+
+        use clap::CommandFactory;
+        let long = Cli::command()
+            .get_subcommands()
+            .find(|listed| listed.get_name() == "doctor")
+            .and_then(|listed| listed.get_long_about().map(ToString::to_string))
+            .expect("what doctor says of itself at length")
+            .to_lowercase();
+        assert!(
+            long.contains(&format!("{counted} things")),
+            "doctor makes {} checks and its help says otherwise: {long}",
+            checks.len()
+        );
+        assert!(
+            README.contains(&format!("the {counted} things")),
+            "doctor makes {} checks and the README says otherwise",
+            checks.len()
+        );
     }
 
     #[test]
