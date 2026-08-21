@@ -33,6 +33,13 @@ const RESUME: &str = "--resume";
 /// The vendor's flag for a session to *start*, under an id the caller chose.
 const START_SESSION: &str = "--session-id";
 
+/// Every way of writing a flag that decides which session the vendor opens.
+///
+/// These are the words a resume replaces rather than carries. Everything else
+/// the agent was started with is the agent's, not the first turn's, and goes
+/// with it: a directory it was given access to is one it still needs.
+const NAMES_A_SESSION: [&str; 3] = [START_SESSION, RESUME, "-r"];
+
 /// Run the verb against the machine.
 pub fn from_env(config: &Config, id: Option<&str>, all: bool) -> Result<i32> {
     let root = paths::state_root()?;
@@ -210,32 +217,56 @@ fn bring_back(root: &Path, meta: &Meta, env: &BTreeMap<String, String>) -> Resul
 
 /// The vendor's argv for a session it already has.
 ///
-/// Two things go and one arrives. The **task** goes: it was put to this session
-/// in its first turn, and handing it over again would ask for the work twice.
-/// `--session-id` goes with it, because it asks the vendor to *start* a session
-/// under a chosen id, which is the opposite instruction to the one this command
-/// carries. And `--resume=<id>` arrives as a single token: a flag whose value
-/// is optional does not take the next argument as its value.
+/// The agent is launched with what it was launched with the first time, minus
+/// the two things this command decides for itself.
+///
+/// The **task** goes: it was put to this session in its first turn, and handing
+/// it over again would ask for the work twice. Every **flag naming a session**
+/// goes with it — `--session-id`, because it asks the vendor to *start* a
+/// session under a chosen id, which is the opposite instruction to the one this
+/// command carries, and `--resume`, because a resumed agent's recorded command
+/// already carries the one the last resume wrote. Two of them would leave which
+/// session the vendor opens up to the vendor.
+///
+/// `--resume=<id>` then arrives as a single token, because that is the one
+/// spelling with no ambiguity about where the value is.
 fn continuing(handoff: &Handoff, session: &str) -> Vec<String> {
-    let mut words = handoff.command.clone();
-    if words.last() == Some(&handoff.task) {
-        words.pop();
-    }
+    let mut words = handoff.command.clone().into_iter().peekable();
+    let mut command: Vec<String> = Vec::new();
 
-    let joined = format!("{START_SESSION}=");
-    let mut command: Vec<String> = Vec::with_capacity(words.len());
-    let mut value_of_a_dropped_flag = false;
-    for word in words {
-        if value_of_a_dropped_flag {
-            value_of_a_dropped_flag = false;
-        } else if word == START_SESSION {
-            value_of_a_dropped_flag = true;
-        } else if !word.starts_with(&joined) {
+    while let Some(word) = words.next() {
+        // Only the last word is the task, which is where `new` put it.
+        if words.peek().is_none() && word == handoff.task {
+            break;
+        }
+        let Some(value_is_a_word_of_its_own) = names_a_session(&word) else {
             command.push(word);
+            continue;
+        };
+        // The value goes with the flag it belongs to. A word that begins with
+        // `-` is never one: the vendor documents `--resume`'s value as
+        // optional, and an optional value is not taken from a word that could
+        // be a flag in its own right.
+        if value_is_a_word_of_its_own && words.peek().is_some_and(|next| !next.starts_with('-')) {
+            words.next();
         }
     }
+
     command.push(format!("{RESUME}={session}"));
     command
+}
+
+/// Whether a word is a flag naming a session, and if so whether its value is
+/// the word after it rather than joined on with `=`.
+fn names_a_session(word: &str) -> Option<bool> {
+    NAMES_A_SESSION.iter().find_map(|flag| {
+        if word == *flag {
+            return Some(true);
+        }
+        word.strip_prefix(flag)
+            .is_some_and(|rest| rest.starts_with('='))
+            .then_some(false)
+    })
 }
 
 /// Where the agent runs, put back if it is not there any more.
@@ -346,6 +377,75 @@ mod tests {
                 started.command
             );
         }
+    }
+
+    #[test]
+    fn clibatch_resume_carries_everything_the_agent_was_started_with() {
+        // The arguments are the agent's, not the first turn's: a directory it
+        // was given access to is one it still needs.
+        let started = handoff(
+            &[
+                "claude",
+                "--model",
+                "opus",
+                "--add-dir",
+                "/srv/data",
+                "--verbose",
+                "port the importer",
+            ],
+            "port the importer",
+        );
+        assert_eq!(
+            continuing(&started, "abc-123"),
+            [
+                "claude",
+                "--model",
+                "opus",
+                "--add-dir",
+                "/srv/data",
+                "--verbose",
+                "--resume=abc-123"
+            ]
+        );
+    }
+
+    #[test]
+    fn clibatch_resuming_twice_asks_for_one_session_and_not_two() {
+        // Each resume records what it launched, so the next one reads a command
+        // that already carries a `--resume`. Handing the vendor two of them
+        // leaves which session it opens up to the vendor.
+        let started = handoff(&["claude", "--add-dir", "/srv/data", "go"], "go");
+        let after_one = Handoff {
+            command: continuing(&started, "abc-123"),
+            ..started
+        };
+        assert_eq!(
+            continuing(&after_one, "def-456"),
+            ["claude", "--add-dir", "/srv/data", "--resume=def-456"]
+        );
+
+        // However it was written the first time, including by hand after the
+        // separator on `amx new`.
+        for written in [
+            &["claude", "--resume", "old", "go"][..],
+            &["claude", "--resume=old", "go"],
+            &["claude", "-r", "old", "go"],
+        ] {
+            let started = handoff(written, "go");
+            assert_eq!(
+                continuing(&started, "def-456"),
+                ["claude", "--resume=def-456"],
+                "{written:?}"
+            );
+        }
+
+        // The value is optional, so the word after one is only its value when
+        // it could be: a flag after `--resume` is a flag, and it stays.
+        let started = handoff(&["claude", "--resume", "--verbose", "go"], "go");
+        assert_eq!(
+            continuing(&started, "def-456"),
+            ["claude", "--verbose", "--resume=def-456"]
+        );
     }
 
     #[test]

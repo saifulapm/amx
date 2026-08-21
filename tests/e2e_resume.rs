@@ -14,17 +14,28 @@ const CONTINUED: &str = "b7d2a5c8-3e14-4f9a-8c26-0d5b1a7e3f42";
 
 /// An agent started the way a person starts one, playing `scenario`.
 fn start(amx: &Harness, id: &str, dir: &Path, scenario: &str) {
+    start_with(amx, id, dir, scenario, &[]);
+}
+
+/// The same, with arguments of the vendor's own after the separator.
+fn start_with(amx: &Harness, id: &str, dir: &Path, scenario: &str, vendor: &[&str]) {
     let out = amx
-        .amx_command(&[
-            "new",
-            "--name",
-            id,
-            "--dir",
-            &dir.to_string_lossy(),
-            "--agent",
-            &amx.mock(),
-            "fix the login bug",
-        ])
+        .amx_command(
+            &[
+                &[
+                    "new",
+                    "--name",
+                    id,
+                    "--dir",
+                    &dir.to_string_lossy(),
+                    "--agent",
+                    &amx.mock(),
+                    "fix the login bug",
+                ][..],
+                vendor,
+            ]
+            .concat(),
+        )
         .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
         .output()
         .expect("running amx new");
@@ -33,6 +44,17 @@ fn start(amx: &Harness, id: &str, dir: &Path, scenario: &str) {
         "amx new: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+/// How the vendor's stand-in says it was called, once it has said it.
+fn argv_of(amx: &Harness, id: &str) -> String {
+    let pane = amx.pane_of(id);
+    amx.until("the vendor to say how it was called", || {
+        amx.capture(&pane)
+            .lines()
+            .find(|line| line.starts_with("argv:"))
+            .map(str::to_string)
+    })
 }
 
 /// `amx resume`, with the stand-in ready to play a continued session.
@@ -189,6 +211,69 @@ fn resume_puts_back_the_tree_that_stopping_took_away() {
         "on the branch it was working on"
     );
     until_continued(&amx, id);
+}
+
+#[test]
+fn clibatch_resume_hands_the_vendor_what_the_agent_was_started_with() {
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start_with(
+        &amx,
+        id,
+        amx.home(),
+        "happy-turn",
+        &["--", "--add-dir", "/srv/data"],
+    );
+    amx.until_state(id, "idle");
+    let session = amx.meta(id)["session"]
+        .as_str()
+        .expect("a session was recorded")
+        .to_string();
+
+    amx.amx(&["stop", id, "--force"]);
+    said(&resume(&amx, &[id]));
+
+    let called = argv_of(&amx, id);
+    assert!(
+        called.contains("--add-dir /srv/data"),
+        "a directory the agent was given access to is one it still needs: {called}"
+    );
+    assert!(called.contains(&format!("--resume={session}")), "{called}");
+}
+
+#[test]
+fn clibatch_resuming_twice_over_asks_for_one_session_and_not_two() {
+    // Each resume records what it launched, so the second one reads a command
+    // that already names a session. Two of them would leave which session the
+    // vendor opens up to the vendor.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start_with(
+        &amx,
+        id,
+        amx.home(),
+        "happy-turn",
+        &["--", "--add-dir", "/srv/data"],
+    );
+    amx.until_state(id, "idle");
+
+    for _ in 0..2 {
+        amx.amx(&["stop", id, "--force"]);
+        said(&resume(&amx, &[id]));
+        until_continued(&amx, id);
+    }
+
+    let called = argv_of(&amx, id);
+    assert_eq!(
+        called.matches("--resume").count(),
+        1,
+        "one flag, whatever the vendor was launched with before: {called}"
+    );
+    assert!(
+        called.contains(&format!("--resume={CONTINUED}")),
+        "{called}"
+    );
+    assert!(called.contains("--add-dir /srv/data"), "{called}");
 }
 
 #[test]
