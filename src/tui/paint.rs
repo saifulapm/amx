@@ -39,9 +39,13 @@ use crate::verbs::send::numbered;
 const KEYS: &str = "space card · enter attach · ctrl+s axis · ? keys · q quit";
 
 /// What the card's own keys do, under the card, while it is holding a line.
+///
 /// What may be typed *into* that line is the question's business and is said
-/// on the line itself.
-const ANSWERS: &str = "enter answers it · alt+enter newline · esc closes it";
+/// on the line itself. Only these two are offered: alt+enter puts a newline in
+/// the line like anywhere else in the view, and a prompt that reads one key
+/// would refuse whatever a newline was typed into, so a row that named it
+/// would be naming a key that cannot work where it was read.
+const ANSWERS: &str = "enter answers it · esc closes it";
 
 /// Every key, for whoever asked what they are.
 const HELP: [(&str, &str); 18] = [
@@ -578,20 +582,22 @@ fn float(frame: &mut Frame, card: &Card, answering: Option<&Composer>, area: Rec
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
 
-    // What the card is for comes first and the pane takes what is left: the
-    // question, then the answers it offers, then the row they are answered on.
+    // What the card is for comes first and the pane takes what is left. The
+    // row being typed on comes before even the question: the question is on
+    // the agent's own row behind the card, and a line somebody is typing into
+    // is nowhere else at all.
     let mut room = inner.height;
     let mut take = |wanted: u16| {
         let taken = wanted.min(room);
         room -= taken;
         taken
     };
+    let typing = take(u16::from(answering.is_some()));
     let asked = take(
         card.question
             .as_deref()
             .map_or(0, |question| wrapped(question, inner.width).min(ASKED_TALL)),
     );
-    let typing = take(u16::from(answering.is_some()));
     let choices = choices(&card.options, inner.width as usize);
     let listed = take(choices.len() as u16);
 
@@ -1351,6 +1357,19 @@ mod tests {
             (18, 9),
             "with the terminal's own cursor at the end of what was typed"
         );
+    }
+
+    #[test]
+    fn card_keeps_the_row_being_typed_on_when_there_is_room_for_little_else() {
+        // A card with one row inside its borders. What somebody is typing is
+        // what that row is for: the question is on the agent's row behind the
+        // card, and the line is nowhere else at all.
+        let screen = painted(
+            &answering(asking(&["the sqlite one"], Some(Kind::Question)), "the sq"),
+            (60, 6),
+        );
+        assert!(answer_row(&screen).contains("❯ the sq"), "{screen:?}");
+        assert_eq!(screen[5], ANSWERS, "with the card's own keys under it");
     }
 
     #[test]
