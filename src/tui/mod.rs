@@ -2,8 +2,13 @@
 //!
 //! One screen, held open on a terminal, answering the question somebody opens
 //! it for: is anything waiting on me? The agents are gathered under what they
-//! need, the cursor walks them, space looks closer at one, and enter puts it in
-//! front of the terminal.
+//! need, the cursor walks them, space floats a card over one of them, and
+//! enter puts it in front of the terminal.
+//!
+//! The card is where an agent that has stopped is dealt with. It carries what
+//! the agent is asking, the choices it is offering and a line to answer on, so
+//! the row that said something needed doing is one keypress from the thing
+//! that does it.
 //!
 //! What can be done from here is what can be done from a shell prompt — start
 //! one, say something to one, stop one, see what one has changed — because a
@@ -12,9 +17,9 @@
 //! key that types text puts the view in a mode that says so: a list whose keys
 //! are also letters cannot have a composer that swallows them.
 //!
-//! Nothing here is in the byte path. A peek is a `capture-pane`, and attaching
-//! is tmux bringing the agent's own window forward — the view stays where it
-//! is, in its window, for whoever comes back to it.
+//! Nothing here is in the byte path. What a card shows is a `capture-pane`,
+//! and attaching is tmux bringing the agent's own window forward — the view
+//! stays where it is, in its window, for whoever comes back to it.
 //!
 //! The reading is taken from disk on a clock rather than pushed at the view by
 //! anything: nothing amx runs stays resident, so there is nobody to push.
@@ -39,8 +44,8 @@ use crate::derive::{self, View};
 use crate::store::{Phase, now};
 use crate::tmux::{PaneId, Server, SessionId};
 use crate::{exit, registry, rules};
-use act::{Asking, Composer, Started};
-use paint::{Notice, Peek};
+use act::{Asking, Composer, Replied, Started};
+use paint::{Card, Notice};
 use rows::List;
 
 /// How often the agents are read again.
@@ -108,13 +113,14 @@ enum Mode {
     Keys,
 }
 
-/// What the closer look is showing.
+/// What the card is showing.
 #[derive(Default, PartialEq, Eq)]
 enum Look {
-    /// Nothing: nobody asked for one.
+    /// Nothing: nobody asked for a card.
     #[default]
     Away,
-    /// The agent's own screen, taken again with every reading.
+    /// The agent's own screen, taken again with every reading, with whatever
+    /// it has stopped to ask over the top of it.
     Screen,
     /// What the agent has changed, as it stood when somebody asked.
     Changes,
@@ -301,7 +307,7 @@ struct Screen {
     profile: Profile,
     mode: Mode,
     look: Look,
-    peek: Option<Peek>,
+    card: Option<Card>,
     notice: Option<Notice>,
     /// When the agents were last read.
     read: Option<Instant>,
@@ -401,16 +407,72 @@ impl Screen {
         }
     }
 
-    /// Take the closer look again, when it is the kind that follows the
-    /// cursor: what an agent is doing is what its pane is showing now.
+    /// Take the card again, when it is the kind that follows the cursor: what
+    /// an agent is doing is what its pane is showing now.
     fn follow_the_cursor(&mut self) {
         match self.look {
-            Look::Away => self.peek = None,
-            Look::Screen => self.peek = self.list.selected().map(look),
+            Look::Away => self.card = None,
+            Look::Screen => self.card = self.list.selected().map(card_of),
             // A diff was taken when somebody asked for it, and stays as it was
             // until they ask again.
             Look::Changes => {}
         }
+    }
+
+    /// The line being typed on the card, when that is where it is going.
+    ///
+    /// The card holds one line and only one: the answer to the question it is
+    /// showing. Anything else being typed — a task, a message to an agent that
+    /// is not the one on the card — is a band of its own under it.
+    fn answering(&self) -> Option<&Composer> {
+        match &self.mode {
+            Mode::Typing(composer) if self.on_the_card(composer) => Some(composer),
+            _ => None,
+        }
+    }
+
+    /// And every other line, which is the one the band under the card draws.
+    fn banded(&self) -> Option<&Composer> {
+        match &self.mode {
+            Mode::Typing(composer) if !self.on_the_card(composer) => Some(composer),
+            _ => None,
+        }
+    }
+
+    /// Whether this line is the answer to the question the card is showing.
+    ///
+    /// Taken as an argument rather than read off the mode, because the one
+    /// place it matters most is the keypress that has the composer out of the
+    /// mode in its hand.
+    fn on_the_card(&self, composer: &Composer) -> bool {
+        match (&composer.asking, &self.card) {
+            (Asking::Reply { id, .. }, Some(card)) => card.asks() && card.id == *id,
+            _ => false,
+        }
+    }
+
+    /// Open the card on the agent under the cursor, with the line to answer it
+    /// on where it is asking something.
+    ///
+    /// The line comes with the card because that is what the card is for: an
+    /// agent that has stopped is the reason somebody came to the screen, and
+    /// making them press a second key to say so would be a screen that knows
+    /// what they want and waits to be asked.
+    fn look_closer(&mut self) {
+        self.look = Look::Screen;
+        self.follow_the_cursor();
+        if let Some(card) = self.card.as_ref().filter(|card| card.asks()) {
+            self.mode = Mode::Typing(Composer::new(Asking::Reply {
+                id: card.id.clone(),
+                question: true,
+            }));
+        }
+    }
+
+    /// Put the card away, and the line it was holding with it.
+    fn look_away(&mut self) {
+        self.look = Look::Away;
+        self.follow_the_cursor();
     }
 
     /// What one key does.
@@ -480,17 +542,11 @@ impl Screen {
                 self.list.up();
                 self.moved();
             }
-            KeyCode::Char(' ') => {
-                self.look = match self.look {
-                    Look::Away => Look::Screen,
-                    _ => Look::Away,
-                };
-                self.follow_the_cursor();
-            }
-            KeyCode::Esc => {
-                self.look = Look::Away;
-                self.follow_the_cursor();
-            }
+            KeyCode::Char(' ') => match self.look {
+                Look::Away => self.look_closer(),
+                _ => self.look_away(),
+            },
+            KeyCode::Esc => self.look_away(),
             // The same key, read where the cursor is: a heading opens and
             // shuts the group under it, the fold gives back what it is holding,
             // and a row brings its agent forward.
@@ -507,21 +563,30 @@ impl Screen {
             KeyCode::Char('?') => self.mode = Mode::Keys,
             KeyCode::Char('n') => self.mode = Mode::Typing(Composer::new(Asking::Task)),
             // What a reply is depends on what the agent is doing: an agent
-            // that has stopped on a question is answered with one of the keys
-            // its prompt reads, and anything else is a message.
+            // that has stopped on a question is answered on the card, where
+            // the choices it is offering are, and anything else is a message
+            // on a line of its own.
             KeyCode::Char('r') => {
-                if let Some(view) = self.list.selected() {
-                    self.mode = Mode::Typing(Composer::new(Asking::Reply {
-                        id: view.id().to_string(),
-                        question: view.phase() == Phase::Waiting,
-                    }));
+                let asking = self
+                    .list
+                    .selected()
+                    .map(|view| (view.id().to_string(), view.phase() == Phase::Waiting));
+                match asking {
+                    Some((_, true)) => self.look_closer(),
+                    Some((id, false)) => {
+                        self.mode = Mode::Typing(Composer::new(Asking::Reply {
+                            id,
+                            question: false,
+                        }));
+                    }
+                    None => {}
                 }
             }
             KeyCode::Char('d') => {
                 if let Some(view) = self.list.selected() {
                     match act::changes(root, view) {
-                        Ok(peek) => {
-                            self.peek = Some(peek);
+                        Ok(card) => {
+                            self.card = Some(card);
                             self.look = Look::Changes;
                         }
                         Err(e) => self.notice = Some(Notice::Failed(format!("{e:#}"))),
@@ -583,8 +648,15 @@ impl Screen {
         };
 
         match key.code {
-            // Cancelled: the line goes, and nothing was done with it.
-            KeyCode::Esc => return Ok(Doing::Carry),
+            // Cancelled: the line goes, and nothing was done with it. The card
+            // that was holding it goes too — it and the line are one thing, so
+            // one key is what closes them.
+            KeyCode::Esc => {
+                if self.on_the_card(&composer) {
+                    self.look_away();
+                }
+                return Ok(Doing::Carry);
+            }
             // A newline in the line rather than the end of it. The one key
             // that grows the composer by hand, and the one enter that does not
             // dispatch: a composer where the plain one did not would be a
@@ -608,8 +680,25 @@ impl Screen {
                     return Ok(Doing::Carry);
                 }
                 if let Asking::Reply { id, .. } = &composer.asking {
-                    self.notice = said(act::reply(root, id, &composer.text));
-                    self.acted();
+                    let id = id.clone();
+                    match act::reply(root, &id, &composer.text) {
+                        Ok(Replied::Yes(said)) => {
+                            self.notice = Some(Notice::Advice(said));
+                            self.acted();
+                        }
+                        // A line the agent would not take is a line somebody
+                        // is still writing, the same as a task a dial refused:
+                        // an answer retyped is an answer, and one thrown away
+                        // is somebody typing it again from the start.
+                        Ok(Replied::No(why)) => {
+                            self.notice = Some(Notice::Advice(why));
+                            self.mode = Mode::Typing(composer);
+                        }
+                        Err(e) => {
+                            self.notice = Some(Notice::Failed(format!("{e:#}")));
+                            self.acted();
+                        }
+                    }
                     return Ok(Doing::Carry);
                 }
 
@@ -694,19 +783,23 @@ fn said(outcome: Result<String>) -> Option<Notice> {
     })
 }
 
-/// A closer look at one agent: what it is asking, and the screen it is asking
-/// it on — or, for an agent whose command has ended, the answer it left.
-fn look(view: &View) -> Peek {
+/// The card for one agent: what it is asking and the answers it is offering,
+/// over the screen it is asking on — or, for an agent whose command has ended,
+/// the answer it left.
+fn card_of(view: &View) -> Card {
     let server = Server::from_socket(view.meta.socket.clone());
     let screen = (!view.phase().is_terminal())
         .then(|| server.capture(&view.meta.pane).ok())
         .flatten()
         .filter(|screen| !screen.trim().is_empty());
 
-    Peek {
+    Card {
         id: view.id().to_string(),
         phase: view.phase(),
+        age: view.verdict.age,
         question: view.state.question.clone(),
+        options: view.state.options.clone(),
+        kind: view.kind(),
         body: screen
             .or_else(|| view.state.result.clone())
             .unwrap_or_default(),
@@ -798,7 +891,8 @@ fn attach(here: Option<&Here>, view: &View) -> Result<Option<Notice>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{Agent, Meta, Phase, State};
+    use crate::derive::{Evidence, Verdict};
+    use crate::store::{Agent, Kind, Meta, Phase, State};
     use crate::tmux::Socket;
     use ratatui::backend::TestBackend;
     use std::path::PathBuf;
@@ -1111,6 +1205,169 @@ mod tests {
         };
         assert_eq!(composer.text, "m", "a letter without the chord is a letter");
         assert!(composer.hidden, "and tab on its own is still the other key");
+    }
+
+    /// A reading of an agent, as a reader hands one to the view.
+    fn reading(id: &str, phase: Phase, state: State) -> View {
+        View::new(
+            Meta {
+                id: id.to_string(),
+                task: "port the importer".to_string(),
+                dir: PathBuf::from("/srv/app"),
+                worktree: None,
+                branch: None,
+                base: None,
+                socket: Socket::Name("amx-not-a-server".to_string()),
+                pane: PaneId::new("%404").unwrap(),
+                session: None,
+                transcript: None,
+                created: 1,
+            },
+            state,
+            Verdict {
+                phase,
+                evidence: Evidence::Hooks,
+                rule: None,
+                age: 29,
+            },
+        )
+    }
+
+    /// One that has stopped on a question of the vendor's own, which is the
+    /// question that takes words as well as a key.
+    fn stopped_on_a_question(id: &str) -> View {
+        reading(
+            id,
+            Phase::Waiting,
+            State {
+                state: Phase::Waiting,
+                question: Some("Which fixture should the port keep?".to_string()),
+                options: vec!["the sqlite one".to_string(), "the docker one".to_string()],
+                kind: Some(Kind::Question),
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        )
+    }
+
+    /// The view showing these agents, with the cursor where it opens.
+    fn watching(views: Vec<View>) -> Screen {
+        let mut screen = Screen::default();
+        screen.list.show(views);
+        screen
+    }
+
+    #[test]
+    fn card_opens_on_the_question_under_the_cursor_with_the_line_to_answer_it() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![stopped_on_a_question("ask-a1b")]);
+        let press = |screen: &mut Screen, code| {
+            screen
+                .act(KeyEvent::from(code), root.path(), &config, None)
+                .unwrap();
+        };
+
+        press(&mut screen, KeyCode::Char(' '));
+        assert!(
+            screen.card.as_ref().is_some_and(Card::asks),
+            "the card is open on what the agent is asking"
+        );
+        assert!(
+            screen.answering().is_some_and(|line| line.text.is_empty()),
+            "with the line to answer it on, and nothing typed at it yet"
+        );
+
+        // A digit fills the line rather than answering with the first key
+        // pressed: the same card takes words, and a menu that pressed its own
+        // digits out from under an answer would answer somebody else's choice.
+        press(&mut screen, KeyCode::Char('2'));
+        assert_eq!(screen.answering().expect("still typing").text, "2");
+
+        // And one key closes the line and the card it was typed on together.
+        press(&mut screen, KeyCode::Esc);
+        assert!(screen.card.is_none());
+        assert!(screen.answering().is_none());
+        assert!(matches!(screen.mode, Mode::List), "back on the agents");
+    }
+
+    #[test]
+    fn card_on_an_agent_that_is_asking_nothing_takes_no_answer() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![reading(
+            "busy-a1b",
+            Phase::Working,
+            State {
+                state: Phase::Working,
+                summary: Some("Running Bash".to_string()),
+                ..State::default()
+            },
+        )]);
+
+        screen
+            .act(
+                KeyEvent::from(KeyCode::Char(' ')),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        assert!(
+            screen.card.is_some(),
+            "a closer look is still a closer look"
+        );
+        assert!(
+            screen.answering().is_none(),
+            "but there is nothing to answer, so nothing is asking for one"
+        );
+        assert!(
+            matches!(screen.mode, Mode::List),
+            "and the keys are the list's"
+        );
+    }
+
+    #[test]
+    fn card_is_where_a_reply_to_a_question_is_typed() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![stopped_on_a_question("ask-a1b")]);
+
+        screen
+            .act(
+                KeyEvent::from(KeyCode::Char('r')),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        assert!(
+            screen.answering().is_some(),
+            "the reply key opens the card the choices are on"
+        );
+
+        // An agent that is not asking anything takes a message, on a line of
+        // its own under the wall.
+        let mut screen = watching(vec![reading(
+            "fix-login-b2c",
+            Phase::Idle,
+            State {
+                state: Phase::Idle,
+                ..State::default()
+            },
+        )]);
+        screen
+            .act(
+                KeyEvent::from(KeyCode::Char('r')),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        assert!(screen.card.is_none(), "with no card over the list");
+        let line = screen.banded().expect("a line of its own");
+        assert_eq!(line.prompt(), "message to fix-login-b2c");
     }
 
     #[test]

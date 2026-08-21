@@ -1,10 +1,14 @@
 //! Drawing the view.
 //!
-//! Five bands, top to bottom: what there is, the agents themselves, a closer
-//! look at one of them when somebody asked for one, the line somebody is
-//! typing when they are typing one, and the keys. Everything here is a
-//! function of what it is handed, so what the screen says can be read back in
-//! a test without a terminal anywhere near it.
+//! Four bands, top to bottom: what there is, the agents themselves, the line
+//! somebody is typing when they are typing one, and the keys. Everything here
+//! is a function of what it is handed, so what the screen says can be read
+//! back in a test without a terminal anywhere near it.
+//!
+//! A closer look at one agent is not a band. It is a card floated over the
+//! bottom of the list, because it is about one row of a list that is still
+//! there behind it — and because what a person does with it is answer the
+//! question on it and go back to the wall.
 //!
 //! A row is one line, always: an agent's answer is a paragraph, and a
 //! paragraph in a list is how a list stops being one.
@@ -19,27 +23,33 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
 use std::sync::OnceLock;
 
-use super::act::{Asking, Composer};
+use super::act::{self, Asking, Composer};
 use super::rows::{Axis, Group, Item, List, Tally, Under};
 use super::{Mode, Profile, Screen};
 use crate::derive::View;
 use crate::registry::DEFAULT;
-use crate::store::Phase;
+use crate::store::{Kind, Phase};
+use crate::verbs::send::numbered;
 
 /// The keys with nowhere else to be said, on the screen where somebody can see
 /// them. The rest are one keypress away, which is what `?` is for.
-const KEYS: &str = "space peek · enter attach · ctrl+s axis · ? keys · q quit";
+const KEYS: &str = "space card · enter attach · ctrl+s axis · ? keys · q quit";
+
+/// What the card's own keys do, under the card, while it is holding a line.
+/// What may be typed *into* that line is the question's business and is said
+/// on the line itself.
+const ANSWERS: &str = "enter answers it · alt+enter newline · esc closes it";
 
 /// Every key, for whoever asked what they are.
 const HELP: [(&str, &str); 18] = [
     ("↑ ↓", "walk the agents"),
-    ("space", "look closer at one"),
+    ("space", "the card: what one is asking, and the answer"),
     ("enter", "bring its window forward · shut a group"),
     ("n", "start an agent · tab starts it out of sight"),
-    ("r", "reply: a message, or the key a question wants"),
+    ("r", "reply: a message, or an answer on the card"),
     ("d", "what it has changed"),
     ("ctrl+x", "stop it · again to forget it"),
     ("ctrl+s", "gather them by state or by project"),
@@ -68,12 +78,20 @@ pub enum Notice {
     Advice(String),
 }
 
-/// A closer look at one agent.
-pub struct Peek {
+/// A closer look at one agent, as the card floated over the list.
+pub struct Card {
     pub id: String,
     pub phase: Phase,
+    /// How long since anything was heard from it, so the card says how old the
+    /// question on it is without anybody going back to the row.
+    pub age: u64,
     /// What it is waiting to be told, when it is waiting to be told anything.
     pub question: Option<String>,
+    /// The choices that question offers, in the order the screen lists them.
+    pub options: Vec<String>,
+    /// What kind of question it is, which is what decides the answers it will
+    /// take.
+    pub kind: Option<Kind>,
     /// The screen it is sitting on, the answer it left behind, or what it has
     /// changed.
     pub body: String,
@@ -82,32 +100,36 @@ pub struct Peek {
     pub changes: bool,
 }
 
+impl Card {
+    /// Whether this card is one somebody can answer. A patch is not a
+    /// question, and neither is a look at an agent that is getting on with it.
+    pub fn asks(&self) -> bool {
+        !self.changes && self.phase == Phase::Waiting
+    }
+}
+
 /// Draw everything.
 pub fn draw(frame: &mut Frame, screen: &Screen) {
     let area = frame.area();
     let helping = matches!(screen.mode, Mode::Keys);
     let head = header_rows(area.height);
-    let typing = matches!(screen.mode, Mode::Typing(_));
     let permission = permission(screen);
     let allowing = u16::from(permission.is_some());
 
-    // Every band that is neither the list nor the closer look: the header, the
-    // keys, the row under the composer, and — while somebody is typing — the
-    // line itself, counted at the one row it never goes below.
-    let chrome = head + 1 + allowing + u16::from(typing);
-    let panel = match (helping, &screen.peek) {
-        (false, Some(_)) => peek_height(area.height, chrome),
-        _ => 0,
-    };
-    let composing = match &screen.mode {
-        Mode::Typing(composer) => composer_height(composer, area, head + 1 + allowing + panel),
-        _ => 0,
+    // The line being typed, where it is not the one the card is holding: an
+    // answer is typed on the card itself, so it is not a band as well.
+    let banded = screen.banded();
+    // Every band that is not the list: the header, the keys, the row under the
+    // composer, and the line itself counted at the one row it never goes below.
+    let chrome = head + 1 + allowing;
+    let composing = match banded {
+        Some(composer) => composer_height(composer, area, chrome),
+        None => 0,
     };
 
-    let [top, middle, bottom, line, allowed, keys] = Layout::vertical([
+    let [top, middle, line, allowed, keys] = Layout::vertical([
         Constraint::Length(head),
         Constraint::Min(1),
-        Constraint::Length(panel),
         Constraint::Length(composing),
         Constraint::Length(allowing),
         Constraint::Length(1),
@@ -115,16 +137,28 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     .areas(area);
 
     frame.render_widget(Paragraph::new(header(screen, top)), top);
+    let floating = match (helping, &screen.card) {
+        (false, Some(_)) => card_height(area.height, middle.height),
+        _ => 0,
+    };
     match &screen.mode {
         Mode::Keys => help(frame, middle),
-        _ => agents(frame, &screen.list, middle, screen.beat),
+        // What the card is covering is still drawn under it, and the rows the
+        // cursor walks are the ones it is not.
+        _ => agents(
+            frame,
+            &screen.list,
+            middle,
+            screen.beat,
+            middle.height - floating,
+        ),
     }
-    if panel > 0
-        && let Some(peek) = &screen.peek
+    if floating > 0
+        && let Some(card) = &screen.card
     {
-        look(frame, peek, bottom);
+        float(frame, card, screen.answering(), over(middle, floating));
     }
-    if let Mode::Typing(composer) = &screen.mode {
+    if let Some(composer) = banded {
         composing_line(frame, composer, line);
     }
     if let Some(row) = permission {
@@ -133,14 +167,38 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     frame.render_widget(Paragraph::new(footer(screen)), keys);
 }
 
-/// How much of the screen a peek takes: about half, and never so much that
-/// the list it was opened from is gone — which is what `chrome` is counted
-/// for, because a peek can be open while somebody is typing and the rows it
-/// was opened from would be what paid for the line.
-fn peek_height(total: u16, chrome: u16) -> u16 {
-    let room = total.saturating_sub(chrome + 1);
-    (total / 2).clamp(3, 14).min(room)
+/// How much of the screen the card takes: about half, and never so much that
+/// the list it was opened from is gone. Below the room for its two borders and
+/// a row between them there is no card at all — a box with nothing in it says
+/// less than the rows it would be standing on.
+fn card_height(total: u16, band: u16) -> u16 {
+    let room = (total / 2)
+        .clamp(CARD_SHORT, CARD_TALL)
+        .min(band.saturating_sub(1));
+    match room >= CARD_SHORT {
+        true => room,
+        false => 0,
+    }
 }
+
+/// The bottom `height` rows of the list, which is where the card floats.
+///
+/// The bottom because a list is read from the top: the rows above it are the
+/// ones the cursor is kept among, and the card stands between them and the row
+/// it was opened from rather than over the whole wall.
+fn over(band: Rect, height: u16) -> Rect {
+    Rect {
+        y: band.y + band.height - height,
+        height,
+        ..band
+    }
+}
+
+/// The two borders of the card and one row between them.
+const CARD_SHORT: u16 = 3;
+
+/// And the most of a screen it will take, however tall the terminal is.
+const CARD_TALL: u16 = 14;
 
 /// Below this the worktree dial says what it is without saying what it will
 /// do: the dial is the thing somebody turns, the path is what it means.
@@ -314,7 +372,12 @@ const BLURBS_WIDE: usize = 72;
 const BLURBS_TALL: usize = 2 * Group::ALL.len();
 
 /// The agents themselves.
-fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize) {
+///
+/// `room` is how many of the rows are not behind the card, and it is what the
+/// cursor is kept inside. The rest are drawn anyway: a card is in front of a
+/// list, not instead of one, and the rows it covers are the ones somebody gets
+/// back by closing it.
+fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize, room: u16) {
     if list.is_empty() {
         let room = area.width as usize >= BLURBS_WIDE && area.height as usize >= BLURBS_TALL;
         if list.unstarted() && room {
@@ -332,8 +395,11 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize) {
     }
 
     let height = area.height as usize;
-    // Enough of the top scrolled away to keep the cursor on the screen.
-    let offset = list.cursor().saturating_sub(height.saturating_sub(1));
+    // Enough of the top scrolled away to keep the cursor on the screen, and in
+    // front of the card rather than behind it.
+    let offset = list
+        .cursor()
+        .saturating_sub((room.max(1) as usize).saturating_sub(1));
     let columns = columns(list);
 
     let lines: Vec<Line> = list
@@ -485,25 +551,59 @@ fn row(view: &View, selected: bool, columns: Columns, width: usize, beat: usize)
     Line::from(spans)
 }
 
-/// A closer look at one agent: what it is asking, over the screen it is
-/// asking it on — or, when that is what was asked for, what it has changed.
-fn look(frame: &mut Frame, peek: &Peek, area: Rect) {
-    let title = match peek.changes {
-        true => format!(" {} · what it has changed ", peek.id),
-        false => format!(" {} · {} ", peek.id, peek.phase.as_str()),
+/// How many rows of a wrapped question the card gives before it stops: the
+/// words of it a person needs to decide, with the pane underneath for the rest.
+const ASKED_TALL: u16 = 3;
+
+/// The card: what one agent is asking, the choices it offers, the line the
+/// answer is typed on, and the screen it is all happening on — or, when that
+/// is what was asked for, what it has changed.
+///
+/// Full width, because the bottom of it is a picture of a terminal and a
+/// terminal cut down the middle is a picture of nothing. It floats over the
+/// rows rather than pushing them up, so the wall is where it was when the card
+/// closes.
+fn float(frame: &mut Frame, card: &Card, answering: Option<&Composer>, area: Rect) {
+    let title = match card.changes {
+        true => format!(" {} · what it has changed ", card.id),
+        false => format!(" {} · {} {} ", card.id, card.phase.as_str(), age(card.age)),
     };
-    let block = Block::new().borders(Borders::TOP).title(title);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(dim())
+        .padding(Padding::horizontal(1))
+        .title(Span::styled(title, colour(card.phase)));
     let inner = block.inner(area);
+    // Whatever the list drew here, the card is in front of it.
+    frame.render_widget(Clear, area);
     frame.render_widget(block, area);
 
-    let asked = peek
-        .question
-        .as_deref()
-        .map_or(0, |question| wrapped(question, inner.width).min(3));
-    let [asking, screen] =
-        Layout::vertical([Constraint::Length(asked), Constraint::Min(0)]).areas(inner);
+    // What the card is for comes first and the pane takes what is left: the
+    // question, then the answers it offers, then the row they are answered on.
+    let mut room = inner.height;
+    let mut take = |wanted: u16| {
+        let taken = wanted.min(room);
+        room -= taken;
+        taken
+    };
+    let asked = take(
+        card.question
+            .as_deref()
+            .map_or(0, |question| wrapped(question, inner.width).min(ASKED_TALL)),
+    );
+    let typing = take(u16::from(answering.is_some()));
+    let choices = choices(&card.options, inner.width as usize);
+    let listed = take(choices.len() as u16);
 
-    if let Some(question) = &peek.question {
+    let [asking, listing, answer, screen] = Layout::vertical([
+        Constraint::Length(asked),
+        Constraint::Length(listed),
+        Constraint::Length(typing),
+        Constraint::Min(0),
+    ])
+    .areas(inner);
+
+    if let Some(question) = &card.question {
         frame.render_widget(
             Paragraph::new(question.clone())
                 .wrap(Wrap { trim: true })
@@ -511,18 +611,94 @@ fn look(frame: &mut Frame, peek: &Peek, area: Rect) {
             asking,
         );
     }
+    if listed > 0 {
+        let lines: Vec<Line> = choices
+            .into_iter()
+            .take(listed as usize)
+            .map(Line::raw)
+            .collect();
+        frame.render_widget(Paragraph::new(lines), listing);
+    }
+    if let Some(composer) = answering {
+        answer_row(frame, card, composer, answer);
+    }
+
     // A screen is read from the bottom, where the newest of it is; a diff is
     // read from the top, where the first file it touched is.
     let rows = screen.height as usize;
-    let body = match peek.changes {
-        true => peek.body.lines().take(rows).collect(),
-        false => tail(&peek.body, rows),
+    let body = match card.changes {
+        true => card.body.lines().take(rows).collect(),
+        false => tail(&card.body, rows),
     };
     let lines: Vec<Line> = body
         .into_iter()
         .map(|text| Line::styled(text.to_string(), dim()))
         .collect();
     frame.render_widget(Paragraph::new(lines), screen);
+}
+
+/// The choices under the question, numbered the way every surface numbers them
+/// and packed onto as few rows as the card is wide.
+///
+/// From [`numbered`] like the rest of them, so the number a person presses on
+/// the card is the number `amx answer` takes and the number `ls` printed. One
+/// too wide for the card is cut with the ellipsis that says it was: a choice
+/// nobody can read is still a choice they can press, and its number is at the
+/// front where the cut cannot reach it.
+fn choices(options: &[String], width: usize) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    for choice in numbered(options) {
+        let room = width.saturating_sub(choice.chars().count() + BETWEEN.len());
+        match rows.last_mut() {
+            Some(row) if row.chars().count() <= room => {
+                row.push_str(BETWEEN);
+                row.push_str(&choice);
+            }
+            _ => rows.push(fit(&choice, width)),
+        }
+    }
+    rows
+}
+
+/// What stands between two choices sitting on one row.
+const BETWEEN: &str = "   ";
+
+/// What the row an answer is typed on begins with.
+const ANSWER: &str = "❯ ";
+
+/// The line the answer is being typed on, with the terminal's own cursor at
+/// the end of it.
+///
+/// Empty, it says what this question will take instead — which is the one
+/// thing somebody looking at a prompt they did not draw cannot work out for
+/// themselves, and it is said from the same place the refusal is written.
+fn answer_row(frame: &mut Frame, card: &Card, composer: &Composer, area: Rect) {
+    let width = area.width as usize;
+    let room = width.saturating_sub(ANSWER.chars().count()).max(1);
+    // The end of the line, because the end is where somebody is typing.
+    let typed = composer_lines(&composer.text, room)
+        .pop()
+        .unwrap_or_default();
+    let said = match composer.text.is_empty() {
+        true => Span::styled(act::invitation(card.kind, &card.options), dim()),
+        false => Span::raw(typed.clone()),
+    };
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(ANSWER, Style::new().fg(role::WARNING)),
+            said,
+        ])),
+        area,
+    );
+    let at = match composer.text.is_empty() {
+        true => 0,
+        false => typed.chars().count(),
+    };
+    frame.set_cursor_position((
+        area.x + (ANSWER.chars().count() + at).min(width.saturating_sub(1)) as u16,
+        area.y,
+    ));
 }
 
 /// Every key and what it does.
@@ -662,12 +838,18 @@ fn permission(screen: &Screen) -> Option<Line<'static>> {
 }
 
 /// The keys, or whatever the view has to say for itself instead.
+///
+/// The row under the card is the card's while it is holding a line, because
+/// what enter does there is not what it does anywhere else in the view.
 fn footer(screen: &Screen) -> Line<'static> {
     if let Some(notice) = &screen.notice {
         return match notice {
             Notice::Failed(said) => Line::styled(said.clone(), Style::new().fg(role::ERROR)),
             Notice::Advice(said) => Line::styled(said.clone(), dim()),
         };
+    }
+    if screen.answering().is_some() {
+        return Line::styled(ANSWERS.to_string(), dim());
     }
     Line::styled(
         match &screen.mode {
@@ -968,11 +1150,26 @@ mod tests {
     ];
 
     /// The view, with a reading in it.
-    fn showing(views: Vec<View>, peek: Option<Peek>) -> Screen {
+    fn showing(views: Vec<View>, card: Option<Card>) -> Screen {
         let mut screen = Screen::default();
         screen.list.show(views);
-        screen.peek = peek;
+        screen.card = card;
         screen
+    }
+
+    /// The card a waiting agent's row opens: what it is asking, the choices it
+    /// offers, and the screen it is asking on.
+    fn asking(options: &[&str], kind: Option<Kind>) -> Card {
+        Card {
+            id: "ask-a1b".to_string(),
+            phase: Phase::Waiting,
+            age: 29,
+            question: Some("Which fixture should the port keep?".to_string()),
+            options: options.iter().map(|label| (*label).to_string()).collect(),
+            kind,
+            body: "$ cargo test\nDo you want to proceed?".to_string(),
+            changes: false,
+        }
     }
 
     /// The same reading, running somewhere else.
@@ -1018,8 +1215,185 @@ mod tests {
     }
 
     /// What the view puts on a screen of this size, line by line.
-    fn drawn(views: Vec<View>, peek: Option<Peek>, size: (u16, u16)) -> Vec<String> {
-        painted(&showing(views, peek), size)
+    fn drawn(views: Vec<View>, card: Option<Card>, size: (u16, u16)) -> Vec<String> {
+        painted(&showing(views, card), size)
+    }
+
+    /// The two agents a card is opened over, so there is a list to still be
+    /// drawn behind it.
+    fn a_fleet() -> Vec<View> {
+        vec![
+            view("ask-a1b", Phase::Waiting, None, 29),
+            view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
+        ]
+    }
+
+    #[test]
+    fn card_floats_a_bordered_box_over_the_still_drawn_list() {
+        let screen = drawn(
+            a_fleet(),
+            Some(asking(
+                &["the sqlite one", "the docker one"],
+                Some(Kind::Question),
+            )),
+            (60, 14),
+        );
+
+        assert_eq!(screen[2], "needs input", "{screen:?}");
+        assert!(
+            screen[3].contains("ask-a1b"),
+            "the row the card was opened from is still on the screen: {screen:?}"
+        );
+
+        let top = screen
+            .iter()
+            .position(|line| line.starts_with('╭'))
+            .expect("the top of the card");
+        assert!(
+            screen[top].contains("ask-a1b · waiting 29s"),
+            "which agent, what it is doing, and how long since: {:?}",
+            screen[top]
+        );
+        assert!(screen[top].ends_with('╮'), "{:?}", screen[top]);
+        assert!(
+            screen[top + 1].contains("Which fixture should the port keep?"),
+            "{:?}",
+            screen[top + 1]
+        );
+        assert!(
+            screen.iter().any(|line| line.contains("Do you want to")),
+            "and the screen it is asking on is under it: {screen:?}"
+        );
+
+        let bottom = screen
+            .iter()
+            .rposition(|line| line.starts_with('╰'))
+            .expect("the foot of the card");
+        assert!(screen[bottom].ends_with('╯'), "{:?}", screen[bottom]);
+        assert_eq!(
+            bottom + 2,
+            screen.len(),
+            "and the hint row is the one beneath it: {screen:?}"
+        );
+    }
+
+    #[test]
+    fn card_numbers_the_choices_the_question_offers() {
+        let screen = drawn(
+            a_fleet(),
+            Some(asking(
+                &["the sqlite one", "the docker one"],
+                Some(Kind::Question),
+            )),
+            (60, 14),
+        );
+        assert!(
+            screen
+                .iter()
+                .any(|line| line.contains("1. the sqlite one   2. the docker one")),
+            "numbered the way every surface numbers them: {screen:?}"
+        );
+    }
+
+    /// The same card, with somebody part way through typing the answer to it.
+    fn answering(card: Card, typed: &str) -> Screen {
+        let mut screen = showing(a_fleet(), Some(card));
+        let mut composer = Composer::new(Asking::Reply {
+            id: "ask-a1b".to_string(),
+            question: true,
+        });
+        composer.text = typed.to_string();
+        screen.mode = Mode::Typing(composer);
+        screen
+    }
+
+    /// The row of the card the answer is typed on.
+    fn answer_row(screen: &[String]) -> String {
+        screen
+            .iter()
+            .find(|line| line.contains('❯'))
+            .unwrap_or_else(|| panic!("no row to answer on in: {screen:?}"))
+            .clone()
+    }
+
+    #[test]
+    fn card_takes_the_answer_on_a_row_of_the_card_itself() {
+        let question = || asking(&["the sqlite one", "the docker one"], Some(Kind::Question));
+
+        let empty = painted(&answering(question(), ""), (60, 14));
+        assert!(
+            answer_row(&empty).contains("❯ press 1-2, or type an answer"),
+            "an empty row says what the question will take: {:?}",
+            answer_row(&empty)
+        );
+        assert_eq!(
+            empty[13], ANSWERS,
+            "and the row under the card says what its own keys do"
+        );
+
+        let typed = painted(&answering(question(), "the docker one"), (60, 14));
+        assert!(
+            answer_row(&typed).contains("❯ the docker one"),
+            "{:?}",
+            answer_row(&typed)
+        );
+        assert!(
+            !typed.iter().any(|line| line.contains("type an answer")),
+            "what was typed takes the row the invitation had: {typed:?}"
+        );
+        assert!(
+            !typed.iter().any(|line| line.starts_with("answer ask-a1b")),
+            "and the line is on the card rather than on a band of its own \
+             under it: {typed:?}"
+        );
+        assert_eq!(
+            caret(&answering(question(), "the docker one"), (60, 14)),
+            (18, 9),
+            "with the terminal's own cursor at the end of what was typed"
+        );
+    }
+
+    #[test]
+    fn card_invites_only_the_answers_the_question_will_take() {
+        // A permission box has no field for words: they would land on whatever
+        // is highlighted, which is an answer nobody chose.
+        let box_office = Card {
+            kind: Some(Kind::Permission),
+            question: Some("Claude needs your permission to use Bash".to_string()),
+            ..asking(&["Yes", "No"], None)
+        };
+        let asked = answer_row(&painted(&answering(box_office, ""), (60, 14)));
+        assert!(asked.contains("❯ press 1-2, y or n"), "{asked:?}");
+        assert!(
+            !asked.contains("type"),
+            "a hint that offers what the prompt will refuse is a hint that \
+             lies: {asked:?}"
+        );
+
+        // And a card nobody is answering has the list's own keys under it.
+        let looking = painted(&showing(a_fleet(), Some(asking(&[], None))), (60, 14));
+        assert_eq!(looking[13], KEYS);
+        assert!(
+            !looking.iter().any(|line| line.contains('❯')),
+            "with no row to answer on: {looking:?}"
+        );
+    }
+
+    #[test]
+    fn card_packs_the_choices_onto_as_few_rows_as_it_is_wide() {
+        let two = ["the sqlite one".to_string(), "the docker one".to_string()];
+        assert_eq!(choices(&two, 40), ["1. the sqlite one   2. the docker one"]);
+        assert_eq!(
+            choices(&two, 20),
+            ["1. the sqlite one", "2. the docker one"],
+            "and one to a row where they will not sit together"
+        );
+        assert_eq!(
+            choices(&two, 10),
+            ["1. the sq…", "2. the do…"],
+            "a choice wider than the card is cut, and says it was"
+        );
+        assert!(choices(&[], 40).is_empty());
     }
 
     #[test]
@@ -1677,15 +2051,15 @@ mod tests {
     }
 
     #[test]
-    fn view_peeks_at_the_question_over_the_screen_it_is_asked_on() {
+    fn card_shows_the_question_over_the_screen_it_is_asked_on() {
         let screen = drawn(
             vec![view("ask-a1b", Phase::Waiting, None, 30)],
-            Some(Peek {
-                id: "ask-a1b".to_string(),
-                phase: Phase::Waiting,
+            Some(Card {
                 question: Some("Claude needs your permission to use Bash".to_string()),
                 body: "$ rm -rf build\nDo you want to proceed?\n\n\n".to_string(),
-                changes: false,
+                options: Vec::new(),
+                kind: Some(Kind::Permission),
+                ..asking(&[], None)
             }),
             (60, 12),
         );
@@ -1696,7 +2070,7 @@ mod tests {
         assert!(all.contains("Do you want to proceed?"), "{all}");
         assert_eq!(
             screen[11], KEYS,
-            "the keys stay on the screen under the peek"
+            "the keys stay on the screen under the card"
         );
         assert!(
             screen.iter().any(|line| line.contains("ask-a1b")),
@@ -1746,10 +2120,13 @@ mod tests {
             .join("\n");
         let screen = drawn(
             vec![view("fix-login-a1b", Phase::Working, None, 3)],
-            Some(Peek {
+            Some(Card {
                 id: "fix-login-a1b".to_string(),
                 phase: Phase::Working,
+                age: 3,
                 question: None,
+                options: Vec::new(),
+                kind: None,
                 body: patch,
                 changes: true,
             }),
@@ -1950,13 +2327,7 @@ mod tests {
         // so the closer look gives way rather than the rows it was opened
         // from.
         let mut screen = launching(vec![view("ask-a1b", Phase::Waiting, None, 30)]);
-        screen.peek = Some(Peek {
-            id: "ask-a1b".to_string(),
-            phase: Phase::Waiting,
-            question: Some("Which fixture should the port keep?".to_string()),
-            body: "1. the sqlite one".to_string(),
-            changes: false,
-        });
+        screen.card = Some(asking(&["the sqlite one"], Some(Kind::Question)));
         screen.mode = Mode::Typing(Composer::new(Asking::Task));
 
         let painted = painted(&screen, (60, 10));

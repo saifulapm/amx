@@ -658,7 +658,7 @@ fn enter_shuts_the_group_its_headings_stand_over_and_opens_it_again() {
 }
 
 #[test]
-fn space_peeks_at_the_pane_and_at_what_it_is_asking() {
+fn card_floats_over_the_list_with_the_question_and_the_pane() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
     amx.until_state("ask-a1b", "waiting");
@@ -668,20 +668,46 @@ fn space_peeks_at_the_pane_and_at_what_it_is_asking() {
         screen(&amx, &view).contains("ask-a1b").then_some(())
     });
 
-    amx.tmux(&["send-keys", "-t", &view, "Space"]);
-    let peeked = amx.until("the peek", || {
+    press(&amx, &view, "Space");
+    let carded = amx.until("the card", || {
         let drawn = screen(&amx, &view);
         drawn.contains("rm -rf build").then_some(drawn)
     });
 
     // The screen the agent is sitting on, and the question it is sitting on it
-    // for — which is on its row as well, so the peek is the second of the two.
-    assert!(peeked.contains("Do you want to proceed?"), "{peeked}");
+    // for — which is on its row as well, so the card is the second of the two.
+    assert!(carded.contains("Do you want to proceed?"), "{carded}");
     assert_eq!(
-        peeked.matches("Claude needs your permission").count(),
+        carded.matches("Claude needs your permission").count(),
         2,
-        "the row asks it and the peek asks it again:\n{peeked}"
+        "the row asks it and the card asks it again:\n{carded}"
     );
+
+    // A box, with the list it was opened from still drawn above it.
+    let top = carded
+        .lines()
+        .find(|line| line.trim_start().starts_with('╭'))
+        .unwrap_or_else(|| panic!("no card in:\n{carded}"));
+    assert!(top.contains("ask-a1b · waiting"), "{top}");
+    assert!(top.trim_end().ends_with('╮'), "{top}");
+    assert!(
+        carded.lines().any(|line| line.trim_end().ends_with('╯')),
+        "{carded}"
+    );
+    assert!(
+        carded.lines().next().unwrap_or_default().contains("amx v"),
+        "the header is where it was:\n{carded}"
+    );
+    assert!(
+        carded.contains("needs input"),
+        "and so is the group the row is under:\n{carded}"
+    );
+
+    // Esc puts it away and leaves the wall as it was.
+    press(&amx, &view, "Escape");
+    amx.until("the card to go", || {
+        (!screen(&amx, &view).contains("rm -rf build")).then_some(())
+    });
 }
 
 #[test]
@@ -1042,7 +1068,7 @@ fn the_composer_keeps_a_line_the_vendor_would_refuse_and_says_what_it_takes() {
 }
 
 #[test]
-fn a_reply_answers_the_question_the_agent_stopped_on() {
+fn card_answers_the_question_the_agent_stopped_on() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
     amx.until_state("ask-a1b", "waiting");
@@ -1052,17 +1078,20 @@ fn a_reply_answers_the_question_the_agent_stopped_on() {
         screen(&amx, &view).contains("ask-a1b").then_some(())
     });
 
-    // Looked at closely first, which is where somebody decides what to answer.
+    // One key: the card is where somebody decides what to answer and where
+    // they type it.
     press(&amx, &view, "Space");
-    amx.until("the peek", || {
-        screen(&amx, &view).contains("rm -rf build").then_some(())
+    amx.until("the card, with a line to answer on", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("rm -rf build") && drawn.contains('❯')).then_some(())
     });
 
-    types(&amx, &view, "r");
-    amx.until("the line to be addressed to the agent", || {
-        screen(&amx, &view).contains("answer ask-a1b").then_some(())
-    });
+    // A key of the grammar that is nowhere on the agent's own screen, so what
+    // reaches the pane is what was typed here and not what was already drawn.
     types(&amx, &view, "9");
+    amx.until("the key on the line", || {
+        screen(&amx, &view).contains("❯ 9").then_some(())
+    });
     press(&amx, &view, "Enter");
 
     amx.until("the key to reach the agent's pane", || {
@@ -1073,6 +1102,110 @@ fn a_reply_answers_the_question_the_agent_stopped_on() {
     amx.until("the question to stop being pending", || {
         (amx.state("ask-a1b")["state"] != "waiting").then_some(())
     });
+}
+
+/// Park an agent on a menu of the vendor's own: the one question that takes
+/// words as well as a key, with the choices it drew recorded beside it.
+fn parked_on_a_menu(amx: &Harness, id: &str) {
+    amx.play(id, "works-without-end");
+    amx.until_state(id, "working");
+    amx.set_state(
+        id,
+        json!({
+            "state": "waiting",
+            "question": {
+                "text": "Which fixture should the port keep?",
+                "options": ["the sqlite one", "the docker one"],
+                "kind": "question",
+            },
+            "since": now(),
+            "last_event": now(),
+        }),
+    );
+}
+
+#[test]
+fn card_takes_words_where_the_question_asks_for_them() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+    parked_on_a_menu(&amx, "pick-a1b");
+    amx.until("the question on its row", || {
+        screen(&amx, &view)
+            .contains("Which fixture should the port keep?")
+            .then_some(())
+    });
+
+    press(&amx, &view, "Space");
+    let carded = amx.until("the card, with the choices numbered", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("1. the sqlite one").then_some(drawn)
+    });
+    assert!(carded.contains("2. the docker one"), "{carded}");
+    assert_eq!(
+        carded
+            .matches("Which fixture should the port keep?")
+            .count(),
+        2,
+        "the row asks it and the card asks it again:\n{carded}"
+    );
+
+    // Words of somebody's own, which is what this one question takes.
+    types(&amx, &view, "neither, keep both");
+    amx.until("the answer on the line", || {
+        screen(&amx, &view)
+            .contains("❯ neither, keep both")
+            .then_some(())
+    });
+    press(&amx, &view, "Enter");
+
+    amx.until("the words to reach the agent's pane", || {
+        amx.capture(&amx.pane_of("pick-a1b"))
+            .contains("neither, keep both")
+            .then_some(())
+    });
+    amx.until("the question to be answered rather than repeated", || {
+        (amx.state("pick-a1b")["question"] == json!(null)).then_some(())
+    });
+}
+
+#[test]
+fn card_refuses_words_at_a_prompt_that_reads_one_key() {
+    let amx = Harness::new();
+    let pane = amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("ask-a1b").then_some(())
+    });
+
+    press(&amx, &view, "Space");
+    amx.until("the card", || {
+        screen(&amx, &view).contains("rm -rf build").then_some(())
+    });
+    types(&amx, &view, "neither, keep both");
+    press(&amx, &view, "Enter");
+
+    let refused = amx.until("the refusal", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("ask-a1b is asking").then_some(drawn)
+    });
+    assert!(
+        refused.contains("❯ neither, keep both"),
+        "a line the question would not take is a line somebody is still \
+         writing:\n{refused}"
+    );
+    assert!(
+        !amx.capture(&pane).contains("neither, keep both"),
+        "and a permission box reads one key, so words typed at it would \
+         answer it by accident"
+    );
+    assert_eq!(
+        amx.state("ask-a1b")["state"],
+        "waiting",
+        "with the question still pending"
+    );
 }
 
 #[test]

@@ -19,12 +19,12 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use super::paint::Peek;
+use super::paint::Card;
 use super::rows::Narrow;
 use crate::cli::{AgentArgs, NewArgs, StopArgs};
 use crate::config::Config;
 use crate::derive::View;
-use crate::store::{Agent, Phase};
+use crate::store::{Agent, Kind, Phase};
 use crate::tmux::Server;
 use crate::{derive, exit, registry, rules, spawn, store, verbs, worktree};
 
@@ -290,27 +290,73 @@ pub fn start(root: &Path, config: &Config, line: &str, hidden: bool) -> Result<S
     Ok(Started::Yes(format!("started {}", one_line(&started))))
 }
 
+/// What a reply came to.
+pub enum Replied {
+    /// It reached the agent, and this says what was done with it.
+    Yes(String),
+    /// Nothing was sent, and this says why.
+    No(String),
+}
+
 /// Say something to the agent under the cursor.
-pub fn reply(root: &Path, id: &str, text: &str) -> Result<String> {
+///
+/// The grammar is `amx answer`'s, because it is the question's rather than
+/// amx's: the choices are read as choices wherever they are typed, and words
+/// are an answer only at the one prompt that offers a field to put them in.
+/// Words typed at a permission box would land on whatever is highlighted,
+/// which is an answer nobody chose, so they are refused before a byte of them
+/// reaches the pane.
+pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
     let view = derive::view(root, id, rules::bundled(), store::now())?;
     let agent = Agent::open(root, id)?;
     let server = Server::from_socket(view.meta.socket.clone());
 
     match view.phase() {
         Phase::Waiting => {
-            let Some(key) = verbs::answer::named(text) else {
-                return Ok(format!(
-                    "{id} is asking; y, n, 1-9, enter or esc answers it"
-                ));
-            };
-            verbs::answer::press(&agent, &server, &view.meta.pane, &key)?;
-            Ok(format!("answered {id}"))
+            if let Some(key) = verbs::answer::named(text) {
+                verbs::answer::press(&agent, &server, &view.meta.pane, &key)?;
+                return Ok(Replied::Yes(format!("answered {id}")));
+            }
+            match view.kind() {
+                Some(Kind::Question) if !text.trim().is_empty() => {
+                    verbs::answer::say(&agent, &server, &view.meta.pane, text.trim())?;
+                    Ok(Replied::Yes(format!("answered {id}")))
+                }
+                kind => Ok(Replied::No(format!(
+                    "{id} is asking: {}",
+                    invitation(kind, &view.state.options)
+                ))),
+            }
         }
-        phase if phase.is_terminal() => Ok(format!("{id} is {phase}; nothing is listening")),
+        phase if phase.is_terminal() => Ok(Replied::No(format!(
+            "{id} is {phase}; nothing is listening"
+        ))),
         _ => {
             verbs::send::deliver(&agent, &server, &view.meta.pane, text)?;
-            Ok(format!("sent to {id}"))
+            Ok(Replied::Yes(format!("sent to {id}")))
         }
+    }
+}
+
+/// What this question will take, in the words the card invites it with — and
+/// the words it is refused in, which are the same words for the same reason.
+///
+/// Only what is true of the prompt in front of somebody: the choices it drew,
+/// numbered as every surface numbers them, and a field for words of their own
+/// where the vendor asked its own question. A permission box has no such
+/// field, so the invitation to type at it is never written; a question whose
+/// choices amx has not read yet does not name numbers it cannot stand behind.
+pub fn invitation(kind: Option<Kind>, options: &[String]) -> String {
+    let choices = match options.len() {
+        0 => None,
+        1 => Some("press 1".to_string()),
+        many => Some(format!("press 1-{}", many.min(9))),
+    };
+    match (choices, kind) {
+        (Some(choices), Some(Kind::Question)) => format!("{choices}, or type an answer"),
+        (Some(choices), _) => format!("{choices}, y or n"),
+        (None, Some(Kind::Question)) => "type an answer".to_string(),
+        (None, _) => "press y, n or 1-9".to_string(),
     }
 }
 
@@ -368,11 +414,11 @@ fn forget(root: &Path, view: &View) -> Result<String> {
     Ok(format!("{} forgotten", view.id()))
 }
 
-/// What the agent has changed, for the closer look.
+/// What the agent has changed, for the card.
 ///
 /// Taken once, when somebody asks, and held: re-running `git diff` on every
 /// reading would put a repository's whole worth of work behind a clock tick.
-pub fn changes(root: &Path, view: &View) -> Result<Peek> {
+pub fn changes(root: &Path, view: &View) -> Result<Card> {
     // The whole patch, not the summary: the closer look is where somebody
     // reads what was written, and the wall already says how much of it there
     // is.
@@ -380,10 +426,13 @@ pub fn changes(root: &Path, view: &View) -> Result<Peek> {
     verbs::diff::run(root, view.id(), false, &mut patch)?;
 
     let patch = String::from_utf8_lossy(&patch).into_owned();
-    Ok(Peek {
+    Ok(Card {
         id: view.id().to_string(),
         phase: view.phase(),
+        age: view.verdict.age,
         question: None,
+        options: Vec::new(),
+        kind: None,
         body: match patch.trim().is_empty() {
             true => "nothing changed yet".to_string(),
             false => patch,
@@ -433,6 +482,35 @@ mod tests {
             question: false,
         });
         assert_eq!(message.prompt(), "message to fix-login-b2c");
+    }
+
+    #[test]
+    fn card_invites_the_answers_the_prompt_in_front_of_somebody_will_take() {
+        let two = ["the sqlite one".to_string(), "the docker one".to_string()];
+        let one = ["Yes".to_string()];
+
+        // A question of the vendor's own offers choices and a field.
+        assert_eq!(
+            invitation(Some(Kind::Question), &two),
+            "press 1-2, or type an answer"
+        );
+        assert_eq!(
+            invitation(Some(Kind::Question), &[]),
+            "type an answer",
+            "and a menu whose choices amx has not read yet names none"
+        );
+
+        // A permission box and the trust screen read one key, so the card
+        // never invites words at either.
+        for kind in [Some(Kind::Permission), Some(Kind::Trust), None] {
+            assert_eq!(invitation(kind, &two), "press 1-2, y or n", "{kind:?}");
+            assert_eq!(invitation(kind, &one), "press 1, y or n", "{kind:?}");
+            assert_eq!(
+                invitation(kind, &[]),
+                "press y, n or 1-9",
+                "with nothing read off the screen, the grammar itself: {kind:?}"
+            );
+        }
     }
 
     #[test]
