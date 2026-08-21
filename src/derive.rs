@@ -20,6 +20,11 @@
 //! the record: they are the one thing on a pane that somebody has to act on
 //! rather than merely read, and the pane is the only place the choices are
 //! ever written. Nothing a hook reported is corrected by them.
+//!
+//! Whatever it concludes, it concludes once. Every reader of an agent — `ls`,
+//! `status`, the view, `--json` — is handed one [`View`], and what is on that
+//! view agrees with the phase on it. A record can disagree with itself; the
+//! answer a reader gives from it may not.
 
 use anyhow::Result;
 use serde::Serialize;
@@ -72,6 +77,29 @@ pub struct View {
 }
 
 impl View {
+    /// An agent as one answer rather than two.
+    ///
+    /// A question belongs to the turn that is waiting for it to be answered.
+    /// Once a reader has concluded that the agent is not waiting — it is back
+    /// at work, the turn is over, the command has gone — a question still on
+    /// the record is about a moment that has passed, and handing it out beside
+    /// that conclusion is amx saying two things at once. The record is what
+    /// lags: an older amx wrote it, or a nudge arrived after the answer did.
+    ///
+    /// The exception is `unknown`, which is a reader saying it cannot tell. It
+    /// cannot tell that the question was answered either, and the one thing on
+    /// a pane that somebody has to act on is the last thing to hide from them.
+    pub fn new(meta: Meta, mut state: State, verdict: Verdict) -> View {
+        if !matches!(verdict.phase, Phase::Waiting | Phase::Unknown) {
+            state.asks(None);
+        }
+        View {
+            meta,
+            state,
+            verdict,
+        }
+    }
+
     pub fn id(&self) -> &str {
         &self.meta.id
     }
@@ -293,11 +321,7 @@ pub fn view(root: &Path, id: &str, rules: &Ruleset, now: u64) -> Result<View> {
         note(&agent, &mut state, asking);
     }
 
-    Ok(View {
-        meta,
-        state,
-        verdict: reading.verdict,
-    })
+    Ok(View::new(meta, state, reading.verdict))
 }
 
 /// Read every agent, oldest first.
@@ -340,11 +364,7 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
             note(&agent, &mut state, asking);
         }
 
-        views.push(View {
-            meta,
-            state,
-            verdict: reading.verdict,
-        });
+        views.push(View::new(meta, state, reading.verdict));
     }
 
     views.sort_by_key(|view| (view.meta.created, view.meta.id.clone()));
@@ -381,6 +401,31 @@ mod tests {
             last_event,
             since: last_event,
             ..State::default()
+        }
+    }
+
+    fn meta() -> Meta {
+        Meta {
+            id: "fix-login-a1b".to_string(),
+            task: "fix the login bug".to_string(),
+            dir: std::path::PathBuf::from("/srv/app"),
+            worktree: None,
+            branch: None,
+            base: None,
+            socket: crate::tmux::Socket::Name("amx".to_string()),
+            pane: crate::tmux::PaneId::new("%7").unwrap(),
+            session: None,
+            transcript: None,
+            created: 1,
+        }
+    }
+
+    fn verdict(phase: Phase, evidence: Evidence, rule: Option<&str>) -> Verdict {
+        Verdict {
+            phase,
+            evidence,
+            rule: rule.map(str::to_string),
+            age: 30,
         }
     }
 
@@ -553,31 +598,13 @@ mod tests {
     fn reader_says_the_kind_the_record_holds_over_the_kind_it_read() {
         use crate::store::Kind;
 
-        let meta = Meta {
-            id: "fix-login-a1b".to_string(),
-            task: "fix the login bug".to_string(),
-            dir: std::path::PathBuf::from("/srv/app"),
-            worktree: None,
-            branch: None,
-            base: None,
-            socket: crate::tmux::Socket::Name("amx".to_string()),
-            pane: crate::tmux::PaneId::new("%7").unwrap(),
-            session: None,
-            transcript: None,
-            created: 1,
-        };
-        let claimed = |rule: &str| Verdict {
-            phase: Phase::Waiting,
-            evidence: Evidence::Screen,
-            rule: Some(rule.to_string()),
-            age: 30,
-        };
+        let claimed = |rule: &str| verdict(Phase::Waiting, Evidence::Screen, Some(rule));
 
         // Nothing on the record: the screen is all there is, and the
         // folder-trust screen is the one kind no hook can ever report, because
         // it stands in front of the session every hook comes from.
         let read = View {
-            meta: meta.clone(),
+            meta: meta(),
             state: State::default(),
             verdict: claimed("folder_trust"),
         };
@@ -586,7 +613,7 @@ mod tests {
 
         // A hook said so, and a hook is the vendor's own account.
         let told = View {
-            meta,
+            meta: meta(),
             state: State {
                 kind: Some(Kind::Question),
                 ..State::default()
@@ -594,5 +621,89 @@ mod tests {
             verdict: claimed("permission_prompt"),
         };
         assert_eq!(told.kind(), Some(Kind::Question));
+    }
+
+    #[test]
+    fn reader_coherence_gives_one_account_of_an_agent_that_has_finished() {
+        use crate::store::Kind;
+
+        // The record the agent read-readme-md-and-799 was left with on
+        // 2026-08-20: done, with the answer of its last turn, and with the
+        // vendor's idle nudge still on it as the question. The hooks no longer
+        // write a record like this one, and records outlive the amx that wrote
+        // them, so a reader gives one answer whatever it is handed.
+        let answered = State {
+            state: Phase::Done,
+            exit: Some(0),
+            question: Some("Claude is waiting for your input".to_string()),
+            options: vec!["Yes".to_string()],
+            kind: Some(Kind::Permission),
+            result: Some("Three that made me stop and re-read:".to_string()),
+            source: Some(Source::Payload),
+            ..State::default()
+        };
+
+        let view = View::new(
+            meta(),
+            answered,
+            verdict(Phase::Done, Evidence::Record, None),
+        );
+        assert_eq!(view.phase(), Phase::Done);
+        assert_eq!(view.line(), Some("Three that made me stop and re-read:"));
+        assert_eq!(view.state.question, None);
+        assert!(view.state.options.is_empty());
+        assert_eq!(view.kind(), None);
+        assert_eq!(view.json()["question"], serde_json::Value::Null);
+        assert_eq!(
+            view.json()["result"],
+            "Three that made me stop and re-read:"
+        );
+    }
+
+    #[test]
+    fn reader_coherence_keeps_the_question_that_is_still_somebody_to_answer() {
+        use crate::store::Kind;
+
+        let asked = State {
+            state: Phase::Waiting,
+            question: Some("Do you want to proceed?".to_string()),
+            options: vec!["Yes".to_string(), "No".to_string()],
+            kind: Some(Kind::Permission),
+            ..State::default()
+        };
+
+        let waiting = View::new(
+            meta(),
+            asked.clone(),
+            verdict(Phase::Waiting, Evidence::Hooks, None),
+        );
+        assert_eq!(waiting.line(), Some("Do you want to proceed?"));
+        assert_eq!(waiting.state.options, ["Yes", "No"]);
+        assert_eq!(waiting.kind(), Some(Kind::Permission));
+
+        // A reader that cannot say what the agent is doing cannot say the
+        // question is answered either, and the one thing somebody has to act
+        // on is the last thing to hide from them.
+        let unreadable = View::new(
+            meta(),
+            asked.clone(),
+            verdict(Phase::Unknown, Evidence::Unknown, None),
+        );
+        assert_eq!(unreadable.line(), Some("Do you want to proceed?"));
+        assert_eq!(unreadable.kind(), Some(Kind::Permission));
+
+        // Back at work: whatever that question was, it was answered on the
+        // pane, and it is not what this agent is doing now.
+        let working = State {
+            summary: Some("Running Bash".to_string()),
+            ..asked
+        };
+        let working = View::new(
+            meta(),
+            working,
+            verdict(Phase::Working, Evidence::Screen, Some("thinking")),
+        );
+        assert_eq!(working.line(), Some("Running Bash"));
+        assert_eq!(working.state.question, None);
     }
 }
