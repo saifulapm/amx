@@ -56,6 +56,15 @@ fn mark(amx: &Harness, view: &str, id: &str) -> Option<char> {
         .next()
 }
 
+/// Move a record's directory, which is what decides its project.
+fn running_in(amx: &Harness, id: &str, dir: &std::path::Path) {
+    let path = amx.agent_dir(id).join("meta.json");
+    let mut meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("the record")).expect("the record");
+    meta["dir"] = json!(dir);
+    std::fs::write(&path, serde_json::to_vec(&meta).expect("the record")).expect("the record");
+}
+
 /// Every agent amx holds a record for.
 fn agents(amx: &Harness) -> Vec<String> {
     let mut ids: Vec<String> = std::fs::read_dir(amx.state_root())
@@ -198,6 +207,73 @@ fn glyphs_say_the_states_apart_and_the_working_one_breathes() {
             "{frame} is not a frame of the pulse: {frames:?}"
         );
     }
+}
+
+#[test]
+fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.play("fix-login-b2c", "happy-turn");
+    amx.until_state("ask-a1b", "waiting");
+    amx.until_state("fix-login-b2c", "idle");
+    // One in the repository itself and one in a subdirectory of it, which is
+    // the case the walk up the ancestors exists for. The third stays where the
+    // harness put it, outside any repository at all.
+    running_in(&amx, "ask-a1b", &repo);
+    running_in(&amx, "fix-login-b2c", &repo.join("src"));
+    finished(&amx, "old-job-c3d", "done", 60);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the agents", || {
+        screen(&amx, &view).contains("needs input").then_some(())
+    });
+
+    press(&amx, &view, "C-s");
+    let drawn = amx.until("the project headings", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("~/repo").then_some(drawn)
+    });
+
+    let row = |id: &str| {
+        drawn
+            .lines()
+            .find(|line| line.contains(id))
+            .unwrap_or_else(|| panic!("no row for {id} in:\n{drawn}"))
+            .to_string()
+    };
+    let at = |text: &str| {
+        drawn
+            .lines()
+            .position(|line| line.trim_end() == text)
+            .unwrap_or_else(|| panic!("no {text} heading in:\n{drawn}"))
+    };
+    assert!(
+        at("~/repo") < at("~"),
+        "the project with the question in it comes first:\n{drawn}"
+    );
+    assert!(
+        drawn
+            .lines()
+            .filter(|line| line.trim_end() == "~/repo")
+            .count()
+            == 1,
+        "one heading for the repository, subdirectory and all:\n{drawn}"
+    );
+    // The heading no longer says the state, so every row carries it.
+    assert!(row("ask-a1b").contains("waiting"), "{drawn}");
+    assert!(row("fix-login-b2c").contains("idle"), "{drawn}");
+    assert!(row("old-job-c3d").contains("done"), "{drawn}");
+    assert!(
+        !drawn.lines().any(|line| line.trim_end() == "needs input"),
+        "and the state headings are gone with the axis:\n{drawn}"
+    );
+
+    // And back, on the same key.
+    press(&amx, &view, "C-s");
+    amx.until("what they need again", || {
+        screen(&amx, &view).contains("needs input").then_some(())
+    });
 }
 
 #[test]

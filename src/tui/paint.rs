@@ -17,17 +17,17 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::sync::OnceLock;
 
 use super::act::{Asking, Composer};
-use super::rows::{Group, Item, List};
+use super::rows::{Axis, Group, Item, List, Under};
 use super::{Mode, Screen};
 use crate::derive::View;
 use crate::store::Phase;
 
 /// The keys with nowhere else to be said, on the screen where somebody can see
 /// them. The rest are one keypress away, which is what `?` is for.
-const KEYS: &str = "space peek · enter attach · ? keys · q quit";
+const KEYS: &str = "space peek · enter attach · ctrl+s axis · ? keys · q quit";
 
 /// Every key, for whoever asked what they are.
-const HELP: [(&str, &str); 9] = [
+const HELP: [(&str, &str); 10] = [
     ("↑ ↓", "walk the agents"),
     ("space", "look closer at one"),
     ("enter", "bring its window forward"),
@@ -35,6 +35,7 @@ const HELP: [(&str, &str); 9] = [
     ("r", "reply: a message, or the key a question wants"),
     ("d", "what it has changed"),
     ("ctrl+x", "stop it · again to forget it"),
+    ("ctrl+s", "gather them by state or by project"),
     ("?", "these keys"),
     ("q", "close the view"),
 ];
@@ -124,6 +125,16 @@ fn header(list: &List) -> Line<'static> {
     Line::from(spans)
 }
 
+/// How wide each column is, worked out over the whole list so that every row
+/// lines up with the ones above it.
+#[derive(Clone, Copy)]
+struct Columns {
+    names: usize,
+    /// The state a row carries, which is a column only where the heading does
+    /// not say it. Zero is no column at all.
+    status: usize,
+}
+
 /// The agents themselves.
 fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize) {
     if list.is_empty() {
@@ -134,7 +145,7 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize) {
     let height = area.height as usize;
     // Enough of the top scrolled away to keep the cursor on the screen.
     let offset = list.cursor().saturating_sub(height.saturating_sub(1));
-    let names = name_width(list);
+    let columns = columns(list);
 
     let lines: Vec<Line> = list
         .items()
@@ -147,7 +158,7 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize) {
                 list,
                 *item,
                 at == list.cursor(),
-                names,
+                columns,
                 area.width as usize,
                 beat,
             )
@@ -161,18 +172,15 @@ fn line(
     list: &List,
     item: Item,
     selected: bool,
-    names: usize,
+    columns: Columns,
     width: usize,
     beat: usize,
 ) -> Line<'static> {
     match item {
-        Item::Heading(group, _) => Line::styled(
-            group.title().to_string(),
-            group_colour(group).add_modifier(Modifier::BOLD),
-        ),
+        Item::Heading(under, _) => Line::styled(list.title(under), heading_colour(under)),
         Item::Fold(hidden) => Line::styled(format!("{}… {hidden} more", marker(selected)), dim()),
         Item::Agent(_) => match list.agent(item) {
-            Some(view) => row(view, selected, names, width, beat),
+            Some(view) => row(view, selected, columns, width, beat),
             None => Line::raw(""),
         },
     }
@@ -180,17 +188,23 @@ fn line(
 
 /// An agent's row: what state it is in, what it is called, what it is up to,
 /// and how long since anybody heard from it.
-fn row(view: &View, selected: bool, names: usize, width: usize, beat: usize) -> Line<'static> {
+///
+/// The state is on the row twice where it is on it at all — as the mark, and
+/// as the word beside the name. The mark is worth reading at a glance across a
+/// whole screen and the word is worth reading on one row, and under a project
+/// heading nothing else says which state a row is in.
+fn row(view: &View, selected: bool, columns: Columns, width: usize, beat: usize) -> Line<'static> {
+    let Columns { names, status } = columns;
     let phase = view.phase();
     let age = age(view.verdict.age);
     let name = fit(view.id(), names);
-    // The marker, the icon and its space, the name and its gap, the age and
-    // the space before it.
-    let spent = 2 + 2 + names + 2 + AGE + 1;
+    // The marker, the icon and its space, the name and its gap, the status
+    // column and its gap where there is one, the age and the space before it.
+    let spent = 2 + 2 + names + 2 + status + 2 * usize::from(status > 0) + AGE + 1;
     let room = width.saturating_sub(spent);
     let said = fit(first_line(view.line().unwrap_or("")), room);
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::raw(marker(selected)),
         Span::styled(format!("{} ", icon(phase, beat)), colour(phase)),
         Span::styled(
@@ -201,9 +215,16 @@ fn row(view: &View, selected: bool, names: usize, width: usize, beat: usize) -> 
                 Style::new()
             },
         ),
-        Span::styled(format!("{said:<room$} "), dim()),
-        Span::styled(format!("{age:>AGE$}"), dim()),
-    ])
+    ];
+    if status > 0 {
+        spans.push(Span::styled(
+            format!("{:<status$}  ", fit(phase.as_str(), status)),
+            colour(phase),
+        ));
+    }
+    spans.push(Span::styled(format!("{said:<room$} "), dim()));
+    spans.push(Span::styled(format!("{age:>AGE$}"), dim()));
+    Line::from(spans)
 }
 
 /// A closer look at one agent: what it is asking, over the screen it is
@@ -304,16 +325,26 @@ fn footer(screen: &Screen) -> Line<'static> {
     )
 }
 
-/// How wide the column of names has to be. Capped, because one long name must
-/// not push what every agent is doing off the side of the screen.
-fn name_width(list: &List) -> usize {
-    list.items()
-        .iter()
-        .filter_map(|item| list.agent(*item))
-        .map(|view| view.id().chars().count())
-        .max()
-        .unwrap_or(0)
-        .clamp(6, 24)
+/// How wide each column has to be. The names are capped, because one long name
+/// must not push what every agent is doing off the side of the screen.
+fn columns(list: &List) -> Columns {
+    let shown = || list.items().iter().filter_map(|item| list.agent(*item));
+    Columns {
+        names: shown()
+            .map(|view| view.id().chars().count())
+            .max()
+            .unwrap_or(0)
+            .clamp(6, 24),
+        // On the state axis the heading over the row already says the state,
+        // and saying it twice would be a column of noise.
+        status: match list.axis() {
+            Axis::State => 0,
+            Axis::Project => shown()
+                .map(|view| view.phase().as_str().len())
+                .max()
+                .unwrap_or(0),
+        },
+    }
 }
 
 /// How many rows text takes when it is wrapped to a width.
@@ -475,6 +506,17 @@ fn colour(phase: Phase) -> Style {
     }
 }
 
+/// A heading, in whatever it stands for. A state heading is coloured by what
+/// that state means; a project is a place, and a place means nothing about how
+/// anything is going.
+fn heading_colour(under: Under) -> Style {
+    match under {
+        Under::Group(group) => group_colour(group),
+        Under::Project(_) => Style::new(),
+    }
+    .add_modifier(Modifier::BOLD)
+}
+
 /// The same roles over a group, so the count at the top and the rows under the
 /// heading say the same thing in the same colour.
 fn group_colour(group: Group) -> Style {
@@ -550,6 +592,20 @@ mod tests {
         let mut screen = Screen::default();
         screen.list.show(views);
         screen.peek = peek;
+        screen
+    }
+
+    /// The same reading, running somewhere else.
+    fn at(mut view: View, dir: &str) -> View {
+        view.meta.dir = PathBuf::from(dir);
+        view
+    }
+
+    /// The view with the agents gathered by where they are running.
+    fn by_project(views: Vec<View>) -> Screen {
+        let mut screen = Screen::default();
+        screen.list.turn();
+        screen.list.show(views);
         screen
     }
 
@@ -752,6 +808,50 @@ mod tests {
         assert!(screen[2].contains('…'), "{:?}", screen[2]);
         assert!(screen[2].ends_with("45s"), "{:?}", screen[2]);
         assert!(screen[2].chars().count() <= 40, "{:?}", screen[2]);
+    }
+
+    #[test]
+    fn axis_heads_the_rows_with_the_project_and_gives_each_one_its_state() {
+        let screen = painted(
+            &by_project(vec![
+                at(view("ask-a1b", Phase::Waiting, None, 30), "/src/api"),
+                at(
+                    view("fix-login-b2c", Phase::Done, Some("fixed it"), 30),
+                    "/src/api",
+                ),
+                at(view("busy-c3d", Phase::Working, None, 3), "/src/web"),
+            ]),
+            (60, 10),
+        );
+
+        assert_eq!(screen[1], "/src/api");
+        assert!(screen[2].contains("ask-a1b"), "{:?}", screen[2]);
+        assert!(
+            screen[2].contains("waiting"),
+            "the heading is a place, so the row says the state: {:?}",
+            screen[2]
+        );
+        assert!(screen[3].contains("done"), "{:?}", screen[3]);
+        assert_eq!(screen[4], "/src/web");
+
+        // One column, so the states read down the screen rather than wandering
+        // with the length of the name above them.
+        let column = |line: &str, word: &str| line.find(word).expect("the state on the row");
+        assert_eq!(column(&screen[2], "waiting"), column(&screen[3], "done"));
+    }
+
+    #[test]
+    fn axis_leaves_the_state_off_a_row_the_heading_over_it_already_says() {
+        let screen = painted(
+            &showing(vec![view("busy-a1b", Phase::Working, None, 3)], None),
+            (60, 8),
+        );
+        assert_eq!(screen[1], "working");
+        assert!(
+            !screen[2].contains("working"),
+            "twice on one screen is a column of noise: {:?}",
+            screen[2]
+        );
     }
 
     #[test]

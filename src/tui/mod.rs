@@ -290,6 +290,11 @@ impl Screen {
                     self.acted();
                 }
             }
+            // The same agents, gathered the other way.
+            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.list.turn();
+                self.follow_the_cursor();
+            }
             _ => {}
         }
         Ok(Doing::Carry)
@@ -498,13 +503,9 @@ mod tests {
         }
     }
 
-    fn typing(keys: &[KeyCode]) -> Script {
-        Script(
-            keys.iter()
-                .map(|code| KeyEvent::new(*code, KeyModifiers::NONE))
-                .collect::<Vec<_>>()
-                .into_iter(),
-        )
+    /// A key held down with control, which is how the chords are typed.
+    fn ctrl(key: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL)
     }
 
     /// The keys of a word, one at a time, the way somebody types it.
@@ -553,12 +554,22 @@ mod tests {
     /// Hold the view open on a screen of this size until the script runs out,
     /// and answer with what it exited with and what was last on the screen.
     fn held(root: &Path, keys: &[KeyCode]) -> (i32, String) {
+        pressing(
+            root,
+            keys.iter()
+                .map(|code| KeyEvent::new(*code, KeyModifiers::NONE))
+                .collect(),
+        )
+    }
+
+    /// The same, for a script with chords in it.
+    fn pressing(root: &Path, keys: Vec<KeyEvent>) -> (i32, String) {
         let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
         let code = watch(
             root,
             &Config::default(),
             &mut terminal,
-            &mut typing(keys),
+            &mut Script(keys.into_iter()),
             None,
         )
         .unwrap();
@@ -589,6 +600,31 @@ mod tests {
                 Some(Notice::Failed(_))
             ),
             "and what went wrong is a failure"
+        );
+    }
+
+    #[test]
+    fn axis_turns_under_the_key_that_says_so() {
+        let root = TempDir::new().unwrap();
+        finished(root.path(), "first-a1b", "wrote the parser", 60);
+
+        let (code, screen) = pressing(
+            root.path(),
+            vec![ctrl('s'), KeyEvent::from(KeyCode::Char('q'))],
+        );
+        assert_eq!(code, exit::OK);
+        let drawn: Vec<&str> = screen.lines().map(str::trim_end).collect();
+        assert_eq!(
+            drawn[1], "/srv/app",
+            "the heading is where the agent is, not what it needs:\n{screen}"
+        );
+        assert!(
+            drawn[2].contains("done"),
+            "and the row carries the state the heading used to say:\n{screen}"
+        );
+        assert!(
+            drawn[0].contains("1 completed"),
+            "what there is does not change with the way it is laid out:\n{screen}"
         );
     }
 
