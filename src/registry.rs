@@ -79,8 +79,14 @@ static ENTRIES: [AgentEntry; 1] = [AgentEntry {
 /// `agent` is a command line rather than a program name, because that is what
 /// the config key holds: the entry is found by the program the command runs.
 pub fn entry(agent: &str) -> Option<&'static AgentEntry> {
-    let program = agent.split_whitespace().next()?;
+    let program = program(agent);
     ENTRIES.iter().find(|e| e.name == program)
+}
+
+/// The program an agent command runs, without its arguments. What a warning
+/// about a vendor should name, and what the table is keyed by.
+pub fn program(agent: &str) -> &str {
+    agent.split_whitespace().next().unwrap_or(agent)
 }
 
 /// Every registered vendor, in the order a cycle key offers them.

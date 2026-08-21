@@ -1,15 +1,24 @@
-//! `~/.config/amx/config.toml` — four keys and nothing else.
+//! `~/.config/amx/config.toml` — seven keys and nothing else.
 //!
 //! Config is a convenience, never a gate: a file that cannot be read or
 //! parsed degrades to the defaults with a warning on stderr, because losing
 //! an agent to a stray comma is a worse outcome than running with defaults.
 
+use crate::registry;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
 
 /// Every key the file may carry. Anything else is warned about and ignored.
-pub const KNOWN_KEYS: [&str; 4] = ["agent", "max_agents", "worktrees", "notifications"];
+pub const KNOWN_KEYS: [&str; 7] = [
+    "agent",
+    "max_agents",
+    "worktrees",
+    "notifications",
+    "model",
+    "permission",
+    "effort",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
@@ -22,6 +31,14 @@ pub struct Config {
     pub worktrees: bool,
     /// Post desktop notifications on the transitions worth interrupting for.
     pub notifications: bool,
+    /// Where the model dial starts. Absent is the vendor's own choice, which
+    /// amx says by passing no flag, so there is no value here that means
+    /// "default" and an `Option` is the honest shape.
+    pub model: Option<String>,
+    /// Where the permission dial starts, under the same rule.
+    pub permission: Option<String>,
+    /// Where the effort dial starts, under the same rule.
+    pub effort: Option<String>,
 }
 
 impl Default for Config {
@@ -31,6 +48,9 @@ impl Default for Config {
             max_agents: 5,
             worktrees: true,
             notifications: true,
+            model: None,
+            permission: None,
+            effort: None,
         }
     }
 }
@@ -40,15 +60,57 @@ impl Default for Config {
 /// An unknown key is a warning: config files outlive the versions that wrote
 /// them. A key with the wrong *type* is an error, because guessing what
 /// `max_agents = "five"` meant is worse than saying so.
+///
+/// A dial the vendor would not take is a warning too, and the same fallback:
+/// the file names its own agent, so which launch values are legal is a
+/// question the text can answer on its own.
 pub fn parse(text: &str) -> Result<(Config, Vec<String>)> {
     let table: toml::Table = text.parse().context("not valid TOML")?;
-    let warnings = table
+    let mut warnings: Vec<String> = table
         .keys()
         .filter(|key| !KNOWN_KEYS.contains(&key.as_str()))
         .map(|key| format!("ignoring unknown key `{key}`"))
         .collect();
-    let config: Config = toml::from_str(text)?;
+    let mut config: Config = toml::from_str(text)?;
+    warnings.extend(check_dials(&mut config));
     Ok((config, warnings))
+}
+
+/// Drop any dial the configured agent would not take, saying which and why.
+///
+/// Dropped means back to absent, which is the only way to say "leave it to
+/// the vendor". An agent amx has no entry for declares no dials at all, so
+/// every dial set for it goes the same way.
+fn check_dials(config: &mut Config) -> Vec<String> {
+    let agent = registry::program(&config.agent);
+    let entry = registry::entry(&config.agent);
+
+    [
+        ("model", entry.and_then(|e| e.model), &mut config.model),
+        (
+            "permission",
+            entry.and_then(|e| e.permission),
+            &mut config.permission,
+        ),
+        ("effort", entry.and_then(|e| e.effort), &mut config.effort),
+    ]
+    .into_iter()
+    .filter_map(|(key, dial, value)| {
+        let set = value.as_deref()?;
+        let warning = match dial {
+            Some(spec) if registry::accepts(&spec, set) => return None,
+            // Only a closed dial ever refuses, so its cycle is the whole list
+            // of what the vendor takes and is worth printing in full.
+            Some(spec) => format!(
+                "ignoring {key} = {set:?}: {agent} takes {}",
+                spec.cycle.join(", ")
+            ),
+            None => format!("ignoring {key} = {set:?}: amx knows no {key} dial for {agent}"),
+        };
+        *value = None;
+        Some(warning)
+    })
+    .collect()
 }
 
 /// Read `path`, degrading to defaults with a warning rather than failing.
@@ -104,6 +166,11 @@ mod tests {
         assert_eq!(c.max_agents, 5);
         assert!(c.worktrees);
         assert!(c.notifications);
+        // Absent, not the word default: a dial nobody has turned is one amx
+        // passes no flag for, and there is no value that says that.
+        assert_eq!(c.model, None);
+        assert_eq!(c.permission, None);
+        assert_eq!(c.effort, None);
     }
 
     #[test]
@@ -131,16 +198,33 @@ mod tests {
         let (c, _) = parse("notifications = false").unwrap();
         assert!(!c.notifications);
         assert!(c.worktrees);
+
+        let (c, w) = parse("model = \"opus\"").unwrap();
+        assert_eq!(c.model.as_deref(), Some("opus"));
+        assert_eq!(c.permission, None);
+        assert_eq!(c.effort, None);
+        assert!(w.is_empty(), "{w:?}");
+
+        let (c, _) = parse("permission = \"plan\"").unwrap();
+        assert_eq!(c.permission.as_deref(), Some("plan"));
+        assert_eq!(c.model, None);
+
+        let (c, _) = parse("effort = \"high\"").unwrap();
+        assert_eq!(c.effort.as_deref(), Some("high"));
+        assert_eq!(c.permission, None);
     }
 
     #[test]
-    fn all_four_keys_together_parse() {
+    fn all_seven_keys_together_parse() {
         let (c, w) = parse(
             r#"
                 agent = "claude --dangerously-skip-permissions"
                 max_agents = 3
                 worktrees = false
                 notifications = false
+                model = "opus"
+                permission = "plan"
+                effort = "xhigh"
             "#,
         )
         .unwrap();
@@ -148,7 +232,10 @@ mod tests {
         assert_eq!(c.max_agents, 3);
         assert!(!c.worktrees);
         assert!(!c.notifications);
-        assert!(w.is_empty());
+        assert_eq!(c.model.as_deref(), Some("opus"));
+        assert_eq!(c.permission.as_deref(), Some("plan"));
+        assert_eq!(c.effort.as_deref(), Some("xhigh"));
+        assert!(w.is_empty(), "{w:?}");
     }
 
     #[test]
@@ -157,6 +244,65 @@ mod tests {
         assert_eq!(c.max_agents, 2);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("wardrobe"), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_dial_the_registry_refuses_warns_by_name_and_falls_back_to_the_default() {
+        // The vendor would refuse this mode itself, at spawn, in a pane that
+        // may already have scrolled. Saying so at the file it was read from is
+        // the same answer somewhere a person can act on it.
+        let (c, w) = parse("permission = \"sudo\"").unwrap();
+        assert_eq!(c.permission, None, "falls back to no flag at all");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("permission"), "{w:?}");
+        assert!(w[0].contains("sudo"), "{w:?}");
+        assert!(w[0].contains("bypassPermissions"), "names what it takes");
+
+        let (c, w) = parse("effort = \"hard\"").unwrap();
+        assert_eq!(c.effort, None);
+        assert!(w[0].contains("xhigh"), "{w:?}");
+    }
+
+    #[test]
+    fn an_open_dial_takes_a_value_the_registry_never_lists() {
+        // model's cycle spells out the aliases alone, and the dial is open, so
+        // a full model name is carried through without a word.
+        let (c, w) = parse("model = \"claude-fable-5\"").unwrap();
+        assert_eq!(c.model.as_deref(), Some("claude-fable-5"));
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn an_agent_with_no_registry_entry_ignores_every_dial_it_was_given() {
+        // No entry, no dials, so a dial key set for it is not obeyed. Saying
+        // so per key is what separates ignored from obeyed wrongly.
+        let (c, w) = parse(
+            r#"
+                agent = "some-other-agent"
+                model = "opus"
+                permission = "plan"
+                effort = "high"
+            "#,
+        )
+        .unwrap();
+        assert_eq!((c.model, c.permission, c.effort), (None, None, None));
+        assert_eq!(w.len(), 3, "{w:?}");
+        assert!(w.iter().all(|w| w.contains("some-other-agent")), "{w:?}");
+    }
+
+    #[test]
+    fn the_registry_is_asked_about_the_program_the_agent_command_runs() {
+        // `agent` holds a command line, and the flags on it do not change
+        // which vendor is being launched.
+        let (c, w) = parse(
+            r#"
+                agent = "claude --add-dir /tmp"
+                model = "opus"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(c.model.as_deref(), Some("opus"));
+        assert!(w.is_empty(), "{w:?}");
     }
 
     #[test]
