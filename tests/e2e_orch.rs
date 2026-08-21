@@ -7,7 +7,9 @@
 mod common;
 
 use common::Harness;
+use serde_json::json;
 use std::process::{Output, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The code the caller branches on.
 fn code(out: &Output) -> i32 {
@@ -256,6 +258,99 @@ fn a_key_that_is_not_an_answer_never_reaches_the_agent() {
     assert!(
         !amx.capture(&amx.pane_of("ask-a1b")).contains("yes please"),
         "the grammar is checked before anything is typed"
+    );
+}
+
+/// Park an agent in front of the permission box its scenario draws, with the
+/// hooks put back far enough that a reader takes the choices off the screen.
+///
+/// The hook carried the words and nothing else — no hook has ever carried the
+/// choices — so this is the only way the record gets both.
+fn parked_on_the_box(amx: &Harness, id: &str) {
+    amx.play(id, "asks-a-question");
+    amx.until_state(id, "waiting");
+    amx.until("the permission box to be drawn", || {
+        amx.capture(&amx.pane_of(id))
+            .contains("❯ 1. Yes")
+            .then_some(())
+    });
+    amx.set_state(
+        id,
+        json!({
+            "state": "waiting",
+            "question": "Claude needs your permission to use Bash",
+            "since": 1,
+            "last_event": 1,
+        }),
+    );
+}
+
+/// Park an agent on a menu of the vendor's own, which is the one question that
+/// takes words rather than a key.
+///
+/// The record is written straight out and left fresh, so the reading answers
+/// from the hooks: what an `AskUserQuestion` hook leaves behind is the words,
+/// the tool's own choices and the kind, and no screen is read over the top.
+fn parked_on_a_menu(amx: &Harness, id: &str) {
+    amx.play(id, "works-without-end");
+    amx.until_state(id, "working");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("a clock")
+        .as_secs();
+    amx.set_state(
+        id,
+        json!({
+            "state": "waiting",
+            "question": {
+                "text": "Which fixture should the port keep?",
+                "options": ["the sqlite one", "the docker one"],
+                "kind": "question",
+            },
+            "since": now,
+            "last_event": now,
+        }),
+    );
+}
+
+#[test]
+fn surfaces_result_prints_the_question_with_the_choices_under_it() {
+    let amx = Harness::new();
+    parked_on_the_box(&amx, "ask-a1b");
+
+    let out = result(&amx, "ask-a1b");
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+
+    let said = stdout(&out);
+    assert!(
+        said.contains("Claude needs your permission to use Bash"),
+        "{said:?}"
+    );
+    assert!(said.contains("1. Yes"), "the choices go with it: {said:?}");
+    assert!(said.contains("2. No"), "{said:?}");
+}
+
+#[test]
+fn surfaces_send_says_a_question_of_the_vendors_own_will_take_words() {
+    let amx = Harness::new();
+    parked_on_a_menu(&amx, "pick-a1b");
+
+    let out = amx.amx(&["send", "pick-a1b", "carry on"]);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("Which fixture should the port keep?"),
+        "{:?}",
+        stdout(&out)
+    );
+    assert!(
+        stdout(&out).contains("1. the sqlite one"),
+        "{:?}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("words"),
+        "this one takes words of your own: {}",
+        stderr(&out)
     );
 }
 

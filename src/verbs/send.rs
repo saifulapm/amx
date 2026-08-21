@@ -6,8 +6,9 @@
 //!
 //! * **It refuses while the agent is waiting.** Text typed at a permission
 //!   prompt answers the prompt, and answering a question by accident is not
-//!   something a caller can take back. The question goes to stdout, where the
-//!   answer would have been, and the exit code says blocked.
+//!   something a caller can take back. The question and the choices under it
+//!   go to stdout, where the answer would have been, and the exit code says
+//!   blocked.
 //! * **It records itself before it types.** A `result` in another shell must
 //!   not hand back the last turn's answer as this send's, so the send is on the
 //!   record — the event log and the sequence number — before a byte reaches the
@@ -27,8 +28,8 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::derive;
-use crate::store::{Agent, Event, Phase};
+use crate::derive::{self, View};
+use crate::store::{Agent, Event, Kind, Phase};
 use crate::tmux::{PaneId, Server};
 use crate::{exit, paths, rules, store};
 
@@ -65,9 +66,7 @@ pub fn run(
     let view = derive::view(root, id, rules::bundled(), store::now())?;
     let phase = view.phase();
     match phase {
-        Phase::Waiting => {
-            return waiting_on_a_question(id, view.state.question.as_deref(), to_terminal, out);
-        }
+        Phase::Waiting => return waiting_on_a_question(&view, to_terminal, out),
         phase if phase.is_terminal() => return Ok(nothing_more_is_coming(id, phase)),
         _ => {}
     }
@@ -136,25 +135,51 @@ fn submissions(events: &[Event]) -> usize {
         .count()
 }
 
-/// Exit `BLOCKED`, with the pending question where the answer would have gone.
+/// Exit `BLOCKED`, with the pending question — and the choices under it —
+/// where the answer would have gone.
 ///
 /// stdout carries the question because that is the pipe a caller reads, and
-/// stderr names the verb that unblocks it. A question amx never captured still
-/// blocks — the state says so, and only the text is missing.
-pub fn waiting_on_a_question(
-    id: &str,
-    question: Option<&str>,
-    to_terminal: bool,
-    out: &mut impl Write,
-) -> Result<i32> {
-    if let Some(question) = question {
+/// stderr names the verb that unblocks it. The choices go on stdout too: they
+/// are what the answer has to be one of, and a caller that has to capture the
+/// pane and parse it for them is a caller amx has not finished the job for.
+/// A question amx never captured still blocks — the state says so, and only
+/// the text is missing.
+pub fn waiting_on_a_question(view: &View, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
+    let id = view.id();
+    if let Some(question) = &view.state.question {
         line(&rendered(question, to_terminal), out)?;
+        for choice in numbered(&view.state.options) {
+            line(&rendered(&choice, to_terminal), out)?;
+        }
     }
     eprintln!(
-        "amx: {id} is waiting on a question. answer it with \
-         `amx answer {id} <y|n|1-9|enter|esc>`"
+        "amx: {id} is waiting on a question. answer it with `{}`",
+        how_to_answer(id, view.kind())
     );
     Ok(exit::BLOCKED)
+}
+
+/// The choices under a question, numbered the way the screen numbers them.
+///
+/// Every surface that prints them prints them from here, so the number a
+/// person reads off `ls` is the number `amx answer` takes.
+pub fn numbered(options: &[String]) -> impl Iterator<Item = String> + '_ {
+    options
+        .iter()
+        .enumerate()
+        .map(|(at, label)| format!("{}. {label}", at + 1))
+}
+
+/// The command that answers this question, with the grammar it will take.
+///
+/// Which kind it is decides that grammar, so the offer is not the same
+/// sentence twice: a permission box and the trust screen want one key, and a
+/// question the vendor asked itself takes a choice or words of your own.
+pub fn how_to_answer(id: &str, kind: Option<Kind>) -> String {
+    match kind {
+        Some(Kind::Question) => format!("amx answer {id} <1-9|\"words of your own\">"),
+        _ => format!("amx answer {id} <y|n|1-9|enter|esc>"),
+    }
 }
 
 /// Exit `FAILURE`: this agent is not going to answer anybody.
@@ -200,6 +225,9 @@ pub fn rendered(text: &str, to_terminal: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::derive::{Evidence, Verdict};
+    use crate::store::{Meta, State};
+    use crate::tmux::Socket;
     use serde_json::json;
 
     fn events(kinds: &[&str]) -> Vec<Event> {
@@ -207,6 +235,38 @@ mod tests {
             .iter()
             .map(|kind| Event::new(*kind, json!({})))
             .collect()
+    }
+
+    /// An agent stopped on a question, as a reader hands it over.
+    fn asking(question: Option<&str>, options: &[&str], kind: Option<Kind>) -> View {
+        View {
+            meta: Meta {
+                id: "fix-login-a1b".to_string(),
+                task: "fix the login bug".to_string(),
+                dir: std::path::PathBuf::from("/srv/app"),
+                worktree: None,
+                branch: None,
+                base: None,
+                socket: Socket::Name("amx".to_string()),
+                pane: PaneId::new("%1").unwrap(),
+                session: None,
+                transcript: None,
+                created: 1,
+            },
+            state: State {
+                state: Phase::Waiting,
+                question: question.map(str::to_string),
+                options: options.iter().map(|label| label.to_string()).collect(),
+                kind,
+                ..State::default()
+            },
+            verdict: Verdict {
+                phase: Phase::Waiting,
+                evidence: Evidence::Hooks,
+                rule: None,
+                age: 3,
+            },
+        }
     }
 
     #[test]
@@ -229,8 +289,11 @@ mod tests {
     fn send_puts_a_pending_question_where_the_answer_would_have_gone() {
         let mut out = Vec::new();
         let code = waiting_on_a_question(
-            "fix-login-a1b",
-            Some("Claude needs your permission to use Bash"),
+            &asking(
+                Some("Claude needs your permission to use Bash"),
+                &["Yes", "No"],
+                None,
+            ),
             false,
             &mut out,
         )
@@ -239,16 +302,42 @@ mod tests {
         assert_eq!(code, exit::BLOCKED);
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "Claude needs your permission to use Bash\n"
+            "Claude needs your permission to use Bash\n1. Yes\n2. No\n",
+            "the choices are what the answer has to be one of"
         );
     }
 
     #[test]
     fn a_question_nobody_captured_still_blocks() {
         let mut out = Vec::new();
-        let code = waiting_on_a_question("fix-login-a1b", None, false, &mut out).unwrap();
+        let code = waiting_on_a_question(&asking(None, &[], None), false, &mut out).unwrap();
         assert_eq!(code, exit::BLOCKED);
         assert!(out.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn surfaces_the_offer_says_what_this_kind_of_question_will_take() {
+        // A permission box and the trust screen take one key. Offering words
+        // at either would be an offer amx cannot keep.
+        for kind in [None, Some(Kind::Permission), Some(Kind::Trust)] {
+            let offered = how_to_answer("fix-login-a1b", kind);
+            assert!(offered.contains("y|n|1-9"), "{offered}");
+            assert!(!offered.contains("words"), "{offered}");
+        }
+
+        let menu = how_to_answer("fix-login-a1b", Some(Kind::Question));
+        assert!(menu.contains("words of your own"), "{menu}");
+        assert!(menu.starts_with("amx answer fix-login-a1b"), "{menu}");
+    }
+
+    #[test]
+    fn surfaces_the_choices_are_numbered_the_way_the_screen_numbers_them() {
+        let options = ["the sqlite one".to_string(), "the docker one".to_string()];
+        assert_eq!(
+            numbered(&options).collect::<Vec<_>>(),
+            ["1. the sqlite one", "2. the docker one"]
+        );
+        assert_eq!(numbered(&[]).count(), 0);
     }
 
     #[test]

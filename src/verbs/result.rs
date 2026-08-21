@@ -7,9 +7,10 @@
 //! * `0` — the agent's answer is on stdout.
 //! * `1` — nothing is coming: the agent failed, was stopped, or ended its turn
 //!   without an answer amx could capture.
-//! * `2` — it is asking a question, which is on stdout. **A wait never goes
-//!   through a question**: the question usually arrives *during* the wait, and
-//!   a caller that cannot see it cannot answer it.
+//! * `2` — it is asking a question, which is on stdout with the choices under
+//!   it. **A wait never goes through a question**: the question usually
+//!   arrives *during* the wait, and a caller that cannot see it cannot answer
+//!   it.
 //! * `3` — the caller's own deadline.
 //!
 //! **The turn it waits for is the one after the last message.** `send` records
@@ -76,9 +77,7 @@ pub fn run(
 
         match settled(phase, ended) {
             Settled::Answer => return answer(&view, to_terminal, out),
-            Settled::Question => {
-                return waiting_on_a_question(id, view.state.question.as_deref(), to_terminal, out);
-            }
+            Settled::Question => return waiting_on_a_question(&view, to_terminal, out),
             // The command ended, and the message it was sent went with it.
             Settled::Unanswered => {
                 eprintln!("amx: {id} ended without answering");
