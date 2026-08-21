@@ -155,7 +155,7 @@ fn seed_within(
         return Ok(false);
     }
 
-    let Some(_held) = Held::take(store, patience, STALE)? else {
+    let Some(held) = Held::take(store, patience, STALE)? else {
         bail!(
             "{} is being written by claude, so amx left it alone",
             store.display()
@@ -171,6 +171,16 @@ fn seed_within(
     }
     if !merge(&mut document, tree) {
         bail!("{} is not a trust store amx can read", store.display());
+    }
+
+    // A taker preempted between judging some earlier lock abandoned and
+    // sweeping it can have caught this one and conceded it to a third; a
+    // store rewritten on a lock no longer held loses that holder's changes.
+    if !held.holds() {
+        bail!(
+            "{} is being written by claude, so amx left it alone",
+            store.display()
+        );
     }
 
     back_up(store, now, existing.is_some())?;
@@ -192,7 +202,14 @@ fn covered(store: &Value, tree: &Path, inherits: Option<&Path>) -> bool {
 /// the same way rather than writing behind the vendor's back — a claude in
 /// another pane saving its own session rewrites this whole document, and two
 /// writers who do not agree on a lock lose one of the two sets of changes.
-struct Held(PathBuf);
+struct Held {
+    path: PathBuf,
+    token: String,
+}
+
+/// The file inside the lock directory that names whose it is. Contents the
+/// vendor never looks at: it only ever asks whether the directory exists.
+const OWNER: &str = "owner";
 
 impl Held {
     /// Take it, or answer `None` when somebody else has it and will not let go
@@ -207,7 +224,14 @@ impl Held {
         let waiting = Instant::now();
         loop {
             match std::fs::create_dir(&path) {
-                Ok(()) => return Ok(Some(Held(path))),
+                Ok(()) => {
+                    if let Some(held) = Held::mark(&path) {
+                        return Ok(Some(held));
+                    }
+                    // A preempted sweep put the lock it had caught back over
+                    // this create before the marker landed. The path is that
+                    // holder's; try again like any other taker.
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(e).with_context(|| format!("taking {}", path.display())),
             }
@@ -221,11 +245,55 @@ impl Held {
             std::thread::sleep(RETRY);
         }
     }
+
+    /// Name the directory just created as this taker's, and answer whether it
+    /// was still this taker's to name.
+    ///
+    /// The marker goes in with `create_new`, so of the two directories a
+    /// putback can interleave here — this taker's create, the caught lock a
+    /// sweep restores over it — exactly one ends up named, whichever won the
+    /// path. Making the directory alone proves nothing.
+    fn mark(path: &Path) -> Option<Held> {
+        // Unique among every taker there could be: two processes differ by
+        // pid, two takes within one process by the count.
+        static TAKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nth = TAKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let token = format!("{}-{nth}", std::process::id());
+
+        let marker = path.join(OWNER);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&marker)
+            .ok()?;
+        if file.write_all(token.as_bytes()).is_err() {
+            // Half a marker would wedge every later taker until the stale
+            // sweep; better to stand aside whole.
+            drop(file);
+            let _ = std::fs::remove_file(&marker);
+            return None;
+        }
+        Some(Held {
+            path: path.to_path_buf(),
+            token,
+        })
+    }
+
+    /// Whether the path is still this taker's: the sweep a preempted taker
+    /// runs can concede a live lock to a third in a narrow window, and the
+    /// marker is how the one conceded finds out before it writes the store.
+    fn holds(&self) -> bool {
+        std::fs::read_to_string(self.path.join(OWNER)).is_ok_and(|named| named == self.token)
+    }
 }
 
 impl Drop for Held {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir(&self.0);
+        // Only a lock still this taker's is this taker's to give back.
+        if self.holds() {
+            let _ = std::fs::remove_file(self.path.join(OWNER));
+            let _ = std::fs::remove_dir(&self.path);
+        }
     }
 }
 
@@ -615,6 +683,51 @@ mod tests {
             drop(held);
             let _ = std::fs::remove_dir_all(&lock);
         }
+    }
+
+    #[test]
+    fn trust_a_sweep_preempted_over_a_live_lock_never_makes_two_holders() {
+        // B holds a fresh lock. A judged the stale lock B has since replaced
+        // abandoned, was preempted, and its sweep now runs against what is
+        // really B's live lock — rename aside, look, put back. C is a third
+        // taker spinning at the take loop. C's create can land in A's aside
+        // window, and A's putback then replaces what C made: without an owner
+        // marker both B and C believe the store is theirs, and one of the two
+        // whole-document rewrites is lost.
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join(".claude.json");
+        let lock = lock_beside(&store);
+
+        let b = Held::take(&store, Duration::ZERO, STALE).unwrap().unwrap();
+
+        let landed = AtomicBool::new(false);
+        let stop = AtomicBool::new(false);
+        let c = std::thread::scope(|racers| {
+            let taker = racers.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    if let Some(held) = Held::take(&store, Duration::ZERO, STALE).unwrap() {
+                        landed.store(true, Ordering::Relaxed);
+                        return Some(held);
+                    }
+                }
+                None
+            });
+            let patience = Instant::now();
+            while !landed.load(Ordering::Relaxed) && patience.elapsed() < Duration::from_secs(10) {
+                sweep(&lock, STALE);
+            }
+            stop.store(true, Ordering::Relaxed);
+            taker.join().unwrap()
+        });
+
+        let c = c.expect("ten seconds of sweeps and C never met the aside window");
+        assert!(c.holds(), "the lock C took is C's");
+        assert!(
+            !b.holds(),
+            "and B must find that out before it writes the store"
+        );
     }
 
     #[test]
