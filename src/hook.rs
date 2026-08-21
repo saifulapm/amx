@@ -323,24 +323,30 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
 
 /// A tool's name the way the vendor writes it into the permission sentence,
 /// measured at 2.1.237: the last `__` segment — an MCP tool arrives as
-/// `mcp__<server>__<tool>` — with underscores as spaces and each word's first
-/// letter raised, which leaves a built-in like `Bash` as it stands. The
-/// sentence written at `PermissionRequest` has to be the one the notification
-/// will repeat, or the echo reads as news and one box interrupts twice.
+/// `mcp__<server>__<tool>` — with underscores as spaces and a letter raised
+/// wherever a word starts, which is after anything that is not a letter or a
+/// digit (the vendor's `\b\w`), not only after an underscore. That carries a
+/// kebab-case name past its dashes, leaves a built-in like `Bash` as it
+/// stands, and keeps a digit's word one word. The sentence written at
+/// `PermissionRequest` has to be the one the notification will repeat, or the
+/// echo reads as news and one box interrupts twice.
 fn rendered(tool: &str) -> String {
+    let mut boundary = true;
     tool.rsplit("__")
         .next()
         .unwrap_or(tool)
-        .split('_')
-        .map(|word| {
-            let mut letters = word.chars();
-            match letters.next() {
-                Some(first) => first.to_uppercase().chain(letters).collect(),
-                None => String::new(),
-            }
+        .chars()
+        .map(|letter| {
+            let letter = if letter == '_' { ' ' } else { letter };
+            let raised = if boundary {
+                letter.to_ascii_uppercase()
+            } else {
+                letter
+            };
+            boundary = !letter.is_ascii_alphanumeric();
+            raised
         })
-        .collect::<Vec<String>>()
-        .join(" ")
+        .collect()
 }
 
 /// The question an `AskUserQuestion` call is about to put on the pane, and the
@@ -641,6 +647,24 @@ mod tests {
             &mut meta,
         );
         assert_eq!(again, None, "one box, one interruption");
+    }
+
+    #[test]
+    fn hook_a_tools_name_is_raised_at_every_word_boundary() {
+        // The vendor raises a letter wherever a word starts — after anything
+        // that is not a letter or a digit — not only after an underscore.
+        // Raised the underscore way, a kebab-case name reads
+        // 'Resolve-library-id' against the pane's 'Resolve-Library-Id', and
+        // the echo lands as news: one box, two interruptions.
+        assert_eq!(
+            rendered("mcp__context7__resolve-library-id"),
+            "Resolve-Library-Id"
+        );
+        assert_eq!(rendered("mcp__playwright__browser_click"), "Browser Click");
+        assert_eq!(rendered("mcp__acme__fs.read_file"), "Fs.Read File");
+        // A digit neither opens a word nor ends one: nothing raises after it.
+        assert_eq!(rendered("mcp__totp__get2fa-codes"), "Get2fa-Codes");
+        assert_eq!(rendered("Bash"), "Bash");
     }
 
     #[test]
