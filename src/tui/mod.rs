@@ -45,6 +45,10 @@ const REFRESH: Duration = Duration::from_millis(1000);
 /// How long the view waits for a key before it goes round again.
 const TICK: Duration = Duration::from_millis(120);
 
+/// How long a frame of the working pulse lasts, which is the vendor's own
+/// interval at 2.1.237.
+const FRAME: Duration = Duration::from_millis(120);
+
 /// What arrived from the terminal.
 enum Typed {
     /// Nobody typed anything in the time given.
@@ -119,6 +123,10 @@ struct Screen {
     notice: Option<String>,
     /// When the agents were last read.
     read: Option<Instant>,
+    /// Which frame of the working pulse the rows are on.
+    beat: usize,
+    /// When that frame came up.
+    stepped: Option<Instant>,
 }
 
 /// Open the view on this terminal and hold it until somebody closes it.
@@ -148,6 +156,7 @@ where
         if screen.read.is_none_or(|at| at.elapsed() >= REFRESH) {
             screen.reread(root)?;
         }
+        screen.step();
         terminal.draw(|frame| paint::draw(frame, &screen))?;
 
         match keys.next(TICK) {
@@ -170,6 +179,18 @@ impl Screen {
         self.read = Some(Instant::now());
         self.follow_the_cursor();
         Ok(())
+    }
+
+    /// Move the working pulse on, if a frame has gone by.
+    ///
+    /// By the clock rather than by the pass: the loop goes round again the
+    /// moment a key arrives, and a row that breathed faster while somebody was
+    /// typing would be saying something about the typing.
+    fn step(&mut self) {
+        if self.stepped.is_none_or(|at| at.elapsed() >= FRAME) {
+            self.beat = self.beat.wrapping_add(1);
+            self.stepped = Some(Instant::now());
+        }
     }
 
     /// Take the closer look again, when it is the kind that follows the
@@ -568,7 +589,7 @@ mod tests {
             &[KeyCode::Down, KeyCode::Char(' '), KeyCode::Char('q')],
         );
         assert_eq!(code, exit::OK);
-        assert!(screen.contains("▸ ✓ second-b2c"), "{screen}");
+        assert!(screen.contains("▸ ● second-b2c"), "{screen}");
         assert!(screen.contains("second-b2c · done"), "{screen}");
         assert!(
             screen.contains("wrote the tests"),

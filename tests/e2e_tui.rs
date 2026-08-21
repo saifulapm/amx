@@ -43,6 +43,19 @@ fn screen(amx: &Harness, pane: &str) -> String {
     amx.capture(pane)
 }
 
+/// The mark on an agent's row, as the view has it drawn now: past the cursor,
+/// whether or not the cursor is on this one.
+fn mark(amx: &Harness, view: &str, id: &str) -> Option<char> {
+    screen(amx, view)
+        .lines()
+        .find(|line| line.contains(id))?
+        .trim_start()
+        .trim_start_matches('▸')
+        .trim_start()
+        .chars()
+        .next()
+}
+
 /// Every agent amx holds a record for.
 fn agents(amx: &Harness) -> Vec<String> {
     let mut ids: Vec<String> = std::fs::read_dir(amx.state_root())
@@ -145,6 +158,44 @@ fn the_view_gathers_the_agents_under_what_they_need() {
             drawn.matches(group).count(),
             2,
             "{group} is counted at the top and named over its rows:\n{drawn}"
+        );
+    }
+}
+
+#[test]
+fn glyphs_say_the_states_apart_and_the_working_one_breathes() {
+    let amx = Harness::new();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.play("port-importer-b2c", "works-with-a-spinner");
+    amx.play("fix-login-c3d", "happy-turn");
+    amx.until_state("ask-a1b", "waiting");
+    amx.until_state("port-importer-b2c", "working");
+    amx.until_state("fix-login-c3d", "idle");
+    finished(&amx, "old-job-d4e", "done", 60);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    for (id, want) in [
+        ("ask-a1b", '?'),
+        ("fix-login-c3d", '○'),
+        ("old-job-d4e", '●'),
+    ] {
+        amx.until(&format!("{id} to be marked {want}"), || {
+            (mark(&amx, &view, id) == Some(want)).then_some(())
+        });
+    }
+
+    // The working row is drawn a frame at a time, so watching it for a moment
+    // shows more than one of them — and every one is the vendor's own, from the
+    // set tmux hands its panes rather than the one ghostty asks for.
+    let mut frames = std::collections::BTreeSet::new();
+    amx.until("the working row to breathe", || {
+        frames.extend(mark(&amx, &view, "port-importer-b2c"));
+        (frames.len() > 1).then_some(())
+    });
+    for frame in &frames {
+        assert!(
+            "·✢*✶✻✽".contains(*frame),
+            "{frame} is not a frame of the pulse: {frames:?}"
         );
     }
 }

@@ -14,6 +14,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use std::sync::OnceLock;
 
 use super::act::{Asking, Composer};
 use super::rows::{Group, Item, List};
@@ -74,7 +75,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     frame.render_widget(Paragraph::new(header(&screen.list)), top);
     match &screen.mode {
         Mode::Keys => help(frame, middle),
-        _ => agents(frame, &screen.list, middle),
+        _ => agents(frame, &screen.list, middle, screen.beat),
     }
     if panel > 0
         && let Some(peek) = &screen.peek
@@ -111,7 +112,7 @@ fn header(list: &List) -> Line<'static> {
 }
 
 /// The agents themselves.
-fn agents(frame: &mut Frame, list: &List, area: Rect) {
+fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize) {
     if list.is_empty() {
         frame.render_widget(Paragraph::new(Line::styled("no agents", dim())), area);
         return;
@@ -128,13 +129,29 @@ fn agents(frame: &mut Frame, list: &List, area: Rect) {
         .enumerate()
         .skip(offset)
         .take(height)
-        .map(|(at, item)| line(list, *item, at == list.cursor(), names, area.width as usize))
+        .map(|(at, item)| {
+            line(
+                list,
+                *item,
+                at == list.cursor(),
+                names,
+                area.width as usize,
+                beat,
+            )
+        })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// One line of the list, whatever kind of line it is.
-fn line(list: &List, item: Item, selected: bool, names: usize, width: usize) -> Line<'static> {
+fn line(
+    list: &List,
+    item: Item,
+    selected: bool,
+    names: usize,
+    width: usize,
+    beat: usize,
+) -> Line<'static> {
     match item {
         Item::Heading(group, _) => Line::styled(
             group.title().to_string(),
@@ -144,7 +161,7 @@ fn line(list: &List, item: Item, selected: bool, names: usize, width: usize) -> 
         ),
         Item::Fold(hidden) => Line::styled(format!("{}… {hidden} more", marker(selected)), dim()),
         Item::Agent(_) => match list.agent(item) {
-            Some(view) => row(view, selected, names, width),
+            Some(view) => row(view, selected, names, width, beat),
             None => Line::raw(""),
         },
     }
@@ -152,7 +169,7 @@ fn line(list: &List, item: Item, selected: bool, names: usize, width: usize) -> 
 
 /// An agent's row: what state it is in, what it is called, what it is up to,
 /// and how long since anybody heard from it.
-fn row(view: &View, selected: bool, names: usize, width: usize) -> Line<'static> {
+fn row(view: &View, selected: bool, names: usize, width: usize, beat: usize) -> Line<'static> {
     let phase = view.phase();
     let age = age(view.verdict.age);
     let name = fit(view.id(), names);
@@ -164,7 +181,10 @@ fn row(view: &View, selected: bool, names: usize, width: usize) -> Line<'static>
 
     Line::from(vec![
         Span::raw(marker(selected)),
-        Span::styled(format!("{} ", icon(phase)), Style::new().fg(colour(phase))),
+        Span::styled(
+            format!("{} ", icon(phase, beat)),
+            Style::new().fg(colour(phase)),
+        ),
         Span::styled(
             format!("{name:<names$}  "),
             if selected {
@@ -345,16 +365,67 @@ fn marker(selected: bool) -> &'static str {
     if selected { "▸ " } else { "  " }
 }
 
-/// The state, as one character.
-fn icon(phase: Phase) -> char {
+/// The vendor's glyph set for a terminal. Ghostty draws the eight-spoked
+/// asterisk where everything else gets a plain one, and that is the only thing
+/// `$TERM` decides. Measured from the 2.1.237 bundle.
+fn set_for(term: &str) -> [&'static str; 6] {
+    match term {
+        "xterm-ghostty" => ["·", "✢", "✳", "✶", "✻", "✻"],
+        _ => ["·", "✢", "*", "✶", "✻", "✽"],
+    }
+}
+
+/// That set for this terminal, read once: `$TERM` does not change under a
+/// running view, and the vendor memoizes it for the same reason.
+fn set() -> [&'static str; 6] {
+    static SET: OnceLock<[&'static str; 6]> = OnceLock::new();
+    *SET.get_or_init(|| set_for(std::env::var("TERM").unwrap_or_default().as_str()))
+}
+
+/// Which of the six a working row rests on, and the frame the pulse is
+/// largest at either side of.
+const LIVE: usize = 4;
+
+/// The six ping-ponged into twelve frames, which is the vendor's own working
+/// mark ported rather than approximated: the set forwards and then backwards,
+/// one frame every 120ms. It grows from a dot to the largest asterisk and
+/// shrinks back, so a working row breathes rather than spins.
+fn pulse(beat: usize) -> &'static str {
+    let set = set();
+    let frames = set.len() * 2;
+    let at = beat % frames;
+    // The back half is the front half read the other way.
+    set[at.min(frames - 1 - at)]
+}
+
+/// The mark a state rests on: eight states and eight marks, so a row says
+/// which one it is in with the colour turned off.
+///
+/// The circle is drawn three ways — dotted while it is coming up, hollow while
+/// it is alive and quiet, filled once it is finished — and nothing at rest may
+/// borrow a frame of the pulse, because every one of those is in motion. The
+/// exception is working itself, which rests on the vendor's live glyph and is
+/// the thing the pulse moves off and back to.
+fn resting(phase: Phase) -> &'static str {
     match phase {
-        Phase::Waiting => '?',
-        Phase::Starting | Phase::Working => '●',
-        Phase::Idle => '○',
-        Phase::Done => '✓',
-        Phase::Failed => '✗',
-        Phase::Stopped => '■',
-        Phase::Unknown => '~',
+        Phase::Waiting => "?",
+        Phase::Starting => "◌",
+        Phase::Working => set()[LIVE],
+        Phase::Idle => "○",
+        Phase::Done => "●",
+        Phase::Failed => "✗",
+        Phase::Stopped => "⏹",
+        // amx does not know what this agent is doing, and says so.
+        Phase::Unknown => "~",
+    }
+}
+
+/// The mark on a row now: a working agent is drawn a frame at a time, and
+/// every other state rests.
+fn icon(phase: Phase, beat: usize) -> &'static str {
+    match phase {
+        Phase::Working => pulse(beat),
+        phase => resting(phase),
     }
 }
 
@@ -424,6 +495,18 @@ mod tests {
         }
     }
 
+    /// Every state there is, so a table of marks cannot quietly miss one.
+    const EVERY: [Phase; 8] = [
+        Phase::Starting,
+        Phase::Working,
+        Phase::Waiting,
+        Phase::Idle,
+        Phase::Done,
+        Phase::Failed,
+        Phase::Stopped,
+        Phase::Unknown,
+    ];
+
     /// The view, with a reading in it.
     fn showing(views: Vec<View>, peek: Option<Peek>) -> Screen {
         let mut screen = Screen::default();
@@ -455,6 +538,83 @@ mod tests {
     }
 
     #[test]
+    fn glyphs_give_every_state_a_mark_of_its_own() {
+        let marks: Vec<&str> = EVERY.iter().map(|phase| resting(*phase)).collect();
+        assert_eq!(
+            marks
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            EVERY.len(),
+            "eight states, eight marks: {marks:?}"
+        );
+        assert_eq!(resting(Phase::Waiting), "?");
+        assert_eq!(resting(Phase::Starting), "◌");
+        assert_eq!(resting(Phase::Idle), "○");
+        assert_eq!(resting(Phase::Done), "●");
+        assert_eq!(resting(Phase::Failed), "✗");
+        assert_eq!(resting(Phase::Stopped), "⏹");
+        assert_eq!(resting(Phase::Unknown), "~");
+
+        for phase in EVERY.iter().filter(|phase| **phase != Phase::Working) {
+            assert!(
+                !set().contains(&resting(*phase)),
+                "{phase} rests on a mark the pulse passes through"
+            );
+        }
+    }
+
+    #[test]
+    fn glyphs_pulse_a_working_row_through_twelve_frames() {
+        let set = set();
+        let want: Vec<&str> = set.iter().chain(set.iter().rev()).copied().collect();
+        let frames: Vec<&str> = (0..12).map(pulse).collect();
+
+        assert_eq!(frames, want, "the set, and then the set backwards");
+        assert_eq!(pulse(12), pulse(0), "and round again");
+        assert_eq!(
+            resting(Phase::Working),
+            set[LIVE],
+            "and it rests on the vendor's own live glyph"
+        );
+    }
+
+    #[test]
+    fn glyphs_take_the_set_the_terminal_asks_for() {
+        assert_eq!(set_for("xterm-ghostty"), ["·", "✢", "✳", "✶", "✻", "✻"]);
+        assert_eq!(set_for("tmux-256color"), ["·", "✢", "*", "✶", "✻", "✽"]);
+        assert_eq!(
+            set_for(""),
+            set_for("xterm"),
+            "and anything else is the same"
+        );
+    }
+
+    #[test]
+    fn glyphs_draw_a_working_row_a_frame_at_a_time() {
+        let at = |beat| {
+            let mut screen = showing(
+                vec![view(
+                    "port-importer-b2c",
+                    Phase::Working,
+                    Some("Running"),
+                    3,
+                )],
+                None,
+            );
+            screen.beat = beat;
+            painted(&screen, (60, 8))[2].clone()
+        };
+
+        assert!(
+            at(0).starts_with(&format!("▸ {} port-importer-b2c", pulse(0))),
+            "{:?}",
+            at(0)
+        );
+        assert_ne!(at(0), at(LIVE), "a working row moves");
+    }
+
+    #[test]
     fn view_draws_a_row_for_every_agent_under_a_heading_for_its_group() {
         let screen = drawn(
             vec![
@@ -471,7 +631,7 @@ mod tests {
         assert!(screen[2].ends_with("1m"), "{:?}", screen[2]);
         assert_eq!(screen[3], "working");
         assert!(
-            screen[4].starts_with("  ● fix-login-b2c"),
+            screen[4].starts_with(&format!("  {} fix-login-b2c", pulse(0))),
             "{:?}",
             screen[4]
         );
