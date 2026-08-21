@@ -43,6 +43,8 @@ pub enum Asking {
     /// Something for an agent that is already running: a message, or the key
     /// its question is waiting for.
     Reply { id: String, question: bool },
+    /// A name for one of them, which goes nowhere near the agent itself.
+    Name { id: String },
 }
 
 impl Composer {
@@ -66,6 +68,7 @@ impl Composer {
             Asking::Task => "task".to_string(),
             Asking::Reply { id, question: true } => format!("answer {id} · y n 1-9 enter esc"),
             Asking::Reply { id, .. } => format!("message to {id}"),
+            Asking::Name { id } => format!("rename {id}"),
         }
     }
 
@@ -360,6 +363,53 @@ pub fn invitation(kind: Option<Kind>, options: &[String]) -> String {
     }
 }
 
+/// What a rename came to.
+pub enum Renamed {
+    /// The wall calls it something else now, and this says what.
+    Yes(String),
+    /// It is called what it was called, and this says why.
+    No(String),
+}
+
+/// The longest name a row will carry. Past this the column that holds it cuts,
+/// and a name that only reads whole in the line it was typed on is not a name
+/// on the wall.
+pub const NAME: usize = 24;
+
+/// Call the agent under the cursor something else.
+///
+/// The id is untouched. It is what the record is filed under, what a shell
+/// addresses, and what the pane, the branch and the tree amx cut are named
+/// after — an id that moved would leave every one of those pointing at a name
+/// nothing answers to. What a rename changes is the word on the row, which is
+/// the thing a person reads a hundred times a day.
+///
+/// What is typed is made safe where it is written down rather than wherever it
+/// is drawn: a name goes on a row, in a notice and in a line somebody is
+/// editing, and a record that never holds a control character is one no reader
+/// has to remember to neutralise.
+pub fn rename(root: &Path, id: &str, typed: &str) -> Result<Renamed> {
+    let name: String = typed.chars().filter(|c| !c.is_control()).collect();
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(Renamed::No("a name is a word, not nothing".to_string()));
+    }
+    if name.chars().count() > NAME {
+        return Ok(Renamed::No(format!(
+            "a name is {NAME} characters at most, so that a row can carry it"
+        )));
+    }
+
+    // Written the way a reading is written rather than as something the agent
+    // said: a name is a fact about the wall, and moving the record's own clock
+    // for it would have the next reader trust this document over the pane.
+    let agent = Agent::open(root, id)?;
+    agent
+        .writer()?
+        .observe(|state| state.name = (name != id).then(|| name.to_string()))?;
+    Ok(Renamed::Yes(format!("{id} is {name}")))
+}
+
 /// End the agent under the cursor: one that is running is stopped, and one
 /// that has already ended is forgotten.
 pub fn end(root: &Path, view: &View) -> Result<String> {
@@ -454,6 +504,78 @@ fn one_line(written: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Meta;
+    use crate::tmux::{PaneId, Socket};
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// An agent with a record under `root`, for the acts that change one.
+    fn recorded(root: &Path, id: &str) -> Agent {
+        Agent::create(
+            root,
+            &Meta {
+                id: id.to_string(),
+                task: "fix the login bug".to_string(),
+                dir: PathBuf::from("/srv/app"),
+                worktree: None,
+                branch: None,
+                base: None,
+                socket: Socket::Name("amx-not-a-server".to_string()),
+                pane: PaneId::new("%404").unwrap(),
+                session: None,
+                transcript: None,
+                created: store::now(),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn acts_rename_puts_the_name_on_the_record_and_leaves_the_id_where_it_was() {
+        let root = TempDir::new().unwrap();
+        let agent = recorded(root.path(), "fix-login-a1b");
+
+        let Renamed::Yes(said) = rename(root.path(), "fix-login-a1b", "  auth\u{7}  ").unwrap()
+        else {
+            panic!("the rename was refused")
+        };
+        assert!(said.contains("auth"), "{said}");
+        assert_eq!(
+            agent.state().unwrap().name.as_deref(),
+            Some("auth"),
+            "trimmed, and without the characters a terminal reads as an \
+             instruction rather than a letter"
+        );
+        assert_eq!(
+            agent.meta().unwrap().id,
+            "fix-login-a1b",
+            "the id is what everything else addresses, and a rename is not \
+             about the id"
+        );
+    }
+
+    #[test]
+    fn acts_rename_refuses_what_no_row_could_carry() {
+        let root = TempDir::new().unwrap();
+        let agent = recorded(root.path(), "fix-login-a1b");
+        let refused = |typed: &str| match rename(root.path(), "fix-login-a1b", typed).unwrap() {
+            Renamed::No(why) => why,
+            Renamed::Yes(said) => panic!("{typed:?} was taken: {said}"),
+        };
+
+        assert!(refused("   ").contains("a name"), "nothing is not a name");
+        assert!(
+            refused(&"x".repeat(NAME + 1)).contains(&NAME.to_string()),
+            "and one no row can draw whole is refused with the length in it"
+        );
+        assert_eq!(agent.state().unwrap().name, None, "and nothing was written");
+
+        // A name that is the id is the name it already had, so the record goes
+        // back to holding none.
+        rename(root.path(), "fix-login-a1b", "auth").unwrap();
+        rename(root.path(), "fix-login-a1b", "fix-login-a1b").unwrap();
+        assert_eq!(agent.state().unwrap().name, None);
+    }
 
     #[test]
     fn a_line_says_what_it_is_for_before_anybody_types_into_it() {

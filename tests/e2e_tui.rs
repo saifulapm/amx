@@ -1442,6 +1442,51 @@ fn ctrl_x_stops_the_agent_and_then_forgets_it() {
 }
 
 #[test]
+fn acts_ctrl_r_calls_the_agent_what_a_person_typed() {
+    let amx = Harness::new();
+    finished(&amx, "fix-login-a1b", "done", 60);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+    });
+
+    press(&amx, &view, "C-r");
+    amx.until("the line to open on what the row is called", || {
+        screen(&amx, &view)
+            .contains("rename fix-login-a1b ▸ fix-login-a1b")
+            .then_some(())
+    });
+
+    // Edited rather than typed again: the name it had, back to nothing, and a
+    // word of somebody's own in its place.
+    let mut keys = vec!["send-keys", "-t", &view];
+    keys.extend(std::iter::repeat_n("BSpace", "fix-login-a1b".len()));
+    amx.tmux(&keys);
+    types(&amx, &view, "auth");
+    press(&amx, &view, "Enter");
+
+    let wall = amx.until("the wall to call it auth", || {
+        let drawn = screen(&amx, &view);
+        drawn
+            .lines()
+            .any(|line| line.contains(" auth "))
+            .then_some(drawn)
+    });
+    assert!(
+        !wall
+            .lines()
+            .any(|line| line.contains(" auth ") && line.contains("fix-login-a1b")),
+        "the row carries the name and the id is off it:\n{wall}"
+    );
+    assert_eq!(
+        amx.state("fix-login-a1b")["name"],
+        "auth",
+        "and the record is filed under the id it always was"
+    );
+}
+
+#[test]
 fn d_shows_what_the_agent_has_changed() {
     let amx = Harness::new();
     let repo = amx.a_repo();

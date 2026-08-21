@@ -201,10 +201,13 @@ impl Filters {
             .state
             .as_ref()
             .is_none_or(|want| view.phase().as_str() == want);
+        // Either word for the agent, because both are on the screen somebody
+        // is typing at: the id every other surface uses, and the name a person
+        // gave it because the id was not what they call it.
         let name = self
             .name
             .as_ref()
-            .is_none_or(|want| view.id().contains(want));
+            .is_none_or(|want| view.id().contains(want) || called(view).contains(want));
         state && name
     }
 
@@ -682,6 +685,16 @@ impl List {
         }
         self.cursor = self.cursor.min(self.items.len() - 1);
     }
+}
+
+/// What a row calls its agent: the name somebody gave it, and the id until
+/// somebody does.
+///
+/// Here rather than on the reading itself, because it is a fact about the row:
+/// the record is filed under the id, every verb takes the id, and the name is
+/// the word this one screen shows instead.
+pub fn called(view: &View) -> &str {
+    view.state.name.as_deref().unwrap_or_else(|| view.id())
 }
 
 /// When an agent's turn ended, as well as the record can say.
@@ -1463,6 +1476,28 @@ mod tests {
         list.narrow(vec![Narrow::State(None)]);
         list.show(vec![view("busy-a1b", Phase::Working, 10), gone]);
         assert_eq!(list.live(), 1);
+    }
+
+    #[test]
+    fn acts_a_row_is_called_what_somebody_renamed_it_to() {
+        let mut named = view("fix-login-a1b", Phase::Idle, 10);
+        named.state.name = Some("auth".to_string());
+        let plain = view("port-importer-b2c", Phase::Idle, 20);
+
+        assert_eq!(called(&named), "auth");
+        assert_eq!(
+            called(&plain),
+            "port-importer-b2c",
+            "and its id until somebody calls it something else"
+        );
+
+        let mut list = listed(vec![named, plain]);
+        list.narrow(vec![Narrow::Name(Some("auth".to_string()))]);
+        assert_eq!(
+            lines(&list),
+            ["idle (1)", "fix-login-a1b"],
+            "and a narrowing takes the name off the row as readily as the id"
+        );
     }
 
     #[test]

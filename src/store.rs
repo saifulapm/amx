@@ -188,6 +188,15 @@ pub struct Meta {
 #[serde(default, from = "Wire", into = "Wire")]
 pub struct State {
     pub state: Phase,
+    /// What a person calls this agent, where somebody has renamed it. The id
+    /// is what the record is filed under and what every surface addresses, and
+    /// it never moves; this is only what the wall says.
+    ///
+    /// It lives here rather than beside the task because it is written the way
+    /// everything else here is written — by whoever is looking, while the
+    /// agent runs — and how the agent was started is not something a rename
+    /// changes.
+    pub name: Option<String>,
     /// Bumped by each `send`, so `result` can tell this turn's end from the
     /// end of the turn before it.
     pub seq: u64,
@@ -271,6 +280,8 @@ impl State {
 #[serde(default)]
 struct Wire {
     state: Phase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
     seq: u64,
     since: u64,
     summary: Option<String>,
@@ -315,6 +326,7 @@ impl From<State> for Wire {
         // survive a restart.
         let State {
             state,
+            name,
             seq,
             since,
             summary,
@@ -329,6 +341,7 @@ impl From<State> for Wire {
 
         Wire {
             state,
+            name,
             seq,
             since,
             summary,
@@ -372,6 +385,7 @@ impl From<Wire> for State {
 
         State {
             state: wire.state,
+            name: wire.name,
             seq: wire.seq,
             since: wire.since,
             summary: wire.summary,
@@ -1040,6 +1054,30 @@ mod tests {
             "a screen is not a thing the agent said"
         );
         assert_eq!(agent.state().unwrap(), noted);
+    }
+
+    #[test]
+    fn acts_a_record_keeps_what_a_person_renamed_an_agent_to() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .observe(|s| s.name = Some("auth".to_string()))
+            .unwrap();
+
+        assert_eq!(written(&agent)["name"], "auth");
+        assert_eq!(agent.state().unwrap().name.as_deref(), Some("auth"));
+        assert_eq!(
+            agent.meta().unwrap().id,
+            "fix-login-a1b",
+            "and the id the record is filed under is where it was"
+        );
+
+        // A document written before anybody could rename anything is a record
+        // of an agent nobody has renamed.
+        std::fs::write(agent.dir().join(STATE), r#"{"state":"idle"}"#).unwrap();
+        assert_eq!(agent.state().unwrap().name, None);
     }
 
     #[test]

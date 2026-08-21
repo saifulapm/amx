@@ -28,7 +28,7 @@ use std::ops::Range;
 use std::sync::OnceLock;
 
 use super::act::{self, Asking, Composer};
-use super::rows::{Axis, Group, Item, List, Tally, Under};
+use super::rows::{self, Axis, Group, Item, List, Tally, Under};
 use super::{Mode, Profile, Screen};
 use crate::ansi::{self, Colour, Painted};
 use crate::derive::View;
@@ -50,7 +50,7 @@ const KEYS: &str = "space card · enter attach · ctrl+s axis · ? keys · q qui
 const ANSWERS: &str = "enter answers it · esc closes it";
 
 /// Every key, for whoever asked what they are.
-const HELP: [(&str, &str); 18] = [
+const HELP: [(&str, &str); 19] = [
     ("↑ ↓", "walk the agents"),
     ("space", "the card: what one is asking, and the answer"),
     ("enter", "bring its window forward · shut a group"),
@@ -58,6 +58,7 @@ const HELP: [(&str, &str); 18] = [
     ("r", "reply: a message, or an answer on the card"),
     ("d", "what it has changed"),
     ("ctrl+x", "stop it · again to forget it"),
+    ("ctrl+r", "call it something else"),
     ("ctrl+s", "gather them by state or by project"),
     ("alt+enter", "a newline in the line, without sending it"),
     ("alt+v", "which vendor the next agent runs"),
@@ -558,7 +559,9 @@ fn row(view: &View, selected: bool, columns: Columns, width: usize, beat: usize)
     let Columns { names, status } = columns;
     let phase = view.phase();
     let age = age(view.verdict.age);
-    let name = fit(view.id(), names);
+    // The one word on a row a person typed rather than amx minting it, so it
+    // is neutralised here as well as where it was written down.
+    let name = fit(&inert(rows::called(view)), names);
     // The gutter, the icon and its space, the name and its gap, the status
     // column and its gap where there is one, the age and the space before it.
     let spent = GUTTER.len() + 2 + names + 2 + status + 2 * usize::from(status > 0) + AGE + 1;
@@ -1180,6 +1183,7 @@ fn footer(screen: &Screen) -> Line<'static> {
                 Asking::Reply { .. } => {
                     "enter sends it · alt+enter newline · esc cancels".to_string()
                 }
+                Asking::Name { .. } => "enter renames it · esc leaves it alone".to_string(),
             },
         },
         dim(),
@@ -1192,7 +1196,7 @@ fn columns(list: &List) -> Columns {
     let shown = || list.items().iter().filter_map(|item| list.agent(*item));
     Columns {
         names: shown()
-            .map(|view| view.id().chars().count())
+            .map(|view| rows::called(view).chars().count())
             .max()
             .unwrap_or(0)
             .clamp(6, 24),

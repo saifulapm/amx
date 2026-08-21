@@ -44,7 +44,7 @@ use crate::derive::{self, View};
 use crate::store::{Phase, now};
 use crate::tmux::{PaneId, Server, SessionId};
 use crate::{exit, registry, rules};
-use act::{Asking, Composer, Replied, Started};
+use act::{Asking, Composer, Renamed, Replied, Started};
 use paint::{Card, Notice};
 use rows::List;
 
@@ -562,6 +562,19 @@ impl Screen {
             }
             KeyCode::Char('?') => self.mode = Mode::Keys,
             KeyCode::Char('n') => self.mode = Mode::Typing(Composer::new(Asking::Task)),
+            // A name for the agent under the cursor, opened on the one it is
+            // going by: what somebody wants is usually a word of the current
+            // name, and a line that started empty would have them type the
+            // part they were keeping.
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(view) = self.list.selected() {
+                    let mut composer = Composer::new(Asking::Name {
+                        id: view.id().to_string(),
+                    });
+                    composer.text = rows::called(view).to_string();
+                    self.mode = Mode::Typing(composer);
+                }
+            }
             // What a reply is depends on what the agent is doing: an agent
             // that has stopped on a question is answered on the card, where
             // the choices it is offering are, and anything else is a message
@@ -674,6 +687,28 @@ impl Screen {
                 {
                     self.list.narrow(narrowing);
                     self.follow_the_cursor();
+                    return Ok(Doing::Carry);
+                }
+                // A name is refused rather than dropped, empty or not: the
+                // line was opened on a name somebody meant to edit, and a
+                // keystroke that quietly threw it away would look like a
+                // rename that happened.
+                if let Asking::Name { id } = &composer.asking {
+                    let id = id.clone();
+                    match act::rename(root, &id, &composer.text) {
+                        Ok(Renamed::Yes(said)) => {
+                            self.notice = Some(Notice::Advice(said));
+                            self.acted();
+                        }
+                        Ok(Renamed::No(why)) => {
+                            self.notice = Some(Notice::Advice(why));
+                            self.mode = Mode::Typing(composer);
+                        }
+                        Err(e) => {
+                            self.notice = Some(Notice::Failed(format!("{e:#}")));
+                            self.acted();
+                        }
+                    }
                     return Ok(Doing::Carry);
                 }
                 if composer.text.trim().is_empty() {
@@ -1375,6 +1410,30 @@ mod tests {
         assert!(screen.card.is_none(), "with no card over the list");
         let line = screen.banded().expect("a line of its own");
         assert_eq!(line.prompt(), "message to fix-login-b2c");
+    }
+
+    #[test]
+    fn acts_ctrl_r_opens_the_line_on_the_name_the_row_is_carrying() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![reading(
+            "fix-login-a1b",
+            Phase::Idle,
+            State {
+                state: Phase::Idle,
+                name: Some("auth".to_string()),
+                ..State::default()
+            },
+        )]);
+
+        screen.act(ctrl('r'), root.path(), &config, None).unwrap();
+        let line = screen.banded().expect("a line of its own");
+        assert_eq!(line.prompt(), "rename fix-login-a1b");
+        assert_eq!(
+            line.text, "auth",
+            "seeded with what the row says, because a rename is an edit of it \
+             rather than a name typed again from nothing"
+        );
     }
 
     #[test]
