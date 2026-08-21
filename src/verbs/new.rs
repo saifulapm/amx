@@ -148,19 +148,11 @@ pub fn run(
         return Ok(exit::BLOCKED);
     }
 
-    let id = match &args.name {
-        Some(name) => {
-            ids::validate_name(name, root)?;
-            name.clone()
-        }
-        None => ids::generate(&args.task, root)?,
-    };
-
-    let agent_dir = paths::agent_dir_in(root, &id)?;
-    make_dir(&agent_dir)?;
+    let (id, agent_dir) = claim(root, args)?;
 
     // From here on a failure leaves nothing behind: an id that half exists is
-    // worse than one that does not.
+    // worse than one that does not. The directory is this spawn's own — the
+    // claim made it — so removing it can never take another spawn's record.
     match start(
         root, &agent_dir, dir, env, config, args, &launch, &id, problems,
     ) {
@@ -173,6 +165,39 @@ pub fn run(
             Err(e)
         }
     }
+}
+
+/// How many minted ids to try to claim before giving up.
+const MAX_CLAIMS: usize = 8;
+
+/// Claim an id by making its directory. The mkdir is the uniqueness check:
+/// two spawns in flight can both believe a name is free, but the directory
+/// can only be made by one of them, and nothing the loser has to clean up
+/// exists yet.
+fn claim(root: &Path, args: &NewArgs) -> Result<(String, PathBuf)> {
+    if let Some(name) = &args.name {
+        ids::validate_name(name, root)?;
+        let dir = paths::agent_dir_in(root, name)?;
+        // A typed name that loses the claim was taken, however recently.
+        if !make_dir(&dir)? {
+            bail!("name {name:?} is already taken");
+        }
+        return Ok((name.clone(), dir));
+    }
+    // generate already avoids every directory that exists, so losing a draw
+    // to a spawn in flight is next to never — and answered with another draw.
+    for _ in 0..MAX_CLAIMS {
+        let id = ids::generate(&args.task, root)?;
+        let dir = paths::agent_dir_in(root, &id)?;
+        if make_dir(&dir)? {
+            return Ok((id, dir));
+        }
+    }
+    bail!(
+        "no id for {:?} could be claimed under {} after {MAX_CLAIMS} draws",
+        args.task,
+        root.display()
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -293,13 +318,17 @@ fn trust_the_tree(
 }
 
 /// The agent's own directory, which nobody else has any business reading.
-fn make_dir(dir: &PathBuf) -> Result<()> {
+///
+/// Deliberately not recursive: making the directory is the uniqueness claim,
+/// so one that is already there has to answer false rather than stand in for
+/// one this spawn made.
+fn make_dir(dir: &Path) -> Result<bool> {
     use std::os::unix::fs::DirBuilderExt;
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .with_context(|| format!("creating {}", dir.display()))
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("creating {}", dir.display())),
+    }
 }
 
 #[cfg(test)]
@@ -404,6 +433,21 @@ mod tests {
         .unwrap_err();
         assert!(refusal.contains("--model"), "{refusal}");
         assert!(refusal.contains("mock-claude"), "{refusal}");
+    }
+
+    #[test]
+    fn the_claim_is_the_mkdir_and_a_directory_already_there_is_not_ours() {
+        // Two spawns racing one name both believe it is free; the mkdir is
+        // what settles it. A directory that already exists must read as
+        // somebody else's claim — never as a success to clean up later.
+        let root = tempfile::TempDir::new().unwrap();
+        let dir = root.path().join("fix-login-a1b");
+
+        assert!(make_dir(&dir).unwrap(), "a free name is claimed");
+        assert!(
+            !make_dir(&dir).unwrap(),
+            "a name somebody holds is not claimed again"
+        );
     }
 
     /// A repository with a tree of amx's own in it, and a home to keep a

@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::Harness;
+use common::{AMX, Harness};
 use std::path::Path;
 use std::process::Output;
 
@@ -600,6 +600,84 @@ fn a_directory_that_is_not_there_is_said_so_before_anything_is_made() {
         !amx.state_root().exists() || amx.state_root().read_dir().unwrap().next().is_none(),
         "a dispatch that failed leaves no half-made agent behind"
     );
+}
+
+#[test]
+fn new_two_racers_for_one_name_leave_the_winners_record_standing() {
+    // Two `amx new --name <same>` in flight at once. The name has one owner:
+    // whichever spawn claims the directory keeps it, and the id it printed is
+    // still a record afterwards — the loser tidying up after itself must
+    // never take the winner's meta.json with it.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    // Ten attempts of racers, and the finished ones still hold panes: the
+    // default cap would start refusing spawns halfway through the race.
+    amx.config("max_agents = 40\n");
+    let state_dir = amx
+        .state_root()
+        .parent()
+        .expect("the state root has a parent")
+        .to_path_buf();
+
+    for attempt in 0..10 {
+        let name = format!("race-{attempt}");
+        // Both racers are up and spinning before the starting gun fires, so
+        // they reach the uniqueness check together instead of one whole run
+        // apart.
+        let go = state_dir.join(format!("go-{attempt}"));
+        let racers: Vec<_> = (0..2)
+            .map(|_| {
+                std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(format!(
+                        "until [ -e '{go}' ]; do :; done; \
+                         exec '{AMX}' new --no-worktree --agent '{mock}' \
+                         --name '{name}' 'fix the login bug'",
+                        go = go.display(),
+                    ))
+                    .env("AMX_STATE_DIR", &state_dir)
+                    .env("HOME", amx.home())
+                    .env("XDG_CONFIG_HOME", amx.home().join(".config"))
+                    .env("AMX_TMUX_SOCKET", amx.socket())
+                    .env("MOCK_CLAUDE_SCENARIO", amx.scenario("finishes"))
+                    .env_remove("TMUX")
+                    .env_remove("TMUX_PANE")
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("starting a racer")
+            })
+            .collect();
+        std::fs::write(&go, b"").expect("the starting gun");
+        let done: Vec<Output> = racers
+            .into_iter()
+            .map(|racer| racer.wait_with_output().expect("waiting for a racer"))
+            .collect();
+
+        let winners: Vec<&Output> = done.iter().filter(|out| out.status.success()).collect();
+        assert_eq!(
+            winners.len(),
+            1,
+            "attempt {attempt}: one name, one owner: {}",
+            done.iter()
+                .map(|out| format!(
+                    "[exit {:?} out {:?} err {:?}]",
+                    out.status.code(),
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                ))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        for winner in winners {
+            let id = String::from_utf8_lossy(&winner.stdout).trim().to_string();
+            assert_eq!(id, name, "the winner prints the name it was given");
+            assert!(
+                amx.agent_dir(&id).join("meta.json").exists(),
+                "attempt {attempt}: {id} was printed with exit 0 but its record is gone"
+            );
+        }
+    }
 }
 
 #[test]
