@@ -36,7 +36,7 @@ use crate::store::{Phase, now};
 use crate::tmux::{PaneId, Server, SessionId};
 use crate::{exit, rules};
 use act::{Asking, Composer};
-use paint::Peek;
+use paint::{Notice, Peek};
 use rows::List;
 
 /// How often the agents are read again.
@@ -120,7 +120,7 @@ struct Screen {
     mode: Mode,
     look: Look,
     peek: Option<Peek>,
-    notice: Option<String>,
+    notice: Option<Notice>,
     /// When the agents were last read.
     read: Option<Instant>,
     /// Which frame of the working pulse the rows are on.
@@ -280,7 +280,7 @@ impl Screen {
                             self.peek = Some(peek);
                             self.look = Look::Changes;
                         }
-                        Err(e) => self.notice = Some(format!("{e:#}")),
+                        Err(e) => self.notice = Some(Notice::Failed(format!("{e:#}"))),
                     }
                 }
             }
@@ -365,10 +365,15 @@ impl Screen {
     }
 }
 
-/// What an action had to say, including when it could not be done at all: a
-/// view that closed itself because git was busy would be a poor view.
-fn said(outcome: Result<String>) -> Option<String> {
-    Some(outcome.unwrap_or_else(|e| format!("{e:#}")))
+/// What an action had to say, at the severity the writer knows it earned: what
+/// an action came back with is advice, and what went wrong under it is a
+/// failure. Either way it is said rather than raised, because a view that
+/// closed itself because git was busy would be a poor view.
+fn said(outcome: Result<String>) -> Option<Notice> {
+    Some(match outcome {
+        Ok(said) => Notice::Advice(said),
+        Err(e) => Notice::Failed(format!("{e:#}")),
+    })
 }
 
 /// A closer look at one agent: what it is asking, and the screen it is asking
@@ -428,21 +433,27 @@ impl Here {
 /// this one has a view to hold open. The agent's window is brought forward on
 /// its own server instead, so the view is still in its own window for whoever
 /// comes back to it.
-fn attach(here: Option<&Here>, view: &View) -> Result<Option<String>> {
+///
+/// Nothing it answers with is a failure: an agent that cannot be brought
+/// forward from here is one somebody can still reach, and the answer says how.
+fn attach(here: Option<&Here>, view: &View) -> Result<Option<Notice>> {
     let elsewhere = format!("run `amx attach {}` to reach it", view.id());
     let Some(here) = here else {
-        return Ok(Some(elsewhere));
+        return Ok(Some(Notice::Advice(elsewhere)));
     };
 
     let server = Server::from_socket(view.meta.socket.clone());
     if !server.pane_alive(&view.meta.pane) {
-        return Ok(Some(format!("{} has no pane any more", view.id())));
+        return Ok(Some(Notice::Advice(format!(
+            "{} has no pane any more",
+            view.id()
+        ))));
     }
     if server.pane_field(&view.meta.pane, "#{pid}")? != here.pid {
-        return Ok(Some(format!(
+        return Ok(Some(Notice::Advice(format!(
             "{} is on another tmux. {elsewhere}",
             view.id()
-        )));
+        ))));
     }
 
     server.run(&["select-window", "-t", view.meta.pane.as_str()])?;
@@ -561,6 +572,24 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         (code, screen)
+    }
+
+    #[test]
+    fn glyphs_and_notices_take_their_severity_from_the_writer() {
+        assert!(
+            matches!(
+                said(Ok("started fix-login-a1b".into())),
+                Some(Notice::Advice(_))
+            ),
+            "what an action came back with is advice, whatever it says"
+        );
+        assert!(
+            matches!(
+                said(Err(anyhow::anyhow!("git is busy"))),
+                Some(Notice::Failed(_))
+            ),
+            "and what went wrong is a failure"
+        );
     }
 
     #[test]

@@ -11,7 +11,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::sync::OnceLock;
@@ -38,6 +38,19 @@ const HELP: [(&str, &str); 9] = [
     ("?", "these keys"),
     ("q", "close the view"),
 ];
+
+/// What the view has to say for itself, and how loudly.
+///
+/// Two channels in the one slot at the foot of the screen, a severity apart:
+/// an action that was attempted and failed is louder than a refusal or a piece
+/// of advice. A view that paints "nothing was deleted" the same red as a git
+/// error is teaching people to read neither.
+pub enum Notice {
+    /// It was attempted and it failed.
+    Failed(String),
+    /// Advice, or a refusal that is not a failure.
+    Advice(String),
+}
 
 /// A closer look at one agent.
 pub struct Peek {
@@ -272,8 +285,11 @@ fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect) {
 
 /// The keys, or whatever the view has to say for itself instead.
 fn footer(screen: &Screen) -> Line<'static> {
-    if let Some(said) = &screen.notice {
-        return Line::styled(said.clone(), Style::new().fg(Color::Yellow));
+    if let Some(notice) = &screen.notice {
+        return match notice {
+            Notice::Failed(said) => Line::styled(said.clone(), Style::new().fg(role::ERROR)),
+            Notice::Advice(said) => Line::styled(said.clone(), dim()),
+        };
     }
     Line::styled(
         match &screen.mode {
@@ -483,6 +499,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
+    use ratatui::style::Color;
     use std::path::PathBuf;
 
     fn view(id: &str, phase: Phase, said: Option<&str>, age: u64) -> View {
@@ -787,10 +804,35 @@ mod tests {
     #[test]
     fn view_says_what_it_could_not_do_where_the_keys_are() {
         let mut screen = showing(Vec::new(), None);
-        screen.notice = Some("fix-login-a1b has no pane any more".to_string());
+        screen.notice = Some(Notice::Advice(
+            "fix-login-a1b has no pane any more".to_string(),
+        ));
 
         let painted = painted(&screen, (60, 6));
         assert_eq!(painted[5], "fix-login-a1b has no pane any more");
+    }
+
+    #[test]
+    fn glyphs_and_notices_tell_a_failure_from_advice() {
+        // The first cell of the row the two of them share.
+        let said = |notice| {
+            let mut screen = showing(Vec::new(), None);
+            screen.notice = Some(notice);
+            let cell = cells(&screen, (60, 6))[(0, 5)].clone();
+            (cell.fg, cell.modifier)
+        };
+
+        assert_eq!(
+            said(Notice::Failed("could not stop fix-login-a1b".to_string())),
+            (role::ERROR, Modifier::empty())
+        );
+        assert_eq!(
+            said(Notice::Advice(
+                "fix-login-a1b is done; nothing is listening".to_string()
+            )),
+            (Color::Reset, Modifier::DIM),
+            "a thing that did not happen is not a thing that went wrong"
+        );
     }
 
     #[test]
