@@ -132,6 +132,7 @@ pub enum Command {
 #[derive(Debug, Args)]
 pub struct NewArgs {
     /// What the agent should do.
+    #[arg(value_parser = a_task)]
     pub task: String,
 
     /// Start out of sight, in a hidden session.
@@ -209,6 +210,23 @@ pub struct StopArgs {
     /// What to do with the agent's branch.
     #[arg(long, value_enum)]
     pub branch: Option<Disposition>,
+}
+
+/// A task with something in it.
+///
+/// An empty task is not a small task: the vendor is handed an empty prompt,
+/// and what starts is an agent sitting at its prompt with nothing to do,
+/// holding a pane and a worktree while it does. It is easy to type by
+/// accident — `amx new "$TASK"` with `TASK` unset is one — so it is answered
+/// here, where nothing has been made yet and there is nothing to clean up.
+///
+/// Only wholly empty is refused. What is inside a task is the person's
+/// business, and a task is passed on exactly as it was typed.
+fn a_task(text: &str) -> Result<String, String> {
+    match text.trim().is_empty() {
+        true => Err("an agent needs something to do".to_string()),
+        false => Ok(text.to_string()),
+    }
 }
 
 /// What becomes of a worktree or a branch when its agent stops.
@@ -475,6 +493,29 @@ mod tests {
         ] {
             assert_eq!(code(argv), exit::OK, "{argv:?}");
         }
+    }
+
+    #[test]
+    fn clibatch_a_task_with_nothing_in_it_is_not_a_task() {
+        for argv in [
+            &["amx", "new", ""][..],
+            &["amx", "new", "   "],
+            &["amx", "new", "\t\n"],
+            &["amx", "new", "", "--bg"],
+        ] {
+            assert_eq!(code(argv), exit::USAGE, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn clibatch_a_task_reaches_the_vendor_as_it_was_typed() {
+        // Only wholly empty is refused. What is inside a task is the person's
+        // business, and amx tidying up their prompt for them is not a service.
+        let cli = parse(&["amx", "new", "  fix the login bug\n"]).unwrap();
+        let Some(Command::New(args)) = cli.command else {
+            panic!("expected new");
+        };
+        assert_eq!(args.task, "  fix the login bug\n");
     }
 
     /// clap's own contract check: the derived surface is internally consistent

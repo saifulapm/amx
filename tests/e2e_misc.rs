@@ -134,6 +134,24 @@ fn diff_says_so_when_there_is_no_such_agent() {
 }
 
 #[test]
+fn clibatch_new_refuses_a_task_with_nothing_in_it() {
+    // `amx new "$TASK"` with `TASK` unset is a command line somebody means, so
+    // what it must not do is start an agent that sits there with nothing to
+    // do, holding a pane and a worktree.
+    let amx = Harness::new();
+    let out = amx.amx(&["new", "", "--agent", &amx.mock()]);
+
+    assert_eq!(out.status.code(), Some(64), "a malformed command line");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("something to do"), "{said}");
+    assert!(
+        std::fs::read_dir(amx.state_root())
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound),
+        "and nothing was made: {said}"
+    );
+}
+
+#[test]
 fn events_merges_the_logs_and_keeps_each_agents_own_order() {
     let amx = Harness::new();
     amx.play("fix-login-a1b", "happy-turn");
