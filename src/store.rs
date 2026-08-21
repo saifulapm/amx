@@ -104,6 +104,23 @@ pub enum Source {
     Error,
 }
 
+/// What an agent has stopped to ask, and the answers it offers.
+///
+/// The text is the vendor's own words where a hook carried them, and amx's
+/// reading of the pane where none did. The options are always the pane's: no
+/// hook this vendor fires has ever named them, and the screen is the only
+/// place they are written down.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Question {
+    /// What is being asked.
+    pub text: String,
+    /// The numbered choices, in the order the screen lists them. Empty until
+    /// something has read the screen, and empty on a question that takes words
+    /// rather than a key.
+    pub options: Vec<String>,
+}
+
 /// How the agent was started, and how to reach it again.
 ///
 /// Fields are added, never renamed or removed: a record outlives the version
@@ -140,7 +157,7 @@ pub struct Meta {
 
 /// What the agent is doing, as the last event left it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, from = "Wire", into = "Wire")]
 pub struct State {
     pub state: Phase,
     /// Bumped by each `send`, so `result` can tell this turn's end from the
@@ -152,6 +169,10 @@ pub struct State {
     pub summary: Option<String>,
     /// The question it is waiting on.
     pub question: Option<String>,
+    /// The choices that question offers, in the order the screen lists them.
+    /// They belong to the question above them and go wherever it goes; the
+    /// record has no place for options with no question over them.
+    pub options: Vec<String>,
     /// The answer from the last turn that ended.
     pub result: Option<String>,
     /// Where that answer came from.
@@ -161,6 +182,137 @@ pub struct State {
     /// Epoch seconds of the last event recorded. How fresh this document is,
     /// which decides whether a reader trusts it over the pane.
     pub last_event: u64,
+}
+
+impl State {
+    /// Set what the agent is being asked.
+    ///
+    /// The options go with it. They are the choices drawn under one particular
+    /// question, and under the next question they are somebody else's answers.
+    pub fn asks(&mut self, question: Option<String>) {
+        self.question = question;
+        self.options.clear();
+    }
+
+    /// Whether a screen's reading would tell the record anything it has not
+    /// got. Asked before the writer's lock is taken, because a reader that has
+    /// learned nothing has no business holding it.
+    pub fn learns_from(&self, seen: &Question) -> bool {
+        (self.question.is_none() && !seen.text.is_empty())
+            || (self.options.is_empty() && !seen.options.is_empty())
+    }
+
+    /// Take what a screen said, and overwrite nothing.
+    ///
+    /// A hook is the vendor's own words about its own state; a screen is amx's
+    /// reading of a picture of it. So the screen fills what the hooks left
+    /// empty — the options, which no hook has ever carried, and the text when
+    /// no hook reported one — and never corrects them.
+    pub fn learn(&mut self, seen: &Question) {
+        if self.question.is_none() && !seen.text.is_empty() {
+            self.question = Some(seen.text.clone());
+        }
+        if self.options.is_empty() {
+            self.options.clone_from(&seen.options);
+        }
+    }
+}
+
+/// A state document as it is written down.
+///
+/// It differs from [`State`] in one place, and this is the only place the two
+/// shapes meet: the record keeps a question and the answers it offers under a
+/// single `question` key, because they are one thing to everything that reads
+/// them, while in memory the text is a field of its own, because the text
+/// alone is what most of amx asks for. Options with no question over them are
+/// not written at all, which is what keeps an answered question from leaving
+/// its choices behind.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct Wire {
+    state: Phase,
+    seq: u64,
+    since: u64,
+    summary: Option<String>,
+    question: Option<Asked>,
+    result: Option<String>,
+    source: Option<Source>,
+    exit: Option<i32>,
+    last_event: u64,
+}
+
+/// A question on the record: its words alone, or the whole of it.
+///
+/// Everything amx knows about a question beyond its words is read off the
+/// screen, and the screen is only read once the hooks have gone quiet — so a
+/// question that has only just been asked is its words and nothing else. That
+/// is what amx has always written there, and it still means the same thing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum Asked {
+    Words(String),
+    Whole(Question),
+}
+
+impl From<State> for Wire {
+    fn from(state: State) -> Wire {
+        // Named one by one rather than by `..`: a field added to the record
+        // and left out of the document would be a field that silently does not
+        // survive a restart.
+        let State {
+            state,
+            seq,
+            since,
+            summary,
+            question,
+            options,
+            result,
+            source,
+            exit,
+            last_event,
+        } = state;
+
+        Wire {
+            state,
+            seq,
+            since,
+            summary,
+            question: question.map(|text| {
+                if options.is_empty() {
+                    Asked::Words(text)
+                } else {
+                    Asked::Whole(Question { text, options })
+                }
+            }),
+            result,
+            source,
+            exit,
+            last_event,
+        }
+    }
+}
+
+impl From<Wire> for State {
+    fn from(wire: Wire) -> State {
+        let (question, options) = match wire.question {
+            Some(Asked::Words(text)) => (Some(text), Vec::new()),
+            Some(Asked::Whole(asked)) => (Some(asked.text), asked.options),
+            None => (None, Vec::new()),
+        };
+
+        State {
+            state: wire.state,
+            seq: wire.seq,
+            since: wire.since,
+            summary: wire.summary,
+            question,
+            options,
+            result: wire.result,
+            source: wire.source,
+            exit: wire.exit,
+            last_event: wire.last_event,
+        }
+    }
 }
 
 /// One thing that happened, as it happened.
@@ -350,6 +502,29 @@ impl Writer<'_> {
         after.last_event = at;
 
         write_atomic(&self.agent.dir.join(STATE), &to_json(&after)?)?;
+        Ok(after)
+    }
+
+    /// Write down something read off the pane rather than heard from the
+    /// agent.
+    ///
+    /// `last_event` stays where it was. It says how fresh the *record* is, and
+    /// a reader that has looked at a screen has heard nothing: moving it would
+    /// make the next reader trust this document over the pane it was copied
+    /// from, and an agent that is standing at a question would read as working
+    /// again until it went stale a second time.
+    ///
+    /// A change that changes nothing writes nothing, so a wall of agents being
+    /// redrawn once a second costs one write per question and not one per
+    /// look.
+    pub fn observe(&self, change: impl FnOnce(&mut State)) -> Result<State> {
+        let before = self.state()?;
+        let mut after = before.clone();
+        change(&mut after);
+
+        if after != before {
+            write_atomic(&self.agent.dir.join(STATE), &to_json(&after)?)?;
+        }
         Ok(after)
     }
 
@@ -545,6 +720,129 @@ mod tests {
         assert_eq!(agent.state().unwrap(), still);
     }
 
+    /// The document on disk, as a reader that is not amx would find it.
+    fn written(agent: &Agent) -> serde_json::Value {
+        let text = std::fs::read_to_string(agent.dir().join(STATE)).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn store_writes_a_question_with_the_answers_it_offers() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .update_state(|s| {
+                s.state = Phase::Waiting;
+                s.asks(Some("Do you want to proceed?".to_string()));
+                s.options = vec!["Yes".to_string(), "No".to_string()];
+            })
+            .unwrap();
+
+        let document = written(&agent);
+        assert_eq!(document["question"]["text"], "Do you want to proceed?");
+        assert_eq!(document["question"]["options"][1], "No");
+
+        let read = agent.state().unwrap();
+        assert_eq!(read.question.as_deref(), Some("Do you want to proceed?"));
+        assert_eq!(read.options, ["Yes", "No"]);
+    }
+
+    #[test]
+    fn store_writes_a_question_it_knows_nothing_about_as_its_words() {
+        // Everything amx knows beyond the words comes off the screen, and the
+        // screen is not read until the hooks go quiet. A question that has
+        // only just been asked is its words, and that is how it is written.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .update_state(|s| s.asks(Some("Claude needs your permission".to_string())))
+            .unwrap();
+
+        assert_eq!(written(&agent)["question"], "Claude needs your permission");
+        assert_eq!(
+            agent.state().unwrap().question.as_deref(),
+            Some("Claude needs your permission")
+        );
+    }
+
+    #[test]
+    fn store_leaves_no_options_behind_when_a_question_is_answered() {
+        // `answer` clears the question and nothing else. Options with no
+        // question over them are somebody else's answers, and the document has
+        // no place to put them.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        let writer = agent.writer().unwrap();
+        writer
+            .update_state(|s| {
+                s.asks(Some("Do you want to proceed?".to_string()));
+                s.options = vec!["Yes".to_string(), "No".to_string()];
+            })
+            .unwrap();
+
+        writer.update_state(|s| s.question = None).unwrap();
+        assert_eq!(written(&agent)["question"], serde_json::Value::Null);
+        assert!(agent.state().unwrap().options.is_empty());
+    }
+
+    #[test]
+    fn store_takes_what_a_screen_saw_without_correcting_a_hook() {
+        let hooked = State {
+            question: Some("Claude needs your permission to use Bash".to_string()),
+            ..State::default()
+        };
+        let seen = Question {
+            text: "Do you want to proceed?".to_string(),
+            options: vec!["Yes".to_string(), "No".to_string()],
+        };
+
+        let mut state = hooked.clone();
+        assert!(state.learns_from(&seen), "the options are news");
+        state.learn(&seen);
+        assert_eq!(
+            state.question, hooked.question,
+            "the vendor's own words stand"
+        );
+        assert_eq!(state.options, ["Yes", "No"]);
+        assert!(!state.learns_from(&seen), "and looking again learns nothing");
+
+        // With nothing on the record the screen is all there is.
+        let mut nothing_heard = State::default();
+        nothing_heard.learn(&seen);
+        assert_eq!(
+            nothing_heard.question.as_deref(),
+            Some("Do you want to proceed?")
+        );
+    }
+
+    #[test]
+    fn store_a_reader_that_learned_nothing_writes_nothing() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        let writer = agent.writer().unwrap();
+        let heard = writer.update_state(|s| s.state = Phase::Waiting).unwrap();
+
+        let looked = writer.observe(|s| s.learn(&Question::default())).unwrap();
+        assert_eq!(looked, heard, "including the clock");
+
+        // And what it does learn is written without claiming to have heard it.
+        let seen = Question {
+            text: "Do you want to proceed?".to_string(),
+            options: vec!["Yes".to_string()],
+        };
+        let noted = writer.observe(|s| s.learn(&seen)).unwrap();
+        assert_eq!(noted.question.as_deref(), Some("Do you want to proceed?"));
+        assert_eq!(
+            noted.last_event, heard.last_event,
+            "a screen is not a thing the agent said"
+        );
+        assert_eq!(agent.state().unwrap(), noted);
+    }
+
     #[test]
     fn store_records_a_terminal_state_with_its_exit_code() {
         let root = TempDir::new().unwrap();
@@ -610,6 +908,17 @@ mod tests {
         assert_eq!(state.state, Phase::Working);
         assert_eq!(state.seq, 3);
         assert_eq!(state.question, None);
+
+        // A question written before amx could read the choices under it is a
+        // string, and a string is still a question.
+        std::fs::write(
+            dir.join(STATE),
+            r#"{"state":"waiting","question":"Do you want to proceed?"}"#,
+        )
+        .unwrap();
+        let state = agent.state().unwrap();
+        assert_eq!(state.question.as_deref(), Some("Do you want to proceed?"));
+        assert!(state.options.is_empty());
     }
 
     #[test]
