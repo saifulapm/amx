@@ -207,6 +207,31 @@ impl Profile {
     fn toggle_worktree(&mut self) {
         self.worktree = !self.worktree;
     }
+
+    /// The config a spawn from this view is made under: the file's own answer
+    /// with every dial the header is showing written over it.
+    ///
+    /// A config rather than a set of flags, and that is what settles the
+    /// precedence: `new` reads a flag first and the file second, and the
+    /// tokens a task line is led with are the flags. So the header is what
+    /// this view spawns at — the worktree dial included, whichever way the
+    /// file had it — and a token on the line beats it for the one spawn it
+    /// leads, without either of them having to know about the other.
+    fn launching(&self, config: &Config) -> Config {
+        Config {
+            agent: self.agent.clone(),
+            worktrees: self.worktree,
+            model: turned_to(&self.model),
+            permission: turned_to(&self.permission),
+            ..config.clone()
+        }
+    }
+}
+
+/// A dial as the config states one: the sentinel is the vendor's own
+/// behaviour, which is said by holding nothing rather than by holding a word.
+fn turned_to(value: &str) -> Option<String> {
+    (value != registry::DEFAULT).then(|| value.to_string())
 }
 
 /// Where a dial rests for a vendor: what config asked for if this vendor takes
@@ -549,7 +574,10 @@ impl Screen {
                     return Ok(Doing::Carry);
                 }
 
-                match act::start(root, config, &composer.text, composer.hidden) {
+                // Under the dials the header is showing, which are what this
+                // view says the next agent will be started with.
+                let launching = self.profile.launching(config);
+                match act::start(root, &launching, &composer.text, composer.hidden) {
                     Ok(Started::Yes(said)) => {
                         self.notice = Some(Notice::Advice(said));
                         self.acted();
@@ -903,6 +931,37 @@ mod tests {
         assert_eq!(profile.model, registry::DEFAULT);
         profile.cycle_model();
         assert_eq!(profile.model, registry::DEFAULT, "and nothing to cycle to");
+    }
+
+    #[test]
+    fn header_dials_are_the_config_the_next_spawn_is_made_under() {
+        let config = Config {
+            max_agents: 4,
+            ..Config::default()
+        };
+        let mut profile = Profile::open(&config, None, None);
+
+        let resting = profile.launching(&config);
+        assert_eq!(
+            resting.model, None,
+            "the sentinel is said by holding no value, because there is no \
+             flag that means what the vendor was going to do anyway"
+        );
+        assert_eq!(resting.permission, None);
+        assert!(resting.worktrees);
+        assert_eq!(
+            resting.max_agents, 4,
+            "and the rest of the file is what it was"
+        );
+
+        profile.cycle_model();
+        profile.cycle_permission();
+        profile.toggle_worktree();
+
+        let turned = profile.launching(&config);
+        assert_eq!(turned.model.as_deref(), Some("fable"));
+        assert_eq!(turned.permission.as_deref(), Some("acceptEdits"));
+        assert!(!turned.worktrees, "whichever way the file had it");
     }
 
     #[test]

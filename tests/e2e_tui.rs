@@ -878,6 +878,69 @@ fn the_composer_turns_the_dials_for_the_one_spawn_its_tokens_lead() {
 }
 
 #[test]
+fn header_dials_are_the_argv_the_next_agent_is_started_with() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+
+    press(&amx, &view, "M-m");
+    amx.until("the model dial to turn", || {
+        screen(&amx, &view).contains("claude (fable)").then_some(())
+    });
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "port the importer");
+    press(&amx, &view, "Enter");
+
+    let id = composed(&amx);
+    let command = command_of(&amx, &id);
+    assert!(
+        command.windows(2).any(|pair| pair == ["--model", "fable"]),
+        "what the header says the next agent will be is what it is: {command:?}"
+    );
+
+    // A token on the line is about the one spawn it leads, so it beats the
+    // dial the view is holding rather than turning it.
+    types(&amx, &view, "n");
+    types(&amx, &view, "m:opus fix the login bug");
+    press(&amx, &view, "Enter");
+
+    let next = composed_after(&amx, &id);
+    assert!(
+        command_of(&amx, &next)
+            .windows(2)
+            .any(|pair| pair == ["--model", "opus"]),
+        "{:?}",
+        command_of(&amx, &next)
+    );
+    amx.until("the header to be as it was", || {
+        screen(&amx, &view).contains("claude (fable)").then_some(())
+    });
+}
+
+#[test]
+fn header_worktree_dial_gives_the_next_agent_a_tree_the_file_would_not() {
+    let amx = Harness::new();
+    a_repo_at(amx.home());
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+
+    press(&amx, &view, "M-w");
+    amx.until("the worktree dial to turn", || {
+        screen(&amx, &view).contains("worktree: on").then_some(())
+    });
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "port the importer");
+    press(&amx, &view, "Enter");
+
+    let id = composed(&amx);
+    assert!(
+        amx.meta(&id)["worktree"].is_string(),
+        "the dial is what this view spawns at, whatever the file says: {:?}",
+        amx.meta(&id)
+    );
+}
+
+#[test]
 fn the_composer_keeps_a_line_the_vendor_would_refuse_and_says_what_it_takes() {
     let amx = Harness::new();
     let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
