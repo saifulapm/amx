@@ -1459,6 +1459,74 @@ fn ctrl_x_stops_the_agent_and_then_forgets_it() {
 }
 
 #[test]
+fn acts_ctrl_x_on_a_heading_forgets_the_finished_and_keeps_the_work() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+
+    // One agent that ran in a tree of its own and left work in it nothing has
+    // committed, and one that had no tree at all.
+    let out = amx
+        .amx_command(&[
+            "new",
+            "--name",
+            "keeps-work-a1b",
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            &amx.mock(),
+            "fix the login bug",
+        ])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("finishes"))
+        .output()
+        .expect("running amx new");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let tree = PathBuf::from(
+        amx.meta("keeps-work-a1b")["worktree"]
+            .as_str()
+            .expect("a worktree"),
+    );
+    amx.until_state("keeps-work-a1b", "done");
+    std::fs::write(tree.join("login.rs"), "fn login() {}\n").expect("the work in the tree");
+    finished(&amx, "port-importer-b2c", "done", 120);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("keeps-work-a1b") && drawn.contains("port-importer-b2c")).then_some(())
+    });
+
+    // Up from the row the view opens on is the heading the group is under.
+    press(&amx, &view, "Up");
+    press(&amx, &view, "C-x");
+    amx.until("the question", || {
+        screen(&amx, &view)
+            .contains("forget 2 finished")
+            .then_some(())
+    });
+    assert_eq!(agents(&amx).len(), 2, "and it is only a question");
+
+    press(&amx, &view, "y");
+    let said = amx.until("the sweep", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("forgot 1").then_some(drawn)
+    });
+    assert_eq!(
+        agents(&amx),
+        ["keeps-work-a1b"],
+        "the one holding work nobody else has a copy of is still here"
+    );
+    assert!(tree.exists(), "and so is its tree");
+    assert!(
+        said.contains("kept 1"),
+        "and the sweep says it kept it:\n{said}"
+    );
+}
+
+#[test]
 fn acts_space_takes_the_unread_mark_off_the_row_it_opened() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);

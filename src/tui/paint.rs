@@ -57,7 +57,10 @@ const HELP: [(&str, &str); 19] = [
     ("n", "start an agent · tab starts it out of sight"),
     ("r", "reply: a message, or an answer on the card"),
     ("d", "what it has changed"),
-    ("ctrl+x", "stop it · again to forget it"),
+    (
+        "ctrl+x",
+        "stop it · again to forget it · a heading clears it",
+    ),
     ("ctrl+r", "call it something else"),
     ("ctrl+s", "gather them by state or by project"),
     ("alt+enter", "a newline in the line, without sending it"),
@@ -1192,10 +1195,17 @@ fn footer(screen: &Screen) -> Line<'static> {
     if screen.answering().is_some() {
         return Line::styled(ANSWERS.to_string(), dim());
     }
+    // A question about deleting things is not advice and not a key: it is the
+    // one thing on the screen, in the colour of something waiting on a person.
+    if let Mode::Confirming(sweep) = &screen.mode {
+        return Line::styled(sweep.question(), Style::new().fg(role::WARNING));
+    }
     Line::styled(
         match &screen.mode {
             Mode::List => KEYS.to_string(),
             Mode::Keys => "any key goes back · q quits".to_string(),
+            // A question up is the whole of this row, and is drawn above.
+            Mode::Confirming(_) => KEYS.to_string(),
             Mode::Typing(composer) if composer.narrows() => {
                 "enter narrows it · s: or a: alone clears · esc cancels".to_string()
             }

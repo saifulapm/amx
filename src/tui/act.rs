@@ -16,8 +16,8 @@
 //! permission prompt answers the prompt, and a turn can end while somebody is
 //! still typing.
 
-use anyhow::{Context, Result};
-use std::path::Path;
+use anyhow::{Context, Result, bail};
+use std::path::{Path, PathBuf};
 
 use super::paint::Card;
 use super::rows::Narrow;
@@ -448,31 +448,80 @@ pub fn end(root: &Path, view: &View) -> Result<String> {
     Ok(one_line(&said))
 }
 
+/// What forgetting one agent came to.
+enum Forgotten {
+    /// The record is gone, and the tree with it.
+    Yes,
+    /// Both are still here, because the tree holds work no commit has.
+    Kept(PathBuf),
+}
+
 /// Forget an agent whose command has ended: its record, and the tree it was
 /// given with it.
 ///
 /// A tree holding work no commit has keeps both. Its record is where the
 /// branch and the commit that tree was cut from are named, and a tree nothing
 /// names is work nobody will find again.
-fn forget(root: &Path, view: &View) -> Result<String> {
+fn forgetting(root: &Path, view: &View) -> Result<Forgotten> {
     let agent = Agent::open(root, view.id())?;
 
     if let Some(tree) = &view.meta.worktree
         && tree.exists()
     {
         if worktree::is_dirty(tree).unwrap_or(true) {
-            return Ok(format!(
-                "keeping {}: {} holds work no commit has",
-                view.id(),
-                tree.display()
-            ));
+            return Ok(Forgotten::Kept(tree.clone()));
         }
         let repo = worktree::main_repo(tree).unwrap_or_else(|_| tree.clone());
         worktree::remove(&repo, tree)?;
     }
 
     agent.remove()?;
-    Ok(format!("{} forgotten", view.id()))
+    Ok(Forgotten::Yes)
+}
+
+/// The same, as the line the view puts where its keys are.
+fn forget(root: &Path, view: &View) -> Result<String> {
+    Ok(match forgetting(root, view)? {
+        Forgotten::Yes => format!("{} forgotten", view.id()),
+        Forgotten::Kept(tree) => format!(
+            "keeping {}: {} holds work no commit has",
+            view.id(),
+            tree.display()
+        ),
+    })
+}
+
+/// Forget all of these, and say what became of them.
+///
+/// One at a time and through the door a single ctrl+x uses, so a tree holding
+/// work no commit has keeps its agent here exactly as it does there. That is
+/// the whole safety of a key that clears a group: a sweep may only do what
+/// somebody could have done row by row.
+///
+/// Nothing stops for a record that will not go. Somebody asked for the group
+/// to be cleared, and one agent amx could not deal with is a line at the end
+/// rather than a reason to leave the rest of them standing.
+pub fn forget_all(root: &Path, views: &[&View]) -> Result<String> {
+    let (mut gone, mut kept) = (0, 0);
+    let mut trouble = Vec::new();
+    for view in views {
+        match forgetting(root, view) {
+            Ok(Forgotten::Yes) => gone += 1,
+            Ok(Forgotten::Kept(_)) => kept += 1,
+            Err(e) => trouble.push(format!("{}: {e:#}", view.id())),
+        }
+    }
+
+    let mut said = format!("forgot {gone}");
+    if kept > 0 {
+        said.push_str(&format!(" · kept {kept} holding work no commit has"));
+    }
+    // Raised rather than said, because part of what was asked for did not
+    // happen: the view draws what it could not do louder than what it did.
+    if !trouble.is_empty() {
+        bail!("{said} · {} would not go: {}", trouble.len(), trouble[0]);
+    }
+    Ok(said)
 }
 
 /// What the agent has changed, for the card.

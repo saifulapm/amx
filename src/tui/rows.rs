@@ -372,6 +372,46 @@ impl List {
         matches!(self.items.get(self.cursor), Some(Item::Heading(..)))
     }
 
+    /// What the heading under the cursor stands for, where it is on one.
+    pub fn heading(&self) -> Option<Under> {
+        match self.items.get(self.cursor) {
+            Some(Item::Heading(under, _)) => Some(*under),
+            _ => None,
+        }
+    }
+
+    /// The agents a heading answers for, in the order they are drawn.
+    ///
+    /// Whether or not they are on the screen: a group somebody shut is still
+    /// standing for them and the fold only decides how many rows are drawn, so
+    /// an act on a heading reaches what the heading's own count claims. What a
+    /// narrowing put out of reach is not among them, for the same reason it is
+    /// not in the count.
+    pub fn members(&self, under: Under) -> Vec<&View> {
+        self.ordered()
+            .into_iter()
+            .filter(|&n| self.belongs(n, under))
+            .map(|n| &self.views[n])
+            .collect()
+    }
+
+    /// The reading of one agent by id, for an act decided on one screen and
+    /// carried out on the next.
+    pub fn agent_by_id(&self, id: &str) -> Option<&View> {
+        self.views.iter().find(|view| view.id() == id)
+    }
+
+    /// Whether an agent is drawn under this heading.
+    fn belongs(&self, n: usize, under: Under) -> bool {
+        match under {
+            Under::Group(group) => Group::of(self.views[n].phase()) == group,
+            Under::Project(at) => self
+                .projects
+                .get(at)
+                .is_some_and(|root| *root == self.root_of(n)),
+        }
+    }
+
     /// Put the group the cursor is on away, or bring it back. The heading
     /// stays either way: it is what stands for the agents while they are gone,
     /// and what somebody presses again to have them back.
@@ -585,11 +625,7 @@ impl List {
     fn by_project(&self, order: &[usize]) -> (Vec<PathBuf>, Vec<Item>) {
         let mut roots: Vec<(PathBuf, Vec<usize>)> = Vec::new();
         for &n in order {
-            let root = self
-                .roots
-                .get(self.views[n].id())
-                .cloned()
-                .unwrap_or_else(|| self.views[n].meta.dir.clone());
+            let root = self.root_of(n);
             match roots.iter_mut().find(|(at, _)| at == &root) {
                 Some((_, members)) => members.push(n),
                 None => roots.push((root, vec![n])),
@@ -618,6 +654,15 @@ impl List {
             projects.push(root);
         }
         (projects, items)
+    }
+
+    /// Which project an agent is drawn under: the walk's answer where it has
+    /// one, and where the agent runs where it has not.
+    fn root_of(&self, n: usize) -> PathBuf {
+        self.roots
+            .get(self.views[n].id())
+            .cloned()
+            .unwrap_or_else(|| self.views[n].meta.dir.clone())
     }
 
     /// What a heading stands for, in terms that outlive the next reading.
@@ -1491,6 +1536,64 @@ mod tests {
         list.narrow(vec![Narrow::State(None)]);
         list.show(vec![view("busy-a1b", Phase::Working, 10), gone]);
         assert_eq!(list.live(), 1);
+    }
+
+    #[test]
+    fn acts_a_heading_answers_for_its_agents_whether_or_not_they_are_drawn() {
+        let mut list = listed(
+            (0..5)
+                .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
+                .collect(),
+        );
+        list.up();
+
+        let under = list.heading().expect("the cursor is on the heading");
+        let members = |list: &List, under| -> Vec<String> {
+            list.members(under)
+                .iter()
+                .map(|view| view.id().to_string())
+                .collect()
+        };
+        assert_eq!(
+            members(&list, under).len(),
+            5,
+            "the fold decides how many rows are drawn, not how many there are"
+        );
+
+        list.shut_or_open();
+        assert_eq!(
+            members(&list, under).len(),
+            5,
+            "and a group somebody shut is still standing for them"
+        );
+
+        list.narrow(vec![Narrow::Name(Some("done-4".to_string()))]);
+        assert_eq!(
+            members(&list, under),
+            ["done-4"],
+            "a heading may not answer for agents a narrowing put out of reach"
+        );
+    }
+
+    #[test]
+    fn acts_a_heading_on_the_project_axis_answers_for_the_agents_under_it() {
+        let mut list = over_the_disk(vec![
+            at(view("ask-a1b", Phase::Waiting, 10), "/src/api"),
+            at(view("done-b2c", Phase::Done, 20), "/src/api/cmd/serve"),
+            at(view("busy-c3d", Phase::Working, 30), "/src/web"),
+        ]);
+        list.up();
+
+        let under = list.heading().expect("the cursor is on the heading");
+        assert_eq!(list.title(under), "/src/api");
+        assert_eq!(
+            list.members(under)
+                .iter()
+                .map(|view| view.id())
+                .collect::<Vec<_>>(),
+            ["ask-a1b", "done-b2c"],
+            "a project stands for what runs in it, subdirectory and all"
+        );
     }
 
     #[test]

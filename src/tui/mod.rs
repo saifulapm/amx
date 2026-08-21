@@ -111,6 +111,30 @@ enum Mode {
     Typing(Composer),
     /// The keys themselves, on the screen.
     Keys,
+    /// A question about a group of agents, waiting for the one key that
+    /// answers it.
+    Confirming(Sweep),
+}
+
+/// A group somebody has asked to have cleared, waiting on the answer.
+///
+/// The agents are held by id and settled when the question is asked, not when
+/// it is answered: the wall is read again every second, and forgetting more
+/// than the question counted is the one thing a confirmation is for.
+struct Sweep {
+    under: String,
+    ids: Vec<String>,
+}
+
+impl Sweep {
+    /// The question itself, in the words the answer is given in.
+    fn question(&self) -> String {
+        format!(
+            "forget {} finished under {}? y forgets them · anything else keeps them",
+            self.ids.len(),
+            self.under
+        )
+    }
 }
 
 /// What the card is showing.
@@ -505,14 +529,16 @@ impl Screen {
         // The dials are about the agent that does not exist yet, so they turn
         // wherever somebody might be about to start one: walking the list, and
         // typing the task itself. Not over the keys, where every key is asked
-        // to put the agents back.
-        if !matches!(self.mode, Mode::Keys) && self.turned(key) {
+        // to put the agents back, and not under a question about deleting
+        // things, where the only key that means anything is the answer.
+        if !matches!(self.mode, Mode::Keys | Mode::Confirming(_)) && self.turned(key) {
             return Ok(Doing::Carry);
         }
 
         match self.mode {
             Mode::Typing(_) => self.typed(key, root, config),
             Mode::Keys => Ok(self.reading_the_keys(key)),
+            Mode::Confirming(_) => Ok(self.answered(key, root)),
             Mode::List => self.pressed(key, root, here),
         }
     }
@@ -615,10 +641,19 @@ impl Screen {
                     }
                 }
             }
+            // The same key, read where the cursor is: on a row it is that
+            // agent's ending, and on a heading it is the finished agents under
+            // it, which is the one place a person is looking at a group rather
+            // than at an agent.
             KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(view) = self.list.selected() {
-                    self.notice = said(act::end(root, view));
-                    self.acted();
+                match self.list.heading() {
+                    Some(under) => self.ask_to_sweep(under),
+                    None => {
+                        if let Some(view) = self.list.selected() {
+                            self.notice = said(act::end(root, view));
+                            self.acted();
+                        }
+                    }
                 }
             }
             // The same agents, gathered the other way.
@@ -787,6 +822,74 @@ impl Screen {
 
         self.mode = Mode::Typing(composer);
         Ok(Doing::Carry)
+    }
+
+    /// Ask about clearing the finished agents under a heading.
+    ///
+    /// Only the finished ones, wherever the heading is: an agent that is still
+    /// running is not something a key that clears history may reach, and a
+    /// group with nothing finished under it is told so rather than asked a
+    /// question whose yes would do nothing.
+    fn ask_to_sweep(&mut self, under: rows::Under) {
+        let ids: Vec<String> = self
+            .list
+            .members(under)
+            .into_iter()
+            .filter(|view| view.phase().is_terminal())
+            .map(|view| view.id().to_string())
+            .collect();
+        let under = self.list.title(under);
+
+        if ids.is_empty() {
+            self.notice = Some(Notice::Advice(format!(
+                "nothing under {under} has finished"
+            )));
+            return;
+        }
+        self.mode = Mode::Confirming(Sweep { under, ids });
+    }
+
+    /// The key a sweep is waiting for.
+    ///
+    /// One key does it and every other key keeps them, which is the way round
+    /// a question about deleting things has to be. A chord is not an answer
+    /// either: it is somebody reaching for something else a beat after this
+    /// opened, and what is on the other end of it is a group of records.
+    fn answered(&mut self, key: KeyEvent, root: &Path) -> Doing {
+        let Mode::Confirming(sweep) = std::mem::take(&mut self.mode) else {
+            return Doing::Carry;
+        };
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            self.mode = Mode::Confirming(sweep);
+            return Doing::Carry;
+        }
+
+        if !matches!(key.code, KeyCode::Char('y' | 'Y')) {
+            // Silence after a keystroke that could have deleted things is
+            // worse than the question was: say that nothing happened.
+            self.notice = Some(Notice::Advice(format!(
+                "nothing was forgotten under {}",
+                sweep.under
+            )));
+            return Doing::Carry;
+        }
+
+        // What the question counted, as the list has it now. An agent whose
+        // record has gone in the meantime is not an agent this can forget.
+        let swept = {
+            let views: Vec<&View> = sweep
+                .ids
+                .iter()
+                .filter_map(|id| self.list.agent_by_id(id))
+                .collect();
+            act::forget_all(root, &views)
+        };
+        self.notice = said(swept);
+        self.acted();
+        Doing::Carry
     }
 
     /// A key while the keys themselves are on the screen. Any of them puts the
@@ -1419,6 +1522,68 @@ mod tests {
         assert!(screen.card.is_none(), "with no card over the list");
         let line = screen.banded().expect("a line of its own");
         assert_eq!(line.prompt(), "message to fix-login-b2c");
+    }
+
+    #[test]
+    fn acts_ctrl_x_on_a_heading_asks_before_it_forgets_the_group() {
+        let root = TempDir::new().unwrap();
+        finished(root.path(), "first-a1b", "wrote the parser", 60);
+        finished(root.path(), "second-b2c", "wrote the tests", 120);
+        let left = || crate::store::list(root.path()).unwrap().len();
+
+        // Up from the row the view opens on is the heading over it.
+        let (_, asked) = pressing(root.path(), vec![KeyEvent::from(KeyCode::Up), ctrl('x')]);
+        assert!(asked.contains("forget 2 finished"), "{asked}");
+        assert_eq!(left(), 2, "and the question is all that has happened");
+
+        // Any key that is not the one it asked for keeps them.
+        let (_, kept) = pressing(
+            root.path(),
+            vec![
+                KeyEvent::from(KeyCode::Up),
+                ctrl('x'),
+                KeyEvent::from(KeyCode::Char('n')),
+            ],
+        );
+        assert!(kept.contains("nothing was forgotten"), "{kept}");
+        assert_eq!(left(), 2);
+
+        let (_, swept) = pressing(
+            root.path(),
+            vec![
+                KeyEvent::from(KeyCode::Up),
+                ctrl('x'),
+                KeyEvent::from(KeyCode::Char('y')),
+            ],
+        );
+        assert!(swept.contains("forgot 2"), "{swept}");
+        assert_eq!(left(), 0);
+    }
+
+    #[test]
+    fn acts_ctrl_x_on_a_heading_over_nothing_finished_says_so_and_asks_nothing() {
+        let root = TempDir::new().unwrap();
+        let mut screen = watching(vec![reading(
+            "busy-a1b",
+            Phase::Working,
+            State {
+                state: Phase::Working,
+                ..State::default()
+            },
+        )]);
+        screen.list.up();
+
+        screen
+            .act(ctrl('x'), root.path(), &Config::default(), None)
+            .unwrap();
+        assert!(
+            matches!(screen.mode, Mode::List),
+            "a group with nothing finished under it is not a question"
+        );
+        let Some(Notice::Advice(said)) = &screen.notice else {
+            panic!("no advice: the key did nothing and said nothing")
+        };
+        assert!(said.contains("working"), "{said}");
     }
 
     #[test]
