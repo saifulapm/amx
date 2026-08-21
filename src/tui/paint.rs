@@ -8,6 +8,12 @@
 //!
 //! A row is one line, always: an agent's answer is a paragraph, and a
 //! paragraph in a list is how a list stops being one.
+//!
+//! Two kinds of thing are on the screen at once and they are drawn apart:
+//! what is happening — the rows, the counters — and what the *next* agent will
+//! be started with, which has not happened at all. Everything of the second
+//! kind wears one treatment of its own, so nobody reads a dial as a fact about
+//! the fleet.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -18,7 +24,7 @@ use std::sync::OnceLock;
 
 use super::act::{Asking, Composer};
 use super::rows::{Axis, Group, Item, List, Tally, Under};
-use super::{Mode, Screen};
+use super::{Mode, Profile, Screen};
 use crate::derive::View;
 use crate::store::Phase;
 
@@ -27,7 +33,7 @@ use crate::store::Phase;
 const KEYS: &str = "space peek · enter attach · ctrl+s axis · ? keys · q quit";
 
 /// Every key, for whoever asked what they are.
-const HELP: [(&str, &str); 14] = [
+const HELP: [(&str, &str); 17] = [
     ("↑ ↓", "walk the agents"),
     ("space", "look closer at one"),
     ("enter", "bring its window forward · shut a group"),
@@ -37,6 +43,9 @@ const HELP: [(&str, &str); 14] = [
     ("ctrl+x", "stop it · again to forget it"),
     ("ctrl+s", "gather them by state or by project"),
     ("alt+enter", "a newline in the line, without sending it"),
+    ("alt+m", "which model the next agent is given"),
+    ("alt+w", "whether it gets a worktree of its own"),
+    ("shift+tab", "what it may do without asking"),
     ("s: a:", "narrow by state or name, on the task line"),
     ("m: p: w:", "model, permission and worktree, for one spawn"),
     ("agent:", "which vendor runs it, for one spawn"),
@@ -75,17 +84,24 @@ pub struct Peek {
 pub fn draw(frame: &mut Frame, screen: &Screen) {
     let area = frame.area();
     let helping = matches!(screen.mode, Mode::Keys);
+    let head = header_rows(area.height);
+    let typing = matches!(screen.mode, Mode::Typing(_));
+
+    // Every band that is neither the list nor the closer look: the header, the
+    // keys, and — while somebody is typing — the line and the row under it,
+    // counted at the one row the line never goes below.
+    let chrome = head + 1 + u16::from(typing);
     let panel = match (helping, &screen.peek) {
-        (false, Some(_)) => peek_height(area.height),
+        (false, Some(_)) => peek_height(area.height, chrome),
         _ => 0,
     };
     let composing = match &screen.mode {
-        Mode::Typing(composer) => composer_height(composer, area, panel),
+        Mode::Typing(composer) => composer_height(composer, area, head + 1 + panel),
         _ => 0,
     };
 
     let [top, middle, bottom, line, keys] = Layout::vertical([
-        Constraint::Length(1),
+        Constraint::Length(head),
         Constraint::Min(1),
         Constraint::Length(panel),
         Constraint::Length(composing),
@@ -93,7 +109,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     ])
     .areas(area);
 
-    frame.render_widget(Paragraph::new(header(&screen.list)), top);
+    frame.render_widget(Paragraph::new(header(screen, top)), top);
     match &screen.mode {
         Mode::Keys => help(frame, middle),
         _ => agents(frame, &screen.list, middle, screen.beat),
@@ -110,32 +126,162 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
 }
 
 /// How much of the screen a peek takes: about half, and never so much that
-/// the list it was opened from is gone.
-fn peek_height(total: u16) -> u16 {
-    let room = total.saturating_sub(3);
+/// the list it was opened from is gone — which is what `chrome` is counted
+/// for, because a peek can be open while somebody is typing and the rows it
+/// was opened from would be what paid for the line.
+fn peek_height(total: u16, chrome: u16) -> u16 {
+    let room = total.saturating_sub(chrome + 1);
     (total / 2).clamp(3, 14).min(room)
 }
 
-/// What there is, in one line.
-fn header(list: &List) -> Line<'static> {
-    let mut spans = vec![Span::styled(
-        "amx",
-        Style::new().add_modifier(Modifier::BOLD),
-    )];
+/// Below this the worktree dial says what it is without saying what it will
+/// do: the dial is the thing somebody turns, the path is what it means.
+const NARROW: usize = 90;
+
+/// Below this many rows the header is the launch profile alone. Two rows of
+/// chrome over a screen that short is a third of it, and the list is what the
+/// view is for.
+const SHORT: usize = 10;
+
+/// Fewer columns than this left for a directory and it is not on the row at
+/// all: a path cut to three characters is not a path.
+const SHORTEST_DIR: usize = 8;
+
+/// How many rows the header takes at this height.
+fn header_rows(height: u16) -> u16 {
+    match (height as usize) < SHORT {
+        true => 1,
+        false => 2,
+    }
+}
+
+/// What is above the list: what the next agent will be started with, and what
+/// the fleet is doing now.
+///
+/// Two rows where there is room for two. The build's own version and the
+/// worktree dial share the first, and the launch profile and the counters
+/// share the second — one prospective half and one current half on each, which
+/// is that law made visible. The row that goes on a short screen is the first:
+/// which version this is says nothing about the fleet, and the dial is one
+/// keypress from being read in the row under the composer.
+fn header(screen: &Screen, area: Rect) -> Vec<Line<'static>> {
+    let width = area.width as usize;
+    let mut lines = Vec::new();
+    if area.height >= 2 {
+        lines.push(spread(
+            vec![Span::styled(
+                format!("amx v{}", env!("CARGO_PKG_VERSION")),
+                dim(),
+            )],
+            vec![Span::styled(
+                worktree_dial(screen.profile.worktree, width),
+                prospective(),
+            )],
+            width,
+        ));
+    }
+
+    // The fleet's half is worked out first: it is what there is, and the
+    // profile is what fits beside it.
+    let counters = counters(&screen.list, screen.profile.max);
+    let room = width.saturating_sub(said(&counters) + 1);
+    lines.push(spread(profile(&screen.profile, room), counters, width));
+    lines
+}
+
+/// Two blocks on one row, the left where it starts and the right against the
+/// far edge, with at least one column between them.
+///
+/// The right block is what goes when they will not both fit: two blocks
+/// touching read as one, and half a sentence pushed off the screen reads as a
+/// word that ends where the terminal does. Where the left block has already
+/// given up every column it had, the right one has the row rather than the row
+/// being drawn blank.
+fn spread(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line<'static> {
+    let mut spans = left;
+    match width.checked_sub(said(&spans) + said(&right)) {
+        Some(gap) if gap >= 1 => {
+            spans.push(Span::raw(" ".repeat(gap)));
+            spans.extend(right);
+        }
+        _ if said(&spans) == 0 => return Line::from(right),
+        _ => {}
+    }
+    Line::from(spans)
+}
+
+/// How many columns a block of spans takes.
+fn said(spans: &[Span<'static>]) -> usize {
+    spans.iter().map(|span| span.content.chars().count()).sum()
+}
+
+/// What the next agent will be started with: the vendor, the model it will be
+/// given, and where it will run.
+///
+/// The model is named as it stands, `default` and all — amx does not know
+/// which model claude would pick for itself and will not print a guess at it —
+/// and a vendor whose entry declares no model dial has nothing to put in
+/// parentheses, so none are drawn.
+///
+/// An `agent` is a command, and a command is routinely an absolute path. Left
+/// to the terminal such a row is clipped, which reads as a name that ends
+/// where the screen does; so the directory gives way first, and whatever is
+/// still too long is cut with an ellipsis that says it was cut.
+fn profile(profile: &Profile, room: usize) -> Vec<Span<'static>> {
+    let agent = match profile.model_dial() {
+        Some(_) => format!("{} ({})", profile.agent, profile.model),
+        None => profile.agent.clone(),
+    };
+    let left = room.saturating_sub(agent.chars().count() + SEPARATOR.len());
+    let said = match !profile.dir.is_empty() && left >= SHORTEST_DIR {
+        true => format!("{agent}{SEPARATOR}{}", fit(&profile.dir, left)),
+        false => fit(&agent, room),
+    };
+    vec![Span::styled(said, prospective())]
+}
+
+/// What stands between two things said on one row.
+const SEPARATOR: &str = " · ";
+
+/// What the fleet is: a count per group, in the word the list can be narrowed
+/// by, and the gate the next agent will meet.
+fn counters(list: &List, max: usize) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
     for (group, count) in list.counts() {
-        spans.push(Span::raw(" · "));
+        if !spans.is_empty() {
+            spans.push(Span::styled(SEPARATOR, dim()));
+        }
         spans.push(Span::styled(
-            format!("{count} {}", group.title()),
+            format!("{count} {}", group.state()),
             group_colour(group),
         ));
     }
+    if !spans.is_empty() {
+        spans.push(Span::styled(SEPARATOR, dim()));
+    }
+    // The limit that refuses a spawn, said before it refuses one.
+    spans.push(Span::styled(
+        format!("{}/{max} running", list.live()),
+        dim(),
+    ));
+
     // What the list was narrowed to, in the words it was narrowed with, so
     // somebody who has forgotten why it is short can read why.
     if let Some(narrowing) = list.narrowing() {
-        spans.push(Span::raw(" · "));
-        spans.push(Span::styled(narrowing, dim()));
+        spans.push(Span::styled(format!("{SEPARATOR}{narrowing}"), dim()));
     }
-    Line::from(spans)
+    spans
+}
+
+/// The worktree dial, and what it will do — named rather than implied. Under
+/// [`NARROW`] the consequence goes and the dial stays.
+fn worktree_dial(on: bool, width: usize) -> String {
+    match (on, width < NARROW) {
+        (true, true) => "worktree: on".to_string(),
+        (false, true) => "worktree: off".to_string(),
+        (true, false) => "worktree: on → .amx/worktrees/<id>".to_string(),
+        (false, false) => "worktree: off → runs in the launch dir".to_string(),
+    }
 }
 
 /// How wide each column is, worked out over the whole list so that every row
@@ -430,9 +576,12 @@ fn composer_lines(text: &str, room: usize) -> Vec<String> {
 
 /// How many rows the composer takes on this screen: as many as the line needs,
 /// up to the cap, and never so many that the list it was opened from is gone.
-fn composer_height(composer: &Composer, area: Rect, panel: u16) -> u16 {
-    // The header, the keys, and one row of the list.
-    let room = area.height.saturating_sub(3 + panel) as usize;
+///
+/// `chrome` is every other band already spoken for — the header, the keys, the
+/// closer look — and one row over that is the list's, which the composer may
+/// not have.
+fn composer_height(composer: &Composer, area: Rect, chrome: u16) -> u16 {
+    let room = area.height.saturating_sub(chrome + 1) as usize;
     let cap = COMPOSER_CAP.min(area.height as usize / 3).min(room).max(1);
     composer_lines(&composer.text, composer_room(composer, area.width))
         .len()
@@ -641,12 +790,17 @@ fn icon(phase: Phase, beat: usize) -> &'static str {
     }
 }
 
-/// The colours, by what they mean rather than by what they are. Five of them,
-/// and the values are the vendor's own dark theme measured from the 2.1.237
-/// binary: a view beside claude's should not be a different shade of the same
-/// idea.
+/// The colours, by what they mean rather than by what they are. Five of them
+/// carry the vendor's own dark theme measured from the 2.1.237 binary: a view
+/// beside claude's should not be a different shade of the same idea.
 mod role {
     use ratatui::style::Color;
+
+    /// What the next agent will be started with. The terminal's own cyan
+    /// rather than a value out of the binary: what colour claude paints the
+    /// prospective half of its own header is not something amx has measured,
+    /// and an RGB nobody measured would read as one that was.
+    pub const PROSPECTIVE: Color = Color::Cyan;
 
     /// It went the way it was meant to.
     pub const SUCCESS: Color = Color::Rgb(78, 186, 101);
@@ -704,6 +858,19 @@ fn group_colour(group: Group) -> Style {
 
 fn dim() -> Style {
     Style::new().add_modifier(Modifier::DIM)
+}
+
+/// The one treatment everything prospective wears — the profile, the dials,
+/// the permission the next agent will run under — so the eye tells what the
+/// next spawn will use from what is running now without reading either.
+///
+/// Weight as well as colour: the counters beside it are already coloured by
+/// what they mean, and a terminal with the colour turned off still has to be
+/// able to tell a dial from a count.
+fn prospective() -> Style {
+    Style::new()
+        .fg(role::PROSPECTIVE)
+        .add_modifier(Modifier::BOLD)
 }
 
 #[cfg(test)]
@@ -934,18 +1101,22 @@ mod tests {
             (60, 10),
         );
 
-        assert_eq!(screen[0], "amx · 1 needs input · 1 working");
-        assert_eq!(screen[1], "needs input");
-        assert!(screen[2].starts_with("  ? ask-a1b"), "{:?}", screen[2]);
-        assert!(screen[2].ends_with("1m"), "{:?}", screen[2]);
-        assert_eq!(screen[3], "working");
         assert!(
-            screen[4].starts_with(&format!("  {} fix-login-b2c", pulse(0))),
+            screen[1].ends_with("1 waiting · 1 working · 2/5 running"),
             "{:?}",
-            screen[4]
+            screen[1]
         );
-        assert!(screen[4].contains("Running Bash"), "{:?}", screen[4]);
-        assert!(screen[4].ends_with("3s"), "{:?}", screen[4]);
+        assert_eq!(screen[2], "needs input");
+        assert!(screen[3].starts_with("  ? ask-a1b"), "{:?}", screen[3]);
+        assert!(screen[3].ends_with("1m"), "{:?}", screen[3]);
+        assert_eq!(screen[4], "working");
+        assert!(
+            screen[5].starts_with(&format!("  {} fix-login-b2c", pulse(0))),
+            "{:?}",
+            screen[5]
+        );
+        assert!(screen[5].contains("Running Bash"), "{:?}", screen[5]);
+        assert!(screen[5].ends_with("3s"), "{:?}", screen[5]);
         assert_eq!(screen[9], KEYS, "and the keys, where they can be read");
     }
 
@@ -999,15 +1170,15 @@ mod tests {
             (60, 10),
         );
 
-        assert_eq!(screen[1], "/src/api");
-        assert!(screen[2].contains("ask-a1b"), "{:?}", screen[2]);
+        assert_eq!(screen[2], "/src/api");
+        assert!(screen[3].contains("ask-a1b"), "{:?}", screen[3]);
         assert!(
-            screen[2].contains("waiting"),
+            screen[3].contains("waiting"),
             "the heading is a place, so the row says the state: {:?}",
-            screen[2]
+            screen[3]
         );
-        assert!(screen[3].contains("done"), "{:?}", screen[3]);
-        assert_eq!(screen[4], "/src/web");
+        assert!(screen[4].contains("done"), "{:?}", screen[4]);
+        assert_eq!(screen[5], "/src/web");
 
         // One column, so the states read down the screen rather than wandering
         // with the length of the name above them. Counted in characters: the
@@ -1016,7 +1187,7 @@ mod tests {
             let at = line.find(word).expect("the state on the row");
             line[..at].chars().count()
         };
-        assert_eq!(column(&screen[2], "waiting"), column(&screen[3], "done"));
+        assert_eq!(column(&screen[3], "waiting"), column(&screen[4], "done"));
     }
 
     #[test]
@@ -1047,7 +1218,11 @@ mod tests {
             .narrow(vec![Narrow::State(Some("working".to_string()))]);
 
         let painted = painted(&screen, (60, 8));
-        assert_eq!(painted[0], "amx · 1 working · s:working");
+        assert!(
+            painted[0].ends_with("1 working · 1/5 running · s:working"),
+            "{:?}",
+            painted[0]
+        );
         assert!(painted[2].contains("busy-a1b"), "{:?}", painted[2]);
         assert!(
             !painted.iter().any(|line| line.contains("done-b2c")),
@@ -1185,8 +1360,197 @@ mod tests {
     #[test]
     fn view_says_when_there_is_nothing_to_show() {
         let screen = drawn(Vec::new(), None, (40, 6));
-        assert_eq!(screen[0], "amx");
+        assert!(screen[0].starts_with("claude (default)"), "{:?}", screen[0]);
+        assert!(screen[0].ends_with("0/5 running"), "{:?}", screen[0]);
         assert_eq!(screen[1], "no agents");
+    }
+
+    /// A screen with room for the whole header, at the width the mockup was
+    /// drawn at.
+    const WIDE: (u16, u16) = (100, 12);
+
+    /// The view with a launch profile that says where it is running: the
+    /// directory is read from the disk when a real view opens, and a test says
+    /// what the disk would have answered.
+    fn launching(views: Vec<View>) -> Screen {
+        let mut screen = showing(views, None);
+        screen.profile.dir = "~/code/amx".to_string();
+        screen
+    }
+
+    /// One line of what a view of this size draws.
+    fn screen_line(screen: &Screen, size: (u16, u16), row: usize) -> String {
+        painted(screen, size)[row].clone()
+    }
+
+    #[test]
+    fn header_says_the_version_the_profile_the_fleet_and_the_worktree_dial() {
+        let screen = painted(
+            &launching(vec![
+                view("ask-a1b", Phase::Waiting, None, 30),
+                view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
+            ]),
+            WIDE,
+        );
+
+        assert!(
+            screen[0].starts_with(&format!("amx v{}", env!("CARGO_PKG_VERSION"))),
+            "the build's own version, never a literal: {:?}",
+            screen[0]
+        );
+        assert!(
+            screen[0].ends_with("worktree: on → .amx/worktrees/<id>"),
+            "the dial says what it will do, not merely that it is on: {:?}",
+            screen[0]
+        );
+        assert!(
+            screen[1].starts_with("claude (default) · ~/code/amx"),
+            "{:?}",
+            screen[1]
+        );
+        assert!(
+            screen[1].ends_with("1 waiting · 1 working · 2/5 running"),
+            "what the fleet is, and the gate the next one meets: {:?}",
+            screen[1]
+        );
+        assert_eq!(screen[2], "needs input", "and the list starts under it");
+    }
+
+    #[test]
+    fn header_counts_the_fleet_in_the_words_a_filter_takes() {
+        let mut screen = launching(vec![
+            view("ask-a1b", Phase::Waiting, None, 30),
+            view("done-b2c", Phase::Done, Some("did it"), 60),
+        ]);
+        assert!(
+            screen_line(&screen, WIDE, 1).ends_with("1 waiting · 1 done · 1/5 running"),
+            "the heading over the rows says `needs input`; the counter says \
+             the word the list can be narrowed by: {:?}",
+            screen_line(&screen, WIDE, 1)
+        );
+
+        // A narrowing is still read back where it was typed, so a short list
+        // says why it is short.
+        screen
+            .list
+            .narrow(vec![Narrow::State(Some("waiting".to_string()))]);
+        assert!(
+            screen_line(&screen, WIDE, 1).ends_with("1 waiting · 1/5 running · s:waiting"),
+            "{:?}",
+            screen_line(&screen, WIDE, 1)
+        );
+    }
+
+    #[test]
+    fn header_says_the_gate_the_next_agent_meets_before_it_refuses() {
+        let mut screen = launching(vec![
+            view("busy-a1b", Phase::Working, None, 3),
+            view("busy-b2c", Phase::Working, None, 3),
+            view("busy-c3d", Phase::Working, None, 3),
+            view("done-d4e", Phase::Done, Some("did it"), 60),
+        ]);
+        screen.profile.max = 5;
+        assert!(
+            screen_line(&screen, WIDE, 1).ends_with("3/5 running"),
+            "an agent whose command has ended holds no slot: {:?}",
+            screen_line(&screen, WIDE, 1)
+        );
+    }
+
+    #[test]
+    fn header_says_the_model_rather_than_guessing_the_vendors_own() {
+        let mut screen = launching(Vec::new());
+        assert!(
+            screen_line(&screen, WIDE, 1).starts_with("claude (default) · ~/code/amx"),
+            "the word, not a guess at what claude would have picked: {:?}",
+            screen_line(&screen, WIDE, 1)
+        );
+
+        screen.profile.model = "opus".to_string();
+        assert!(
+            screen_line(&screen, WIDE, 1).starts_with("claude (opus) · ~/code/amx"),
+            "{:?}",
+            screen_line(&screen, WIDE, 1)
+        );
+
+        // An agent the registry never heard of declares no model dial, so
+        // there is nothing to put in the parentheses and none are drawn.
+        screen.profile.agent = "mock-claude".to_string();
+        assert!(
+            screen_line(&screen, WIDE, 1).starts_with("mock-claude · ~/code/amx"),
+            "{:?}",
+            screen_line(&screen, WIDE, 1)
+        );
+    }
+
+    #[test]
+    fn header_sheds_the_path_before_the_dial_and_the_dir_before_the_agent() {
+        // Decided here rather than discovered at the edge of a terminal.
+        let screen = launching(vec![view("busy-a1b", Phase::Working, None, 3)]);
+
+        let narrow = painted(&screen, (NARROW as u16 - 1, 12));
+        assert!(
+            narrow[0].ends_with("worktree: on"),
+            "the dial is what somebody turns; the path is what it means: {:?}",
+            narrow[0]
+        );
+
+        let cramped = painted(&screen, (40, 12));
+        assert!(
+            cramped[1].starts_with("claude (default)"),
+            "the dir is the losable half of the profile: {:?}",
+            cramped[1]
+        );
+        assert!(
+            cramped[1].ends_with("1 working · 1/5 running"),
+            "what the fleet is stays: {:?}",
+            cramped[1]
+        );
+        assert!(
+            !cramped[1].contains("code/amx"),
+            "a path cut to nothing is not a path: {:?}",
+            cramped[1]
+        );
+    }
+
+    #[test]
+    fn header_keeps_the_fleet_on_the_row_that_has_no_room_for_the_profile() {
+        // Every group at once on a narrow terminal: the counters are wider
+        // than the screen on their own, so nothing is left for the profile.
+        // What the fleet is doing is what the row is for, and a row drawn
+        // blank says less than one the terminal cut.
+        let screen = launching(vec![
+            view("ask-a1b", Phase::Waiting, None, 30),
+            view("busy-b2c", Phase::Working, None, 3),
+            view("idle-c3d", Phase::Idle, None, 30),
+            view("done-d4e", Phase::Done, Some("did it"), 60),
+        ]);
+
+        let cramped = painted(&screen, (40, 12));
+        assert!(
+            cramped[1].starts_with("1 waiting · 1 working"),
+            "{:?}",
+            cramped[1]
+        );
+    }
+
+    #[test]
+    fn header_gives_the_row_back_to_the_list_on_a_short_screen() {
+        let screen = launching(vec![view("busy-a1b", Phase::Working, None, 3)]);
+        let short = painted(&screen, (60, SHORT as u16 - 1));
+
+        assert!(
+            short[0].starts_with("claude (default)"),
+            "the line that says what the next agent will be is the one that \
+             stays: {:?}",
+            short[0]
+        );
+        assert!(
+            short[0].ends_with("1 working · 1/5 running"),
+            "{:?}",
+            short[0]
+        );
+        assert_eq!(short[1], "working", "and the list starts a row sooner");
     }
 
     /// Room for the four headings, their four lines, and the bands above and
@@ -1197,7 +1561,7 @@ mod tests {
     fn headings_that_explain_themselves_stand_over_a_fleet_nobody_has_started() {
         let screen = drawn(Vec::new(), None, WALL);
 
-        let mut at = 1;
+        let mut at = 2;
         for group in Group::ALL {
             assert_eq!(screen[at], group.title(), "{screen:?}");
             assert_eq!(screen[at + 1], format!("{GUTTER}{}", group.blurb()));
@@ -1217,7 +1581,7 @@ mod tests {
             None,
             WALL,
         );
-        assert_eq!(one[1], "completed");
+        assert_eq!(one[2], "completed");
         assert!(
             !one.iter().any(|line| line.contains("here to read")),
             "one agent and there is something to read off the rows: {one:?}"
@@ -1229,13 +1593,13 @@ mod tests {
         screen
             .list
             .narrow(vec![Narrow::Name(Some("nobody".to_string()))]);
-        assert_eq!(painted(&screen, WALL)[1], "nothing matches a:nobody");
+        assert_eq!(painted(&screen, WALL)[2], "nothing matches a:nobody");
 
         // On the project axis a heading is a place, and a place nobody is
         // running anything in has nothing to explain.
         let mut screen = showing(Vec::new(), None);
         screen.list.turn();
-        assert_eq!(painted(&screen, WALL)[1], "no agents");
+        assert_eq!(painted(&screen, WALL)[2], "no agents");
     }
 
     #[test]
@@ -1253,11 +1617,13 @@ mod tests {
         );
 
         // Under either floor the pair is dropped whole: half an explanation
-        // reads worse than the one sentence that was there before it.
+        // reads worse than the one sentence that was there before it. One row
+        // short is a screen whose list band is one short of the eight, which
+        // is the header's two rows and the keys' one over that.
         let narrow = drawn(Vec::new(), None, (BLURBS_WIDE as u16 - 1, WALL.1));
-        assert_eq!(narrow[1], "no agents");
-        let short = drawn(Vec::new(), None, (WALL.0, BLURBS_TALL as u16 + 1));
-        assert_eq!(short[1], "no agents");
+        assert_eq!(narrow[2], "no agents");
+        let short = drawn(Vec::new(), None, (WALL.0, BLURBS_TALL as u16 + 2));
+        assert_eq!(short[2], "no agents");
     }
 
     #[test]
@@ -1267,9 +1633,9 @@ mod tests {
             .collect();
         let screen = drawn(views, None, (40, 10));
 
-        assert_eq!(screen[1], "completed");
+        assert_eq!(screen[2], "completed");
         assert_eq!(screen.iter().filter(|l| l.contains("done-")).count(), 3);
-        assert!(screen[5].contains("… 2 more"), "{:?}", screen[5]);
+        assert!(screen[6].contains("… 2 more"), "{:?}", screen[6]);
     }
 
     #[test]
@@ -1490,7 +1856,7 @@ mod tests {
 
         // Tall enough for every key: the overlay is one column, and a screen
         // shorter than the list cuts the end off it.
-        let painted = painted(&screen, (60, 18)).join("\n");
+        let painted = painted(&screen, (60, 22)).join("\n");
         for (key, does) in HELP {
             assert!(painted.contains(key), "{key} is missing:\n{painted}");
             assert!(painted.contains(does), "{does} is missing:\n{painted}");

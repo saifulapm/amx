@@ -279,14 +279,86 @@ fn the_view_gathers_the_agents_under_what_they_need() {
     assert!(drawn.contains("Running Bash"), "{drawn}");
     assert!(drawn.contains("did what it was asked"), "{drawn}");
 
-    // Twice over: the count at the top, and the group the rows sit under.
-    for group in ["needs input", "completed"] {
+    // Twice over, in two vocabularies: the heading says what the group means,
+    // and the counter at the top says the word the list can be narrowed by.
+    for (group, counted) in [("needs input", "waiting"), ("completed", "done")] {
         assert_eq!(
             drawn.matches(group).count(),
-            2,
-            "{group} is counted at the top and named over its rows:\n{drawn}"
+            1,
+            "{group} stands over its rows and nowhere else:\n{drawn}"
+        );
+        assert!(
+            drawn.contains(&format!("1 {counted}")),
+            "and the header counts it as {counted}:\n{drawn}"
         );
     }
+}
+
+#[test]
+fn header_says_what_the_next_agent_will_be_started_with() {
+    let amx = Harness::new();
+    amx.config("agent = \"claude\"\nmax_agents = 3\n");
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let drawn = amx.until("the header", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("worktree:").then_some(drawn)
+    });
+
+    assert!(
+        drawn.contains(&format!("amx v{}", env!("CARGO_PKG_VERSION"))),
+        "the build's own version:\n{drawn}"
+    );
+    assert!(
+        drawn.contains("claude (default) · ~"),
+        "the vendor, the model it will be given, and where it will run:\n{drawn}"
+    );
+    assert!(
+        drawn.contains("1 waiting · 1/3 running"),
+        "what the fleet is, and the gate the next one meets:\n{drawn}"
+    );
+    assert!(
+        drawn.contains("worktree: on"),
+        "and whether the next one is cut a tree of its own:\n{drawn}"
+    );
+}
+
+#[test]
+fn header_dials_turn_from_the_keys_and_leave_the_agents_alone() {
+    let amx = Harness::new();
+    amx.config("agent = \"claude\"\n");
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the header", || {
+        screen(&amx, &view)
+            .contains("claude (default)")
+            .then_some(())
+    });
+
+    press(&amx, &view, "M-m");
+    amx.until("the model dial to turn", || {
+        screen(&amx, &view).contains("claude (fable)").then_some(())
+    });
+
+    press(&amx, &view, "M-w");
+    let drawn = amx.until("the worktree dial to turn", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("worktree: off").then_some(drawn)
+    });
+
+    assert!(
+        drawn.contains("ask-a1b"),
+        "and the agent that was already running is untouched:\n{drawn}"
+    );
+    assert_eq!(
+        amx.state("ask-a1b")["state"],
+        "waiting",
+        "a dial says what the next one will be, and nothing about this one"
+    );
 }
 
 #[test]

@@ -38,7 +38,7 @@ use crate::config::Config;
 use crate::derive::{self, View};
 use crate::store::{Phase, now};
 use crate::tmux::{PaneId, Server, SessionId};
-use crate::{exit, rules};
+use crate::{exit, registry, rules};
 use act::{Asking, Composer, Started};
 use paint::{Notice, Peek};
 use rows::List;
@@ -120,11 +120,122 @@ enum Look {
     Changes,
 }
 
+/// What the next agent will be started with: the vendor, the dials that
+/// vendor declares, where it will run, and the gate it will meet.
+///
+/// All of it prospective. Nothing here says anything about the agents already
+/// running: a dial is about the agent that does not exist yet, so turning one
+/// touches none of the ones that do. The profile starts at the config file
+/// every time the view opens and dies with it — a launcher that drifted from
+/// the file because of what somebody pressed last Tuesday would leave the file
+/// saying one thing and the screen another.
+struct Profile {
+    /// The vendor command a spawn runs, which is a command line rather than a
+    /// program name because that is what the config key holds.
+    agent: String,
+    /// Where each vendor dial stands. [`registry::DEFAULT`] is the vendor's
+    /// own behaviour, which amx says by passing no flag at all.
+    model: String,
+    permission: String,
+    /// Whether the next agent is cut a worktree of its own.
+    worktree: bool,
+    /// Where the next agent will run, as a person writes it.
+    dir: String,
+    /// How many agents may be running before `new` refuses another, so the
+    /// gate is on the screen before it bites.
+    max: usize,
+}
+
+impl Default for Profile {
+    fn default() -> Profile {
+        Profile::open(&Config::default(), None, None)
+    }
+}
+
+impl Profile {
+    /// The profile a view opens at: config's own answer for every dial, and
+    /// the directory the view is being run from.
+    ///
+    /// A dial config asked for that this vendor would not take rests at the
+    /// sentinel instead, which is the second half of the law the config loader
+    /// keeps: no entry, no dial, and no value amx would have to invent.
+    fn open(config: &Config, dir: Option<&Path>, home: Option<&Path>) -> Profile {
+        let entry = registry::entry(&config.agent);
+        Profile {
+            agent: config.agent.clone(),
+            model: effective(entry.and_then(|e| e.model), config.model.as_deref()),
+            permission: effective(
+                entry.and_then(|e| e.permission),
+                config.permission.as_deref(),
+            ),
+            worktree: config.worktrees,
+            dir: dir.map(|dir| rows::shorten(dir, home)).unwrap_or_default(),
+            max: config.max_agents,
+        }
+    }
+
+    /// This vendor's model dial, where it declares one.
+    fn model_dial(&self) -> Option<registry::DialSpec> {
+        registry::entry(&self.agent)?.model
+    }
+
+    /// This vendor's permission dial, under the same rule.
+    fn permission_dial(&self) -> Option<registry::DialSpec> {
+        registry::entry(&self.agent)?.permission
+    }
+
+    /// A dial a vendor does not declare has nothing to offer, so its key does
+    /// nothing rather than inventing a value the vendor would refuse.
+    fn cycle_model(&mut self) {
+        if let Some(next) = self
+            .model_dial()
+            .and_then(|d| next_in(d.cycle, &self.model))
+        {
+            self.model = next;
+        }
+    }
+
+    fn cycle_permission(&mut self) {
+        if let Some(next) = self
+            .permission_dial()
+            .and_then(|d| next_in(d.cycle, &self.permission))
+        {
+            self.permission = next;
+        }
+    }
+
+    fn toggle_worktree(&mut self) {
+        self.worktree = !self.worktree;
+    }
+}
+
+/// Where a dial rests for a vendor: what config asked for if this vendor takes
+/// it, and the sentinel — no flag at all — otherwise.
+fn effective(dial: Option<registry::DialSpec>, configured: Option<&str>) -> String {
+    match (dial, configured) {
+        (Some(spec), Some(value)) if registry::accepts(&spec, value) => value.to_string(),
+        _ => registry::DEFAULT.to_string(),
+    }
+}
+
+/// The next value a cycle offers. A value the cycle never names — a full model
+/// name out of config, say — starts the cycle over rather than ending it: the
+/// cycle is what the key offers, and it always begins at the sentinel.
+fn next_in(cycle: &[&str], now: &str) -> Option<String> {
+    match cycle.iter().position(|value| *value == now) {
+        Some(at) => cycle.get((at + 1) % cycle.len()),
+        None => cycle.first(),
+    }
+    .map(|value| value.to_string())
+}
+
 /// The view as it stands: what was read, where the cursor is, what the keys
 /// are doing, and what the view last had to say for itself.
 #[derive(Default)]
 struct Screen {
     list: List,
+    /// What the next agent will be started with.
+    profile: Profile,
     mode: Mode,
     look: Look,
     peek: Option<Peek>,
@@ -172,7 +283,18 @@ where
     B: Backend,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
-    let mut screen = Screen::default();
+    // What the next agent will be started with is read once, from the config
+    // this run was given and the directory it was run from: neither moves
+    // while somebody is looking at the screen, and a dial they turn is theirs
+    // until they close it.
+    let mut screen = Screen {
+        profile: Profile::open(
+            config,
+            std::env::current_dir().ok().as_deref(),
+            std::env::home_dir().as_deref(),
+        ),
+        ..Screen::default()
+    };
 
     loop {
         if screen.read.is_none_or(|at| at.elapsed() >= REFRESH) {
@@ -246,11 +368,40 @@ impl Screen {
             return Ok(Doing::Close);
         }
 
+        // The dials are about the agent that does not exist yet, so they turn
+        // wherever somebody might be about to start one: walking the list, and
+        // typing the task itself. Not over the keys, where every key is asked
+        // to put the agents back.
+        if !matches!(self.mode, Mode::Keys) && self.turned(key) {
+            return Ok(Doing::Carry);
+        }
+
         match self.mode {
             Mode::Typing(_) => self.typed(key, root, config),
             Mode::Keys => Ok(self.reading_the_keys(key)),
             Mode::List => self.pressed(key, root, here),
         }
+    }
+
+    /// A dial, if this is the key that turns one.
+    ///
+    /// The shape of them is the vendor's: alt with the initial of what it
+    /// turns, and shift+tab for the permission mode, which is the chord
+    /// claude's own screens cycle it with. Each one changes what the *next*
+    /// agent will be started with and nothing about the ones already running.
+    fn turned(&mut self, key: KeyEvent) -> bool {
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        match key.code {
+            KeyCode::Char('m') if alt => self.profile.cycle_model(),
+            KeyCode::Char('w') if alt => self.profile.toggle_worktree(),
+            // Shift+tab is a key of its own where a terminal has one, and tab
+            // with shift held where it does not.
+            KeyCode::BackTab => self.profile.cycle_permission(),
+            KeyCode::Tab if shift => self.profile.cycle_permission(),
+            _ => return false,
+        }
+        true
     }
 
     /// A key on the list.
@@ -600,6 +751,11 @@ mod tests {
         KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL)
     }
 
+    /// A key held down with alt, which is how the dials are turned.
+    fn alt(key: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(key), KeyModifiers::ALT)
+    }
+
     /// The keys of a word, one at a time, the way somebody types it.
     fn word(text: &str) -> Vec<KeyCode> {
         text.chars().map(KeyCode::Char).collect()
@@ -684,6 +840,111 @@ mod tests {
     }
 
     #[test]
+    fn header_dials_start_at_what_the_config_file_asked_for() {
+        let config = Config {
+            model: Some("opus".to_string()),
+            permission: Some("plan".to_string()),
+            worktrees: false,
+            max_agents: 3,
+            ..Config::default()
+        };
+        let profile = Profile::open(
+            &config,
+            Some(Path::new("/home/dev/code/amx")),
+            Some(Path::new("/home/dev")),
+        );
+
+        assert_eq!(profile.model, "opus");
+        assert_eq!(profile.permission, "plan");
+        assert!(!profile.worktree);
+        assert_eq!(profile.max, 3);
+        assert_eq!(
+            profile.dir, "~/code/amx",
+            "where the next one will run, written the way the headings write it"
+        );
+    }
+
+    #[test]
+    fn header_dials_offer_what_the_vendor_declares_and_come_back_round() {
+        let mut profile = Profile::default();
+        assert_eq!(
+            profile.model,
+            registry::DEFAULT,
+            "nothing in config, so the vendor's own choice"
+        );
+
+        for want in ["fable", "opus", "sonnet", registry::DEFAULT] {
+            profile.cycle_model();
+            assert_eq!(profile.model, want, "claude's own cycle, in its own order");
+        }
+
+        profile.cycle_permission();
+        assert_eq!(profile.permission, "acceptEdits");
+
+        assert!(profile.worktree);
+        profile.toggle_worktree();
+        assert!(!profile.worktree);
+    }
+
+    #[test]
+    fn header_dials_a_vendor_amx_never_heard_of_declares_none() {
+        // The config loader clears a dial an unregistered vendor cannot take,
+        // and the profile is the second half of that law: no entry, no dial,
+        // and nothing for a key to turn.
+        let config = Config {
+            agent: "mock-claude".to_string(),
+            model: Some("opus".to_string()),
+            ..Config::default()
+        };
+        let mut profile = Profile::open(&config, None, None);
+
+        assert!(profile.model_dial().is_none());
+        assert!(profile.permission_dial().is_none());
+        assert_eq!(profile.model, registry::DEFAULT);
+        profile.cycle_model();
+        assert_eq!(profile.model, registry::DEFAULT, "and nothing to cycle to");
+    }
+
+    #[test]
+    fn header_dials_turn_under_the_keys_that_say_so() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = Screen::default();
+        let press = |screen: &mut Screen, key| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        press(&mut screen, alt('m'));
+        assert_eq!(screen.profile.model, "fable");
+        press(
+            &mut screen,
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+        );
+        assert_eq!(screen.profile.permission, "acceptEdits");
+        press(&mut screen, alt('w'));
+        assert!(!screen.profile.worktree);
+
+        // And they are live while somebody is typing a task, because that is
+        // the moment before the spawn they are about.
+        screen.mode = Mode::Typing(Composer::new(Asking::Task));
+        press(&mut screen, alt('m'));
+        assert_eq!(screen.profile.model, "opus");
+        press(
+            &mut screen,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
+        );
+        assert_eq!(screen.profile.permission, "auto");
+
+        press(&mut screen, KeyEvent::from(KeyCode::Tab));
+        press(&mut screen, KeyEvent::from(KeyCode::Char('m')));
+        let Mode::Typing(composer) = &screen.mode else {
+            panic!("still typing")
+        };
+        assert_eq!(composer.text, "m", "a letter without the chord is a letter");
+        assert!(composer.hidden, "and tab on its own is still the other key");
+    }
+
+    #[test]
     fn glyphs_and_notices_take_their_severity_from_the_writer() {
         assert!(
             matches!(
@@ -713,15 +974,15 @@ mod tests {
         assert_eq!(code, exit::OK);
         let drawn: Vec<&str> = screen.lines().map(str::trim_end).collect();
         assert_eq!(
-            drawn[1], "/srv/app",
+            drawn[2], "/srv/app",
             "the heading is where the agent is, not what it needs:\n{screen}"
         );
         assert!(
-            drawn[2].contains("done"),
+            drawn[3].contains("done"),
             "and the row carries the state the heading used to say:\n{screen}"
         );
         assert!(
-            drawn[0].contains("1 completed"),
+            drawn[1].contains("1 done"),
             "what there is does not change with the way it is laid out:\n{screen}"
         );
     }

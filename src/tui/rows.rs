@@ -81,6 +81,24 @@ impl Group {
         }
     }
 
+    /// The state that stands for the group where a count of it is being read
+    /// rather than a heading over rows.
+    ///
+    /// Two words for one group, and the second earns its keep: a heading says
+    /// what the group means to somebody scanning the list, and a counter says
+    /// the word `s:` takes for it, so the header teaches the language the list
+    /// is narrowed in by existing. Every one of these is a state an agent can
+    /// actually be in — a counter naming a word nothing matches would send
+    /// somebody to an empty list.
+    pub fn state(self) -> &'static str {
+        match self {
+            Group::NeedsInput => "waiting",
+            Group::Working => "working",
+            Group::Idle => "idle",
+            Group::Completed => "done",
+        }
+    }
+
     /// What lands here, for somebody looking at a fleet nobody has started
     /// yet. A heading over no agents says nothing on its own, and a wall with
     /// nothing on it is the one screen where the groups have to explain
@@ -408,6 +426,20 @@ impl List {
         self.items.is_empty()
     }
 
+    /// How many agents are holding a slot against the spawn gate.
+    ///
+    /// The whole fleet's worth, whatever the list was narrowed to: the gate
+    /// counts agents, and an agent somebody has filtered off the screen is
+    /// still in the way of the next one. Read from the records, which is what
+    /// the view has — the gate itself also asks tmux whether the pane is
+    /// there, and the view is not in that path.
+    pub fn live(&self) -> usize {
+        self.views
+            .iter()
+            .filter(|view| !view.phase().is_terminal())
+            .count()
+    }
+
     pub fn down(&mut self) {
         self.step(1);
     }
@@ -709,7 +741,10 @@ fn holds_a_repository(dir: &Path) -> bool {
 }
 
 /// A path the way a person writes it, with home as `~`.
-fn shorten(path: &Path, home: Option<&Path>) -> String {
+///
+/// Shared with the header, which says where the next agent will run and must
+/// not write a path a different way from the headings under it.
+pub(super) fn shorten(path: &Path, home: Option<&Path>) -> String {
     let under = home
         .filter(|home| !home.as_os_str().is_empty())
         .and_then(|home| path.strip_prefix(home).ok());
@@ -1360,6 +1395,60 @@ mod tests {
             "the group that holds what amx cannot read is the one that has to \
              say so: {}",
             Group::Idle.blurb()
+        );
+    }
+
+    /// Every state there is, so a table over them cannot quietly miss one.
+    const EVERY: [Phase; 8] = [
+        Phase::Starting,
+        Phase::Working,
+        Phase::Waiting,
+        Phase::Idle,
+        Phase::Done,
+        Phase::Failed,
+        Phase::Stopped,
+        Phase::Unknown,
+    ];
+
+    #[test]
+    fn header_counts_a_group_in_a_word_the_list_can_be_narrowed_by() {
+        // The heading over the rows says what the group means; the counter at
+        // the top says the state that stands for it, and every one of those is
+        // a word `s:` takes — so the header teaches the filter language by
+        // existing rather than by documenting itself.
+        for group in Group::ALL {
+            let phase = EVERY
+                .into_iter()
+                .find(|phase| phase.as_str() == group.state())
+                .unwrap_or_else(|| panic!("nothing is ever {}", group.state()));
+            assert_eq!(
+                Group::of(phase),
+                group,
+                "narrowing to {} would empty the group its own counter names",
+                group.state()
+            );
+        }
+    }
+
+    #[test]
+    fn header_counts_the_agents_that_hold_a_slot_against_the_gate() {
+        let mut list = listed(vec![
+            view("busy-a1b", Phase::Working, 10),
+            view("ask-b2c", Phase::Waiting, 20),
+            view("done-c3d", Phase::Done, 30),
+            view("stopped-d4e", Phase::Stopped, 40),
+        ]);
+        assert_eq!(
+            list.live(),
+            2,
+            "an agent whose command has ended holds none"
+        );
+
+        list.narrow(vec![Narrow::State(Some("waiting".to_string()))]);
+        assert_eq!(
+            list.live(),
+            2,
+            "and the gate counts the fleet rather than what is on the screen"
         );
     }
 
