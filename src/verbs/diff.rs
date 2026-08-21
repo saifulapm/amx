@@ -1,4 +1,6 @@
-//! `amx diff` — what an agent has done to its tree, while it is still doing it.
+//! `amx diff` — what an agent has done to its tree, while it is still doing it,
+//! or with `--stat` the shape of it: a file per line and the totals under them,
+//! which is what somebody wants when the question is how far along it is.
 //!
 //! The comparison is against the commit the tree was cut from, recorded when it
 //! was cut. Not against the repository's HEAD, which has moved on since, and not
@@ -17,14 +19,14 @@ use crate::store::Agent;
 use crate::{exit, paths, worktree};
 
 /// Run the verb against the machine.
-pub fn from_env(id: &str) -> Result<i32> {
+pub fn from_env(id: &str, stat: bool) -> Result<i32> {
     let root = paths::state_root()?;
     let mut out = std::io::stdout().lock();
-    run(&root, id, &mut out)
+    run(&root, id, stat, &mut out)
 }
 
 /// The verb, with the state directory named.
-pub fn run(root: &Path, id: &str, out: &mut impl Write) -> Result<i32> {
+pub fn run(root: &Path, id: &str, stat: bool, out: &mut impl Write) -> Result<i32> {
     let meta = Agent::open(root, id)?.meta()?;
 
     let (Some(tree), Some(base)) = (&meta.worktree, &meta.base) else {
@@ -42,7 +44,7 @@ pub fn run(root: &Path, id: &str, out: &mut impl Write) -> Result<i32> {
         }
     }
 
-    worktree::diff(tree, base, out)?;
+    worktree::diff(tree, base, stat, out)?;
     Ok(exit::OK)
 }
 
@@ -79,7 +81,7 @@ mod tests {
 
     fn refused(root: &Path, id: &str) -> String {
         let mut out = Vec::new();
-        format!("{:#}", run(root, id, &mut out).unwrap_err())
+        format!("{:#}", run(root, id, false, &mut out).unwrap_err())
     }
 
     #[test]

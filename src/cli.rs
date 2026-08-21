@@ -86,7 +86,12 @@ pub enum Command {
     Stop(StopArgs),
 
     /// Show the agent's worktree against the commit it started from.
-    Diff { id: String },
+    Diff {
+        id: String,
+        /// Summarise the patch instead of printing it.
+        #[arg(long)]
+        stat: bool,
+    },
 
     /// Restart a stopped agent, continuing its recorded session.
     Resume {

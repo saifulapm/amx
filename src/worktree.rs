@@ -141,20 +141,29 @@ pub fn delete_branch(repo: &Path, branch: &str) -> Result<()> {
 }
 
 /// Write what the agent has done to its tree, against the commit it started
-/// from, while it is still doing it.
+/// from, while it is still doing it. With `stat`, the shape of that work
+/// rather than the work: a file per line and the totals under them.
 ///
 /// The `add -N` is the trick: an agent's first act is usually a *new* file,
 /// and `git diff` alone says nothing about a file git has never heard of.
 /// Recording the intent to add it makes it a diff against nothing, and records
-/// nothing else — the agent's own staged work is left as it is.
-pub fn diff(worktree: &Path, base: &str, out: &mut impl Write) -> Result<()> {
+/// nothing else — the agent's own staged work is left as it is. It is done for
+/// the summary too, since a summary that leaves out the new files is a summary
+/// of the wrong afternoon.
+pub fn diff(worktree: &Path, base: &str, stat: bool, out: &mut impl Write) -> Result<()> {
     git(worktree, &["add", "-N", "."])?;
+
+    let mut args = vec!["diff"];
+    if stat {
+        args.push("--stat");
+    }
+    args.push(base);
 
     // A day's work is a long patch, so it is copied out as git writes it
     // rather than held whole.
     let mut child = Command::new("git")
         .current_dir(worktree)
-        .args(["diff", base])
+        .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -270,9 +279,9 @@ mod tests {
         dir
     }
 
-    fn shown(worktree: &Path, base: &str) -> String {
+    fn shown(worktree: &Path, base: &str, stat: bool) -> String {
         let mut out = Vec::new();
-        diff(worktree, base, &mut out).unwrap();
+        diff(worktree, base, stat, &mut out).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -375,7 +384,7 @@ mod tests {
         std::fs::write(tree.path.join("login.rs"), "fn login() {}\n").unwrap();
         std::fs::write(tree.path.join("README.md"), "after\n").unwrap();
 
-        let diff = shown(&tree.path, &tree.base);
+        let diff = shown(&tree.path, &tree.base, false);
         assert!(diff.contains("+fn login() {}"), "the new file: {diff}");
         assert!(
             diff.contains("-before"),
@@ -393,10 +402,31 @@ mod tests {
         setup(&tree.path, &["add", "login.rs"]);
         setup(&tree.path, &["commit", "-m", "the agent's own commit"]);
 
-        let diff = shown(&tree.path, &tree.base);
+        let diff = shown(&tree.path, &tree.base, false);
         assert!(
             diff.contains("+fn login() {}"),
             "committed work is still work done since the base: {diff}"
+        );
+    }
+
+    #[test]
+    fn clibatch_diff_stat_answers_with_the_shape_of_the_work() {
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+
+        std::fs::write(tree.path.join("login.rs"), "fn login() {}\n").unwrap();
+        std::fs::write(tree.path.join("README.md"), "after\n").unwrap();
+
+        let summary = shown(&tree.path, &tree.base, true);
+        assert!(summary.contains("login.rs"), "the new file: {summary}");
+        assert!(
+            summary.contains("README.md"),
+            "and the changed one: {summary}"
+        );
+        assert!(summary.contains("2 files changed"), "{summary}");
+        assert!(
+            !summary.contains("+fn login() {}"),
+            "a summary is not the patch: {summary}"
         );
     }
 

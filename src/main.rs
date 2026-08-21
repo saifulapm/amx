@@ -69,7 +69,7 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Answer { id, key }) => finish(verbs::answer::from_env(id, key)),
         Some(cli::Command::Result { id, timeout }) => finish(verbs::result::from_env(id, *timeout)),
         Some(cli::Command::Attach { id }) => finish(verbs::attach::from_env(id)),
-        Some(cli::Command::Diff { id }) => finish(verbs::diff::from_env(id)),
+        Some(cli::Command::Diff { id, stat }) => finish(verbs::diff::from_env(id, *stat)),
         Some(cli::Command::Resume { id, all }) => {
             finish(verbs::resume::from_env(config, id.as_deref(), *all))
         }

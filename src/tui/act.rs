@@ -220,8 +220,11 @@ fn forget(root: &Path, view: &View) -> Result<String> {
 /// Taken once, when somebody asks, and held: re-running `git diff` on every
 /// reading would put a repository's whole worth of work behind a clock tick.
 pub fn changes(root: &Path, view: &View) -> Result<Peek> {
+    // The whole patch, not the summary: the closer look is where somebody
+    // reads what was written, and the wall already says how much of it there
+    // is.
     let mut patch = Vec::new();
-    verbs::diff::run(root, view.id(), &mut patch)?;
+    verbs::diff::run(root, view.id(), false, &mut patch)?;
 
     let patch = String::from_utf8_lossy(&patch).into_owned();
     Ok(Peek {

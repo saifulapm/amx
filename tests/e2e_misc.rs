@@ -89,6 +89,37 @@ fn diff_has_nothing_to_show_for_an_agent_that_has_changed_nothing() {
 }
 
 #[test]
+fn clibatch_diff_stat_summarises_the_work_instead_of_printing_it() {
+    // The question `--stat` answers is how far along an agent is, which a
+    // hundred-file patch scrolling past does not.
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let tree = with_a_worktree(&amx, "fix-login-a1b", &repo, "works-without-end");
+
+    std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
+    std::fs::write(tree.join("login.rs"), "fn login() {}\n").expect("the new file");
+
+    let out = amx.amx(&["diff", "fix-login-a1b", "--stat"]);
+    assert!(
+        out.status.success(),
+        "amx diff --stat: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let summary = String::from_utf8_lossy(&out.stdout);
+    assert!(summary.contains("README.md"), "{summary}");
+    assert!(
+        summary.contains("login.rs"),
+        "a file git has never heard of counts too: {summary}"
+    );
+    assert!(summary.contains("2 files changed"), "{summary}");
+    assert!(
+        !summary.contains("+fn login() {}"),
+        "and it is a summary, not the patch: {summary}"
+    );
+}
+
+#[test]
 fn diff_says_so_when_the_agent_works_in_the_directory_as_it_is() {
     let amx = Harness::new();
     let repo = amx.a_repo();
