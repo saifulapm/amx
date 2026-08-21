@@ -112,6 +112,21 @@ fn press(amx: &Harness, view: &str, key: &str) {
     amx.tmux(&["send-keys", "-t", view, key]);
 }
 
+/// Paste text at the view the way a terminal delivers a paste: in one
+/// bracketed piece, with every newline in it left alone.
+fn pastes(amx: &Harness, view: &str, text: &str) {
+    amx.tmux(&["set-buffer", "--", text]);
+    amx.tmux(&["paste-buffer", "-p", "-r", "-t", view]);
+}
+
+/// A task of numbered lines, more of them than any composer will show at once.
+fn twenty_rows() -> String {
+    (1..=20)
+        .map(|n| format!("row-{n:02}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// A view on a terminal that can start agents of its own: the vendor's
 /// stand-in as the agent command, and the scenario it plays.
 fn a_view_that_dispatches(amx: &Harness, scenario: &str) -> String {
@@ -590,6 +605,52 @@ fn the_composer_starts_an_agent_where_the_view_is() {
     amx.until("the agent's own row", || {
         screen(&amx, &view).contains(&id).then_some(())
     });
+}
+
+#[test]
+fn the_composer_takes_a_paste_as_one_edit_and_grows_to_its_cap() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches(&amx, "happy-turn");
+
+    // Pasted at the list, where without bracketing every line of it would be
+    // read as the keys it is made of and the first newline would dispatch.
+    let pasted = format!("{}\n", twenty_rows());
+    pastes(&amx, &view, &pasted);
+
+    let drawn = amx.until("the pasted task", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("row-20").then_some(drawn)
+    });
+    assert!(
+        agents(&amx).is_empty(),
+        "a paste is one edit, its own last newline included:\n{drawn}"
+    );
+
+    // Ten rows, or a third of the terminal where that is less. The paste's own
+    // last newline leaves an empty row at the bottom, where the cursor is, so
+    // the line at the top of the composer is one further back than the count.
+    let height: usize = pane_field(&amx, &view, "#{pane_height}")
+        .parse()
+        .expect("a pane height");
+    let cap = 10.min(height / 3);
+    let top = format!("task ▸ row-{:02}", 22 - cap);
+    assert!(
+        drawn.contains(&top),
+        "the composer stops at {cap} rows and scrolls to {top}:\n{drawn}"
+    );
+    assert!(
+        !drawn.contains("row-01"),
+        "and what scrolled past is off the screen:\n{drawn}"
+    );
+
+    // And the enter afterwards is what dispatches, once, with the whole of it.
+    press(&amx, &view, "Enter");
+    let id = composed(&amx);
+    assert_eq!(
+        amx.meta(&id)["task"].as_str(),
+        Some(pasted.as_str()),
+        "one task, with every line of the paste in it"
+    );
 }
 
 #[test]

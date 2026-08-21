@@ -24,7 +24,11 @@ mod paint;
 mod rows;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
+};
+use crossterm::execute;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use std::path::Path;
@@ -54,6 +58,9 @@ enum Typed {
     /// Nobody typed anything in the time given.
     Nothing,
     Key(KeyEvent),
+    /// Text that arrived in one piece rather than a key at a time, which is a
+    /// paste.
+    Paste(String),
     /// There is nobody at this terminal any more.
     Gone,
 }
@@ -75,6 +82,7 @@ impl Keys for Keyboard {
             Err(_) => Typed::Gone,
             Ok(true) => match event::read() {
                 Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => Typed::Key(key),
+                Ok(Event::Paste(text)) => Typed::Paste(text),
                 Ok(_) => Typed::Nothing,
                 Err(_) => Typed::Gone,
             },
@@ -130,10 +138,24 @@ struct Screen {
 }
 
 /// Open the view on this terminal and hold it until somebody closes it.
+///
+/// The terminal is asked to bracket pastes for as long as the view holds it.
+/// Without that a pasted task arrives as the keys it is made of, and the first
+/// newline in it is an enter: a truncated task dispatched, and the rest of the
+/// lines queued up to dispatch themselves after it. It is the same law amx has
+/// always sent text to an agent under, facing the other way.
 pub fn run(root: &Path, config: &Config) -> Result<i32> {
     let mut terminal = ratatui::try_init().context("taking the terminal")?;
+    // A terminal that declines is one amx cannot tell a paste from typing on,
+    // which is what the composer did before it asked at all.
+    let bracketed = execute!(std::io::stdout(), EnableBracketedPaste).is_ok();
+
     let outcome = watch(root, config, &mut terminal, &mut Keyboard, Here::read());
+
     // Whatever happened, the screen goes back the way it was found.
+    if bracketed {
+        let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+    }
     ratatui::restore();
     outcome
 }
@@ -162,6 +184,7 @@ where
         match keys.next(TICK) {
             Typed::Nothing => {}
             Typed::Gone => return Ok(exit::OK),
+            Typed::Paste(text) => screen.pasted(&text),
             Typed::Key(key) => {
                 if let Doing::Close = screen.act(key, root, config, here.as_ref())? {
                     return Ok(exit::OK);
@@ -304,6 +327,33 @@ impl Screen {
             _ => {}
         }
         Ok(Doing::Carry)
+    }
+
+    /// Text arriving in one piece, which is a paste.
+    ///
+    /// It goes into the line verbatim, every newline in it included, and waits
+    /// there: a paste is one edit, and what dispatches it is the enter pressed
+    /// afterwards. Its own trailing newline is text like any other.
+    ///
+    /// Pasted at the list it opens a task line rather than being read as keys.
+    /// A wall of agents whose keys stop things and forget things is no place to
+    /// replay somebody's clipboard, and a person who pasted a task at the view
+    /// meant it for the one thing here that takes text.
+    fn pasted(&mut self, text: &str) {
+        // Whatever the view had to say, it was about the last thing that
+        // happened, and this is another one.
+        self.notice = None;
+
+        // A terminal that ends its lines the other way is still ending lines.
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        match &mut self.mode {
+            Mode::Typing(composer) => composer.text.push_str(&text),
+            _ => {
+                let mut composer = Composer::new(Asking::Task);
+                composer.text = text;
+                self.mode = Mode::Typing(composer);
+            }
+        }
     }
 
     /// A key while somebody is typing a line.
@@ -515,15 +565,12 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    /// Keys from a script, and then nobody at the terminal at all.
-    struct Script(std::vec::IntoIter<KeyEvent>);
+    /// What arrives from a script, and then nobody at the terminal at all.
+    struct Script(std::vec::IntoIter<Typed>);
 
     impl Keys for Script {
         fn next(&mut self, _: Duration) -> Typed {
-            match self.0.next() {
-                Some(key) => Typed::Key(key),
-                None => Typed::Gone,
-            }
+            self.0.next().unwrap_or(Typed::Gone)
         }
     }
 
@@ -588,12 +635,18 @@ mod tests {
 
     /// The same, for a script with chords in it.
     fn pressing(root: &Path, keys: Vec<KeyEvent>) -> (i32, String) {
+        driving(root, keys.into_iter().map(Typed::Key).collect())
+    }
+
+    /// And the same for a script with anything else in it: a paste is not a
+    /// key, and the view has to be handed one to be shown taking it.
+    fn driving(root: &Path, script: Vec<Typed>) -> (i32, String) {
         let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
         let code = watch(
             root,
             &Config::default(),
             &mut terminal,
-            &mut Script(keys.into_iter()),
+            &mut Script(script.into_iter()),
             None,
         )
         .unwrap();
@@ -735,6 +788,46 @@ mod tests {
         let (code, screen) = held(root.path(), &keys);
         assert_eq!(code, exit::OK, "and the view did not close on any of them");
         assert!(screen.contains("drop the queue and quitq"), "{screen}");
+    }
+
+    #[test]
+    fn composer_takes_a_pasted_task_as_one_edit_and_dispatches_none_of_it() {
+        let root = TempDir::new().unwrap();
+        let (code, screen) = driving(
+            root.path(),
+            vec![Typed::Paste(
+                "port the importer\nand its tests\n".to_string(),
+            )],
+        );
+
+        assert_eq!(code, exit::OK);
+        assert!(screen.contains("task ▸ port the importer"), "{screen}");
+        assert!(
+            screen.contains("       and its tests"),
+            "every line of it is on the line being typed: {screen}"
+        );
+        assert!(
+            crate::store::list(root.path()).unwrap().is_empty(),
+            "and the newlines in it are text, not enters"
+        );
+    }
+
+    #[test]
+    fn composer_adds_a_paste_to_the_line_somebody_was_already_typing() {
+        let root = TempDir::new().unwrap();
+        let mut script = vec![Typed::Key(KeyEvent::from(KeyCode::Char('n')))];
+        script.extend(
+            word("port ")
+                .into_iter()
+                .map(|code| Typed::Key(KeyEvent::from(code))),
+        );
+        // A terminal that ends its lines with a carriage return is ending
+        // lines, and the composer reads them as the newlines they are.
+        script.push(Typed::Paste("the importer\rand its tests".to_string()));
+
+        let (_, screen) = driving(root.path(), script);
+        assert!(screen.contains("task ▸ port the importer"), "{screen}");
+        assert!(screen.contains("       and its tests"), "{screen}");
     }
 
     #[test]
