@@ -169,8 +169,9 @@ fn kind(payload: &Value) -> Option<&str> {
 /// * `Notification` means it has stopped on a question, and carries its words.
 ///   The choices under it are on the pane, which this command does not read;
 ///   a reader fills them in later. Its `notification_type` is the vendor's own
-///   word for what the notice is about, and it is the only thing here that
-///   names a permission prompt for what it is.
+///   word for what the notice is about: it is the only thing here that names a
+///   permission prompt for what it is, and the only thing that tells the
+///   nudge about an idle session apart from a question, which it is not.
 /// * `Stop` ends the turn, and its payload is the freshest place the answer
 ///   ever exists — the transcript is written asynchronously and lags it.
 /// * Anything carrying an `agent_id` is a subagent's, and a subagent's work is
@@ -228,16 +229,25 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             None
         }
 
+        // The vendor nudges about an idle session only when nothing is open on
+        // it: no permission box, no menu, nobody being asked for anything. It
+        // is the turn being over, said a minute late, and the record has often
+        // said so already with the answer on it. Its words are about the
+        // session rather than about anything to answer, so they are not the
+        // question, and whatever amx thought was outstanding is not on that
+        // screen either.
+        "Notification" if payload["notification_type"] == "idle_prompt" => {
+            state.state = Phase::Idle;
+            state.summary = None;
+            state.asks(None);
+            None
+        }
+
         "Notification" => {
             state.state = Phase::Waiting;
             state.asks(payload["message"].as_str().map(str::to_string));
-            match payload["notification_type"].as_str() {
-                Some("permission_prompt") => state.kind = Some(Kind::Permission),
-                // The vendor nudges about an idle session only when nothing is
-                // open on it: no permission box, no menu. Whatever amx thought
-                // was outstanding is not on that screen.
-                Some("idle_prompt") => state.kind = None,
-                _ => {}
+            if payload["notification_type"] == "permission_prompt" {
+                state.kind = Some(Kind::Permission);
             }
             Some(Notice::waiting(&meta.id, state.question.as_deref()))
         }
@@ -484,13 +494,43 @@ mod tests {
     }
 
     #[test]
-    fn hook_a_nudge_about_an_idle_session_is_a_question_of_no_kind() {
+    fn hook_coherence_a_nudge_about_an_idle_session_is_not_a_question() {
         // The vendor only nudges about an idle session when nothing is open on
-        // it: no permission box, no menu. Whatever amx thought was
-        // outstanding, it is not on that screen.
+        // it: no permission box, no menu. Nobody is being asked for anything;
+        // the turn is over. Taking the nudge's own words as the question would
+        // leave "Claude is waiting for your input" on the record as the thing
+        // to answer, and every reader would say the agent was waiting.
         let mut state = State {
             state: Phase::Waiting,
+            summary: Some("Running Bash".to_string()),
+            question: Some("Claude needs your permission to use Bash".to_string()),
+            options: vec!["Yes".to_string(), "No".to_string()],
             kind: Some(Kind::Permission),
+            ..State::default()
+        };
+        let notice = apply(
+            &json!({
+                "hook_event_name": "Notification",
+                "message": "Claude is waiting for your input",
+                "notification_type": "idle_prompt"
+            }),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(state.state, Phase::Idle, "the vendor says nothing is open");
+        assert_eq!(state.question, None);
+        assert!(state.options.is_empty());
+        assert_eq!(state.kind, None);
+        assert_eq!(state.summary, None, "and it is running nothing");
+        assert_eq!(notice, None, "an agent going quiet interrupts nobody");
+    }
+
+    #[test]
+    fn hook_coherence_a_late_nudge_never_overwrites_the_answer() {
+        let mut state = State {
+            state: Phase::Idle,
+            result: Some("I fixed the login bug.".to_string()),
+            source: Some(Source::Payload),
             ..State::default()
         };
         apply(
@@ -502,11 +542,10 @@ mod tests {
             &mut state,
             &mut meta(),
         );
-        assert_eq!(state.kind, None);
-        assert_eq!(
-            state.question.as_deref(),
-            Some("Claude is waiting for your input")
-        );
+        assert_eq!(state.state, Phase::Idle);
+        assert_eq!(state.result.as_deref(), Some("I fixed the login bug."));
+        assert_eq!(state.source, Some(Source::Payload));
+        assert_eq!(state.question, None);
     }
 
     #[test]
@@ -849,6 +888,49 @@ mod tests {
         assert_eq!(state.state, Phase::Idle);
         assert_eq!(state.result.as_deref(), Some("from the transcript"));
         assert_eq!(state.source, Some(Source::Transcript));
+    }
+
+    #[test]
+    fn hook_coherence_the_turn_that_ended_and_then_read_as_waiting() {
+        // Recorded on 2026-08-20 from the agent read-readme-md-and-799, hook
+        // for hook: a turn ended with an answer, the vendor nudged about the
+        // idle session a minute later, and the command exited a minute after
+        // that. What was left on disk said `done` with an answer on it and
+        // "Claude is waiting for your input" as the question, so `ls` called
+        // the agent done while the line beside it said it was waiting.
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(root.path());
+        let answer = "Three that made me stop and re-read:";
+
+        for payload in [
+            json!({
+                "hook_event_name": "SessionStart",
+                "session_id": "34011b84-4d68-4108-a4f9-38a068bb2ae6",
+                "source": "startup"
+            }),
+            json!({ "hook_event_name": "UserPromptSubmit", "prompt": "read README.md" }),
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "Read" }),
+            json!({ "hook_event_name": "Stop", "last_assistant_message": answer }),
+            json!({
+                "hook_event_name": "Notification",
+                "message": "Claude is waiting for your input",
+                "notification_type": "idle_prompt"
+            }),
+        ] {
+            hook(root.path(), agent.id(), &payload.to_string());
+        }
+
+        let state = agent.state().unwrap();
+        assert_eq!(state.state, Phase::Idle);
+        assert_eq!(state.result.as_deref(), Some(answer));
+        assert_eq!(state.source, Some(Source::Payload));
+        assert_eq!(state.question, None, "and nothing is outstanding");
+
+        exited(root.path(), agent.id(), 0, &quiet());
+        let state = agent.state().unwrap();
+        assert_eq!(state.state, Phase::Done);
+        assert_eq!(state.result.as_deref(), Some(answer));
+        assert_eq!(state.question, None);
     }
 
     #[test]
