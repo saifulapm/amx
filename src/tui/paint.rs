@@ -449,6 +449,7 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize, visible: u16)
         .cursor()
         .saturating_sub((visible.max(1) as usize).saturating_sub(1));
     let columns = columns(list);
+    let section = list.section();
 
     let lines: Vec<Line> = list
         .items()
@@ -461,6 +462,7 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize, visible: u16)
                 list,
                 *item,
                 at == list.cursor(),
+                section == Some(at),
                 columns,
                 area.width as usize,
                 beat,
@@ -470,17 +472,20 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize, visible: u16)
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// One line of the list, whatever kind of line it is.
+/// One line of the list, whatever kind of line it is. `section` says this is
+/// the heading of the group holding the cursor, wherever in the group the
+/// cursor stands.
 fn line(
     list: &List,
     item: Item,
     selected: bool,
+    section: bool,
     columns: Columns,
     width: usize,
     beat: usize,
 ) -> Line<'static> {
     let line = match item {
-        Item::Heading(under, tally) => heading(list.title(under), tally, selected),
+        Item::Heading(under, tally) => heading(list.title(under), tally, selected || section),
         Item::Fold(hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
         Item::Agent(_) => match list.agent(item) {
             Some(view) => row(view, selected, columns, width, beat),
@@ -526,12 +531,16 @@ fn barred(line: Line<'static>, width: usize) -> Line<'static> {
 /// no line under it would be the fault this is for, so they come as pairs or
 /// not at all — which is why the room for all eight is asked for before any of
 /// them is drawn, and why they are never cut to fit.
+///
+/// The first heading is bold: the empty screen keeps the section highlight's
+/// "you are here", and here the cursor stands at the top, in the first group.
 fn blurbs() -> Vec<Line<'static>> {
     Group::ALL
         .into_iter()
-        .flat_map(|group| {
+        .enumerate()
+        .flat_map(|(at, group)| {
             [
-                Line::styled(group.title(), heading_style(false)),
+                Line::styled(group.title(), heading_style(at == 0)),
                 Line::styled(format!("{GUTTER}{}", group.blurb()), dim()),
             ]
         })
@@ -545,14 +554,14 @@ fn blurbs() -> Vec<Line<'static>> {
 /// thing standing in for them. The failures are said either way — that is the
 /// one number a heading is worth reading without opening it, because an agent
 /// that failed is the reason somebody came to the screen.
-fn heading(title: String, tally: Tally, selected: bool) -> Line<'static> {
+fn heading(title: String, tally: Tally, marked: bool) -> Line<'static> {
     let counted = match (tally.shut, tally.failures) {
         (false, 0) => String::new(),
         (false, failures) => format!(" · {failures} failed"),
         (true, 0) => format!(" {}", tally.members),
         (true, failures) => format!(" {} · {failures} failed", tally.members),
     };
-    let mut spans = vec![Span::styled(title, heading_style(selected))];
+    let mut spans = vec![Span::styled(title, heading_style(marked))];
     if !counted.is_empty() {
         spans.push(Span::styled(counted, dim()));
     }
@@ -1562,9 +1571,9 @@ fn colour(phase: Phase) -> Style {
 /// A heading's label: dim and bare, whatever it stands for. The rows under it
 /// carry the state's colour, so the label repeating it would say nothing —
 /// and a label with no weight of its own leaves bold free to mark the section
-/// the cursor is in.
-fn heading_style(selected: bool) -> Style {
-    match selected {
+/// holding the cursor, wherever in the section the cursor stands.
+fn heading_style(marked: bool) -> Style {
+    match marked {
         true => Style::new().add_modifier(Modifier::BOLD),
         false => dim(),
     }
@@ -2375,32 +2384,97 @@ mod tests {
     }
 
     #[test]
-    fn headings_are_dim_and_bare_until_the_cursor_gives_one_weight() {
+    fn headings_wear_bold_for_the_section_holding_the_cursor() {
+        // The highlight says where the cursor is, not what it is on: the
+        // heading of the group containing the cursor wears bold while the
+        // cursor sits on any of its rows or on the heading itself, and every
+        // other heading stays dim and bare.
         let mut screen = showing(a_fleet(), None);
 
-        let label = cells(&screen, (60, 10))[(0, 2)].clone();
+        // The view opens on the first agent, under `needs input`.
+        let held = cells(&screen, (60, 10))[(0, 2)].clone();
         assert!(
-            label.modifier.contains(Modifier::DIM),
-            "a heading is dim: {:?}",
-            label.modifier
+            held.modifier.contains(Modifier::BOLD),
+            "the section the cursor is in is bold from the start: {:?}",
+            held.modifier
         );
+        let other = cells(&screen, (60, 10))[(0, 5)].clone();
         assert!(
-            !label.modifier.contains(Modifier::BOLD),
-            "and carries no weight of its own, so the highlight has one to add"
+            other.modifier.contains(Modifier::DIM) && !other.modifier.contains(Modifier::BOLD),
+            "the section it is not in stays dim: {:?}",
+            other.modifier
         );
         assert_eq!(
-            label.fg,
+            other.fg,
             Color::Reset,
             "and bare: the rows under it carry the state's colour"
         );
 
-        // The cursor arriving is what gives a section its weight.
+        // Two steps down: over the `working` heading, onto its row. The
+        // weight moves with the section, on the heading and under it alike.
+        for _ in 0..2 {
+            screen.list.down();
+            let held = cells(&screen, (60, 10))[(0, 5)].clone();
+            assert!(
+                held.modifier.contains(Modifier::BOLD),
+                "the section holding the cursor is the bold one: {:?}",
+                held.modifier
+            );
+            let left = cells(&screen, (60, 10))[(0, 2)].clone();
+            assert!(
+                !left.modifier.contains(Modifier::BOLD),
+                "and the one it left lays the weight back down: {:?}",
+                left.modifier
+            );
+        }
+    }
+
+    #[test]
+    fn a_lone_heading_stays_dim_for_want_of_a_second() {
+        // One heading on the screen is nowhere else to be, so the section
+        // highlight has nothing to say and the heading keeps its dim.
+        let mut screen = showing(
+            vec![
+                view("busy-a1b", Phase::Working, None, 3),
+                view("busy-b2c", Phase::Working, None, 5),
+            ],
+            None,
+        );
+
+        let label = cells(&screen, (60, 8))[(0, 1)].clone();
+        assert!(
+            label.modifier.contains(Modifier::DIM) && !label.modifier.contains(Modifier::BOLD),
+            "a lone heading holds the cursor's section and says nothing: {:?}",
+            label.modifier
+        );
+
+        // The cursor arriving on the line itself is another matter: that is
+        // the selected weight, worn with the bar.
         screen.list.up();
-        let label = cells(&screen, (60, 10))[(0, 2)].clone();
+        let label = cells(&screen, (60, 8))[(0, 1)].clone();
         assert!(
             label.modifier.contains(Modifier::BOLD),
-            "the bold section highlight: {:?}",
+            "{:?}",
             label.modifier
+        );
+    }
+
+    #[test]
+    fn the_first_heading_over_a_fleet_nobody_has_started_wears_the_highlight() {
+        // The empty screen keeps the same "you are here": the cursor stands
+        // at the top, in the first group, and that heading is the bold one.
+        let screen = showing(Vec::new(), None);
+        let first = cells(&screen, WALL)[(0, 2)].clone();
+        assert!(
+            first.modifier.contains(Modifier::BOLD),
+            "{:?}",
+            first.modifier
+        );
+        let second = cells(&screen, WALL)[(0, 4)].clone();
+        assert!(
+            second.modifier.contains(Modifier::DIM) && !second.modifier.contains(Modifier::BOLD),
+            "the rest keep their dim: {:?}",
+            second.modifier
         );
     }
 

@@ -383,6 +383,18 @@ impl List {
         }
     }
 
+    /// The heading of the group holding the cursor — the one the bold section
+    /// highlight marks — where there is a second heading for it to be told
+    /// apart from. A lone heading is the only place the cursor could be, so
+    /// it has nothing to say and nobody is named.
+    pub fn section(&self) -> Option<usize> {
+        let heading = |item: &Item| matches!(item, Item::Heading(..));
+        if self.items.iter().filter(|item| heading(item)).count() < 2 {
+            return None;
+        }
+        self.items.iter().take(self.cursor + 1).rposition(heading)
+    }
+
     /// The agents a heading answers for, in the order they are drawn.
     ///
     /// Whether or not they are on the screen: a group somebody shut is still
