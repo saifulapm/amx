@@ -588,6 +588,7 @@ mod tests {
                 base: None,
                 socket: Socket::Name("amx-not-a-server".to_string()),
                 pane: PaneId::new("%404").unwrap(),
+                bg: false,
                 session: None,
                 transcript: None,
                 created: store::now(),

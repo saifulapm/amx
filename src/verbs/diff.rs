@@ -71,6 +71,7 @@ mod tests {
                 base: worktree.map(|_| "0f1e2d3".to_string()),
                 socket: Socket::Name("amx".to_string()),
                 pane: PaneId::new("%1").unwrap(),
+                bg: false,
                 session: None,
                 transcript: None,
                 created: now(),

@@ -399,6 +399,7 @@ mod tests {
             base: None,
             socket: Socket::Name("amx".to_string()),
             pane: PaneId::new("%7").unwrap(),
+            bg: false,
             session: None,
             transcript: None,
             created: 1,

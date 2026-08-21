@@ -89,6 +89,7 @@ mod tests {
                 base: None,
                 socket,
                 pane,
+                bg: false,
                 session: None,
                 transcript: None,
                 created: 1,

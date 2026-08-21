@@ -215,14 +215,13 @@ fn bring_back(root: &Path, id: &str, env: &BTreeMap<String, String>) -> Result<(
         "_boot".to_string(),
         id.to_string(),
     ];
-    let pane = spawn::place(
-        &server,
-        Placement::Wall,
-        id,
-        &dir,
-        &boot,
-        &spawn::wall_lock(root),
-    )?;
+    // Where it was started is where it comes back: an agent put out of sight
+    // was put there on purpose.
+    let placement = match meta.bg {
+        true => Placement::Background,
+        false => Placement::Wall,
+    };
+    let pane = spawn::place(&server, placement, id, &dir, &boot, &spawn::wall_lock(root))?;
 
     // Still under the writer taken at the top: a hook the new pane fires
     // waits at the lock until the pane is on the record, and update_meta

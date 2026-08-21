@@ -172,6 +172,10 @@ pub struct Meta {
     /// caller happens to be inside.
     pub socket: Socket,
     pub pane: PaneId,
+    /// Started out of sight rather than on the wall — which is where a
+    /// resume puts it back.
+    #[serde(default)]
+    pub bg: bool,
     /// The vendor's own session id, learned from a hook — what `resume` hands
     /// back to the vendor.
     #[serde(default)]
@@ -736,6 +740,7 @@ mod tests {
             base: Some("0f1e2d3".to_string()),
             socket: Socket::Name("amx".to_string()),
             pane: PaneId::new("%7").unwrap(),
+            bg: false,
             session: None,
             transcript: None,
             created: now(),

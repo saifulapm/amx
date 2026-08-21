@@ -260,6 +260,7 @@ fn start(
             base: tree.as_ref().map(|tree| tree.base.clone()),
             socket: server.socket().clone(),
             pane,
+            bg: args.bg,
             session: None,
             transcript: None,
             created: now(),

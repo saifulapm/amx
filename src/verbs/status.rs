@@ -138,6 +138,7 @@ mod tests {
                 base: None,
                 socket: Socket::Name("amx".to_string()),
                 pane: PaneId::new("%1").unwrap(),
+                bg: false,
                 session: None,
                 transcript: None,
                 created: 1,

@@ -223,6 +223,52 @@ fn resume_picks_up_an_agent_whose_command_ran_to_the_end() {
 }
 
 #[test]
+fn resume_puts_a_background_agent_back_in_the_background() {
+    // An agent started out of sight was put there on purpose — it is an
+    // orchestrator's worker — and a resume must not move it onto the wall.
+    let amx = Harness::new();
+    let id = "quiet-fix-a1b";
+    let out = amx
+        .amx_command(&[
+            "new",
+            "--bg",
+            "--name",
+            id,
+            "--dir",
+            &amx.home().to_string_lossy(),
+            "--agent",
+            &amx.mock(),
+            "fix the login bug",
+        ])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("happy-turn"))
+        .output()
+        .expect("running amx new");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    amx.until_state(id, "idle");
+    amx.amx(&["stop", id, "--force"]);
+    assert_eq!(amx.state(id)["state"], "stopped");
+
+    let out = resume(&amx, &[id]);
+    assert!(said(&out).contains(id));
+    let session = amx.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &amx.pane_of(id),
+        "#{session_name}",
+    ]);
+    assert_eq!(
+        session,
+        format!("amx-{id}"),
+        "back where it was started, not on the wall"
+    );
+}
+
+#[test]
 fn resume_all_brings_back_everything_a_dead_server_took() {
     let amx = Harness::new();
     let ids = ["fix-login-a1b", "port-importer-c3d"];

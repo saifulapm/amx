@@ -414,6 +414,7 @@ mod tests {
             base: None,
             socket: crate::tmux::Socket::Name("amx".to_string()),
             pane: crate::tmux::PaneId::new("%7").unwrap(),
+            bg: false,
             session: None,
             transcript: None,
             created: 1,
