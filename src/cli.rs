@@ -570,6 +570,24 @@ mod tests {
     const README: &str = include_str!("../README.md");
     const SKILL: &str = include_str!("../skill/amx/SKILL.md");
 
+    /// Every verb, as `amx --help` lists them, with the flags each one takes.
+    fn listed_verbs() -> Vec<(String, Vec<String>)> {
+        use clap::CommandFactory;
+        Cli::command()
+            .get_subcommands()
+            .filter(|verb| !verb.is_hide_set())
+            .map(|verb| {
+                let flags = verb
+                    .get_arguments()
+                    .filter_map(|arg| arg.get_long())
+                    .filter(|long| *long != "help")
+                    .map(|long| format!("--{long}"))
+                    .collect();
+                (verb.get_name().to_string(), flags)
+            })
+            .collect()
+    }
+
     /// Every verb amx answers to at all, the three it keeps out of help
     /// included.
     fn every_verb() -> Vec<String> {
@@ -578,6 +596,32 @@ mod tests {
             .get_subcommands()
             .map(|verb| verb.get_name().to_string())
             .collect()
+    }
+
+    /// Every key the view binds, read out of the table its `?` overlay is
+    /// drawn from.
+    ///
+    /// That table belongs to the view and is not public to the rest of the
+    /// crate, so it is read as text. What pays for the parser is the length the
+    /// table declares: a table this cannot read comes back the wrong length and
+    /// says so, rather than quietly agreeing with whatever the README claims.
+    fn keys_the_view_binds() -> Vec<&'static str> {
+        let source = include_str!("tui/paint.rs");
+        let (_, table) = source
+            .split_once("const HELP: [(&str, &str); ")
+            .expect("the table the overlay is drawn from");
+        let (count, table) = table.split_once("] = [").expect("how many keys it holds");
+        let (table, _) = table.split_once("\n];").expect("the end of it");
+
+        // Two literals to an entry, the key and then what it does.
+        let written: Vec<&str> = table.split('"').skip(1).step_by(2).collect();
+        let keys: Vec<&str> = written.into_iter().step_by(2).collect();
+        assert_eq!(
+            keys.len(),
+            count.parse::<usize>().expect("a count"),
+            "the keys table is not the shape this reads it in: {keys:?}"
+        );
+        keys
     }
 
     /// The verbs a document puts in a command line, read out of its code
@@ -606,6 +650,44 @@ mod tests {
             }
         }
         named
+    }
+
+    #[test]
+    fn docs_the_readme_names_every_verb_and_the_flags_it_takes() {
+        for (verb, flags) in listed_verbs() {
+            assert!(
+                README.contains(&format!("amx {verb}")),
+                "the README says nothing about `amx {verb}`"
+            );
+            for flag in flags {
+                assert!(
+                    README.contains(&flag),
+                    "the README says nothing about `amx {verb} {flag}`"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn docs_the_readme_names_every_key_the_view_binds() {
+        // A key column may name two keys, and a person looking one of them up
+        // is looking up the one they pressed.
+        for key in keys_the_view_binds().iter().flat_map(|key| key.split(' ')) {
+            assert!(
+                README.contains(&format!("`{key}`")),
+                "the README names no key `{key}`"
+            );
+        }
+    }
+
+    #[test]
+    fn docs_the_readme_names_every_config_key() {
+        for key in crate::config::KNOWN_KEYS {
+            assert!(
+                README.contains(&format!("\n{key} = ")),
+                "the README's config file has no `{key}` in it"
+            );
+        }
     }
 
     #[test]

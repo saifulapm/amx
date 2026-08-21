@@ -34,11 +34,16 @@ cargo install --path .
 amx doctor --fix
 ```
 
-`doctor` checks the four things that have to be true before an agent can run:
-tmux, the agent command, the config file, and the hooks. `--fix` wires amx's
-five hooks into `~/.claude/settings.json`, beside whatever is already there,
-after asking once and backing the file up. `amx uninstall` puts the backed-up
-bytes back and removes amx's records.
+`doctor` checks the six things that have to be true before an agent can run:
+tmux, the agent command, the config file, the hooks, a state directory amx can
+keep records in, and no agent already stopped at a screen the vendor puts in
+front of the work. Every check that fails says what to do about it.
+
+`--fix` does the one repair amx can make safely: wiring amx's five hooks into
+`~/.claude/settings.json`, beside whatever is already there, after asking once
+and backing the file up. `amx uninstall` puts the backed-up bytes back and
+removes amx's records. It refuses while an agent is still running, because
+those records are the only place their answers are kept.
 
 Without the hooks amx falls back to reading panes, which is enough to say what
 an agent is doing but not enough to hand you what it said. Answers come from
@@ -51,6 +56,7 @@ amx new "fix the login bug"            # in a repository: its own worktree
 amx new --no-worktree "run the tests"  # in this directory, as it is
 amx new --bg "watch the log"           # out of sight
 amx new --name importer "port it"      # a name you chose
+amx new --dir /srv/app "tail the log"  # somewhere other than here
 ```
 
 Where the pane goes depends on where you typed it. Inside tmux, agents tile
@@ -62,6 +68,17 @@ nobody is attached to.
 `new` prints the agent's id and nothing else. Everything after this takes that
 id.
 
+Four dials say what is being launched and how it should behave:
+
+```sh
+amx new --agent claude --model opus --permission plan --effort high "port it"
+```
+
+Each falls back to the config, and the config falls back to the vendor: amx
+passes no flag at all for a dial nobody turned. Which dials exist is the
+vendor's answer, so a value claude would refuse is refused here instead, while
+the command is still on your screen.
+
 Anything after `--` is handed to the agent command untouched, and the task is
 added after it, where a prompt goes:
 
@@ -69,34 +86,95 @@ added after it, where a prompt goes:
 amx new "port the importer" -- --model opus --session-id "$uuid"
 ```
 
-## Looking, and answering
+`--model` before the separator turns amx's dial; the same word after it is
+claude's own flag, and amx stands its dial down rather than send the flag
+twice.
 
-```sh
-amx                    # the front door: the room, or the list
-amx ls                 # every agent, one line each
-amx status <id>        # one agent, and which signal that state came from
-amx attach <id>        # hand this terminal to its pane
-amx send <id> "and now the linter"
-amx answer <id> y      # the keys a prompt reads: y, n, 1-9, enter, esc
-amx diff <id>          # its worktree against the commit it was cut from
-amx events --follow    # every agent's log, merged
-```
+## The view
 
 Typing `amx` on its own opens the room. That is amx's own tmux session, with
 the list of agents in one window and the wall the agents tile into beside it.
 Inside tmux it opens the list where you are. Down a pipe it prints the table and
 exits, so `amx | grep waiting` is a reasonable thing to write.
 
+The list answers one question, so it is gathered under the answer: the agents
+stopped on a question come first, then the ones mid-turn, then the ones sitting
+at their prompt, then the ones whose command has ended. A heading is a line like
+the rows under it, the cursor stops on one, and shutting it puts its agents away
+behind a count. Rows nobody has been to read carry a mark down the gutter.
+
+| Key | What it does |
+| --- | ------------ |
+| `↑` `↓` | walk the agents |
+| `space` | the card: what one is asking, and the answer |
+| `enter` `→` | bring its window forward, or shut the group under the cursor |
+| `esc` | put the card away, or leave a line alone |
+| `n` | start an agent, and `tab` starts it out of sight |
+| `r` | reply: a message, or an answer on the card |
+| `d` | what it has changed |
+| `ctrl+x` | stop it, again to forget it, and on a heading clear the finished |
+| `ctrl+r` | call it something else |
+| `ctrl+s` | gather them by state or by project |
+| `alt+enter` | a newline in the line, without sending it |
+| `alt+v` | which vendor the next agent runs |
+| `alt+m` | which model the next agent is given |
+| `alt+w` | whether it gets a worktree of its own |
+| `shift+tab` | what the next agent may do without asking |
+| `?` | every key, over the list |
+| `q` `ctrl+c` | close the view |
+
+Every key answers to the one chord it is written under, so the `alt+q` of
+somebody arranging their windows closes nothing. The four dials are about the
+agent that does not exist yet: they change what the next `n` starts and nothing
+about what is already running, and the header says where they point.
+
+The line a task is typed on reads a few words of its own, at the front of it
+and nowhere else. `s:` and `a:` narrow the list by state and by name rather
+than starting anything: `s:waiting`, or `a:import`. `m:`, `p:`, `w:` and
+`agent:` turn the dials for the one agent that line starts, as in
+`m:opus w:off port the importer`.
+
+## Looking, and answering
+
+```sh
+amx ls                 # every agent, one line each
+amx ls --json          # the same reading, for a program
+amx status <id>        # one agent, and which signal that state came from
+amx status <id> --json
+amx attach <id>        # hand this terminal to its pane
+amx send <id> "and now the linter"
+amx answer <id> y      # the keys a prompt reads: y, n, 1-9, enter, esc
+amx diff <id>          # its worktree against the commit it was cut from
+amx diff <id> --stat   # the shape of it: a file per line, and the totals
+amx events --follow    # every agent's log, merged
+amx events <id> --json # one object per event, payloads whole
+```
+
 `send` refuses while an agent is waiting on a question. Text typed at a
 permission prompt answers the prompt, and that is not something you can take
 back. It hands you the question instead. `answer` is for those, and refuses
 when nothing is pending.
+
+What a question will take depends on what kind it is. A permission prompt and
+the folder-trust screen read one key. A question the vendor asked itself offers
+choices and a field, so it also takes words of your own:
+`amx answer <id> "keep the old importer"`. Anything outside that grammar is
+refused before a byte reaches the pane.
+
+`amx statusline` prints the two numbers a status line has room for, and nothing
+at all when no agent needs saying:
+
+```tmux
+set -g status-right '#(amx statusline)'
+```
 
 ## Ending one
 
 ```sh
 amx stop <id>            # asks what to do with the worktree and the branch
 amx stop <id> --force    # takes the defaults, asks nothing
+amx stop <id> --worktree keep --branch delete
+amx stop <id> --delete   # and forget the record too
 amx resume <id>          # start it again on the conversation it had
 amx resume --all         # everything that was stopped, as after a server death
 ```
@@ -105,14 +183,16 @@ Stopping asks the pane's process group to stop, waits, and only then kills it.
 An agent cut down mid-sentence loses the answer it was writing. The defaults
 lose nothing: the worktree goes, the branch stays, the record stays. A
 worktree with uncommitted work in it is always kept, whatever you answer.
+`--delete` says the record goes; `--force` says every question takes its
+default. They are separate on purpose.
 
 ## Worktrees
 
 In a git repository, `new` gives each agent a worktree of its own at
 `<repo>/.amx/worktrees/<id>` on branch `amx/<id>`, cut from whatever was
-checked out at the time. That commit is recorded, which is what lets `amx
-diff` show the whole of an agent's work, including what it has already
-committed, rather than only what it has not.
+checked out at the time. That commit is recorded, which is what lets `amx diff`
+show the whole of an agent's work, including what it has already committed,
+rather than only what it has not.
 
 `.amx/` is kept out of the repository's status through `.git/info/exclude`, so
 nothing about this shows up in a diff of yours. `--no-worktree` runs the agent
@@ -128,7 +208,7 @@ Four questions, four commands, and the exit code is the answer:
 | `1`  | failed, stopped, or ended without an answer; nothing more is coming |
 | `2`  | blocked: `result` and `send` on an agent that is asking, `answer` with nothing pending, `new` at the agent cap |
 | `3`  | `result --timeout` expired |
-| `64` | the command line was wrong |
+| `64` | the command line was wrong, an answer the question would not take included |
 
 ```sh
 id=$(amx new --bg --no-worktree --dir "$dir" "Read $brief and execute it exactly." \
@@ -148,19 +228,25 @@ esac
 `result` blocks until the turn ends and prints what the agent said, verbatim.
 What you capture is what it wrote, not a rendering of it. It never waits
 through a question. A question usually arrives *during* the wait, and a caller
-that cannot see it cannot answer it. After a `send` it waits for the turn
-after that message, never handing back the previous turn's answer.
+that cannot see it cannot answer it, so the question goes to stdout with its
+choices numbered under it, and the numbers are the ones `amx answer` takes.
+After a `send` it waits for the turn after that message, never handing back the
+previous turn's answer.
+
+A skill teaching that loop, for an agent doing the driving, is bundled at
+`skill/amx/SKILL.md`.
 
 `ls --json` and `status --json` are stable. Fields are added, never renamed or
 removed. Each row carries `id`, `state`, `evidence`, `rule`, `age`, `since`,
-`last_event`, `seq`, `summary`, `question`, `result`, `source`, `exit`, `task`,
-`dir`, `worktree`, `branch`, `base`, `pane`, `socket`, `session` and `created`,
-so one `ls` call answers both "is it still going?" and "when was it last heard
-from?" for every agent at once.
+`last_event`, `seq`, `summary`, `question`, `options`, `result`, `source`,
+`exit`, `kind`, `task`, `dir`, `worktree`, `branch`, `base`, `pane`, `socket`,
+`session` and `created`, so one `ls` call answers both "is it still going?" and
+"when was it last heard from?" for every agent at once.
 
 `state` is one of `starting`, `working`, `waiting`, `idle`, `done`, `failed`,
 `stopped`, `unknown`. `done`, `failed` and `stopped` are endings; every other
-state is an agent still worth waiting on.
+state is an agent still worth waiting on. `kind` says what an outstanding
+question is: `permission`, `question` or `trust`.
 
 ## How amx knows what an agent is doing
 
@@ -181,20 +267,35 @@ date. A reader works it out at the moment you ask, in this order:
 `amx status` says which of these it used. `evidence` in the JSON is the same
 answer for a program.
 
+## Notifications
+
+Two moments are worth interrupting somebody for: an agent that has stopped on a
+question, and one whose command has finished. Both post a desktop notice
+through `notify-send`, or `osascript` on macOS. Nothing is posted about a pane
+its person is already looking at, and a machine with no notifier costs nothing:
+the notice is handed over and never waited for.
+
 ## Configuration
 
-`~/.config/amx/config.toml`, four keys and no more:
+`~/.config/amx/config.toml`, seven keys and no more:
 
 ```toml
 agent = "claude"        # the command a new agent runs
 max_agents = 5          # how many live agents before `new` refuses
 worktrees = true        # give each agent its own worktree in a repository
 notifications = true    # desktop notification when one needs you or finishes
+
+# The dials. A key left out is a flag amx does not pass, which leaves the
+# choice to the vendor.
+model = "opus"
+permission = "plan"
+effort = "high"
 ```
 
 Config is a convenience, never a gate. A file amx cannot read or parse falls
 back to these defaults with a warning, because losing an agent to a stray
-comma is the worse outcome.
+comma is the worse outcome. An unknown key is a warning and the rest of the
+file still applies, and so is a dial the configured agent would not take.
 
 ## What is on disk
 
