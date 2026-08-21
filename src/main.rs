@@ -18,6 +18,8 @@ mod notify;
 #[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod paths;
 #[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
+mod registry;
+#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod rules;
 mod spawn;
 #[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
