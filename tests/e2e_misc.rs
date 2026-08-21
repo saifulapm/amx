@@ -222,6 +222,56 @@ fn events_has_nothing_to_say_about_an_agent_nothing_has_happened_to() {
 }
 
 #[test]
+fn clibatch_events_json_is_the_same_merge_for_a_program_to_read() {
+    let amx = Harness::new();
+    amx.play("fix-login-a1b", "happy-turn");
+    amx.play("port-importer-c3d", "finishes");
+    amx.until_state("fix-login-a1b", "idle");
+    amx.until_state("port-importer-c3d", "done");
+
+    let out = amx.amx(&["events", "--json"]);
+    assert!(
+        out.status.success(),
+        "amx events --json: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed = String::from_utf8_lossy(&out.stdout);
+
+    let read: Vec<serde_json::Value> = printed
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{line}: {e}")))
+        .collect();
+    assert_eq!(
+        read.len(),
+        amx.events("fix-login-a1b").len() + amx.events("port-importer-c3d").len(),
+        "one object per event, and nothing else: {printed}"
+    );
+
+    // Every line says whose it is, which is the whole of what a merged stream
+    // adds to the logs it merged.
+    let whose: Vec<&str> = read
+        .iter()
+        .filter_map(|event| event["id"].as_str())
+        .collect();
+    assert_eq!(whose.len(), read.len(), "{printed}");
+    assert!(whose.contains(&"fix-login-a1b") && whose.contains(&"port-importer-c3d"));
+
+    // And the payload is the vendor's own, not a phrase amx made of it.
+    let stop = read
+        .iter()
+        .find(|event| event["id"] == "fix-login-a1b" && event["kind"] == "Stop")
+        .unwrap_or_else(|| panic!("the turn's end: {printed}"));
+    assert_eq!(
+        stop["payload"]["last_assistant_message"], "the tests pass now",
+        "{printed}"
+    );
+    assert!(
+        stop["payload"]["session_id"].is_string(),
+        "whole: {printed}"
+    );
+}
+
+#[test]
 fn following_prints_events_as_they_arrive() {
     let amx = Harness::new();
     let mut child = amx

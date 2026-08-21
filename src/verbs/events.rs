@@ -8,6 +8,11 @@
 //! the last look. No watcher, no daemon and nothing to leak if the person
 //! reading walks away, which is the same bargain the rest of amx makes: nothing
 //! amx runs stays resident.
+//!
+//! There are two streams, and which one a reader wants depends on who is
+//! reading. The table is drawn for a person: columns, a phrase per event, and
+//! nothing in it that can drive their terminal. `--json` is the same merge for
+//! a program, one object per line, payloads whole.
 
 use anyhow::Result;
 use serde_json::Value;
@@ -28,14 +33,20 @@ const POLL: Duration = Duration::from_secs(1);
 const KIND: usize = 16;
 
 /// Run the verb against the machine.
-pub fn from_env(ids: &[String], follow: bool) -> Result<i32> {
+pub fn from_env(ids: &[String], follow: bool, as_json: bool) -> Result<i32> {
     let root = paths::state_root()?;
     let mut out = std::io::stdout().lock();
-    run(&root, ids, follow, &mut out)
+    run(&root, ids, follow, as_json, &mut out)
 }
 
 /// The verb, with the state directory named.
-pub fn run(root: &Path, ids: &[String], follow: bool, out: &mut impl Write) -> Result<i32> {
+pub fn run(
+    root: &Path,
+    ids: &[String],
+    follow: bool,
+    as_json: bool,
+    out: &mut impl Write,
+) -> Result<i32> {
     // A name that is not an agent's is said now, once. A stream that quietly
     // watches nothing is the worst possible answer to a typed id.
     let mut named = ids.to_vec();
@@ -49,9 +60,13 @@ pub fn run(root: &Path, ids: &[String], follow: bool, out: &mut impl Write) -> R
     loop {
         let batch = tails.appended(root, &named);
         for (id, event) in batch {
+            let printed = match as_json {
+                true => json(&id, &event),
+                false => line(&id, &event, tails.widest),
+            };
             // A reader that walked away — `amx events | head` — ends the
             // stream, and that is nobody's failure to report.
-            if writeln!(out, "{}", line(&id, &event, tails.widest)).is_err() {
+            if writeln!(out, "{printed}").is_err() {
                 return Ok(exit::OK);
             }
         }
@@ -138,6 +153,27 @@ fn grown(path: &Path, read: u64) -> Option<(String, u64)> {
     fresh.truncate(whole);
 
     Some((fresh, read + whole as u64))
+}
+
+/// One event as a program reads it: the line the record holds, with the agent
+/// it came from added, because a merged stream nothing is labelled in cannot
+/// be read at all.
+///
+/// This is a contract. A key may be added here; renaming or dropping one
+/// breaks every script written against it, so the key set is spelled out in
+/// the tests rather than left to be discovered in somebody's `jq` weeks from
+/// now.
+///
+/// The payload goes out whole, which the stream a person reads cannot do. It
+/// is one line and there is nothing in it a terminal acts on for a different
+/// reason than over there: JSON escapes control characters, so the escaping is
+/// the sanitising.
+fn json(id: &str, event: &Event) -> String {
+    let mut value = serde_json::to_value(event).expect("an event is plain data");
+    if let Some(object) = value.as_object_mut() {
+        object.insert("id".to_string(), Value::String(id.to_string()));
+    }
+    value.to_string()
 }
 
 /// One event as a person reads it: when, whose, what, and the one thing worth
@@ -351,6 +387,60 @@ mod tests {
             shown.chars().filter(|c| c.is_control()).count(),
             0,
             "{shown:?}"
+        );
+    }
+
+    #[test]
+    fn clibatch_the_json_line_is_the_record_with_whose_it_is_added() {
+        // The key set is the contract every script reading this stream is
+        // written against: a key may be added, never renamed or dropped.
+        let printed = json(
+            "fix-login-a1b",
+            &Event {
+                at: 1_800_000_061,
+                kind: "Stop".to_string(),
+                payload: json!({ "last_assistant_message": "the tests pass now" }),
+            },
+        );
+
+        let parsed: Value = serde_json::from_str(&printed).expect("a line of JSON");
+        let object = parsed.as_object().expect("an object");
+        let keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["at", "id", "kind", "payload"]);
+        assert_eq!(object["id"], "fix-login-a1b");
+        assert_eq!(object["at"], 1_800_000_061u64);
+        assert_eq!(object["kind"], "Stop");
+        assert_eq!(
+            object["payload"]["last_assistant_message"],
+            "the tests pass now"
+        );
+    }
+
+    #[test]
+    fn clibatch_the_json_line_hands_over_a_payload_whole() {
+        // The stream a person reads takes the first line of a phrase and
+        // strips it; this one is read by programs, and a payload cut down is a
+        // payload that lied. It is one line and inert for a different reason:
+        // JSON escapes the control characters a terminal acts on.
+        let printed = json(
+            "fix-login-a1b",
+            &Event {
+                at: 1,
+                kind: "Stop".to_string(),
+                payload: json!({ "last_assistant_message": "done\u{1b}[2J\nand more" }),
+            },
+        );
+
+        assert_eq!(printed.lines().count(), 1, "{printed:?}");
+        assert_eq!(
+            printed.chars().filter(|c| c.is_control()).count(),
+            0,
+            "{printed:?}"
+        );
+        let parsed: Value = serde_json::from_str(&printed).expect("a line of JSON");
+        assert_eq!(
+            parsed["payload"]["last_assistant_message"], "done\u{1b}[2J\nand more",
+            "and it reads back as what the vendor said"
         );
     }
 

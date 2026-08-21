@@ -104,6 +104,9 @@ pub enum Command {
         /// Keep printing as events arrive.
         #[arg(long, short)]
         follow: bool,
+        /// Print one JSON object per event instead of the table.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Check tmux, the agent command, the config and the hook wiring.

@@ -73,7 +73,9 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Resume { id, all }) => {
             finish(verbs::resume::from_env(config, id.as_deref(), *all))
         }
-        Some(cli::Command::Events { ids, follow }) => finish(verbs::events::from_env(ids, *follow)),
+        Some(cli::Command::Events { ids, follow, json }) => {
+            finish(verbs::events::from_env(ids, *follow, *json))
+        }
         Some(cli::Command::Boot { id }) => finish(spawn::boot_from_env(id)),
         Some(cli::Command::Stop(args)) => finish(verbs::stop::from_env(args)),
         Some(cli::Command::Doctor { fix }) => finish(verbs::doctor::from_env(config, *fix)),
