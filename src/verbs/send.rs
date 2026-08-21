@@ -1,7 +1,7 @@
 //! `amx send` — put a message in front of a running agent.
 //!
 //! The message goes into the pane as a bracketed paste and is submitted with
-//! Enter, so the agent reads it the way it reads a person typing. Two things
+//! Enter, so the agent reads it the way it reads a person typing. Three things
 //! around that are the whole verb:
 //!
 //! * **It refuses while the agent is waiting.** Text typed at a permission
@@ -9,6 +9,10 @@
 //!   something a caller can take back. The question and the choices under it
 //!   go to stdout, where the answer would have been, and the exit code says
 //!   blocked.
+//! * **It refuses a message that ends its own paste.** The brackets around the
+//!   text are what make it text; a message carrying a copy of the closing one
+//!   is typing at the agent from the middle of itself. See
+//!   [`ends_its_own_paste`].
 //! * **It records itself before it types.** A `result` in another shell must
 //!   not hand back the last turn's answer as this send's, so the send is on the
 //!   record — the event log and the sequence number — before a byte reaches the
@@ -23,7 +27,7 @@
 //! sentences, and a caller reading amx's stderr should not find three ways of
 //! saying that an agent has ended.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -101,6 +105,14 @@ pub fn run(
 /// before this message. The view acts through this too: what is shared is the
 /// order, which is the part that must not be got wrong twice.
 pub fn deliver(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Result<()> {
+    if ends_its_own_paste(text) {
+        bail!(
+            "that message carries the end of a bracketed paste; \
+             what follows it would be typed at `{}` rather than pasted into it",
+            agent.id()
+        );
+    }
+
     let writer = agent.writer()?;
     writer.append(&Event::new(SEND, serde_json::json!({ "text": text })))?;
     writer.update_state(|state| state.seq += 1)?;
@@ -108,6 +120,26 @@ pub fn deliver(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Res
 
     server.paste(pane, text)?;
     server.send_keys(pane, &["Enter"])
+}
+
+/// Whether the message carries the brackets of the paste it travels in.
+///
+/// tmux writes `ESC [ 200 ~` before the text and `ESC [ 201 ~` after it, and
+/// it does not look at the text in between. A message carrying the closing
+/// pair ends its own paste early: the rest of it arrives at the vendor as
+/// keystrokes, where a newline submits, an arrow moves a menu's cursor and a
+/// line beginning with a slash is a command. That is a message writing itself
+/// a second turn, and there is no escape for it — a paste is bytes, so the
+/// only answer is to refuse.
+///
+/// The opening pair goes with it. Nothing amx has any business sending carries
+/// either, and a message that is trying to open a paste of its own is a
+/// message worth stopping on the same sentence.
+fn ends_its_own_paste(text: &str) -> bool {
+    // `ESC [` and the one character an 8-bit terminal takes in its place.
+    ["\u{1b}[", "\u{9b}"]
+        .iter()
+        .any(|csi| text.contains(&format!("{csi}200~")) || text.contains(&format!("{csi}201~")))
 }
 
 /// Wait for the vendor to say it took the message.
@@ -267,6 +299,50 @@ mod tests {
                 age: 3,
             },
         }
+    }
+
+    #[test]
+    fn hardening_a_message_may_not_end_its_own_paste() {
+        assert!(!ends_its_own_paste(
+            "fix the login bug\nand the tests with it"
+        ));
+        assert!(!ends_its_own_paste(
+            "the escape \u{1b}[2J on its own is text"
+        ));
+
+        // What follows the terminator is not pasted, it is typed.
+        assert!(ends_its_own_paste("done\u{1b}[201~/exit\r"));
+        assert!(
+            ends_its_own_paste("done\u{9b}201~/exit\r"),
+            "including the one character an 8-bit terminal takes for ESC ["
+        );
+        assert!(
+            ends_its_own_paste("\u{1b}[200~ another paste inside this one"),
+            "and the end amx did not write is as bad as the start"
+        );
+    }
+
+    #[test]
+    fn hardening_a_message_amx_refuses_never_reaches_the_record() {
+        // The record is written before the text is typed, so a refusal that
+        // came afterwards would leave a send on the log that never happened
+        // and a sequence number `result` reads as this turn's.
+        let root = tempfile::TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &asking(None, &[], None).meta).unwrap();
+        let server = Server::from_socket(Socket::Name("amx-no-such-server".to_string()));
+
+        let refused = deliver(
+            &agent,
+            &server,
+            &PaneId::new("%1").unwrap(),
+            "harmless\u{1b}[201~\u{1b}[B\r",
+        )
+        .unwrap_err();
+
+        let said = format!("{refused:#}");
+        assert!(said.contains("paste"), "{said}");
+        assert_eq!(agent.state().unwrap().seq, 0, "no send is counted");
+        assert!(agent.events().unwrap().is_empty(), "and none is logged");
     }
 
     #[test]
