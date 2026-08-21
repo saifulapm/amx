@@ -10,12 +10,14 @@
 //! holds an exclusive `flock` for as long as it lives, so two hooks firing at
 //! once cannot lose each other's work or split a line in half.
 //!
-//! **Readers never lock.** `ls`, `status` and the view read these files while
-//! agents are running, and waiting on a lock to draw a list would be a poor
-//! trade. They see whole documents anyway: a document is written to a
-//! neighbouring temporary file and renamed over its target, and a rename is
+//! **Readers never lock to read.** `ls`, `status` and the view read these
+//! files while agents are running, and waiting on a lock to draw a list would
+//! be a poor trade. They see whole documents anyway: a document is written to
+//! a neighbouring temporary file and renamed over its target, and a rename is
 //! atomic. A reader gets the old document or the new one, never a half of
-//! either.
+//! either. A reader that finds a question on a pane does take the lock, to put
+//! it where the next reader will find it — see [`Writer::observe`] — but only
+//! on the look that finds one.
 //!
 //! A crash can therefore lose the last write, since the rename is not followed
 //! by an fsync. That is the trade the hook path is worth: state on disk is a
@@ -808,7 +810,10 @@ mod tests {
             "the vendor's own words stand"
         );
         assert_eq!(state.options, ["Yes", "No"]);
-        assert!(!state.learns_from(&seen), "and looking again learns nothing");
+        assert!(
+            !state.learns_from(&seen),
+            "and looking again learns nothing"
+        );
 
         // With nothing on the record the screen is all there is.
         let mut nothing_heard = State::default();
