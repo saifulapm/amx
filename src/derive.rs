@@ -14,13 +14,19 @@
 //! 5. **Neither.** The screen is claimed by nothing, so the answer is
 //!    `unknown` — with how long it has been since anything was heard, because
 //!    "I can't tell" is only useful with that beside it.
+//!
+//! A reader concludes and forgets, with one exception. When the screen it read
+//! was a screen asking a question, the question and the choices under it go on
+//! the record: they are the one thing on a pane that somebody has to act on
+//! rather than merely read, and the pane is the only place the choices are
+//! ever written. Nothing a hook reported is corrected by them.
 
 use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
 
 use crate::rules::{Claim, Ruleset};
-use crate::store::{Agent, Meta, Phase, Source, State};
+use crate::store::{Agent, Meta, Phase, Question, Source, State};
 use crate::tmux::Server;
 
 /// How long the vendor's own events are taken at their word.
@@ -98,6 +104,7 @@ impl View {
             "seq": self.state.seq,
             "summary": self.state.summary,
             "question": self.state.question,
+            "options": self.state.options,
             "result": self.state.result,
             "source": self.state.source.map(source_name),
             "exit": self.state.exit,
@@ -123,79 +130,107 @@ fn source_name(source: Source) -> &'static str {
     }
 }
 
+/// What a reader made of an agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reading {
+    pub verdict: Verdict,
+    /// What the screen says the agent is asking, when the screen is what
+    /// answered. Only ever the screen's: a question a hook reported is on the
+    /// record already, and the screen is where the choices under it are.
+    pub asking: Option<Question>,
+}
+
 /// Work out what an agent is doing.
 ///
 /// `alive` is whether its pane is still there, and `capture` is asked for the
 /// screen only when it is going to be read — a fresh record needs no tmux call
 /// at all, which is what keeps `ls` cheap with a wall full of agents.
-pub fn decide(
+pub fn read(
     state: &State,
     alive: bool,
     capture: impl FnOnce() -> Option<String>,
     rules: &Ruleset,
     now: u64,
     looks: usize,
-) -> Verdict {
+) -> Reading {
     let age = now.saturating_sub(state.last_event.max(state.since));
+    let told = |phase, evidence, rule: Option<&str>| Reading {
+        verdict: Verdict {
+            phase,
+            evidence,
+            rule: rule.map(str::to_string),
+            age,
+        },
+        asking: None,
+    };
 
     if state.state.is_terminal() {
-        return Verdict {
-            phase: state.state,
-            evidence: Evidence::Record,
-            rule: None,
-            age,
-        };
+        return told(state.state, Evidence::Record, None);
     }
 
     if !alive {
         // The pane went without recording an exit: killed, or its server died.
-        return Verdict {
-            phase: Phase::Stopped,
-            evidence: Evidence::Gone,
-            rule: None,
-            age,
-        };
+        return told(Phase::Stopped, Evidence::Gone, None);
     }
 
     if age <= FRESH {
-        return Verdict {
-            phase: state.state,
-            evidence: Evidence::Hooks,
-            rule: None,
-            age,
-        };
+        return told(state.state, Evidence::Hooks, None);
     }
 
     let Some(screen) = capture() else {
-        return Verdict {
-            phase: Phase::Unknown,
-            evidence: Evidence::Unknown,
-            rule: None,
-            age,
-        };
+        return told(Phase::Unknown, Evidence::Unknown, None);
     };
 
     match rules.claim(&screen, state.state, looks) {
-        Claim::Ruled(rule) => Verdict {
-            phase: rule.state,
-            evidence: Evidence::Screen,
-            rule: Some(rule.name.clone()),
-            age,
+        Claim::Ruled(rule) => Reading {
+            verdict: Verdict {
+                phase: rule.state,
+                evidence: Evidence::Screen,
+                rule: Some(rule.name.clone()),
+                age,
+            },
+            asking: rule.question(&screen),
         },
         // A rule claims the screen but may not end a turn that is on the
         // record as running. The record stands, with its age beside it.
-        Claim::Unsettled(rule) => Verdict {
-            phase: state.state,
-            evidence: Evidence::Hooks,
-            rule: Some(rule.name.clone()),
-            age,
-        },
-        Claim::Unclaimed => Verdict {
-            phase: Phase::Unknown,
-            evidence: Evidence::Unknown,
-            rule: None,
-            age,
-        },
+        Claim::Unsettled(rule) => told(state.state, Evidence::Hooks, Some(&rule.name)),
+        Claim::Unclaimed => told(Phase::Unknown, Evidence::Unknown, None),
+    }
+}
+
+/// Write down what a screen is asking, when the record has not got it.
+///
+/// The one thing a reader records rather than works out and forgets. A
+/// question is not a conclusion about an agent: it is something a person or a
+/// caller has to answer, and the pane is the only place the choices under it
+/// are ever written down. `ls` and the view are looking at the screen anyway,
+/// and throwing away what they read there would leave every caller to capture
+/// the pane and parse it again for itself.
+///
+/// The writer's lock is taken only when there is something new to write, so
+/// the promise that readers never wait on writers holds for every look but the
+/// one that finds the question.
+fn note(agent: &Agent, state: &mut State, asking: &Question) {
+    if !state.learns_from(asking) {
+        return;
+    }
+
+    let heard = state.last_event;
+    let noted = agent.writer().and_then(|writer| {
+        writer.observe(|current| {
+            // A hook that arrived while the pane was being read is the
+            // vendor's own account of a moment this picture is already behind.
+            if current.last_event == heard {
+                current.learn(asking);
+            }
+        })
+    });
+
+    match noted {
+        Ok(current) => *state = current,
+        // A record that cannot be written is still a question that can be
+        // reported, and the next look will try again.
+        Err(_) => state.learn(asking),
     }
 }
 
@@ -203,11 +238,11 @@ pub fn decide(
 pub fn view(root: &Path, id: &str, rules: &Ruleset, now: u64) -> Result<View> {
     let agent = Agent::open(root, id)?;
     let meta = agent.meta()?;
-    let state = agent.state()?;
+    let mut state = agent.state()?;
     let server = Server::from_socket(meta.socket.clone());
 
     let alive = state.state.is_terminal() || server.pane_alive(&meta.pane);
-    let verdict = decide(
+    let reading = read(
         &state,
         alive,
         || server.capture(&meta.pane).ok(),
@@ -215,10 +250,14 @@ pub fn view(root: &Path, id: &str, rules: &Ruleset, now: u64) -> Result<View> {
         now,
         1,
     );
+    if let Some(asking) = &reading.asking {
+        note(&agent, &mut state, asking);
+    }
+
     Ok(View {
         meta,
         state,
-        verdict,
+        verdict: reading.verdict,
     })
 }
 
@@ -233,7 +272,7 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
     for id in crate::store::list(root)? {
         let agent = Agent::open(root, &id)?;
         let Ok(meta) = agent.meta() else { continue };
-        let state = agent.state()?;
+        let mut state = agent.state()?;
         let server = Server::from_socket(meta.socket.clone());
 
         let alive = if state.state.is_terminal() {
@@ -250,7 +289,7 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
             listed.contains(&meta.pane)
         };
 
-        let verdict = decide(
+        let reading = read(
             &state,
             alive,
             || server.capture(&meta.pane).ok(),
@@ -258,10 +297,14 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
             now,
             1,
         );
+        if let Some(asking) = &reading.asking {
+            note(&agent, &mut state, asking);
+        }
+
         views.push(View {
             meta,
             state,
-            verdict,
+            verdict: reading.verdict,
         });
     }
 
@@ -282,6 +325,17 @@ mod tests {
 
     const A_SHELL: &str = "$ ls\nCargo.toml  src\n$\n";
 
+    /// A permission box, which is a screen with a question on it.
+    const A_BLOCKING_SCREEN: &str = "\
+────────────────────────────────
+ Bash command
+   rm -rf build
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+ Esc to cancel · Tab to amend
+";
+
     fn state(phase: Phase, last_event: u64) -> State {
         State {
             state: phase,
@@ -291,8 +345,8 @@ mod tests {
         }
     }
 
-    fn decided(state: &State, alive: bool, screen: Option<&str>, now: u64) -> Verdict {
-        decide(
+    fn reading(state: &State, alive: bool, screen: Option<&str>, now: u64) -> Reading {
+        read(
             state,
             alive,
             || screen.map(str::to_string),
@@ -300,6 +354,49 @@ mod tests {
             now,
             1,
         )
+    }
+
+    fn decided(state: &State, alive: bool, screen: Option<&str>, now: u64) -> Verdict {
+        reading(state, alive, screen, now).verdict
+    }
+
+    #[test]
+    fn reader_takes_the_question_off_the_screen_that_answered() {
+        let reading = reading(
+            &state(Phase::Working, 1_000),
+            true,
+            Some(A_BLOCKING_SCREEN),
+            1_100,
+        );
+        assert_eq!(reading.verdict.phase, Phase::Waiting);
+
+        let asking = reading.asking.expect("a blocking screen is asking");
+        assert_eq!(asking.text, "Do you want to proceed?");
+        assert_eq!(asking.options, ["Yes", "No"]);
+    }
+
+    #[test]
+    fn reader_has_no_question_from_a_screen_it_never_looked_at() {
+        // Fresh hooks answer without a capture, so there is nothing to read a
+        // question out of — and the record already has whatever they reported.
+        let fresh = reading(
+            &state(Phase::Waiting, 1_000),
+            true,
+            Some(A_BLOCKING_SCREEN),
+            1_000,
+        );
+        assert_eq!(fresh.verdict.evidence, Evidence::Hooks);
+        assert_eq!(fresh.asking, None);
+
+        // And a screen that is not asking anything says nothing about it.
+        let quiet = reading(
+            &state(Phase::Starting, 1_000),
+            true,
+            Some(IDLE_SCREEN),
+            1_100,
+        );
+        assert_eq!(quiet.verdict.phase, Phase::Idle);
+        assert_eq!(quiet.asking, None);
     }
 
     #[test]
