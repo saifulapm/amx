@@ -2730,6 +2730,35 @@ mod tests {
         );
     }
 
+    /// `capture-pane -p -J` of a live claude 2.1.237 at 72 columns on
+    /// 2026-08-21, with a task typed into the composer and wrapped over three
+    /// rows. Verbatim, trailing spaces and the no-break space after the
+    /// chevron included: the rows above are transcriptions, and what a
+    /// transcription cannot carry is exactly what these predicates walk over.
+    const CAPTURED: [&str; 9] = [
+        "what the agent said",
+        "  tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to…",
+        "────────────────────────────────────────────────── execute amx-v2 tail ─",
+        "❯\u{a0}check every call site 1 check every call site 2 check every call      ",
+        "  site 3 check every call site 4 check every call site 5 check every    ",
+        "  call site 6                                             ",
+        "────────────────────────────────────────────────────────────────────────",
+        "  Opus 5 (1M context) (1M context) │ ◈ 0% │ amx-main (main) │ ◖ xhigh",
+        "  ⏵⏵ accept edits on (shift+tab to cycle)               ",
+    ];
+
+    #[test]
+    fn view_tail_cuts_what_a_live_vendor_actually_drew() {
+        // The pane's own padding under the last row the vendor drew on.
+        let mut screen = CAPTURED.to_vec();
+        screen.push("");
+
+        // The warning claude renders flush against the composer's top border
+        // with no blank row between them stays: it is above the box, and a
+        // walk that ran upward until a blank row would have eaten it.
+        assert_eq!(cut(&screen), &CAPTURED[..2]);
+    }
+
     #[test]
     fn view_tail_says_so_when_a_capture_is_nothing_but_chrome() {
         let mut card = asking(&[], None);
