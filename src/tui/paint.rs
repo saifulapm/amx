@@ -28,7 +28,7 @@ use std::ops::Range;
 use std::sync::OnceLock;
 
 use super::act::{self, Asking, Composer};
-use super::rows::{self, Axis, Group, Item, List, Tally, Under};
+use super::rows::{self, Axis, Group, Item, List, Tally};
 use super::{Mode, Profile, Screen};
 use crate::ansi::{self, Colour, Painted};
 use crate::derive::View;
@@ -480,12 +480,13 @@ fn line(
     beat: usize,
 ) -> Line<'static> {
     let line = match item {
-        Item::Heading(under, tally) => heading(list.title(under), under, tally),
+        Item::Heading(under, tally) => heading(list.title(under), tally, selected),
         Item::Fold(hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
         Item::Agent(_) => match list.agent(item) {
             Some(view) => row(view, selected, columns, width, beat),
             None => Line::raw(""),
         },
+        Item::Blank => Line::raw(""),
     };
     match selected {
         true => barred(line, width),
@@ -530,7 +531,7 @@ fn blurbs() -> Vec<Line<'static>> {
         .into_iter()
         .flat_map(|group| {
             [
-                Line::styled(group.title(), heading_colour(Under::Group(group))),
+                Line::styled(group.title(), heading_style(false)),
                 Line::styled(format!("{GUTTER}{}", group.blurb()), dim()),
             ]
         })
@@ -544,14 +545,14 @@ fn blurbs() -> Vec<Line<'static>> {
 /// thing standing in for them. The failures are said either way — that is the
 /// one number a heading is worth reading without opening it, because an agent
 /// that failed is the reason somebody came to the screen.
-fn heading(title: String, under: Under, tally: Tally) -> Line<'static> {
+fn heading(title: String, tally: Tally, selected: bool) -> Line<'static> {
     let counted = match (tally.shut, tally.failures) {
         (false, 0) => String::new(),
         (false, failures) => format!(" · {failures} failed"),
         (true, 0) => format!(" {}", tally.members),
         (true, failures) => format!(" {} · {failures} failed", tally.members),
     };
-    let mut spans = vec![Span::styled(title, heading_colour(under))];
+    let mut spans = vec![Span::styled(title, heading_style(selected))];
     if !counted.is_empty() {
         spans.push(Span::styled(counted, dim()));
     }
@@ -1274,6 +1275,8 @@ fn hints(screen: &Screen) -> Vec<&'static str> {
             "ctrl+x clears the finished",
         ],
         Some(Item::Fold(_)) => vec!["enter shows them"],
+        // The cursor never rests on a blank; the arm is for the compiler.
+        Some(Item::Blank) => Vec::new(),
         // An agent whose command has ended has no window to bring forward and
         // nothing left to stop, and the same key that would have stopped it
         // forgets it instead.
@@ -1549,15 +1552,15 @@ fn colour(phase: Phase) -> Style {
     }
 }
 
-/// A heading, in whatever it stands for. A state heading is coloured by what
-/// that state means; a project is a place, and a place means nothing about how
-/// anything is going.
-fn heading_colour(under: Under) -> Style {
-    match under {
-        Under::Group(group) => group_colour(group),
-        Under::Project(_) => Style::new(),
+/// A heading's label: dim and bare, whatever it stands for. The rows under it
+/// carry the state's colour, so the label repeating it would say nothing —
+/// and a label with no weight of its own leaves bold free to mark the section
+/// the cursor is in.
+fn heading_style(selected: bool) -> Style {
+    match selected {
+        true => Style::new().add_modifier(Modifier::BOLD),
+        false => dim(),
     }
-    .add_modifier(Modifier::BOLD)
 }
 
 /// The same roles over a group, so the count at the top and the rows under the
@@ -2074,14 +2077,15 @@ mod tests {
             screen[3]
         );
         assert!(screen[3].ends_with("1m"), "{:?}", screen[3]);
-        assert_eq!(screen[4], "working");
+        assert_eq!(screen[4], "", "the next group stands off from this one");
+        assert_eq!(screen[5], "working");
         assert!(
-            screen[5].starts_with(&format!("  {} fix-login-b2c", pulse(0))),
+            screen[6].starts_with(&format!("  {} fix-login-b2c", pulse(0))),
             "{:?}",
-            screen[5]
+            screen[6]
         );
-        assert!(screen[5].contains("Running Bash"), "{:?}", screen[5]);
-        assert!(screen[5].ends_with("3s"), "{:?}", screen[5]);
+        assert!(screen[6].contains("Running Bash"), "{:?}", screen[6]);
+        assert!(screen[6].ends_with("3s"), "{:?}", screen[6]);
         assert_eq!(
             screen[9], "space card · enter attach · ctrl+x stop · ? keys",
             "and the keys, where they can be read"
@@ -2146,7 +2150,8 @@ mod tests {
             screen[3]
         );
         assert!(screen[4].contains("done"), "{:?}", screen[4]);
-        assert_eq!(screen[5], "/src/web");
+        assert_eq!(screen[5], "", "the next project stands off from this one");
+        assert_eq!(screen[6], "/src/web");
 
         // One column, so the states read down the screen rather than wandering
         // with the length of the name above them. Counted in characters: the
@@ -2322,6 +2327,48 @@ mod tests {
             painted(&screen, (60, 8))[1],
             "completed 2 · 1 failed",
             "shutting a group hides the detail of a failure, never the fact"
+        );
+    }
+
+    #[test]
+    fn headings_stand_off_from_the_group_above_them() {
+        // A blank line above every heading but the first, so the groups read
+        // as groups instead of one run of rows.
+        let screen = drawn(a_fleet(), None, (60, 10));
+        assert_eq!(screen[2], "needs input", "the first heading, unspaced");
+        assert!(screen[3].contains("ask-a1b"), "{screen:?}");
+        assert_eq!(screen[4], "", "a blank line stands the next group off");
+        assert_eq!(screen[5], "working");
+        assert!(screen[6].contains("busy-b2c"), "{screen:?}");
+    }
+
+    #[test]
+    fn headings_are_dim_and_bare_until_the_cursor_gives_one_weight() {
+        let mut screen = showing(a_fleet(), None);
+
+        let label = cells(&screen, (60, 10))[(0, 2)].clone();
+        assert!(
+            label.modifier.contains(Modifier::DIM),
+            "a heading is dim: {:?}",
+            label.modifier
+        );
+        assert!(
+            !label.modifier.contains(Modifier::BOLD),
+            "and carries no weight of its own, so the highlight has one to add"
+        );
+        assert_eq!(
+            label.fg,
+            Color::Reset,
+            "and bare: the rows under it carry the state's colour"
+        );
+
+        // The cursor arriving is what gives a section its weight.
+        screen.list.up();
+        let label = cells(&screen, (60, 10))[(0, 2)].clone();
+        assert!(
+            label.modifier.contains(Modifier::BOLD),
+            "the bold section highlight: {:?}",
+            label.modifier
         );
     }
 

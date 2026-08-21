@@ -151,7 +151,8 @@ pub struct Tally {
     pub shut: bool,
 }
 
-/// One line of the list. Every one of them is a place the cursor can stop.
+/// One line of the list. Every one of them but the blank is a place the
+/// cursor can stop; the blank is spacing, and the cursor walks over it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {
     /// A heading, and what it answers for.
@@ -160,6 +161,8 @@ pub enum Item {
     Agent(usize),
     /// How many finished agents the fold is holding back.
     Fold(usize),
+    /// The line that stands a heading off from the group above it.
+    Blank,
 }
 
 /// A heading in terms that outlive the next reading. `Under` holds a project's
@@ -495,13 +498,22 @@ impl List {
     }
 
     /// Move to the next line, staying put at the ends. Every line is a stop,
-    /// headings included: a group is a thing somebody does something to.
+    /// headings included — a group is a thing somebody does something to —
+    /// except the blank over a heading, which the cursor walks straight over.
     fn step(&mut self, by: isize) {
-        let Some(next) = self.cursor.checked_add_signed(by) else {
-            return;
-        };
-        if next < self.items.len() {
-            self.cursor = next;
+        let mut at = self.cursor;
+        loop {
+            let Some(next) = at.checked_add_signed(by) else {
+                return;
+            };
+            if next >= self.items.len() {
+                return;
+            }
+            at = next;
+            if !matches!(self.items[at], Item::Blank) {
+                self.cursor = at;
+                return;
+            }
         }
     }
 
@@ -579,6 +591,9 @@ impl List {
             }
 
             let shut = self.shut.contains(&Key::Group(group));
+            if !items.is_empty() {
+                items.push(Item::Blank);
+            }
             items.push(Item::Heading(
                 Under::Group(group),
                 self.tally(&members, shut),
@@ -644,6 +659,9 @@ impl List {
         let mut items = Vec::new();
         for (root, members) in roots {
             let shut = self.shut.contains(&Key::Project(root.clone()));
+            if !items.is_empty() {
+                items.push(Item::Blank);
+            }
             items.push(Item::Heading(
                 Under::Project(projects.len()),
                 self.tally(&members, shut),
@@ -729,6 +747,11 @@ impl List {
             return;
         }
         self.cursor = self.cursor.min(self.items.len() - 1);
+        // A blank is not a stop. It only ever stands over a heading, so the
+        // heading is what the cursor was nearest to.
+        if matches!(self.items[self.cursor], Item::Blank) {
+            self.cursor = (self.cursor + 1).min(self.items.len() - 1);
+        }
     }
 }
 
@@ -897,6 +920,7 @@ mod tests {
                 ),
                 Item::Agent(_) => list.agent(*item).unwrap().id().to_string(),
                 Item::Fold(hidden) => format!("… {hidden} more"),
+                Item::Blank => String::new(),
             })
             .collect()
     }
@@ -950,11 +974,14 @@ mod tests {
             [
                 "needs input (1)",
                 "ask-c3d",
+                "",
                 "working (2)",
                 "busy-a1b",
                 "starting-e5f",
+                "",
                 "idle (1)",
                 "idle-d4e",
+                "",
                 "completed (1)",
                 "done-b2c",
             ],
@@ -1083,8 +1110,10 @@ mod tests {
                 "/src/api (2)",
                 "ask-b2c",
                 "done-c3d",
+                "",
                 "/src/web (1)",
                 "busy-a1b",
+                "",
                 "/tmp/scratch (1)",
                 "loose-d4e",
             ],
@@ -1110,10 +1139,13 @@ mod tests {
             [
                 "/src/web (1)",
                 "ask-b2c",
+                "",
                 "/src/api (1)",
                 "busy-a1b",
+                "",
                 "/aaa (1)",
                 "idle-c3d",
+                "",
                 "/bbb (1)",
                 "quiet-d4e",
             ]
@@ -1140,6 +1172,7 @@ mod tests {
                 "/src/api (2)",
                 "fix-login-a1b",
                 "plain-b2c",
+                "",
                 "/elsewhere (1)",
                 "astray-c3d"
             ],
@@ -1184,7 +1217,7 @@ mod tests {
         assert_eq!(list.axis(), Axis::State);
         assert_eq!(
             lines(&list),
-            ["needs input (1)", "ask-a1b", "working (1)", "busy-b2c"]
+            ["needs input (1)", "ask-a1b", "", "working (1)", "busy-b2c"]
         );
 
         list.turn();
@@ -1253,7 +1286,7 @@ mod tests {
         assert_eq!(list.narrowing().as_deref(), Some("s:working a:c3d"));
 
         list.narrow(vec![Narrow::State(None), Narrow::Name(None)]);
-        assert_eq!(lines(&list).len(), 5);
+        assert_eq!(lines(&list).len(), 6);
         assert_eq!(list.narrowing(), None);
     }
 
@@ -1306,12 +1339,16 @@ mod tests {
         assert!(list.selected().is_none(), "a heading is not an agent");
         assert_eq!(list.cursor(), 0);
 
-        for want in [1, 2, 3] {
+        for want in [1, 3, 4] {
             list.down();
-            assert_eq!(list.cursor(), want, "and the walk down takes every line");
+            assert_eq!(
+                list.cursor(),
+                want,
+                "and the walk down takes every stop, straight over the blank"
+            );
         }
         list.down();
-        assert_eq!(list.cursor(), 3, "the end of the list is the end");
+        assert_eq!(list.cursor(), 4, "the end of the list is the end");
     }
 
     #[test]
@@ -1325,7 +1362,7 @@ mod tests {
         list.shut_or_open();
         assert_eq!(
             lines(&list),
-            ["needs input (1) shut", "working (1)", "busy-b2c"],
+            ["needs input (1) shut", "", "working (1)", "busy-b2c"],
             "the rows go and the heading stays"
         );
         assert!(list.on_heading(), "with the cursor still on it");
@@ -1333,7 +1370,7 @@ mod tests {
         list.shut_or_open();
         assert_eq!(
             lines(&list),
-            ["needs input (1)", "ask-a1b", "working (1)", "busy-b2c"]
+            ["needs input (1)", "ask-a1b", "", "working (1)", "busy-b2c"]
         );
     }
 
@@ -1357,8 +1394,10 @@ mod tests {
             [
                 "needs input (1)",
                 "ask-c3d",
+                "",
                 "working (1)",
                 "busy-b2c",
+                "",
                 "completed (1) shut",
             ],
             "a group somebody shut stays shut while the reading moves under it"
@@ -1420,7 +1459,7 @@ mod tests {
         list.shut_or_open();
         assert_eq!(
             lines(&list),
-            ["/src/api (1) shut", "/src/web (1)", "busy-b2c"]
+            ["/src/api (1) shut", "", "/src/web (1)", "busy-b2c"]
         );
 
         // The waiting agent answers, so its project is no longer the first one
@@ -1431,7 +1470,7 @@ mod tests {
         ]);
         assert_eq!(
             lines(&list),
-            ["/src/web (1)", "busy-b2c", "/src/api (1) shut"]
+            ["/src/web (1)", "busy-b2c", "", "/src/api (1) shut"]
         );
     }
 
