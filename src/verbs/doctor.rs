@@ -226,11 +226,17 @@ fn setup_check(found: &Findings) -> Check {
         many => format!("{} agents are stopped: {}", many.len(), many.join(", ")),
     };
 
-    Check::wrong(
-        "setup",
-        what,
-        format!("answer it yourself: amx attach {}", first.id),
-    )
+    let remedy = match first.screen {
+        // The one screen amx can take off the person's hands, once they have
+        // said so: the config key is the consent the write stands behind.
+        Setup::Trust => format!(
+            "answer it yourself: amx attach {}, or set trust = true in the \
+             config and amx answers it for the trees it cuts",
+            first.id
+        ),
+        Setup::Unread => format!("answer it yourself: amx attach {}", first.id),
+    };
+    Check::wrong("setup", what, remedy)
 }
 
 /// Print the checks, offer the one repair amx can make, and answer with an
@@ -823,6 +829,10 @@ mod tests {
         assert!(setup.found.contains("trust"), "{}", setup.found);
         let remedy = setup.remedy.as_deref().unwrap();
         assert!(remedy.contains("amx attach fix-auth-2k3"), "{remedy}");
+        assert!(
+            remedy.contains("trust = true"),
+            "the key that makes it never happen again is named: {remedy}"
+        );
         assert_eq!(said(&found, false).0, exit::FAILURE);
     }
 

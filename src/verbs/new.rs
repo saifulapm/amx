@@ -218,7 +218,7 @@ fn start(
         .map(|tree| tree.path.clone())
         .unwrap_or_else(|| dir.to_path_buf());
     if let Some(tree) = &tree {
-        trust_the_tree(&env, &launch.agent, &tree.path, problems);
+        trust_the_tree(config, &env, &launch.agent, &tree.path, problems);
     }
 
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
@@ -298,11 +298,19 @@ fn cut_worktree(
 /// wrote anything at all, so a store amx cannot write is said once and the
 /// spawn goes on.
 fn trust_the_tree(
+    config: &Config,
     env: &std::collections::BTreeMap<String, String>,
     agent: &str,
     tree: &Path,
     problems: &mut impl Write,
 ) {
+    // The store is the person's own file, and nothing is written to it until
+    // they have said so once — `trust = true` in the config, the same consent
+    // the hooks stand behind at doctor --fix. Until then the screen is theirs
+    // to answer, and doctor points at the key.
+    if !config.trust {
+        return;
+    }
     if !trust::is_vendor(agent) {
         return;
     }
@@ -462,13 +470,36 @@ mod tests {
         (tree, env)
     }
 
+    /// A config whose person has said yes to the trust write.
+    fn agreed() -> Config {
+        Config {
+            trust: true,
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn trust_is_never_answered_until_the_config_says_yes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (tree, env) = a_tree(&dir);
+        let mut problems = Vec::new();
+
+        trust_the_tree(&Config::default(), &env, "claude", &tree, &mut problems);
+
+        assert!(
+            !trust::store_in(&env).unwrap().exists(),
+            "the person's own file, and the person has not said yes"
+        );
+        assert!(problems.is_empty(), "declining quietly is not a problem");
+    }
+
     #[test]
     fn trust_is_answered_for_the_tree_a_claude_spawn_was_given() {
         let dir = tempfile::TempDir::new().unwrap();
         let (tree, env) = a_tree(&dir);
         let mut problems = Vec::new();
 
-        trust_the_tree(&env, "claude", &tree, &mut problems);
+        trust_the_tree(&agreed(), &env, "claude", &tree, &mut problems);
 
         let store = trust::store_in(&env).unwrap();
         let written: serde_json::Value =
@@ -487,7 +518,7 @@ mod tests {
         let (tree, env) = a_tree(&dir);
         let mut problems = Vec::new();
 
-        trust_the_tree(&env, "mock-claude --pane", &tree, &mut problems);
+        trust_the_tree(&agreed(), &env, "mock-claude --pane", &tree, &mut problems);
 
         assert!(
             !trust::store_in(&env).unwrap().exists(),
@@ -505,7 +536,7 @@ mod tests {
         std::fs::write(&store, "{ not json at all }").unwrap();
         let mut problems = Vec::new();
 
-        trust_the_tree(&env, "claude", &tree, &mut problems);
+        trust_the_tree(&agreed(), &env, "claude", &tree, &mut problems);
 
         let said = String::from_utf8(problems).unwrap();
         assert!(said.contains("trust store amx can read"), "{said}");

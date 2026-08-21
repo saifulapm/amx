@@ -10,11 +10,12 @@ use serde::Deserialize;
 use std::path::Path;
 
 /// Every key the file may carry. Anything else is warned about and ignored.
-pub const KNOWN_KEYS: [&str; 7] = [
+pub const KNOWN_KEYS: [&str; 8] = [
     "agent",
     "max_agents",
     "worktrees",
     "notifications",
+    "trust",
     "model",
     "permission",
     "effort",
@@ -31,6 +32,11 @@ pub struct Config {
     pub worktrees: bool,
     /// Post desktop notifications on the transitions worth interrupting for.
     pub notifications: bool,
+    /// Answer claude's folder-trust screen for the worktrees amx cuts, by
+    /// writing the vendor's own trust store. Off until the person says so:
+    /// the store is their file, and this is the consent the write stands
+    /// behind, the way the hooks stand behind doctor --fix's yes.
+    pub trust: bool,
     /// Where the model dial starts. Absent is the vendor's own choice, which
     /// amx says by passing no flag, so there is no value here that means
     /// "default" and an `Option` is the honest shape.
@@ -48,6 +54,7 @@ impl Default for Config {
             max_agents: 5,
             worktrees: true,
             notifications: true,
+            trust: false,
             model: None,
             permission: None,
             effort: None,
@@ -166,6 +173,7 @@ mod tests {
         assert_eq!(c.max_agents, 5);
         assert!(c.worktrees);
         assert!(c.notifications);
+        assert!(!c.trust, "the vendor's own file wants a yes before a write");
         // Absent, not the word default: a dial nobody has turned is one amx
         // passes no flag for, and there is no value that says that.
         assert_eq!(c.model, None);
@@ -197,6 +205,10 @@ mod tests {
 
         let (c, _) = parse("notifications = false").unwrap();
         assert!(!c.notifications);
+        assert!(c.worktrees);
+
+        let (c, _) = parse("trust = true").unwrap();
+        assert!(c.trust);
         assert!(c.worktrees);
 
         let (c, w) = parse("model = \"opus\"").unwrap();
