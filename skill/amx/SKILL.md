@@ -22,7 +22,7 @@ Nothing here needs a screen scraped or a state file polled.
 | `amx status <id> [--json]` | One agent, and which signal that state came from. |
 | `amx events [<ids>] [--follow] [--json]` | Every agent's log, merged in time order. |
 | `amx diff <id> [--stat]` | What it has changed, against the commit its tree was cut from. |
-| `amx stop <id> [--force]` | End it, and decide what its worktree and branch leave behind. |
+| `amx stop <id> [--force]` | End it, and say what happens to its worktree and branch. |
 
 Three more are for a person rather than a script: `amx attach <id>` hands the
 terminal to the agent's pane, `amx resume <id>` starts a stopped agent again on
@@ -125,6 +125,12 @@ if [ $# -gt 1 ]; then
     printf 'second: %s\n' "$second"
 fi
 ```
+
+The loop answers `1`, the first choice, which is what a permission prompt and
+a menu both read. The folder-trust screen is the one that wants `enter`
+instead, and amx has already answered that for a worktree it cut. If an agent
+seems stuck at its very first turn, `amx doctor` names any that never got past
+the vendor's own setup.
 
 Spawn, drive, end it:
 
