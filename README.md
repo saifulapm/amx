@@ -39,7 +39,7 @@ tmux, the agent command, the config file, the hooks, a state directory amx can
 keep records in, and no agent already stopped at a screen the vendor puts in
 front of the work. Every check that fails says what to do about it.
 
-`--fix` does the one repair amx can make safely: wiring amx's five hooks into
+`--fix` does the one repair amx can make safely: wiring amx's seven hooks into
 `~/.claude/settings.json`, beside whatever is already there, after asking once
 and backing the file up. `amx uninstall` puts the backed-up bytes back and
 removes amx's records. It refuses while any agent is still running: those

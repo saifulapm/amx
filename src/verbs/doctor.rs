@@ -643,7 +643,10 @@ mod tests {
         assert!(printed.contains("will add"), "it asked first: {printed}");
         let written: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
-        assert_eq!(install::installed_events(&written, COMMAND).len(), 5);
+        assert_eq!(
+            install::installed_events(&written, COMMAND).len(),
+            install::EVENTS.len()
+        );
         assert_eq!(written["model"], "opus");
     }
 

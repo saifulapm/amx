@@ -23,16 +23,18 @@ use std::path::{Path, PathBuf};
 
 /// The events amx listens to. The mapping each one drives lives with the hook
 /// command; here they are only names to wire.
-pub const EVENTS: [&str; 5] = [
+pub const EVENTS: [&str; 7] = [
     "SessionStart",
     "UserPromptSubmit",
     "PreToolUse",
+    "PermissionRequest",
+    "PermissionDenied",
     "Notification",
     "Stop",
 ];
 
 /// Events that take a tool matcher, and the matcher amx asks for.
-const MATCHED: [&str; 1] = ["PreToolUse"];
+const MATCHED: [&str; 3] = ["PreToolUse", "PermissionRequest", "PermissionDenied"];
 const MATCHER: &str = "*";
 
 /// What was done to the file.
@@ -472,9 +474,11 @@ mod tests {
         for event in EVENTS {
             assert_eq!(hooks(&settings, event), [AMX], "{event}");
         }
-        let pre_tool = settings["hooks"]["PreToolUse"][0].clone();
-        assert_eq!(pre_tool["matcher"], MATCHER, "tool events take a matcher");
-        assert_eq!(pre_tool["hooks"][0]["type"], "command");
+        for matched in ["PreToolUse", "PermissionRequest", "PermissionDenied"] {
+            let group = settings["hooks"][matched][0].clone();
+            assert_eq!(group["matcher"], MATCHER, "{matched} takes a matcher");
+            assert_eq!(group["hooks"][0]["type"], "command");
+        }
         assert!(
             settings["hooks"]["Stop"][0].get("matcher").is_none(),
             "and the others do not"

@@ -171,6 +171,9 @@ fn kind(payload: &Value) -> Option<&str> {
 ///   tool call says what it is doing. The one tool that is not work is
 ///   `AskUserQuestion`: it draws a menu and waits, and its payload carries the
 ///   question and every choice under it.
+/// * `PermissionRequest` is the permission box the instant it goes up, tool
+///   and all; `PermissionDenied` is the only thing that says it closed with
+///   the tool refused, after which the turn is working again.
 /// * `Notification` means it has stopped on a question, and carries its words.
 ///   The choices under it are on the pane, which this command does not read;
 ///   a reader fills them in later. Its `notification_type` is the vendor's own
@@ -234,6 +237,35 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             None
         }
 
+        // Fired as the permission box goes up — six seconds before the
+        // notification that repeats it, which was the whole of what said so
+        // before this event was wired. The payload carries the tool and not
+        // the vendor's sentence, so the sentence is written here the way the
+        // vendor will write it, and a box with no tool named waits for a
+        // reader to quote the pane.
+        "PermissionRequest" => {
+            state.state = Phase::Waiting;
+            state.summary = None;
+            state.asks(
+                payload["tool_name"]
+                    .as_str()
+                    .map(|tool| format!("Claude needs your permission to use {tool}")),
+            );
+            state.kind = Some(Kind::Permission);
+            Some(Notice::waiting(&meta.id, state.question.as_deref()))
+        }
+
+        // The one hook that says the box closed without the tool running: no
+        // PostToolUse follows a tool that never ran. The turn goes on with
+        // the refusal in it, and the next tool call will say what the agent
+        // is doing now.
+        "PermissionDenied" => {
+            state.state = Phase::Working;
+            state.summary = None;
+            state.asks(None);
+            None
+        }
+
         // The vendor nudges about an idle session only when nothing is open on
         // it: no permission box, no menu, nobody being asked for anything. It
         // is the turn being over, said a minute late, and the record has often
@@ -249,12 +281,17 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         }
 
         "Notification" => {
+            // The permission notification repeats, six seconds later, a box
+            // PermissionRequest has usually announced already. A notice that
+            // tells nobody anything new interrupts nobody twice.
+            let told = state.state == Phase::Waiting
+                && state.question.as_deref() == payload["message"].as_str();
             state.state = Phase::Waiting;
             state.asks(payload["message"].as_str().map(str::to_string));
             if payload["notification_type"] == "permission_prompt" {
                 state.kind = Some(Kind::Permission);
             }
-            Some(Notice::waiting(&meta.id, state.question.as_deref()))
+            (!told).then(|| Notice::waiting(&meta.id, state.question.as_deref()))
         }
 
         "Stop" => {
@@ -475,6 +512,96 @@ mod tests {
             Some("Claude needs your permission to use Bash")
         );
         assert!(notice.is_some(), "somebody has to be told");
+    }
+
+    #[test]
+    fn hook_a_permission_request_is_the_box_the_instant_it_goes_up() {
+        // Measured at 2.1.237: PermissionRequest fires as the box goes up,
+        // six seconds before the notification that repeats it. The payload
+        // carries the tool and not the vendor's sentence, so the sentence is
+        // written the way the vendor will write it.
+        let (state, _, notice) = fold(json!({
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "tool_input": { "command": "rm -rf build" },
+            "permission_suggestions": []
+        }));
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(state.kind, Some(Kind::Permission));
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Claude needs your permission to use Bash")
+        );
+        assert_eq!(state.summary, None, "a box is not a tool running");
+        assert!(
+            notice.is_some(),
+            "the six-second blind window was the point"
+        );
+
+        // A box amx cannot name is still a permission box somebody has to
+        // answer, and the pane's own words reach the record from a reader.
+        let (state, _, _) = fold(json!({ "hook_event_name": "PermissionRequest" }));
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(state.kind, Some(Kind::Permission));
+        assert_eq!(state.question, None);
+    }
+
+    #[test]
+    fn hook_the_notification_repeating_a_known_box_interrupts_nobody_twice() {
+        let mut state = State::default();
+        let mut meta = meta();
+        let told = apply(
+            &json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash" }),
+            &mut state,
+            &mut meta,
+        );
+        assert!(told.is_some());
+
+        let again = apply(
+            &json!({
+                "hook_event_name": "Notification",
+                "message": "Claude needs your permission to use Bash",
+                "notification_type": "permission_prompt"
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(state.kind, Some(Kind::Permission));
+        assert_eq!(again, None, "one box, one interruption");
+    }
+
+    #[test]
+    fn hook_a_denied_permission_puts_the_agent_back_to_work() {
+        // The one hook that says a box has closed without the tool running:
+        // no PostToolUse follows a tool that never ran, so without this the
+        // record would say waiting for as long as the turn went on.
+        let mut state = State {
+            state: Phase::Waiting,
+            question: Some("Claude needs your permission to use Bash".to_string()),
+            options: vec!["Yes".to_string(), "No".to_string()],
+            kind: Some(Kind::Permission),
+            ..State::default()
+        };
+        let notice = apply(
+            &json!({
+                "hook_event_name": "PermissionDenied",
+                "tool_name": "Bash",
+                "tool_use_id": "toolu_01",
+                "reason": "user denied"
+            }),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(
+            state.state,
+            Phase::Working,
+            "the turn goes on with the refusal in it"
+        );
+        assert_eq!(state.question, None);
+        assert!(state.options.is_empty());
+        assert_eq!(state.kind, None);
+        assert_eq!(notice, None, "nobody is being asked for anything now");
     }
 
     #[test]
