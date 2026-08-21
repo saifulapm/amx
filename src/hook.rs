@@ -281,6 +281,18 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         }
 
         "Notification" => {
+            // An untyped notification about a turn that already ended with an
+            // answer can only be an older vendor's idle nudge wearing no
+            // name: a vendor notifies about an idle session when nothing is
+            // open on it, and an answered turn has nothing open. Its words
+            // are not a question, and taking them as one would put the record
+            // back to waiting in front of the answer it holds.
+            if state.state == Phase::Idle
+                && state.result.is_some()
+                && payload["notification_type"].is_null()
+            {
+                return None;
+            }
             // The permission notification repeats, six seconds later, a box
             // PermissionRequest has usually announced already. A notice that
             // tells nobody anything new interrupts nobody twice.
@@ -678,6 +690,34 @@ mod tests {
         assert_eq!(state.result.as_deref(), Some("I fixed the login bug."));
         assert_eq!(state.source, Some(Source::Payload));
         assert_eq!(state.question, None);
+    }
+
+    #[test]
+    fn hook_coherence_an_untyped_nudge_never_undoes_an_answered_turn() {
+        // An older vendor types nothing on its notifications, and its idle
+        // nudge arrives with no name. One arriving after the turn ended with
+        // an answer on the record can only be that nudge: the vendor notifies
+        // about an idle session when nothing is open on it, and an answered
+        // turn has nothing open. Taking its words as a question would flip
+        // the record back to waiting in front of the answer it holds.
+        let mut state = State {
+            state: Phase::Idle,
+            result: Some("I fixed the login bug.".to_string()),
+            source: Some(Source::Payload),
+            ..State::default()
+        };
+        let notice = apply(
+            &json!({
+                "hook_event_name": "Notification",
+                "message": "Claude is waiting for your input"
+            }),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(state.state, Phase::Idle, "the turn is still over");
+        assert_eq!(state.question, None);
+        assert_eq!(state.result.as_deref(), Some("I fixed the login bug."));
+        assert_eq!(notice, None, "an agent going quiet interrupts nobody");
     }
 
     #[test]
