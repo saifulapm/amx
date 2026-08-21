@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::sync::OnceLock;
 
-use crate::store::Phase;
+use crate::store::{Phase, Question};
 
 /// How many rows up from the bottom of the capture a rule may see. The
 /// vendor's chrome sits at the bottom; the rest is the agent's own output,
@@ -172,6 +172,54 @@ impl Rule {
         !screen.any_below(last, &self.not_below)
     }
 
+    /// What this screen is asking, read off the capture this rule claimed.
+    ///
+    /// Only a blocking screen is asking anything: a spinner and an idle prompt
+    /// are states, not questions. The rest is where each screen keeps its
+    /// question, which is not the same place on any two of them — see
+    /// [`Asks`].
+    pub fn question(&self, capture: &str) -> Option<Question> {
+        if self.state != Phase::Waiting {
+            return None;
+        }
+
+        let screen = Screen::new(capture);
+        let choices = screen.first_option();
+        let (from, to) = match self.asks() {
+            Asks::Sentence(anchor) => screen.sentence_at(screen.row_above(choices, anchor)?),
+            Asks::AboveOptions => screen.sentence_above(choices?)?,
+        };
+
+        let text = screen.joined(from, to);
+        (!text.is_empty()).then(|| Question {
+            options: screen.options_below(to),
+            text,
+        })
+    }
+
+    /// Where this screen keeps the question it is asking.
+    ///
+    /// By name, because the four blocking screens keep it in four different
+    /// places and no reading works on all of them. Each of these was chosen
+    /// against the captures in this file's tests, at every width they were
+    /// measured at.
+    fn asks(&self) -> Asks {
+        match self.name.as_str() {
+            // The question is the row the rule's own anchor is on. What is
+            // above it is what the request is about — the tool, its arguments,
+            // the rule that stopped it — and that is not what is being asked.
+            "permission_prompt" => Asks::Sentence("do you want to"),
+            // The same, and for the same reason: under this screen's question
+            // sit a sentence about what claude will be able to do and a link
+            // to the security guide, and neither is the question.
+            "folder_trust" => Asks::Sentence("trust"),
+            // Every other blocking screen puts the question straight above the
+            // choices with a blank row between, which is also where a screen
+            // amx has not met yet is likeliest to put it.
+            _ => Asks::AboveOptions,
+        }
+    }
+
     /// Whether this rule may speak, given what amx already believes.
     ///
     /// A rule that is not quiescent always may. A quiescent one may end a turn
@@ -190,10 +238,22 @@ impl Rule {
     }
 }
 
-/// The part of a capture a rule is allowed to look at: the bottom rows, case
-/// folded.
+/// Where on a claimed screen its question is written.
+enum Asks {
+    /// The sentence the lowest row carrying this string belongs to, wrap and
+    /// all. For the screens that draw something under their question that is
+    /// not part of it.
+    Sentence(&'static str),
+    /// The sentence that ends just above the first choice.
+    AboveOptions,
+}
+
+/// The part of a capture a rule is allowed to look at: the bottom rows, twice
+/// over — case folded for the anchors to match against, and as the pane drew
+/// it for a question to be read out of.
 struct Screen {
-    rows: Vec<String>,
+    folded: Vec<String>,
+    shown: Vec<String>,
 }
 
 impl Screen {
@@ -201,22 +261,132 @@ impl Screen {
         let all: Vec<&str> = capture.lines().collect();
         let floor = all.len().saturating_sub(FLOOR_LINES);
         Screen {
-            rows: all[floor..].iter().map(|row| row.to_lowercase()).collect(),
+            folded: all[floor..].iter().map(|row| row.to_lowercase()).collect(),
+            shown: all[floor..].iter().map(|row| row.to_string()).collect(),
         }
     }
 
     /// The topmost row carrying `needle`.
     fn row_of(&self, needle: &str) -> Option<usize> {
-        self.rows.iter().position(|row| row.contains(needle))
+        self.folded.iter().position(|row| row.contains(needle))
     }
 
     /// Whether any of `needles` appears below `row`.
     fn any_below(&self, row: usize, needles: &[String]) -> bool {
-        self.rows
+        self.folded
             .iter()
             .skip(row + 1)
             .any(|line| needles.iter().any(|needle| line.contains(needle)))
     }
+
+    /// The row the choices start on.
+    ///
+    /// The lowest one that reads as the first choice, not the topmost: a
+    /// blocking screen is the last thing the vendor draws, and an agent's own
+    /// output above it writes numbered lists every day.
+    fn first_option(&self) -> Option<usize> {
+        self.shown
+            .iter()
+            .rposition(|row| matches!(option_on(row), Some((1, _))))
+    }
+
+    /// The lowest row above the choices that carries `needle`.
+    fn row_above(&self, choices: Option<usize>, needle: &str) -> Option<usize> {
+        let ceiling = choices.unwrap_or(self.folded.len());
+        self.folded[..ceiling]
+            .iter()
+            .rposition(|row| row.contains(needle))
+    }
+
+    /// The rows this one is a sentence with.
+    fn sentence_at(&self, row: usize) -> (usize, usize) {
+        let mut from = row;
+        while from > 0 && wrapped(&self.shown[from]) && content(&self.shown[from - 1]) {
+            from -= 1;
+        }
+
+        let mut to = row;
+        while to + 1 < self.shown.len()
+            && content(&self.shown[to + 1])
+            && option_on(&self.shown[to + 1]).is_none()
+        {
+            to += 1;
+        }
+        (from, to)
+    }
+
+    /// The rows of the sentence that ends above the choices.
+    fn sentence_above(&self, choices: usize) -> Option<(usize, usize)> {
+        let mut to = choices.checked_sub(1)?;
+        while !content(&self.shown[to]) {
+            to = to.checked_sub(1)?;
+        }
+
+        let mut from = to;
+        while from > 0 && content(&self.shown[from - 1]) {
+            from -= 1;
+        }
+        Some((from, to))
+    }
+
+    /// Rows `from` to `to` as the one sentence the vendor wrapped them out of.
+    fn joined(&self, from: usize, to: usize) -> String {
+        self.shown[from..=to]
+            .iter()
+            .map(|row| row.trim())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim()
+            .to_string()
+    }
+
+    /// The choices under `row`, in the order they are drawn.
+    ///
+    /// Numbered from one and counting up, which is what makes a description
+    /// under a label, a rule drawn through the list, or a stray line of the
+    /// agent's own prose unable to join in.
+    fn options_below(&self, row: usize) -> Vec<String> {
+        let mut options: Vec<String> = Vec::new();
+        for line in self.shown.iter().skip(row + 1) {
+            if let Some((number, label)) = option_on(line)
+                && number == options.len() + 1
+            {
+                options.push(label.to_string());
+            }
+        }
+        options
+    }
+}
+
+/// One numbered choice, as the vendor draws it: `❯ 1. Yes` for the one under
+/// the cursor and `  2. No` for the rest.
+///
+/// A label the vendor wrapped is read as far as its own row goes. The rows
+/// under it cannot be joined on, because that is exactly where the menu keeps
+/// the descriptions of its choices, at the same indent and telling nothing
+/// apart.
+fn option_on(row: &str) -> Option<(usize, &str)> {
+    let row = row.trim_start();
+    let row = row.strip_prefix('❯').map_or(row, str::trim_start);
+    let (number, label) = row.split_once(". ")?;
+    let number = number.parse().ok()?;
+    let label = label.trim();
+    (!label.is_empty()).then_some((number, label))
+}
+
+/// Whether a row has anything on it but the vendor's furniture.
+fn content(row: &str) -> bool {
+    let row = row.trim();
+    !row.is_empty() && !row.chars().all(|glyph| glyph == '─' || glyph == '-')
+}
+
+/// Whether a row is the rest of the row above it. Word wrap breaks a sentence
+/// mid-way, and the vendor's prose starts its sentences with a capital.
+fn wrapped(row: &str) -> bool {
+    row.trim_start()
+        .chars()
+        .next()
+        .is_some_and(|glyph| glyph.is_lowercase())
 }
 
 #[cfg(test)]
@@ -711,6 +881,111 @@ $
                 Some(Phase::Waiting),
                 "{what} must not rule waiting, ruled {claimed:?}"
             );
+        }
+    }
+
+    /// What the screen says it is asking, once a rule has claimed it.
+    fn asked(rules: &Ruleset, screen: &str) -> Question {
+        let Claim::Ruled(rule) = claim(rules, screen, Phase::Working) else {
+            panic!("no rule claims this screen");
+        };
+        rule.question(screen)
+            .expect("a screen that blocks says what it is blocking on")
+    }
+
+    #[test]
+    fn rules_a_permission_box_carries_the_question_and_the_two_answers() {
+        let asked = asked(bundled(), PERMISSION_BOX);
+        assert_eq!(asked.text, "Do you want to proceed?");
+        assert_eq!(
+            asked.options,
+            ["Yes", "No"],
+            "the request above the question is what it is about, not what it asks"
+        );
+    }
+
+    #[test]
+    fn rules_the_trust_screen_asks_one_question_at_both_widths() {
+        // The vendor wraps this sentence across five rows at 54 columns and
+        // breaks it between `you` and `trust`. Both widths are the same
+        // question, and the record must not be able to tell which one was read.
+        let whole = "Quick safety check: Is this a project you created or one you \
+             trust? (Like your own code, a well-known open source project, or work \
+             from your team). If not, take a moment to review what's in this folder \
+             first.";
+        for (width, screen) in [("220", TRUST_SCREEN_220), ("54", TRUST_SCREEN_54)] {
+            let asked = asked(bundled(), screen);
+            assert_eq!(asked.text, whole, "at {width} columns");
+            assert_eq!(
+                asked.options,
+                ["Yes, I trust this folder", "No, exit"],
+                "at {width} columns"
+            );
+        }
+    }
+
+    #[test]
+    fn rules_a_menu_carries_the_agents_own_question_and_every_choice() {
+        let wide = asked(bundled(), ASK_MENU_80);
+        assert_eq!(
+            wide.text,
+            "Should this project be indented with spaces or tabs?"
+        );
+        assert_eq!(
+            wide.options,
+            ["Spaces", "Tabs", "Type something.", "Chat about this"],
+            "the descriptions under the labels are not choices, and the rule \
+             between the third and the fourth does not end the list"
+        );
+
+        // The same menu at 24 columns. The choices survive the wrap; the first
+        // row of the question does not survive the floor, which only reads the
+        // bottom of the pane, so what is recorded is what could be seen.
+        let narrow = asked(bundled(), ASK_MENU_24);
+        assert_eq!(narrow.options, wide.options);
+        assert_eq!(narrow.text, "indented with spaces or tabs?");
+    }
+
+    #[test]
+    fn rules_the_plan_approval_asks_one_question_at_every_width() {
+        let whole = "Claude has written up a plan and is ready to execute. \
+             Would you like to proceed?";
+        for (width, screen) in [
+            ("220", PLAN_APPROVAL_220),
+            ("54", PLAN_APPROVAL_54),
+            ("24", PLAN_APPROVAL_24),
+        ] {
+            assert_eq!(asked(bundled(), screen).text, whole, "at {width} columns");
+        }
+
+        assert_eq!(
+            asked(bundled(), PLAN_APPROVAL_220).options,
+            [
+                "Yes, and use auto mode",
+                "Yes, manually approve edits",
+                "Tell Claude what to change"
+            ]
+        );
+        assert_eq!(
+            asked(bundled(), PLAN_APPROVAL_24).options,
+            ["Yes, and use", "Yes, manually", "Tell Claude"],
+            "a label the vendor wrapped is read as far as its own row goes: the \
+             rows under it are where the menu keeps its descriptions"
+        );
+    }
+
+    #[test]
+    fn rules_a_screen_that_is_not_blocking_asks_no_question() {
+        let rules = bundled();
+        for (what, screen) in [
+            ("an idle prompt", IDLE_SCREEN),
+            ("a running turn", WORKING_SCREEN),
+            ("a promptless boot", PARKED_SCREEN),
+        ] {
+            let Claim::Ruled(rule) = claim(rules, screen, Phase::Starting) else {
+                panic!("{what} is claimed by a rule");
+            };
+            assert_eq!(rule.question(screen), None, "{what} is not asking");
         }
     }
 
