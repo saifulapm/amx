@@ -696,7 +696,7 @@ mod tests {
             &[KeyCode::Down, KeyCode::Char(' '), KeyCode::Char('q')],
         );
         assert_eq!(code, exit::OK);
-        assert!(screen.contains("▸ ● second-b2c"), "{screen}");
+        assert!(screen.contains("  ● second-b2c"), "{screen}");
         assert!(screen.contains("second-b2c · done"), "{screen}");
         assert!(
             screen.contains("wrote the tests"),

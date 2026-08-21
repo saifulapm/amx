@@ -43,17 +43,33 @@ fn screen(amx: &Harness, pane: &str) -> String {
     amx.capture(pane)
 }
 
-/// The mark on an agent's row, as the view has it drawn now: past the cursor,
-/// whether or not the cursor is on this one.
+/// The mark on an agent's row, as the view has it drawn now: past the gutter
+/// its rows are indented by.
 fn mark(amx: &Harness, view: &str, id: &str) -> Option<char> {
     screen(amx, view)
         .lines()
         .find(|line| line.contains(id))?
         .trim_start()
-        .trim_start_matches('▸')
-        .trim_start()
         .chars()
         .next()
+}
+
+/// The same screen with the colours the view drew it in, as the escapes tmux
+/// wrote them: what a bar is made of cannot be read off the text.
+fn coloured(amx: &Harness, pane: &str) -> String {
+    amx.tmux(&["capture-pane", "-p", "-e", "-J", "-t", pane])
+}
+
+/// The line of the list holding `text`, escapes and all. The last of them,
+/// because the header at the top says what there is in the same words the
+/// headings under it do, and the list is the part the cursor walks.
+fn coloured_line(amx: &Harness, view: &str, text: &str) -> String {
+    let drawn = coloured(amx, view);
+    drawn
+        .lines()
+        .rfind(|line| line.contains(text))
+        .unwrap_or_else(|| panic!("no line holding {text} in:\n{drawn}"))
+        .to_string()
 }
 
 /// Move a record's directory, which is what decides its project.
@@ -363,6 +379,42 @@ fn completed_agents_fold_into_a_count_until_they_are_opened() {
     amx.until("the rest of them", || {
         screen(&amx, &view).contains("five-e5f").then_some(())
     });
+}
+
+#[test]
+fn the_cursor_is_a_bar_over_rows_and_headings_alike() {
+    let amx = Harness::new();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("ask-a1b").then_some(())
+    });
+
+    // The bar is a background colour, so it is in the escapes rather than in
+    // the text: 55,55,55, which is the vendor's own for a selected line.
+    const BAR: &str = "48;2;55;55;55";
+    amx.until("the bar under the cursor", || {
+        coloured_line(&amx, &view, "ask-a1b")
+            .contains(BAR)
+            .then_some(())
+    });
+    assert!(
+        !coloured_line(&amx, &view, "needs input").contains(BAR),
+        "and not under the heading the cursor is not on"
+    );
+
+    press(&amx, &view, "Up");
+    amx.until("the bar to move up onto the heading", || {
+        coloured_line(&amx, &view, "needs input")
+            .contains(BAR)
+            .then_some(())
+    });
+    assert!(
+        !coloured_line(&amx, &view, "ask-a1b").contains(BAR),
+        "one line at a time, whatever kind of line it is"
+    );
 }
 
 #[test]

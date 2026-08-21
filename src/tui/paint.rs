@@ -189,14 +189,41 @@ fn line(
     width: usize,
     beat: usize,
 ) -> Line<'static> {
-    match item {
+    let line = match item {
         Item::Heading(under, tally) => heading(list.title(under), under, tally),
-        Item::Fold(hidden) => Line::styled(format!("{}… {hidden} more", marker(selected)), dim()),
+        Item::Fold(hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
         Item::Agent(_) => match list.agent(item) {
             Some(view) => row(view, selected, columns, width, beat),
             None => Line::raw(""),
         },
+    };
+    match selected {
+        true => barred(line, width),
+        false => line,
     }
+}
+
+/// The line the cursor is on, with the bar that says so under it.
+///
+/// A background colour the width of the list rather than a reversal of what
+/// the line already says. The two look alike on a row, which is nearly as wide
+/// as the list, and they part company on a heading: a reversal there marks a
+/// short label, and what the cursor is on is a line. So both wear the bar, and
+/// the cursor looks like one thing wherever it is.
+///
+/// The colour is the vendor's own for a selected line, measured from the
+/// 2.1.237 bundle, for the reason the rest of them are.
+fn barred(line: Line<'static>, width: usize) -> Line<'static> {
+    let said: usize = line
+        .spans
+        .iter()
+        .map(|span| span.content.chars().count())
+        .sum();
+    let mut line = line;
+    if said < width {
+        line.spans.push(Span::raw(" ".repeat(width - said)));
+    }
+    line.style(Style::new().bg(role::SELECTED))
 }
 
 /// A heading: what it stands for, and what it is answerable for.
@@ -232,14 +259,14 @@ fn row(view: &View, selected: bool, columns: Columns, width: usize, beat: usize)
     let phase = view.phase();
     let age = age(view.verdict.age);
     let name = fit(view.id(), names);
-    // The marker, the icon and its space, the name and its gap, the status
+    // The gutter, the icon and its space, the name and its gap, the status
     // column and its gap where there is one, the age and the space before it.
-    let spent = 2 + 2 + names + 2 + status + 2 * usize::from(status > 0) + AGE + 1;
+    let spent = GUTTER.len() + 2 + names + 2 + status + 2 * usize::from(status > 0) + AGE + 1;
     let room = width.saturating_sub(spent);
     let said = fit(first_line(view.line().unwrap_or("")), room);
 
     let mut spans = vec![
-        Span::raw(marker(selected)),
+        Span::raw(GUTTER),
         Span::styled(format!("{} ", icon(phase, beat)), colour(phase)),
         Span::styled(
             format!("{name:<names$}  "),
@@ -439,10 +466,9 @@ fn end_of(text: &str, width: usize) -> String {
     text.chars().skip(over).collect()
 }
 
-/// Where the cursor is.
-fn marker(selected: bool) -> &'static str {
-    if selected { "▸ " } else { "  " }
-}
+/// What a row is indented by, so an agent reads as sitting under the heading
+/// it belongs to rather than beside it.
+const GUTTER: &str = "  ";
 
 /// The vendor's glyph set for a terminal. Ghostty draws the eight-spoked
 /// asterisk where everything else gets a plain one, and that is the only thing
@@ -508,7 +534,7 @@ fn icon(phase: Phase, beat: usize) -> &'static str {
     }
 }
 
-/// The colours, by what they mean rather than by what they are. Four of them,
+/// The colours, by what they mean rather than by what they are. Five of them,
 /// and the values are the vendor's own dark theme measured from the 2.1.237
 /// binary: a view beside claude's should not be a different shade of the same
 /// idea.
@@ -523,6 +549,10 @@ mod role {
     pub const ERROR: Color = Color::Rgb(255, 107, 128);
     /// It was ended by hand, and nothing more is coming.
     pub const INACTIVE: Color = Color::Rgb(153, 153, 153);
+    /// The line the cursor is on. A background rather than a foreground: it
+    /// says where the cursor is without taking a colour away from what the
+    /// line was already saying.
+    pub const SELECTED: Color = Color::Rgb(55, 55, 55);
 }
 
 /// What a state is worth saying in colour.
@@ -779,7 +809,7 @@ mod tests {
         };
 
         assert!(
-            at(0).starts_with(&format!("▸ {} port-importer-b2c", pulse(0))),
+            at(0).starts_with(&format!("  {} port-importer-b2c", pulse(0))),
             "{:?}",
             at(0)
         );
@@ -799,7 +829,7 @@ mod tests {
 
         assert_eq!(screen[0], "amx · 1 needs input · 1 working");
         assert_eq!(screen[1], "needs input");
-        assert!(screen[2].starts_with("▸ ? ask-a1b"), "{:?}", screen[2]);
+        assert!(screen[2].starts_with("  ? ask-a1b"), "{:?}", screen[2]);
         assert!(screen[2].ends_with("1m"), "{:?}", screen[2]);
         assert_eq!(screen[3], "working");
         assert!(
@@ -873,8 +903,12 @@ mod tests {
         assert_eq!(screen[4], "/src/web");
 
         // One column, so the states read down the screen rather than wandering
-        // with the length of the name above them.
-        let column = |line: &str, word: &str| line.find(word).expect("the state on the row");
+        // with the length of the name above them. Counted in characters: the
+        // marks are not all one byte, and a column is what a person sees.
+        let column = |line: &str, word: &str| {
+            let at = line.find(word).expect("the state on the row");
+            line[..at].chars().count()
+        };
         assert_eq!(column(&screen[2], "waiting"), column(&screen[3], "done"));
     }
 
@@ -938,6 +972,55 @@ mod tests {
             !painted[5].contains("starts it"),
             "a hint that says the other thing is a hint that lies: {:?}",
             painted[5]
+        );
+    }
+
+    /// The background of every cell across one row of the list.
+    fn behind(screen: &Screen, size: (u16, u16), row: u16) -> Vec<Color> {
+        let buffer = cells(screen, size);
+        (0..size.0).map(|at| buffer[(at, row)].bg).collect()
+    }
+
+    #[test]
+    fn a_cursor_on_a_headings_line_is_marked_the_way_a_cursor_on_a_row_is() {
+        let mut screen = showing(
+            vec![
+                view("busy-a1b", Phase::Working, None, 3),
+                view("busy-b2c", Phase::Working, None, 5),
+            ],
+            None,
+        );
+        let bar = vec![role::SELECTED; 60];
+        let plain = vec![Color::Reset; 60];
+
+        // The view opens on the first agent, with the heading over it bare.
+        assert_eq!(behind(&screen, (60, 8), 2), bar, "the row the cursor is on");
+        assert_eq!(behind(&screen, (60, 8), 1), plain, "and not the heading");
+
+        screen.list.up();
+        assert_eq!(
+            behind(&screen, (60, 8), 1),
+            bar,
+            "a heading is a line like any other, so the cursor looks the same \
+             on it: column zero to the last column, over a label that is a \
+             third of that"
+        );
+        assert_eq!(behind(&screen, (60, 8), 2), plain);
+    }
+
+    #[test]
+    fn a_headings_bar_is_the_only_thing_that_says_where_the_cursor_is() {
+        let painted = painted(
+            &showing(
+                vec![view("busy-a1b", Phase::Working, Some("Running"), 3)],
+                None,
+            ),
+            (60, 8),
+        );
+        assert!(
+            painted[2].starts_with(&format!("  {} busy-a1b", pulse(0))),
+            "a row reads the same whether or not the cursor is on it: {:?}",
+            painted[2]
         );
     }
 
