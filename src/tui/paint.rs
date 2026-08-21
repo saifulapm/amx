@@ -36,9 +36,9 @@ use crate::registry::DEFAULT;
 use crate::store::{Kind, Phase};
 use crate::verbs::send::numbered;
 
-/// The keys with nowhere else to be said, on the screen where somebody can see
-/// them. The rest are one keypress away, which is what `?` is for.
-const KEYS: &str = "space card · enter attach · ctrl+s axis · ? keys · q quit";
+/// The key the hint row keeps whatever else it has to shed, because the
+/// overlay behind it is where every key is.
+const MORE: &str = "? keys";
 
 /// What the card's own keys do, under the card, while it is holding a line.
 ///
@@ -178,7 +178,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     if let Some(row) = permission {
         frame.render_widget(Paragraph::new(row), allowed);
     }
-    frame.render_widget(Paragraph::new(footer(screen)), keys);
+    frame.render_widget(Paragraph::new(footer(screen, keys.width)), keys);
 }
 
 /// How much of the screen the card takes: what it has to show, up to about
@@ -1181,11 +1181,73 @@ fn permission(screen: &Screen) -> Option<Line<'static>> {
     ))
 }
 
+/// The keys with nowhere else to be said, as the line under the cursor makes
+/// them true.
+///
+/// Enter brings a window forward on a row, shuts a group on a heading and
+/// gives back the fold's rows on the fold; a row of hints that named one of
+/// those over the other two would be teaching somebody to press the wrong key.
+/// So what the cursor is standing on decides the front of the row, and the
+/// keys that mean the same thing wherever it is standing follow.
+fn hints(screen: &Screen) -> Vec<&'static str> {
+    let list = &screen.list;
+    let mut said = match list.items().get(list.cursor()) {
+        Some(Item::Heading(_, tally)) => vec![
+            match tally.shut {
+                true => "enter opens it",
+                false => "enter shuts it",
+            },
+            "ctrl+x clears the finished",
+        ],
+        Some(Item::Fold(_)) => vec!["enter shows them"],
+        // An agent whose command has ended has no window to bring forward and
+        // nothing left to stop, and the same key that would have stopped it
+        // forgets it instead.
+        Some(Item::Agent(_)) => {
+            let card = match screen.card.is_some() {
+                true => "space closes it",
+                false => "space card",
+            };
+            match list.selected().is_some_and(|view| view.phase().is_terminal()) {
+                true => vec![card, "ctrl+x forget"],
+                false => vec![card, "enter attach", "ctrl+x stop"],
+            }
+        }
+        // A wall with nothing on it has no line under the cursor, and the one
+        // key that changes that is the one worth the room.
+        None => vec!["n starts one"],
+    };
+    said.extend(["ctrl+s axis", "q quit"]);
+    said
+}
+
+/// Those keys on one row, cut to what a screen this wide can hold.
+///
+/// What goes is what is furthest from `?`, and `?` itself never does: a hint
+/// clipped by the terminal reads as a key that ends where the screen does, and
+/// the last one a narrow row has room for should be the one that leads to all
+/// the others.
+fn fitted(said: &[&str], width: usize) -> String {
+    let taken = |kept: &[&str]| {
+        kept.iter()
+            .map(|hint| hint.chars().count() + SEPARATOR.chars().count())
+            .sum::<usize>()
+            + MORE.chars().count()
+    };
+
+    let mut kept = said.to_vec();
+    while !kept.is_empty() && taken(&kept) > width {
+        kept.pop();
+    }
+    kept.push(MORE);
+    kept.join(SEPARATOR)
+}
+
 /// The keys, or whatever the view has to say for itself instead.
 ///
 /// The row under the card is the card's while it is holding a line, because
 /// what enter does there is not what it does anywhere else in the view.
-fn footer(screen: &Screen) -> Line<'static> {
+fn footer(screen: &Screen, width: u16) -> Line<'static> {
     if let Some(notice) = &screen.notice {
         return match notice {
             Notice::Failed(said) => Line::styled(said.clone(), Style::new().fg(role::ERROR)),
@@ -1202,10 +1264,10 @@ fn footer(screen: &Screen) -> Line<'static> {
     }
     Line::styled(
         match &screen.mode {
-            Mode::List => KEYS.to_string(),
+            Mode::List => fitted(&hints(screen), width as usize),
             Mode::Keys => "any key goes back · q quits".to_string(),
             // A question up is the whole of this row, and is drawn above.
-            Mode::Confirming(_) => KEYS.to_string(),
+            Mode::Confirming(_) => fitted(&hints(screen), width as usize),
             Mode::Typing(composer) if composer.narrows() => {
                 "enter narrows it · s: or a: alone clears · esc cancels".to_string()
             }
@@ -1778,7 +1840,10 @@ mod tests {
 
         // And a card nobody is answering has the list's own keys under it.
         let looking = painted(&showing(a_fleet(), Some(asking(&[], None))), (60, 14));
-        assert_eq!(looking[13], KEYS);
+        assert_eq!(
+            looking[13],
+            "space closes it · enter attach · ctrl+x stop · ? keys"
+        );
         assert!(
             !looking.iter().any(|line| line.contains('❯')),
             "with no row to answer on: {looking:?}"
@@ -1940,7 +2005,10 @@ mod tests {
         );
         assert!(screen[5].contains("Running Bash"), "{:?}", screen[5]);
         assert!(screen[5].ends_with("3s"), "{:?}", screen[5]);
-        assert_eq!(screen[9], KEYS, "and the keys, where they can be read");
+        assert_eq!(
+            screen[9], "space card · enter attach · ctrl+x stop · ? keys",
+            "and the keys, where they can be read"
+        );
     }
 
     #[test]
@@ -2480,12 +2548,116 @@ mod tests {
         assert!(all.contains("Claude needs your permission"), "{all}");
         assert!(all.contains("Do you want to proceed?"), "{all}");
         assert_eq!(
-            screen[11], KEYS,
-            "the keys stay on the screen under the card"
+            screen[11], "space closes it · enter attach · ctrl+x stop · ? keys",
+            "the keys stay on the screen under the card, saying what they do \
+             while it is up"
         );
         assert!(
             screen.iter().any(|line| line.contains("ask-a1b")),
             "and the list is still there above it: {all}"
+        );
+    }
+
+    /// The row the keys are drawn on, which is the last one on the screen.
+    fn hint_row(screen: &Screen, size: (u16, u16)) -> String {
+        painted(screen, size).pop().expect("a row for the keys")
+    }
+
+    /// A fleet with nothing left to finish, so there is a fold to walk onto.
+    fn all_done() -> Vec<View> {
+        (0..5)
+            .map(|n| view(&format!("done-{n}"), Phase::Done, Some("did it"), 60))
+            .collect()
+    }
+
+    #[test]
+    fn keymap_hints_are_the_keys_the_line_under_the_cursor_answers_to() {
+        let wide = (80, 12);
+        let mut screen = showing(a_fleet(), None);
+
+        // The view opens on an agent's row, where those keys reach the agent.
+        assert_eq!(
+            hint_row(&screen, wide),
+            "space card · enter attach · ctrl+x stop · ctrl+s axis · q quit · ? keys"
+        );
+
+        // One line up is the heading over it, where the same two keys do
+        // something else entirely.
+        screen.list.up();
+        assert_eq!(
+            hint_row(&screen, wide),
+            "enter shuts it · ctrl+x clears the finished · ctrl+s axis · q quit · ? keys"
+        );
+
+        // And a group somebody has shut is opened by the key that shut it.
+        screen.list.shut_or_open();
+        assert!(
+            hint_row(&screen, wide).starts_with("enter opens it"),
+            "{:?}",
+            hint_row(&screen, wide)
+        );
+    }
+
+    #[test]
+    fn keymap_hints_offer_nothing_the_line_under_the_cursor_cannot_do() {
+        let wide = (80, 12);
+
+        // A card is put away by the key that opened it.
+        let mut screen = showing(a_fleet(), None);
+        screen.card = Some(asking(&[], None));
+        assert!(
+            hint_row(&screen, wide).starts_with("space closes it · enter attach"),
+            "{:?}",
+            hint_row(&screen, wide)
+        );
+
+        // An agent whose command has ended has no window to bring forward and
+        // nothing left to stop.
+        let mut screen = showing(all_done(), None);
+        let row = hint_row(&screen, wide);
+        assert!(row.starts_with("space card · ctrl+x forget"), "{row:?}");
+        assert!(!row.contains("attach"), "{row:?}");
+
+        // The fold is not an agent either: what enter does there is give back
+        // the rows it is holding.
+        for _ in 0..3 {
+            screen.list.down();
+        }
+        assert!(
+            hint_row(&screen, wide).starts_with("enter shows them"),
+            "{:?}",
+            hint_row(&screen, wide)
+        );
+
+        // And a wall with nothing on it has no line under the cursor at all.
+        let screen = showing(Vec::new(), None);
+        assert!(
+            hint_row(&screen, wide).starts_with("n starts one"),
+            "{:?}",
+            hint_row(&screen, wide)
+        );
+    }
+
+    #[test]
+    fn keymap_hints_shed_from_the_far_end_and_never_shed_the_overlay() {
+        let screen = showing(a_fleet(), None);
+        for width in 12..=80 {
+            let row = hint_row(&screen, (width, 12));
+            assert!(
+                row.chars().count() <= width as usize,
+                "a hint cut in half is a key that reads as another one: {row:?}"
+            );
+            assert!(
+                row.ends_with("? keys"),
+                "the row that has all of them is the last thing to go: {row:?}"
+            );
+        }
+
+        // What is shed is what is furthest from it, and what is kept is what
+        // the line under the cursor answers to.
+        assert_eq!(
+            hint_row(&screen, (60, 12)),
+            "space card · enter attach · ctrl+x stop · ? keys"
         );
     }
 

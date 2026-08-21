@@ -1680,6 +1680,41 @@ fn d_shows_what_the_agent_has_changed() {
 }
 
 #[test]
+fn keymap_the_hint_row_says_what_the_line_under_the_cursor_answers_to() {
+    let amx = Harness::new();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    // The row is the one holding the key that leads to all of them, which is
+    // the last thing the row sheds and so the way to find it.
+    let hints = |want: &str| {
+        amx.until(want, || {
+            screen(&amx, &view)
+                .lines()
+                .rfind(|line| line.contains("? keys"))
+                .filter(|row| row.contains(want))
+                .map(str::to_string)
+        })
+    };
+
+    // The view opens on the agent's row, where those keys reach the agent.
+    let row = hints("space card");
+    assert!(row.contains("enter attach"), "{row}");
+    assert!(row.contains("ctrl+x stop"), "{row}");
+
+    // One line up is the heading over it, where the same two keys are about
+    // the group rather than about any one agent.
+    press(&amx, &view, "Up");
+    let heading = hints("enter shuts it");
+    assert!(heading.contains("ctrl+x clears the finished"), "{heading}");
+    assert!(
+        !heading.contains("attach"),
+        "a heading has no window to bring forward:\n{heading}"
+    );
+}
+
+#[test]
 fn the_keys_are_on_the_screen_for_the_asking() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);
