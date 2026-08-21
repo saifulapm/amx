@@ -22,7 +22,7 @@ use std::path::Path;
 use crate::config::Config;
 use crate::exit;
 use crate::notify::{self, Notice};
-use crate::store::{Agent, Meta, Phase, Source, State};
+use crate::store::{Agent, Kind, Meta, Phase, Source, State};
 
 /// How the hook learns which agent it belongs to. `_boot` puts it in the
 /// pane's environment, so every process the vendor starts inherits it.
@@ -163,10 +163,14 @@ fn kind(payload: &Value) -> Option<&str> {
 ///   writes, and moves nothing. Only this event may set the session id —
 ///   every payload carries one, and a subagent's is not the agent's.
 /// * `UserPromptSubmit` and `PreToolUse` mean the agent is working, and the
-///   tool call says what it is doing.
+///   tool call says what it is doing. The one tool that is not work is
+///   `AskUserQuestion`: it draws a menu and waits, and its payload carries the
+///   question and every choice under it.
 /// * `Notification` means it has stopped on a question, and carries its words.
 ///   The choices under it are on the pane, which this command does not read;
-///   a reader fills them in later.
+///   a reader fills them in later. Its `notification_type` is the vendor's own
+///   word for what the notice is about, and it is the only thing here that
+///   names a permission prompt for what it is.
 /// * `Stop` ends the turn, and its payload is the freshest place the answer
 ///   ever exists — the transcript is written asynchronously and lags it.
 /// * Anything carrying an `agent_id` is a subagent's, and a subagent's work is
@@ -201,6 +205,20 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             None
         }
 
+        "PreToolUse" if payload["tool_name"] == "AskUserQuestion" => {
+            state.state = Phase::Waiting;
+            // Not running anything: the menu is what it is doing.
+            state.summary = None;
+            let (text, options) = question_asked(&payload["tool_input"]).unzip();
+            state.asks(text);
+            state.options = options.unwrap_or_default();
+            state.kind = Some(Kind::Question);
+            // Nothing else will say this agent is waiting. The vendor notifies
+            // about an idle session only when nothing is open on it, and a
+            // menu is open on this one.
+            Some(Notice::waiting(&meta.id, state.question.as_deref()))
+        }
+
         "PreToolUse" => {
             state.state = Phase::Working;
             if let Some(tool) = payload["tool_name"].as_str() {
@@ -213,6 +231,14 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         "Notification" => {
             state.state = Phase::Waiting;
             state.asks(payload["message"].as_str().map(str::to_string));
+            match payload["notification_type"].as_str() {
+                Some("permission_prompt") => state.kind = Some(Kind::Permission),
+                // The vendor nudges about an idle session only when nothing is
+                // open on it: no permission box, no menu. Whatever amx thought
+                // was outstanding is not on that screen.
+                Some("idle_prompt") => state.kind = None,
+                _ => {}
+            }
             Some(Notice::waiting(&meta.id, state.question.as_deref()))
         }
 
@@ -229,6 +255,29 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
 
         _ => None,
     }
+}
+
+/// The question an `AskUserQuestion` call is about to put on the pane, and the
+/// choices under it.
+///
+/// The tool takes up to four questions and asks them one at a time, so the
+/// first is the one on the screen. A choice is its label: the sentence beside
+/// it explains it to whoever is reading, but the label is what an answer
+/// names. Anything else in the payload is the vendor's business.
+fn question_asked(input: &Value) -> Option<(String, Vec<String>)> {
+    let asking = input["questions"].as_array()?.first()?;
+    let text = asking["question"].as_str()?.to_string();
+    let options = asking["options"]
+        .as_array()
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|option| option["label"].as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((text, options))
 }
 
 /// The answer at the end of a transcript, if the turn has ended.
@@ -389,6 +438,150 @@ mod tests {
             let mut state = asked.clone();
             apply(&payload, &mut state, &mut meta());
             assert!(state.options.is_empty(), "{payload}");
+        }
+    }
+
+    #[test]
+    fn hook_the_vendor_names_the_kind_of_prompt_it_is_notifying_about() {
+        // Measured against claude 2.1.237: the notification that a permission
+        // box is up carries notification_type `permission_prompt` beside the
+        // message. The words alone would not do. They are one sentence about
+        // one tool, and every other notice the vendor sends is a sentence in
+        // the same shape.
+        let (state, _, notice) = fold(json!({
+            "hook_event_name": "Notification",
+            "message": "Claude needs your permission to use Bash",
+            "notification_type": "permission_prompt"
+        }));
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(state.kind, Some(Kind::Permission));
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Claude needs your permission to use Bash")
+        );
+        assert!(notice.is_some(), "somebody has to be told");
+    }
+
+    #[test]
+    fn hook_a_notification_of_no_named_kind_leaves_the_kind_where_it_was() {
+        // Every notification amx saw before this carried no type at all, and
+        // it still means what it always meant: this agent has stopped, and
+        // here are the words it stopped on.
+        let mut state = State {
+            state: Phase::Waiting,
+            kind: Some(Kind::Permission),
+            ..State::default()
+        };
+        apply(
+            &json!({
+                "hook_event_name": "Notification",
+                "message": "Claude needs your permission to use Bash"
+            }),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(state.kind, Some(Kind::Permission));
+    }
+
+    #[test]
+    fn hook_a_nudge_about_an_idle_session_is_a_question_of_no_kind() {
+        // The vendor only nudges about an idle session when nothing is open on
+        // it: no permission box, no menu. Whatever amx thought was
+        // outstanding, it is not on that screen.
+        let mut state = State {
+            state: Phase::Waiting,
+            kind: Some(Kind::Permission),
+            ..State::default()
+        };
+        apply(
+            &json!({
+                "hook_event_name": "Notification",
+                "message": "Claude is waiting for your input",
+                "notification_type": "idle_prompt"
+            }),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(state.kind, None);
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Claude is waiting for your input")
+        );
+    }
+
+    #[test]
+    fn hook_a_question_the_vendor_asks_is_a_kind_of_its_own() {
+        // AskUserQuestion is a tool call, so the only hook it fires is the one
+        // that says a tool is about to run. It never runs in the sense the
+        // others do: it draws a menu and waits. The question and the choices
+        // are in the payload, which is earlier and surer than the pane.
+        let (state, _, notice) = fold(json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "AskUserQuestion",
+            "tool_input": {
+                "questions": [{
+                    "question": "Which fixture should the port keep?",
+                    "header": "Fixture",
+                    "options": [
+                        { "label": "the sqlite one", "description": "no daemon to run" },
+                        { "label": "the docker one", "description": "closer to production" }
+                    ],
+                    "multiSelect": false
+                }]
+            }
+        }));
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(state.kind, Some(Kind::Question));
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Which fixture should the port keep?")
+        );
+        assert_eq!(state.options, ["the sqlite one", "the docker one"]);
+        assert_eq!(state.summary, None, "it is not running anything");
+        assert!(
+            notice.is_some(),
+            "no notification follows this one, so nobody would be told at all"
+        );
+    }
+
+    #[test]
+    fn hook_a_question_amx_cannot_read_is_still_a_question_of_that_kind() {
+        // A menu amx cannot quote is still a menu somebody has to answer.
+        for input in [
+            json!({ "questions": [] }),
+            json!({ "questions": "malformed" }),
+            json!({}),
+        ] {
+            let (state, _, _) = fold(json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "AskUserQuestion",
+                "tool_input": input
+            }));
+            assert_eq!(state.state, Phase::Waiting, "{}", state.state);
+            assert_eq!(state.kind, Some(Kind::Question));
+            assert_eq!(state.question, None);
+        }
+    }
+
+    #[test]
+    fn hook_a_question_that_is_over_takes_its_kind_with_it() {
+        let asked = State {
+            state: Phase::Waiting,
+            question: Some("Which fixture should the port keep?".to_string()),
+            options: vec!["the sqlite one".to_string()],
+            kind: Some(Kind::Question),
+            ..State::default()
+        };
+
+        for payload in [
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash" }),
+            json!({ "hook_event_name": "UserPromptSubmit", "prompt": "carry on" }),
+            json!({ "hook_event_name": "Stop", "last_assistant_message": "done" }),
+        ] {
+            let mut state = asked.clone();
+            apply(&payload, &mut state, &mut meta());
+            assert_eq!(state.kind, None, "{payload}");
+            assert_eq!(state.question, None);
         }
     }
 
@@ -559,6 +752,51 @@ mod tests {
 
     fn hook(root: &Path, id: &str, payload: &str) -> i32 {
         run(Some(id), root, &mut payload.as_bytes(), &quiet())
+    }
+
+    /// The document on disk, as a caller that is not amx would find it.
+    fn written(agent: &Agent) -> Value {
+        let text = std::fs::read_to_string(agent.dir().join("state.json")).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn hook_a_permission_and_a_question_reach_the_record_as_different_kinds() {
+        let root = TempDir::new().unwrap();
+        let asked = an_agent(root.path());
+        let allowed = Agent::create(
+            root.path(),
+            &Meta {
+                id: "port-cli-batch-c3d".to_string(),
+                ..meta()
+            },
+        )
+        .unwrap();
+
+        hook(
+            root.path(),
+            asked.id(),
+            &json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "AskUserQuestion",
+                "tool_input": { "questions": [{ "question": "Which fixture?", "options": [] }] }
+            })
+            .to_string(),
+        );
+        hook(
+            root.path(),
+            allowed.id(),
+            &json!({
+                "hook_event_name": "Notification",
+                "message": "Claude needs your permission to use Bash",
+                "notification_type": "permission_prompt"
+            })
+            .to_string(),
+        );
+
+        assert_eq!(written(&asked)["question"]["kind"], "question");
+        assert_eq!(written(&asked)["question"]["text"], "Which fixture?");
+        assert_eq!(written(&allowed)["question"]["kind"], "permission");
     }
 
     #[test]
