@@ -671,11 +671,191 @@ fn float(frame: &mut Frame, card: &Card, answering: Option<&Composer>, area: Rec
 ///
 /// A screen is read from the bottom, where the newest of it is; a diff is read
 /// from the top, where the first file it touched is.
+///
+/// claude's own furniture comes off the screen *before* the rows are counted.
+/// After would be worse than not at all: the card would spend its window on
+/// the vendor's composer and then have nothing left for the work.
 fn body(card: &Card, rows: usize) -> Vec<&str> {
-    match card.changes {
-        true => card.body.lines().take(rows).collect(),
-        false => tail(&card.body, rows),
+    if card.changes {
+        return card.body.lines().take(rows).collect();
     }
+    let read: Vec<&str> = card.body.lines().collect();
+    // An agent whose command has ended has no pane left to capture, so what
+    // the card is holding is the answer it left, and an answer is not a screen
+    // with a vendor's chrome on it.
+    let kept = match card.phase.is_terminal() {
+        true => read.as_slice(),
+        false => cut(&read),
+    };
+    let shown = tail(kept, rows);
+
+    // Said only where the walk actually cut. An agent that has said nothing
+    // yet is a different fact from a pane holding nothing but furniture, and
+    // a card that answered both with the same sentence would be lying about
+    // one of them.
+    match shown.is_empty() && kept.len() < read.len() {
+        true => vec![ALL_CHROME],
+        false => shown,
+    }
+}
+
+/// What the card says where the walk finds nothing underneath the chrome.
+const ALL_CHROME: &str = "amx captured nothing but claude's own chrome";
+
+/// claude's own furniture, cut off the bottom of a capture.
+///
+/// The vendor draws the same block under every pane it has the room for: the
+/// composer's top border, whatever is staged in the box, the composer's bottom
+/// border, the statusline, and the mode footer. None of it is the agent's
+/// work, and all of it stands between a person and the rows they opened the
+/// card to read.
+///
+/// **Read from the bottom, and every step capped.** A rule that found the last
+/// footer row and cut everything below it reads the same and is not: an agent
+/// that quotes a mode footer — `amx send` delivers captures of other panes —
+/// and then stops on a permission prompt would have the quotation found as the
+/// anchor and the prompt cut out from under it. From the bottom a quotation is
+/// unreachable, because a screen with a real prompt on it does not end in a
+/// footer. Where a step meets a shape it was not measured against it gives
+/// back what it cut by position and keeps what it cut by an anchor, so what a
+/// wrong number costs is furniture left on the screen and never a row of work
+/// taken off it.
+///
+/// Measured against a live claude 2.1.237 on 2026-08-21 at 100, 30, 24, 23,
+/// 22, 21 and 20 columns and at pane heights 30, 12, 10, 9 and 8, with the
+/// composer empty and with three and ten rows staged in it.
+fn cut<'a, 'b>(rows: &'a [&'b str]) -> &'a [&'b str] {
+    // Past the blank rows a pane is padded out with, to the last row the
+    // vendor actually drew on.
+    let mut at = rows.len();
+    while at > 0 && blank(rows[at - 1]) {
+        at -= 1;
+    }
+
+    // The anchor. No footer, no cut: the screens carrying none are the
+    // blocking prompts, the full-screen dialogs, a pane too small for the
+    // vendor to draw its chrome in, and the seconds after a paste — and on
+    // every one of them the whole screen is the right answer.
+    if at == 0 || !mode_footer(rows[at - 1]) {
+        return rows;
+    }
+    at -= 1;
+    let footer = at;
+
+    // The statusline, which is whatever somebody configured and is not always
+    // there at all, so it is stepped over by position. The cap is what keeps
+    // the walk off the transcript: claude renders a transient warning flush
+    // against the composer's top border with no blank row between them, and a
+    // walk that ran upward until a blank row would have eaten it.
+    let mut stepped = 0;
+    while at > 0 && !rule_row(rows[at - 1]) {
+        if stepped == STATUSLINE {
+            return &rows[..footer];
+        }
+        at -= 1;
+        stepped += 1;
+    }
+    if at == 0 {
+        return &rows[..footer];
+    }
+
+    // The composer's bottom border.
+    let mut borders = 0;
+    while at > 0 && borders < BOTTOM && rule_row(rows[at - 1]) {
+        at -= 1;
+        borders += 1;
+    }
+    let bottom = at;
+
+    // Everything staged in the composer, however many rows of it there are.
+    // The walk is between the box's two borders now, so these rows are taken
+    // by position and never because one was recognised; what stops it is the
+    // top border, which ends in its rule wherever the label breaks. Reaching
+    // the cap means that border was never found, and a step that cannot find
+    // its border gives back what it took.
+    let mut typed = 0;
+    while at > 0 && !ends_in_rule(rows[at - 1]) {
+        if typed == rows.len() / 2 {
+            return &rows[..bottom];
+        }
+        at -= 1;
+        typed += 1;
+    }
+    if at == 0 {
+        return &rows[..bottom];
+    }
+
+    // The composer's top border: the row the scan stopped on, and only it.
+    at -= 1;
+
+    // And the line claude spins while a turn runs, which sits above the box
+    // with a blank row between them.
+    let mut above = at;
+    while above > 0 && blank(rows[above - 1]) {
+        above -= 1;
+    }
+    match above > 0 && spinning(rows[above - 1]) {
+        true => &rows[..above - 1],
+        false => &rows[..at],
+    }
+}
+
+/// How many rows of statusline the walk will step over to reach the composer's
+/// bottom border: a margin over the one row measured, not a measured maximum.
+const STATUSLINE: usize = 2;
+
+/// How many rows the composer's bottom border can take. One at 22 columns and
+/// wider, which is every pane 2.1.237 draws a footer in at all; two below
+/// that, where the box is wider than the pane and wraps.
+const BOTTOM: usize = 2;
+
+/// The rule claude draws its composer's box with.
+const RULE: char = '─';
+
+/// What claude's mode footer opens with. The two glyphs are the whole of the
+/// anchor: the words after them truncate as the pane narrows and are gone by
+/// 30 columns, and these are present in all six permission modes at every
+/// width from 24 to 220.
+const MODE: [&str; 2] = ["⏵⏵", "⏸"];
+
+/// The two fragments claude's turn spinner always carries — the ellipsis
+/// before its elapsed time and the separator after it. Punctuation rather than
+/// any word, so the vendor renaming its gerunds does not move the anchor, and
+/// neither fragment is on the line it leaves behind when the turn is over.
+const SPINNING: [&str; 2] = ["… (", "s · "];
+
+/// A row with nothing on it.
+fn blank(row: &str) -> bool {
+    row.trim().is_empty()
+}
+
+/// A row that is the vendor's rule and nothing else, which is what the
+/// composer's bottom border is. Never a blank row: every character of an empty
+/// string is a rule, and a blank row is not a border.
+fn rule_row(row: &str) -> bool {
+    let drawn = row.trim();
+    !drawn.is_empty() && drawn.chars().all(|c| c == RULE)
+}
+
+/// A row the vendor's rule ends. The composer's top border carries a
+/// right-anchored label, so it is not a rule row — but its last character is
+/// the rule wherever the label breaks, and that is what makes it findable.
+fn ends_in_rule(row: &str) -> bool {
+    row.trim_end().ends_with(RULE)
+}
+
+/// claude's mode footer, which is the last row of every pane the vendor has
+/// the room to draw one in. Read from what the row opens with, so a footer the
+/// vendor indents is still a footer and a glyph mid-sentence is not.
+fn mode_footer(row: &str) -> bool {
+    let drawn = row.trim_start();
+    MODE.iter().any(|glyph| drawn.starts_with(glyph))
+}
+
+/// The line claude spins while a turn runs, told apart from the line it leaves
+/// behind when the turn is over by the ellipsis and the elapsed time.
+fn spinning(row: &str) -> bool {
+    SPINNING.iter().all(|fragment| row.contains(fragment))
 }
 
 /// The choices under the question, numbered the way every surface numbers them
@@ -943,13 +1123,14 @@ fn wrapped(text: &str, width: u16) -> u16 {
 }
 
 /// The last rows of a screen, with the blank ones at the bottom dropped: a
-/// pane is as tall as its window and its content rarely is.
-fn tail(text: &str, rows: usize) -> Vec<&str> {
-    let mut lines: Vec<&str> = text.lines().collect();
+/// pane is as tall as its window and its content rarely is, and a cut can
+/// expose more of them.
+fn tail<'a>(rows: &[&'a str], wanted: usize) -> Vec<&'a str> {
+    let mut lines = rows.to_vec();
     while lines.last().is_some_and(|line| line.trim().is_empty()) {
         lines.pop();
     }
-    let from = lines.len().saturating_sub(rows);
+    let from = lines.len().saturating_sub(wanted);
     lines.split_off(from)
 }
 
@@ -2449,9 +2630,132 @@ mod tests {
 
     #[test]
     fn view_reads_the_bottom_of_a_screen_and_drops_what_is_blank() {
-        assert_eq!(tail("a\nb\nc\n\n\n", 2), ["b", "c"]);
-        assert_eq!(tail("a\nb", 5), ["a", "b"]);
-        assert!(tail("", 3).is_empty());
+        let screen = |text: &'static str| text.lines().collect::<Vec<&str>>();
+        assert_eq!(tail(&screen("a\nb\nc\n\n\n"), 2), ["b", "c"]);
+        assert_eq!(tail(&screen("a\nb"), 5), ["a", "b"]);
+        assert!(tail(&screen(""), 3).is_empty());
+    }
+
+    /// The five rows claude draws at the bottom of every pane it has the room
+    /// for, in the vendor's own order: the composer's top border with its
+    /// right-anchored label, whatever is staged in the box, the composer's
+    /// bottom border, the statusline, and the mode footer. Transcribed from a
+    /// live 2.1.237 at 100 columns on 2026-08-21.
+    const CHROME: [&str; 5] = [
+        "───────────────────────────── execute amx-v2 tail ─",
+        "❯ ",
+        "───────────────────────────────────────────────────",
+        "  Opus 5 │ ◈ 0% │ amx-main (main) │ ◖ xhigh",
+        "  ⏵⏵ accept edits on (shift+tab to cycle) · ← 3 agents",
+    ];
+
+    /// A row of the agent's own work, which is the one thing no step may take.
+    const SAID: &str = "what the agent said";
+
+    /// That screen with `typed` staged in the composer, under a row of work.
+    fn staged(typed: &[&'static str]) -> Vec<&'static str> {
+        let mut screen = vec![SAID, CHROME[0]];
+        screen.extend_from_slice(typed);
+        screen.extend_from_slice(&CHROME[2..]);
+        screen
+    }
+
+    #[test]
+    fn view_tail_cuts_the_chrome_claude_draws_under_every_pane() {
+        let mut screen = vec![SAID, "", "✻ Nesting… (15s · thinking)", ""];
+        screen.extend_from_slice(&CHROME);
+        assert_eq!(
+            cut(&screen),
+            [SAID, ""].as_slice(),
+            "the spinner goes with the box it sits over"
+        );
+    }
+
+    #[test]
+    fn view_tail_cuts_a_composer_whatever_is_staged_in_it() {
+        // A composer with one row of text in it is the state that let a walk
+        // cutting exactly one input row pass for a working rule, so neither
+        // fixture here has one: a task wrapped over three rows, and a message
+        // typed over four lines.
+        let wrapped = staged(&[
+            "❯ port the importer and then check every",
+            "  call site that used to take the old",
+            "  shape",
+        ]);
+        assert_eq!(cut(&wrapped), [SAID].as_slice());
+
+        let lines = staged(&["❯ first", "  second", "  third", "  fourth"]);
+        assert_eq!(cut(&lines), [SAID].as_slice());
+    }
+
+    #[test]
+    fn view_tail_leaves_a_screen_the_vendor_drew_no_footer_under_alone() {
+        // A permission prompt, which ends at its own confirm row: cutting
+        // upward from there would take the question the card was opened for.
+        let prompt = [
+            "───────────────────────────────────",
+            " Bash command",
+            "   rm -rf build",
+            " Do you want to proceed?",
+            " ❯ 1. Yes",
+            "   2. No",
+            " Esc to cancel · Tab to amend",
+        ];
+        assert_eq!(cut(&prompt), prompt.as_slice());
+
+        // And a pane too short for the vendor to draw its chrome in, whose
+        // last row is the composer's own bottom border.
+        let short = [SAID, CHROME[0], CHROME[1], CHROME[2]];
+        assert_eq!(cut(&short), short.as_slice());
+    }
+
+    #[test]
+    fn view_tail_gives_back_by_position_what_it_cannot_place() {
+        // Three rows between the footer and the nearest rule: not the shape
+        // this was measured against, so the statusline step abandons and only
+        // the footer — matched by its own opener — stays cut.
+        let odd = [SAID, CHROME[2], "one", "two", "three", CHROME[4]];
+        assert_eq!(cut(&odd), &odd[..odd.len() - 1]);
+
+        // A composer whose staged text is taller than half the capture: the
+        // scan runs past its cap without meeting a top border, so it gives
+        // back every row it took and the box survives on screen.
+        let mut runaway = vec![SAID];
+        runaway.extend((0..8).map(|_| "  typed"));
+        runaway.extend_from_slice(&CHROME[2..]);
+        assert_eq!(
+            cut(&runaway),
+            &runaway[..runaway.len() - 3],
+            "the footer, the statusline and the bottom border keep their anchors"
+        );
+    }
+
+    #[test]
+    fn view_tail_says_so_when_a_capture_is_nothing_but_chrome() {
+        let mut card = asking(&[], None);
+        card.phase = Phase::Working;
+        card.body = CHROME.join("\n");
+        assert_eq!(body(&card, 8), [ALL_CHROME]);
+
+        // Which is not what an agent with nothing to say gets: no capture was
+        // cut there, and "the pane held only furniture" is a different fact.
+        card.body = String::new();
+        assert!(body(&card, 8).is_empty());
+    }
+
+    #[test]
+    fn view_tail_is_cut_before_the_card_measures_what_it_has() {
+        let mut card = asking(&[], None);
+        card.phase = Phase::Working;
+        card.question = None;
+        let mut screen = vec!["what the agent said"];
+        screen.extend_from_slice(&CHROME);
+        card.body = screen.join("\n");
+
+        // Two borders and the one row left under them, not the six rows the
+        // capture has: a card that measured before it cut would spend its
+        // height on the vendor's furniture.
+        assert_eq!(card_rows(&card, false, 60), 3);
     }
 
     #[test]

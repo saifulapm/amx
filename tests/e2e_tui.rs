@@ -119,6 +119,41 @@ fn pastes(amx: &Harness, view: &str, text: &str) {
     amx.tmux(&["paste-buffer", "-p", "-r", "-t", view]);
 }
 
+/// A pane showing exactly these rows and nothing else, where a real agent's
+/// pane would be: the fixture screens the chrome cut is measured against, put
+/// somewhere the view has to read them the way it reads any other pane.
+fn a_pane_showing(amx: &Harness, rows: &[&str]) -> String {
+    let drawn: String = rows.iter().map(|row| format!("{row}\\n")).collect();
+    amx.tmux(&[
+        "new-session",
+        "-d",
+        "-x",
+        "60",
+        "-y",
+        "24",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "--",
+        "sh",
+        "-c",
+        &format!("printf '{drawn}'; while :; do sleep 0.05; done"),
+    ])
+}
+
+/// The five rows claude draws at the bottom of every pane it has the room
+/// for, in the vendor's own order: the composer's top border with its
+/// right-anchored label, whatever is staged in the box, the composer's bottom
+/// border, the statusline, and the mode footer. Transcribed from a live
+/// 2.1.237 on 2026-08-21.
+const CHROME: [&str; 5] = [
+    "──────────────────────────── execute amx-v2 ─",
+    "❯ ",
+    "─────────────────────────────────────────────",
+    "  Opus 5 │ amx-main (main) │ xhigh",
+    "  ⏵⏵ accept edits on (shift+tab to cycle)",
+];
+
 /// A task of numbered lines, more of them than any composer will show at once.
 fn twenty_rows() -> String {
     (1..=20)
@@ -708,6 +743,109 @@ fn card_floats_over_the_list_with_the_question_and_the_pane() {
     amx.until("the card to go", || {
         (!screen(&amx, &view).contains("rm -rf build")).then_some(())
     });
+}
+
+#[test]
+fn card_tail_cuts_the_chrome_claude_draws_under_its_pane() {
+    let amx = Harness::new();
+    let mut pane_rows = vec![
+        "i ported the importer",
+        "",
+        "✻ Nesting… (15s · still thinking)",
+        "",
+    ];
+    pane_rows.extend_from_slice(&CHROME);
+    let pane = a_pane_showing(&amx, &pane_rows);
+    amx.record("port-cli-b2c", &pane);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("port-cli-b2c").then_some(())
+    });
+
+    press(&amx, &view, "Space");
+    let carded = amx.until("the card", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("i ported the importer").then_some(drawn)
+    });
+    for furniture in [
+        "accept edits on",
+        "execute amx-v2",
+        "amx-main (main)",
+        "still thinking",
+    ] {
+        assert!(
+            !carded.contains(furniture),
+            "{furniture} is claude's, not the agent's:\n{carded}"
+        );
+    }
+}
+
+#[test]
+fn card_tail_cuts_a_composer_a_message_was_typed_into() {
+    let amx = Harness::new();
+    // Wrapped over three rows, because a composer holding one row of text is
+    // the state a walk that cut exactly one input row would pass.
+    let mut pane_rows = vec!["i ported the importer", CHROME[0]];
+    pane_rows.extend_from_slice(&[
+        "❯ and now check every call site that",
+        "  used to take the old shape, then",
+        "  run the suite",
+    ]);
+    pane_rows.extend_from_slice(&CHROME[2..]);
+    let pane = a_pane_showing(&amx, &pane_rows);
+    amx.record("port-cli-b2c", &pane);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("port-cli-b2c").then_some(())
+    });
+
+    press(&amx, &view, "Space");
+    let carded = amx.until("the card", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("i ported the importer").then_some(drawn)
+    });
+    for staged in ["check every call site", "the old shape", "run the suite"] {
+        assert!(
+            !carded.contains(staged),
+            "a line somebody is part way through typing is not the tail:\n{carded}"
+        );
+    }
+    assert!(!carded.contains("accept edits on"), "{carded}");
+}
+
+#[test]
+fn card_tail_leaves_a_prompt_whole_where_the_vendor_drew_no_footer() {
+    let amx = Harness::new();
+    let pane = a_pane_showing(
+        &amx,
+        &[
+            "─────────────────────────────────────────────",
+            " Bash command",
+            "   rm -rf build",
+            " Permission rule Bash requires confirmation.",
+            " Do you want to proceed?",
+            " ❯ 1. Yes",
+            "   2. No",
+        ],
+    );
+    amx.record("port-cli-b2c", &pane);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("port-cli-b2c").then_some(())
+    });
+
+    press(&amx, &view, "Space");
+    let carded = amx.until("the card", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("rm -rf build").then_some(drawn)
+    });
+    // Every row of it, options included: a screen with a real prompt on it does
+    // not end in a footer, and cutting one that has none would take the answer
+    // the card was opened to give.
+    assert!(carded.contains("2. No"), "{carded}");
 }
 
 #[test]
