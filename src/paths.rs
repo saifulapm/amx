@@ -13,10 +13,29 @@
 
 use anyhow::{Context, Result, bail};
 use std::ffi::OsString;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// Test-only override of the state root.
 const STATE_DIR_ENV: &str = "AMX_STATE_DIR";
+
+/// What a directory amx makes is kept at, and what a file it writes is kept
+/// at: an agent's task, the answers a person gave it and the path to the
+/// transcript of the whole conversation are the owner's business alone.
+pub const DIR_MODE: u32 = 0o700;
+pub const FILE_MODE: u32 = 0o600;
+
+/// Set `path` to `mode`.
+///
+/// The mode is asked for at creation *and* set here, because neither creation
+/// call keeps the promise on its own: a mode handed to `open` is a request the
+/// umask may take bits out of, and it is ignored outright for a file that is
+/// already there — a state file amx wrote before this law existed, or a log an
+/// agent's own shell left lying about.
+pub fn keep_to_the_owner(path: &Path, mode: u32) -> Result<()> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .with_context(|| format!("keeping {} to its owner", path.display()))
+}
 
 /// The directory holding one subdirectory per agent.
 pub fn state_root() -> Result<PathBuf> {
@@ -132,6 +151,28 @@ mod tests {
             root.join("fix-login-a1b")
         );
         assert!(agent_dir("../escape").is_err());
+    }
+
+    #[test]
+    fn hardening_a_mode_is_set_rather_than_asked_for() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        keep_to_the_owner(&path, FILE_MODE).unwrap();
+        keep_to_the_owner(dir.path(), DIR_MODE).unwrap();
+        assert_eq!(mode_of(&path), FILE_MODE, "a file that was already there");
+        assert_eq!(mode_of(dir.path()), DIR_MODE);
+
+        // And a path that is not there is a failure with the path in it.
+        let missing = dir.path().join("never-written");
+        let said = format!("{:#}", keep_to_the_owner(&missing, FILE_MODE).unwrap_err());
+        assert!(said.contains("never-written"), "{said}");
+    }
+
+    fn mode_of(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
 
     #[test]

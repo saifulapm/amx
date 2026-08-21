@@ -31,6 +31,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::paths;
 use crate::tmux::{PaneId, Socket};
 
 const META: &str = "meta.json";
@@ -432,12 +433,15 @@ impl Agent {
         if dir.join(META).exists() {
             bail!("agent `{}` already has a record", meta.id);
         }
-        // A task and the answers to it are the owner's business alone.
+        // A task and the answers to it are the owner's business alone — and
+        // the directory is usually there already, made by whatever put the
+        // pane's handoff in it, so the mode is set rather than asked for.
         std::fs::DirBuilder::new()
             .recursive(true)
-            .mode(0o700)
+            .mode(paths::DIR_MODE)
             .create(&dir)
             .with_context(|| format!("creating {}", dir.display()))?;
+        paths::keep_to_the_owner(&dir, paths::DIR_MODE)?;
 
         let agent = Agent {
             id: meta.id.clone(),
@@ -523,9 +527,10 @@ impl Agent {
             .write(true)
             .create(true)
             .truncate(false)
-            .mode(0o600)
+            .mode(paths::FILE_MODE)
             .open(&path)
             .with_context(|| format!("opening {}", path.display()))?;
+        paths::keep_to_the_owner(&path, paths::FILE_MODE)?;
         let lock = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive)
             .map_err(|(_, errno)| errno)
             .with_context(|| format!("locking {}", path.display()))?;
@@ -617,9 +622,10 @@ impl Writer<'_> {
         let mut file = OpenOptions::new()
             .append(true)
             .create(true)
-            .mode(0o600)
+            .mode(paths::FILE_MODE)
             .open(&path)
             .with_context(|| format!("opening {}", path.display()))?;
+        paths::keep_to_the_owner(&path, paths::FILE_MODE)?;
         file.write_all(&line)
             .with_context(|| format!("appending to {}", path.display()))
     }
@@ -673,9 +679,12 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         .write(true)
         .create(true)
         .truncate(true)
-        .mode(0o600)
+        .mode(paths::FILE_MODE)
         .open(&temporary)
         .with_context(|| format!("creating {}", temporary.display()))?;
+    // Before a byte of the document goes in, and not after: what is renamed
+    // over the target is a file that was never readable by anybody else.
+    paths::keep_to_the_owner(&temporary, paths::FILE_MODE)?;
     file.write_all(bytes)
         .with_context(|| format!("writing {}", temporary.display()))?;
     drop(file);
@@ -687,6 +696,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tempfile::TempDir;
@@ -755,6 +765,50 @@ mod tests {
             0o700,
             "an agent's task and its answers are nobody else's business"
         );
+    }
+
+    /// The permission bits, as anything but amx would read them.
+    fn mode_of(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    /// A mode as a set of permissions, for a test that leaves one lying about.
+    fn mode(bits: u32) -> std::fs::Permissions {
+        std::fs::Permissions::from_mode(bits)
+    }
+
+    #[test]
+    fn hardening_every_file_in_a_record_is_the_owners_alone() {
+        // Neither the directory nor the files in it are amx's to assume: the
+        // directory is made before there is a record to put in it, a mode
+        // passed to `open` is a request the umask may take bits out of, and it
+        // is ignored outright for a file that is already there.
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join("fix-login-a1b");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, mode(0o755)).unwrap();
+        std::fs::write(dir.join(EVENTS), "").unwrap();
+        std::fs::set_permissions(dir.join(EVENTS), mode(0o644)).unwrap();
+
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        let writer = agent.writer().unwrap();
+        writer
+            .append(&Event::new("SessionStart", serde_json::json!({})))
+            .unwrap();
+        writer.update_state(|s| s.state = Phase::Working).unwrap();
+        writer
+            .update_meta(|m| m.session = Some("abc-123".to_string()))
+            .unwrap();
+        drop(writer);
+
+        assert_eq!(mode_of(&dir), 0o700, "the directory");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            assert_eq!(mode_of(&path), 0o600, "{}", path.display());
+            checked += 1;
+        }
+        assert_eq!(checked, 4, "the record, the state, the log and the lock");
     }
 
     #[test]
