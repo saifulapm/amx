@@ -44,11 +44,21 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::{install, registry, worktree};
 
 /// The one vendor whose trust amx knows how to answer.
 const VENDOR: &str = "claude";
+
+/// How long amx waits for the vendor's lock before leaving the file alone,
+/// and how often it looks again while it waits.
+const PATIENCE: Duration = Duration::from_secs(2);
+const RETRY: Duration = Duration::from_millis(20);
+
+/// When a lock nobody has refreshed counts as abandoned. The vendor's own
+/// threshold, so that amx judges an orphan the way the vendor judges one.
+const STALE: Duration = Duration::from_secs(10);
 
 /// The vendor's config file, and the two keys inside it that decide the
 /// screen.
@@ -120,6 +130,17 @@ pub fn merge(store: &mut Value, dir: &Path) -> bool {
 /// linked worktree to it, so a repository somebody has already trusted covers
 /// every tree amx cuts inside it and there is nothing to write.
 pub fn seed(store: &Path, tree: &Path, inherits: Option<&Path>, now: u64) -> Result<bool> {
+    seed_within(store, tree, inherits, now, PATIENCE)
+}
+
+/// The same, with the wait for the vendor's lock named.
+fn seed_within(
+    store: &Path,
+    tree: &Path,
+    inherits: Option<&Path>,
+    now: u64,
+    patience: Duration,
+) -> Result<bool> {
     if !worktree::is_amx_tree(tree) {
         bail!(
             "{} is not a tree amx made, so its trust is not amx's to answer",
@@ -127,9 +148,25 @@ pub fn seed(store: &Path, tree: &Path, inherits: Option<&Path>, now: u64) -> Res
         );
     }
 
+    // Looked at before the lock is asked for: the ordinary spawn is into a
+    // repository somebody has trusted already, and standing in the vendor's
+    // way to find out there is nothing to do would be a poor trade.
+    if covered(&read(store)?.unwrap_or_else(|| json!({})), tree, inherits) {
+        return Ok(false);
+    }
+
+    let Some(_held) = Held::take(store, patience, STALE)? else {
+        bail!(
+            "{} is being written by claude, so amx left it alone",
+            store.display()
+        );
+    };
+
+    // Read again inside the lock: what was looked at a moment ago is what the
+    // vendor may have been in the middle of replacing.
     let existing = read(store)?;
     let mut document = existing.clone().unwrap_or_else(|| json!({}));
-    if trusted(&document, tree) || inherits.is_some_and(|repo| trusted(&document, repo)) {
+    if covered(&document, tree, inherits) {
         return Ok(false);
     }
     if !merge(&mut document, tree) {
@@ -139,6 +176,75 @@ pub fn seed(store: &Path, tree: &Path, inherits: Option<&Path>, now: u64) -> Res
     back_up(store, now, existing.is_some())?;
     write(store, &document)?;
     Ok(true)
+}
+
+/// Whether the vendor would let an agent into `tree` as things stand, either
+/// because the tree is trusted or because the repository it belongs to is.
+fn covered(store: &Value, tree: &Path, inherits: Option<&Path>) -> bool {
+    trusted(store, tree) || inherits.is_some_and(|repo| trusted(store, repo))
+}
+
+/// The lock the vendor holds while it writes, taken the vendor's own way.
+///
+/// claude guards every write to this file with a directory beside it: whoever
+/// manages to make `<store>.lock` holds it, and one nobody has touched for
+/// [`STALE`] was left behind by a claude that died. amx takes the same lock
+/// the same way rather than writing behind the vendor's back — a claude in
+/// another pane saving its own session rewrites this whole document, and two
+/// writers who do not agree on a lock lose one of the two sets of changes.
+struct Held(PathBuf);
+
+impl Held {
+    /// Take it, or answer `None` when somebody else has it and will not let go
+    /// inside `patience`.
+    fn take(store: &Path, patience: Duration, stale: Duration) -> Result<Option<Held>> {
+        let path = lock_beside(store);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+
+        let waiting = Instant::now();
+        loop {
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(Some(Held(path))),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e).with_context(|| format!("taking {}", path.display())),
+            }
+            if abandoned(&path, stale) {
+                let _ = std::fs::remove_dir(&path);
+                continue;
+            }
+            if waiting.elapsed() >= patience {
+                return Ok(None);
+            }
+            std::thread::sleep(RETRY);
+        }
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.0);
+    }
+}
+
+/// Where the vendor's lock for `store` goes.
+fn lock_beside(store: &Path) -> PathBuf {
+    let name = store.file_name().unwrap_or_default().to_string_lossy();
+    store.with_file_name(format!("{name}.lock"))
+}
+
+/// Whether a lock has gone unrefreshed long enough to be nobody's. The vendor
+/// touches its own while it holds it, so age is the whole of the question.
+fn abandoned(lock: &Path, stale: Duration) -> bool {
+    std::fs::metadata(lock)
+        .and_then(|found| found.modified())
+        .is_ok_and(|touched| {
+            SystemTime::now()
+                .duration_since(touched)
+                .is_ok_and(|since| since >= stale)
+        })
 }
 
 /// Whether this document is shaped the way the vendor writes one, as far as
@@ -380,6 +486,56 @@ mod tests {
             bytes,
             "so the file is not opened for writing at all"
         );
+    }
+
+    #[test]
+    fn trust_takes_the_lock_the_vendor_takes_and_gives_it_back() {
+        let dir = TempDir::new().unwrap();
+        let (repo, tree) = a_tree(&dir);
+        let store = dir.path().join(".claude.json");
+        let lock = lock_beside(&store);
+
+        assert!(seed(&store, &tree, Some(&repo), 1).unwrap());
+        assert!(!lock.exists(), "the vendor is left free to write again");
+
+        // Held by a claude that is saving its own session.
+        std::fs::create_dir_all(&lock).unwrap();
+        let second = repo.join(".amx/worktrees/port-importer-c3d");
+        std::fs::create_dir_all(&second).unwrap();
+
+        let refused = seed_within(&store, &second, Some(&repo), 2, Duration::ZERO).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("being written"),
+            "{refused:#}"
+        );
+        assert!(
+            !trusted(&read_back(&store), &second),
+            "a write behind the vendor's back would lose one of the two"
+        );
+        assert!(lock.exists(), "and somebody else's lock is still theirs");
+    }
+
+    #[test]
+    fn trust_sweeps_a_lock_nobody_is_holding_any_more() {
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join(".claude.json");
+        let lock = lock_beside(&store);
+        std::fs::create_dir_all(&lock).unwrap();
+
+        assert!(
+            Held::take(&store, Duration::ZERO, Duration::from_secs(10))
+                .unwrap()
+                .is_none(),
+            "a lock somebody refreshed a moment ago is somebody's"
+        );
+        let held = Held::take(&store, Duration::ZERO, Duration::ZERO).unwrap();
+        assert!(
+            held.is_some(),
+            "and one nobody has touched was left behind by a claude that died"
+        );
+
+        drop(held);
+        assert!(!lock.exists());
     }
 
     #[test]
