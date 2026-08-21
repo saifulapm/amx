@@ -14,6 +14,53 @@ fn new(amx: &Harness, scenario: &str, args: &[&str]) -> Output {
         .expect("running amx new")
 }
 
+/// `amx new`, with the vendor's stand-in installed under the name the dial
+/// table knows.
+///
+/// The table is keyed by the program an agent command runs, and the program it
+/// has an entry for is claude. A spawn that wants a dial turned has to be
+/// launching something by that name, so the stand-in is copied under it into a
+/// directory of this harness's own and put in front of PATH. The pane resolves
+/// the command through the environment `new` was run with, which is how the
+/// copy is the one that runs.
+fn new_as_claude(amx: &Harness, scenario: &str, args: &[&str]) -> Output {
+    let bin = amx.home().join("bin");
+    std::fs::create_dir_all(&bin).expect("a directory for the stand-in");
+    std::fs::copy(amx.mock(), bin.join("claude")).expect("the stand-in under claude's name");
+
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    amx.amx_command(&[&["new"], args].concat())
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
+        .env("PATH", path)
+        .output()
+        .expect("running amx new")
+}
+
+/// The argv amx wrote for the vendor, as the pane will be handed it.
+fn command_of(amx: &Harness, id: &str) -> Vec<String> {
+    amx.handoff(id)["command"]
+        .as_array()
+        .expect("the handoff names a command")
+        .iter()
+        .map(|arg| arg.as_str().expect("an argument").to_string())
+        .collect()
+}
+
+/// What the vendor's own process says it was called with.
+fn argv_of(amx: &Harness, id: &str) -> String {
+    let pane = amx.pane_of(id);
+    amx.until("the vendor to say how it was called", || {
+        amx.capture(&pane)
+            .lines()
+            .find(|line| line.starts_with("argv:"))
+            .map(str::to_string)
+    })
+}
+
 fn id_of(out: &Output) -> String {
     assert!(
         out.status.success(),
@@ -394,6 +441,147 @@ fn vendor_arguments_reach_the_vendor_untouched() {
         command.last(),
         Some(&"fix the login bug"),
         "the task is the last word, the way a prompt is"
+    );
+}
+
+#[test]
+fn dials_the_flags_amx_was_given_reach_the_vendor() {
+    let amx = Harness::new();
+    let id = id_of(&new_as_claude(
+        &amx,
+        "a-dispatched-worker",
+        &[
+            "--no-worktree",
+            "--agent",
+            "claude",
+            "--model",
+            "opus",
+            "--effort",
+            "high",
+            "fix the login bug",
+        ],
+    ));
+
+    let command = command_of(&amx, &id);
+    assert_eq!(command[0], "claude");
+    assert!(
+        command.windows(2).any(|pair| pair == ["--model", "opus"])
+            && command.windows(2).any(|pair| pair == ["--effort", "high"]),
+        "{command:?}"
+    );
+    assert!(
+        !command.iter().any(|arg| arg == "--permission-mode"),
+        "the dial nobody turned sends no flag at all: {command:?}"
+    );
+    assert_eq!(
+        command.last().map(String::as_str),
+        Some("fix the login bug"),
+        "and the task is still the last word: {command:?}"
+    );
+
+    // Not only on the record: the process in the pane was called that way.
+    let argv = argv_of(&amx, &id);
+    assert!(argv.contains("--model opus"), "{argv}");
+    assert!(argv.contains("--effort high"), "{argv}");
+}
+
+#[test]
+fn dials_stand_down_from_a_flag_the_caller_wrote_out_by_hand() {
+    // Both spellings of the same thing are on this command line: amx's dial
+    // and claude's own flag. The vendor is handed one of them, the one that
+    // was written out, and the dial nobody wrote is still injected.
+    let amx = Harness::new();
+    let id = id_of(&new_as_claude(
+        &amx,
+        "a-dispatched-worker",
+        &[
+            "--no-worktree",
+            "--agent",
+            "claude",
+            "--model",
+            "opus",
+            "--effort",
+            "high",
+            "fix the login bug",
+            "--",
+            "--model",
+            "sonnet",
+        ],
+    ));
+
+    let command = command_of(&amx, &id);
+    assert_eq!(
+        command.iter().filter(|arg| *arg == "--model").count(),
+        1,
+        "one --model, never two with the winner left to the vendor: {command:?}"
+    );
+    assert!(
+        command.windows(2).any(|pair| pair == ["--model", "sonnet"]),
+        "and it is the caller's own: {command:?}"
+    );
+    assert!(
+        command.windows(2).any(|pair| pair == ["--effort", "high"]),
+        "{command:?}"
+    );
+
+    let argv = argv_of(&amx, &id);
+    assert!(
+        argv.contains("--model sonnet") && !argv.contains("opus"),
+        "{argv}"
+    );
+}
+
+#[test]
+fn dials_are_turned_by_the_config_for_every_spawn_that_says_nothing() {
+    let amx = Harness::new();
+    amx.config("agent = \"claude\"\nmodel = \"fable\"\npermission = \"plan\"\n");
+
+    let id = id_of(&new_as_claude(
+        &amx,
+        "a-dispatched-worker",
+        &["--no-worktree", "fix the login bug"],
+    ));
+
+    let command = command_of(&amx, &id);
+    assert_eq!(command[0], "claude");
+    assert!(
+        command.windows(2).any(|pair| pair == ["--model", "fable"])
+            && command
+                .windows(2)
+                .any(|pair| pair == ["--permission-mode", "plan"]),
+        "{command:?}"
+    );
+}
+
+#[test]
+fn dials_a_value_the_vendor_would_refuse_is_refused_before_anything_is_made() {
+    let amx = Harness::new();
+    let refused = new(
+        &amx,
+        "happy-turn",
+        &[
+            "--no-worktree",
+            "--agent",
+            "claude",
+            "--effort",
+            "hard",
+            "fix the login bug",
+        ],
+    );
+
+    assert_eq!(
+        refused.status.code(),
+        Some(64),
+        "a malformed command line, not a state a caller branches on"
+    );
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        said.contains("--effort") && said.contains("xhigh"),
+        "{said}"
+    );
+    assert!(
+        !amx.state_root().exists() || amx.state_root().read_dir().unwrap().next().is_none(),
+        "and no id was minted for it"
     );
 }
 
