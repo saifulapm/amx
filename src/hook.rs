@@ -249,7 +249,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             state.asks(
                 payload["tool_name"]
                     .as_str()
-                    .map(|tool| format!("Claude needs your permission to use {tool}")),
+                    .map(|tool| format!("Claude needs your permission to use {}", rendered(tool))),
             );
             state.kind = Some(Kind::Permission);
             Some(Notice::waiting(&meta.id, state.question.as_deref()))
@@ -319,6 +319,28 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
 
         _ => None,
     }
+}
+
+/// A tool's name the way the vendor writes it into the permission sentence,
+/// measured at 2.1.237: the last `__` segment — an MCP tool arrives as
+/// `mcp__<server>__<tool>` — with underscores as spaces and each word's first
+/// letter raised, which leaves a built-in like `Bash` as it stands. The
+/// sentence written at `PermissionRequest` has to be the one the notification
+/// will repeat, or the echo reads as news and one box interrupts twice.
+fn rendered(tool: &str) -> String {
+    tool.rsplit("__")
+        .next()
+        .unwrap_or(tool)
+        .split('_')
+        .map(|word| {
+            let mut letters = word.chars();
+            match letters.next() {
+                Some(first) => first.to_uppercase().chain(letters).collect(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
 }
 
 /// The question an `AskUserQuestion` call is about to put on the pane, and the
@@ -581,6 +603,43 @@ mod tests {
         );
         assert_eq!(state.state, Phase::Waiting);
         assert_eq!(state.kind, Some(Kind::Permission));
+        assert_eq!(again, None, "one box, one interruption");
+    }
+
+    #[test]
+    fn hook_an_mcp_tools_box_is_worded_the_vendors_way_and_said_once() {
+        // The payload names the tool `mcp__<server>__<tool>`; the vendor's
+        // sentence — on the box, and in the notification that repeats it —
+        // renders the last `__` segment with underscores as spaces and each
+        // word's first letter raised. A sentence written any other way
+        // differs from the pane until the echo lands, and the echo reads as
+        // news: one box, two interruptions.
+        let mut state = State::default();
+        let mut meta = meta();
+        let told = apply(
+            &json!({
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "mcp__playwright__browser_click"
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert!(told.is_some());
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Claude needs your permission to use Browser Click"),
+            "the sentence on the record is the sentence on the pane"
+        );
+
+        let again = apply(
+            &json!({
+                "hook_event_name": "Notification",
+                "message": "Claude needs your permission to use Browser Click",
+                "notification_type": "permission_prompt"
+            }),
+            &mut state,
+            &mut meta,
+        );
         assert_eq!(again, None, "one box, one interruption");
     }
 
