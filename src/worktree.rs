@@ -337,7 +337,11 @@ fn command(dir: &Path, overrides: &[String], args: &[&str]) -> Command {
         .args(["-c", "core.fsmonitor=false"])
         .args(overrides)
         .args(args)
-        .stdin(Stdio::null());
+        .stdin(Stdio::null())
+        // The overrides blank the keys amx knows to blank; the machine's own
+        // /etc/gitconfig can name programs under keys nobody thought of, and
+        // nothing amx asks git for depends on it.
+        .env("GIT_CONFIG_NOSYSTEM", "1");
     git
 }
 
@@ -533,6 +537,24 @@ mod tests {
         assert!(
             !summary.contains("+fn login() {}"),
             "a summary is not the patch: {summary}"
+        );
+    }
+
+    #[test]
+    fn hardening_every_git_is_run_with_the_system_config_shut_out() {
+        // The per-key overrides blank what amx knows to blank; the machine's
+        // own /etc/gitconfig can name programs under keys nobody thought of.
+        // GIT_CONFIG_NOSYSTEM is the guard for the whole file at once.
+        let dir = TempDir::new().unwrap();
+        let git = command(dir.path(), &[], &["status"]);
+        let guard = git
+            .get_envs()
+            .find(|(name, _)| *name == "GIT_CONFIG_NOSYSTEM")
+            .and_then(|(_, value)| value);
+        assert_eq!(
+            guard,
+            Some(std::ffi::OsStr::new("1")),
+            "every git amx runs, not only the diff"
         );
     }
 
