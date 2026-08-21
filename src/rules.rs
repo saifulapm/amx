@@ -199,10 +199,10 @@ impl Rule {
 
     /// Where this screen keeps the question it is asking.
     ///
-    /// By name, because the four blocking screens keep it in four different
-    /// places and no reading works on all of them. Each of these was chosen
-    /// against the captures in this file's tests, at every width they were
-    /// measured at.
+    /// By name, because the blocking screens do not all keep it in the same
+    /// place and no one reading finds it on every one of them. Both of these
+    /// were chosen against the captures in this file's tests, at each of the
+    /// widths those were measured at.
     fn asks(&self) -> Asks {
         match self.name.as_str() {
             // The question is the row the rule's own anchor is on. What is
