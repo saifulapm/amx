@@ -114,8 +114,13 @@ pub fn create(repo: &Path, id: &str) -> Result<Worktree> {
 /// and files git has never heard of alike. Untracked files count — an agent's
 /// first act is usually a new file, and deleting one because git did not know
 /// about it is the kind of loss amx cannot undo.
+///
+/// It reads the tree, so it runs with [`nothing_to_run`] too: git refreshes
+/// the index to answer this, and a refresh runs a hook and hashes what it
+/// cannot vouch for through whatever filter an attribute names.
 pub fn is_dirty(worktree: &Path) -> Result<bool> {
-    Ok(!git(worktree, &["status", "--porcelain"])?.is_empty())
+    let safe = nothing_to_run(worktree);
+    Ok(!git_with(worktree, &safe, &["status", "--porcelain"])?.is_empty())
 }
 
 /// Remove the tree, refusing while it holds uncommitted work.
@@ -167,10 +172,16 @@ pub fn delete_branch(repo: &Path, branch: &str) -> Result<()> {
 /// nothing else — the agent's own staged work is left as it is. It is done for
 /// the summary too, since a summary that leaves out the new files is a summary
 /// of the wrong afternoon.
+///
+/// Both halves run with [`nothing_to_run`]: reading an agent's work must not
+/// run the agent's work.
 pub fn diff(worktree: &Path, base: &str, stat: bool, out: &mut impl Write) -> Result<()> {
-    git(worktree, &["add", "-N", "."])?;
+    let safe = nothing_to_run(worktree);
+    git_with(worktree, &safe, &["add", "-N", "."])?;
 
-    let mut args = vec!["diff"];
+    // `--no-ext-diff` and `--no-textconv` are the same refusal as the
+    // overrides, in the form git offers for the two of them it has a flag for.
+    let mut args = vec!["diff", "--no-ext-diff", "--no-textconv"];
     if stat {
         args.push("--stat");
     }
@@ -178,10 +189,7 @@ pub fn diff(worktree: &Path, base: &str, stat: bool, out: &mut impl Write) -> Re
 
     // A day's work is a long patch, so it is copied out as git writes it
     // rather than held whole.
-    let mut child = Command::new("git")
-        .current_dir(worktree)
-        .args(&args)
-        .stdin(Stdio::null())
+    let mut child = command(worktree, &safe, &args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -235,12 +243,76 @@ fn ensure_excluded(repo: &Path) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))
 }
 
+/// The overrides that leave a tree amx is only reading with nothing to run.
+///
+/// A repository's config is a list of programs: `diff.external` for the patch
+/// itself, a `textconv` or a `clean` filter for whichever paths an attribute
+/// picks out, a hook for the index git refreshes on its way past. Every
+/// one of them can be written by the agent whose work is about to be read,
+/// from inside the tree it works in, and every one of them then runs as the
+/// person reading it. `-c` beats every config file, so each key goes there
+/// with nothing in it.
+///
+/// The filter drivers have to be named one at a time, since there is no
+/// wildcard to blank them with, and `required` goes with them: a required
+/// filter that has been blanked is a fatal error rather than a plain diff.
+/// What that costs is a filtered file compared as git stored it rather than as
+/// the filter would have rendered it, and git only hashes a file whose stat
+/// data moved — so the files this can read differently are the ones the agent
+/// touched, which are the ones the answer was going to name anyway.
+fn nothing_to_run(dir: &Path) -> Vec<String> {
+    let mut safe = vec!["-c".to_string(), "core.hooksPath=/dev/null".to_string()];
+    for driver in filter_drivers(dir) {
+        for key in ["clean", "smudge", "process"] {
+            safe.push("-c".to_string());
+            safe.push(format!("filter.{driver}.{key}="));
+        }
+        safe.push("-c".to_string());
+        safe.push(format!("filter.{driver}.required=false"));
+    }
+    safe
+}
+
+/// The filter drivers this repository's config declares, once each.
+///
+/// A value read: `--get-regexp` exits as a failure when nothing matches, which
+/// is what most repositories answer, and a config git will not list is a
+/// config amx has nothing to blank.
+fn filter_drivers(dir: &Path) -> Vec<String> {
+    let listed = git(
+        dir,
+        &["config", "--name-only", "--get-regexp", r"^filter\."],
+    )
+    .unwrap_or_default();
+    drivers_in(&listed)
+}
+
+/// The driver out of each `filter.<driver>.<key>` line, once each.
+///
+/// The name is what lies between the two ends, dots and all: a driver may be
+/// called `git-lfs.2` and the key after it is what says where it stops. The
+/// same driver arrives once per key and once per file that declares it.
+fn drivers_in(listed: &str) -> Vec<String> {
+    let mut drivers: Vec<String> = listed
+        .lines()
+        .filter_map(|key| key.trim().strip_prefix("filter."))
+        .filter_map(|rest| rest.rsplit_once('.'))
+        .filter(|(driver, _)| !driver.is_empty())
+        .map(|(driver, _)| driver.to_string())
+        .collect();
+    drivers.sort();
+    drivers.dedup();
+    drivers
+}
+
 /// One git command, with its output as the answer.
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .stdin(Stdio::null())
+    git_with(dir, &[], args)
+}
+
+/// The same, with config overrides in front of the subcommand.
+fn git_with(dir: &Path, overrides: &[String], args: &[&str]) -> Result<String> {
+    let out = command(dir, overrides, args)
         .output()
         .with_context(|| format!("running `git {}`", args.join(" ")))?;
     if !out.status.success() {
@@ -253,9 +325,26 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
 
+/// git, pointed at `dir` and ready to run.
+///
+/// `core.fsmonitor` is blanked on every command, not only the reading ones: it
+/// names a program git starts before it will so much as look at a file, and a
+/// repository amx is asking a question of does not get to start one. It is a
+/// cache and nothing amx asks for depends on it.
+fn command(dir: &Path, overrides: &[String], args: &[&str]) -> Command {
+    let mut git = Command::new("git");
+    git.current_dir(dir)
+        .args(["-c", "core.fsmonitor=false"])
+        .args(overrides)
+        .args(args)
+        .stdin(Stdio::null());
+    git
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -445,6 +534,72 @@ mod tests {
             !summary.contains("+fn login() {}"),
             "a summary is not the patch: {summary}"
         );
+    }
+
+    #[test]
+    fn hardening_a_diff_runs_nothing_the_tree_it_reads_names() {
+        // Every one of these is a config key naming a program, and every one
+        // of them can be written from inside the tree by the agent whose work
+        // is about to be read. The attributes that pick a driver go in
+        // `.git/info/attributes`, which is the copy no attribute source can be
+        // pointed away from.
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+
+        let traps = TempDir::new().unwrap();
+        let ran = traps.path().join("ran");
+        let program = traps.path().join("trap.sh");
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\necho ran >> {}\n", ran.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let hooks = traps.path().join("hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        std::fs::copy(&program, hooks.join("post-index-change")).unwrap();
+
+        let named = program.to_string_lossy().into_owned();
+        let hooked = hooks.to_string_lossy().into_owned();
+        for (key, value) in [
+            ("diff.external", named.as_str()),
+            ("diff.trap.textconv", &named),
+            ("filter.trap.clean", &named),
+            ("filter.trap.required", "true"),
+            ("core.fsmonitor", &named),
+            ("core.hooksPath", &hooked),
+        ] {
+            setup(&tree.path, &["config", key, value]);
+        }
+        std::fs::write(
+            repo.path().join(".git/info/attributes"),
+            "* diff=trap filter=trap\n",
+        )
+        .unwrap();
+
+        std::fs::write(tree.path.join("login.rs"), "fn login() {}\n").unwrap();
+        std::fs::write(tree.path.join("README.md"), "after\n").unwrap();
+
+        let diff = shown(&tree.path, &tree.base, false);
+        assert!(!ran.exists(), "reading the work ran something it named");
+        assert!(
+            diff.contains("+fn login() {}") && diff.contains("+after"),
+            "and the work is still what the diff shows: {diff}"
+        );
+
+        assert!(is_dirty(&tree.path).unwrap(), "the tree holds work");
+        assert!(
+            !ran.exists(),
+            "and the look that says so ran nothing either"
+        );
+    }
+
+    #[test]
+    fn hardening_a_filter_driver_is_whatever_lies_between_the_two_ends() {
+        let listed = "filter.lfs.clean\nfilter.lfs.smudge\nfilter.git-lfs.2.process\n\
+                      filter.lfs.clean\ncore.fsmonitor\nfilter.\n";
+        assert_eq!(drivers_in(listed), ["git-lfs.2", "lfs"]);
+        assert!(drivers_in("").is_empty(), "and most repositories say this");
     }
 
     #[test]
