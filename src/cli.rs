@@ -150,13 +150,44 @@ pub struct NewArgs {
     #[arg(long)]
     pub no_worktree: bool,
 
-    /// The agent command to run instead of the configured one.
-    #[arg(long)]
-    pub agent: Option<String>,
+    /// The vendor and the dials for this one spawn, `None` when the caller
+    /// named none of them and the config answers for all four.
+    #[command(flatten)]
+    pub agent: Option<AgentArgs>,
 
     /// Arguments passed to the agent command verbatim.
     #[arg(last = true, value_name = "AGENT_ARGS")]
     pub vendor_args: Vec<String>,
+}
+
+/// Which vendor a spawn runs, and where its dials are pointed.
+///
+/// One group because they are one decision: a dial only means anything
+/// against the vendor it is turned on, and the vendor amx is about to launch
+/// is the one that says which dials exist at all. Every field is optional and
+/// falls back to the config, which falls back to the vendor's own behaviour.
+///
+/// These are amx's flags, not the vendor's. Anything after `--` is the
+/// vendor's own and is passed through untouched, including the same words:
+/// `--model` before the separator turns amx's dial, `--model` after it is
+/// claude's flag, and a dial stands down rather than send the flag twice.
+#[derive(Debug, Args)]
+pub struct AgentArgs {
+    /// The agent command to run instead of the configured one.
+    #[arg(long = "agent", value_name = "COMMAND")]
+    pub command: Option<String>,
+
+    /// The model to run the agent on.
+    #[arg(long, value_name = "MODEL")]
+    pub model: Option<String>,
+
+    /// The permission mode to start the agent in.
+    #[arg(long, value_name = "MODE")]
+    pub permission: Option<String>,
+
+    /// How much reasoning effort the agent spends.
+    #[arg(long, value_name = "LEVEL")]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -291,11 +322,86 @@ mod tests {
         assert_eq!(args.name.as_deref(), Some("importer"));
         assert_eq!(args.dir, Some(PathBuf::from("/srv/app")));
         assert!(args.no_worktree);
-        assert_eq!(args.agent.as_deref(), Some("claude"));
+        assert_eq!(
+            args.agent.and_then(|named| named.command).as_deref(),
+            Some("claude")
+        );
         assert_eq!(
             args.vendor_args,
             ["--session-id", "abc-123", "--model", "opus"]
         );
+    }
+
+    #[test]
+    fn dials_new_takes_the_vendor_and_its_three_dials() {
+        let cli = parse(&[
+            "amx",
+            "new",
+            "port the importer",
+            "--agent",
+            "claude",
+            "--model",
+            "opus",
+            "--permission",
+            "plan",
+            "--effort",
+            "high",
+        ])
+        .unwrap();
+
+        let Some(Command::New(args)) = cli.command else {
+            panic!("expected new");
+        };
+        let named = args.agent.expect("the caller named the vendor and its dials");
+        assert_eq!(named.command.as_deref(), Some("claude"));
+        assert_eq!(named.model.as_deref(), Some("opus"));
+        assert_eq!(named.permission.as_deref(), Some("plan"));
+        assert_eq!(named.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn dials_a_spawn_that_names_none_of_them_leaves_the_config_its_say() {
+        // Absent is not the same as a dial turned to some neutral value: the
+        // config, and then the vendor's own behaviour, answer for what the
+        // caller never mentioned.
+        let cli = parse(&["amx", "new", "port the importer"]).unwrap();
+        let Some(Command::New(args)) = cli.command else {
+            panic!("expected new");
+        };
+        assert!(args.agent.is_none());
+
+        let cli = parse(&["amx", "new", "port the importer", "--effort", "max"]).unwrap();
+        let Some(Command::New(args)) = cli.command else {
+            panic!("expected new");
+        };
+        let named = args.agent.expect("one dial is enough to be named");
+        assert_eq!(named.effort.as_deref(), Some("max"));
+        assert!(named.command.is_none() && named.model.is_none());
+    }
+
+    #[test]
+    fn dials_the_vendors_own_model_flag_is_still_the_vendors() {
+        // amx's `--model` and claude's are the same word for the same thing,
+        // and the separator is what tells them apart. Neither reads the other.
+        let cli = parse(&[
+            "amx",
+            "new",
+            "port the importer",
+            "--model",
+            "fable",
+            "--",
+            "--model",
+            "opus",
+        ])
+        .unwrap();
+        let Some(Command::New(args)) = cli.command else {
+            panic!("expected new");
+        };
+        assert_eq!(
+            args.agent.and_then(|named| named.model),
+            Some("fable".to_string())
+        );
+        assert_eq!(args.vendor_args, ["--model", "opus"]);
     }
 
     #[test]

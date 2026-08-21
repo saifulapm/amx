@@ -96,7 +96,11 @@ fn start(
         .map(|tree| tree.path.clone())
         .unwrap_or_else(|| dir.to_path_buf());
 
-    let agent = args.agent.clone().unwrap_or_else(|| config.agent.clone());
+    let agent = args
+        .agent
+        .as_ref()
+        .and_then(|named| named.command.clone())
+        .unwrap_or_else(|| config.agent.clone());
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
     spawn::write_handoff(
         agent_dir,
