@@ -212,7 +212,7 @@ impl Held {
                 Err(e) => return Err(e).with_context(|| format!("taking {}", path.display())),
             }
             if abandoned(&path, stale) {
-                let _ = std::fs::remove_dir(&path);
+                sweep(&path, stale);
                 continue;
             }
             if waiting.elapsed() >= patience {
@@ -227,6 +227,36 @@ impl Drop for Held {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir(&self.0);
     }
+}
+
+/// Clear away a lock that reads as abandoned, without ever taking a live one.
+///
+/// Judged stale and then removed are two acts, and the lock a plain remove
+/// meets may not be the lock the judgement was about: another taker can sweep
+/// and make a fresh lock of its own in between, and removing *that* leaves
+/// two writers each believing the store is theirs. So the lock is renamed
+/// aside first — to a name only this process uses, making whatever was caught
+/// this process's alone — and only then looked at. A catch that really is
+/// abandoned goes away; a live lock caught in the window between somebody's
+/// create and this rename goes straight back where it was.
+fn sweep(path: &Path, stale: Duration) {
+    // Unique among every taker there could be: two processes differ by pid,
+    // two sweeps within one process by the count.
+    static SWEPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nth = SWEPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let aside = path.with_file_name(format!("{name}.stale-{}-{nth}", std::process::id()));
+    if std::fs::rename(path, &aside).is_err() {
+        // Somebody else swept or released it first; the path is theirs to
+        // have cleared, and the next create will find out.
+        return;
+    }
+    if !abandoned(&aside, stale) && std::fs::rename(&aside, path).is_ok() {
+        return;
+    }
+    // Truly abandoned — or a putback that lost its place, in which case the
+    // lock it held is already gone to whoever created meanwhile.
+    let _ = std::fs::remove_dir_all(&aside);
 }
 
 /// Where the vendor's lock for `store` goes.
@@ -536,6 +566,55 @@ mod tests {
 
         drop(held);
         assert!(!lock.exists());
+    }
+
+    /// The lock a claude that died long ago left behind: present, and old.
+    fn left_behind(lock: &Path) {
+        std::fs::create_dir_all(lock).unwrap();
+        let past = nix::sys::time::TimeSpec::new(1, 0);
+        nix::sys::stat::utimensat(
+            nix::fcntl::AT_FDCWD,
+            lock,
+            &past,
+            &past,
+            nix::sys::stat::UtimensatFlags::FollowSymlink,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn trust_two_sweeps_of_one_stale_lock_never_both_hold() {
+        // A lock left by a dead claude, and two spawns arriving at once.
+        // Judged stale and then swept are two acts, and the lock the sweep
+        // met was sometimes the fresh one the other taker had just made —
+        // after which both takers held, and two whole-document rewrites of
+        // the store lost one writer's changes.
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join(".claude.json");
+        let lock = lock_beside(&store);
+
+        for round in 0..1000 {
+            left_behind(&lock);
+            let starting = std::sync::Barrier::new(2);
+            let held: Vec<Option<Held>> = std::thread::scope(|racers| {
+                let takers: Vec<_> = (0..2)
+                    .map(|_| {
+                        racers.spawn(|| {
+                            starting.wait();
+                            Held::take(&store, Duration::ZERO, STALE).unwrap()
+                        })
+                    })
+                    .collect();
+                takers
+                    .into_iter()
+                    .map(|taker| taker.join().unwrap())
+                    .collect()
+            });
+            let holders = held.iter().filter(|held| held.is_some()).count();
+            assert_eq!(holders, 1, "round {round}: one stale lock, one taker");
+            drop(held);
+            let _ = std::fs::remove_dir_all(&lock);
+        }
     }
 
     #[test]
