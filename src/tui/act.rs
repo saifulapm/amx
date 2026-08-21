@@ -410,6 +410,17 @@ pub fn rename(root: &Path, id: &str, typed: &str) -> Result<Renamed> {
     Ok(Renamed::Yes(format!("{id} is {name}")))
 }
 
+/// Write down that somebody has looked at this agent.
+///
+/// A look, like a name, is a fact about the wall rather than something the
+/// agent said, so it goes in through the same door: the record's own clock
+/// stays where it was, and a look that changes nothing writes nothing.
+pub fn looked(root: &Path, id: &str) -> Result<()> {
+    let agent = Agent::open(root, id)?;
+    agent.writer()?.observe(|state| state.seen = store::now())?;
+    Ok(())
+}
+
 /// End the agent under the cursor: one that is running is stopped, and one
 /// that has already ended is forgotten.
 pub fn end(root: &Path, view: &View) -> Result<String> {

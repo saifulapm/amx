@@ -569,7 +569,7 @@ fn row(view: &View, selected: bool, columns: Columns, width: usize, beat: usize)
     let said = fit(first_line(view.line().unwrap_or("")), room);
 
     let mut spans = vec![
-        Span::raw(GUTTER),
+        unread(view),
         Span::styled(format!("{} ", icon(phase, beat)), colour(phase)),
         Span::styled(
             format!("{name:<names$}  "),
@@ -590,6 +590,30 @@ fn row(view: &View, selected: bool, columns: Columns, width: usize, beat: usize)
     spans.push(Span::styled(format!("{age:>AGE$}"), dim()));
     Line::from(spans)
 }
+
+/// The mark on a row nobody has been to read, in the gutter every row is
+/// already indented by.
+///
+/// It costs the list no width, and down a wall of rows the marks line up into
+/// a column of their own — which is the thing worth reading here: not what
+/// this agent is, but which of them somebody has not caught up with. In the
+/// colour of a thing waiting on a person, because that is what it is.
+fn unread(view: &View) -> Span<'static> {
+    match rows::unread(view) {
+        true => Span::styled(
+            // The mark takes the first column of the gutter and gives back the
+            // rest, so a row with one is not a row that starts a column over.
+            format!("{UNREAD}{}", " ".repeat(GUTTER.chars().count() - 1)),
+            Style::new().fg(role::WARNING),
+        ),
+        false => Span::raw(GUTTER),
+    }
+}
+
+/// What that mark is drawn with. One column wide, and not a frame of the pulse
+/// or a resting glyph: it sits beside both, and a wall where the two are told
+/// apart by size would be a wall nobody reads either off.
+const UNREAD: &str = "•";
 
 /// How many rows of a wrapped question the card gives before it stops: the
 /// words of it a person needs to decide, with the pane underneath for the rest.
@@ -1891,7 +1915,12 @@ mod tests {
             screen[1]
         );
         assert_eq!(screen[2], "needs input");
-        assert!(screen[3].starts_with("  ? ask-a1b"), "{:?}", screen[3]);
+        assert!(
+            screen[3].starts_with("• ? ask-a1b"),
+            "a question nobody has been to read carries the mark that says so: \
+             {:?}",
+            screen[3]
+        );
         assert!(screen[3].ends_with("1m"), "{:?}", screen[3]);
         assert_eq!(screen[4], "working");
         assert!(

@@ -458,7 +458,7 @@ impl Screen {
     /// agent that has stopped is the reason somebody came to the screen, and
     /// making them press a second key to say so would be a screen that knows
     /// what they want and waits to be asked.
-    fn look_closer(&mut self) {
+    fn look_closer(&mut self, root: &Path) {
         self.look = Look::Screen;
         self.follow_the_cursor();
         if let Some(card) = self.card.as_ref().filter(|card| card.asks()) {
@@ -466,6 +466,15 @@ impl Screen {
                 id: card.id.clone(),
                 question: true,
             }));
+        }
+
+        // Opening the card is the whole of what the mark means, so the record
+        // learns it here. A record that will not take the look costs a mark
+        // that stays on a row somebody has read, which is not worth spending
+        // the one line the view has to say things on.
+        if let Some(id) = self.list.selected().map(|view| view.id().to_string()) {
+            let _ = act::looked(root, &id);
+            self.acted();
         }
     }
 
@@ -543,7 +552,7 @@ impl Screen {
                 self.moved();
             }
             KeyCode::Char(' ') => match self.look {
-                Look::Away => self.look_closer(),
+                Look::Away => self.look_closer(root),
                 _ => self.look_away(),
             },
             KeyCode::Esc => self.look_away(),
@@ -585,7 +594,7 @@ impl Screen {
                     .selected()
                     .map(|view| (view.id().to_string(), view.phase() == Phase::Waiting));
                 match asking {
-                    Some((_, true)) => self.look_closer(),
+                    Some((_, true)) => self.look_closer(root),
                     Some((id, false)) => {
                         self.mode = Mode::Typing(Composer::new(Asking::Reply {
                             id,
@@ -1410,6 +1419,45 @@ mod tests {
         assert!(screen.card.is_none(), "with no card over the list");
         let line = screen.banded().expect("a line of its own");
         assert_eq!(line.prompt(), "message to fix-login-b2c");
+    }
+
+    #[test]
+    fn acts_peeking_at_an_agent_takes_the_mark_off_its_row() {
+        let root = TempDir::new().unwrap();
+        finished(root.path(), "first-a1b", "wrote the parser", 60);
+        finished(root.path(), "second-b2c", "wrote the tests", 120);
+
+        // The view opens on the newest ending, so the card opens on that one.
+        let (code, drawn) = held(root.path(), &[KeyCode::Char(' '), KeyCode::Char('q')]);
+        assert_eq!(code, exit::OK);
+        let row = |id: &str| {
+            drawn
+                .lines()
+                .find(|line| line.contains(id))
+                .unwrap_or_else(|| panic!("no row for {id}:\n{drawn}"))
+        };
+        assert!(
+            row("first-a1b").starts_with("  "),
+            "the row somebody looked at has nothing left to say:\n{drawn}"
+        );
+        assert!(
+            row("second-b2c").starts_with('•'),
+            "and the one they did not is still holding something:\n{drawn}"
+        );
+
+        let looked = |id: &str| {
+            crate::store::Agent::open(root.path(), id)
+                .unwrap()
+                .state()
+                .unwrap()
+                .seen
+        };
+        assert!(looked("first-a1b") > 0, "the look is on the record");
+        assert_eq!(
+            looked("second-b2c"),
+            0,
+            "and an agent nobody opened was not marked read on their behalf"
+        );
     }
 
     #[test]

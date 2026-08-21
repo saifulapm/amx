@@ -223,6 +223,10 @@ pub struct State {
     /// Epoch seconds of the last event recorded. How fresh this document is,
     /// which decides whether a reader trusts it over the pane.
     pub last_event: u64,
+    /// Epoch seconds when somebody last looked at this agent, and zero for one
+    /// nobody has opened. Read against `last_event`, it says whether what the
+    /// agent has to say came before or after the last look at it.
+    pub seen: u64,
 }
 
 impl State {
@@ -290,6 +294,7 @@ struct Wire {
     source: Option<Source>,
     exit: Option<i32>,
     last_event: u64,
+    seen: u64,
 }
 
 /// A question on the record: its words alone, or the whole of it.
@@ -337,6 +342,7 @@ impl From<State> for Wire {
             source,
             exit,
             last_event,
+            seen,
         } = state;
 
         Wire {
@@ -371,6 +377,7 @@ impl From<State> for Wire {
             source,
             exit,
             last_event,
+            seen,
         }
     }
 }
@@ -396,6 +403,7 @@ impl From<Wire> for State {
             source: wire.source,
             exit: wire.exit,
             last_event: wire.last_event,
+            seen: wire.seen,
         }
     }
 }
@@ -1054,6 +1062,32 @@ mod tests {
             "a screen is not a thing the agent said"
         );
         assert_eq!(agent.state().unwrap(), noted);
+    }
+
+    #[test]
+    fn acts_a_record_keeps_when_somebody_last_looked_at_the_agent() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        let writer = agent.writer().unwrap();
+        let ended = writer
+            .update_state(|s| {
+                s.state = Phase::Done;
+                s.result = Some("wrote the parser".to_string());
+            })
+            .unwrap();
+
+        let looked = writer.observe(|s| s.seen = now()).unwrap();
+        assert!(looked.seen >= ended.last_event);
+        assert_eq!(
+            looked.last_event, ended.last_event,
+            "a look is not something the agent said"
+        );
+        assert_eq!(written(&agent)["seen"], looked.seen);
+
+        // A document from before anybody could be said to have looked is one
+        // nobody has looked at.
+        std::fs::write(agent.dir().join(STATE), r#"{"state":"done"}"#).unwrap();
+        assert_eq!(agent.state().unwrap().seen, 0);
     }
 
     #[test]

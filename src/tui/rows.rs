@@ -697,6 +697,21 @@ pub fn called(view: &View) -> &str {
     view.state.name.as_deref().unwrap_or_else(|| view.id())
 }
 
+/// Whether this row is holding something nobody has read.
+///
+/// Two halves, and both are needed. An agent that is starting or mid-turn has
+/// nothing for anybody to have read: what it is doing is on the row already
+/// and it is different by the next reading. Everything else has stopped —
+/// on a question, at its prompt, or for good — and what it stopped with is
+/// worth a mark until somebody has been to look at it.
+///
+/// Read against the clock rather than against a flag, so the mark comes back
+/// on its own: an agent that was read at its prompt and then stopped on a
+/// question has said something since the last look at it.
+pub fn unread(view: &View) -> bool {
+    Group::of(view.phase()) != Group::Working && view.state.seen < ended(view)
+}
+
 /// When an agent's turn ended, as well as the record can say.
 fn ended(view: &View) -> u64 {
     view.state.last_event.max(view.state.since)
@@ -1476,6 +1491,34 @@ mod tests {
         list.narrow(vec![Narrow::State(None)]);
         list.show(vec![view("busy-a1b", Phase::Working, 10), gone]);
         assert_eq!(list.live(), 1);
+    }
+
+    #[test]
+    fn acts_a_row_carries_a_mark_until_somebody_has_looked_at_it() {
+        let mut ended = view("done-a1b", Phase::Done, 10);
+        assert!(
+            unread(&ended),
+            "an agent that has ended and nobody has been to read"
+        );
+
+        ended.state.seen = 10;
+        assert!(!unread(&ended), "and it is read once somebody has");
+
+        ended.state.last_event = 20;
+        assert!(
+            unread(&ended),
+            "something said after the look is news again"
+        );
+
+        // An agent still going is not holding anything to read: what it is
+        // doing is on the row already, and it changes with every reading.
+        for phase in [Phase::Starting, Phase::Working] {
+            assert!(!unread(&view("busy-b2c", phase, 30)), "{phase}");
+        }
+        assert!(
+            unread(&view("ask-c3d", Phase::Waiting, 30)),
+            "and one stopped on a question is the whole reason for the mark"
+        );
     }
 
     #[test]

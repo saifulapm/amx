@@ -44,14 +44,31 @@ fn screen(amx: &Harness, pane: &str) -> String {
 }
 
 /// The mark on an agent's row, as the view has it drawn now: past the gutter
-/// its rows are indented by.
+/// its rows are indented by, which is where the unread mark goes.
 fn mark(amx: &Harness, view: &str, id: &str) -> Option<char> {
+    row_of(amx, view, id)?.chars().nth(2)
+}
+
+/// Whether the view is saying nobody has read this row, which is the first
+/// column of the gutter.
+fn unread(amx: &Harness, view: &str, id: &str) -> bool {
+    row_of(amx, view, id).is_some_and(|row| row.starts_with('•'))
+}
+
+/// Whether this line of the screen is the row of an agent the view is calling
+/// `name`: past the gutter, the mark and the space after it, which is where a
+/// row writes what it calls its agent. A notice quoting the same word is prose
+/// at the left edge and does not answer to this.
+fn a_row_called(line: &str, name: &str) -> bool {
+    line.chars().skip(4).collect::<String>().starts_with(name)
+}
+
+/// The line of the list an agent is drawn on.
+fn row_of(amx: &Harness, view: &str, id: &str) -> Option<String> {
     screen(amx, view)
         .lines()
-        .find(|line| line.contains(id))?
-        .trim_start()
-        .chars()
-        .next()
+        .find(|line| line.contains(id))
+        .map(str::to_string)
 }
 
 /// The same screen with the colours the view drew it in, as the escapes tmux
@@ -1442,6 +1459,35 @@ fn ctrl_x_stops_the_agent_and_then_forgets_it() {
 }
 
 #[test]
+fn acts_space_takes_the_unread_mark_off_the_row_it_opened() {
+    let amx = Harness::new();
+    finished(&amx, "fix-login-a1b", "done", 60);
+    finished(&amx, "port-importer-b2c", "done", 120);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both rows to be marked unread", || {
+        (unread(&amx, &view, "fix-login-a1b") && unread(&amx, &view, "port-importer-b2c"))
+            .then_some(())
+    });
+
+    // The cursor opens on the newest ending, which is the row the card opens
+    // over.
+    press(&amx, &view, "Space");
+    amx.until("the mark to go with the look", || {
+        (!unread(&amx, &view, "fix-login-a1b")).then_some(())
+    });
+    assert!(
+        unread(&amx, &view, "port-importer-b2c"),
+        "and the row nobody opened keeps its mark:\n{}",
+        screen(&amx, &view)
+    );
+    assert!(
+        amx.state("fix-login-a1b")["seen"].as_u64().unwrap_or(0) > 0,
+        "the look is on the record, so the next view opens knowing it"
+    );
+}
+
+#[test]
 fn acts_ctrl_r_calls_the_agent_what_a_person_typed() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
@@ -1470,13 +1516,11 @@ fn acts_ctrl_r_calls_the_agent_what_a_person_typed() {
         let drawn = screen(&amx, &view);
         drawn
             .lines()
-            .any(|line| line.contains(" auth "))
+            .any(|line| a_row_called(line, "auth"))
             .then_some(drawn)
     });
     assert!(
-        !wall
-            .lines()
-            .any(|line| line.contains(" auth ") && line.contains("fix-login-a1b")),
+        !wall.lines().any(|line| a_row_called(line, "fix-login-a1b")),
         "the row carries the name and the id is off it:\n{wall}"
     );
     assert_eq!(
@@ -1541,16 +1585,19 @@ fn the_keys_are_on_the_screen_for_the_asking() {
     until_empty(&amx, &view);
 
     types(&amx, &view, "?");
+    // Waited for by the last of them, so a screen caught halfway through
+    // being written is not read as a key that is missing.
     let keys = amx.until("the keys", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("ctrl+x").then_some(drawn)
+        drawn.contains("close the view").then_some(drawn)
     });
     for does in [
         "start an agent",
         "reply",
         "what it has changed",
         "stop it",
-        "close the view",
+        "call it something else",
+        "ctrl+x",
     ] {
         assert!(keys.contains(does), "{does} is not among the keys:\n{keys}");
     }
