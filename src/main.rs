@@ -91,6 +91,7 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
 fn finish(outcome: Result<i32>) -> i32 {
     match outcome {
         Ok(code) => code,
+        Err(e) if broke_the_pipe(&e) => exit::OK,
         Err(e) => {
             eprintln!("amx: {e:#}");
             exit::FAILURE
@@ -98,9 +99,58 @@ fn finish(outcome: Result<i32>) -> i32 {
     }
 }
 
+/// Whether what went wrong is the far end of a pipe closing.
+///
+/// A verb writes its answer to stdout, and `amx diff fix-login-a1b | head`
+/// takes that pipe away the moment head has its ten lines. Rust turns SIGPIPE
+/// off for the whole process before `main`, so the write comes back as an
+/// error instead of ending the process the way the signal would — and amx
+/// keeps it that way, because a verb halfway through writing a record should
+/// get to finish it.
+///
+/// What is left is to answer as the signal would have: nothing on stderr,
+/// which may be the same pipe, and no failure to report, because a reader that
+/// has what it came for is not a failure. It is looked for down the whole
+/// chain, since the io error arrives wrapped in whatever the verb was doing.
+fn broke_the_pipe(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hardening_a_reader_that_stopped_reading_is_not_a_failure() {
+        // `amx diff fix-login-a1b | head` closes the pipe as soon as head has
+        // what it asked for. Rust turns that into an error rather than the
+        // signal a shell would report as 141, and it arrives here wrapped in
+        // whatever the verb was doing at the time.
+        let closed = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "Broken pipe (os error 32)",
+        ))
+        .context("reading the diff");
+        assert!(broke_the_pipe(&closed));
+        assert_eq!(finish(Err(closed)), exit::OK, "and says nothing about it");
+
+        let elsewhere = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::StorageFull,
+            "No space left on device",
+        ))
+        .context("writing the diff");
+        assert!(
+            !broke_the_pipe(&elsewhere),
+            "another write that would not go"
+        );
+        assert!(!broke_the_pipe(&anyhow::anyhow!(
+            "no agent `fix-login-a1b`"
+        )));
+    }
 
     #[test]
     fn a_verb_that_cannot_reach_its_agent_fails_with_the_reason() {
