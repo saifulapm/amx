@@ -391,6 +391,61 @@ fn surfaces_the_table_carries_the_choices_beside_the_question() {
 }
 
 #[test]
+fn surfaces_answer_takes_words_where_the_vendor_asks_a_question_of_its_own() {
+    let amx = Harness::new();
+    parked_on_a_menu(&amx, "pick-a1b");
+
+    let out = amx.amx(&["answer", "pick-a1b", "neither, keep both"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    amx.until("the words to reach the pane", || {
+        amx.capture(&amx.pane_of("pick-a1b"))
+            .contains("neither, keep both")
+            .then_some(())
+    });
+
+    let recorded = amx.state("pick-a1b");
+    assert_ne!(
+        recorded["state"], "waiting",
+        "an answered question is not still pending"
+    );
+    assert_eq!(
+        recorded["question"],
+        json!(null),
+        "and it leaves neither its words nor its choices behind"
+    );
+}
+
+#[test]
+fn surfaces_answer_refuses_words_at_a_prompt_that_takes_a_key() {
+    let amx = Harness::new();
+    parked_on_the_box(&amx, "ask-a1b");
+
+    let out = amx.amx(&["answer", "ask-a1b", "neither, keep both"]);
+    assert_eq!(code(&out), 64, "{}", stderr(&out));
+    assert!(stderr(&out).contains("y, n, 1-9"), "{}", stderr(&out));
+    assert!(
+        !amx.capture(&amx.pane_of("ask-a1b"))
+            .contains("neither, keep both"),
+        "a permission box takes one key, and words typed at it answer it by accident"
+    );
+}
+
+#[test]
+fn surfaces_an_empty_answer_is_not_an_answer_to_anything() {
+    let amx = Harness::new();
+    parked_on_a_menu(&amx, "pick-a1b");
+
+    let out = amx.amx(&["answer", "pick-a1b", "   "]);
+    assert_eq!(code(&out), 64, "{}", stderr(&out));
+    assert_eq!(
+        amx.state("pick-a1b")["state"],
+        "waiting",
+        "the question is still there to be answered"
+    );
+}
+
+#[test]
 fn the_orchestration_verbs_say_so_when_there_is_no_such_agent() {
     let amx = Harness::new();
     for args in [
