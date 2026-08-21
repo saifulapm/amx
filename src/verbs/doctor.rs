@@ -1,9 +1,10 @@
 //! `amx doctor` — what amx needs from this machine, and what is missing.
 //!
-//! Five things have to be true before an agent can run: a tmux new enough to
+//! Six things have to be true before an agent can run: a tmux new enough to
 //! address panes by id, a vendor command to run, a config amx can read, amx's
-//! hooks wired into the vendor's settings, and a state root amx can keep an
-//! agent in. Each check that fails says what to do about it, because a check
+//! hooks wired into the vendor's settings, a state root amx can keep an agent
+//! in, and no agent already stopped at a screen the vendor puts in front of
+//! the work. Each check that fails says what to do about it, because a check
 //! that only says "no" leaves somebody guessing at a machine they thought was
 //! fine.
 //!
@@ -16,7 +17,9 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-use crate::{exit, install, tmux};
+use crate::derive::View;
+use crate::store::Phase;
+use crate::{derive, exit, install, rules, store, tmux};
 
 /// One thing amx looked at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +75,35 @@ pub struct Findings {
     /// cannot.
     pub state_root: PathBuf,
     pub state_error: Option<String>,
+    /// The agents that never got past the vendor's own setup.
+    pub parked: Vec<Parked>,
+}
+
+/// An agent stopped at a screen the vendor puts in front of the work, and
+/// which screen it is. Nobody but the person at the keyboard can get it past
+/// one, so this is a check that names names rather than one amx can fix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parked {
+    pub id: String,
+    pub screen: Setup,
+}
+
+/// What is in the way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Setup {
+    /// The folder-trust question, which amx has a measured rule for.
+    Trust,
+    /// A screen no rule claims, under a record that has never left `starting`.
+    Unread,
+}
+
+impl Setup {
+    fn says(self) -> &'static str {
+        match self {
+            Setup::Trust => "claude's folder-trust question",
+            Setup::Unread => "an opening screen amx has no rule for",
+        }
+    }
 }
 
 /// Judge what was found.
@@ -82,6 +114,7 @@ pub fn report(found: &Findings) -> Vec<Check> {
         config_check(found),
         hooks_check(found),
         state_check(found),
+        setup_check(found),
     ]
 }
 
@@ -176,6 +209,28 @@ fn state_check(found: &Findings) -> Check {
             "amx keeps every agent there, so until that is fixed it has nowhere to put one",
         ),
     }
+}
+
+fn setup_check(found: &Findings) -> Check {
+    let Some(first) = found.parked.first() else {
+        return Check::ok("setup", "no agent is stopped at the vendor's own setup");
+    };
+
+    let each: Vec<String> = found
+        .parked
+        .iter()
+        .map(|agent| format!("{} at {}", agent.id, agent.screen.says()))
+        .collect();
+    let what = match each.as_slice() {
+        [one] => one.clone(),
+        many => format!("{} agents are stopped: {}", many.len(), many.join(", ")),
+    };
+
+    Check::wrong(
+        "setup",
+        what,
+        format!("answer it yourself: amx attach {}", first.id),
+    )
 }
 
 /// Print the checks, offer the one repair amx can make, and answer with an
@@ -273,8 +328,51 @@ pub fn gather(config: &Config) -> Result<Findings> {
         settings_error,
         command,
         state_error: usable(&state_root),
+        parked: parked(
+            // A state root amx cannot read has no agents to report on, and the
+            // check above is where that is said. Here it means none were found.
+            &derive::views(&state_root, rules::bundled(), store::now()).unwrap_or_default(),
+        ),
         state_root,
     })
+}
+
+/// The agents stopped at a screen the vendor draws before it will do anything
+/// else, and which screen each of them is at.
+///
+/// Two shapes, because amx can name one of them and can only describe the
+/// other. The folder-trust question has a rule measured off a live vendor, so
+/// an agent stopped there is named for what it is. The login prompt has no
+/// rule and cannot honestly be given one from here: measuring it means logging
+/// a real claude out, and a string nobody read off a running vendor is exactly
+/// what the ruleset's anchor law forbids.
+///
+/// So the second shape is described rather than named: a record that has never
+/// left `starting` — the vendor has begun no turn, and `SessionStart` alone
+/// does not move it — under a screen no rule claims. A vendor that changed its
+/// opening screen reads the same way, and so does one still drawing its first
+/// frame once the record has gone stale enough for the pane to be asked. That
+/// is the cost of describing it, and it is the cheaper mistake: the remedy is
+/// to attach and look, which is what a person would do anyway.
+fn parked(views: &[View]) -> Vec<Parked> {
+    views
+        .iter()
+        .filter_map(|view| {
+            let screen = if view.phase() == Phase::Waiting
+                && view.verdict.rule.as_deref() == Some("folder_trust")
+            {
+                Setup::Trust
+            } else if view.state.state == Phase::Starting && view.phase() == Phase::Unknown {
+                Setup::Unread
+            } else {
+                return None;
+            };
+            Some(Parked {
+                id: view.id().to_string(),
+                screen,
+            })
+        })
+        .collect()
 }
 
 /// Why amx cannot use `root`, when it cannot.
@@ -380,6 +478,34 @@ mod tests {
             command: COMMAND.to_string(),
             state_root: PathBuf::from("/home/dev/.local/state/amx/agents"),
             state_error: None,
+            parked: Vec::new(),
+        }
+    }
+
+    /// An agent as a reader hands it over. The record is deserialised rather
+    /// than built field by field, because that is how a real one arrives and a
+    /// field added to `Meta` tomorrow should not land here.
+    fn view(id: &str, recorded: Phase, seen: Phase, rule: Option<&str>) -> derive::View {
+        derive::View {
+            meta: serde_json::from_value(serde_json::json!({
+                "id": id,
+                "task": "fix the login bug",
+                "dir": "/srv/app",
+                "socket": {"name": "amx"},
+                "pane": "%1",
+                "created": 1,
+            }))
+            .expect("the record amx writes at spawn"),
+            state: store::State {
+                state: recorded,
+                ..store::State::default()
+            },
+            verdict: derive::Verdict {
+                phase: seen,
+                evidence: derive::Evidence::Screen,
+                rule: rule.map(str::to_string),
+                age: 40,
+            },
         }
     }
 
@@ -412,8 +538,8 @@ mod tests {
         assert!(checks.iter().all(Check::is_ok), "{checks:#?}");
         assert_eq!(
             checks.len(),
-            5,
-            "tmux, the vendor, the config, the hooks, the state root"
+            6,
+            "tmux, the vendor, the config, the hooks, the state root, setup"
         );
 
         let (code, printed) = said(&healthy(), false);
@@ -679,6 +805,114 @@ mod tests {
         // the name in the answer is the directory that actually refused.
         let why = usable(&closed.join("amx/agents")).expect("nowhere to make it");
         assert!(why.contains(&closed.display().to_string()), "{why}");
+    }
+
+    #[test]
+    fn doctor_names_the_agent_stopped_at_the_vendors_trust_question() {
+        let mut found = healthy();
+        found.parked = vec![Parked {
+            id: "fix-auth-2k3".to_string(),
+            screen: Setup::Trust,
+        }];
+
+        let setup = check(&found, "setup");
+        assert!(setup.found.contains("fix-auth-2k3"), "{}", setup.found);
+        assert!(setup.found.contains("trust"), "{}", setup.found);
+        let remedy = setup.remedy.as_deref().unwrap();
+        assert!(remedy.contains("amx attach fix-auth-2k3"), "{remedy}");
+        assert_eq!(said(&found, false).0, exit::FAILURE);
+    }
+
+    #[test]
+    fn doctor_names_an_agent_the_vendor_never_let_start() {
+        // What a login prompt looks like from out here, and amx says only what
+        // it can see: a screen no rule claims, from an agent that has never
+        // reported anything.
+        let mut found = healthy();
+        found.parked = vec![Parked {
+            id: "port-cli-b91".to_string(),
+            screen: Setup::Unread,
+        }];
+
+        let setup = check(&found, "setup");
+        assert!(setup.found.contains("port-cli-b91"), "{}", setup.found);
+        assert!(
+            setup.remedy.as_deref().unwrap().contains("amx attach"),
+            "somebody has to look at it: {setup:?}"
+        );
+    }
+
+    #[test]
+    fn doctor_names_every_agent_stopped_at_setup_and_one_to_start_with() {
+        let mut found = healthy();
+        found.parked = vec![
+            Parked {
+                id: "fix-auth-2k3".to_string(),
+                screen: Setup::Trust,
+            },
+            Parked {
+                id: "port-cli-b91".to_string(),
+                screen: Setup::Unread,
+            },
+        ];
+
+        let setup = check(&found, "setup");
+        assert!(setup.found.contains('2'), "how many: {}", setup.found);
+        assert!(setup.found.contains("fix-auth-2k3"), "{}", setup.found);
+        assert!(setup.found.contains("port-cli-b91"), "{}", setup.found);
+        assert!(
+            setup
+                .remedy
+                .as_deref()
+                .unwrap()
+                .contains("amx attach fix-auth-2k3"),
+            "one of them to start with: {setup:?}"
+        );
+    }
+
+    #[test]
+    fn only_an_agent_that_never_got_started_is_stopped_at_setup() {
+        let views = vec![
+            view("works-a1b", Phase::Working, Phase::Working, Some("spinner")),
+            view(
+                "asks-b2c",
+                Phase::Working,
+                Phase::Waiting,
+                Some("permission_prompt"),
+            ),
+            view("waits-c3d", Phase::Idle, Phase::Idle, Some("idle_prompt")),
+            view(
+                "trust-d4e",
+                Phase::Starting,
+                Phase::Waiting,
+                Some("folder_trust"),
+            ),
+            view("login-e5f", Phase::Starting, Phase::Unknown, None),
+            // Interrupted mid-turn onto a screen no rule claims. The vendor let
+            // this one start, so it is not stopped at setup.
+            view("lost-f6g", Phase::Working, Phase::Unknown, None),
+            // Started, drawn, and sitting at its prompt with nothing to do.
+            view(
+                "fresh-g7h",
+                Phase::Starting,
+                Phase::Idle,
+                Some("idle_prompt"),
+            ),
+        ];
+
+        assert_eq!(
+            parked(&views),
+            vec![
+                Parked {
+                    id: "trust-d4e".to_string(),
+                    screen: Setup::Trust,
+                },
+                Parked {
+                    id: "login-e5f".to_string(),
+                    screen: Setup::Unread,
+                },
+            ]
+        );
     }
 
     #[test]
