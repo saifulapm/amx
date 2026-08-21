@@ -14,7 +14,88 @@ use crate::cli::NewArgs;
 use crate::config::Config;
 use crate::spawn::{self, Dials, Handoff, Placement};
 use crate::store::{Meta, now};
-use crate::{exit, ids, paths, worktree};
+use crate::{exit, ids, paths, registry, worktree};
+
+/// What this spawn launches: the vendor's command, and where its dials are
+/// pointed for this one agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Launch {
+    agent: String,
+    dials: Dials,
+}
+
+impl Launch {
+    /// What the caller typed, else what the config holds, else the vendor's
+    /// own behaviour, dial by dial.
+    ///
+    /// A value the vendor would not take is refused rather than passed on.
+    /// The config is treated more gently and drops such a value instead: a
+    /// file outlives the versions that wrote it, and it has already said so
+    /// on its own terms when it was read. A flag was typed for this spawn,
+    /// with the person who typed it still standing there, so telling them
+    /// beats starting an agent at a setting nobody asked for.
+    fn resolve(config: &Config, args: &NewArgs) -> Result<Launch, String> {
+        let named = args.agent.as_ref();
+        let agent = named
+            .and_then(|named| named.command.clone())
+            .unwrap_or_else(|| config.agent.clone());
+        let entry = registry::entry(&agent);
+        let mut dials = Dials::default();
+
+        for (key, spec, typed, held, resolved) in [
+            (
+                "model",
+                entry.and_then(|entry| entry.model),
+                named.and_then(|named| named.model.as_deref()),
+                config.model.as_deref(),
+                &mut dials.model,
+            ),
+            (
+                "permission",
+                entry.and_then(|entry| entry.permission),
+                named.and_then(|named| named.permission.as_deref()),
+                config.permission.as_deref(),
+                &mut dials.permission,
+            ),
+            (
+                "effort",
+                entry.and_then(|entry| entry.effort),
+                named.and_then(|named| named.effort.as_deref()),
+                config.effort.as_deref(),
+                &mut dials.effort,
+            ),
+        ] {
+            if let Some(value) = typed {
+                match spec {
+                    Some(spec) if registry::accepts(&spec, value) => *resolved = value.to_string(),
+                    // Only a closed dial ever refuses a value, so its cycle is
+                    // the whole of what the vendor takes and worth printing.
+                    Some(spec) => {
+                        return Err(format!(
+                            "--{key} {value:?}: {} takes {}",
+                            registry::program(&agent),
+                            spec.cycle.join(", ")
+                        ));
+                    }
+                    None => {
+                        return Err(format!(
+                            "--{key} {value:?}: amx knows no {key} dial for {}",
+                            registry::program(&agent)
+                        ));
+                    }
+                }
+                continue;
+            }
+            if let Some(value) = held
+                && spec.is_some_and(|spec| registry::accepts(&spec, value))
+            {
+                *resolved = value.to_string();
+            }
+        }
+
+        Ok(Launch { agent, dials })
+    }
+}
 
 /// Run the verb against the machine.
 pub fn from_env(config: &Config, args: &NewArgs) -> Result<i32> {
@@ -41,6 +122,17 @@ pub fn run(
     out: &mut impl Write,
     problems: &mut impl Write,
 ) -> Result<i32> {
+    // Before anything is made: a dial the vendor would not take is a
+    // malformed command line, and there is nothing to clean up if it is
+    // answered here.
+    let launch = match Launch::resolve(config, args) {
+        Ok(launch) => launch,
+        Err(refusal) => {
+            writeln!(problems, "amx new: {refusal}")?;
+            return Ok(exit::USAGE);
+        }
+    };
+
     std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
 
     // The cap is about agents that are still going. One that has finished is a
@@ -69,7 +161,7 @@ pub fn run(
 
     // From here on a failure leaves nothing behind: an id that half exists is
     // worse than one that does not.
-    match start(root, &agent_dir, dir, env, config, args, &id) {
+    match start(root, &agent_dir, dir, env, config, args, &launch, &id) {
         Ok(()) => {
             writeln!(out, "{id}")?;
             Ok(exit::OK)
@@ -81,6 +173,7 @@ pub fn run(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start(
     root: &Path,
     agent_dir: &Path,
@@ -88,6 +181,7 @@ fn start(
     mut env: std::collections::BTreeMap<String, String>,
     config: &Config,
     args: &NewArgs,
+    launch: &Launch,
     id: &str,
 ) -> Result<()> {
     let tree = cut_worktree(dir, id, config, args)?;
@@ -96,19 +190,14 @@ fn start(
         .map(|tree| tree.path.clone())
         .unwrap_or_else(|| dir.to_path_buf());
 
-    let agent = args
-        .agent
-        .as_ref()
-        .and_then(|named| named.command.clone())
-        .unwrap_or_else(|| config.agent.clone());
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
     spawn::write_handoff(
         agent_dir,
         &Handoff {
             task: args.task.clone(),
             command: spawn::vendor_command(
-                &agent,
-                &Dials::default(),
+                &launch.agent,
+                &launch.dials,
                 &args.vendor_args,
                 &args.task,
             ),
@@ -177,4 +266,121 @@ fn make_dir(dir: &PathBuf) -> Result<()> {
         .mode(0o700)
         .create(dir)
         .with_context(|| format!("creating {}", dir.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::AgentArgs;
+    use crate::registry::DEFAULT;
+
+    fn spawn(agent: Option<&str>, dials: [Option<&str>; 3]) -> NewArgs {
+        let [model, permission, effort] = dials;
+        NewArgs {
+            task: "port the importer".to_string(),
+            bg: false,
+            name: None,
+            dir: None,
+            no_worktree: false,
+            agent: Some(AgentArgs {
+                command: agent.map(str::to_string),
+                model: model.map(str::to_string),
+                permission: permission.map(str::to_string),
+                effort: effort.map(str::to_string),
+            }),
+            vendor_args: Vec::new(),
+        }
+    }
+
+    fn configured(model: Option<&str>, permission: Option<&str>, effort: Option<&str>) -> Config {
+        Config {
+            model: model.map(str::to_string),
+            permission: permission.map(str::to_string),
+            effort: effort.map(str::to_string),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn dials_the_caller_beats_the_config_which_beats_the_vendors_own() {
+        let config = configured(Some("fable"), Some("plan"), None);
+        let launch =
+            Launch::resolve(&config, &spawn(None, [Some("opus"), None, Some("high")])).unwrap();
+
+        assert_eq!(launch.agent, "claude", "the configured vendor, unnamed");
+        assert_eq!(launch.dials.model, "opus", "typed over configured");
+        assert_eq!(launch.dials.permission, "plan", "configured, never typed");
+        assert_eq!(launch.dials.effort, "high", "typed, never configured");
+    }
+
+    #[test]
+    fn dials_untouched_by_either_are_left_to_the_vendor() {
+        let launch = Launch::resolve(&Config::default(), &spawn(None, [None; 3])).unwrap();
+        assert_eq!(launch.dials, Dials::default());
+    }
+
+    #[test]
+    fn dials_can_be_turned_back_to_the_vendors_own_by_name() {
+        // The only way to spawn once at whatever claude was going to do
+        // anyway, without editing the config file first.
+        let config = configured(Some("fable"), None, Some("max"));
+        let launch = Launch::resolve(&config, &spawn(None, [Some(DEFAULT), None, None])).unwrap();
+
+        assert_eq!(launch.dials.model, DEFAULT);
+        assert_eq!(launch.dials.effort, "max", "and only that dial");
+    }
+
+    #[test]
+    fn dials_the_vendor_would_refuse_are_refused_here_first() {
+        // claude answers `--permission-mode nonsense` with an error naming the
+        // modes it takes, so amx saying it is the same answer sooner, before
+        // an id is minted or a pane is opened.
+        let refusal = Launch::resolve(
+            &Config::default(),
+            &spawn(None, [None, Some("acceptedits"), None]),
+        )
+        .unwrap_err();
+        assert!(refusal.contains("--permission"), "{refusal}");
+        assert!(refusal.contains("acceptEdits"), "{refusal}");
+
+        let refusal = Launch::resolve(&Config::default(), &spawn(None, [None, None, Some("hard")]))
+            .unwrap_err();
+        assert!(
+            refusal.contains("--effort") && refusal.contains("xhigh"),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn dials_a_full_model_name_is_taken_because_that_dial_is_open() {
+        let launch = Launch::resolve(
+            &Config::default(),
+            &spawn(None, [Some("claude-fable-5"), None, None]),
+        )
+        .unwrap();
+        assert_eq!(launch.dials.model, "claude-fable-5");
+    }
+
+    #[test]
+    fn dials_a_flag_for_a_vendor_that_has_no_such_dial_is_refused() {
+        let refusal = Launch::resolve(
+            &Config::default(),
+            &spawn(Some("mock-claude"), [Some("opus"), None, None]),
+        )
+        .unwrap_err();
+        assert!(refusal.contains("--model"), "{refusal}");
+        assert!(refusal.contains("mock-claude"), "{refusal}");
+    }
+
+    #[test]
+    fn dials_the_config_cannot_stop_a_spawn_the_way_a_flag_can() {
+        // A config file outlives the versions that wrote it, so a value this
+        // vendor cannot use is dropped and the spawn goes ahead. The file has
+        // already said so on its own terms when it was read.
+        let config = configured(Some("opus"), None, Some("high"));
+        let launch = Launch::resolve(&config, &spawn(Some("mock-claude"), [None; 3])).unwrap();
+
+        assert_eq!(launch.agent, "mock-claude");
+        assert_eq!(launch.dials, Dials::default());
+    }
 }

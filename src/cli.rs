@@ -352,7 +352,9 @@ mod tests {
         let Some(Command::New(args)) = cli.command else {
             panic!("expected new");
         };
-        let named = args.agent.expect("the caller named the vendor and its dials");
+        let named = args
+            .agent
+            .expect("the caller named the vendor and its dials");
         assert_eq!(named.command.as_deref(), Some("claude"));
         assert_eq!(named.model.as_deref(), Some("opus"));
         assert_eq!(named.permission.as_deref(), Some("plan"));
