@@ -1,10 +1,11 @@
 //! `amx doctor` — what amx needs from this machine, and what is missing.
 //!
-//! Four things have to be true before an agent can run: a tmux new enough to
-//! address panes by id, a vendor command to run, a config amx can read, and
-//! amx's hooks wired into the vendor's settings. Each check that fails says
-//! what to do about it, because a check that only says "no" leaves somebody
-//! guessing at a machine they thought was fine.
+//! Five things have to be true before an agent can run: a tmux new enough to
+//! address panes by id, a vendor command to run, a config amx can read, amx's
+//! hooks wired into the vendor's settings, and a state root amx can keep an
+//! agent in. Each check that fails says what to do about it, because a check
+//! that only says "no" leaves somebody guessing at a machine they thought was
+//! fine.
 //!
 //! `--fix` does the one repair amx can make safely: wiring the hooks, after
 //! asking.
@@ -67,6 +68,10 @@ pub struct Findings {
     pub settings_error: Option<String>,
     /// The hook command this amx would install.
     pub command: String,
+    /// Where every agent's record is kept, and why amx cannot use it when it
+    /// cannot.
+    pub state_root: PathBuf,
+    pub state_error: Option<String>,
 }
 
 /// Judge what was found.
@@ -76,6 +81,7 @@ pub fn report(found: &Findings) -> Vec<Check> {
         vendor_check(found),
         config_check(found),
         hooks_check(found),
+        state_check(found),
     ]
 }
 
@@ -161,6 +167,17 @@ fn hooks_check(found: &Findings) -> Check {
     Check::wrong("hooks", what, "run `amx doctor --fix`")
 }
 
+fn state_check(found: &Findings) -> Check {
+    match &found.state_error {
+        None => Check::ok("state", found.state_root.display().to_string()),
+        Some(why) => Check::wrong(
+            "state",
+            why.clone(),
+            "amx keeps every agent there, so until that is fixed it has nowhere to put one",
+        ),
+    }
+}
+
 /// Print the checks, offer the one repair amx can make, and answer with an
 /// exit code: zero when there is nothing left to do.
 pub fn run(
@@ -243,6 +260,7 @@ pub fn gather(config: &Config) -> Result<Findings> {
     let command = install::hook_command(&std::env::current_exe()?);
     let (wired, settings_error) = wiring(&settings, &command);
     let (_, config_warnings) = crate::config::load();
+    let state_root = crate::paths::state_root()?;
 
     Ok(Findings {
         tmux: tmux::version().ok(),
@@ -254,6 +272,42 @@ pub fn gather(config: &Config) -> Result<Findings> {
         wired,
         settings_error,
         command,
+        state_error: usable(&state_root),
+        state_root,
+    })
+}
+
+/// Why amx cannot use `root`, when it cannot.
+///
+/// An agent's directory is made with all of its missing parents at once, so
+/// the directory that has to take that write is the nearest ancestor already
+/// on disk: the root itself once amx has run here before, the directory above
+/// it on a machine where it has not. The root is read as well as written once
+/// it exists, because listing it is how every reader finds the agents.
+///
+/// The failure this exists for is quiet: a root that cannot be made and a
+/// machine that has simply never run an agent both list as no agents at all,
+/// and the difference only shows up as a spawn failing later.
+fn usable(root: &Path) -> Option<String> {
+    let mut dir = root;
+    while !dir.exists() {
+        dir = dir.parent()?;
+    }
+
+    let mut needs = nix::unistd::AccessFlags::W_OK | nix::unistd::AccessFlags::X_OK;
+    if dir == root {
+        needs |= nix::unistd::AccessFlags::R_OK;
+    }
+
+    let why = nix::unistd::access(dir, needs).err()?.desc();
+    Some(if dir == root {
+        format!("{} is not readable and writable: {why}", dir.display())
+    } else {
+        format!(
+            "{} would be made in {}, which is not writable: {why}",
+            root.display(),
+            dir.display()
+        )
     })
 }
 
@@ -324,7 +378,19 @@ mod tests {
             wired: install::EVENTS.iter().map(|e| e.to_string()).collect(),
             settings_error: None,
             command: COMMAND.to_string(),
+            state_root: PathBuf::from("/home/dev/.local/state/amx/agents"),
+            state_error: None,
         }
+    }
+
+    /// A directory nobody but its owner may write to is the whole of these
+    /// tests, and root is exempt from the permission bits.
+    fn not_root() -> bool {
+        if nix::unistd::Uid::effective().is_root() {
+            eprintln!("skipping: running as root, which every directory lets in");
+            return false;
+        }
+        true
     }
 
     fn check(found: &Findings, name: &str) -> Check {
@@ -344,7 +410,11 @@ mod tests {
     fn doctor_says_nothing_is_wrong_when_nothing_is() {
         let checks = report(&healthy());
         assert!(checks.iter().all(Check::is_ok), "{checks:#?}");
-        assert_eq!(checks.len(), 4, "tmux, the vendor, the config, the hooks");
+        assert_eq!(
+            checks.len(),
+            5,
+            "tmux, the vendor, the config, the hooks, the state root"
+        );
 
         let (code, printed) = said(&healthy(), false);
         assert_eq!(code, exit::OK);
@@ -553,5 +623,78 @@ mod tests {
             program("/usr/local/bin/claude --resume"),
             "/usr/local/bin/claude"
         );
+    }
+
+    #[test]
+    fn doctor_names_an_unwritable_state_root_instead_of_saying_no_agents() {
+        // A state root nobody can write to and a machine that has simply never
+        // run an agent look the same from a listing: both say "no agents".
+        let mut found = healthy();
+        found.state_root = PathBuf::from("/srv/amx/agents");
+        found.state_error =
+            Some("/srv/amx/agents cannot be written to: Permission denied".to_string());
+
+        let state = check(&found, "state");
+        assert!(state.found.contains("/srv/amx/agents"), "{}", state.found);
+        assert!(state.found.contains("Permission denied"), "{}", state.found);
+        assert!(
+            state.remedy.is_some(),
+            "and something to do about it: {state:?}"
+        );
+        assert_eq!(said(&found, false).0, exit::FAILURE);
+    }
+
+    #[test]
+    fn a_state_root_that_is_not_there_yet_is_judged_by_the_directory_it_would_go_in() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(usable(&dir.path().join("state/amx/agents")), None);
+    }
+
+    #[test]
+    fn a_state_root_nobody_can_write_to_names_it_and_says_why() {
+        if !not_root() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("agents");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let why = usable(&root).expect("read only, so a new agent has nowhere to go");
+        assert!(why.contains(&root.display().to_string()), "{why}");
+        assert!(why.to_lowercase().contains("permission denied"), "{why}");
+    }
+
+    #[test]
+    fn a_state_root_that_cannot_be_made_names_the_directory_that_refused() {
+        if !not_root() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let closed = dir.path().join("state");
+        std::fs::create_dir(&closed).unwrap();
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        // The root is two levels below a directory that will not take it, so
+        // the name in the answer is the directory that actually refused.
+        let why = usable(&closed.join("amx/agents")).expect("nowhere to make it");
+        assert!(why.contains(&closed.display().to_string()), "{why}");
+    }
+
+    #[test]
+    fn a_state_root_nobody_can_read_is_not_an_empty_one() {
+        if !not_root() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("agents");
+        std::fs::create_dir(&root).unwrap();
+        // Write and search but no read: a listing of it fails outright, which
+        // is the other way a full state root passes for an empty one.
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o300)).unwrap();
+
+        let why = usable(&root);
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(why.is_some(), "a root amx cannot list is a root to report");
     }
 }
