@@ -21,12 +21,12 @@ use std::path::Path;
 
 use super::paint::Peek;
 use super::rows::Narrow;
-use crate::cli::{NewArgs, StopArgs};
+use crate::cli::{AgentArgs, NewArgs, StopArgs};
 use crate::config::Config;
 use crate::derive::View;
 use crate::store::{Agent, Phase};
 use crate::tmux::Server;
-use crate::{derive, exit, rules, spawn, store, verbs, worktree};
+use crate::{derive, exit, registry, rules, spawn, store, verbs, worktree};
 
 /// A line somebody is typing, and what it is for.
 pub struct Composer {
@@ -108,16 +108,169 @@ pub fn narrowing(line: &str) -> Option<Vec<Narrow>> {
     )
 }
 
+/// The tokens a task line may be led with, and what each of them turns.
+const DIALS: [&str; 4] = ["m:", "p:", "w:", "agent:"];
+
+/// What a line's leading tokens turn, for the one spawn they lead. Empty is
+/// the ordinary line, which leaves every dial where the config put it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Turned {
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub permission: Option<String>,
+    /// Whether this agent is given a tree of its own, when the line said.
+    pub worktree: Option<bool>,
+}
+
+/// What starting an agent came to.
+pub enum Started {
+    /// It is running, and this says which one.
+    Yes(String),
+    /// Nothing was made, and this says why.
+    No(String),
+}
+
+/// Split a task line into the dial tokens at the front of it and the task
+/// itself.
+///
+/// Leading only: `port the m:opus importer` is a task with a colon in it,
+/// under the same law that keeps `s:waiting is what to check` one. A task that
+/// has to *begin* with one of these words is what `amx new` at a shell prompt
+/// is for.
+fn tokens(line: &str) -> (Vec<(&'static str, &str)>, &str) {
+    let mut found = Vec::new();
+    let mut rest = line;
+    loop {
+        let ahead = rest.trim_start();
+        let word = ahead.split_whitespace().next().unwrap_or_default();
+        let Some(dial) = DIALS.iter().find(|dial| word.starts_with(**dial)) else {
+            break;
+        };
+        found.push((*dial, &word[dial.len()..]));
+        rest = &ahead[word.len()..];
+    }
+    match found.is_empty() {
+        true => (found, line),
+        false => (found, rest.trim_start()),
+    }
+}
+
+/// The dials a task line turns and the task that is left, or the word that is
+/// not a value for the dial it was typed at.
+///
+/// What a dial takes is the vendor's business, and the answer comes from the
+/// table `new` resolves against: a value amx passed on and the vendor refused
+/// would be an agent that died in its pane with the reason scrolled past.
+///
+/// `agent:` is the exception and takes any command, the way `--agent` does at
+/// a shell prompt. The registry is launch metadata rather than a list of who
+/// may be launched, and an agent it has never heard of has always been allowed
+/// to spawn; what it costs is its dials, which `m:` and `p:` beside it say by
+/// name.
+pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
+    let (tokens, task) = tokens(line);
+    let mut turned = Turned::default();
+
+    // Which vendor first: which dials exist at all is its answer, and a line
+    // may name one the config does not.
+    for (dial, value) in &tokens {
+        if *dial == "agent:" {
+            if value.is_empty() {
+                return Err("agent: takes a command".to_string());
+            }
+            turned.agent = Some((*value).to_string());
+        }
+    }
+    let agent = turned.agent.clone().unwrap_or_else(|| config.agent.clone());
+    let entry = registry::entry(&agent);
+
+    for (dial, value) in &tokens {
+        match *dial {
+            "agent:" => {}
+            "w:" => {
+                turned.worktree = Some(match *value {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err(format!("w:{value}: on or off")),
+                });
+            }
+            "m:" => {
+                turned.model = Some(pointed(&agent, dial, entry.and_then(|e| e.model), value)?);
+            }
+            _ => {
+                turned.permission = Some(pointed(
+                    &agent,
+                    dial,
+                    entry.and_then(|e| e.permission),
+                    value,
+                )?);
+            }
+        }
+    }
+    Ok((turned, task.to_string()))
+}
+
+/// A value for one of the vendor's own dials, or why it is not one.
+fn pointed(
+    agent: &str,
+    dial: &str,
+    spec: Option<registry::DialSpec>,
+    value: &str,
+) -> Result<String, String> {
+    let Some(spec) = spec else {
+        return Err(format!(
+            "{dial}{value}: amx knows no such dial for {}",
+            registry::program(agent)
+        ));
+    };
+    if value.is_empty() {
+        return Err(format!("{dial} takes a value"));
+    }
+    if !registry::accepts(&spec, value) {
+        return Err(format!(
+            "{dial}{value}: {} takes {}",
+            registry::program(agent),
+            spec.cycle.join(", ")
+        ));
+    }
+    Ok(value.to_string())
+}
+
 /// Start an agent on what was typed, where the view is.
-pub fn start(root: &Path, config: &Config, task: &str, hidden: bool) -> Result<String> {
+pub fn start(root: &Path, config: &Config, line: &str, hidden: bool) -> Result<Started> {
+    let (turned, task) = match turned(config, line) {
+        Ok(read) => read,
+        Err(refusal) => return Ok(Started::No(refusal)),
+    };
+    if task.trim().is_empty() {
+        return Ok(Started::No(
+            "the dials are turned; now say what to do".to_string(),
+        ));
+    }
+
     let dir = std::env::current_dir().context("no working directory")?;
+    // A `w:` is a decision about this agent, so it is made where the config's
+    // own answer is made rather than argued with downstream: `new` has a flag
+    // for going without a tree and none for insisting on one.
+    let mut config = config.clone();
+    if let Some(worktree) = turned.worktree {
+        config.worktrees = worktree;
+    }
+
+    let dials = AgentArgs {
+        command: turned.agent,
+        model: turned.model,
+        permission: turned.permission,
+        effort: None,
+    };
+    let named = dials.command.is_some() || dials.model.is_some() || dials.permission.is_some();
     let args = NewArgs {
-        task: task.to_string(),
+        task,
         bg: hidden,
         name: None,
         dir: None,
         no_worktree: false,
-        agent: None,
+        agent: named.then_some(dials),
         vendor_args: Vec::new(),
     };
 
@@ -126,15 +279,15 @@ pub fn start(root: &Path, config: &Config, task: &str, hidden: bool) -> Result<S
         root,
         &dir,
         spawn::env_snapshot(std::env::vars()),
-        config,
+        &config,
         &args,
         &mut started,
         &mut refused,
     )?;
     if code != exit::OK {
-        return Ok(one_line(&refused));
+        return Ok(Started::No(one_line(&refused)));
     }
-    Ok(format!("started {}", one_line(&started)))
+    Ok(Started::Yes(format!("started {}", one_line(&started))))
 }
 
 /// Say something to the agent under the cursor.
@@ -324,6 +477,101 @@ mod tests {
 
         composer.text = "s:waiting is what to check".to_string();
         assert_eq!(composer.prompt(), "task", "and a task still is one");
+    }
+
+    /// A config whose vendor is the one the registry declares dials for.
+    fn as_claude() -> Config {
+        Config {
+            agent: "claude".to_string(),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn composer_reads_the_dials_off_the_front_of_a_task_line() {
+        let (dials, task) = turned(&as_claude(), "m:opus p:plan w:off port the importer").unwrap();
+        assert_eq!(
+            dials,
+            Turned {
+                agent: None,
+                model: Some("opus".to_string()),
+                permission: Some("plan".to_string()),
+                worktree: Some(false),
+            }
+        );
+        assert_eq!(task, "port the importer");
+
+        let (dials, task) = turned(&as_claude(), "agent:codex  w:on  fix the login bug").unwrap();
+        assert_eq!(dials.agent.as_deref(), Some("codex"));
+        assert_eq!(dials.worktree, Some(true));
+        assert_eq!(task, "fix the login bug", "however they were spaced");
+    }
+
+    #[test]
+    fn composer_keeps_the_newlines_of_the_task_the_dials_lead() {
+        let (dials, task) =
+            turned(&as_claude(), "m:opus port the importer\nand its tests").unwrap();
+        assert_eq!(dials.model.as_deref(), Some("opus"));
+        assert_eq!(
+            task, "port the importer\nand its tests",
+            "a pasted task is one task, dials or no dials"
+        );
+    }
+
+    #[test]
+    fn composer_takes_a_line_with_a_dial_word_anywhere_else_for_the_task_it_is() {
+        // The same law that keeps `s:waiting is what to check` a task: leading
+        // tokens only, and everything from the first word that is not one.
+        for line in [
+            "port the m:opus importer",
+            "fix w:off",
+            "port the importer",
+            "make agent:s of them",
+        ] {
+            let (dials, task) = turned(&as_claude(), line).unwrap();
+            assert_eq!(dials, Turned::default(), "{line:?}");
+            assert_eq!(task, line, "{line:?} is a task, colons and all");
+        }
+    }
+
+    #[test]
+    fn composer_refuses_a_value_the_vendor_would_not_take_and_says_what_it_does() {
+        let refused = |line: &str| turned(&as_claude(), line).expect_err(line);
+
+        let said = refused("p:nonsense port the importer");
+        assert!(said.starts_with("p:nonsense: claude takes"), "{said}");
+        assert!(said.contains("acceptEdits"), "every mode it has: {said}");
+        assert_eq!(refused("w:maybe port it"), "w:maybe: on or off");
+        assert_eq!(refused("m: port it"), "m: takes a value");
+        assert_eq!(refused("agent: port it"), "agent: takes a command");
+
+        // Open dials take what the cycle never names, because `--model` does.
+        let (dials, _) = turned(&as_claude(), "m:claude-fable-5 port it").unwrap();
+        assert_eq!(dials.model.as_deref(), Some("claude-fable-5"));
+    }
+
+    #[test]
+    fn composer_refuses_a_dial_the_agent_on_the_same_line_does_not_declare() {
+        // The unregistered rule, said where somebody is standing: an agent amx
+        // has no table for spawns exactly as it always did, and the dials it
+        // never declared are refused by name rather than injected at it.
+        let said = turned(&as_claude(), "agent:mock-claude m:opus port it").expect_err("refused");
+        assert_eq!(said, "m:opus: amx knows no such dial for mock-claude");
+
+        let config = Config {
+            agent: "mock-claude".to_string(),
+            ..Config::default()
+        };
+        assert_eq!(
+            turned(&config, "p:plan port it").expect_err("refused"),
+            "p:plan: amx knows no such dial for mock-claude"
+        );
+        let (dials, task) = turned(&config, "w:off port it").unwrap();
+        assert_eq!(
+            (dials.worktree, task.as_str()),
+            (Some(false), "port it"),
+            "the tree is amx's own dial, and every agent gets one"
+        );
     }
 
     #[test]

@@ -39,7 +39,7 @@ use crate::derive::{self, View};
 use crate::store::{Phase, now};
 use crate::tmux::{PaneId, Server, SessionId};
 use crate::{exit, rules};
-use act::{Asking, Composer};
+use act::{Asking, Composer, Started};
 use paint::{Notice, Peek};
 use rows::List;
 
@@ -358,9 +358,10 @@ impl Screen {
 
     /// A key while somebody is typing a line.
     ///
-    /// The composer is taken out of the mode for the length of the keypress
-    /// and put back unless the key was the end of it, which is what makes
-    /// entering and cancelling the same one move: the line is gone either way.
+    /// The composer is taken out of the mode for the length of the keypress and
+    /// put back unless the key was the end of it, which is what makes entering
+    /// and cancelling the same one move: the line is gone either way. A line
+    /// that was entered and refused was not the end of it, so it comes back.
     fn typed(&mut self, key: KeyEvent, root: &Path, config: &Config) -> Result<Doing> {
         let Mode::Typing(mut composer) = std::mem::take(&mut self.mode) else {
             return Ok(Doing::Carry);
@@ -388,12 +389,32 @@ impl Screen {
                     self.follow_the_cursor();
                     return Ok(Doing::Carry);
                 }
-                if !composer.text.trim().is_empty() {
-                    self.notice = said(match &composer.asking {
-                        Asking::Task => act::start(root, config, &composer.text, composer.hidden),
-                        Asking::Reply { id, .. } => act::reply(root, id, &composer.text),
-                    });
+                if composer.text.trim().is_empty() {
+                    return Ok(Doing::Carry);
+                }
+                if let Asking::Reply { id, .. } = &composer.asking {
+                    self.notice = said(act::reply(root, id, &composer.text));
                     self.acted();
+                    return Ok(Doing::Carry);
+                }
+
+                match act::start(root, config, &composer.text, composer.hidden) {
+                    Ok(Started::Yes(said)) => {
+                        self.notice = Some(Notice::Advice(said));
+                        self.acted();
+                    }
+                    // A line nothing was made from is a line somebody is still
+                    // writing, so it stays where they typed it with the reason
+                    // under it. A task retyped because a dial was misspelt is
+                    // a task somebody types shorter the second time.
+                    Ok(Started::No(why)) => {
+                        self.notice = Some(Notice::Advice(why));
+                        self.mode = Mode::Typing(composer);
+                    }
+                    Err(e) => {
+                        self.notice = Some(Notice::Failed(format!("{e:#}")));
+                        self.acted();
+                    }
                 }
                 return Ok(Doing::Carry);
             }
@@ -846,6 +867,24 @@ mod tests {
             crate::store::list(root.path()).unwrap().is_empty(),
             "and the enter that makes a newline is the one that starts nothing"
         );
+    }
+
+    #[test]
+    fn composer_keeps_a_line_a_dial_refused_where_it_was_typed() {
+        let root = TempDir::new().unwrap();
+        let mut keys = vec![KeyCode::Char('n')];
+        keys.extend(word("p:nonsense port it"));
+        keys.push(KeyCode::Enter);
+
+        let (code, screen) = held(root.path(), &keys);
+        assert_eq!(code, exit::OK);
+        assert!(
+            screen.contains("task ▸ p:nonsense port it"),
+            "a line nothing was made from is a line somebody is still \
+             writing: {screen}"
+        );
+        assert!(screen.contains("p:nonsense: claude takes"), "{screen}");
+        assert!(crate::store::list(root.path()).unwrap().is_empty());
     }
 
     #[test]

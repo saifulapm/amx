@@ -149,6 +149,68 @@ fn a_view_that_dispatches(amx: &Harness, scenario: &str) -> String {
     view
 }
 
+/// A view whose vendor is claude, which is the agent the registry declares
+/// dials for: the stand-in under claude's name, on the path a spawn from this
+/// terminal looks down.
+fn a_view_that_dispatches_as_claude(amx: &Harness, config: &str) -> String {
+    let bin = amx.home().join("bin");
+    std::fs::create_dir_all(&bin).expect("a directory for the stand-in");
+    std::fs::copy(amx.mock(), bin.join("claude")).expect("the stand-in under claude's name");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    amx.config(&format!("agent = \"claude\"\n{config}"));
+    let scenario = amx.scenario("happy-turn").to_string_lossy().into_owned();
+    let transcript = amx
+        .home()
+        .join("composed.jsonl")
+        .to_string_lossy()
+        .into_owned();
+
+    let view = amx.in_a_terminal(
+        &[
+            ("MOCK_CLAUDE_SCENARIO", &scenario),
+            ("MOCK_CLAUDE_TRANSCRIPT", &transcript),
+            ("PATH", &path),
+        ],
+        &[],
+    );
+    until_empty(amx, &view);
+    view
+}
+
+/// Make a directory a git repository with one commit in it, so an agent
+/// started there can be given a tree of its own.
+fn a_repo_at(dir: &std::path::Path) {
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "amx tests")
+            .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
+            .env("GIT_COMMITTER_NAME", "amx tests")
+            .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
+            .output()
+            .expect("running git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-b", "main"]);
+    git(&["config", "user.name", "amx tests"]);
+    git(&["config", "user.email", "tests@example.invalid"]);
+    std::fs::write(dir.join("README.md"), "before\n").expect("a file to commit");
+    git(&["add", "README.md"]);
+    git(&["commit", "-m", "first"]);
+}
+
 /// The one agent the view started, once its record is whole.
 ///
 /// The directory comes before the record in it: `new` starts the pane first,
@@ -159,6 +221,24 @@ fn composed(amx: &Harness) -> String {
         let id = (started.len() == 1).then(|| started[0].clone())?;
         amx.meta(&id)["pane"].as_str().map(|_| id)
     })
+}
+
+/// The next one it started, for a test that dispatches twice.
+fn composed_after(amx: &Harness, first: &str) -> String {
+    amx.until("the next agent to be started", || {
+        let id = agents(amx).into_iter().find(|id| id != first)?;
+        amx.meta(&id)["pane"].as_str().map(|_| id)
+    })
+}
+
+/// The argv amx wrote for the vendor, as the pane will be handed it.
+fn command_of(amx: &Harness, id: &str) -> Vec<String> {
+    amx.handoff(id)["command"]
+        .as_array()
+        .expect("the handoff names a command")
+        .iter()
+        .map(|arg| arg.as_str().expect("an argument").to_string())
+        .collect()
 }
 
 fn pane_field(amx: &Harness, pane: &str, format: &str) -> String {
@@ -679,6 +759,74 @@ fn an_agent_can_be_composed_out_of_sight() {
         "it has a session nobody is attached to"
     );
     amx.until_state(&id, "idle");
+}
+
+#[test]
+fn the_composer_turns_the_dials_for_the_one_spawn_its_tokens_lead() {
+    let amx = Harness::new();
+    a_repo_at(amx.home());
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "m:opus p:plan w:on port the importer");
+    press(&amx, &view, "Enter");
+
+    let id = composed(&amx);
+    let command = command_of(&amx, &id);
+    assert!(
+        command.windows(2).any(|pair| pair == ["--model", "opus"])
+            && command
+                .windows(2)
+                .any(|pair| pair == ["--permission-mode", "plan"]),
+        "{command:?}"
+    );
+    assert_eq!(
+        command.last().map(String::as_str),
+        Some("port the importer"),
+        "and the tokens are off the task the vendor is handed: {command:?}"
+    );
+    assert!(
+        amx.meta(&id)["worktree"].is_string(),
+        "w:on out-votes a config that turned worktrees off"
+    );
+
+    // One spawn and no other: the next line with no tokens on it is the
+    // config's answer again, every dial of it.
+    types(&amx, &view, "n");
+    types(&amx, &view, "fix the login bug");
+    press(&amx, &view, "Enter");
+
+    let next = composed_after(&amx, &id);
+    let command = command_of(&amx, &next);
+    assert!(
+        !command.iter().any(|arg| arg.starts_with("--")),
+        "a token turns a dial for the line it was typed on: {command:?}"
+    );
+    assert!(amx.meta(&next)["worktree"].is_null(), "and no other");
+}
+
+#[test]
+fn the_composer_keeps_a_line_the_vendor_would_refuse_and_says_what_it_takes() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "p:nonsense port the importer");
+    press(&amx, &view, "Enter");
+
+    let drawn = amx.until("the refusal", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("claude takes").then_some(drawn)
+    });
+    assert!(
+        drawn.contains("acceptEdits"),
+        "and the modes it does take:\n{drawn}"
+    );
+    assert!(
+        drawn.contains("task ▸ p:nonsense port the importer"),
+        "the line is still there to be fixed:\n{drawn}"
+    );
+    assert!(agents(&amx).is_empty(), "and nothing was made:\n{drawn}");
 }
 
 #[test]

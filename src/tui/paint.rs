@@ -27,7 +27,7 @@ use crate::store::Phase;
 const KEYS: &str = "space peek · enter attach · ctrl+s axis · ? keys · q quit";
 
 /// Every key, for whoever asked what they are.
-const HELP: [(&str, &str); 12] = [
+const HELP: [(&str, &str); 14] = [
     ("↑ ↓", "walk the agents"),
     ("space", "look closer at one"),
     ("enter", "bring its window forward · shut a group"),
@@ -38,6 +38,8 @@ const HELP: [(&str, &str); 12] = [
     ("ctrl+s", "gather them by state or by project"),
     ("alt+enter", "a newline in the line, without sending it"),
     ("s: a:", "narrow by state or name, on the task line"),
+    ("m: p: w:", "model, permission and worktree, for one spawn"),
+    ("agent:", "which vendor runs it, for one spawn"),
     ("?", "these keys"),
     ("q", "close the view"),
 ];
@@ -1488,7 +1490,7 @@ mod tests {
 
         // Tall enough for every key: the overlay is one column, and a screen
         // shorter than the list cuts the end off it.
-        let painted = painted(&screen, (60, 14)).join("\n");
+        let painted = painted(&screen, (60, 18)).join("\n");
         for (key, does) in HELP {
             assert!(painted.contains(key), "{key} is missing:\n{painted}");
             assert!(painted.contains(does), "{does} is missing:\n{painted}");
