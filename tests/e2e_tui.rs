@@ -153,6 +153,12 @@ fn a_view_that_dispatches(amx: &Harness, scenario: &str) -> String {
 /// dials for: the stand-in under claude's name, on the path a spawn from this
 /// terminal looks down.
 fn a_view_that_dispatches_as_claude(amx: &Harness, config: &str) -> String {
+    a_view_that_can_start_claude(amx, &format!("agent = \"claude\"\n{config}"))
+}
+
+/// The same terminal under a whole config of its own, for the tests that say
+/// what the file asked for rather than taking claude as read.
+fn a_view_that_can_start_claude(amx: &Harness, config: &str) -> String {
     let bin = amx.home().join("bin");
     std::fs::create_dir_all(&bin).expect("a directory for the stand-in");
     std::fs::copy(amx.mock(), bin.join("claude")).expect("the stand-in under claude's name");
@@ -162,7 +168,7 @@ fn a_view_that_dispatches_as_claude(amx: &Harness, config: &str) -> String {
         std::env::var("PATH").unwrap_or_default()
     );
 
-    amx.config(&format!("agent = \"claude\"\n{config}"));
+    amx.config(config);
     let scenario = amx.scenario("happy-turn").to_string_lossy().into_owned();
     let transcript = amx
         .home()
@@ -945,6 +951,47 @@ fn header_dials_are_the_argv_the_next_agent_is_started_with() {
     amx.until("the header to be as it was", || {
         screen(&amx, &view).contains("claude (fable)").then_some(())
     });
+}
+
+#[test]
+fn header_vendor_dial_runs_the_next_agent_under_the_vendor_it_names() {
+    let amx = Harness::new();
+    // The file names a command amx has no entry for, and claude is on the
+    // path beside it: the vendor dial is the only thing on this screen that
+    // could reach the second one.
+    let view = a_view_that_can_start_claude(
+        &amx,
+        &format!("agent = \"{}\"\nworktrees = false\n", amx.mock()),
+    );
+    let drawn = amx.until("the header", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("worktree: off").then_some(drawn)
+    });
+    assert!(
+        !drawn.contains("claude (default)"),
+        "an unregistered command declares no model dial, so there is nothing \
+         to put in parentheses:\n{drawn}"
+    );
+
+    press(&amx, &view, "M-v");
+    amx.until("the vendor dial to turn", || {
+        screen(&amx, &view)
+            .contains("claude (default)")
+            .then_some(())
+    });
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "port the importer");
+    press(&amx, &view, "Enter");
+
+    let id = composed(&amx);
+    let command = command_of(&amx, &id);
+    assert_eq!(
+        command.first().map(String::as_str),
+        Some("claude"),
+        "the vendor the header names is the program the agent runs: {command:?}"
+    );
+    amx.until_state(&id, "idle");
 }
 
 #[test]

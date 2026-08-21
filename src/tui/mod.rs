@@ -133,6 +133,9 @@ struct Profile {
     /// The vendor command a spawn runs, which is a command line rather than a
     /// program name because that is what the config key holds.
     agent: String,
+    /// The command the config file asked for, which is where the vendor dial
+    /// starts and what it comes back round to.
+    configured: String,
     /// Where each vendor dial stands. [`registry::DEFAULT`] is the vendor's
     /// own behaviour, which amx says by passing no flag at all.
     model: String,
@@ -163,6 +166,7 @@ impl Profile {
         let entry = registry::entry(&config.agent);
         Profile {
             agent: config.agent.clone(),
+            configured: config.agent.clone(),
             model: effective(entry.and_then(|e| e.model), config.model.as_deref()),
             permission: effective(
                 entry.and_then(|e| e.permission),
@@ -182,6 +186,40 @@ impl Profile {
     /// This vendor's permission dial, under the same rule.
     fn permission_dial(&self) -> Option<registry::DialSpec> {
         registry::entry(&self.agent)?.permission
+    }
+
+    /// What the vendor dial offers: the command the config file asked for,
+    /// and every vendor amx has an entry for beside it.
+    ///
+    /// The file's own command comes first and is never dropped, because it is
+    /// the one value the dial could not work out for itself: `agent` is a
+    /// command line, arguments and all, and a cycle that turned off it would
+    /// leave nothing on the screen able to say what the file said.
+    fn vendors(&self) -> Vec<&str> {
+        let configured = registry::program(&self.configured);
+        std::iter::once(self.configured.as_str())
+            .chain(
+                registry::entries()
+                    .iter()
+                    .map(|entry| entry.name)
+                    .filter(|name| *name != configured),
+            )
+            .collect()
+    }
+
+    /// The next vendor, with the dials it declares under it.
+    ///
+    /// A dial the new vendor will not take rests at the sentinel, which is
+    /// the law the profile opens on read a second time: the row must not name
+    /// a model to a vendor that would refuse it.
+    fn cycle_vendor(&mut self) {
+        let Some(next) = next_in(&self.vendors(), &self.agent) else {
+            return;
+        };
+        self.agent = next;
+        let (model, permission) = (self.model_dial(), self.permission_dial());
+        self.model = effective(model, Some(&self.model));
+        self.permission = effective(permission, Some(&self.permission));
     }
 
     /// A dial a vendor does not declare has nothing to offer, so its key does
@@ -418,6 +456,7 @@ impl Screen {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
+            KeyCode::Char('v') if alt => self.profile.cycle_vendor(),
             KeyCode::Char('m') if alt => self.profile.cycle_model(),
             KeyCode::Char('w') if alt => self.profile.toggle_worktree(),
             // Shift+tab is a key of its own where a terminal has one, and tab
@@ -915,6 +954,69 @@ mod tests {
     }
 
     #[test]
+    fn header_dials_the_vendor_cycle_starts_at_the_command_config_asked_for() {
+        // A vendor amx has no entry for is still what the file asked for, and
+        // the cycle is the only thing that could put it back.
+        let config = Config {
+            agent: "mock-claude".to_string(),
+            ..Config::default()
+        };
+        let mut profile = Profile::open(&config, None, None);
+
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "claude");
+        assert!(
+            profile.model_dial().is_some(),
+            "and the dials it declares come with it"
+        );
+
+        profile.cycle_vendor();
+        assert_eq!(
+            profile.agent, "mock-claude",
+            "and round again to the file's own answer"
+        );
+    }
+
+    #[test]
+    fn header_dials_a_turned_vendor_takes_the_dials_it_declares_and_no_others() {
+        let config = Config {
+            agent: "mock-claude".to_string(),
+            ..Config::default()
+        };
+        let mut profile = Profile::open(&config, None, None);
+
+        profile.cycle_vendor();
+        profile.cycle_model();
+        assert_eq!(profile.model, "fable");
+
+        profile.cycle_vendor();
+        assert_eq!(
+            profile.model,
+            registry::DEFAULT,
+            "a vendor that declares no model dial is not started with a model"
+        );
+        assert_eq!(profile.launching(&config).model, None);
+    }
+
+    #[test]
+    fn header_dials_the_vendor_key_leaves_a_command_it_could_not_put_back() {
+        // The one registered vendor, so there is nowhere to cycle to.
+        let mut profile = Profile::default();
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "claude");
+
+        // And the same vendor with arguments of its own: no cycle knows what
+        // they were, so the key that would drop them does nothing.
+        let config = Config {
+            agent: "claude --add-dir ..".to_string(),
+            ..Config::default()
+        };
+        let mut profile = Profile::open(&config, None, None);
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "claude --add-dir ..");
+    }
+
+    #[test]
     fn header_dials_a_vendor_amx_never_heard_of_declares_none() {
         // The config loader clears a dial an unregistered vendor cannot take,
         // and the profile is the second half of that law: no entry, no dial,
@@ -967,12 +1069,20 @@ mod tests {
     #[test]
     fn header_dials_turn_under_the_keys_that_say_so() {
         let root = TempDir::new().unwrap();
-        let config = Config::default();
-        let mut screen = Screen::default();
+        let config = Config {
+            agent: "mock-claude".to_string(),
+            ..Config::default()
+        };
+        let mut screen = Screen {
+            profile: Profile::open(&config, None, None),
+            ..Screen::default()
+        };
         let press = |screen: &mut Screen, key| {
             screen.act(key, root.path(), &config, None).unwrap();
         };
 
+        press(&mut screen, alt('v'));
+        assert_eq!(screen.profile.agent, "claude");
         press(&mut screen, alt('m'));
         assert_eq!(screen.profile.model, "fable");
         press(

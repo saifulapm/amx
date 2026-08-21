@@ -34,7 +34,7 @@ use crate::store::Phase;
 const KEYS: &str = "space peek · enter attach · ctrl+s axis · ? keys · q quit";
 
 /// Every key, for whoever asked what they are.
-const HELP: [(&str, &str); 17] = [
+const HELP: [(&str, &str); 18] = [
     ("↑ ↓", "walk the agents"),
     ("space", "look closer at one"),
     ("enter", "bring its window forward · shut a group"),
@@ -44,6 +44,7 @@ const HELP: [(&str, &str); 17] = [
     ("ctrl+x", "stop it · again to forget it"),
     ("ctrl+s", "gather them by state or by project"),
     ("alt+enter", "a newline in the line, without sending it"),
+    ("alt+v", "which vendor the next agent runs"),
     ("alt+m", "which model the next agent is given"),
     ("alt+w", "whether it gets a worktree of its own"),
     ("shift+tab", "what it may do without asking"),
