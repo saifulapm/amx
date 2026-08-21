@@ -142,7 +142,11 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
 
     frame.render_widget(Paragraph::new(header(screen, top)), top);
     let floating = match (helping, &screen.card) {
-        (false, Some(_)) => card_height(area.height, middle.height),
+        (false, Some(card)) => card_height(
+            area.height,
+            middle.height,
+            card_rows(card, screen.answering().is_some(), middle.width),
+        ),
         _ => 0,
     };
     match &screen.mode {
@@ -171,18 +175,39 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     frame.render_widget(Paragraph::new(footer(screen)), keys);
 }
 
-/// How much of the screen the card takes: about half, and never so much that
-/// the list it was opened from is gone. Below the room for its two borders and
-/// a row between them there is no card at all — a box with nothing in it says
-/// less than the rows it would be standing on.
-fn card_height(total: u16, band: u16) -> u16 {
+/// How much of the screen the card takes: what it has to show, up to about
+/// half, and never so much that the list it was opened from is gone.
+///
+/// What it has to show comes into it because a card is over a wall somebody is
+/// reading: an agent whose answer is one line does not need seven rows of box
+/// to say it in, and every row the card does not take is a row of the list
+/// still on the screen. Below the room for its two borders and a row between
+/// them there is no card at all.
+fn card_height(total: u16, band: u16, wanted: u16) -> u16 {
     let room = (total / 2)
         .clamp(CARD_SHORT, CARD_TALL)
+        .min(wanted.max(CARD_SHORT))
         .min(band.saturating_sub(1));
     match room >= CARD_SHORT {
         true => room,
         false => 0,
     }
+}
+
+/// How many rows the card would take to say everything it has: its two
+/// borders, what the agent is asking, the choices under that, the line the
+/// answer goes on, and the screen it is all happening on.
+fn card_rows(card: &Card, answering: bool, width: u16) -> u16 {
+    let inner = width.saturating_sub(2 + 2 * PADDING);
+    let asked = card
+        .question
+        .as_deref()
+        .map_or(0, |question| wrapped(question, inner).min(ASKED_TALL));
+    let listed = choices(&card.options, inner as usize).len();
+    let shown = body(card, usize::MAX).len();
+
+    let rows = 2 + asked as usize + listed + usize::from(answering) + shown;
+    rows.min(u16::MAX as usize) as u16
 }
 
 /// The bottom `height` rows of the list, which is where the card floats.
@@ -203,6 +228,10 @@ const CARD_SHORT: u16 = 3;
 
 /// And the most of a screen it will take, however tall the terminal is.
 const CARD_TALL: u16 = 14;
+
+/// The column of air inside each border, so what the card says is not written
+/// against the box it is written in.
+const PADDING: u16 = 1;
 
 /// Below this the worktree dial says what it is without saying what it will
 /// do: the dial is the thing somebody turns, the path is what it means.
@@ -575,7 +604,7 @@ fn float(frame: &mut Frame, card: &Card, answering: Option<&Composer>, area: Rec
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(dim())
-        .padding(Padding::horizontal(1))
+        .padding(Padding::horizontal(PADDING))
         .title(Span::styled(title, colour(card.phase)));
     let inner = block.inner(area);
     // Whatever the list drew here, the card is in front of it.
@@ -629,18 +658,22 @@ fn float(frame: &mut Frame, card: &Card, answering: Option<&Composer>, area: Rec
         answer_row(frame, card, composer, answer);
     }
 
-    // A screen is read from the bottom, where the newest of it is; a diff is
-    // read from the top, where the first file it touched is.
-    let rows = screen.height as usize;
-    let body = match card.changes {
-        true => card.body.lines().take(rows).collect(),
-        false => tail(&card.body, rows),
-    };
-    let lines: Vec<Line> = body
+    let lines: Vec<Line> = body(card, screen.height as usize)
         .into_iter()
         .map(|text| Line::styled(text.to_string(), dim()))
         .collect();
     frame.render_widget(Paragraph::new(lines), screen);
+}
+
+/// What the card has under everything else, cut to the rows it has for it.
+///
+/// A screen is read from the bottom, where the newest of it is; a diff is read
+/// from the top, where the first file it touched is.
+fn body(card: &Card, rows: usize) -> Vec<&str> {
+    match card.changes {
+        true => card.body.lines().take(rows).collect(),
+        false => tail(&card.body, rows),
+    }
 }
 
 /// The choices under the question, numbered the way every surface numbers them
@@ -1356,6 +1389,43 @@ mod tests {
             caret(&answering(question(), "the docker one"), (60, 14)),
             (18, 9),
             "with the terminal's own cursor at the end of what was typed"
+        );
+    }
+
+    #[test]
+    fn card_is_no_taller_than_what_it_has_to_show() {
+        // An agent whose answer is one line does not want seven rows of box to
+        // say it in, and every row the card leaves is a row of the wall.
+        let brief = Card {
+            phase: Phase::Done,
+            question: None,
+            options: Vec::new(),
+            body: "did what it was asked".to_string(),
+            ..asking(&[], None)
+        };
+        let screen = drawn(a_fleet(), Some(brief), (60, 20));
+        let top = screen
+            .iter()
+            .position(|line| line.starts_with('╭'))
+            .expect("the top of the card");
+        let bottom = screen
+            .iter()
+            .rposition(|line| line.starts_with('╰'))
+            .expect("the foot of the card");
+
+        assert_eq!(
+            bottom - top,
+            2,
+            "two borders and the one line it has: {screen:?}"
+        );
+        assert!(
+            screen[top + 1].contains("did what it was asked"),
+            "{screen:?}"
+        );
+        assert_eq!(
+            screen[top - 1],
+            "",
+            "with the rows it is not covering behind it: {screen:?}"
         );
     }
 
