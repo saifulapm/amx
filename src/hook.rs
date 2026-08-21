@@ -164,7 +164,9 @@ fn kind(payload: &Value) -> Option<&str> {
 ///   every payload carries one, and a subagent's is not the agent's.
 /// * `UserPromptSubmit` and `PreToolUse` mean the agent is working, and the
 ///   tool call says what it is doing.
-/// * `Notification` means it has stopped on a question, and carries it.
+/// * `Notification` means it has stopped on a question, and carries its words.
+///   The choices under it are on the pane, which this command does not read;
+///   a reader fills them in later.
 /// * `Stop` ends the turn, and its payload is the freshest place the answer
 ///   ever exists — the transcript is written asynchronously and lags it.
 /// * Anything carrying an `agent_id` is a subagent's, and a subagent's work is
@@ -190,7 +192,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         "UserPromptSubmit" => {
             state.state = Phase::Working;
             state.summary = None;
-            state.question = None;
+            state.asks(None);
             // A new turn retires the last one's answer. A turn that ends
             // without one would otherwise leave the previous answer on the
             // record, and `result` would hand it to a caller as this turn's.
@@ -204,20 +206,20 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             if let Some(tool) = payload["tool_name"].as_str() {
                 state.summary = Some(format!("Running {tool}"));
             }
-            state.question = None;
+            state.asks(None);
             None
         }
 
         "Notification" => {
             state.state = Phase::Waiting;
-            state.question = payload["message"].as_str().map(str::to_string);
+            state.asks(payload["message"].as_str().map(str::to_string));
             Some(Notice::waiting(&meta.id, state.question.as_deref()))
         }
 
         "Stop" => {
             state.state = Phase::Idle;
             state.summary = None;
-            state.question = None;
+            state.asks(None);
             if let Some(answer) = payload["last_assistant_message"].as_str() {
                 state.result = Some(answer.to_string());
                 state.source = Some(Source::Payload);
@@ -364,6 +366,30 @@ mod tests {
         );
         let notice = notice.expect("somebody has to be told");
         assert!(notice.title.contains("fix-login-a1b"));
+    }
+
+    #[test]
+    fn hook_the_choices_go_wherever_the_question_they_answer_goes() {
+        // The options were read under one particular question. Under the next
+        // one they are somebody else's answers, and offering them to a caller
+        // would be offering it the wrong keys to press.
+        let asked = State {
+            state: Phase::Waiting,
+            question: Some("Do you want to proceed?".to_string()),
+            options: vec!["Yes".to_string(), "No".to_string()],
+            ..State::default()
+        };
+
+        for payload in [
+            json!({ "hook_event_name": "Notification", "message": "Claude needs your permission to use Write" }),
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash" }),
+            json!({ "hook_event_name": "UserPromptSubmit", "prompt": "carry on" }),
+            json!({ "hook_event_name": "Stop", "last_assistant_message": "done" }),
+        ] {
+            let mut state = asked.clone();
+            apply(&payload, &mut state, &mut meta());
+            assert!(state.options.is_empty(), "{payload}");
+        }
     }
 
     #[test]
