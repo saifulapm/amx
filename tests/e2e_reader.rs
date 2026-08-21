@@ -25,6 +25,159 @@ fn status(amx: &Harness, id: &str) -> Value {
     serde_json::from_slice(&out.stdout).expect("the status is json")
 }
 
+/// The AskUserQuestion menu, measured off claude v2.1.229 at 80 columns.
+const A_MENU: &str = "\
+────────────────────────────────────────────────────────────────────────────────
+ ☐ Indentation
+
+Should this project be indented with spaces or tabs?
+
+❯ 1. Spaces
+     Indent with spaces (most common default across JS/TS, PHP/Laravel, and
+     Python codebases).
+  2. Tabs
+     Indent with tab characters, since each reader can set their own width.
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
+/// The folder-trust screen, measured off claude v2.1.226 at 54 columns and
+/// reconfirmed at v2.1.237. The vendor wraps its question across five rows at
+/// this width, and breaks it between `you` and `trust`.
+const A_TRUST_SCREEN: &str = "\
+──────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /tmp/amx-repo/repo/.amx/worktrees/fix-login-a1b
+
+ Quick safety check: Is this a project you created or
+ one you trust? (Like your own code, a well-known
+ open source project, or work from your team). If
+ not, take a moment to review what's in this folder
+ first.
+
+ Claude Code'll be able to read, edit, and execute
+ files here.
+
+ Security guide
+
+ ❯ 1. Yes, I trust this folder
+   2. No, exit
+
+ Enter to confirm · Esc to cancel
+";
+
+/// A pane with one of the vendor's blocking screens on it and nothing running
+/// but a sleep.
+///
+/// claude draws these two at a boot and at a permission stop, which is not
+/// something the stand-in can be made to reach; the screen itself is what a
+/// reader has to work from, so the screen itself is what is put in front of it.
+fn a_pane_showing(amx: &Harness, screen: &str) -> String {
+    let word = format!("'{}'", screen.replace('\'', r"'\''"));
+    amx.tmux(&[
+        "new-session",
+        "-d",
+        // Wide enough that the pane does not wrap what the vendor already
+        // wrapped, and no taller than the rows a rule may look at.
+        "-x",
+        "100",
+        "-y",
+        "24",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "--",
+        "sh",
+        "-c",
+        &format!("printf '%s' {word}; sleep 600"),
+    ])
+}
+
+#[test]
+fn a_waiting_agents_question_reaches_the_record_with_the_answers_it_offers() {
+    let amx = Harness::new();
+    amx.play("ask-a1b", "asks-a-question");
+    let heard = amx.until_state("ask-a1b", "waiting");
+    assert_eq!(
+        heard["question"], "Claude needs your permission to use Bash",
+        "the hook carries the words and nothing else, so that is all there is"
+    );
+    amx.until("the permission box to be drawn", || {
+        amx.capture(&amx.pane_of("ask-a1b"))
+            .contains("❯ 1. Yes")
+            .then_some(())
+    });
+
+    // The hooks have gone quiet with the box still on the pane, which is when
+    // a reader looks at the screen.
+    amx.set_state(
+        "ask-a1b",
+        json!({
+            "state": "waiting",
+            "question": "Claude needs your permission to use Bash",
+            "since": 1,
+            "last_event": 1,
+        }),
+    );
+
+    let agent = status(&amx, "ask-a1b");
+    assert_eq!(agent["state"], "waiting");
+    assert_eq!(agent["options"], json!(["Yes", "No"]));
+
+    let recorded = amx.state("ask-a1b");
+    assert_eq!(
+        recorded["question"]["text"], "Claude needs your permission to use Bash",
+        "the vendor's own words are not corrected by a reading of a picture"
+    );
+    assert_eq!(
+        recorded["question"]["options"],
+        json!(["Yes", "No"]),
+        "and the keys that answer it, which no hook has ever carried"
+    );
+}
+
+#[test]
+fn a_menu_and_a_trust_screen_record_the_question_they_are_asking() {
+    let amx = Harness::new();
+    for (id, screen, text, options) in [
+        (
+            "picks-a1b",
+            A_MENU,
+            "Should this project be indented with spaces or tabs?",
+            json!(["Spaces", "Tabs", "Type something.", "Chat about this"]),
+        ),
+        (
+            "trusts-b2c",
+            A_TRUST_SCREEN,
+            "Quick safety check: Is this a project you created or one you trust? \
+             (Like your own code, a well-known open source project, or work from \
+             your team). If not, take a moment to review what's in this folder \
+             first.",
+            json!(["Yes, I trust this folder", "No, exit"]),
+        ),
+    ] {
+        let pane = a_pane_showing(&amx, screen);
+        amx.record(id, &pane);
+        amx.until("the screen to be drawn", || {
+            amx.capture(&pane).contains("❯ 1.").then_some(())
+        });
+
+        // Nothing was ever heard from this one, so the screen is all there is
+        // and the question on it is nobody's but the screen's.
+        let agent = status(&amx, id);
+        assert_eq!(agent["state"], "waiting", "{id}: {agent}");
+        assert_eq!(agent["question"], text, "{id}");
+
+        let recorded = amx.state(id);
+        assert_eq!(recorded["question"]["text"], text, "{id}");
+        assert_eq!(recorded["question"]["options"], options, "{id}");
+    }
+}
+
 #[test]
 fn a_fresh_record_is_read_from_the_hooks() {
     let amx = Harness::new();
@@ -174,6 +327,7 @@ fn the_json_carries_what_a_caller_branches_on() {
         "seq",
         "summary",
         "question",
+        "options",
         "result",
         "source",
         "exit",
