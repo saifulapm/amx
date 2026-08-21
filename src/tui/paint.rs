@@ -664,12 +664,19 @@ fn float(frame: &mut Frame, card: &Card, answering: Option<&Composer>, area: Rec
         taken
     };
     let typing = take(u16::from(answering.is_some()));
+    // The question and the choices are the agent's own words, and the choices
+    // are the keys a person is about to press: both go through `inert` before
+    // anything draws them. ratatui would *delete* the invisible format
+    // characters on its own, which is exactly the wrong treatment — deleting
+    // a zero-width lets one choice wear another's spelling.
+    let question = card.question.as_deref().map(inert);
+    let options: Vec<String> = card.options.iter().map(|option| inert(option)).collect();
     let asked = take(
-        card.question
+        question
             .as_deref()
             .map_or(0, |question| wrapped(question, inner.width).min(ASKED_TALL)),
     );
-    let choices = choices(&card.options, inner.width as usize);
+    let choices = choices(&options, inner.width as usize);
     let listed = take(choices.len() as u16);
 
     let [asking, listing, answer, screen] = Layout::vertical([
@@ -680,9 +687,9 @@ fn float(frame: &mut Frame, card: &Card, answering: Option<&Composer>, area: Rec
     ])
     .areas(inner);
 
-    if let Some(question) = &card.question {
+    if let Some(question) = question {
         frame.render_widget(
-            Paragraph::new(question.clone())
+            Paragraph::new(question)
                 .wrap(Wrap { trim: true })
                 .style(Style::new().fg(role::WARNING)),
             asking,
@@ -2328,6 +2335,30 @@ mod tests {
             "completed 2 · 1 failed",
             "shutting a group hides the detail of a failure, never the fact"
         );
+    }
+
+    #[test]
+    fn card_neutralises_the_question_and_the_choices_it_quotes() {
+        // The question is the agent's own words, and a bidirectional override
+        // written into them can visually reorder the choices underneath —
+        // which are the keys a person is about to press. ratatui drops the
+        // control characters on its own; the invisible format characters it
+        // keeps have to be neutralised before anything draws them.
+        let mut card = asking(&["yes\u{200b}really", "no\u{ad}pe"], Some(Kind::Question));
+        card.question = Some("pro\u{ad}ceed\u{202e}?".to_string());
+        let screen = drawn(a_fleet(), Some(card), (60, 14)).join("\n");
+
+        for (invisible, name) in [
+            ('\u{202e}', "a bidi override"),
+            ('\u{200b}', "a zero-width space"),
+            ('\u{ad}', "a soft hyphen"),
+        ] {
+            assert!(
+                !screen.contains(invisible),
+                "{name} reached the terminal: {screen:?}"
+            );
+        }
+        assert!(screen.contains("pro ceed"), "{screen:?}");
     }
 
     #[test]

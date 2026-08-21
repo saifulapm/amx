@@ -376,6 +376,32 @@ fn surfaces_status_prints_the_question_with_the_choices_under_it() {
 }
 
 #[test]
+fn surfaces_status_neutralises_the_task_it_quotes() {
+    // The task is free text typed by whoever spawned the agent, and status
+    // hands it to a terminal: an escape or a bidi override in it must arrive
+    // neutralised, like every other word amx did not author.
+    let amx = Harness::new();
+    let id = "sly-task-a1b";
+    amx.play(id, "works-without-end");
+
+    let path = amx.agent_dir(id).join("meta.json");
+    let mut meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    meta["task"] = serde_json::json!("fix\u{1b}]0;owned\u{7} the\u{202e}login");
+    std::fs::write(&path, meta.to_string()).unwrap();
+
+    let out = amx.amx(&["status", id]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+    assert!(!said.contains('\u{1b}'), "an escape reached the terminal");
+    assert!(
+        !said.contains('\u{202e}'),
+        "a bidi override reached the terminal"
+    );
+    assert!(said.contains("fix"), "{said:?}");
+}
+
+#[test]
 fn surfaces_the_table_carries_the_choices_beside_the_question() {
     let amx = Harness::new();
     parked_on_the_box(&amx, "ask-a1b");

@@ -60,7 +60,9 @@ fn report(view: &View, out: &mut impl Write) -> Result<()> {
     if let Some(exit) = view.state.exit {
         writeln!(out, "  exit      {exit}")?;
     }
-    writeln!(out, "  task      {}", view.meta.task.trim())?;
+    // The task is free text typed by whoever spawned the agent, so it goes
+    // the way of every other word amx did not author.
+    say(out, "task", &view.meta.task)?;
     writeln!(out, "  dir       {}", view.meta.dir.display())?;
     if let Some(branch) = &view.meta.branch {
         writeln!(out, "  branch    {branch}")?;
