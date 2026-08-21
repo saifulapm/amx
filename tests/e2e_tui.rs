@@ -94,6 +94,15 @@ fn agents(amx: &Harness) -> Vec<String> {
     ids
 }
 
+/// Wait for a view with nothing in it, which on a terminal this size is the
+/// four groups saying what would land in them. The last of the four is what
+/// says the whole empty state is up.
+fn until_empty(amx: &Harness, view: &str) {
+    amx.until("the empty view", || {
+        screen(amx, view).contains("here to read").then_some(())
+    });
+}
+
 /// Type a line at the view, as a person types one.
 fn types(amx: &Harness, view: &str, text: &str) {
     amx.tmux(&["send-keys", "-t", view, "-l", text]);
@@ -121,9 +130,7 @@ fn a_view_that_dispatches(amx: &Harness, scenario: &str) -> String {
         ],
         &[],
     );
-    amx.until("the view", || {
-        screen(amx, &view).contains("no agents").then_some(())
-    });
+    until_empty(amx, &view);
     view
 }
 
@@ -344,12 +351,37 @@ fn a_filter_line_narrows_the_axis_instead_of_starting_an_agent() {
 }
 
 #[test]
-fn the_view_says_when_there_is_nothing_to_show() {
+fn a_wall_with_nothing_on_it_gets_the_headings_and_what_lands_under_each() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
 
-    amx.until("the empty view", || {
-        screen(&amx, &view).contains("no agents").then_some(())
+    let drawn = screen(&amx, &view);
+    for (group, said) in [
+        ("needs input", "stopped on a question"),
+        ("working", "starting or mid-turn"),
+        ("idle", "amx cannot account for"),
+        ("completed", "here to read"),
+    ] {
+        let at = drawn
+            .lines()
+            .position(|line| line.trim_end() == group)
+            .unwrap_or_else(|| panic!("no {group} heading in:\n{drawn}"));
+        assert!(
+            drawn.lines().nth(at + 1).is_some_and(|l| l.contains(said)),
+            "{group} has nothing under it saying what lands there:\n{drawn}"
+        );
+    }
+    assert!(
+        !drawn.contains("no agents"),
+        "the four of them are said instead of the one sentence:\n{drawn}"
+    );
+
+    // And they go the moment there is anything to read off a row.
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until("the agent's own row", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("ask-a1b") && !drawn.contains("here to read")).then_some(())
     });
 }
 
@@ -678,9 +710,7 @@ fn ctrl_x_stops_the_agent_and_then_forgets_it() {
     // Again on the same row: an agent that has already ended is forgotten.
     press(&amx, &view, "C-x");
     amx.until("the record to go", || agents(&amx).is_empty().then_some(()));
-    amx.until("the view to have nothing left to show", || {
-        screen(&amx, &view).contains("no agents").then_some(())
-    });
+    until_empty(&amx, &view);
 }
 
 #[test]
@@ -735,9 +765,7 @@ fn d_shows_what_the_agent_has_changed() {
 fn the_keys_are_on_the_screen_for_the_asking() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);
-    amx.until("the view", || {
-        screen(&amx, &view).contains("no agents").then_some(())
-    });
+    until_empty(&amx, &view);
 
     types(&amx, &view, "?");
     let keys = amx.until("the keys", || {
@@ -756,18 +784,14 @@ fn the_keys_are_on_the_screen_for_the_asking() {
 
     // And back to the agents, which is what the view is for.
     press(&amx, &view, "Escape");
-    amx.until("the list again", || {
-        screen(&amx, &view).contains("no agents").then_some(())
-    });
+    until_empty(&amx, &view);
 }
 
 #[test]
 fn q_closes_the_view_and_gives_the_screen_back() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);
-    amx.until("the view", || {
-        screen(&amx, &view).contains("no agents").then_some(())
-    });
+    until_empty(&amx, &view);
 
     // Keep the pane after its command ends, so what it ended with can be read.
     amx.tmux(&["set-option", "-w", "-t", &view, "remain-on-exit", "on"]);
@@ -783,7 +807,7 @@ fn q_closes_the_view_and_gives_the_screen_back() {
         "closing a view is not a failure"
     );
     assert!(
-        !screen(&amx, &view).contains("no agents"),
+        !screen(&amx, &view).contains("here to read"),
         "the screen the view borrowed is handed back"
     );
 }

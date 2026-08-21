@@ -80,6 +80,23 @@ impl Group {
             Group::Completed => "completed",
         }
     }
+
+    /// What lands here, for somebody looking at a fleet nobody has started
+    /// yet. A heading over no agents says nothing on its own, and a wall with
+    /// nothing on it is the one screen where the groups have to explain
+    /// themselves rather than be read off the rows under them.
+    ///
+    /// Each one names every state the group holds. A blurb that describes its
+    /// group as whoever wrote it imagined it leaves an agent sitting under a
+    /// heading whose own sentence excludes it.
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Group::NeedsInput => "stopped on a question, and nothing moves until it is answered",
+            Group::Working => "starting or mid-turn, running whether or not anybody is watching",
+            Group::Idle => "at their prompt, and the ones amx cannot account for",
+            Group::Completed => "the command has ended, and what it left is here to read",
+        }
+    }
 }
 
 /// Which way the agents are gathered.
@@ -350,6 +367,15 @@ impl List {
         let held = self.on();
         self.rebuild();
         self.follow(&held);
+    }
+
+    /// Whether this is a fleet nobody has started, rather than one a narrowing
+    /// has emptied or a list of the places nobody is running anything.
+    ///
+    /// The one case where a group with nobody under it is worth a heading,
+    /// because there the heading is being used to say what would land there.
+    pub fn unstarted(&self) -> bool {
+        self.axis == Axis::State && self.views.is_empty() && self.filters.label().is_none()
     }
 
     /// Show the finished agents the fold was holding back, and keep showing
@@ -1295,6 +1321,45 @@ mod tests {
         assert_eq!(
             lines(&list),
             ["/src/web (1)", "busy-b2c", "/src/api (1) shut"]
+        );
+    }
+
+    #[test]
+    fn headings_over_an_empty_fleet_are_the_state_axis_saying_what_lands_where() {
+        let mut list = listed(Vec::new());
+        assert!(list.unstarted());
+
+        list.turn();
+        assert!(
+            !list.unstarted(),
+            "the project axis has no groups to explain, only places nobody is"
+        );
+
+        list.turn();
+        list.narrow(vec![Narrow::Name(Some("nobody".to_string()))]);
+        assert!(
+            !list.unstarted(),
+            "a fleet somebody narrowed to nothing is not a fleet nobody has started"
+        );
+
+        list.narrow(vec![Narrow::Name(None)]);
+        list.show(vec![view("done-a1b", Phase::Done, 10)]);
+        assert!(!list.unstarted(), "and one agent is a fleet");
+    }
+
+    #[test]
+    fn headings_say_what_lands_under_them_in_their_own_words() {
+        let said: Vec<&str> = Group::ALL.into_iter().map(Group::blurb).collect();
+        assert_eq!(
+            said.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            Group::ALL.len(),
+            "four groups, four things to say: {said:?}"
+        );
+        assert!(
+            Group::Idle.blurb().contains("account for"),
+            "the group that holds what amx cannot read is the one that has to \
+             say so: {}",
+            Group::Idle.blurb()
         );
     }
 
