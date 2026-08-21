@@ -45,7 +45,7 @@ fn main() -> ExitCode {
             let internal = parsed.verb().is_some_and(|verb| verb.starts_with('_'));
             if !internal {
                 for warning in warnings {
-                    eprintln!("amx: {warning}");
+                    eprintln!("{}", complaint(&warning));
                 }
             }
             run(&parsed, &config)
@@ -93,10 +93,23 @@ fn finish(outcome: Result<i32>) -> i32 {
         Ok(code) => code,
         Err(e) if broke_the_pipe(&e) => exit::OK,
         Err(e) => {
-            eprintln!("amx: {e:#}");
+            eprintln!("{}", complaint(&format!("{e:#}")));
             exit::FAILURE
         }
     }
+}
+
+/// One line about something that went wrong, with nothing in it a terminal
+/// will act on.
+///
+/// Every complaint quotes something amx did not write: the id as it was typed
+/// at the shell, a path out of a record, git's own words about a repository it
+/// would not read. A terminal is an interpreter, and the same bytes that name
+/// an agent can retitle the window or clear the screen, so they go through the
+/// sieve a captured pane goes through. Line breaks live, because git says its
+/// piece in as many lines as it likes and the breaks in it are how it reads.
+fn complaint(text: &str) -> String {
+    format!("amx: {}", tmux::sanitize(text))
 }
 
 /// Whether what went wrong is the far end of a pipe closing.
@@ -123,6 +136,26 @@ fn broke_the_pipe(e: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hardening_a_complaint_says_nothing_a_terminal_will_act_on() {
+        // Every line amx prints about a failure quotes something it did not
+        // write. The id is whatever was typed at the shell, and it is quoted
+        // back in the refusal.
+        let said = complaint("no agent `x\u{1b}]0;PWNED\u{7}y`");
+        assert!(said.starts_with("amx: no agent"), "{said:?}");
+        assert!(said.contains("]0;PWNED"), "still readable: {said:?}");
+        assert_eq!(
+            said.chars().filter(|c| c.is_control()).count(),
+            0,
+            "and inert: {said:?}"
+        );
+
+        // git says its piece in as many lines as it likes, and the breaks in
+        // it are how it reads.
+        let git = complaint("git diff 0f1e2d3: fatal: bad object\nsecond line");
+        assert!(git.ends_with("bad object\nsecond line"), "{git:?}");
+    }
 
     #[test]
     fn hardening_a_reader_that_stopped_reading_is_not_a_failure() {
