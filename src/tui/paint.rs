@@ -26,6 +26,7 @@ use super::act::{Asking, Composer};
 use super::rows::{Axis, Group, Item, List, Tally, Under};
 use super::{Mode, Profile, Screen};
 use crate::derive::View;
+use crate::registry::DEFAULT;
 use crate::store::Phase;
 
 /// The keys with nowhere else to be said, on the screen where somebody can see
@@ -86,25 +87,28 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     let helping = matches!(screen.mode, Mode::Keys);
     let head = header_rows(area.height);
     let typing = matches!(screen.mode, Mode::Typing(_));
+    let permission = permission(screen);
+    let allowing = u16::from(permission.is_some());
 
     // Every band that is neither the list nor the closer look: the header, the
-    // keys, and — while somebody is typing — the line and the row under it,
-    // counted at the one row the line never goes below.
-    let chrome = head + 1 + u16::from(typing);
+    // keys, the row under the composer, and — while somebody is typing — the
+    // line itself, counted at the one row it never goes below.
+    let chrome = head + 1 + allowing + u16::from(typing);
     let panel = match (helping, &screen.peek) {
         (false, Some(_)) => peek_height(area.height, chrome),
         _ => 0,
     };
     let composing = match &screen.mode {
-        Mode::Typing(composer) => composer_height(composer, area, head + 1 + panel),
+        Mode::Typing(composer) => composer_height(composer, area, head + 1 + allowing + panel),
         _ => 0,
     };
 
-    let [top, middle, bottom, line, keys] = Layout::vertical([
+    let [top, middle, bottom, line, allowed, keys] = Layout::vertical([
         Constraint::Length(head),
         Constraint::Min(1),
         Constraint::Length(panel),
         Constraint::Length(composing),
+        Constraint::Length(allowing),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -121,6 +125,9 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     }
     if let Mode::Typing(composer) = &screen.mode {
         composing_line(frame, composer, line);
+    }
+    if let Some(row) = permission {
+        frame.render_widget(Paragraph::new(row), allowed);
     }
     frame.render_widget(Paragraph::new(footer(screen)), keys);
 }
@@ -621,6 +628,36 @@ fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect) {
         area.x + at.min(width.saturating_sub(1)) as u16,
         area.y + shown.len().saturating_sub(1) as u16,
     ));
+}
+
+/// What the next agent will be allowed to do without asking, under the line it
+/// would be started from — where claude's own screens put it, and where
+/// somebody about to press enter is already looking.
+///
+/// The row belongs to a line that will start an agent: not to a reply, which
+/// goes to one already running under whatever it was started with, and not to
+/// a line that narrows the list. At the sentinel it names the layer rather
+/// than a mode, because amx does not know which mode the vendor is configured
+/// for and a guess at it is the same lie the model dial refuses. A vendor
+/// whose entry declares no permission dial has nothing to say here and nothing
+/// to turn, so the row is absent rather than empty.
+fn permission(screen: &Screen) -> Option<Line<'static>> {
+    let Mode::Typing(composer) = &screen.mode else {
+        return None;
+    };
+    if !matches!(composer.asking, Asking::Task) || composer.narrows() {
+        return None;
+    }
+    screen.profile.permission_dial()?;
+
+    let said = match screen.profile.permission.as_str() {
+        DEFAULT => "permission: vendor default".to_string(),
+        mode => format!("⏵⏵ {mode}"),
+    };
+    Some(Line::styled(
+        format!("{said} (shift+tab to cycle)"),
+        prospective(),
+    ))
 }
 
 /// The keys, or whatever the view has to say for itself instead.
@@ -1768,23 +1805,23 @@ mod tests {
     #[test]
     fn composer_grows_a_row_at_a_time_as_the_line_it_holds_does() {
         let one = painted(&typing("port the importer"), TALL);
-        assert_eq!(one[28], "task ▸ port the importer");
-        assert_eq!(one[27], "", "one line takes one row, at the foot of it all");
+        assert_eq!(one[27], "task ▸ port the importer");
+        assert_eq!(one[26], "", "one line takes one row, at the foot of it all");
 
         let three = painted(
             &typing("port the importer\nand its tests\nand the docs"),
             TALL,
         );
-        assert_eq!(three[26], "task ▸ port the importer");
+        assert_eq!(three[25], "task ▸ port the importer");
         assert_eq!(
-            three[27], "       and its tests",
+            three[26], "       and its tests",
             "a row under the first is indented to it, so a task reads as one \
              thing"
         );
-        assert_eq!(three[28], "       and the docs");
+        assert_eq!(three[27], "       and the docs");
         assert_eq!(
             caret(&typing("port it\nand test it"), TALL),
-            (18, 28),
+            (18, 27),
             "and the cursor is at the end of the last of them"
         );
     }
@@ -1793,8 +1830,8 @@ mod tests {
     fn composer_wrapping_past_the_width_grows_it_the_same_way_a_newline_does() {
         // Twice the room a sixty-column screen leaves beside the prompt.
         let painted = painted(&typing(&"x".repeat(106)), TALL);
-        assert_eq!(painted[27], format!("task ▸ {}", "x".repeat(53)));
-        assert_eq!(painted[28], format!("       {}", "x".repeat(53)));
+        assert_eq!(painted[26], format!("task ▸ {}", "x".repeat(53)));
+        assert_eq!(painted[27], format!("       {}", "x".repeat(53)));
     }
 
     /// A line long enough to need more rows than any screen will give it.
@@ -1811,16 +1848,16 @@ mod tests {
         let painted = painted(&screen, TALL);
 
         assert_eq!(
-            painted[19], "task ▸ row-11",
+            painted[18], "task ▸ row-11",
             "the prompt is on the top row however far the rest has scrolled: \
              {painted:?}"
         );
-        assert_eq!(painted[28], "       row-20", "{painted:?}");
+        assert_eq!(painted[27], "       row-20", "{painted:?}");
         assert!(
             !painted.iter().any(|line| line.contains("row-10")),
             "and what scrolled past is off the screen: {painted:?}"
         );
-        assert_eq!(caret(&screen, TALL), (13, 28));
+        assert_eq!(caret(&screen, TALL), (13, 27));
     }
 
     #[test]
@@ -1828,8 +1865,8 @@ mod tests {
         // A third of eight rows is two, whatever the line is holding, and the
         // agents are what the view is for.
         let painted = painted(&typing(&twenty_rows()), (60, 8));
-        assert_eq!(painted[5], "task ▸ row-19");
-        assert_eq!(painted[6], "       row-20");
+        assert_eq!(painted[4], "task ▸ row-19");
+        assert_eq!(painted[5], "       row-20");
         assert_eq!(
             painted[1], "no agents",
             "the list is still there above it: {painted:?}"
@@ -1844,9 +1881,93 @@ mod tests {
         screen.mode = Mode::Typing(composer);
 
         let painted = painted(&screen, (60, 6));
-        assert_eq!(painted[4], "task ▸ port the importer");
+        assert_eq!(painted[3], "task ▸ port the importer");
         assert!(painted[5].contains("enter starts it"), "{:?}", painted[5]);
         assert!(painted[5].contains("tab out of sight"), "{:?}", painted[5]);
+    }
+
+    #[test]
+    fn header_says_what_the_next_agent_may_do_without_asking() {
+        let mut screen = launching(Vec::new());
+        screen.mode = Mode::Typing(Composer::new(Asking::Task));
+
+        let drawn = painted(&screen, (60, 8));
+        assert_eq!(drawn[5], "task ▸");
+        assert_eq!(
+            drawn[6], "permission: vendor default (shift+tab to cycle)",
+            "the layer, not a guess at which mode claude would have picked"
+        );
+        assert!(drawn[7].contains("enter starts it"), "{:?}", drawn[7]);
+
+        screen.profile.permission = "acceptEdits".to_string();
+        assert_eq!(
+            painted(&screen, (60, 8))[6],
+            "⏵⏵ acceptEdits (shift+tab to cycle)",
+            "and a mode in the vendor's own word for it"
+        );
+    }
+
+    #[test]
+    fn header_keeps_the_permission_row_to_the_lines_that_start_an_agent() {
+        let row = |screen: &Screen| {
+            painted(screen, (60, 8))
+                .iter()
+                .any(|line| line.contains("shift+tab"))
+        };
+
+        // A reply goes to an agent that is already running under whatever it
+        // was started with, so the dial has nothing to say about it.
+        let mut screen = launching(Vec::new());
+        screen.mode = Mode::Typing(Composer::new(Asking::Reply {
+            id: "ask-a1b".to_string(),
+            question: true,
+        }));
+        assert!(!row(&screen), "a reply is not a spawn");
+
+        // Nor has it anything to say about a line that narrows the list.
+        let mut composer = Composer::new(Asking::Task);
+        composer.text = "s:waiting".to_string();
+        screen.mode = Mode::Typing(composer);
+        assert!(!row(&screen));
+
+        // A vendor amx has no entry for declares no permission dial: there is
+        // nothing to say and nothing to turn, so the row is absent rather than
+        // empty.
+        screen.mode = Mode::Typing(Composer::new(Asking::Task));
+        screen.profile.agent = "mock-claude".to_string();
+        assert!(!row(&screen));
+
+        // And nothing is being typed at all, which is most of the time.
+        let screen = launching(Vec::new());
+        assert!(!row(&screen));
+    }
+
+    #[test]
+    fn header_leaves_the_list_a_row_with_every_other_band_open() {
+        // Four bands of chrome at once: the header, a closer look, a line
+        // being typed and the row under it. The list is what the view is for,
+        // so the closer look gives way rather than the rows it was opened
+        // from.
+        let mut screen = launching(vec![view("ask-a1b", Phase::Waiting, None, 30)]);
+        screen.peek = Some(Peek {
+            id: "ask-a1b".to_string(),
+            phase: Phase::Waiting,
+            question: Some("Which fixture should the port keep?".to_string()),
+            body: "1. the sqlite one".to_string(),
+            changes: false,
+        });
+        screen.mode = Mode::Typing(Composer::new(Asking::Task));
+
+        let painted = painted(&screen, (60, 10));
+        assert!(
+            painted.iter().any(|line| line.contains("ask-a1b")),
+            "{painted:?}"
+        );
+        assert!(
+            painted.iter().any(|line| line.contains("shift+tab")),
+            "{painted:?}"
+        );
+        assert!(painted[9].contains("enter starts it"), "{:?}", painted[9]);
     }
 
     #[test]

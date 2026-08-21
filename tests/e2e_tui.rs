@@ -878,6 +878,36 @@ fn the_composer_turns_the_dials_for_the_one_spawn_its_tokens_lead() {
 }
 
 #[test]
+fn header_puts_what_the_next_agent_may_do_under_the_line_that_starts_it() {
+    let amx = Harness::new();
+    amx.config("agent = \"claude\"\n");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the header", || {
+        screen(&amx, &view)
+            .contains("claude (default)")
+            .then_some(())
+    });
+
+    press(&amx, &view, "n");
+    amx.until("the permission row", || {
+        screen(&amx, &view)
+            .contains("permission: vendor default (shift+tab to cycle)")
+            .then_some(())
+    });
+
+    press(&amx, &view, "BTab");
+    let drawn = amx.until("the permission dial to turn", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("⏵⏵ acceptEdits").then_some(drawn)
+    });
+    assert!(
+        drawn.contains("task ▸"),
+        "and the line it is under is still there to type into:\n{drawn}"
+    );
+}
+
+#[test]
 fn header_dials_are_the_argv_the_next_agent_is_started_with() {
     let amx = Harness::new();
     let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
