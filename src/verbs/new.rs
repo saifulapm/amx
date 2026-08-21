@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::NewArgs;
 use crate::config::Config;
-use crate::spawn::{self, Handoff, Placement};
+use crate::spawn::{self, Dials, Handoff, Placement};
 use crate::store::{Meta, now};
 use crate::{exit, ids, paths, worktree};
 
@@ -106,7 +106,12 @@ fn start(
         agent_dir,
         &Handoff {
             task: args.task.clone(),
-            command: spawn::vendor_command(&agent, &args.vendor_args, &args.task),
+            command: spawn::vendor_command(
+                &agent,
+                &Dials::default(),
+                &args.vendor_args,
+                &args.task,
+            ),
             env,
         },
     )?;

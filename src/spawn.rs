@@ -21,6 +21,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::registry;
 use crate::store::{Agent, Meta};
 use crate::tmux::{PaneId, Server, SessionId};
 
@@ -72,11 +73,51 @@ pub fn env_snapshot(vars: impl IntoIterator<Item = (String, String)>) -> BTreeMa
         .collect()
 }
 
-/// The vendor's argv: the configured command, whatever the caller passed
-/// through, and the task last — where a prompt goes.
-pub fn vendor_command(agent: &str, vendor_args: &[String], task: &str) -> Vec<String> {
+/// Where a spawn's three dials are pointed, each of them a value the vendor
+/// would take or [`registry::DEFAULT`] for one nobody turned.
+///
+/// Resolving them is `new`'s business, because they come from what the caller
+/// typed and what the config holds. Turning them into flags is the registry's,
+/// and happens once, here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dials {
+    pub model: String,
+    pub permission: String,
+    pub effort: String,
+}
+
+impl Default for Dials {
+    /// Every dial left where the vendor's own configuration puts it, which
+    /// amx says by sending no flag.
+    fn default() -> Dials {
+        Dials {
+            model: registry::DEFAULT.to_string(),
+            permission: registry::DEFAULT.to_string(),
+            effort: registry::DEFAULT.to_string(),
+        }
+    }
+}
+
+/// The vendor's argv: the configured command, the dials that are turned,
+/// whatever the caller passed through, and the task last — where a prompt
+/// goes.
+///
+/// A dial yields to the same flag written by hand, wherever it was written, so
+/// the vendor is never handed one flag twice.
+pub fn vendor_command(
+    agent: &str,
+    dials: &Dials,
+    vendor_args: &[String],
+    task: &str,
+) -> Vec<String> {
     let mut command: Vec<String> = agent.split_whitespace().map(str::to_string).collect();
-    command.extend(vendor_args.iter().cloned());
+    command.extend(registry::inject(
+        agent,
+        &dials.model,
+        &dials.permission,
+        &dials.effort,
+        vendor_args,
+    ));
     command.push(task.to_string());
     command
 }
@@ -414,6 +455,7 @@ mod tests {
     fn spawn_the_task_is_the_last_word_the_vendor_is_given() {
         let command = vendor_command(
             "claude --model opus",
+            &Dials::default(),
             &["--session-id".to_string(), "abc-123".to_string()],
             "fix the login bug",
         );
@@ -428,6 +470,82 @@ mod tests {
                 "fix the login bug"
             ]
         );
+    }
+
+    #[test]
+    fn spawn_dials_become_flags_in_front_of_what_the_caller_passed_through() {
+        let command = vendor_command(
+            "claude",
+            &Dials {
+                model: "opus".to_string(),
+                effort: "high".to_string(),
+                ..Dials::default()
+            },
+            &["--session-id".to_string(), "abc-123".to_string()],
+            "fix the login bug",
+        );
+        assert_eq!(
+            command,
+            [
+                "claude",
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--session-id",
+                "abc-123",
+                "fix the login bug"
+            ],
+            "the permission dial nobody turned sends no flag at all"
+        );
+    }
+
+    #[test]
+    fn spawn_dials_stand_down_from_a_flag_the_argv_already_carries() {
+        // Whichever way the caller wrote it, and whether they wrote it in the
+        // configured command or after the separator, claude is never handed
+        // the same flag twice with the winner left to the vendor.
+        let dials = Dials {
+            model: "opus".to_string(),
+            permission: "plan".to_string(),
+            effort: "high".to_string(),
+        };
+
+        let command = vendor_command(
+            "claude --effort max",
+            &dials,
+            &["--model=sonnet".to_string()],
+            "fix the login bug",
+        );
+        assert_eq!(
+            command,
+            [
+                "claude",
+                "--effort",
+                "max",
+                "--permission-mode",
+                "plan",
+                "--model=sonnet",
+                "fix the login bug"
+            ]
+        );
+    }
+
+    #[test]
+    fn spawn_dials_send_nothing_to_a_vendor_the_table_has_no_entry_for() {
+        // The stand-in every end to end test runs is unregistered, so a dial
+        // set for it changes nothing about how it is launched.
+        let command = vendor_command(
+            "mock-claude",
+            &Dials {
+                model: "opus".to_string(),
+                permission: "plan".to_string(),
+                effort: "high".to_string(),
+            },
+            &[],
+            "fix the login bug",
+        );
+        assert_eq!(command, ["mock-claude", "fix the login bug"]);
     }
 
     #[test]
