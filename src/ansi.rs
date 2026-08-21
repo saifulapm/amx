@@ -543,6 +543,211 @@ mod tests {
         assert_eq!(rows[1][0].text, "word");
     }
 
+    // ── the pinned divergences ──────────────────────────────────────────────
+    //
+    // Three places the walk reads a real terminal's bytes differently from a
+    // real terminal, carried from the walk this one replaced. Each is pinned
+    // so the next reader finds a decision here and not a surprise: widening
+    // any of them is a contract amendment, not a fix.
+
+    /// "Any other escape is exactly two characters" is what keeps the walk
+    /// linear, and three-character escapes are the price of it: `ESC ( B`
+    /// designates a charset, and its final `B` is left behind as text. The
+    /// leftover is a printable letter and never an escape, so nothing hostile
+    /// rides through the hole.
+    #[test]
+    fn a_three_character_escape_leaves_its_final_byte_behind() {
+        assert_eq!(strip_ansi("a\u{1b}(Bb"), "aBb");
+        assert_eq!(strip_ansi("a\u{1b})0b"), "a0b");
+    }
+
+    /// The same rule seen from its other side: `ESC` immediately before a
+    /// newline takes the newline as its second character, so the two rows
+    /// join. A real terminal would execute the `LF` instead.
+    #[test]
+    fn an_escape_before_a_newline_consumes_the_newline() {
+        assert_eq!(strip_ansi("one\u{1b}\ntwo"), "onetwo");
+        assert_eq!(painted("one\u{1b}\ntwo"), vec![vec![plain_run("onetwo")]]);
+    }
+
+    /// This module removes escapes; it is not a display sanitiser. U+0085 and
+    /// U+0099 are control characters a terminal must not be handed, and they
+    /// are `inert`'s to remove, not this walk's.
+    #[test]
+    fn an_unnamed_c1_character_is_left_for_the_display_law() {
+        assert_eq!(strip_ansi("a\u{85}b\u{99}c"), "a\u{85}b\u{99}c");
+    }
+
+    // ── hostile input ───────────────────────────────────────────────────────
+    //
+    // These bytes come off another program's pane on their way to this user's
+    // terminal: nothing below may panic, and nothing below may cost more than
+    // a scan of its input.
+
+    /// Captures shaped like everything above and everything that has gone
+    /// wrong on a real pane: cancellations, bad colour specs, truncations,
+    /// eight-bit introducers, strays, and the vendor's own footer.
+    const FIXTURES: [&str; 24] = [
+        "a\u{1b}\u{1b}[31mone escape cancelling another",
+        "\u{1b}[1m\u{1b}[38;2;300;1;4ma colour spec with a bad red",
+        "",
+        "no escapes at all",
+        "one\ntwo\nthree\n",
+        "\n\n\n",
+        "\u{1b}[1mbold\u{1b}[0m and \u{1b}[3;4mmore\u{1b}[m",
+        "\u{1b}[38;5;196mindexed\u{1b}[48;2;1;2;3mon rgb\u{1b}[0m",
+        "\u{1b}[31mred\n\u{1b}[32mgreen\n",
+        "\u{1b}]0;a window title\u{7}after the bell",
+        "\u{1b}]8;;https://example\u{1b}\\a link\u{1b}]8;;\u{1b}\\",
+        "\u{1b}Pq#0;2;0;0;0#0~~\u{1b}\\a sixel just went by",
+        "\u{1b}_Gf=100,a=T;base64ish\u{1b}\\a graphic just went by",
+        "\u{1b}^a private message\u{1b}\\",
+        "\u{1b}Xstart of string\u{1b}\\",
+        "\u{9b}1mbold through a C1 introducer\u{9b}0m",
+        "\u{9d}0;title\u{9c}\u{90}dcs\u{9c}\u{9f}apc\u{9c}\u{9e}pm\u{9c}\u{98}sos\u{9c}",
+        "truncated mid-string \u{1b}]0;never terminated",
+        "truncated mid-sequence \u{1b}[38;5",
+        "a lone trailing escape \u{1b}",
+        "an aborted string \u{1b}]0;title\u{1b}[31m then a CSI",
+        "\u{1b}[1mé unicodé ✓ 日本語\u{1b}[0m",
+        "\u{9c} a stray terminator, and \u{85} a C1 this walk does not name",
+        "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents\n",
+    ];
+
+    /// Every introducer the walk names, in both widths.
+    const INTRODUCERS: [(&str, &str); 15] = [
+        ("CSI", "\u{1b}[31;1mtext\u{1b}[0m"),
+        ("OSC, BEL-terminated", "\u{1b}]0;window title\u{7}"),
+        ("OSC, ST-terminated", "\u{1b}]8;;https://example\u{1b}\\"),
+        ("DCS", "\u{1b}Pq#0;2;0;0;0#0~~\u{1b}\\"),
+        ("APC", "\u{1b}_Gf=100,a=T;payload\u{1b}\\"),
+        ("PM", "\u{1b}^status line\u{1b}\\"),
+        ("SOS", "\u{1b}Xstart of string\u{1b}\\"),
+        ("any other ESC x", "\u{1b}c"),
+        ("CSI, 8-bit", "\u{9b}31;1mtext\u{9b}0m"),
+        ("OSC, 8-bit", "\u{9d}0;window title\u{9c}"),
+        ("DCS, 8-bit", "\u{90}q#0;2;0;0;0\u{9c}"),
+        ("APC, 8-bit", "\u{9f}payload\u{9c}"),
+        ("PM, 8-bit", "\u{9e}status line\u{9c}"),
+        ("SOS, 8-bit", "\u{98}start of string\u{9c}"),
+        ("a stray ST", "\u{9c}"),
+    ];
+
+    /// A run wearing no style at all.
+    fn plain_run(text: &str) -> Painted {
+        Painted {
+            text: text.into(),
+            ..Painted::default()
+        }
+    }
+
+    /// The style in force over the first run of the first line.
+    fn first(screen: &str) -> Painted {
+        painted(screen).swap_remove(0).swap_remove(0)
+    }
+
+    /// [`painted`] with the style thrown away and the runs joined — the other
+    /// half of the headline law, written out so the tests below assert the
+    /// contract and not an implementation.
+    fn flattened(screen: &str) -> String {
+        painted(screen)
+            .iter()
+            .map(|line| line.iter().map(|run| run.text.as_str()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn strip_and_painted_agree_over_the_hostile_fixtures() {
+        for screen in FIXTURES {
+            assert_eq!(strip_ansi(screen), flattened(screen), "{screen:?}");
+        }
+    }
+
+    #[test]
+    fn the_walk_never_grows_what_it_was_given() {
+        for screen in FIXTURES {
+            assert!(
+                strip_ansi(screen).len() <= screen.len(),
+                "the walk grew {screen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_truncated_sequence_at_every_length_is_survivable() {
+        // Every prefix of every fixture, which covers a capture cut at any
+        // byte — the ordinary case for a tail read off a live pane.
+        for screen in FIXTURES {
+            for end in 0..=screen.len() {
+                if !screen.is_char_boundary(end) {
+                    continue;
+                }
+                let cut = &screen[..end];
+                assert_eq!(
+                    strip_ansi(cut),
+                    flattened(cut),
+                    "cut of {screen:?} at {end}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_multibyte_character_next_to_an_introducer_does_not_panic() {
+        assert_eq!(strip_ansi("\u{1b}é"), ""); // ESC x, where x is two bytes
+        assert_eq!(strip_ansi("\u{1b}[é1mtext"), "text"); // inside the parameters
+        assert_eq!(strip_ansi("\u{1b}]0;日本語\u{7}kept"), "kept"); // inside a string
+        assert_eq!(strip_ansi("\u{9b}日1mtext"), "text"); // after a C1 introducer
+    }
+
+    #[test]
+    fn a_long_unterminated_string_costs_one_scan_and_no_more() {
+        // 128 KiB of body with no terminator in it. The walk is linear by
+        // construction; a quadratic one would not finish this test in the time
+        // a suite is willing to wait, which is the point of the size.
+        let hostile = format!("keep me\u{1b}]0;{}", "A".repeat(128 * 1024));
+        assert_eq!(strip_ansi(&hostile), "keep me");
+        assert_eq!(flattened(&hostile), "keep me");
+
+        // The same for a sequence that never finds its final byte, and for a
+        // parameter list far longer than any real one.
+        let unfinished = format!("keep me\u{1b}[{}", "1;".repeat(64 * 1024));
+        assert_eq!(strip_ansi(&unfinished), "keep me");
+        let huge = format!("\u{1b}[{}mtext", "9".repeat(64 * 1024));
+        assert_eq!(strip_ansi(&huge), "text");
+        assert_eq!(first(&huge), plain_run("text")); // unreadable, so ignored
+    }
+
+    #[test]
+    fn a_capture_that_is_all_paint_yields_no_runs_at_all() {
+        // The shape that would make a renderer spend a row on nothing: many
+        // style changes, no text. Bounded output, not one empty run.
+        let all_paint = "\u{1b}[1m\u{1b}[0m".repeat(4096);
+        assert_eq!(strip_ansi(&all_paint), "");
+        assert_eq!(painted(&all_paint), vec![vec![]]);
+    }
+
+    #[test]
+    fn no_escape_character_reaches_the_output() {
+        for (name, sequence) in INTRODUCERS {
+            let out = strip_ansi(&format!("<{sequence}>"));
+            assert!(
+                !out.contains('\u{1b}'),
+                "{name}: an escape reached the output of {sequence:?}: {out:?}"
+            );
+            // The CSI cases carry `text` between two sequences; the rest carry
+            // nothing a caller should see. Either way the sentinels survive and
+            // no body byte does.
+            let expected = if name.starts_with("CSI") {
+                "<text>"
+            } else {
+                "<>"
+            };
+            assert_eq!(out, expected, "{name}: {sequence:?}");
+        }
+    }
+
     /// A tiny deterministic generator, so the property test below is
     /// reproducible without pulling in a crate for it.
     struct Rng(u64);
