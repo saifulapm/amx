@@ -4,13 +4,19 @@
 //! because a hook arrived a second ago and one that says `working` because
 //! nothing has been heard for two minutes are telling a person two different
 //! things, so this says which it is.
+//!
+//! An agent that is waiting gets the rest of the answer: what it is asking,
+//! the choices under that, and the command that answers it. That last line is
+//! the point of the other two — a person reading this is the one who has to
+//! unblock it.
 
 use anyhow::Result;
 use std::io::Write;
 use std::path::Path;
 
 use crate::derive::{self, Evidence, View};
-use crate::store::now;
+use crate::store::{Phase, now};
+use crate::verbs::send;
 use crate::{exit, paths, rules};
 
 /// Run the verb against the machine.
@@ -36,10 +42,20 @@ fn report(view: &View, out: &mut impl Write) -> Result<()> {
     writeln!(out, "{}  {}", view.id(), view.phase())?;
     writeln!(out, "  evidence  {}", evidence(view))?;
     if let Some(question) = &view.state.question {
-        writeln!(out, "  asking    {}", question.trim())?;
+        say(out, "asking", question)?;
+        for choice in send::numbered(&view.state.options) {
+            say(out, "", &choice)?;
+        }
+    }
+    if view.phase() == Phase::Waiting {
+        writeln!(
+            out,
+            "  answer    {}",
+            send::how_to_answer(view.id(), view.kind())
+        )?;
     }
     if let Some(summary) = &view.state.summary {
-        writeln!(out, "  doing     {}", summary.trim())?;
+        say(out, "doing", summary)?;
     }
     if let Some(exit) = view.state.exit {
         writeln!(out, "  exit      {exit}")?;
@@ -51,6 +67,31 @@ fn report(view: &View, out: &mut impl Write) -> Result<()> {
     }
     writeln!(out, "  pane      {}", view.meta.pane)?;
     Ok(())
+}
+
+/// One field of the report, in words amx did not author.
+///
+/// The label is left blank on a line that continues the one above it: a
+/// question the vendor wrapped across a screen is one thing being asked, and
+/// so are the choices under it.
+fn say(out: &mut impl Write, label: &str, text: &str) -> Result<()> {
+    for (at, line) in inert(text).lines().enumerate() {
+        let label = match at {
+            0 => label,
+            _ => "",
+        };
+        writeln!(out, "  {label:<8}  {line}")?;
+    }
+    Ok(())
+}
+
+/// A string amx did not author, as a person should receive it.
+///
+/// A terminal is an interpreter, and the same bytes that read as a question
+/// can retitle the window or clear the screen. What the vendor wrote arrives
+/// here inert, keeping only the line breaks the layout above is ready for.
+fn inert(text: &str) -> String {
+    crate::tmux::sanitize(text).trim().to_string()
 }
 
 /// The sentence that says what amx is going on, and how old it is.

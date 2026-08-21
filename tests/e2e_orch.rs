@@ -355,6 +355,27 @@ fn surfaces_send_says_a_question_of_the_vendors_own_will_take_words() {
 }
 
 #[test]
+fn surfaces_status_prints_the_question_with_the_choices_under_it() {
+    let amx = Harness::new();
+    parked_on_the_box(&amx, "ask-a1b");
+
+    let out = amx.amx(&["status", "ask-a1b"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let said = stdout(&out);
+    assert!(
+        said.contains("Claude needs your permission to use Bash"),
+        "{said:?}"
+    );
+    assert!(said.contains("1. Yes"), "{said:?}");
+    assert!(said.contains("2. No"), "{said:?}");
+    assert!(
+        said.contains("amx answer ask-a1b"),
+        "and what unblocks it: {said:?}"
+    );
+}
+
+#[test]
 fn the_orchestration_verbs_say_so_when_there_is_no_such_agent() {
     let amx = Harness::new();
     for args in [
