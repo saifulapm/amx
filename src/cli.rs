@@ -36,6 +36,7 @@ impl Cli {
             Diff { .. } => "diff",
             Resume { .. } => "resume",
             Events { .. } => "events",
+            Statusline => "statusline",
             Doctor { .. } => "doctor",
             Uninstall => "uninstall",
             Hook => "_hook",
@@ -113,6 +114,12 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+
+    /// Print the counts a status line has room for: ✽ moving, ⚠ waiting.
+    ///
+    /// Meant for tmux's own `status-right '#(amx statusline)'`, but it is
+    /// plain text and prints nothing at all when no agent needs saying.
+    Statusline,
 
     /// Check tmux, the agent command, the config and the hook wiring.
     Doctor {
@@ -312,6 +319,7 @@ mod tests {
             (&["amx", "events"], "events"),
             (&["amx", "events", "fix-a1b", "--follow"], "events"),
             (&["amx", "events", "--json"], "events"),
+            (&["amx", "statusline"], "statusline"),
             (&["amx", "doctor"], "doctor"),
             (&["amx", "doctor", "--fix"], "doctor"),
             (&["amx", "uninstall"], "uninstall"),
@@ -527,6 +535,26 @@ mod tests {
             panic!("expected new");
         };
         assert_eq!(args.task, "  fix the login bug\n");
+    }
+
+    #[test]
+    fn statusline_is_a_verb_a_person_can_find() {
+        use clap::CommandFactory;
+
+        let cli = parse(&["amx", "statusline"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Statusline)));
+
+        // It is typed once, into somebody's own tmux config, and never again.
+        // Hiding it would leave the one verb people have to be told about as
+        // the only one they cannot find in `amx --help`.
+        let listed = Cli::command()
+            .get_subcommands()
+            .any(|verb| verb.get_name() == "statusline" && !verb.is_hide_set());
+        assert!(listed, "statusline is not in help");
+
+        // It takes nothing: what it prints is the same for everyone, and a
+        // dial here would be one more thing to get wrong inside a config file.
+        assert_eq!(code(&["amx", "statusline", "fix-a1b"]), exit::USAGE);
     }
 
     /// clap's own contract check: the derived surface is internally consistent

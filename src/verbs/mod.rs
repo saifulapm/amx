@@ -11,5 +11,6 @@ pub mod result;
 pub mod resume;
 pub mod send;
 pub mod status;
+pub mod statusline;
 pub mod stop;
 pub mod uninstall;
