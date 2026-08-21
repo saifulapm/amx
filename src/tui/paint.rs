@@ -105,7 +105,7 @@ fn header(list: &List) -> Line<'static> {
         spans.push(Span::raw(" · "));
         spans.push(Span::styled(
             format!("{count} {}", group.title()),
-            Style::new().fg(group_colour(group)),
+            group_colour(group),
         ));
     }
     Line::from(spans)
@@ -155,9 +155,7 @@ fn line(
     match item {
         Item::Heading(group, _) => Line::styled(
             group.title().to_string(),
-            Style::new()
-                .fg(group_colour(group))
-                .add_modifier(Modifier::BOLD),
+            group_colour(group).add_modifier(Modifier::BOLD),
         ),
         Item::Fold(hidden) => Line::styled(format!("{}… {hidden} more", marker(selected)), dim()),
         Item::Agent(_) => match list.agent(item) {
@@ -181,10 +179,7 @@ fn row(view: &View, selected: bool, names: usize, width: usize, beat: usize) -> 
 
     Line::from(vec![
         Span::raw(marker(selected)),
-        Span::styled(
-            format!("{} ", icon(phase, beat)),
-            Style::new().fg(colour(phase)),
-        ),
+        Span::styled(format!("{} ", icon(phase, beat)), colour(phase)),
         Span::styled(
             format!("{name:<names$}  "),
             if selected {
@@ -220,7 +215,7 @@ fn look(frame: &mut Frame, peek: &Peek, area: Rect) {
         frame.render_widget(
             Paragraph::new(question.clone())
                 .wrap(Wrap { trim: true })
-                .style(Style::new().fg(Color::Yellow)),
+                .style(Style::new().fg(role::WARNING)),
             asking,
         );
     }
@@ -267,7 +262,7 @@ fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect) {
     let at = prompt.chars().count() + typed.chars().count();
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(prompt, Style::new().fg(Color::Yellow)),
+            Span::styled(prompt, Style::new().fg(role::WARNING)),
             Span::raw(typed),
         ])),
         area,
@@ -429,24 +424,49 @@ fn icon(phase: Phase, beat: usize) -> &'static str {
     }
 }
 
-fn colour(phase: Phase) -> Color {
+/// The colours, by what they mean rather than by what they are. Four of them,
+/// and the values are the vendor's own dark theme measured from the 2.1.237
+/// binary: a view beside claude's should not be a different shade of the same
+/// idea.
+mod role {
+    use ratatui::style::Color;
+
+    /// It went the way it was meant to.
+    pub const SUCCESS: Color = Color::Rgb(78, 186, 101);
+    /// Something is waiting on a person.
+    pub const WARNING: Color = Color::Rgb(255, 193, 7);
+    /// It was attempted and it failed.
+    pub const ERROR: Color = Color::Rgb(255, 107, 128);
+    /// It was ended by hand, and nothing more is coming.
+    pub const INACTIVE: Color = Color::Rgb(153, 153, 153);
+}
+
+/// What a state is worth saying in colour.
+///
+/// Whether anything is running is the mark's job, which leaves the colour to
+/// carry how it went: an agent still at work has nothing to say about that
+/// yet, so it takes the terminal's own colour and earns one by ending.
+fn colour(phase: Phase) -> Style {
     match phase {
-        Phase::Waiting => Color::Yellow,
-        Phase::Starting | Phase::Working => Color::Cyan,
-        Phase::Idle => Color::Green,
-        Phase::Done => Color::Green,
-        Phase::Failed => Color::Red,
-        Phase::Stopped => Color::DarkGray,
-        Phase::Unknown => Color::Magenta,
+        // What amx cannot account for wants a person as much as a question
+        // does, and the mark is what says which of the two it is.
+        Phase::Waiting | Phase::Unknown => Style::new().fg(role::WARNING),
+        Phase::Starting | Phase::Working => Style::new(),
+        Phase::Idle => dim(),
+        Phase::Done => Style::new().fg(role::SUCCESS),
+        Phase::Failed => Style::new().fg(role::ERROR),
+        Phase::Stopped => Style::new().fg(role::INACTIVE),
     }
 }
 
-fn group_colour(group: Group) -> Color {
+/// The same roles over a group, so the count at the top and the rows under the
+/// heading say the same thing in the same colour.
+fn group_colour(group: Group) -> Style {
     match group {
-        Group::NeedsInput => Color::Yellow,
-        Group::Working => Color::Cyan,
-        Group::Idle => Color::Green,
-        Group::Completed => Color::DarkGray,
+        Group::NeedsInput => Style::new().fg(role::WARNING),
+        Group::Working => Style::new(),
+        Group::Idle => dim(),
+        Group::Completed => Style::new().fg(role::INACTIVE),
     }
 }
 
@@ -462,6 +482,7 @@ mod tests {
     use crate::tmux::{PaneId, Socket};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use std::path::PathBuf;
 
     fn view(id: &str, phase: Phase, said: Option<&str>, age: u64) -> View {
@@ -515,12 +536,23 @@ mod tests {
         screen
     }
 
-    /// What a view of this size puts on the screen, line by line.
-    fn painted(screen: &Screen, size: (u16, u16)) -> Vec<String> {
+    /// What a view of this size draws, cell by cell.
+    fn cells(screen: &Screen, size: (u16, u16)) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
         terminal.draw(|frame| draw(frame, screen)).unwrap();
+        terminal.backend().buffer().clone()
+    }
 
-        let buffer = terminal.backend().buffer().clone();
+    /// The mark on a row, and how the view painted it: a mark carries its
+    /// colour, and a test that read the text alone could not see it.
+    fn mark(screen: &Screen, size: (u16, u16), row: u16) -> (String, Color, Modifier) {
+        let cell = cells(screen, size)[(2, row)].clone();
+        (cell.symbol().to_string(), cell.fg, cell.modifier)
+    }
+
+    /// What a view of this size puts on the screen, line by line.
+    fn painted(screen: &Screen, size: (u16, u16)) -> Vec<String> {
+        let buffer = cells(screen, size);
         (0..size.1)
             .map(|row| {
                 (0..size.0)
@@ -587,6 +619,35 @@ mod tests {
             set_for(""),
             set_for("xterm"),
             "and anything else is the same"
+        );
+    }
+
+    #[test]
+    fn glyphs_leave_the_colour_to_say_how_it_went() {
+        // The mark on the one row a view of one agent draws.
+        let painted = |phase| {
+            let screen = showing(vec![view("agent-a1b", phase, Some("said"), 5)], None);
+            mark(&screen, (60, 8), 2)
+        };
+        let plain = Modifier::empty();
+
+        assert_eq!(painted(Phase::Waiting), ("?".into(), role::WARNING, plain));
+        assert_eq!(painted(Phase::Unknown), ("~".into(), role::WARNING, plain));
+        assert_eq!(painted(Phase::Done), ("●".into(), role::SUCCESS, plain));
+        assert_eq!(painted(Phase::Failed), ("✗".into(), role::ERROR, plain));
+        assert_eq!(painted(Phase::Stopped), ("⏹".into(), role::INACTIVE, plain));
+
+        // An agent still at work has nothing to say about how it went, so it
+        // takes the terminal's own colour and the pulse does the talking. An
+        // agent that has finished its turn and is sitting there is quiet.
+        assert_eq!(painted(Phase::Starting), ("◌".into(), Color::Reset, plain));
+        assert_eq!(
+            painted(Phase::Working),
+            (pulse(0).into(), Color::Reset, plain)
+        );
+        assert_eq!(
+            painted(Phase::Idle),
+            ("○".into(), Color::Reset, Modifier::DIM)
         );
     }
 
