@@ -333,6 +333,23 @@ impl Server {
             .with_context(|| format!("pane {pane} reported pid {printed:?}"))
     }
 
+    /// Whether somebody is looking at this pane right now.
+    ///
+    /// Three flags, read together, and every one of them has to be set: the
+    /// pane is the active one in its window, the window is the one its session
+    /// is showing, and a client is attached to that session. Being active is
+    /// not enough — a session nobody has ever attached to has an active pane
+    /// too, and it is on nobody's screen.
+    ///
+    /// A **value read**, so a pane that has gone answers emptily and reads as
+    /// unwatched. Whatever asks this is deciding whether to interrupt
+    /// somebody, and that is the direction worth being wrong in: a
+    /// notification nobody needed beats a question nobody was told about.
+    pub fn pane_watched(&self, pane: &PaneId) -> bool {
+        self.pane_field(pane, "#{pane_active} #{window_active} #{session_attached}")
+            .is_ok_and(|printed| watched_flags(&printed))
+    }
+
     /// What is on the pane's screen now, sanitized.
     pub fn capture(&self, pane: &PaneId) -> Result<String> {
         let raw = self.run(&["capture-pane", "-p", "-J", "-t", pane.as_str()])?;
@@ -442,6 +459,18 @@ fn named<'a>(listed: &'a str, name: &str) -> Option<&'a str> {
         let (id, listed) = line.split_once(' ')?;
         (listed == name).then_some(id)
     })
+}
+
+/// The three flags [`Server::pane_watched`] asks for, all of them set.
+///
+/// `session_attached` is a count of clients rather than a flag, and any of
+/// them is somebody.
+fn watched_flags(printed: &str) -> bool {
+    let flags: Vec<&str> = printed.split_whitespace().collect();
+    flags.len() == 3
+        && flags
+            .iter()
+            .all(|flag| flag.parse::<u32>().is_ok_and(|set| set > 0))
 }
 
 /// tmux quotes an option value when it has to; take the quotes back off.
@@ -892,6 +921,37 @@ mod tests {
             "a value read on a gone pane must not answer as if it were alive: {answer:?}"
         );
         assert!(server.pane_alive(&first), "the other pane is untouched");
+    }
+
+    #[test]
+    fn tmux_watching_a_pane_takes_all_three_flags() {
+        assert!(watched_flags("1 1 1"));
+        assert!(watched_flags("1 1 2"), "two clients are still somebody");
+        for nobody in ["0 1 1", "1 0 1", "1 1 0", "1 1", "", "   ", "x y z"] {
+            assert!(!watched_flags(nobody), "{nobody:?}");
+        }
+    }
+
+    #[test]
+    fn tmux_says_whether_anybody_is_looking_at_a_pane() {
+        let server = TestServer::new();
+        let (_, first) = server.new_session(&idle()).unwrap();
+
+        // `new-session -d` leaves an active pane in an active window that no
+        // client is attached to, which is the whole reason all three flags are
+        // asked for.
+        assert!(!server.pane_watched(&first), "nobody is attached");
+
+        let window = WindowId::new(server.pane_field(&first, "#{window_id}").unwrap()).unwrap();
+        let second = server.split_window(&window, &idle()).unwrap();
+        assert!(!server.pane_watched(&second), "and it is not even active");
+
+        // A pane that has gone answers emptily, and that reads as unwatched:
+        // this question decides whether to interrupt somebody, and the wrong
+        // direction to be wrong in is the silent one.
+        server.kill_pane(&second).unwrap();
+        until("the pane to leave the list", || !server.pane_alive(&second));
+        assert!(!server.pane_watched(&second));
     }
 
     #[test]
