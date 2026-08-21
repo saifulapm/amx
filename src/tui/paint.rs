@@ -204,7 +204,9 @@ fn card_rows(card: &Card, answering: bool, width: u16) -> u16 {
         .as_deref()
         .map_or(0, |question| wrapped(question, inner).min(ASKED_TALL));
     let listed = choices(&card.options, inner as usize).len();
-    let shown = body(card, usize::MAX).len();
+    // Counted no further than the card could ever grow, because the body can
+    // be a patch of thousands of lines and this runs on every frame.
+    let shown = body(card, CARD_TALL as usize).len();
 
     let rows = 2 + asked as usize + listed + usize::from(answering) + shown;
     rows.min(u16::MAX as usize) as u16
@@ -406,11 +408,11 @@ const BLURBS_TALL: usize = 2 * Group::ALL.len();
 
 /// The agents themselves.
 ///
-/// `room` is how many of the rows are not behind the card, and it is what the
-/// cursor is kept inside. The rest are drawn anyway: a card is in front of a
-/// list, not instead of one, and the rows it covers are the ones somebody gets
-/// back by closing it.
-fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize, room: u16) {
+/// `visible` is how many of the rows are not behind the card, and it is what
+/// the cursor is kept inside. The rest are drawn anyway: a card is in front of
+/// a list, not instead of one, and the rows it covers are the ones somebody
+/// gets back by closing it.
+fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize, visible: u16) {
     if list.is_empty() {
         let room = area.width as usize >= BLURBS_WIDE && area.height as usize >= BLURBS_TALL;
         if list.unstarted() && room {
@@ -432,7 +434,7 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize, room: u16) {
     // front of the card rather than behind it.
     let offset = list
         .cursor()
-        .saturating_sub((room.max(1) as usize).saturating_sub(1));
+        .saturating_sub((visible.max(1) as usize).saturating_sub(1));
     let columns = columns(list);
 
     let lines: Vec<Line> = list
@@ -654,7 +656,7 @@ fn float(frame: &mut Frame, card: &Card, answering: Option<&Composer>, area: Rec
             .collect();
         frame.render_widget(Paragraph::new(lines), listing);
     }
-    if let Some(composer) = answering {
+    if let Some(composer) = answering.filter(|_| typing > 0) {
         answer_row(frame, card, composer, answer);
     }
 
