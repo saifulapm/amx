@@ -136,6 +136,78 @@ fn resume_refuses_an_agent_that_has_not_ended() {
 }
 
 #[test]
+fn resume_two_racers_bring_back_one_agent_and_not_two() {
+    // Two `amx resume <id>` in flight at once. One session may only be
+    // continued once: two panes both running `--resume=<same session>` would
+    // fight over one record, so the loser has to hear that the agent is
+    // already going again.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, amx.home(), "happy-turn");
+    amx.until_state(id, "idle");
+    amx.amx(&["stop", id, "--force"]);
+    assert_eq!(amx.state(id)["state"], "stopped");
+
+    let state_dir = amx
+        .state_root()
+        .parent()
+        .expect("the state root has a parent")
+        .to_path_buf();
+    // Both racers are up and spinning before the starting gun fires, so they
+    // reach the has-it-ended gate together instead of one whole run apart.
+    let go = state_dir.join("go");
+    let racers: Vec<_> = (0..2)
+        .map(|_| {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!(
+                    "until [ -e '{go}' ]; do :; done; exec '{amx}' resume '{id}'",
+                    go = go.display(),
+                    amx = common::AMX,
+                ))
+                .env("AMX_STATE_DIR", &state_dir)
+                .env("HOME", amx.home())
+                .env("XDG_CONFIG_HOME", amx.home().join(".config"))
+                .env("AMX_TMUX_SOCKET", amx.socket())
+                .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
+                .env("MOCK_CLAUDE_SESSION_2", CONTINUED)
+                .env_remove("TMUX")
+                .env_remove("TMUX_PANE")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("starting a racer")
+        })
+        .collect();
+    std::fs::write(&go, b"").expect("the starting gun");
+    let done: Vec<Output> = racers
+        .into_iter()
+        .map(|racer| racer.wait_with_output().expect("waiting for a racer"))
+        .collect();
+
+    let winners = done.iter().filter(|out| out.status.success()).count();
+    assert_eq!(
+        winners,
+        1,
+        "one resume owns the comeback: {}",
+        done.iter()
+            .map(|out| format!(
+                "[exit {:?} out {:?} err {:?}]",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    until_continued(&amx, id);
+    assert!(
+        amx.pane_alive(&amx.pane_of(id)),
+        "and the record names the pane that is actually running"
+    );
+}
+
+#[test]
 fn resume_picks_up_an_agent_whose_command_ran_to_the_end() {
     // How an agent ended is not whether there is a session behind it. One that
     // finished has an answer and a session, and picking that session up is how

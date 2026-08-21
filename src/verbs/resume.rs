@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::spawn::{self, Handoff, Placement};
 use crate::store::{Agent, Event, Meta, Phase, State};
+use crate::tmux::Server;
 use crate::{derive, exit, paths, rules, store, worktree};
 
 /// What amx records when it brings an agent back.
@@ -87,7 +88,7 @@ fn one(
         return Ok(exit::BLOCKED);
     }
 
-    bring_back(root, &view.meta, env)?;
+    bring_back(root, id, env)?;
     writeln!(out, "{id} resumed")?;
     Ok(exit::OK)
 }
@@ -120,7 +121,7 @@ fn sweep(
         // One agent that cannot come back is not the sweep's ending. The
         // others still can, and this is the command somebody runs when the
         // whole wall went at once.
-        match bring_back(root, &view.meta, env) {
+        match bring_back(root, view.id(), env) {
             Ok(()) => writeln!(out, "{} resumed", view.id())?,
             Err(e) => eprintln!("amx resume: {}: {e:#}", view.id()),
         }
@@ -140,8 +141,28 @@ fn at_capacity(root: &Path, config: &Config) -> Result<Option<String>> {
 }
 
 /// Put the agent back in a pane, continuing what it was doing.
-fn bring_back(root: &Path, meta: &Meta, env: &BTreeMap<String, String>) -> Result<()> {
-    let id = &meta.id;
+///
+/// All of it happens under the agent's writer lock. The has-it-ended check
+/// and the respawn are one action: of two resumes racing, the second waits
+/// at the lock and then reads the `starting` state and the live pane the
+/// first wrote, so one session is never continued into two panes. The gates
+/// in [`one`] and [`sweep`] are for saying so politely; this one is for
+/// being right.
+fn bring_back(root: &Path, id: &str, env: &BTreeMap<String, String>) -> Result<()> {
+    let agent = Agent::open(root, id)?;
+    let writer = agent.writer()?;
+
+    // The raw record rather than the derived view, which may take this very
+    // lock to note a question it read off a pane. An agent has ended when its
+    // record says so, or when the pane the record names is gone.
+    let current = writer.state()?;
+    let meta = agent.meta()?;
+    if !current.state.is_terminal()
+        && Server::from_socket(meta.socket.clone()).pane_alive(&meta.pane)
+    {
+        bail!("{id} is already going again");
+    }
+
     let Some(session) = meta.session.as_deref() else {
         bail!(
             "no session was ever recorded for {id}, so there is nothing to continue. \
@@ -155,10 +176,9 @@ fn bring_back(root: &Path, meta: &Meta, env: &BTreeMap<String, String>) -> Resul
         bail!("the session recorded for {id} is not a session id, so it will not be handed on");
     }
 
-    let agent = Agent::open(root, id)?;
     let recorded = spawn::read_handoff(agent.dir())
         .with_context(|| format!("reading what {id} was started with"))?;
-    let dir = ready_dir(meta)?;
+    let dir = ready_dir(&meta)?;
 
     // The vendor is the one the agent was started with, and the environment is
     // the one this command was run with — the same rule `new` follows, because
@@ -174,7 +194,6 @@ fn bring_back(root: &Path, meta: &Meta, env: &BTreeMap<String, String>) -> Resul
         },
     )?;
 
-    let writer = agent.writer()?;
     writer.append(&Event::new(
         RESUMED,
         serde_json::json!({ "session": session }),
@@ -189,7 +208,6 @@ fn bring_back(root: &Path, meta: &Meta, env: &BTreeMap<String, String>) -> Resul
             ..State::default()
         }
     })?;
-    drop(writer);
 
     let server = spawn::server(root)?;
     let boot = vec![
@@ -206,9 +224,10 @@ fn bring_back(root: &Path, meta: &Meta, env: &BTreeMap<String, String>) -> Resul
         &spawn::wall_lock(root),
     )?;
 
-    // Read and written under the lock, so a hook that arrived while the pane
-    // was being made keeps whatever it recorded about the new session.
-    agent.writer()?.update_meta(|meta| {
+    // Still under the writer taken at the top: a hook the new pane fires
+    // waits at the lock until the pane is on the record, and update_meta
+    // reads before it writes, so nothing a hook recorded earlier is lost.
+    writer.update_meta(|meta| {
         meta.socket = server.socket().clone();
         meta.pane = pane;
     })?;
