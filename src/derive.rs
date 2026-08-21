@@ -90,6 +90,19 @@ impl View {
             .or(self.state.result.as_deref())
     }
 
+    /// What kind of thing this agent is being asked, if anything.
+    ///
+    /// The record's own word for it, else what the rule that claimed the
+    /// screen says. The order is the one amx keeps everywhere: a hook is the
+    /// vendor's account of its own state and a rule is amx's reading of a
+    /// picture of it, so the screen fills what the hooks left empty and
+    /// corrects nothing.
+    pub fn kind(&self) -> Option<crate::store::Kind> {
+        self.state
+            .kind
+            .or_else(|| asked_kind(self.verdict.rule.as_deref()))
+    }
+
     /// The stable shape `--json` prints. Fields are added, never renamed or
     /// removed: callers branch on these.
     pub fn json(&self) -> serde_json::Value {
@@ -108,6 +121,7 @@ impl View {
             "result": self.state.result,
             "source": self.state.source.map(source_name),
             "exit": self.state.exit,
+            "kind": self.kind(),
             "task": self.meta.task,
             "dir": self.meta.dir,
             "worktree": self.meta.worktree,
@@ -118,6 +132,31 @@ impl View {
             "session": self.meta.session,
             "created": self.meta.created,
         })
+    }
+}
+
+/// What kind of thing the screen a rule claimed is asking for.
+///
+/// The rules say which screen is on the pane; this says what that screen wants
+/// back, which is the part anything answering an agent needs. It is by name
+/// because the screens are told apart by name everywhere else in amx, and a
+/// name amx does not know asks for nothing it can describe.
+///
+/// The folder-trust screen is here and nowhere else: it stands in front of the
+/// session that every hook comes from, so no hook can ever report it, and the
+/// pane is the only place it is ever seen.
+fn asked_kind(rule: Option<&str>) -> Option<crate::store::Kind> {
+    use crate::store::Kind;
+
+    match rule? {
+        "permission_prompt" => Some(Kind::Permission),
+        // An approval, answered yes or no about something the agent is about
+        // to do. That the vendor draws it as a menu does not make it a
+        // question with an answer of your own.
+        "plan_approval" => Some(Kind::Permission),
+        "ask_menu" => Some(Kind::Question),
+        "folder_trust" => Some(Kind::Trust),
+        _ => None,
     }
 }
 
@@ -482,5 +521,78 @@ mod tests {
         let mut fresh = state(Phase::Starting, 0);
         fresh.since = 1_000;
         assert_eq!(decided(&fresh, true, None, 1_002).age, 2);
+    }
+
+    #[test]
+    fn reader_has_a_kind_for_every_screen_that_blocks() {
+        use crate::store::Kind;
+
+        // Every rule that stops an agent stops it on something somebody has to
+        // answer, and what may be sent back depends on which. A blocking rule
+        // added without a kind here would leave a caller guessing again.
+        for rule in rules::bundled().rules() {
+            let kind = asked_kind(Some(&rule.name));
+            assert_eq!(
+                kind.is_some(),
+                rule.state == Phase::Waiting,
+                "{} claims a {} screen",
+                rule.name,
+                rule.state
+            );
+        }
+        assert_eq!(asked_kind(Some("folder_trust")), Some(Kind::Trust));
+        assert_eq!(asked_kind(Some("ask_menu")), Some(Kind::Question));
+        assert_eq!(asked_kind(None), None);
+        assert_eq!(
+            asked_kind(Some("a rule from a ruleset amx has not met")),
+            None
+        );
+    }
+
+    #[test]
+    fn reader_says_the_kind_the_record_holds_over_the_kind_it_read() {
+        use crate::store::Kind;
+
+        let meta = Meta {
+            id: "fix-login-a1b".to_string(),
+            task: "fix the login bug".to_string(),
+            dir: std::path::PathBuf::from("/srv/app"),
+            worktree: None,
+            branch: None,
+            base: None,
+            socket: crate::tmux::Socket::Name("amx".to_string()),
+            pane: crate::tmux::PaneId::new("%7").unwrap(),
+            session: None,
+            transcript: None,
+            created: 1,
+        };
+        let claimed = |rule: &str| Verdict {
+            phase: Phase::Waiting,
+            evidence: Evidence::Screen,
+            rule: Some(rule.to_string()),
+            age: 30,
+        };
+
+        // Nothing on the record: the screen is all there is, and the
+        // folder-trust screen is the one kind no hook can ever report, because
+        // it stands in front of the session every hook comes from.
+        let read = View {
+            meta: meta.clone(),
+            state: State::default(),
+            verdict: claimed("folder_trust"),
+        };
+        assert_eq!(read.kind(), Some(Kind::Trust));
+        assert_eq!(read.json()["kind"], "trust");
+
+        // A hook said so, and a hook is the vendor's own account.
+        let told = View {
+            meta,
+            state: State {
+                kind: Some(Kind::Question),
+                ..State::default()
+            },
+            verdict: claimed("permission_prompt"),
+        };
+        assert_eq!(told.kind(), Some(Kind::Question));
     }
 }
