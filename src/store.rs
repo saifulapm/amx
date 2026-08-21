@@ -123,6 +123,31 @@ pub struct Question {
     pub options: Vec<String>,
 }
 
+/// What kind of thing an agent has stopped to ask.
+///
+/// Three screens block a claude agent, and none of them takes the answer the
+/// others take: a permission box wants one tool call allowed or refused, an
+/// AskUserQuestion menu wants a choice or words of your own, and the
+/// folder-trust screen wants a decision about the directory before the vendor
+/// will start a session in it at all. Which one it is decides what may be sent
+/// back, so it belongs on the record beside the question rather than left for
+/// whoever reads it to guess from the wording.
+///
+/// It is only ever written from something that said so: a hook event that is
+/// about a permission prompt, the vendor's own name for a notification, the
+/// tool a question arrives as, or the rule that claimed the screen. Nothing
+/// here is inferred from the words of the question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    /// A tool call the agent may not make until somebody allows it.
+    Permission,
+    /// The vendor asking its own question, which takes a choice or words.
+    Question,
+    /// The folder-trust screen, which stands between the vendor and a session.
+    Trust,
+}
+
 /// How the agent was started, and how to reach it again.
 ///
 /// Fields are added, never renamed or removed: a record outlives the version
@@ -175,6 +200,10 @@ pub struct State {
     /// They belong to the question above them and go wherever it goes; the
     /// record has no place for options with no question over them.
     pub options: Vec<String>,
+    /// What kind of thing is being asked, where something has said so. It can
+    /// be known when the words are not: a menu whose payload amx could not
+    /// read is still a menu somebody has to answer.
+    pub kind: Option<Kind>,
     /// The answer from the last turn that ended.
     pub result: Option<String>,
     /// Where that answer came from.
@@ -191,9 +220,17 @@ impl State {
     ///
     /// The options go with it. They are the choices drawn under one particular
     /// question, and under the next question they are somebody else's answers.
+    ///
+    /// The kind goes only when the question does. Words arriving for a
+    /// question already outstanding are just words: the hook that carries them
+    /// is describing the same screen something else already named, and it
+    /// names nothing itself.
     pub fn asks(&mut self, question: Option<String>) {
         self.question = question;
         self.options.clear();
+        if self.question.is_none() {
+            self.kind = None;
+        }
     }
 
     /// Whether a screen's reading would tell the record anything it has not
@@ -253,7 +290,21 @@ struct Wire {
 #[serde(untagged)]
 enum Asked {
     Words(String),
-    Whole(Question),
+    Whole(Known),
+}
+
+/// Everything the record has on one question. Each part is left out when amx
+/// has not got it, so the document never claims to know more than it does —
+/// and a document written before any of this existed still reads.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct Known {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    options: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<Kind>,
 }
 
 impl From<State> for Wire {
@@ -268,6 +319,7 @@ impl From<State> for Wire {
             summary,
             question,
             options,
+            kind,
             result,
             source,
             exit,
@@ -279,13 +331,28 @@ impl From<State> for Wire {
             seq,
             since,
             summary,
-            question: question.map(|text| {
-                if options.is_empty() {
-                    Asked::Words(text)
-                } else {
-                    Asked::Whole(Question { text, options })
-                }
-            }),
+            question: match (question, kind) {
+                // Nothing outstanding. Options with no question over them are
+                // not written at all, which is what keeps an answered question
+                // from leaving its choices behind.
+                (None, None) => None,
+                // A question amx knows the kind of and not the words: a menu
+                // whose payload it could not read. The kind is the whole of
+                // what there is to say about it, and choices with no question
+                // over them are nobody's to press.
+                (None, kind) => Some(Asked::Whole(Known {
+                    kind,
+                    ..Known::default()
+                })),
+                // The words alone, as amx has always written a question a hook
+                // has only just carried.
+                (Some(text), None) if options.is_empty() => Some(Asked::Words(text)),
+                (text, kind) => Some(Asked::Whole(Known {
+                    text,
+                    options,
+                    kind,
+                })),
+            },
             result,
             source,
             exit,
@@ -296,10 +363,10 @@ impl From<State> for Wire {
 
 impl From<Wire> for State {
     fn from(wire: Wire) -> State {
-        let (question, options) = match wire.question {
-            Some(Asked::Words(text)) => (Some(text), Vec::new()),
-            Some(Asked::Whole(asked)) => (Some(asked.text), asked.options),
-            None => (None, Vec::new()),
+        let (question, options, kind) = match wire.question {
+            Some(Asked::Words(text)) => (Some(text), Vec::new(), None),
+            Some(Asked::Whole(asked)) => (asked.text, asked.options, asked.kind),
+            None => (None, Vec::new(), None),
         };
 
         State {
@@ -309,6 +376,7 @@ impl From<Wire> for State {
             summary: wire.summary,
             question,
             options,
+            kind,
             result: wire.result,
             source: wire.source,
             exit: wire.exit,
@@ -789,6 +857,78 @@ mod tests {
         writer.update_state(|s| s.question = None).unwrap();
         assert_eq!(written(&agent)["question"], serde_json::Value::Null);
         assert!(agent.state().unwrap().options.is_empty());
+    }
+
+    #[test]
+    fn store_writes_the_kind_of_thing_a_question_is() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .update_state(|s| {
+                s.state = Phase::Waiting;
+                s.asks(Some("Which fixture should the port keep?".to_string()));
+                s.options = vec!["the sqlite one".to_string(), "the docker one".to_string()];
+                s.kind = Some(Kind::Question);
+            })
+            .unwrap();
+
+        let document = written(&agent);
+        assert_eq!(document["question"]["kind"], "question");
+        assert_eq!(
+            document["question"]["text"],
+            "Which fixture should the port keep?"
+        );
+        assert_eq!(agent.state().unwrap().kind, Some(Kind::Question));
+    }
+
+    #[test]
+    fn store_writes_a_kind_it_has_no_words_for() {
+        // What kind of thing is outstanding is worth having even where the
+        // words are not to be had, and the choices under a question amx cannot
+        // quote are nobody's to press.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .update_state(|s| {
+                s.state = Phase::Waiting;
+                s.options = vec!["Yes".to_string(), "No".to_string()];
+                s.kind = Some(Kind::Permission);
+            })
+            .unwrap();
+
+        let document = written(&agent);
+        assert_eq!(document["question"]["kind"], "permission");
+        assert_eq!(document["question"]["text"], serde_json::Value::Null);
+        assert_eq!(document["question"]["options"], serde_json::Value::Null);
+
+        let read = agent.state().unwrap();
+        assert_eq!(read.kind, Some(Kind::Permission));
+        assert_eq!(read.question, None);
+        assert!(read.options.is_empty());
+    }
+
+    #[test]
+    fn store_lets_a_question_that_is_over_take_its_kind_with_it() {
+        let mut state = State {
+            state: Phase::Waiting,
+            question: Some("Do you want to proceed?".to_string()),
+            options: vec!["Yes".to_string(), "No".to_string()],
+            kind: Some(Kind::Permission),
+            ..State::default()
+        };
+
+        // Words arriving for the question already outstanding are only words:
+        // the hook that carries them says nothing about what kind of screen
+        // they are on, and it is the same screen.
+        state.asks(Some("Claude needs your permission to use Bash".to_string()));
+        assert_eq!(state.kind, Some(Kind::Permission));
+
+        state.asks(None);
+        assert_eq!(state.kind, None, "and nothing outstanding has a kind");
     }
 
     #[test]
