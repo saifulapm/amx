@@ -10,6 +10,11 @@
 //! stays. A worktree with uncommitted work in it is never deleted, whatever
 //! anybody says — it holds work that no commit has, and deleting that is the
 //! one thing amx could do that nothing undoes.
+//!
+//! `--delete` is the record's disposition, and it is not `--force`. One says
+//! that this row goes; the other answers every question with its default.
+//! Keeping them apart is what lets somebody clear a finished agent away
+//! without also telling amx they do not care what happens to a worktree.
 
 use anyhow::{Context, Result};
 use std::io::{BufRead, Write};
@@ -56,6 +61,15 @@ pub fn run(
     writeln!(out, "{} stopped", args.id)?;
 
     dispositions(&meta, args, input, out)?;
+
+    // Last, and only once everything it names has been said. The record is
+    // where the worktree and the branch are written down, so a line about
+    // either of them has to be printed while there is still a record to print
+    // it from.
+    if args.delete {
+        agent.remove()?;
+        writeln!(out, "removed {}'s record", args.id)?;
+    }
     Ok(exit::OK)
 }
 

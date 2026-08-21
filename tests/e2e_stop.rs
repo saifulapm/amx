@@ -214,6 +214,49 @@ fn stopping_an_agent_that_has_already_ended_still_tidies_up() {
 }
 
 #[test]
+fn clibatch_delete_takes_the_record_away_with_the_agent() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let worktree = with_a_worktree(&amx, "fix-login-a1b", &repo, "happy-turn");
+    amx.until_state("fix-login-a1b", "idle");
+
+    let out = said(&stop(&amx, &["fix-login-a1b", "--force", "--delete"]));
+    assert!(!Path::new(&worktree).exists(), "{out}");
+    assert!(
+        !amx.agent_dir("fix-login-a1b").exists(),
+        "the row goes, and everything under it: {out}"
+    );
+
+    let listed = amx.amx(&["ls"]);
+    assert!(
+        !String::from_utf8_lossy(&listed.stdout).contains("fix-login-a1b"),
+        "and nothing lists it any more"
+    );
+}
+
+#[test]
+fn clibatch_delete_still_asks_before_it_takes_a_worktree() {
+    // `--delete` says what becomes of the record. It is not `--force`, and it
+    // is not an answer to a question about somebody's work.
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let worktree = with_a_worktree(&amx, "fix-login-a1b", &repo, "happy-turn");
+    amx.until_state("fix-login-a1b", "idle");
+
+    let printed = said(&amx.amx_with_input(&["stop", "fix-login-a1b", "--delete"], "n\n"));
+    assert!(printed.contains("delete the worktree"), "{printed}");
+    assert!(
+        Path::new(&worktree).exists(),
+        "the answer was no: {printed}"
+    );
+    assert!(
+        printed.contains(&worktree),
+        "and the record that named it is going, so the line says where it is: {printed}"
+    );
+    assert!(!amx.agent_dir("fix-login-a1b").exists(), "{printed}");
+}
+
+#[test]
 fn stop_says_so_when_there_is_no_such_agent() {
     let amx = Harness::new();
     let out = amx.amx(&["stop", "never-made-abc"]);

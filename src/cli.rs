@@ -198,6 +198,10 @@ pub struct StopArgs {
     #[arg(long)]
     pub force: bool,
 
+    /// Remove the agent's record too, so nothing of it is left.
+    #[arg(long)]
+    pub delete: bool,
+
     /// What to do with the agent's worktree.
     #[arg(long, value_enum)]
     pub worktree: Option<Disposition>,

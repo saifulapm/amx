@@ -172,9 +172,13 @@ pub fn end(root: &Path, view: &View) -> Result<String> {
     // here as the defaults they already are: the worktree goes, the branch
     // stays, the record stays. Nothing that could lose work is decided by a
     // keystroke.
+    // `forget` above is this file's own `--delete`, and it is a second
+    // keystroke rather than part of this one: ending an agent and clearing its
+    // row away are two decisions on the wall as well as at a prompt.
     let args = StopArgs {
         id: view.id().to_string(),
         force: true,
+        delete: false,
         worktree: None,
         branch: None,
     };
