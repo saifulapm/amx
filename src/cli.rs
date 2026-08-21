@@ -564,4 +564,116 @@ mod tests {
         use clap::CommandFactory;
         Cli::command().debug_assert();
     }
+
+    /// What amx says about itself: the README somebody reads before they run
+    /// it, and the skill an agent is given instead of reading anything.
+    const README: &str = include_str!("../README.md");
+    const SKILL: &str = include_str!("../skill/amx/SKILL.md");
+
+    /// Every verb amx answers to at all, the three it keeps out of help
+    /// included.
+    fn every_verb() -> Vec<String> {
+        use clap::CommandFactory;
+        Cli::command()
+            .get_subcommands()
+            .map(|verb| verb.get_name().to_string())
+            .collect()
+    }
+
+    /// The verbs a document puts in a command line, read out of its code
+    /// alone: prose says `amx` about the program itself, and only code says it
+    /// about something a person can type.
+    fn verbs_named_in(text: &str) -> Vec<String> {
+        let mut named = Vec::new();
+        for (at, chunk) in text.split("```").enumerate() {
+            let code: Vec<&str> = match at % 2 == 1 {
+                true => vec![chunk],
+                // Outside a fence, the code is whatever is between backticks.
+                false => chunk.split('`').skip(1).step_by(2).collect(),
+            };
+            for line in code.iter().flat_map(|code| code.lines()) {
+                // A comment inside a fence is prose that happens to be in one.
+                let line = line.split('#').next().unwrap_or_default();
+                for after in line.split("amx ").skip(1) {
+                    let verb: String = after
+                        .chars()
+                        .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                        .collect();
+                    if !verb.is_empty() {
+                        named.push(verb);
+                    }
+                }
+            }
+        }
+        named
+    }
+
+    #[test]
+    fn docs_neither_document_names_a_verb_amx_does_not_have() {
+        // The other half of parity, and the half that rots quietly: a command
+        // line somebody copies out of the README fails at the shell, and one an
+        // agent copies out of the skill fails where nobody is reading.
+        let verbs = every_verb();
+        for (document, text) in [("README", README), ("skill", SKILL)] {
+            for named in verbs_named_in(text) {
+                assert!(
+                    verbs.contains(&named),
+                    "the {document} says `amx {named}`, which is not a verb"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn docs_the_skill_is_one_the_vendor_can_load() {
+        let (frontmatter, body) = SKILL
+            .strip_prefix("---\n")
+            .and_then(|rest| rest.split_once("\n---\n"))
+            .expect("frontmatter, which is what makes it a skill");
+
+        assert!(
+            frontmatter.lines().any(|line| line.trim() == "name: amx"),
+            "the skill is not named for the directory it is in: {frontmatter}"
+        );
+        let description = frontmatter
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("description:"))
+            .expect("a description, which is what it is loaded on");
+        assert!(!description.trim().is_empty(), "an empty description");
+        assert!(!body.trim().is_empty(), "a skill with nothing in it");
+    }
+
+    #[test]
+    fn docs_the_skill_teaches_the_loop() {
+        // The exit codes are the whole interface a caller has, so a skill that
+        // leaves one out is one that meets it unprepared.
+        for code in [
+            exit::OK,
+            exit::FAILURE,
+            exit::BLOCKED,
+            exit::TIMEOUT,
+            exit::USAGE,
+        ] {
+            assert!(
+                SKILL.contains(&format!("`{code}`")),
+                "the skill does not say what exit {code} means"
+            );
+        }
+
+        // The question arrives during the wait and comes back where the answer
+        // would have been. A caller that does not know to read it there has
+        // nothing to answer with.
+        for taught in [
+            "amx new",
+            "amx result",
+            "amx answer",
+            "amx send",
+            "amx stop",
+            "--timeout",
+            "stdout",
+            "max_agents",
+        ] {
+            assert!(SKILL.contains(taught), "the skill never mentions {taught}");
+        }
+    }
 }
