@@ -16,7 +16,10 @@
 //! * **A capture is sanitized.** Control characters — including the 8-bit CSI
 //!   at U+009B, which `capture-pane` passes through verbatim — become spaces,
 //!   and so do the invisible format characters. Replaced, never deleted:
-//!   deleting a zero-width space is how `ad\u{200b}min` reads as `admin`.
+//!   deleting a zero-width space is how `ad\u{200b}min` reads as `admin`. The
+//!   one exception says so in its own name: `capture_painted` keeps the
+//!   escapes because they are what it was called for, and hands the reader the
+//!   job of walking them.
 //! * **The conf rides every call.** A server born without `-f` reads
 //!   `~/.tmux.conf`, and the server is born by whichever call arrives first.
 
@@ -354,6 +357,17 @@ impl Server {
     pub fn capture(&self, pane: &PaneId) -> Result<String> {
         let raw = self.run(&["capture-pane", "-p", "-J", "-t", pane.as_str()])?;
         Ok(sanitize(&raw))
+    }
+
+    /// The same screen with the paint the pane was drawn in kept.
+    ///
+    /// The one capture that is not sanitized here, because the escapes are
+    /// what it is for. Whatever reads it has to walk them: [`crate::ansi`]
+    /// consumes every escape sequence and answers with runs of text and the
+    /// style each was drawn in, and it is that text — never this string — that
+    /// is made inert and handed to a terminal.
+    pub fn capture_painted(&self, pane: &PaneId) -> Result<String> {
+        self.run(&["capture-pane", "-p", "-e", "-J", "-t", pane.as_str()])
     }
 
     /// Put `text` into the pane as a bracketed paste.

@@ -21,14 +21,16 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
+use std::ops::Range;
 use std::sync::OnceLock;
 
 use super::act::{self, Asking, Composer};
 use super::rows::{Axis, Group, Item, List, Tally, Under};
 use super::{Mode, Profile, Screen};
+use crate::ansi::{self, Colour, Painted};
 use crate::derive::View;
 use crate::registry::DEFAULT;
 use crate::store::{Kind, Phase};
@@ -660,14 +662,11 @@ fn float(frame: &mut Frame, card: &Card, answering: Option<&Composer>, area: Rec
         answer_row(frame, card, composer, answer);
     }
 
-    let lines: Vec<Line> = body(card, screen.height as usize)
-        .into_iter()
-        .map(|text| Line::styled(text.to_string(), dim()))
-        .collect();
-    frame.render_widget(Paragraph::new(lines), screen);
+    frame.render_widget(Paragraph::new(body(card, screen.height as usize)), screen);
 }
 
-/// What the card has under everything else, cut to the rows it has for it.
+/// What the card has under everything else, in the paint it was drawn in and
+/// cut to the rows the card has for it.
 ///
 /// A screen is read from the bottom, where the newest of it is; a diff is read
 /// from the top, where the first file it touched is.
@@ -675,28 +674,122 @@ fn float(frame: &mut Frame, card: &Card, answering: Option<&Composer>, area: Rec
 /// claude's own furniture comes off the screen *before* the rows are counted.
 /// After would be worse than not at all: the card would spend its window on
 /// the vendor's composer and then have nothing left for the work.
-fn body(card: &Card, rows: usize) -> Vec<&str> {
+fn body(card: &Card, rows: usize) -> Vec<Line<'static>> {
     if card.changes {
-        return card.body.lines().take(rows).collect();
+        // A patch is amx's own reading of a repository rather than a pane, so
+        // there is no paint on it to keep.
+        return card
+            .body
+            .lines()
+            .take(rows)
+            .map(|text| Line::styled(inert(text), dim()))
+            .collect();
     }
-    let read: Vec<&str> = card.body.lines().collect();
+
+    // The escapes are walked into styling here and nowhere else, so nothing
+    // downstream of this line is holding a control sequence.
+    let read = ansi::painted(&card.body);
+    let said: Vec<String> = read.iter().map(|row| words(row)).collect();
+    let plain: Vec<&str> = said.iter().map(String::as_str).collect();
+
     // An agent whose command has ended has no pane left to capture, so what
     // the card is holding is the answer it left, and an answer is not a screen
     // with a vendor's chrome on it.
     let kept = match card.phase.is_terminal() {
-        true => read.as_slice(),
-        false => cut(&read),
+        true => plain.len(),
+        false => cut(&plain).len(),
     };
-    let shown = tail(kept, rows);
+    let shown: Vec<Line<'static>> = read[tail(&plain[..kept], rows)]
+        .iter()
+        .map(|row| as_painted(row))
+        .collect();
 
     // Said only where the walk actually cut. An agent that has said nothing
     // yet is a different fact from a pane holding nothing but furniture, and
     // a card that answered both with the same sentence would be lying about
     // one of them.
-    match shown.is_empty() && kept.len() < read.len() {
-        true => vec![ALL_CHROME],
+    match shown.is_empty() && kept < plain.len() {
+        true => vec![Line::styled(ALL_CHROME, dim())],
         false => shown,
     }
+}
+
+/// What a captured row says, which is what the cut reads it for. The runs of
+/// one row joined, so the words and the paint can never disagree about where a
+/// row begins or what is on it.
+fn words(row: &[Painted]) -> String {
+    row.iter().map(|run| run.text.as_str()).collect()
+}
+
+/// One captured row, drawn the way the vendor drew it.
+fn as_painted(row: &[Painted]) -> Line<'static> {
+    let spans: Vec<Span<'static>> = row
+        .iter()
+        .map(|run| Span::styled(inert(&run.text), paint(run)))
+        .collect();
+    Line::from(spans)
+}
+
+/// The paint one run was written in, as the renderer's own styling.
+fn paint(run: &Painted) -> Style {
+    let mut style = Style::new();
+    for (on, modifier) in [
+        (run.bold, Modifier::BOLD),
+        (run.dim, Modifier::DIM),
+        (run.italic, Modifier::ITALIC),
+        (run.underline, Modifier::UNDERLINED),
+        (run.reverse, Modifier::REVERSED),
+    ] {
+        if on {
+            style = style.add_modifier(modifier);
+        }
+    }
+    if let Some(fg) = run.fg {
+        style = style.fg(shade(fg));
+    }
+    if let Some(bg) = run.bg {
+        style = style.bg(shade(bg));
+    }
+    style
+}
+
+/// A colour the vendor named, as the renderer names it. The first sixteen are
+/// named rather than numbered, so a person's own palette decides what red
+/// looks like on their terminal, the way it does in the pane itself.
+fn shade(colour: Colour) -> Color {
+    match colour {
+        Colour::Ansi(n) => ANSI[usize::from(n) & 0x0f],
+        Colour::Indexed(n) => Color::Indexed(n),
+        Colour::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+
+/// The sixteen SGR names them, in the order ANSI numbers them.
+const ANSI: [Color; 16] = [
+    Color::Black,
+    Color::Red,
+    Color::Green,
+    Color::Yellow,
+    Color::Blue,
+    Color::Magenta,
+    Color::Cyan,
+    Color::Gray,
+    Color::DarkGray,
+    Color::LightRed,
+    Color::LightGreen,
+    Color::LightYellow,
+    Color::LightBlue,
+    Color::LightMagenta,
+    Color::LightCyan,
+    Color::White,
+];
+
+/// Text out of an agent's own screen, made safe to hand a terminal. The paint
+/// is gone by the time this runs, so what is left to neutralise is the
+/// characters that were never paint: the controls and the invisible format
+/// characters a row can be written to carry.
+fn inert(text: &str) -> String {
+    crate::tmux::sanitize(text)
 }
 
 /// What the card says where the walk finds nothing underneath the chrome.
@@ -1122,16 +1215,19 @@ fn wrapped(text: &str, width: u16) -> u16 {
     rows.clamp(1, u16::MAX as usize) as u16
 }
 
-/// The last rows of a screen, with the blank ones at the bottom dropped: a
-/// pane is as tall as its window and its content rarely is, and a cut can
-/// expose more of them.
-fn tail<'a>(rows: &[&'a str], wanted: usize) -> Vec<&'a str> {
-    let mut lines = rows.to_vec();
-    while lines.last().is_some_and(|line| line.trim().is_empty()) {
-        lines.pop();
+/// Which rows of a screen the card shows: the last of them, with the blank
+/// ones at the bottom dropped. A pane is as tall as its window and its content
+/// rarely is, and a cut can expose more of them.
+///
+/// A window rather than the rows themselves, because the words a row says and
+/// the paint it says them in are two readings of one screen and both are
+/// wanted here.
+fn tail(rows: &[&str], wanted: usize) -> Range<usize> {
+    let mut end = rows.len();
+    while end > 0 && rows[end - 1].trim().is_empty() {
+        end -= 1;
     }
-    let from = lines.len().saturating_sub(wanted);
-    lines.split_off(from)
+    end.saturating_sub(wanted)..end
 }
 
 /// The width the age is given, which fits everything up to `365d`.
@@ -2630,10 +2726,13 @@ mod tests {
 
     #[test]
     fn view_reads_the_bottom_of_a_screen_and_drops_what_is_blank() {
-        let screen = |text: &'static str| text.lines().collect::<Vec<&str>>();
-        assert_eq!(tail(&screen("a\nb\nc\n\n\n"), 2), ["b", "c"]);
-        assert_eq!(tail(&screen("a\nb"), 5), ["a", "b"]);
-        assert!(tail(&screen(""), 3).is_empty());
+        let shown = |text: &'static str, wanted: usize| {
+            let rows: Vec<&str> = text.lines().collect();
+            rows[tail(&rows, wanted)].to_vec()
+        };
+        assert_eq!(shown("a\nb\nc\n\n\n", 2), ["b", "c"]);
+        assert_eq!(shown("a\nb", 5), ["a", "b"]);
+        assert!(shown("", 3).is_empty());
     }
 
     /// The five rows claude draws at the bottom of every pane it has the room
@@ -2759,17 +2858,30 @@ mod tests {
         assert_eq!(cut(&screen), &CAPTURED[..2]);
     }
 
+    /// What a card's body says, with the paint it says it in set aside.
+    fn said(card: &Card, rows: usize) -> Vec<String> {
+        body(card, rows)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect()
+    }
+
     #[test]
     fn view_tail_says_so_when_a_capture_is_nothing_but_chrome() {
         let mut card = asking(&[], None);
         card.phase = Phase::Working;
         card.body = CHROME.join("\n");
-        assert_eq!(body(&card, 8), [ALL_CHROME]);
+        assert_eq!(said(&card, 8), [ALL_CHROME]);
 
         // Which is not what an agent with nothing to say gets: no capture was
         // cut there, and "the pane held only furniture" is a different fact.
         card.body = String::new();
-        assert!(body(&card, 8).is_empty());
+        assert!(said(&card, 8).is_empty());
     }
 
     #[test]

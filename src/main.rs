@@ -1,4 +1,3 @@
-#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod ansi;
 mod cli;
 mod cockpit;

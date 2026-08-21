@@ -816,6 +816,42 @@ fn card_tail_cuts_a_composer_a_message_was_typed_into() {
 }
 
 #[test]
+fn card_tail_keeps_the_paint_the_agent_drew_its_screen_in() {
+    let amx = Harness::new();
+    // A row claude wrote in bold and in a colour of its own, which is what a
+    // heading in one of its answers looks like on a real pane.
+    let mut pane_rows = vec!["\\033[1m\\033[38;5;208mI ported the importer\\033[0m"];
+    pane_rows.extend_from_slice(&CHROME);
+    let pane = a_pane_showing(&amx, &pane_rows);
+    amx.record("port-cli-b2c", &pane);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("port-cli-b2c").then_some(())
+    });
+
+    press(&amx, &view, "Space");
+    let carded = amx.until("the card", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("I ported the importer").then_some(drawn)
+    });
+    assert!(
+        !carded.contains("38;5;208"),
+        "no escape reaches the screen as text:\n{carded}"
+    );
+
+    let painted = coloured_line(&amx, &view, "I ported the importer");
+    assert!(
+        painted.contains("38;5;208"),
+        "the colour claude chose is the colour the card draws it in:\n{painted:?}"
+    );
+    assert!(
+        painted.contains("\u{1b}[1m"),
+        "and so is the weight:\n{painted:?}"
+    );
+}
+
+#[test]
 fn card_tail_leaves_a_prompt_whole_where_the_vendor_drew_no_footer() {
     let amx = Harness::new();
     let pane = a_pane_showing(

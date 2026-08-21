@@ -786,12 +786,19 @@ fn said(outcome: Result<String>) -> Option<Notice> {
 /// The card for one agent: what it is asking and the answers it is offering,
 /// over the screen it is asking on — or, for an agent whose command has ended,
 /// the answer it left.
+/// The screen is captured with its paint kept, because the card shows the
+/// pane as the vendor drew it: bold where claude went bold, coloured where it
+/// coloured. What is on this string is escape sequences, and the one thing
+/// allowed to read it is the walk in [`crate::ansi`], which consumes every one
+/// of them.
 fn card_of(view: &View) -> Card {
     let server = Server::from_socket(view.meta.socket.clone());
     let screen = (!view.phase().is_terminal())
-        .then(|| server.capture(&view.meta.pane).ok())
+        .then(|| server.capture_painted(&view.meta.pane).ok())
         .flatten()
-        .filter(|screen| !screen.trim().is_empty());
+        // Emptiness is a question about the words, and a screen can carry
+        // paint over none of them.
+        .filter(|screen| !crate::ansi::strip_ansi(screen).trim().is_empty());
 
     Card {
         id: view.id().to_string(),
