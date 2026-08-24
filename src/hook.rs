@@ -352,9 +352,10 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             // call behind it, and what kind of thing is being asked is what
             // decides what may be sent back.
             state.kind = Some(Kind::Question);
-            // The menu itself was the fresh screen, and the call that drew it
-            // said so; the vendor asking itself for leave is news only when
-            // that call never made the record.
+            // Not `Fresh`, which the call itself is: this is the same menu
+            // named a second time, 10 ms behind the event that drew it. It is
+            // news only to a record that was not already waiting, which is the
+            // record that missed the call.
             Screen::Waiting
         }
 
@@ -411,8 +412,6 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         // the call already says.
         "Notification" if state.pending().is_some() => {
             state.state = Phase::Waiting;
-            // It repeats a stop the call already put on the record, so it is
-            // news only to a record that was not waiting.
             Screen::Waiting
         }
 
@@ -918,6 +917,50 @@ mod tests {
             &mut meta,
         );
         assert_eq!(state.options, ["the sqlite one"]);
+    }
+
+    #[test]
+    fn hook_the_leave_to_draw_a_menu_is_a_stop_nobody_has_heard_of_yet() {
+        // The permission event the vendor fires over its own question tool is
+        // the second of three about one screen. On the ordinary turn the call
+        // 10 ms in front of it has already told somebody, and it says nothing
+        // — that is what the three-event replays check. On the turn amx missed
+        // that call, a hook wired mid-turn or a hook process that died, this
+        // is the first anybody hears of the menu, and the questions it carries
+        // are what there is to tell them.
+        let mut state = State::default();
+        let mut meta = meta();
+        let told = apply(
+            &json!({
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "AskUserQuestion",
+                "tool_input": { "questions": [{
+                    "question": "Which fixture should the port keep?",
+                    "header": "Fixture",
+                    "options": [{ "label": "SQLite" }, { "label": "Docker" }],
+                    "multiSelect": false
+                }] }
+            }),
+            &mut state,
+            &mut meta,
+        )
+        .expect("a menu nothing has mentioned is a stop somebody has to hear about");
+        assert_eq!(told.body, "Which fixture should the port keep?");
+
+        // And the notification six seconds behind it is that same screen said
+        // a second time, to somebody who has already been told.
+        let again = apply(
+            &json!({
+                "hook_event_name": "Notification",
+                "message": "Claude needs your permission",
+                "notification_type": "permission_prompt"
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(again, None, "one stop, one interruption");
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(state.kind, Some(Kind::Question), "and it is still the menu");
     }
 
     #[test]
