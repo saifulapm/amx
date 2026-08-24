@@ -149,7 +149,17 @@ impl View {
 
     /// The stable shape `--json` prints. Fields are added, never renamed or
     /// removed: callers branch on these.
+    ///
+    /// The pull requests come from the same reading the row is labelled from,
+    /// which is what the last look wrote down beside the record. A verb that
+    /// prints once and exits does not wait for a forge, so a caller that has
+    /// never had the view open reads an empty list until something has asked.
     pub fn json(&self) -> serde_json::Value {
+        self.json_beside(&crate::pr::of(&self.meta))
+    }
+
+    /// The same, over requests already read.
+    fn json_beside(&self, prs: &[crate::pr::Pr]) -> serde_json::Value {
         serde_json::json!({
             "id": self.meta.id,
             "state": self.verdict.phase.as_str(),
@@ -179,6 +189,10 @@ impl View {
             "source": self.state.source.map(source_name),
             "exit": self.state.exit,
             "kind": self.kind(),
+            // What the agent's branch has open, newest of whatever is still
+            // live first. `standing` is the word the row's colour came from,
+            // because a program has no colour to read it off.
+            "pr": prs,
             "task": self.meta.task,
             "dir": self.meta.dir,
             "worktree": self.meta.worktree,
@@ -1099,6 +1113,44 @@ mod tests {
         assert_eq!(json["options"][0], "Canary");
         assert_eq!(json["multi"], true, "and this one takes more than one");
         assert_eq!(json["questions"][0]["answer"], "Node");
+    }
+
+    #[test]
+    fn reader_hands_a_program_what_the_branch_has_open() {
+        use crate::pr::{Pr, Standing};
+
+        // A program reading `--json` is the one caller that cannot see a
+        // colour, so the number goes out beside the word the colour came from
+        // rather than beside the colour.
+        let view = View::new(
+            meta(),
+            state(Phase::Done, 1_300),
+            verdict(Phase::Done, Evidence::Record, None),
+        );
+        let open = [
+            Pr {
+                number: 12,
+                standing: Standing::Failing,
+            },
+            Pr {
+                number: 9,
+                standing: Standing::Merged,
+            },
+        ];
+        assert_eq!(
+            view.json_beside(&open)["pr"],
+            serde_json::json!([
+                {"number": 12, "standing": "failing"},
+                {"number": 9, "standing": "merged"},
+            ])
+        );
+
+        assert_eq!(
+            view.json()["pr"],
+            serde_json::json!([]),
+            "and an agent amx cut no branch for has nothing to say here, \
+             which is an empty list rather than a missing field"
+        );
     }
 
     #[test]

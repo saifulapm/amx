@@ -299,14 +299,17 @@ this loop written for one.
 `ls --json` and `status --json` are stable. Fields are added, never renamed or
 removed. Each row carries `id`, `state`, `evidence`, `rule`, `age`, `since`,
 `last_event`, `seq`, `summary`, `question`, `options`, `result`, `source`,
-`exit`, `kind`, `task`, `dir`, `worktree`, `branch`, `base`, `pane`, `socket`,
-`session` and `created`, so one `ls` call answers both "is it still going?" and
-"when was it last heard from?" for every agent at once.
+`exit`, `kind`, `pr`, `task`, `dir`, `worktree`, `branch`, `base`, `pane`,
+`socket`, `session` and `created`, so one `ls` call answers both "is it still
+going?" and "when was it last heard from?" for every agent at once.
 
 `state` is one of `starting`, `working`, `waiting`, `idle`, `done`, `failed`,
 `stopped`, `unknown`. `done`, `failed` and `stopped` are endings; every other
 state is an agent still worth waiting on. `kind` says what an outstanding
-question is: `permission`, `question` or `trust`.
+question is: `permission`, `question` or `trust`. `pr` is what the agent's
+branch has open, each entry a `number` and a `standing` — `merged`, `closed`,
+`draft`, `failing`, `changes`, `running`, `ready` or `open` — which is the word
+the number's colour is drawn from in the view.
 
 ## How amx knows what an agent is doing
 
