@@ -272,6 +272,31 @@ at all when no agent needs saying:
 set -g status-right '#(amx statusline)'
 ```
 
+## A copy of a conversation
+
+An agent that has gone a long way down one road is worth keeping when you want
+to see the other one. `fork` starts a second agent on a copy of everything the
+first has been told:
+
+```sh
+amx fork <id>                        # a copy, waiting for a turn
+amx fork <id> "try it with sqlite"   # a copy, and what to do next
+```
+
+It prints the new agent's id, like `new`, and the two are their own from that
+moment: nothing either says reaches the other. The copy runs in the directory
+the original ran in, because a conversation is about the files it was held over,
+down to the ones no commit has yet. That directory is the original's, so amx
+records no worktree and no branch for the copy — `amx stop` on a fork takes its
+pane and nothing else — and `amx diff <id>` on the original is where that work
+is read.
+
+What is copied is the session the vendor recorded, so an agent that never
+announced one cannot be forked, and amx says so rather than starting the task
+over. The copy's log opens with a `fork` line naming the agent it came from and
+the conversation it took, before the vendor has said anything at all:
+`amx events <id> --json` is where to read it.
+
 ## Ending one
 
 ```sh

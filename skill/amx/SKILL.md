@@ -24,6 +24,7 @@ Nothing here needs a screen scraped or a state file polled.
 | `amx events [<ids>] [--follow] [--json]` | Every agent's log, merged in time order. |
 | `amx diff <id> [--stat]` | What it has changed, against the commit its tree was cut from. |
 | `amx logs <id> [--lines N]` | The last of what its pane has printed, without attaching to it. |
+| `amx fork <id> ["<task>"]` | Start a second agent on a copy of its conversation. Prints the new id. |
 | `amx stop <id> [--force]` | End it, and say what happens to its worktree and branch. |
 
 Three more are for a person rather than a script: `amx attach <id>` hands the
@@ -194,6 +195,12 @@ when one is in a state you did not expect.
   `<repo>/.amx/worktrees/<id>` on branch `amx/<id>`, so two of them cannot
   collide in one checkout. `amx diff <id>` is how you read that work. Nothing
   is merged for you.
+- **Two roads out of one conversation.** `amx fork <id> "<task>"` starts a
+  second agent on a copy of everything the first was told, so trying the other
+  approach costs nothing of the one already tried. The copy runs in the same
+  directory as the original, so do not drive both at the same files at once.
+  An agent that never recorded a session cannot be forked, and the refusal says
+  so: that is what `amx new` is for.
 - **A long command can have a row too.** `amx new --exec 'cargo test --all'`
   runs it in a pane and hands back an id, so a build you would otherwise sit
   through runs beside the agents. Do not wait on it with `result`: a command

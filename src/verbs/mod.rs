@@ -5,6 +5,7 @@ pub mod attach;
 pub mod diff;
 pub mod doctor;
 pub mod events;
+pub mod fork;
 pub mod logs;
 pub mod ls;
 pub mod new;

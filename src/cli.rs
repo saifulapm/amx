@@ -36,6 +36,7 @@ impl Cli {
             Stop(_) => "stop",
             Diff { .. } => "diff",
             Resume { .. } => "resume",
+            Fork { .. } => "fork",
             Events { .. } => "events",
             Statusline => "statusline",
             Doctor { .. } => "doctor",
@@ -134,6 +135,26 @@ pub enum Command {
         /// Every stopped agent, as after a tmux server death.
         #[arg(long, conflicts_with = "id")]
         all: bool,
+    },
+
+    /// Start a second agent on a copy of this one's conversation.
+    ///
+    /// The copy runs where the original ran, on everything it had been told up
+    /// to now, and goes its own way from there: a different approach to the
+    /// same problem, without giving up the one already tried. Both agents are
+    /// their own from the moment it starts, and nothing either does reaches the
+    /// other.
+    ///
+    /// It is the recorded session that is copied, so an agent that never
+    /// announced one cannot be forked at all — `amx new` is what starts an
+    /// agent with no conversation behind it.
+    Fork {
+        /// The agent whose conversation is copied.
+        id: String,
+        /// What the copy should do first. Without one it opens the
+        /// conversation and waits for a turn.
+        #[arg(value_parser = a_task)]
+        task: Option<String>,
     },
 
     /// Print the agents' event streams, merged.
@@ -403,6 +424,8 @@ mod tests {
             (&["amx", "diff", "fix-a1b", "--stat"], "diff"),
             (&["amx", "resume", "fix-a1b"], "resume"),
             (&["amx", "resume", "--all"], "resume"),
+            (&["amx", "fork", "fix-a1b"], "fork"),
+            (&["amx", "fork", "fix-a1b", "try it with sqlite"], "fork"),
             (&["amx", "events"], "events"),
             (&["amx", "events", "fix-a1b", "--follow"], "events"),
             (&["amx", "events", "--json"], "events"),
@@ -579,6 +602,25 @@ mod tests {
     }
 
     #[test]
+    fn fork_takes_an_agent_to_copy_and_a_turn_of_its_own() {
+        let cli = parse(&["amx", "fork", "fix-a1b"]).unwrap();
+        let Some(Command::Fork { id, task }) = cli.command else {
+            panic!("expected fork");
+        };
+        assert_eq!(id, "fix-a1b");
+        assert_eq!(
+            task, None,
+            "a copy with nothing to do opens the conversation and waits"
+        );
+
+        let cli = parse(&["amx", "fork", "fix-a1b", "try it with sqlite"]).unwrap();
+        let Some(Command::Fork { task, .. }) = cli.command else {
+            panic!("expected fork");
+        };
+        assert_eq!(task.as_deref(), Some("try it with sqlite"));
+    }
+
+    #[test]
     fn stop_takes_its_dispositions_by_name() {
         let cli = parse(&[
             "amx",
@@ -620,6 +662,10 @@ mod tests {
             &["amx", "stop", "fix-a1b", "--worktree", "burn"],
             &["amx", "resume"],
             &["amx", "resume", "fix-a1b", "--all"],
+            // There is no conversation to copy without one to copy it from,
+            // and an empty turn is not a turn.
+            &["amx", "fork"],
+            &["amx", "fork", "fix-a1b", "  "],
             &["amx", "_exit", "fix-a1b"],
             &["amx", "new"],
         ] {
