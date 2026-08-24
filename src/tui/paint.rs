@@ -437,6 +437,26 @@ fn counters(list: &List, max: usize) -> Vec<Span<'static>> {
     spans
 }
 
+/// What the terminal the view is drawn on is called: the program, and how many
+/// agents are waiting on somebody where any are.
+///
+/// The waiting count and nothing else. A title is read out of the corner of an
+/// eye, from a tab bar or a window list with the terminal behind something
+/// else, and the one thing worth pulling a window forward for is an agent that
+/// has stopped and cannot go on. What is merely running does not need a person
+/// and does not go here; the wall itself says the rest.
+pub fn title(list: &List) -> String {
+    let waiting = list
+        .counts()
+        .into_iter()
+        .find(|(group, _)| *group == Group::NeedsInput)
+        .map(|(_, count)| count);
+    match waiting {
+        Some(count) => format!("amx{SEPARATOR}{count} waiting"),
+        None => "amx".to_string(),
+    }
+}
+
 /// The worktree dial, and what it will do — named rather than implied. Under
 /// [`NARROW`] the consequence goes and the dial stays.
 fn worktree_dial(on: bool, width: usize) -> String {

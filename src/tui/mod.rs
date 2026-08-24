@@ -35,7 +35,8 @@ use crossterm::event::{
     KeyModifiers,
 };
 use crossterm::execute;
-use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
+use crossterm::style::Print;
+use crossterm::terminal::{EnterAlternateScreen, SetTitle, enable_raw_mode};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use serde::{Deserialize, Serialize};
@@ -79,8 +80,28 @@ trait Keys {
     fn next(&mut self, patience: Duration) -> Typed;
 }
 
+/// Where the view says what the terminal it is drawing on should be called.
+///
+/// A window title is the one part of this screen somebody can read with the
+/// window behind something else, so what goes on it is the one thing they would
+/// have come back to the screen for: how many agents are waiting on them.
+trait Titles {
+    fn say(&mut self, said: &str);
+}
+
 /// The terminal itself.
 struct Keyboard;
+
+/// And its title bar.
+struct TitleBar;
+
+impl Titles for TitleBar {
+    fn say(&mut self, said: &str) {
+        // A terminal that will not take a title is a terminal with no title
+        // bar, which is nothing for a view to report.
+        let _ = execute!(std::io::stdout(), SetTitle(said));
+    }
+}
 
 impl Keys for Keyboard {
     fn next(&mut self, patience: Duration) -> Typed {
@@ -402,6 +423,11 @@ pub fn run(root: &Path, config: &Config, scope: &Scope) -> Result<i32> {
     // which is what the composer did before it asked at all.
     let bracketed = execute!(std::io::stdout(), EnableBracketedPaste).is_ok();
 
+    // The title the terminal came with, kept while the view has its own to
+    // say, and put back below. A view that renamed somebody's window and left
+    // it renamed would be leaving a count that stopped being true behind it.
+    let _ = execute!(std::io::stdout(), Print(KEEP_THE_TITLE));
+
     let remembering = crate::paths::view_file(root);
     let outcome = watch(
         root,
@@ -411,12 +437,14 @@ pub fn run(root: &Path, config: &Config, scope: &Scope) -> Result<i32> {
         &mut Keyboard,
         Here::read(),
         remembering.as_deref(),
+        &mut TitleBar,
     );
 
     // Whatever happened, the screen goes back the way it was found.
     if bracketed {
         let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     }
+    let _ = execute!(std::io::stdout(), Print(PUT_THE_TITLE_BACK));
     ratatui::restore();
 
     // Said onto the screen the view has just handed back, where there is
@@ -429,6 +457,15 @@ pub fn run(root: &Path, config: &Config, scope: &Scope) -> Result<i32> {
     }
     outcome
 }
+
+/// What a terminal is asked with to hold on to the title it is wearing, and to
+/// put it back on again.
+///
+/// xterm's own pair for it, which the terminals amx is drawn on speak and the
+/// ones that do not ignore: an escape a terminal has never heard of costs
+/// nothing, and the worst of it is a window left called `amx`.
+const KEEP_THE_TITLE: &str = "\x1b[22;2t";
+const PUT_THE_TITLE_BACK: &str = "\x1b[23;2t";
 
 /// The line somebody pastes, which is the verb amx already has with a clock
 /// beside it.
@@ -494,6 +531,7 @@ impl Remembered {
 /// `remembering` is where what somebody arranges is kept, where there is
 /// anywhere to keep it. A view with nowhere still arranges itself; it just
 /// does not outlive the run.
+#[allow(clippy::too_many_arguments)]
 fn watch<B>(
     root: &Path,
     config: &Config,
@@ -502,6 +540,7 @@ fn watch<B>(
     keys: &mut impl Keys,
     here: Option<Here>,
     remembering: Option<&Path>,
+    titles: &mut impl Titles,
 ) -> Result<i32>
 where
     B: Backend,
@@ -528,12 +567,22 @@ where
         screen.list.arrange(Remembered::read(path).arrangement);
     }
 
+    // What the terminal is called at the moment, so that it is said again when
+    // it stops being true and not on every frame that did not change it.
+    let mut called = String::new();
+
     loop {
         if screen.read.is_none_or(|at| at.elapsed() >= REFRESH) {
             screen.reread(root, scope)?;
         }
         screen.step();
         terminal.draw(|frame| paint::draw(frame, &screen))?;
+
+        let title = paint::title(&screen.list);
+        if title != called {
+            titles.say(&title);
+            called = title;
+        }
 
         match keys.next(TICK) {
             Typed::Nothing => {}
@@ -544,8 +593,15 @@ where
                 Doing::Close => return Ok(exit::OK),
                 Doing::Lend { id, on, session } => {
                     screen.notice = lend(terminal, &id, &on, &session)?;
+                    // Whoever had the terminal had the title with it, so the
+                    // view says what it is called again rather than trusting a
+                    // name it did not put there.
+                    called.clear();
                 }
-                Doing::Edit => edit_the_line(terminal, &mut screen)?,
+                Doing::Edit => {
+                    edit_the_line(terminal, &mut screen)?;
+                    called.clear();
+                }
             },
         }
     }
@@ -1520,6 +1576,16 @@ mod tests {
         }
     }
 
+    /// What the view called the terminal, in the order it said so.
+    #[derive(Default)]
+    struct Said(Vec<String>);
+
+    impl Titles for Said {
+        fn say(&mut self, said: &str) {
+            self.0.push(said.to_string());
+        }
+    }
+
     /// A key held down with control, which is how the chords are typed.
     fn ctrl(key: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL)
@@ -1618,6 +1684,7 @@ mod tests {
             &mut Script(script.into_iter()),
             None,
             remembering,
+            &mut Said::default(),
         )
         .unwrap();
         let buffer = terminal.backend().buffer().clone();
@@ -2605,6 +2672,66 @@ mod tests {
         assert!(
             crate::store::list(root.path()).unwrap().len() == 2,
             "and a line that narrows starts nothing"
+        );
+    }
+
+    #[test]
+    fn view_carries_the_waiting_count_in_what_the_terminal_is_called() {
+        let waiting = watching(vec![
+            stopped_on_a_question("ask-a1b"),
+            stopped_on_a_question("ask-b2c"),
+            reading(
+                "busy-c3d",
+                Phase::Working,
+                State {
+                    state: Phase::Working,
+                    ..State::default()
+                },
+            ),
+        ]);
+        assert_eq!(
+            paint::title(&waiting.list),
+            "amx · 2 waiting",
+            "the one question a tab bar can answer from across the room"
+        );
+
+        let quiet = watching(vec![reading(
+            "busy-a1b",
+            Phase::Working,
+            State {
+                state: Phase::Working,
+                ..State::default()
+            },
+        )]);
+        assert_eq!(
+            paint::title(&quiet.list),
+            "amx",
+            "and a fleet with nothing waiting says nothing about a count"
+        );
+    }
+
+    #[test]
+    fn view_says_what_to_call_the_terminal_when_it_changes_and_not_otherwise() {
+        let root = TempDir::new().unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
+        let mut said = Said::default();
+
+        watch(
+            root.path(),
+            &Config::default(),
+            &Scope::default(),
+            &mut terminal,
+            &mut Script(vec![Typed::Key(KeyEvent::from(KeyCode::Down))].into_iter()),
+            None,
+            None,
+            &mut said,
+        )
+        .unwrap();
+
+        assert_eq!(
+            said.0,
+            ["amx"],
+            "said once and not again on every frame that did not change it"
         );
     }
 

@@ -175,6 +175,11 @@ wall, counting rows from the top and skipping the headings, without walking the
 cursor to them first. It is the fleet you already have in front of you, reached
 by the number you were about to count to.
 
+While the view is open your terminal is called `amx · 2 waiting`, or `amx` when
+nothing is waiting on you, so a window behind something else still answers the
+one question worth pulling it forward for. The title your terminal came with is
+put back when the view closes.
+
 Every key answers to the one chord it is written under, so the `alt+q` of
 somebody arranging their windows closes nothing. The four dials are about the
 agent that does not exist yet: they change what the next `n` starts and nothing
