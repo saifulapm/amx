@@ -237,21 +237,28 @@ fn kind(payload: &Value) -> Option<&str> {
 /// * A record that has already ended stays ended. A late hook is a hook about
 ///   a turn that is over.
 ///
-/// What comes back is the one notice a stop is worth. Somebody is told when
-/// the record moves into waiting, with the question if the event that moved it
-/// there carried one, and everything arriving while it already says waiting is
-/// folded in silently. Three of the events above end in waiting and one
-/// `AskUserQuestion` fires all three — the tool call that draws the menu, the
-/// permission box over that same tool, and the notification that repeats the
-/// box. They are three different sentences, so nothing but the record's own
-/// phase tells one stop from three.
+/// What comes back is the one notice a stop is worth, and one for every stop.
+/// Somebody is told when a screen goes up that nothing has told them about,
+/// with the question if the event that put it there carried one, and anything
+/// repeating a screen already up is folded in silently. Three of the events
+/// above end in waiting and one `AskUserQuestion` fires all three — the tool
+/// call that draws the menu, the permission box over that same tool, and the
+/// notification that repeats the box. They are three different sentences, so
+/// nothing but the record's own phase tells one stop from three.
+///
+/// The phase alone would then fold two stops into one. Nothing amx installs
+/// fires when a box is approved or a menu answered — the vendor says so with
+/// `PostToolUse`, which is not one of amx's events — so the record still reads
+/// waiting when the next screen goes up, and the person is told about a box
+/// they have answered and not about the menu in front of them. A menu says for
+/// itself that it is a stop of its own.
 pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Notice> {
     if !payload["agent_id"].is_null() || state.state.is_terminal() {
         return None;
     }
     let was_waiting = state.state == Phase::Waiting;
 
-    let waiting = match kind(payload)? {
+    let screen = match kind(payload)? {
         "SessionStart" => {
             if let Some(session) = payload["session_id"].as_str() {
                 meta.session = Some(session.to_string());
@@ -259,7 +266,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             if let Some(transcript) = payload["transcript_path"].as_str() {
                 meta.transcript = Some(transcript.into());
             }
-            false
+            Screen::Clear
         }
 
         "UserPromptSubmit" => {
@@ -271,7 +278,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             // record, and `result` would hand it to a caller as this turn's.
             state.result = None;
             state.source = None;
-            false
+            Screen::Clear
         }
 
         "PreToolUse" if payload["tool_name"] == "AskUserQuestion" => {
@@ -283,7 +290,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             // Nothing else will say this agent is waiting. The vendor notifies
             // about an idle session only when nothing is open on it, and a
             // menu is open on this one.
-            true
+            Screen::Fresh
         }
 
         "PreToolUse" => {
@@ -292,7 +299,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
                 state.summary = Some(format!("Running {tool}"));
             }
             state.asks(None);
-            false
+            Screen::Clear
         }
 
         // Fired as the permission box goes up — six seconds before the
@@ -310,7 +317,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
                     .map(|tool| format!("Claude needs your permission to use {}", rendered(tool))),
             );
             state.kind = Some(Kind::Permission);
-            true
+            Screen::Waiting
         }
 
         // The one hook that says the box closed without the tool running: no
@@ -321,7 +328,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             state.state = Phase::Working;
             state.summary = None;
             state.asks(None);
-            false
+            Screen::Clear
         }
 
         // The vendor nudges about an idle session only when nothing is open on
@@ -335,7 +342,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             state.state = Phase::Idle;
             state.summary = None;
             state.asks(None);
-            false
+            Screen::Clear
         }
 
         "Notification" => {
@@ -356,7 +363,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             if payload["notification_type"] == "permission_prompt" {
                 state.kind = Some(Kind::Permission);
             }
-            true
+            Screen::Waiting
         }
 
         "Stop" => {
@@ -367,16 +374,39 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
                 state.result = Some(answer.to_string());
                 state.source = Some(Source::Payload);
             }
-            false
+            Screen::Clear
         }
 
-        _ => false,
+        _ => Screen::Clear,
     };
 
-    // One stop, one interruption. An agent that was already waiting when this
-    // arrived is one somebody has been told about, whatever this event calls
-    // the thing it is waiting on.
-    (waiting && !was_waiting).then(|| Notice::waiting(&meta.id, state.question.as_deref()))
+    // One stop, one interruption. An agent that was already waiting when a box
+    // or a notification arrived is one somebody has been told about, whatever
+    // this event calls the thing it is waiting on — and a menu is a stop
+    // nobody has been told about however the record reads.
+    let told = match screen {
+        Screen::Fresh => true,
+        Screen::Waiting => !was_waiting,
+        Screen::Clear => false,
+    };
+    told.then(|| Notice::waiting(&meta.id, state.question.as_deref()))
+}
+
+/// What one event leaves on the agent's pane.
+enum Screen {
+    /// Nothing to answer: the agent is working, or the event moved nothing.
+    Clear,
+    /// Something to answer, which may well be what was already there — the box
+    /// over a call amx has seen, or the notification that repeats the box.
+    /// Whether this is the first anybody has heard of it is the record's own
+    /// phase to say.
+    Waiting,
+    /// Something to answer that was not there a moment ago. A menu is this
+    /// wherever it lands: `PreToolUse` fires before the vendor has asked
+    /// anybody whether the call may run at all, so the call it names has not
+    /// been on the pane before, and whatever the record was waiting on is
+    /// behind it — answered, approved, or gone with the tool that ran.
+    Fresh,
 }
 
 /// A tool's name the way the vendor writes it into the permission sentence,
@@ -806,6 +836,165 @@ mod tests {
             "the event that stopped the agent is the one that knew the question"
         );
         assert_eq!(state.state, Phase::Waiting, "and it is still waiting");
+    }
+
+    #[test]
+    fn hook_coherence_the_menu_behind_an_answered_box_is_its_own_stop() {
+        // One turn, two stops, captured on 2026-08-25 from a claude 2.1.240 in
+        // a tmux pane in default permission mode. The box over a Bash command
+        // went up, was answered with 1, and the menu was on the pane a moment
+        // later. Between them the vendor fired PostToolUse(Bash) — not one of
+        // the seven events amx installs, so it is left out here as it is left
+        // out there. Nothing that does reach this function said the box had
+        // closed, and the record still read waiting when the menu went up.
+        //
+        // Two screens is two people have to be interrupted. The box's notice
+        // is spent by the time the menu arrives, and the menu is what is on
+        // the pane now.
+        let asking = json!({ "questions": [{
+            "question": "Which fixture should the port keep?",
+            "header": "Fixture",
+            "options": [
+                { "label": "SQLite fixture", "description": "Use SQLite for the port" },
+                { "label": "Docker fixture", "description": "Use Docker for the port" }
+            ],
+            "multiSelect": false
+        }] });
+        let running = json!({
+            "command": "touch /home/saiful/probe/marker.txt",
+            "description": "Create marker file"
+        });
+
+        let mut state = State::default();
+        let mut meta = meta();
+        let told: Vec<Notice> = [
+            json!({ "hook_event_name": "UserPromptSubmit", "permission_mode": "default" }),
+            json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": running,
+                "tool_use_id": "toolu_01MjEq6c8WXNCAN1JVaeRm24"
+            }),
+            json!({
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "Bash",
+                "tool_input": running
+            }),
+            json!({
+                "hook_event_name": "Notification",
+                "message": "Claude needs your permission",
+                "notification_type": "permission_prompt"
+            }),
+            json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "AskUserQuestion",
+                "tool_input": asking,
+                "tool_use_id": "toolu_01P5TGAepraiDjF8PFyYTdcR"
+            }),
+            json!({
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "AskUserQuestion",
+                "tool_input": asking
+            }),
+            json!({
+                "hook_event_name": "Notification",
+                "message": "Claude needs your permission",
+                "notification_type": "permission_prompt"
+            }),
+        ]
+        .iter()
+        .filter_map(|payload| apply(payload, &mut state, &mut meta))
+        .collect();
+
+        assert_eq!(told.len(), 2, "two stops, two notices: {told:?}");
+        assert_eq!(
+            told[0].body, "Claude needs your permission to use Bash",
+            "the box is the first thing anybody had to answer"
+        );
+        assert_eq!(
+            told[1].body, "Which fixture should the port keep?",
+            "and the menu is the screen it left behind it"
+        );
+    }
+
+    #[test]
+    fn hook_coherence_the_second_menu_of_one_turn_is_a_second_stop() {
+        // The same claude and the same pane, asked for two questions in one
+        // turn: menu, answer, menu. Answering the first fired PostToolUse,
+        // which amx does not install, so the record reads waiting from the
+        // first menu straight through to the second. Two questions is two
+        // things somebody has to answer, and the second is the one on the
+        // pane.
+        let fixture = json!({ "questions": [{
+            "question": "Which fixture should the port keep?",
+            "header": "Fixture",
+            "options": [
+                { "label": "SQLite fixture", "description": "Use SQLite for the port" },
+                { "label": "Docker fixture", "description": "Use Docker for the port" }
+            ],
+            "multiSelect": false
+        }] });
+        let port = json!({ "questions": [{
+            "question": "Which port should be bound?",
+            "header": "Port",
+            "options": [
+                { "label": "3000", "description": "Bind to port 3000" },
+                { "label": "8080", "description": "Bind to port 8080" }
+            ],
+            "multiSelect": false
+        }] });
+
+        let mut state = State::default();
+        let mut meta = meta();
+        let told: Vec<Notice> = [
+            json!({ "hook_event_name": "UserPromptSubmit", "permission_mode": "default" }),
+            json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "AskUserQuestion",
+                "tool_input": fixture,
+                "tool_use_id": "toolu_013QLrB2kwSKCX1e9v17nFQp"
+            }),
+            json!({
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "AskUserQuestion",
+                "tool_input": fixture
+            }),
+            json!({
+                "hook_event_name": "Notification",
+                "message": "Claude needs your permission",
+                "notification_type": "permission_prompt"
+            }),
+            json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "AskUserQuestion",
+                "tool_input": port,
+                "tool_use_id": "toolu_01UreAQSVJXR8d9K9oXj7eJD"
+            }),
+            json!({
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "AskUserQuestion",
+                "tool_input": port
+            }),
+            json!({
+                "hook_event_name": "Notification",
+                "message": "Claude needs your permission",
+                "notification_type": "permission_prompt"
+            }),
+        ]
+        .iter()
+        .filter_map(|payload| apply(payload, &mut state, &mut meta))
+        .collect();
+
+        // Each notice went out on the menu going up, which is the event that
+        // knew what it was asking. What the box and the notification behind
+        // each menu then do to the question on the record is the kind
+        // precedence 02BQ6442 is about, and nothing here says it is right.
+        assert_eq!(told.len(), 2, "two menus, two notices: {told:?}");
+        assert_eq!(told[0].body, "Which fixture should the port keep?");
+        assert_eq!(
+            told[1].body, "Which port should be bound?",
+            "the second question is the one still up"
+        );
     }
 
     #[test]
