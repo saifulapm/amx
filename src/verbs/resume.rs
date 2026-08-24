@@ -5,7 +5,10 @@
 //! thing that changes about it is the pane it lives in. What makes that
 //! possible is the vendor's own session, recorded from a hook the first time
 //! the agent announced one — without one there is nothing to pick up, and
-//! saying so beats starting the task over.
+//! saying so beats starting the task over. The command the agent was started
+//! with is the other half, written down beside the record. An adopted claude
+//! has the session and not the command, because amx never started it, and it
+//! goes back the way it came: by hand.
 //!
 //! Two orderings here are the whole of the verb's correctness. The record is
 //! put back to `starting` **before** the pane exists, because a pane starts
@@ -71,6 +74,9 @@ pub fn again(
 ) -> Result<Comeback> {
     let agent = Agent::open(root, id)?;
     if let Err(why) = to_continue(&agent.meta()?) {
+        return Ok(Comeback::No(why));
+    }
+    if let Err(why) = to_start(agent.dir(), id) {
         return Ok(Comeback::No(why));
     }
     if let Some(full) = at_capacity(root, config)? {
@@ -203,6 +209,7 @@ fn bring_back(root: &Path, id: &str, env: &BTreeMap<String, String>) -> Result<(
     }
 
     let session = to_continue(&meta).map_err(anyhow::Error::msg)?;
+    to_start(agent.dir(), id).map_err(anyhow::Error::msg)?;
 
     let recorded = spawn::read_handoff(agent.dir())
         .with_context(|| format!("reading what {id} was started with"))?;
@@ -374,6 +381,23 @@ fn to_continue(meta: &Meta) -> Result<&str, String> {
         ));
     }
     Ok(session)
+}
+
+/// Whether there is a command to start again, or the sentence saying why there
+/// is not.
+///
+/// Every agent amx started has what it was started with written down beside
+/// its record. An adopted claude has none: somebody ran it themselves, in a
+/// pane amx never opened, so there is a session here and no command to carry
+/// it. That is a different thing missing to a missing session, and whoever
+/// reached for this agent is told which.
+fn to_start(dir: &Path, id: &str) -> Result<(), String> {
+    if dir.join(spawn::HANDOFF).exists() {
+        return Ok(());
+    }
+    Err(format!(
+        "{id} was started by hand rather than by amx, so there is no command to start again"
+    ))
 }
 
 /// Whether a recorded session id is one.

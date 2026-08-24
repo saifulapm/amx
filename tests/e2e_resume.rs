@@ -113,10 +113,59 @@ fn until_looking_at_it(amx: &Harness, terminal: &str) {
 /// An agent that ran, and whose pane is gone: what somebody comes back to in
 /// the morning. Answers with the pane it used to be in.
 fn ran_and_stopped(amx: &Harness, id: &str) -> String {
-    // Something else on the server first, the way a machine somebody works on
-    // has something else on it. Stopping the only agent would take the server
-    // with it, and a server that starts again hands the next pane the id the
-    // dead one had — which is a test measuring tmux rather than amx.
+    something_else_on_the_server(amx);
+    start(amx, id, amx.home(), "happy-turn");
+    amx.until_state(id, "idle");
+    amx.amx(&["stop", id, "--force"]);
+    assert_eq!(amx.state(id)["state"], "stopped");
+    let gone = amx.pane_of(id);
+    assert!(!amx.pane_alive(&gone), "stopping took the pane with it");
+    gone
+}
+
+/// A claude somebody started themselves, taken onto the wall by `amx adopt`.
+///
+/// The one shape of agent amx has a session for and no command: that claude
+/// was run by hand, in a pane amx never opened. Answers with its pane.
+fn adopted(amx: &Harness, id: &str) -> String {
+    something_else_on_the_server(amx);
+    let pane = amx.tmux(&[
+        "new-session",
+        "-d",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "--",
+        "sh",
+        "-c",
+        "while :; do sleep 0.05; done",
+    ]);
+    let out = amx
+        .amx_command(&["adopt", "--name", id, "--task", "fix the login bug"])
+        // The two variables the verb reads: tmux says which pane the command
+        // was typed in, and the vendor says which conversation typed it.
+        .env("TMUX_PANE", &pane)
+        .env("CLAUDE_CODE_SESSION_ID", ADOPTED)
+        .output()
+        .expect("running amx adopt");
+    assert!(
+        out.status.success(),
+        "amx adopt: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    pane
+}
+
+/// The conversation the adopted claude says it is.
+const ADOPTED: &str = "9f3c1d20-5a44-4e7b-8c19-6d0a2b5f7e31";
+
+/// Something on the server that is not the agent under test, the way a machine
+/// somebody works on has something else on it.
+///
+/// Losing the last pane takes the server with it, and a server that starts
+/// again hands the next pane the id the dead one had — which is a test
+/// measuring tmux rather than amx.
+fn something_else_on_the_server(amx: &Harness) {
     amx.tmux(&[
         "new-session",
         "-d",
@@ -125,13 +174,17 @@ fn ran_and_stopped(amx: &Harness, id: &str) -> String {
         "-c",
         "while :; do sleep 0.05; done",
     ]);
-    start(amx, id, amx.home(), "happy-turn");
-    amx.until_state(id, "idle");
-    amx.amx(&["stop", id, "--force"]);
-    assert_eq!(amx.state(id)["state"], "stopped");
-    let gone = amx.pane_of(id);
-    assert!(!amx.pane_alive(&gone), "stopping took the pane with it");
-    gone
+}
+
+/// Wait until the pane is gone, however it went.
+fn until_pane_gone(amx: &Harness, pane: &str) {
+    amx.until("the pane to go", || (!amx.pane_alive(pane)).then_some(()));
+}
+
+/// Take the pane away, and wait until it has gone.
+fn kill_pane(amx: &Harness, pane: &str) {
+    amx.tmux(&["kill-pane", "-t", pane]);
+    until_pane_gone(amx, pane);
 }
 
 #[test]
@@ -598,6 +651,83 @@ fn attach_says_so_when_there_is_nothing_to_bring_back() {
     let why = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(why.contains("session"), "{why}");
     assert!(why.contains("amx new"), "and what to do instead: {why}");
+    assert!(
+        !why.contains("no pane"),
+        "which is a fact about the pane, not a reason: {why}"
+    );
+}
+
+#[test]
+fn attach_says_so_when_amx_never_started_the_agent() {
+    // An adopted claude is the one agent with a session behind it that amx
+    // still cannot bring back: it was started by hand, and amx wrote down no
+    // command to start a second time. That is the reason, and a complaint
+    // about a file amx keeps for itself is not.
+    let amx = Harness::new();
+    let id = "their-own-a1b";
+    let pane = adopted(&amx, id);
+    assert_eq!(
+        amx.meta(id)["session"],
+        ADOPTED,
+        "the session is the half amx did record"
+    );
+    kill_pane(&amx, &pane);
+
+    let out = amx.amx(&["attach", id]);
+    assert_eq!(out.status.code(), Some(1));
+    let why = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(why.contains(id), "{why}");
+    assert!(why.contains("by hand"), "and which half is missing: {why}");
+    assert!(
+        !why.contains("handoff"),
+        "the name of a file amx keeps is not a reason: {why}"
+    );
+    assert!(
+        !why.contains("no pane"),
+        "which is a fact about the pane, not a reason: {why}"
+    );
+}
+
+#[test]
+fn resume_says_so_when_amx_never_started_the_agent() {
+    // The same refusal at a shell prompt, in the same words: the verb and the
+    // door that becomes it read the record the same way.
+    let amx = Harness::new();
+    let id = "their-own-a1b";
+    let pane = adopted(&amx, id);
+    kill_pane(&amx, &pane);
+
+    let out = resume(&amx, &[id]);
+    assert_eq!(out.status.code(), Some(1));
+    let why = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(why.contains(id), "{why}");
+    assert!(why.contains("by hand"), "{why}");
+}
+
+#[test]
+fn attach_says_so_when_the_row_is_a_command_and_not_an_agent() {
+    // The other shape with nothing to continue. A command has no conversation
+    // to pick up wherever it got to, and the answer says which is missing
+    // rather than that the pane has gone.
+    let amx = Harness::new();
+    let id = "run-tests-a1b";
+    something_else_on_the_server(&amx);
+    let out = amx
+        .amx_command(&["new", "--name", id, "--exec", "true"])
+        .output()
+        .expect("running amx new --exec");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    amx.until_state(id, "done");
+    until_pane_gone(&amx, &amx.pane_of(id));
+
+    let out = amx.amx(&["attach", id]);
+    assert_eq!(out.status.code(), Some(1));
+    let why = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(why.contains("session"), "{why}");
     assert!(
         !why.contains("no pane"),
         "which is a fact about the pane, not a reason: {why}"
