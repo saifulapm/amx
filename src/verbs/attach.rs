@@ -4,31 +4,58 @@
 //! selected on the server the record names, and then this process is replaced
 //! by tmux's own client. What happens after that is between the person and the
 //! vendor.
+//!
+//! A pane that is gone is not the end of the verb. What somebody asked for is
+//! to look at this agent, and an agent with a session behind it can be looked
+//! at again: it is brought back into a pane first, and the terminal is handed
+//! over to that one. Only an agent with nothing to continue is refused, and
+//! then in the words that say which is missing.
 
 use anyhow::{Context, Result, bail};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
+use crate::config::{self, Config};
 use crate::store::Agent;
 use crate::tmux::{PaneId, Server, SessionId};
-use crate::{exit, paths};
+use crate::verbs::resume::{self, Comeback};
+use crate::{exit, paths, spawn};
 
 /// Run the verb against the machine.
 pub fn from_env(id: &str) -> Result<i32> {
     let root = paths::state_root()?;
+    // The config is read here because attaching may become a resume, and a
+    // resume answers to `max_agents`. The environment for the same reason: an
+    // agent that comes back runs in the environment the command that brought it
+    // back was typed in, which is the rule `new` and `resume` both follow.
+    let config = config::current();
+    let env = spawn::env_snapshot(std::env::vars());
     let inside = std::env::var("TMUX").ok().filter(|v| !v.is_empty());
-    run(&root, id, inside.as_deref())
+    run(&root, config, id, &env, inside.as_deref())
 }
 
 /// Attach to `id`, from inside tmux or from outside it.
-pub fn run(root: &Path, id: &str, inside: Option<&str>) -> Result<i32> {
+pub fn run(
+    root: &Path,
+    config: &Config,
+    id: &str,
+    env: &BTreeMap<String, String>,
+    inside: Option<&str>,
+) -> Result<i32> {
     let agent = Agent::open(root, id)?;
-    let meta = agent.meta()?;
-    let server = Server::from_socket(meta.socket.clone());
+    let mut meta = agent.meta()?;
 
-    if !server.pane_alive(&meta.pane) {
-        bail!("{id} has no pane any more");
+    if !Server::from_socket(meta.socket.clone()).pane_alive(&meta.pane) {
+        match resume::again(root, config, id, env)? {
+            // The record now names a pane nothing has read yet, so it is read
+            // again: where the agent is is what the rest of this verb is about.
+            Comeback::Back => meta = agent.meta()?,
+            Comeback::No(why) => bail!("{why}"),
+        }
     }
+
+    let server = Server::from_socket(meta.socket.clone());
     let session = SessionId::new(server.pane_field(&meta.pane, "#{session_id}")?)
         .with_context(|| format!("finding the session {id} is in"))?;
 

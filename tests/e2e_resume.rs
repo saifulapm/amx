@@ -82,6 +82,58 @@ fn until_continued(amx: &Harness, id: &str) {
     });
 }
 
+/// A terminal of somebody's own, running `amx` with `args`, with the stand-in
+/// ready to play a continued session.
+///
+/// Outside tmux as far as amx can tell, which is what tmux's own two variables
+/// say and the only thing that says it: a terminal with nothing else on it is
+/// the one that shows what attaching came to.
+fn a_terminal(amx: &Harness, args: &[&str]) -> String {
+    let scenario = amx.scenario("continues-a-session");
+    amx.in_a_terminal(
+        &[
+            ("TMUX", ""),
+            ("TMUX_PANE", ""),
+            ("MOCK_CLAUDE_SCENARIO", &scenario.to_string_lossy()),
+            ("MOCK_CLAUDE_SESSION_2", CONTINUED),
+        ],
+        args,
+    )
+}
+
+/// Wait for the continued session to be drawing on this terminal.
+fn until_looking_at_it(amx: &Harness, terminal: &str) {
+    amx.until("the agent on the screen", || {
+        amx.capture(terminal)
+            .contains("continuing where we left off")
+            .then_some(())
+    });
+}
+
+/// An agent that ran, and whose pane is gone: what somebody comes back to in
+/// the morning. Answers with the pane it used to be in.
+fn ran_and_stopped(amx: &Harness, id: &str) -> String {
+    // Something else on the server first, the way a machine somebody works on
+    // has something else on it. Stopping the only agent would take the server
+    // with it, and a server that starts again hands the next pane the id the
+    // dead one had — which is a test measuring tmux rather than amx.
+    amx.tmux(&[
+        "new-session",
+        "-d",
+        "--",
+        "sh",
+        "-c",
+        "while :; do sleep 0.05; done",
+    ]);
+    start(amx, id, amx.home(), "happy-turn");
+    amx.until_state(id, "idle");
+    amx.amx(&["stop", id, "--force"]);
+    assert_eq!(amx.state(id)["state"], "stopped");
+    let gone = amx.pane_of(id);
+    assert!(!amx.pane_alive(&gone), "stopping took the pane with it");
+    gone
+}
+
 #[test]
 fn resume_brings_a_stopped_agent_back_on_the_session_it_had() {
     let amx = Harness::new();
@@ -500,4 +552,94 @@ fn resume_says_so_when_there_is_no_such_agent() {
     let out = resume(&amx, &["never-made-abc"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("never-made-abc"));
+}
+
+#[test]
+fn attach_brings_back_an_agent_whose_pane_is_gone() {
+    // What somebody asked for is to look at this agent, and a pane that is
+    // gone is not an answer to that. The session behind it is, so attaching
+    // picks it up and hands the terminal over exactly as it always did.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let gone = ran_and_stopped(&amx, id);
+    let session = amx.meta(id)["session"]
+        .as_str()
+        .expect("a session was recorded")
+        .to_string();
+
+    let terminal = a_terminal(&amx, &["attach", id]);
+
+    until_continued(&amx, id);
+    let pane = amx.pane_of(id);
+    assert_ne!(pane, gone, "a pane of its own again");
+    assert!(amx.pane_alive(&pane));
+
+    let called = argv_of(&amx, id);
+    assert!(
+        called.contains(&format!("--resume={session}")),
+        "on the session it had rather than the task it was started on: {called}"
+    );
+    assert!(!called.contains("fix the login bug"), "{called}");
+
+    until_looking_at_it(&amx, &terminal);
+}
+
+#[test]
+fn attach_says_so_when_there_is_nothing_to_bring_back() {
+    // A record whose agent never announced a session: there is nothing to pick
+    // up, and saying which is missing beats saying that the pane is.
+    let amx = Harness::new();
+    let id = "never-hooked-a1b";
+    amx.record(id, "%99");
+    amx.set_state(id, json!({ "state": "stopped" }));
+
+    let out = amx.amx(&["attach", id]);
+    assert_eq!(out.status.code(), Some(1));
+    let why = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(why.contains("session"), "{why}");
+    assert!(why.contains("amx new"), "and what to do instead: {why}");
+    assert!(
+        !why.contains("no pane"),
+        "which is a fact about the pane, not a reason: {why}"
+    );
+}
+
+#[test]
+fn enter_on_a_dead_agent_brings_it_back() {
+    // The wall's own door to the same thing. Outside tmux the view is the
+    // terminal, so what it has to give the agent is the terminal itself.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let gone = ran_and_stopped(&amx, id);
+
+    let view = a_terminal(&amx, &[]);
+    amx.until("the row", || amx.capture(&view).contains(id).then_some(()));
+    amx.tmux(&["send-keys", "-t", &view, "Enter"]);
+
+    until_continued(&amx, id);
+    let pane = amx.pane_of(id);
+    assert_ne!(pane, gone, "a pane of its own again");
+    assert!(amx.pane_alive(&pane));
+    until_looking_at_it(&amx, &view);
+}
+
+#[test]
+fn enter_on_an_agent_with_nothing_to_resume_says_why() {
+    let amx = Harness::new();
+    let id = "never-hooked-a1b";
+    amx.record(id, "%99");
+    amx.set_state(id, json!({ "state": "stopped" }));
+
+    let view = a_terminal(&amx, &[]);
+    amx.until("the row", || amx.capture(&view).contains(id).then_some(()));
+    amx.tmux(&["send-keys", "-t", &view, "Enter"]);
+
+    let said = amx.until("the view to say why", || {
+        let screen = amx.capture(&view);
+        screen.contains("session").then_some(screen)
+    });
+    assert!(
+        !said.contains("no pane any more"),
+        "which is a fact about the pane, not a reason: {said}"
+    );
 }

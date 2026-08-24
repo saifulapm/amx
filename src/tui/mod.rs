@@ -48,7 +48,8 @@ use crate::derive::{self, View};
 use crate::store::{Phase, now};
 use crate::tmux::{PaneId, Server, SessionId};
 use crate::verbs::ls::Scope;
-use crate::{exit, registry, rules};
+use crate::verbs::resume::Comeback;
+use crate::{exit, registry, rules, spawn, verbs};
 use act::{Asking, Composer, Edited, Renamed, Replied, Started};
 use paint::{Card, Notice};
 use rows::{Arrangement, List};
@@ -823,7 +824,7 @@ impl Screen {
             Mode::Typing(_) => self.typed(key, root, config, here),
             Mode::Keys => Ok(self.reading_the_keys(key)),
             Mode::Confirming(_) => self.answered(key, root, config, here),
-            Mode::List => self.pressed(key, root, here),
+            Mode::List => self.pressed(key, root, config, here),
         }
     }
 
@@ -857,7 +858,13 @@ impl Screen {
     /// with control or alt is somebody reaching for something else, and a list
     /// whose plain keys answered to every chord that carried them would close
     /// itself on the alt+q of somebody arranging their windows.
-    fn pressed(&mut self, key: KeyEvent, root: &Path, here: Option<&Here>) -> Result<Doing> {
+    fn pressed(
+        &mut self,
+        key: KeyEvent,
+        root: &Path,
+        config: &Config,
+        here: Option<&Here>,
+    ) -> Result<Doing> {
         let plain = chord(key).is_empty();
         let ctrl = chord(key) == KeyModifiers::CONTROL;
         let alt = chord(key) == KeyModifiers::ALT;
@@ -900,7 +907,11 @@ impl Screen {
                     self.list.unfold();
                 } else if let Some(view) = self.list.selected() {
                     let id = view.id().to_string();
-                    match reach(here, view)? {
+                    let reached = reach(root, config, here, view)?;
+                    // An agent that came back is in a pane this reading knows
+                    // nothing about.
+                    self.acted();
+                    match reached {
                         Reach::There => {}
                         Reach::Say(notice) => self.notice = Some(notice),
                         Reach::Lend(on, session) => {
@@ -914,7 +925,7 @@ impl Screen {
             // them, because there is no tenth key.
             KeyCode::Char(digit @ '1'..='9') if alt => {
                 let at = digit.to_digit(10).unwrap_or_default() as usize;
-                return self.reach_the_nth(at, here);
+                return self.reach_the_nth(at, root, config, here);
             }
             KeyCode::Char('?') if plain => self.mode = Mode::Keys,
             KeyCode::Char('n') if plain => self.mode = Mode::Typing(Composer::new(Asking::Task)),
@@ -1165,7 +1176,13 @@ impl Screen {
     ///
     /// Read from its record rather than looked for in the list: the wall is a
     /// reading a second old, and this agent is younger than that.
-    fn landing(&mut self, root: &Path, id: &str, here: Option<&Here>) -> Result<Doing> {
+    fn landing(
+        &mut self,
+        root: &Path,
+        config: &Config,
+        id: &str,
+        here: Option<&Here>,
+    ) -> Result<Doing> {
         let view = match derive::view(root, id, rules::bundled(), now()) {
             Ok(view) => view,
             // Started and unreachable is worth saying and not worth closing the
@@ -1177,7 +1194,7 @@ impl Screen {
             }
         };
 
-        match reach(here, &view)? {
+        match reach(root, config, here, &view)? {
             Reach::There => {}
             Reach::Say(notice) => self.notice = Some(notice),
             Reach::Lend(on, session) => {
@@ -1197,7 +1214,13 @@ impl Screen {
     /// Agents rather than lines: a heading and the fold are not things a person
     /// counts when they are looking for the third agent, and a group somebody
     /// has shut holds none that can be counted to at all.
-    fn reach_the_nth(&mut self, at: usize, here: Option<&Here>) -> Result<Doing> {
+    fn reach_the_nth(
+        &mut self,
+        at: usize,
+        root: &Path,
+        config: &Config,
+        here: Option<&Here>,
+    ) -> Result<Doing> {
         let nth = self
             .list
             .items()
@@ -1212,7 +1235,9 @@ impl Screen {
         };
 
         let id = view.id().to_string();
-        match reach(here, view)? {
+        let reached = reach(root, config, here, view)?;
+        self.acted();
+        match reached {
             Reach::There => {}
             Reach::Say(notice) => self.notice = Some(notice),
             Reach::Lend(on, session) => return Ok(Doing::Lend { id, on, session }),
@@ -1260,7 +1285,7 @@ impl Screen {
                 self.notice = Some(Notice::Advice(said));
                 self.acted();
                 if follow {
-                    return self.landing(root, &id, here);
+                    return self.landing(root, config, &id, here);
                 }
             }
             // A line nothing was made from is a line somebody is still
@@ -1500,7 +1525,36 @@ enum Reach {
     Lend(Server, SessionId),
 }
 
-/// Put the agent in front of whoever is looking at the view.
+/// Put the agent in front of whoever is looking at the view, bringing it back
+/// first where there is no pane left to put in front of them.
+///
+/// Enter on a row is somebody asking to look at this agent, and the same key
+/// answers that whether or not the pane it was in is still there: an agent
+/// with a session behind it is picked up into a fresh pane and shown, which
+/// is what `amx attach` does at a shell prompt. Only one with nothing to
+/// continue is refused, and then in the words that say which is missing.
+fn reach(root: &Path, config: &Config, here: Option<&Here>, view: &View) -> Result<Reach> {
+    let server = Server::from_socket(view.meta.socket.clone());
+    if server.pane_alive(&view.meta.pane) {
+        return reaching(server, here, view);
+    }
+
+    let env = spawn::env_snapshot(std::env::vars());
+    match verbs::resume::again(root, config, view.id(), &env)? {
+        Comeback::No(why) => Ok(Reach::Say(Notice::Advice(why))),
+        // The pane the record named a moment ago is not the pane it names now,
+        // and where the agent is is the whole of what the rest of this is
+        // about, so the record is read again rather than argued with.
+        Comeback::Back => {
+            let back = derive::view(root, view.id(), rules::bundled(), now())?;
+            let server = Server::from_socket(back.meta.socket.clone());
+            reaching(server, here, &back)
+        }
+    }
+}
+
+/// The half of it that is tmux: an agent in a pane, and a terminal to put it
+/// in front of.
 ///
 /// This is not `amx attach`: that verb becomes tmux and is done with it, and
 /// this one has a view to hold open behind whatever happens next. Which is why
@@ -1511,14 +1565,7 @@ enum Reach {
 ///
 /// Nothing it answers with is a failure: an agent this view cannot reach is
 /// one somebody can still reach, and the answer says how.
-fn reach(here: Option<&Here>, view: &View) -> Result<Reach> {
-    let server = Server::from_socket(view.meta.socket.clone());
-    if !server.pane_alive(&view.meta.pane) {
-        return Ok(Reach::Say(Notice::Advice(format!(
-            "{} has no pane any more",
-            view.id()
-        ))));
-    }
+fn reaching(server: Server, here: Option<&Here>, view: &View) -> Result<Reach> {
     // A client cannot be asked to switch to a session on a server it is not
     // attached to, and starting a second client inside the first is what
     // "sessions should be nested with care" is about.
@@ -2343,20 +2390,27 @@ mod tests {
         finished(root.path(), "first-a1b", "wrote the parser", 60);
         finished(root.path(), "second-b2c", "wrote the tests", 120);
 
-        // Both have ended, so neither has a pane to be taken to and the view
-        // says so by name — which is how a test reads which row was counted
-        // to. The cursor is on the first of them and was never moved.
+        // Both have ended with nothing recorded to pick up again, so neither
+        // can be reached and the view says so by name — which is how a test
+        // reads which row was counted to. The cursor is on the first of them
+        // and was never moved.
         let (_, second) = pressing(
             root.path(),
             vec![alt('2'), KeyEvent::from(KeyCode::Char('q'))],
         );
-        assert!(second.contains("second-b2c has no pane"), "{second}");
+        assert!(
+            second.contains("no session was ever recorded for second-b2c"),
+            "{second}"
+        );
 
         let (_, first) = pressing(
             root.path(),
             vec![alt('1'), KeyEvent::from(KeyCode::Char('q'))],
         );
-        assert!(first.contains("first-a1b has no pane"), "{first}");
+        assert!(
+            first.contains("no session was ever recorded for first-a1b"),
+            "{first}"
+        );
 
         // A digit past the end of the wall says so rather than going quiet:
         // the digits count agents, and a heading is not one.
@@ -2815,8 +2869,9 @@ mod tests {
 
         let (_, screen) = held(root.path(), &[KeyCode::Enter, KeyCode::Char('q')]);
         assert!(
-            screen.contains("first-a1b has no pane any more"),
-            "an agent whose command has ended is nowhere to be taken: {screen}"
+            screen.contains("no session was ever recorded for first-a1b"),
+            "an agent with nothing behind it to pick up is nowhere to be \
+             taken, and the view says which is missing: {screen}"
         );
     }
 
@@ -2957,11 +3012,37 @@ mod tests {
 
         // Read from the record rather than from the list, which is a second
         // old and knows nothing about an agent younger than that.
-        screen.landing(root.path(), "first-a1b", None).unwrap();
+        screen
+            .landing(root.path(), &Config::default(), "first-a1b", None)
+            .unwrap();
         let Some(Notice::Advice(said)) = &screen.notice else {
             panic!("nothing was said about where the agent went")
         };
-        assert!(said.contains("first-a1b has no pane any more"), "{said}");
+        // Nothing was ever recorded for this one to be picked up again, so
+        // what it is told is which of the two is missing.
+        assert!(said.contains("first-a1b"), "{said}");
+        assert!(said.contains("session"), "{said}");
+    }
+
+    #[test]
+    fn acts_enter_on_an_agent_with_nothing_to_continue_says_which_is_missing() {
+        // A pane that is gone is not the answer to what enter asked, and it is
+        // not the reason either: what the row wants is the session it would
+        // have been carried back on, and this one never had one.
+        let root = TempDir::new().unwrap();
+        finished(root.path(), "first-a1b", "wrote the parser", 60);
+        let view = derive::view(root.path(), "first-a1b", rules::bundled(), now()).unwrap();
+
+        let Reach::Say(Notice::Advice(said)) =
+            reach(root.path(), &Config::default(), None, &view).unwrap()
+        else {
+            panic!("an agent with nothing to continue was reached anyway")
+        };
+        assert!(
+            !said.contains("no pane any more"),
+            "which is a fact about the pane, not a reason: {said}"
+        );
+        assert!(said.contains("amx new"), "and what to do instead: {said}");
     }
 
     #[test]
