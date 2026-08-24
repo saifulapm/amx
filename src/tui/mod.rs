@@ -154,7 +154,7 @@ enum Mode {
 /// One key answers either of them and every other key does not, which is the
 /// way round a question has to be when a yes is the expensive answer: one of
 /// these forgets a group of records and the other starts a program.
-pub(super) enum Asked {
+enum Asked {
     /// A group somebody has asked to have cleared.
     Sweep(Sweep),
     /// A task barely long enough to be one, and the line it was typed on.
@@ -169,7 +169,7 @@ pub(super) enum Asked {
 
 impl Asked {
     /// The question itself, in the words the answer is given in.
-    pub(super) fn question(&self) -> String {
+    fn question(&self) -> String {
         match self {
             Asked::Sweep(sweep) => format!(
                 "forget {} finished under {}? y forgets them · anything else keeps them",
@@ -188,7 +188,7 @@ impl Asked {
 /// The agents are held by id and settled when the question is asked, not when
 /// it is answered: the wall is read again every second, and forgetting more
 /// than the question counted is the one thing a confirmation is for.
-pub(super) struct Sweep {
+struct Sweep {
     under: String,
     ids: Vec<String>,
 }

@@ -445,6 +445,11 @@ fn counters(list: &List, max: usize) -> Vec<Span<'static>> {
 /// else, and the one thing worth pulling a window forward for is an agent that
 /// has stopped and cannot go on. What is merely running does not need a person
 /// and does not go here; the wall itself says the rest.
+///
+/// Counted as the list has it, which is what the header counts too: a view
+/// opened about one directory is a question about those agents, and a title
+/// answering a wider one would be answering a question nobody on this screen
+/// asked.
 pub fn title(list: &List) -> String {
     let waiting = list
         .counts()
@@ -1613,8 +1618,8 @@ fn footer(screen: &Screen, width: u16) -> Line<'static> {
     if screen.answering().is_some() {
         return Line::styled(ANSWERS.to_string(), dim());
     }
-    // A question about deleting things is not advice and not a key: it is the
-    // one thing on the screen, in the colour of something waiting on a person.
+    // A question of the view's own is not advice and not a key: it is the one
+    // thing on the screen, in the colour of something waiting on a person.
     if let Mode::Confirming(asked) = &screen.mode {
         return Line::styled(asked.question(), Style::new().fg(role::WARNING));
     }
