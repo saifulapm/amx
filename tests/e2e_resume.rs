@@ -603,3 +603,43 @@ fn attach_says_so_when_there_is_nothing_to_bring_back() {
         "which is a fact about the pane, not a reason: {why}"
     );
 }
+
+#[test]
+fn enter_on_a_dead_agent_brings_it_back() {
+    // The wall's own door to the same thing. Outside tmux the view is the
+    // terminal, so what it has to give the agent is the terminal itself.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let gone = ran_and_stopped(&amx, id);
+
+    let view = a_terminal(&amx, &[]);
+    amx.until("the row", || amx.capture(&view).contains(id).then_some(()));
+    amx.tmux(&["send-keys", "-t", &view, "Enter"]);
+
+    until_continued(&amx, id);
+    let pane = amx.pane_of(id);
+    assert_ne!(pane, gone, "a pane of its own again");
+    assert!(amx.pane_alive(&pane));
+    until_looking_at_it(&amx, &view);
+}
+
+#[test]
+fn enter_on_an_agent_with_nothing_to_resume_says_why() {
+    let amx = Harness::new();
+    let id = "never-hooked-a1b";
+    amx.record(id, "%99");
+    amx.set_state(id, json!({ "state": "stopped" }));
+
+    let view = a_terminal(&amx, &[]);
+    amx.until("the row", || amx.capture(&view).contains(id).then_some(()));
+    amx.tmux(&["send-keys", "-t", &view, "Enter"]);
+
+    let said = amx.until("the view to say why", || {
+        let screen = amx.capture(&view);
+        screen.contains("session").then_some(screen)
+    });
+    assert!(
+        !said.contains("no pane any more"),
+        "which is a fact about the pane, not a reason: {said}"
+    );
+}
