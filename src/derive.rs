@@ -442,6 +442,22 @@ fn clock(phase: Phase, state: &State, created: u64, now: u64) -> u64 {
     now.saturating_sub(heard)
 }
 
+/// The reading's number in words, in the shortest form that says it.
+///
+/// A surface prints the number [`clock`] worked out, and the units belong with
+/// the working out rather than with the printing. A table and a screen that
+/// each decide for themselves what `120` means are two surfaces that agree
+/// today and disagree after the next hand touches one of them, and a person
+/// with both open in front of them is the one who finds out.
+pub fn in_words(seconds: u64) -> String {
+    match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m", seconds / 60),
+        3600..=86_399 => format!("{}h", seconds / 3600),
+        _ => format!("{}d", seconds / 86_400),
+    }
+}
+
 /// Work out what an agent is doing.
 ///
 /// `alive` is whether its pane is still there, and `capture` is asked for the
@@ -1405,6 +1421,30 @@ mod tests {
         assert_eq!(view.json()["age"], 10);
         assert_eq!(view.json()["worked"], 10, "and the spans it was added from");
         assert_eq!(view.json()["ended"], 4_610, "and when it ended, whole");
+    }
+
+    #[test]
+    fn reader_says_its_number_in_one_set_of_units() {
+        // The units are decided here, where the number is worked out, and
+        // every surface that prints it says them by asking. Two surfaces with
+        // a set of units each is how one of them comes to print a bare number
+        // while the other prints 4s.
+        assert_eq!(in_words(0), "0s");
+        assert_eq!(in_words(45), "45s");
+        assert_eq!(in_words(59), "59s");
+        assert_eq!(in_words(60), "1m");
+        assert_eq!(in_words(3_599), "59m");
+        assert_eq!(in_words(3_600), "1h");
+        assert_eq!(in_words(86_399), "23h");
+        assert_eq!(in_words(86_400), "1d");
+
+        // And the reading a surface has in its hand goes through it: the run
+        // that worked ten seconds says ten seconds, in words, a day later.
+        let mut done = state(Phase::Done, 4_610);
+        done.ended = 4_610;
+        done.worked = 10;
+        let verdict = started(1_000, &done, true, None, 90_000).verdict;
+        assert_eq!(in_words(verdict.age), "10s");
     }
 
     #[test]

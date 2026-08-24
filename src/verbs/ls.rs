@@ -177,17 +177,11 @@ fn inert(text: &str) -> String {
 /// finished run worked, how long a waiting agent has waited, and how long since
 /// anything was heard from one still going.
 ///
-/// The number is the reading's and not this table's, and the view says the
-/// same one in the same units off the same reading, so a person who has both
-/// open is never told two things about one agent.
+/// Both the number and the units are the reading's, and this table only asks
+/// for them. The view asks the same reading the same way, so a person who has
+/// both open is never told two things about one agent.
 fn age(view: &View) -> String {
-    let seconds = view.verdict.age;
-    match seconds {
-        0..=59 => format!("{seconds}s"),
-        60..=3599 => format!("{}m", seconds / 60),
-        3600..=86_399 => format!("{}h", seconds / 3600),
-        _ => format!("{}d", seconds / 86_400),
-    }
+    derive::in_words(view.verdict.age)
 }
 
 /// One line of it, so a paragraph of an answer cannot take over the table.
@@ -321,11 +315,13 @@ mod tests {
             "a row of a run that worked ten seconds says ten seconds"
         );
 
-        // The row is the reading's own number put into words, and not a second
-        // number this table worked out for itself. It is what the view reads
-        // and how the view says it, so the two surfaces cannot disagree.
+        // The row is the reading's own number in the reading's own units, and
+        // not a second number this table worked out for itself in units of its
+        // own. It is what the view reads and how the view says it, so the two
+        // surfaces cannot disagree.
         let read = reading("fix-login-a1b", record, 1_000, 90_000);
         assert_eq!(read.verdict.age, 10);
+        assert_eq!(age(&read), derive::in_words(read.verdict.age));
         assert!(hour.contains(&age(&read)), "{hour}");
     }
 
