@@ -602,6 +602,12 @@ fn wants_a_line(state: &State) -> bool {
 /// What comes back is the first line with anything on it. A command that fails,
 /// that is not there, or that says nothing leaves the row exactly as it was:
 /// this is a line about the answer, and the answer is on the record either way.
+///
+/// The answer goes in on a thread of its own. An answer is as long as the turn
+/// was and a pipe holds a page or sixteen of it, so whoever writes the answer
+/// cannot also be whoever reads what comes back: a command that echoes what it
+/// reads fills its own pipe, stops reading, and the two of them wait on each
+/// other for good.
 fn ask_for_a_line(command: &str, at: &Path, id: &str, answer: &str) -> Option<String> {
     let mut child = std::process::Command::new("sh")
         .arg("-c")
@@ -614,12 +620,22 @@ fn ask_for_a_line(command: &str, at: &Path, id: &str, answer: &str) -> Option<St
         .spawn()
         .ok()?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        // A command that reads a line and leaves is answering the question
-        // asked, so a pipe it stopped reading is not a failure.
-        let _ = stdin.write_all(answer.as_bytes());
+    let feeding = child.stdin.take().map(|mut stdin| {
+        let answer = answer.to_string();
+        std::thread::spawn(move || {
+            // A command that reads a line and leaves is answering the question
+            // asked, so a pipe it stopped reading is not a failure. The handle
+            // goes at the end of this, which is what tells the command the
+            // answer is all of the answer.
+            let _ = stdin.write_all(answer.as_bytes());
+        })
+    });
+    let said = child.wait_with_output().ok();
+    if let Some(feeding) = feeding {
+        let _ = feeding.join();
     }
-    let said = child.wait_with_output().ok()?;
+
+    let said = said?;
     if !said.status.success() {
         return None;
     }
@@ -1676,6 +1692,31 @@ mod tests {
             ask_for_a_line("no-such-command-here", at.path(), "x", said),
             None
         );
+    }
+
+    #[test]
+    fn summary_command_takes_an_answer_longer_than_a_pipe_holds() {
+        // A megabyte is an ordinary long turn and several times what a pipe
+        // holds on any of these machines. Handing one to a command that writes
+        // back what it reads stops both of them where the answer goes in and
+        // what comes back is read on the one thread: the command's own pipe
+        // fills, it stops reading, and amx is still writing into a pipe
+        // nothing is draining. `tr a-z A-Z` is the shape of it, and it is the
+        // shape the key's own documentation offers.
+        let at = TempDir::new().unwrap();
+        let answer = format!("fixed the redirect\n{}\n", "y".repeat(1024 * 1024));
+
+        // On a thread of its own so the deadlock is a failure rather than a
+        // suite that never ends.
+        let (said, heard) = std::sync::mpsc::channel();
+        let ran_in = at.path().to_path_buf();
+        std::thread::spawn(move || {
+            let _ = said.send(ask_for_a_line("cat", &ran_in, "fix-login-a1b", &answer));
+        });
+        let line = heard
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the command to come back");
+        assert_eq!(line.as_deref(), Some("fixed the redirect"));
     }
 
     /// The queue is one place for the whole process, and every test about it
