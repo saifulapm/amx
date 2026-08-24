@@ -128,6 +128,12 @@ fn press(amx: &Harness, view: &str, key: &str) {
     amx.tmux(&["send-keys", "-t", view, key]);
 }
 
+/// The same key twice, close enough together that a view holding a window
+/// open for the second press still has it open.
+fn twice(amx: &Harness, view: &str, key: &str) {
+    amx.tmux(&["send-keys", "-t", view, key, key]);
+}
+
 /// Paste text at the view the way a terminal delivers a paste: in one
 /// bracketed piece, with every newline in it left alone.
 fn pastes(amx: &Harness, view: &str, text: &str) {
@@ -2177,8 +2183,66 @@ fn ctrl_x_stops_the_agent_and_then_forgets_it() {
         (!amx.pane_alive(&pane)).then_some(())
     });
 
-    // Again on the same row: an agent that has already ended is forgotten.
+    // Again on the same row: an agent that has already ended is forgotten,
+    // and it takes the two presses forgetting takes anywhere.
+    twice(&amx, &view, "C-x");
+    amx.until("the record to go", || agents(&amx).is_empty().then_some(()));
+    until_empty(&amx, &view);
+}
+
+#[test]
+fn ctrl_x_arms_a_finished_row_and_says_so_where_its_summary_was() {
+    let amx = Harness::new();
+    finished(&amx, "fix-login-a1b", "done", 60);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row and what it did", || {
+        row_of(&amx, &view, "fix-login-a1b")
+            .filter(|row| row.contains("did what it was asked"))
+            .map(|_| ())
+    });
+
+    // One press says what a second one would do, on the row itself.
     press(&amx, &view, "C-x");
+    let armed = amx.until("the warning where the summary was", || {
+        coloured(&amx, &view)
+            .lines()
+            .find(|line| line.contains("ctrl+x again forgets"))
+            .map(str::to_string)
+    });
+    assert!(
+        armed.contains("fix-login-a1b"),
+        "on the agent's own row rather than at the foot of the screen:\n{armed}"
+    );
+    assert!(
+        !armed.contains("did what it was asked"),
+        "in place of the summary rather than beside it:\n{armed}"
+    );
+    assert!(
+        armed.contains("38;2;255;193;7"),
+        "in the colour of a thing waiting on a person:\n{armed}"
+    );
+    assert_eq!(
+        agents(&amx),
+        ["fix-login-a1b"],
+        "and one press forgets nothing"
+    );
+
+    // The window closes on its own, and the row goes back to saying what the
+    // agent did.
+    amx.until("the summary to come back", || {
+        row_of(&amx, &view, "fix-login-a1b")
+            .filter(|row| row.contains("did what it was asked"))
+            .map(|_| ())
+    });
+    assert_eq!(
+        agents(&amx),
+        ["fix-login-a1b"],
+        "a window that closed forgets nothing either"
+    );
+
+    // Two presses inside the window is what forgets it.
+    twice(&amx, &view, "C-x");
     amx.until("the record to go", || agents(&amx).is_empty().then_some(()));
     until_empty(&amx, &view);
 }

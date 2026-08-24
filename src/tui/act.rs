@@ -687,6 +687,11 @@ pub fn looked(root: &Path, id: &str) -> Result<()> {
 
 /// End the agent under the cursor: one that is running is stopped, and one
 /// that has already ended is forgotten.
+///
+/// Which of the two it is, is decided here. How many presses it took to get
+/// here is the view's own business, and the answer there is two for a
+/// forgetting: this door opens on the second press of a row the first one
+/// armed, because nothing brings a record and the tree under it back.
 pub fn end(root: &Path, view: &View) -> Result<String> {
     if view.phase().is_terminal() {
         return forget(root, view);

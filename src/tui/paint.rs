@@ -202,7 +202,10 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
             frame,
             &screen.list,
             middle,
-            screen.beat,
+            Moment {
+                beat: screen.beat,
+                armed: screen.armed(),
+            },
             middle.height - floating,
         ),
     }
@@ -520,7 +523,7 @@ const WELCOME: &str = "nothing running, nothing broken, nobody asking. enjoy it"
 /// the cursor is kept inside. The rest are drawn anyway: a card is in front of
 /// a list, not instead of one, and the rows it covers are the ones somebody
 /// gets back by closing it.
-fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize, visible: u16) {
+fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment, visible: u16) {
     if list.is_empty() {
         // Nothing to show is one thing while a narrowing is holding every
         // agent back, another while nobody has started one, and the line for
@@ -560,11 +563,23 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize, visible: u16)
                 section == Some(at),
                 columns,
                 area.width as usize,
-                beat,
+                moment,
             )
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// What the clock has made of the list at the moment it is drawn: which frame
+/// of the working pulse the rows are on, and which of them a press has armed.
+///
+/// Neither is a fact about an agent, and neither is worth writing down: they
+/// are what the view is doing while somebody watches it, so they are handed to
+/// the rows and forgotten with the frame.
+#[derive(Clone, Copy)]
+struct Moment<'a> {
+    beat: usize,
+    armed: Option<&'a str>,
 }
 
 /// One line of the list, whatever kind of line it is. `section` says this is
@@ -577,7 +592,7 @@ fn line(
     section: bool,
     columns: Columns,
     width: usize,
-    beat: usize,
+    moment: Moment,
 ) -> Line<'static> {
     let line = match item {
         Item::Heading(under, tally) => heading(list.title(under), tally, selected || section),
@@ -590,7 +605,7 @@ fn line(
                 selected,
                 columns,
                 width,
-                beat,
+                moment,
             ),
             None => Line::raw(""),
         },
@@ -654,6 +669,12 @@ fn heading(title: String, tally: Tally, marked: bool) -> Line<'static> {
 /// as the word beside the name. The mark is worth reading at a glance across a
 /// whole screen and the word is worth reading on one row, and under a project
 /// heading nothing else says which state a row is in.
+///
+/// A row a press has armed says that instead of what the agent said, in the
+/// colour of a thing waiting on a person. The summary is the one part of a row
+/// amx is free to speak over: the state, the name and the age are what the row
+/// is for, and a warning that took a column of its own would move every row
+/// under it for as long as it was up.
 fn row(
     view: &View,
     prs: &[Pr],
@@ -661,7 +682,7 @@ fn row(
     selected: bool,
     columns: Columns,
     width: usize,
-    beat: usize,
+    moment: Moment,
 ) -> Line<'static> {
     let Columns { names, status, pr } = columns;
     let phase = view.phase();
@@ -686,13 +707,17 @@ fn row(
         + AGE
         + 1;
     let room = width.saturating_sub(spent);
-    let said = fit(first_line(view.line().unwrap_or("")), room);
+    let armed = moment.armed == Some(view.id());
+    let said = match armed {
+        true => fit(AGAIN, room),
+        false => fit(first_line(view.line().unwrap_or("")), room),
+    };
 
     let [read, top] = marks(view, held);
     let mut spans = vec![
         read,
         top,
-        Span::styled(format!("{} ", icon(phase, beat)), colour(phase)),
+        Span::styled(format!("{} ", icon(phase, moment.beat)), colour(phase)),
         Span::styled(
             format!("{name:<names$}  "),
             if selected {
@@ -718,10 +743,21 @@ fn row(
         };
         spans.push(Span::styled(format!("{label:<pr$}  "), paint));
     }
-    spans.push(Span::styled(format!("{said:<room$} "), dim()));
+    let summary = match armed {
+        true => Style::new().fg(role::WARNING),
+        false => dim(),
+    };
+    spans.push(Span::styled(format!("{said:<room$} "), summary));
     spans.push(Span::styled(format!("{age:>AGE$}"), dim()));
     Line::from(spans)
 }
+
+/// What an armed row says where its summary was: the key again, and what it
+/// does this time.
+///
+/// The words claude's own agent view uses for the same two presses, because a
+/// person who has met one of these screens should not have to learn the other.
+const AGAIN: &str = "ctrl+x again forgets";
 
 /// The two columns every row is already indented by, and what each of them is
 /// for: a row nobody has been to read is marked in the first, and one somebody
@@ -1986,6 +2022,7 @@ fn prospective() -> Style {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Arm;
     use super::super::rows::Narrow;
     use super::*;
     use crate::derive::{Evidence, Verdict};
@@ -1996,6 +2033,7 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::style::Color;
     use std::path::PathBuf;
+    use std::time::Instant;
 
     fn view(id: &str, phase: Phase, said: Option<&str>, age: u64) -> View {
         View {
@@ -2576,6 +2614,55 @@ mod tests {
         assert!(screen[2].contains('…'), "{:?}", screen[2]);
         assert!(screen[2].ends_with("45s"), "{:?}", screen[2]);
         assert!(screen[2].chars().count() <= 40, "{:?}", screen[2]);
+    }
+
+    #[test]
+    fn view_says_on_an_armed_row_what_the_next_press_would_do_to_it() {
+        let size = (60, 8);
+        let mut screen = showing(
+            vec![
+                view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
+                view(
+                    "port-importer-b2c",
+                    Phase::Done,
+                    Some("wrote the tests"),
+                    90,
+                ),
+            ],
+            None,
+        );
+        assert!(painted(&screen, size)[2].contains("wrote the parser"));
+
+        screen.arm = Some(Arm {
+            id: "fix-login-a1b".to_string(),
+            at: Instant::now(),
+        });
+        let drawn = painted(&screen, size);
+        assert!(
+            drawn[2].contains("ctrl+x again forgets"),
+            "the row says it where it was saying what the agent did: {:?}",
+            drawn[2]
+        );
+        assert!(
+            !drawn[2].contains("wrote the parser"),
+            "in place of the summary rather than beside it: {:?}",
+            drawn[2]
+        );
+        assert!(
+            drawn[2].ends_with("1m"),
+            "and the columns either side of it are where they were: {:?}",
+            drawn[2]
+        );
+        assert_eq!(
+            word_colour(&screen, size, 2, "ctrl+x again forgets"),
+            role::WARNING,
+            "in the colour of a thing waiting on a person"
+        );
+        assert!(
+            drawn[3].contains("wrote the tests"),
+            "and the rows nobody armed say what they always said: {:?}",
+            drawn[3]
+        );
     }
 
     #[test]

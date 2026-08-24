@@ -149,7 +149,7 @@ behind a count. Rows nobody has been to read carry a mark down the gutter.
 | `alt+n` | start the line and go to the agent it started |
 | `r` | reply: a message, or an answer on the card |
 | `d` | what it has changed |
-| `ctrl+x` | stop it, again to forget it, and on a heading clear the finished |
+| `ctrl+x` | stop it, twice to forget it, and on a heading clear the finished |
 | `ctrl+r` | call it something else |
 | `ctrl+g` | write the line in `$EDITOR` |
 | `alt+1..9` | reach the agent at that place on the wall |
@@ -174,6 +174,14 @@ when you detach.
 wall, counting rows from the top and skipping the headings, without walking the
 cursor to them first. It is the fleet you already have in front of you, reached
 by the number you were about to count to.
+
+`ctrl+x` forgets nothing on the first press. On an agent that is still running
+it stops it, which costs you the pane and nothing else. On one whose command
+has ended it arms the row instead: where the row was saying what the agent did
+it says `ctrl+x again forgets` for about two seconds, and the press inside that
+window is the one that takes the record away, and the worktree with it where
+that tree holds nothing no commit has. Leave it alone and the row goes back to
+saying what it was saying, having forgotten nothing.
 
 While the view is open your terminal is called `amx · 2 waiting`, or `amx` when
 nothing is waiting on you, so a window behind something else still answers the

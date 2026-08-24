@@ -64,6 +64,11 @@ const TICK: Duration = Duration::from_millis(120);
 /// interval at 2.1.237.
 const FRAME: Duration = Duration::from_millis(120);
 
+/// How long a press leaves a finished row armed: long enough to read what the
+/// row has started saying and press the key again, short enough that a key
+/// pressed after that is a fresh decision rather than the end of an old one.
+const ARMED: Duration = Duration::from_secs(2);
+
 /// What arrived from the terminal.
 enum Typed {
     /// Nobody typed anything in the time given.
@@ -389,6 +394,16 @@ fn next_in(cycle: &[&str], now: &str) -> Option<String> {
     .map(|value| value.to_string())
 }
 
+/// A finished row a press has armed, and the moment it was armed.
+///
+/// Held by id rather than by where the cursor was: the wall is read again
+/// every second and the rows move under it, and a window that belonged to a
+/// place on the screen would arm whatever had come to rest there.
+struct Arm {
+    id: String,
+    at: Instant,
+}
+
 /// The view as it stands: what was read, where the cursor is, what the keys
 /// are doing, and what the view last had to say for itself.
 #[derive(Default)]
@@ -400,6 +415,8 @@ struct Screen {
     look: Look,
     card: Option<Card>,
     notice: Option<Notice>,
+    /// The finished row a press has armed, where one is armed.
+    arm: Option<Arm>,
     /// When the agents were last read.
     read: Option<Instant>,
     /// Where what somebody arranges is kept, where there is anywhere to keep
@@ -986,12 +1003,7 @@ impl Screen {
             // than at an agent.
             KeyCode::Char('x') if ctrl => match self.list.heading() {
                 Some(under) => self.ask_to_sweep(under),
-                None => {
-                    if let Some(view) = self.list.selected() {
-                        self.notice = said(act::end(root, view));
-                        self.acted();
-                    }
-                }
+                None => self.end_or_arm(root),
             },
             // The same agents, gathered the other way.
             KeyCode::Char('s') if ctrl => {
@@ -1302,6 +1314,55 @@ impl Screen {
             }
         }
         Ok(Doing::Carry)
+    }
+
+    /// The row a press has armed, while its window is still open.
+    ///
+    /// Worked out from the clock every time it is asked for rather than
+    /// cleared when it falls due: what closes the window is time passing, and
+    /// there is nothing running in this view to do the clearing at the moment
+    /// it happens.
+    fn armed(&self) -> Option<&str> {
+        self.arm
+            .as_ref()
+            .filter(|arm| arm.at.elapsed() < ARMED)
+            .map(|arm| arm.id.as_str())
+    }
+
+    /// ctrl+x on an agent's row: stop it, or arm it and then forget it.
+    ///
+    /// Stopping is what the key has always done to a running agent, and it
+    /// costs nothing that is not on a branch: the pane goes and the record
+    /// stays. Forgetting is the other kind of thing — the record goes, and the
+    /// tree it was cut goes with it — so it is not what any single keystroke
+    /// does. The first press on a finished row arms it and the row says so, in
+    /// the place somebody is already reading; the press inside that window is
+    /// the one that forgets.
+    ///
+    /// The row says it rather than the line under the keys, because the row is
+    /// what the cursor is on and what the second press would take away. A
+    /// warning at the foot of a screen is about the view; this one is about
+    /// one agent.
+    fn end_or_arm(&mut self, root: &Path) {
+        let Some(view) = self.list.selected() else {
+            return;
+        };
+        let armed = self.armed() == Some(view.id());
+        if view.phase().is_terminal() && !armed {
+            let id = view.id().to_string();
+            // The row is the whole of what the view has to say about this, so
+            // whatever it was saying before makes way for it.
+            self.notice = None;
+            self.arm = Some(Arm {
+                id,
+                at: Instant::now(),
+            });
+            return;
+        }
+
+        self.arm = None;
+        self.notice = said(act::end(root, view));
+        self.acted();
     }
 
     /// Ask about clearing the finished agents under a heading.
@@ -2281,6 +2342,37 @@ mod tests {
             written.contains("\"statusline\": true"),
             "what the file already said is still in it: {written}"
         );
+    }
+
+    #[test]
+    fn acts_ctrl_x_arms_a_finished_row_and_the_press_after_it_forgets_it() {
+        let root = TempDir::new().unwrap();
+        finished(root.path(), "first-a1b", "wrote the parser", 60);
+        finished(root.path(), "second-b2c", "wrote the tests", 120);
+        let left = || crate::store::list(root.path()).unwrap().len();
+
+        // The view opens on the newest of them, which is the row the key is
+        // read on.
+        let (_, armed) = pressing(root.path(), vec![ctrl('x')]);
+        assert!(armed.contains("ctrl+x again forgets"), "{armed}");
+        assert!(
+            armed.contains("wrote the tests"),
+            "and the row nobody armed is saying what it always said: {armed}"
+        );
+        assert_eq!(left(), 2, "and one press forgets nothing");
+
+        // A second press with the cursor somewhere else arms the row it is on
+        // rather than finishing what the first one started.
+        let (_, moved) = pressing(
+            root.path(),
+            vec![ctrl('x'), KeyEvent::from(KeyCode::Down), ctrl('x')],
+        );
+        assert!(moved.contains("ctrl+x again forgets"), "{moved}");
+        assert_eq!(left(), 2, "a press on another row arms that one instead");
+
+        let (_, gone) = pressing(root.path(), vec![ctrl('x'), ctrl('x')]);
+        assert!(gone.contains("first-a1b forgotten"), "{gone}");
+        assert_eq!(left(), 1);
     }
 
     #[test]
