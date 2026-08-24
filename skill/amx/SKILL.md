@@ -75,6 +75,11 @@ Words that read as a key need `--text`, which says they are words:
 `amx answer <id> --text 2` answers with the character `2`, where a bare `2` is
 the second choice.
 
+Some questions take a note beside the choice, the ones whose options carry a
+`preview` in `.questions`: `amx answer <id> 1 --note "keep the subtitle"`. A
+question without one is refused, and so is a note with no choice to ride
+beside.
+
 Answering clears the question from the record, so the next `result` waits for
 the turn rather than handing you the same question back.
 

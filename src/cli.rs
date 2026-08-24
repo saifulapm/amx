@@ -242,6 +242,11 @@ pub struct AnswerArgs {
     /// like.
     #[arg(long, value_name = "WORDS")]
     pub text: Option<String>,
+
+    /// A note to send beside the choice, where the question draws a field for
+    /// one.
+    #[arg(long, value_name = "WORDS", conflicts_with = "text")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -347,6 +352,10 @@ mod tests {
             (&["amx", "answer", "fix-a1b", "1,3"], "answer"),
             (
                 &["amx", "answer", "fix-a1b", "--text", "the sqlite one"],
+                "answer",
+            ),
+            (
+                &["amx", "answer", "fix-a1b", "1", "--note", "keep it short"],
                 "answer",
             ),
             (&["amx", "result", "fix-a1b"], "result"),
@@ -536,6 +545,9 @@ mod tests {
             // Which of the two a thing that reads as both is has to be said,
             // and saying both says neither.
             &["amx", "answer", "fix-a1b", "2", "--text", "2"],
+            // A note rides beside a choice, and there is no choice here.
+            &["amx", "answer", "fix-a1b", "--note", "keep it short"],
+            &["amx", "answer", "fix-a1b", "--text", "2", "--note", "short"],
             &["amx", "result", "fix-a1b", "--timeout", "soon"],
             &["amx", "stop", "fix-a1b", "--worktree", "burn"],
             &["amx", "resume"],

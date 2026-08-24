@@ -22,13 +22,22 @@
 //!
 //! A question the vendor asked itself is not one screen, and the keys that
 //! finish one shape of it leave another standing. `docs/question-shapes.md`
-//! measured the four against claude 2.1.240, and two of them are here: a
-//! question that takes more than one choice checks boxes rather than choosing,
-//! so nothing is submitted until the choices are left behind, and a call of
-//! several questions ends on a Submit tab of the vendor's own that has to be
-//! confirmed. Which shape is on the screen is not on the screen — the tab strip
-//! elides its own headers as the pane narrows — so it is read off the record,
-//! where the payload put it.
+//! measured four of them against claude 2.1.240, and each has an answer here.
+//! A question that takes more than one choice checks boxes rather than
+//! choosing, so nothing is submitted until the choices are left behind; a call
+//! of several questions ends on a Submit tab of the vendor's own that has to be
+//! confirmed; the free-text row every menu carries takes each key as a
+//! character, so `--text` is how a caller says a `2` is the character and not
+//! the second choice; and where the choices carry a preview the vendor draws a
+//! field for a note, which `--note` fills before the choice that carries it is
+//! made.
+//!
+//! Which shape is on the screen is not on the screen — the tab strip elides its
+//! own headers as the pane narrows — so it is read off the record, where the
+//! payload put it. Each of the three is refused where the question offers no
+//! such thing, and the refusal is what keeps a key from landing on somebody
+//! else's answer: `n` at a menu with no preview does nothing at all, and the
+//! note would be typed at the menu with its first digit answering it.
 
 use anyhow::Result;
 use std::path::Path;
@@ -70,6 +79,21 @@ const OFF_THE_FIELD: &str = "Down";
 /// checkbox box, or `1. Submit answers` on the review screen.
 const TAKE_IT: &str = "Enter";
 
+/// The key that puts the cursor in the notes field, on the one shape that
+/// draws one. Measured against 2.1.240: at a menu with no preview it does
+/// nothing at all, which is why a note is refused there rather than typed.
+const TO_THE_NOTES: &str = "n";
+
+/// The key that comes back out of the notes field with the note kept.
+///
+/// It is the same key that cancels the prompt from a choice, and from inside
+/// the field it does not: measured against 2.1.240, `Escape` there leaves the
+/// note behind and puts the cursor back on the choices. Submitting from inside
+/// the field is what would go wrong, and it is what amx never does: the vendor
+/// takes that as a complete answer and writes `(notes only)` where the choice
+/// should be.
+const OFF_THE_NOTES: &str = "Escape";
+
 /// Run the verb against the machine.
 pub fn from_env(id: &str, typed: &AnswerArgs) -> Result<i32> {
     let root = paths::state_root()?;
@@ -91,8 +115,8 @@ pub fn run(root: &Path, id: &str, typed: &AnswerArgs) -> Result<i32> {
     // Nothing is opened, let alone typed, until this holds: an answer this
     // question cannot take is a mistake in the command line, and the agent
     // must never see it.
-    let answer = match answer(typed, view.kind(), &view.state) {
-        Ok(answer) => answer,
+    let (answer, note) = match read(typed, view.kind(), &view.state) {
+        Ok(read) => read,
         Err(refused) => {
             eprintln!("amx: {refused}");
             return Ok(exit::USAGE);
@@ -106,6 +130,7 @@ pub fn run(root: &Path, id: &str, typed: &AnswerArgs) -> Result<i32> {
         &server,
         &view.meta.pane,
         answer,
+        note.as_deref(),
         Shape::of(&view.state),
     )?;
     Ok(exit::OK)
@@ -216,6 +241,43 @@ enum Step {
     Key(String),
     /// Text, into whatever field has the cursor.
     Type(String),
+}
+
+/// Read the command line as an answer to this question, and the note the
+/// vendor lets one ride beside.
+///
+/// The note is read first because it is the part that is not an answer: it
+/// rides beside one, and a question that draws no field for it takes none.
+fn read(
+    args: &AnswerArgs,
+    kind: Option<Kind>,
+    state: &State,
+) -> Result<(Answer, Option<String>), String> {
+    let note = note(args, state.pending())?;
+    Ok((answer(args, kind, state)?, note))
+}
+
+/// The note to send beside the answer, once the question draws a field for it.
+///
+/// The vendor draws that field where a choice carries a preview and only
+/// there: `n` at a menu without one does nothing at all, so the note would be
+/// typed at the menu itself and the first digit in it would answer the
+/// question.
+fn note(args: &AnswerArgs, pending: Option<&Ask>) -> Result<Option<String>, String> {
+    let Some(note) = &args.note else {
+        return Ok(None);
+    };
+    if !previewed(pending) {
+        return Err(
+            "this question draws no notes field: the vendor draws one where a choice \
+             carries a preview, and none of these do"
+                .to_string(),
+        );
+    }
+    if note.trim().is_empty() {
+        return Err("a note with nothing in it is not a note".to_string());
+    }
+    Ok(Some(note.trim().to_string()))
 }
 
 /// Read the command line as an answer to this question.
@@ -372,9 +434,17 @@ fn one_choice(key: &str) -> Option<usize> {
 /// key are the two that go wrong quietly: a checkbox question submits nothing
 /// on its own, and its free-text row checks itself as it is typed into, so an
 /// `Enter` there unchecks it again and leaves the prompt up.
-fn steps(answer: &Answer, shape: Shape) -> Vec<Step> {
+fn steps(answer: &Answer, note: Option<&str>, shape: Shape) -> Vec<Step> {
     let key = |name: &str| Step::Key(name.to_string());
     let mut steps = Vec::new();
+    // The note first, and out of its field before the answer is given: from
+    // inside it the key that would choose submits the note with no choice at
+    // all, which the vendor writes down as `(notes only)`.
+    if let Some(note) = note {
+        steps.push(key(TO_THE_NOTES));
+        steps.push(Step::Type(note.to_string()));
+        steps.push(key(OFF_THE_NOTES));
+    }
     match answer {
         Answer::Key(pressed) => steps.push(key(pressed)),
         Answer::Toggle(checked) => {
@@ -421,6 +491,7 @@ pub fn press(agent: &Agent, server: &Server, pane: &PaneId, pressed: &str) -> Re
         server,
         pane,
         Answer::Key(pressed.to_string()),
+        None,
         Shape::default(),
     )
 }
@@ -441,7 +512,14 @@ pub fn press(agent: &Agent, server: &Server, pane: &PaneId, pressed: &str) -> Re
 /// the words just checked.
 pub fn say(agent: &Agent, server: &Server, pane: &PaneId, words: &str) -> Result<()> {
     let shape = Shape::of(&agent.state()?);
-    reply(agent, server, pane, Answer::Words(words.to_string()), shape)
+    reply(
+        agent,
+        server,
+        pane,
+        Answer::Words(words.to_string()),
+        None,
+        shape,
+    )
 }
 
 /// Type an answer at the pane, and write down what was answered.
@@ -450,10 +528,11 @@ fn reply(
     server: &Server,
     pane: &PaneId,
     answer: Answer,
+    note: Option<&str>,
     shape: Shape,
 ) -> Result<()> {
-    drive(server, pane, &steps(&answer, shape))?;
-    answered(agent, &answer)
+    drive(server, pane, &steps(&answer, note, shape))?;
+    answered(agent, &answer, note)
 }
 
 /// Type one sequence at the pane.
@@ -493,10 +572,14 @@ fn drive(server: &Server, pane: &PaneId, steps: &[Step]) -> Result<()> {
 /// The question goes with its choices and its kind: they were the choices
 /// under *this* question, and a row still offering them after it has been
 /// answered is a row inviting somebody to answer it again.
-fn answered(agent: &Agent, answer: &Answer) -> Result<()> {
+fn answered(agent: &Agent, answer: &Answer, note: Option<&str>) -> Result<()> {
     let writer = agent.writer()?;
     let said = answer.said(writer.state()?.pending());
-    writer.append(&Event::new("answer", answer.event(&said)))?;
+    let mut what = answer.event(&said);
+    if let Some(note) = note {
+        what["note"] = serde_json::json!(note);
+    }
+    writer.append(&Event::new("answer", what))?;
     writer.update_state(|state| {
         match answer.chose() && !state.asking.is_empty() {
             // The answer goes on the question it answered, and the tab after
@@ -655,7 +738,7 @@ mod tests {
     /// What amx would type at this question for this command line.
     fn typed(state: &State, args: &AnswerArgs) -> Vec<Step> {
         let answer = answer(args, state.kind, state).expect("an answer this question takes");
-        steps(&answer, Shape::of(state))
+        steps(&answer, None, Shape::of(state))
     }
 
     /// The one step that is not a key.
@@ -851,6 +934,60 @@ mod tests {
     }
 
     #[test]
+    fn surfaces_a_note_rides_beside_the_choice_it_is_about() {
+        // Measured against 2.1.240: `n` puts the cursor in the notes field,
+        // `Escape` leaves it with the note kept rather than cancelling the
+        // prompt, and the choice made after that carries the note back beside
+        // it in the vendor's own annotations.
+        let state = a_previewed_question();
+        let line = AnswerArgs {
+            key: Some("1".to_string()),
+            note: Some("prefer the stacked one".to_string()),
+            ..AnswerArgs::default()
+        };
+        let (answer, note) =
+            read(&line, Some(Kind::Question), &state).expect("a note and a choice");
+        assert_eq!(answer, Answer::Key("1".to_string()));
+        assert_eq!(
+            steps(&answer, note.as_deref(), Shape::of(&state)),
+            vec![
+                Step::Key("n".to_string()),
+                words("prefer the stacked one"),
+                Step::Key("Escape".to_string()),
+                Step::Key("1".to_string()),
+            ],
+            "the note is typed before the answer that carries it"
+        );
+    }
+
+    #[test]
+    fn surfaces_a_question_that_draws_no_notes_field_takes_no_note() {
+        // `n` at a menu with no preview does nothing at all, so the note would
+        // be typed at the menu itself and its first digit would answer it.
+        for state in [
+            a_plain_question(),
+            a_checkbox_question(),
+            a_permission_box(),
+        ] {
+            let line = AnswerArgs {
+                key: Some("1".to_string()),
+                note: Some("prefer the stacked one".to_string()),
+                ..AnswerArgs::default()
+            };
+            let refused = read(&line, state.kind, &state).expect_err("no notes field");
+            assert!(refused.contains("preview"), "{refused}");
+        }
+
+        // And a note with nothing in it is not a note.
+        let blank = AnswerArgs {
+            key: Some("1".to_string()),
+            note: Some("  ".to_string()),
+            ..AnswerArgs::default()
+        };
+        assert!(read(&blank, Some(Kind::Question), &a_previewed_question()).is_err());
+    }
+
+    #[test]
     fn surfaces_the_record_names_the_choices_that_were_checked() {
         // The vendor's own answer for a checkbox question is the labels joined
         // with a comma, and that is what a caller reading the record wants
@@ -1003,7 +1140,7 @@ mod tests {
         let root = tempfile::TempDir::new().unwrap();
         let agent = recorded(root.path(), &call);
 
-        answered(&agent, &Answer::Key("2".to_string())).unwrap();
+        answered(&agent, &Answer::Key("2".to_string()), None).unwrap();
         let state = agent.state().unwrap();
         assert_eq!(state.state, Phase::Waiting, "the prompt is still up");
         assert_eq!(state.asking[0].answer.as_deref(), Some("Apache-2.0"));
@@ -1013,7 +1150,7 @@ mod tests {
         );
         assert!(state.multi());
 
-        answered(&agent, &Answer::Toggle(vec![1, 3])).unwrap();
+        answered(&agent, &Answer::Toggle(vec![1, 3]), None).unwrap();
         let state = agent.state().unwrap();
         assert_eq!(state.state, Phase::Working, "and now it is over");
         assert_eq!(state.question, None);
@@ -1043,7 +1180,7 @@ mod tests {
                 a_checkbox_question().asking[0].clone(),
             ]);
             let agent = recorded(root.path(), &call);
-            answered(&agent, &Answer::Key(key.to_string())).unwrap();
+            answered(&agent, &Answer::Key(key.to_string()), None).unwrap();
 
             let state = agent.state().unwrap();
             assert_eq!(state.state, Phase::Working, "{key}");
