@@ -24,6 +24,11 @@
 //! rather than merely read, and the pane is the only place the choices are
 //! ever written. Nothing a hook reported is corrected by them.
 //!
+//! A screen with a turn running on it carries one more thing worth handing on
+//! and nothing worth recording: the vendor's own spinner line, which says what
+//! it is doing at the moment it was looked at. It goes on the reading and
+//! never on the record — see [`doing`].
+//!
 //! Whatever it concludes, it concludes once. Every reader of an agent — `ls`,
 //! `status`, the view, `--json` — is handed one [`View`], and what is on that
 //! view agrees with the phase on it. A record can disagree with itself; the
@@ -249,6 +254,10 @@ pub struct Reading {
     /// say what for. Only ever the screen's: a question a hook reported is on
     /// the record already, and the screen is where the choices under it are.
     pub asking: Option<Question>,
+    /// What the screen said the agent was doing, off the line the vendor spins
+    /// while a turn runs. Only where a rule read the screen as a turn running,
+    /// and never written down: it is about the second it was read in.
+    pub doing: Option<String>,
 }
 
 /// The sentences the vendor sends about a dialog it will not describe.
@@ -294,6 +303,54 @@ fn forget_the_placeholder(state: &mut State) {
     if state.question.as_deref().is_some_and(placeholder) {
         state.question = None;
         state.options.clear();
+    }
+}
+
+/// What the vendor's own spinner line says the agent is doing.
+///
+/// The record's account of a turn is whatever the last tool call wrote, and a
+/// reader is at the screen precisely because that was some time ago. The
+/// vendor spins one line above its composer for as long as a turn runs, and
+/// what is on it is about the second the pane was captured:
+///
+///   ✽ Nesting… (15s · still thinking with xhigh effort)
+///   · Infusing… (2m 2s · ↓ 6.9k tokens)
+///
+/// The row is found by what the spinner rule anchors on
+/// (`assets/screen-rules.toml`): the ellipsis before the parenthesis and the
+/// elapsed seconds before the `·`, both on the one row, because a row carrying
+/// half of it is not the line the rule was measured against. The lowest such
+/// row, and only inside the floor the rules themselves read, so an agent's own
+/// output further up the transcript is not mistaken for the vendor's chrome.
+///
+/// Read but not recorded. A line that says an agent has been at something for
+/// 22 seconds is true for a second, and a record carrying it would have every
+/// later reader repeat it as news.
+fn doing(capture: &str) -> Option<String> {
+    let rows: Vec<&str> = capture.lines().collect();
+    let floor = rows.len().saturating_sub(crate::rules::FLOOR_LINES);
+    let line = rows[floor..]
+        .iter()
+        .rev()
+        .find(|row| row.contains("… (") && row.contains("s · "))?;
+    Some(unglyphed(line))
+}
+
+/// The spinner line without the glyph the vendor pulses in front of it.
+///
+/// The glyph cycles through six shapes — `✻ ✽ ✢ ✶ · *` — and a vendor bump may
+/// bring a seventh, so what is dropped is described rather than listed: one
+/// character that is not a word, in front of the words. A row that opens with
+/// a word is left whole.
+fn unglyphed(row: &str) -> String {
+    let row = row.trim();
+    match row.split_once(' ') {
+        Some((glyph, rest))
+            if glyph.chars().count() == 1 && !glyph.chars().all(char::is_alphanumeric) =>
+        {
+            rest.trim_start().to_string()
+        }
+        _ => row.to_string(),
     }
 }
 
@@ -392,6 +449,7 @@ pub fn read(
             age: clock(phase, state, created, now),
         },
         asking: None,
+        doing: None,
     };
 
     if state.state.is_terminal() {
@@ -432,6 +490,12 @@ pub fn read(
                 age: clock(rule.state, state, created, now),
             },
             asking: rule.question(&screen),
+            // A screen a rule read as a turn running is a screen with the
+            // vendor's spinner line on it, and that line is fresher than
+            // anything the record can say about the same turn.
+            doing: (rule.state == Phase::Working)
+                .then(|| doing(&screen))
+                .flatten(),
         },
         // A rule claims the screen but may not end a turn that is on the
         // record as running. The record stands, with its age beside it.
@@ -483,6 +547,20 @@ fn note(agent: &Agent, state: &mut State, asking: &Question) {
     }
 }
 
+/// One agent as one answer, with the screen where the screen is fresher.
+///
+/// What a reader read off the pane about a turn in progress stands in front of
+/// what the record says about the same turn, and goes no further than the
+/// answer this reader hands back. The record is the vendor's own account and
+/// this is a picture of it; the picture wins here because the record is stale
+/// by the time anything looks at a pane at all.
+fn seen(meta: Meta, mut state: State, reading: Reading) -> View {
+    if let Some(doing) = reading.doing {
+        state.summary = Some(doing);
+    }
+    View::new(meta, state, reading.verdict)
+}
+
 /// Read one agent.
 pub fn view(root: &Path, id: &str, rules: &Ruleset, now: u64) -> Result<View> {
     let agent = Agent::open(root, id)?;
@@ -504,7 +582,7 @@ pub fn view(root: &Path, id: &str, rules: &Ruleset, now: u64) -> Result<View> {
         note(&agent, &mut state, asking);
     }
 
-    Ok(View::new(meta, state, reading.verdict))
+    Ok(seen(meta, state, reading))
 }
 
 /// Read every agent, oldest first.
@@ -548,7 +626,7 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
             note(&agent, &mut state, asking);
         }
 
-        views.push(View::new(meta, state, reading.verdict));
+        views.push(seen(meta, state, reading));
     }
 
     views.sort_by_key(|view| (view.meta.created, view.meta.id.clone()));
@@ -567,6 +645,18 @@ mod tests {
 ";
 
     const A_SHELL: &str = "$ ls\nCargo.toml  src\n$\n";
+
+    /// A turn running, as claude 2.1.240 draws it: the agent's own output, the
+    /// vendor's spinner line over the composer, and the mode footer that is on
+    /// every screen this vendor draws.
+    const A_WORKING_SCREEN: &str = "\
+● Read(src/main.rs)
+  ⎿  Read 210 lines
+
+✢ Forging… (22s · ↓ 1.3k tokens)
+❯
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+";
 
     /// The vendor's own notification about a dialog it will not describe,
     /// whole. It says a question exists and not one word about what it wants.
@@ -814,6 +904,72 @@ mod tests {
         );
         assert_eq!(quiet.verdict.phase, Phase::Idle);
         assert_eq!(quiet.asking, None);
+    }
+
+    #[test]
+    fn reader_takes_what_a_working_agent_is_doing_off_the_spinner_line() {
+        // The hooks have gone quiet mid-turn, so the record's account of what
+        // this agent is doing is as old as the silence: the tool it names may
+        // have finished a minute ago. The vendor's own line is on the pane and
+        // it is about now.
+        let mut told = state(Phase::Working, 1_000);
+        told.summary = Some("Running Bash".to_string());
+        let reading = reading(&told, true, Some(A_WORKING_SCREEN), 1_100);
+
+        assert_eq!(reading.verdict.phase, Phase::Working);
+        assert_eq!(reading.verdict.rule.as_deref(), Some("spinner"));
+        assert_eq!(
+            reading.doing.as_deref(),
+            Some("Forging… (22s · ↓ 1.3k tokens)"),
+            "the glyph is the vendor's pulse rather than a word about the turn"
+        );
+
+        let view = seen(meta(), told, reading);
+        assert_eq!(view.line(), Some("Forging… (22s · ↓ 1.3k tokens)"));
+        assert_eq!(view.json()["summary"], "Forging… (22s · ↓ 1.3k tokens)");
+    }
+
+    #[test]
+    fn reader_reads_the_spinner_line_through_whichever_glyph_is_on_it() {
+        // The glyph cycles through six shapes and a vendor bump may bring a
+        // seventh. What they have in common is that they are one character and
+        // not a word, which is the whole of what this leans on.
+        for glyph in ["✻", "✽", "✢", "✶", "·", "*"] {
+            let screen = format!("{glyph} Smooshing… (7s · thinking with xhigh effort)\n");
+            let reading = reading(&state(Phase::Working, 1_000), true, Some(&screen), 1_100);
+            assert_eq!(
+                reading.doing.as_deref(),
+                Some("Smooshing… (7s · thinking with xhigh effort)"),
+                "{glyph}"
+            );
+        }
+    }
+
+    #[test]
+    fn reader_says_what_an_agent_is_doing_only_where_it_read_it() {
+        // Fresh hooks, so no screen is captured at all and the record's own
+        // account of the turn stands.
+        let fresh = reading(
+            &state(Phase::Working, 1_000),
+            true,
+            Some(A_WORKING_SCREEN),
+            1_000,
+        );
+        assert_eq!(fresh.verdict.evidence, Evidence::Hooks);
+        assert_eq!(fresh.doing, None);
+
+        // And a screen with no turn running on it says nothing about one: a
+        // question, a prompt nobody is at, and a shell amx cannot account for.
+        for screen in [A_BLOCKING_SCREEN, IDLE_SCREEN, A_SHELL] {
+            let reading = reading(&state(Phase::Starting, 1_000), true, Some(screen), 1_100);
+            assert_eq!(reading.doing, None, "{screen}");
+        }
+
+        // What the record says is what the row says, then.
+        let mut told = state(Phase::Working, 1_000);
+        told.summary = Some("Running Bash".to_string());
+        let reading = reading(&told, true, Some(A_SHELL), 1_500);
+        assert_eq!(seen(meta(), told, reading).line(), Some("Running Bash"));
     }
 
     #[test]

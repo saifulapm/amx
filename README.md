@@ -497,6 +497,12 @@ date. A reader works it out at the moment you ask, in this order:
 `amx status` says which of these it used. `evidence` in the JSON is the same
 answer for a program.
 
+A screen with a turn running on it says more than which state the agent is in.
+claude spins one line above its composer for as long as the turn lasts, and
+that line — `Forging… (22s · ↓ 1.3k tokens)` — is what the row shows the agent
+doing, in place of the tool call the record last wrote down. It is read and not
+recorded: it is true for a second, and the next reading takes it again.
+
 ## Notifications
 
 Two moments are worth interrupting somebody for: an agent that has stopped on a
