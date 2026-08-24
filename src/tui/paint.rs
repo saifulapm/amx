@@ -141,24 +141,27 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     let space = space_rows(area.height);
     let permission = permission(screen);
     let allowing = u16::from(permission.is_some());
+    let prefixes = prefixes(screen);
+    let teaching = u16::from(prefixes.is_some());
 
     // The line being typed, where it is not the one the card is holding: an
     // answer is typed on the card itself, so it is not a band as well.
     let banded = screen.banded();
     // Every band that is not the list: the header, the space under it, the
-    // keys, the row under the composer, and the line itself counted at the one
-    // row it never goes below.
-    let chrome = head + space + 1 + allowing;
+    // keys, the rows under the composer, and the line itself counted at the
+    // one row it never goes below.
+    let chrome = head + space + 1 + allowing + teaching;
     let composing = match banded {
         Some(composer) => composer_height(composer, area, chrome),
         None => 0,
     };
 
-    let [top, _, middle, line, allowed, keys] = Layout::vertical([
+    let [top, _, middle, line, taught, allowed, keys] = Layout::vertical([
         Constraint::Length(head),
         Constraint::Length(space),
         Constraint::Min(1),
         Constraint::Length(composing),
+        Constraint::Length(teaching),
         Constraint::Length(allowing),
         Constraint::Length(1),
     ])
@@ -223,6 +226,10 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     }
     if let Some(composer) = banded {
         composing_line(frame, composer, line);
+    }
+    if let Some(taught_words) = prefixes {
+        let row = Line::styled(fit(taught_words, taught.width as usize), dim());
+        frame.render_widget(Paragraph::new(row), taught);
     }
     if let Some(row) = permission {
         frame.render_widget(Paragraph::new(row), allowed);
@@ -1668,6 +1675,27 @@ fn permission(screen: &Screen) -> Option<Line<'static>> {
         format!("{said} (shift+tab to cycle)"),
         prospective(),
     ))
+}
+
+/// The words the task line reads at its front, said while there is nothing on
+/// it.
+///
+/// The prefixes are amx's own grammar and nothing else on the screen teaches
+/// them: a dial turned by `m:` looks exactly like a task that happens to open
+/// with one. So the empty line says them, dimly, and the first character typed
+/// takes the row away — whoever is typing has stopped reading it. A reply and
+/// a rename read no prefixes, so their lines teach none.
+fn prefixes(screen: &Screen) -> Option<&'static str> {
+    let Mode::Typing(composer) = &screen.mode else {
+        return None;
+    };
+    if !matches!(composer.asking, Asking::Task) || !composer.text.is_empty() {
+        return None;
+    }
+    Some(
+        "m:model · p:permission · w:on|off · d:directory · agent:command \
+         · s:state · a:name · ! shell",
+    )
 }
 
 /// The keys with nowhere else to be said, as the line under the cursor makes
@@ -3492,6 +3520,57 @@ mod tests {
     }
 
     #[test]
+    fn composer_an_empty_task_line_names_its_own_prefixes() {
+        // Wide enough for the whole sentence; a narrow screen clips it with
+        // the ellipsis every other row wears.
+        let empty = painted(&typing(""), (110, 30));
+        let hint = empty
+            .iter()
+            .find(|row| row.contains("m:model"))
+            .expect("the empty line teaches its prefixes");
+        for named in [
+            "m:model",
+            "p:permission",
+            "w:on|off",
+            "d:directory",
+            "agent:command",
+            "s:state",
+            "a:name",
+            "! shell",
+        ] {
+            assert!(hint.contains(named), "{named} is not taught: {hint}");
+        }
+
+        let narrow = painted(&typing(""), TALL);
+        let clipped = narrow
+            .iter()
+            .find(|row| row.contains("m:model"))
+            .expect("a narrow screen still teaches what fits");
+        assert!(clipped.trim_end().ends_with('…'), "{clipped}");
+
+        // The first character typed takes the row away: whoever is typing has
+        // stopped reading it.
+        let typed = painted(&typing("p"), TALL);
+        assert!(
+            !typed.iter().any(|row| row.contains("m:model")),
+            "{typed:?}"
+        );
+
+        // A reply goes to an agent already running, where a dial means
+        // nothing, so the row would be teaching keys the line does not read.
+        let mut replying = showing(Vec::new(), None);
+        replying.mode = Mode::Typing(Composer::new(Asking::Reply {
+            id: "fix-a1b".to_string(),
+            question: false,
+        }));
+        let reply = painted(&replying, TALL);
+        assert!(
+            !reply.iter().any(|row| row.contains("m:model")),
+            "{reply:?}"
+        );
+    }
+
+    #[test]
     fn composer_wraps_what_will_not_fit_and_starts_a_row_at_every_newline() {
         assert_eq!(composer_lines("abcdef", 3), ["abc", "def"]);
         assert_eq!(
@@ -3597,7 +3676,12 @@ mod tests {
         screen.mode = Mode::Typing(Composer::new(Asking::Task));
 
         let drawn = painted(&screen, (60, 8));
-        assert_eq!(drawn[5], "task ▸");
+        assert_eq!(drawn[4], "task ▸");
+        assert!(
+            drawn[5].starts_with("m:model"),
+            "the empty line teaches its prefixes above the dial: {:?}",
+            drawn[5]
+        );
         assert_eq!(
             drawn[6], "permission: vendor default (shift+tab to cycle)",
             "the layer, not a guess at which mode claude would have picked"
