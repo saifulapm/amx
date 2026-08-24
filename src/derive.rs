@@ -641,11 +641,16 @@ fn ask_for_a_line(command: &str, at: &Path, id: &str, answer: &str) -> Option<St
 /// is not the record this sentence is about. The answer is what says so rather
 /// than the clock: two turns of one second are told apart by what they said
 /// and not by when they said it.
-fn write_the_line(root: &Path, id: &str, at: &Path, command: &str, answer: &str) {
-    let Some(line) = ask_for_a_line(command, at, id, answer) else {
+fn write_the_line(root: &Path, id: &str, turn: u64, at: &Path, command: &str, answer: &str) {
+    let line = ask_for_a_line(command, at, id, answer);
+    let Ok(agent) = Agent::open(root, id) else {
         return;
     };
-    let Ok(agent) = Agent::open(root, id) else {
+    // The ask is over either way, and saying so is what stops the next reader
+    // asking the same question of the same command.
+    settle_the_ask(&agent, turn, crate::store::now());
+
+    let Some(line) = line else {
         return;
     };
     let _ = agent.writer().and_then(|writer| {
@@ -687,51 +692,103 @@ fn done_asking() {
     }
 }
 
-/// What the last ask was about, beside the record it was about.
+/// What the last ask was, beside the record it was about.
 const ASKED: &str = "summary.asked";
+
+/// The last ask about one agent: which turn it was about, when it went out,
+/// and whether it came back.
+///
+/// Beside the record because a queue inside one process cannot answer this:
+/// `amx ls --json` in a caller's loop is a new process every time, and each
+/// would find a finished turn with no line on it and start the command again
+/// for as long as the loop runs. The record is what those processes share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+struct Asked {
+    turn: u64,
+    at: u64,
+    /// Whether whoever asked heard back. A command that answered nothing has
+    /// answered: it will answer nothing again in five minutes, and asking a
+    /// model the same question every five minutes for as long as a view is
+    /// open is the one way this key could quietly cost somebody money.
+    over: bool,
+}
+
+/// How long an ask that has not come back is taken to be still out.
+///
+/// The ask is made on a thread nobody joins, so a verb that prints and exits
+/// takes its unfinished ask with it — and a claim left behind by one of those
+/// would be a turn nothing ever asks about again. Long enough that a command
+/// still thinking is not asked the same question twice, short enough that the
+/// row gets its line from the next reader rather than from the next turn.
+const AGAIN: u64 = 300;
+
+/// Whether this turn is worth asking about, given what the last ask was.
+fn worth_asking(asked: Option<Asked>, turn: u64, now: u64) -> bool {
+    match asked {
+        Some(asked) if asked.turn == turn => !asked.over && now.saturating_sub(asked.at) >= AGAIN,
+        // Nothing asked yet, or asked about the turn before this one.
+        _ => true,
+    }
+}
 
 /// Claim a turn, so one amx asks about it rather than every amx that happens
 /// to read the agent.
 ///
-/// A queue inside one process cannot do this: `amx ls --json` in a caller's
-/// loop is a new process every time, and each would find a finished turn with
-/// no line on it and start the command again, for as long as the loop runs.
-/// What outlives a process here is the record, so the claim goes beside it —
-/// the turn asked about, written under the writer's lock, which is the one
-/// thing exclusive across every amx on the machine.
-///
-/// A turn claimed is never asked about again, whatever came back. A command
-/// that failed once fails the same way a second later, and a turn nobody could
-/// summarise keeps the answer on its row, which is what it had before anybody
-/// configured anything.
-fn claim_the_turn(agent: &Agent, since: u64) -> bool {
-    // Read before locking, the way a question is: a claim already made costs
-    // one small file read, and a turn with a line on it never gets this far.
-    if claimed(agent.dir()) == Some(since) {
+/// Written under the writer's lock, which is the one thing exclusive across
+/// every amx on the machine, and read once without it first: a claim already
+/// made costs a small file read, and a turn with a line on it never gets this
+/// far.
+fn claim_the_turn(agent: &Agent, turn: u64, now: u64) -> bool {
+    if !worth_asking(asked(agent.dir()), turn, now) {
         return false;
     }
     let Ok(_writer) = agent.writer() else {
         return false;
     };
-    if claimed(agent.dir()) == Some(since) {
+    // Under the lock, where two amx that read the same absence become one.
+    if !worth_asking(asked(agent.dir()), turn, now) {
         return false;
     }
+    write_asked(
+        agent.dir(),
+        Asked {
+            turn,
+            at: now,
+            over: false,
+        },
+    )
+}
 
-    let path = agent.dir().join(ASKED);
-    if std::fs::write(&path, since.to_string()).is_err() {
+/// Say the ask came back, whatever it came back with.
+fn settle_the_ask(agent: &Agent, turn: u64, now: u64) {
+    let Ok(_writer) = agent.writer() else {
+        return;
+    };
+    write_asked(
+        agent.dir(),
+        Asked {
+            turn,
+            at: now,
+            over: true,
+        },
+    );
+}
+
+/// The last ask about this agent, where there was one.
+fn asked(dir: &Path) -> Option<Asked> {
+    serde_json::from_str(&std::fs::read_to_string(dir.join(ASKED)).ok()?).ok()
+}
+
+fn write_asked(dir: &Path, asked: Asked) -> bool {
+    let Ok(said) = serde_json::to_string(&asked) else {
+        return false;
+    };
+    let path = dir.join(ASKED);
+    if std::fs::write(&path, said).is_err() {
         return false;
     }
     let _ = crate::paths::keep_to_the_owner(&path, crate::paths::FILE_MODE);
     true
-}
-
-/// The turn the last ask was about, where one has been made.
-fn claimed(dir: &Path) -> Option<u64> {
-    std::fs::read_to_string(dir.join(ASKED))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
 }
 
 /// Set that going, with nobody waiting for it.
@@ -741,30 +798,37 @@ fn claimed(dir: &Path) -> Option<u64> {
 /// reading, and a verb that exits first leaves the turn unsummarised, which
 /// costs the line and nothing else. A command that never returns costs the
 /// thread it is on, and the queue behind it.
-fn have_a_line_written(root: &Path, agent: &Agent, meta: &Meta, state: &State, command: &str) {
+fn have_a_line_written(
+    root: &Path,
+    agent: &Agent,
+    meta: &Meta,
+    state: &State,
+    command: &str,
+    now: u64,
+) {
     // Before the queue rather than after it. A turn somebody has already asked
     // about is one this reading will never ask about, and a row that stood in
     // the queue holding a place it cannot use would keep every row under it
     // from ever being asked about at all.
-    if claimed(agent.dir()) == Some(state.since) {
+    if !worth_asking(asked(agent.dir()), state.since, now) {
         return;
     }
     if !may_ask() {
         return;
     }
-    if !claim_the_turn(agent, state.since) {
+    if !claim_the_turn(agent, state.since, now) {
         done_asking();
         return;
     }
 
-    let (root, id) = (root.to_path_buf(), meta.id.clone());
+    let (root, id, turn) = (root.to_path_buf(), meta.id.clone(), state.since);
     let at = where_it_ran(meta);
     let command = command.to_string();
     let answer = state.result.clone().unwrap_or_default();
     let asking = std::thread::Builder::new()
         .name("amx-summary".to_string())
         .spawn(move || {
-            write_the_line(&root, &id, &at, &command, &answer);
+            write_the_line(&root, &id, turn, &at, &command, &answer);
             done_asking();
         });
     if asking.is_err() {
@@ -805,7 +869,7 @@ pub fn view(root: &Path, id: &str, rules: &Ruleset, now: u64) -> Result<View> {
     if let Some(command) = crate::config::current().summary_command.as_deref()
         && wants_a_line(&state)
     {
-        have_a_line_written(root, &agent, &meta, &state, command);
+        have_a_line_written(root, &agent, &meta, &state, command, now);
     }
 
     Ok(seen(meta, state, reading))
@@ -854,7 +918,7 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
         if let Some(command) = crate::config::current().summary_command.as_deref()
             && wants_a_line(&state)
         {
-            have_a_line_written(root, &agent, &meta, &state, command);
+            have_a_line_written(root, &agent, &meta, &state, command, now);
         }
 
         views.push(seen(meta, state, reading));
@@ -1627,6 +1691,43 @@ mod tests {
     }
 
     #[test]
+    fn summary_asks_again_only_about_a_turn_whose_ask_went_with_its_process() {
+        let out = |turn, at| {
+            Some(Asked {
+                turn,
+                at,
+                over: false,
+            })
+        };
+
+        assert!(worth_asking(None, 100, 1_000), "nobody has asked yet");
+        assert!(
+            !worth_asking(out(100, 1_000), 100, 1_100),
+            "an ask that went out a minute ago is still out"
+        );
+        assert!(
+            worth_asking(out(100, 1_000), 100, 1_000 + AGAIN),
+            "and one that never came back went with the verb that made it"
+        );
+        assert!(
+            !worth_asking(
+                Some(Asked {
+                    turn: 100,
+                    at: 1_000,
+                    over: true
+                }),
+                100,
+                90_000
+            ),
+            "a command that answered nothing has answered"
+        );
+        assert!(
+            worth_asking(out(100, 1_000), 200, 1_100),
+            "the turn after it is a question of its own"
+        );
+    }
+
+    #[test]
     fn summary_claims_a_turn_so_one_amx_asks_about_it_and_not_five() {
         let root = TempDir::new().unwrap();
         let agent = Agent::create(root.path(), &meta()).unwrap();
@@ -1639,27 +1740,25 @@ mod tests {
             .unwrap();
         drop(writer);
 
-        assert!(claim_the_turn(&agent, ended.since));
+        assert!(claim_the_turn(&agent, ended.since, 1_000));
         assert!(
-            !claim_the_turn(&agent, ended.since),
+            !claim_the_turn(&agent, ended.since, 1_001),
             "a caller's next ls is a new process, and the record is the only \
              thing either of them shares"
         );
-        // Whatever came back, including nothing: a command that failed once
-        // fails the same way a second later.
-        assert!(agent.state().unwrap().summary.is_none());
 
-        // And a turn nobody may ask about again does not stand in the queue
-        // for the rows under it, which is the whole of what those rows would
-        // get: this one is the first row of every reading.
-        have_a_line_written(root.path(), &agent, &meta(), &ended, "true");
+        // A turn nobody may ask about again does not stand in the queue for
+        // the rows under it, which is the whole of what those rows would get:
+        // this one is the first row of every reading.
+        have_a_line_written(root.path(), &agent, &meta(), &ended, "true", 1_001);
         assert!(may_ask(), "the queue is where it was");
         done_asking();
 
-        assert!(
-            claim_the_turn(&agent, ended.since + 1),
-            "the turn after it is a question of its own"
-        );
+        // The command answered, with a line or with nothing, and either way
+        // the question has been put.
+        settle_the_ask(&agent, ended.since, 1_002);
+        assert!(!claim_the_turn(&agent, ended.since, 90_000));
+        assert!(agent.state().unwrap().summary.is_none());
     }
 
     #[test]
@@ -1677,7 +1776,14 @@ mod tests {
         drop(writer);
 
         let answer = ended.result.clone().unwrap();
-        write_the_line(root.path(), "fix-login-a1b", at.path(), "cat", &answer);
+        write_the_line(
+            root.path(),
+            "fix-login-a1b",
+            ended.since,
+            at.path(),
+            "cat",
+            &answer,
+        );
 
         let written = agent.state().unwrap();
         assert_eq!(written.summary.as_deref(), Some("fixed the redirect"));
@@ -1698,7 +1804,14 @@ mod tests {
             })
             .unwrap();
         drop(writer);
-        write_the_line(root.path(), "fix-login-a1b", at.path(), "cat", &answer);
+        write_the_line(
+            root.path(),
+            "fix-login-a1b",
+            ended.since,
+            at.path(),
+            "cat",
+            &answer,
+        );
         assert_eq!(agent.state().unwrap().summary, None);
     }
 

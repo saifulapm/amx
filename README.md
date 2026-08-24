@@ -547,8 +547,9 @@ the line arrives, and a command that fails, that is not installed, or that says
 nothing costs the line and nothing else. Each turn is asked about once, by one
 amx, and one turn at a time: a view opened on a week of finished agents is a
 queue rather than a week of model calls at once, and a caller running `ls` in a
-loop does not start the command again on every pass. Left out, nothing is run
-and nothing is spent.
+loop does not start the command again on every pass. A verb that prints and
+exits while the command is still thinking takes the ask with it, and the next
+reader along makes it again. Left out, nothing is run and nothing is spent.
 
 ## What is on disk
 
@@ -559,9 +560,9 @@ One directory per agent under `~/.local/state/amx/agents/<id>/`:
 - `events.jsonl` holds one line per event, in the order they arrived.
 - `pr.json` holds what its branch's pull requests were doing when the view last
   asked, and is only there once one has.
-- `summary.asked` names the turn a `summary_command` was last run for, so one
-  amx runs it and the next one to read the agent does not run it again. Only
-  there once one has been configured.
+- `summary.asked` holds the last ask a `summary_command` made: the turn it was
+  about, when it went out, and whether it came back. It is what keeps one amx
+  asking and every other one reading, and is only there once the key is set.
 - `scratch/` is the agent's own directory to write in. Every pane amx starts is
   told where it is in `$AMX_AGENT_DIR`, and it goes when the record goes, so
   anything worth keeping belongs in the worktree with the rest of the work.
