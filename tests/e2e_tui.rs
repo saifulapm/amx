@@ -1657,6 +1657,56 @@ fn a_previewed_question() -> Vec<Value> {
     })]
 }
 
+/// The vendor's own checkbox menu, row for row as claude 2.1.240 draws one
+/// (`docs/question-shapes.md` § 1): the full-width rule the box opens with,
+/// the tab strip, the question, the boxes with their descriptions, the two rows
+/// no payload carries, and the footer every question screen ends in.
+const MENU: [&str; 17] = [
+    "────────────────────────────────────────────────────────────",
+    "←  ☐ Features  ✔ Submit  →",
+    "",
+    "Which features should be enabled?",
+    "",
+    "❯ 1. [ ] Logging",
+    "  Write a log file",
+    "  2. [ ] Metrics",
+    "  Export counters",
+    "  3. [ ] Tracing",
+    "  Emit spans",
+    "  4. [ ] Type something",
+    "     Submit",
+    "────────────────────────────────────────────────────────────",
+    "  5. Chat about this",
+    "",
+    "Enter to select · ↑/↓ to navigate · Esc to cancel",
+];
+
+/// The call that drew it, as the tool made it: one question, three choices and
+/// the flag that says the boxes take more than one.
+fn the_menus_call() -> Vec<Value> {
+    vec![json!({
+        "header": "Features",
+        "text": "Which features should be enabled?",
+        "options": [
+            { "label": "Logging", "description": "Write a log file" },
+            { "label": "Metrics", "description": "Export counters" },
+            { "label": "Tracing", "description": "Emit spans" },
+        ],
+        "multi": true,
+    })]
+}
+
+/// An agent standing at that menu: the screen live on a pane of its own, with
+/// what it said before it asked above the box, and the call on its record.
+fn parked_at_a_live_menu(amx: &Harness, id: &str) -> String {
+    let mut rows = vec!["i wired the logging up", ""];
+    rows.extend_from_slice(&MENU);
+    let pane = a_pane_showing(amx, &rows);
+    amx.record(id, &pane);
+    showing_the_pending_one(amx, id, &the_menus_call());
+    pane
+}
+
 /// The card, opened on the agent the view is holding the cursor over.
 fn card_on(amx: &Harness, view: &str, id: &str) -> String {
     amx.until("the row", || screen(amx, view).contains(id).then_some(()));
@@ -1891,6 +1941,49 @@ fn card_checks_the_boxes_of_a_question_that_takes_more_than_one() {
             .contains("Storage · 3 of 3")
             .then_some(())
     });
+}
+
+#[test]
+fn card_over_a_live_menu_draws_the_question_once() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+    parked_at_a_live_menu(&amx, "pick-a1b");
+
+    let carded = card_on(&amx, &view, "pick-a1b");
+    assert_eq!(
+        carded.matches("Which features should be enabled?").count(),
+        2,
+        "the row asks it and the card asks it again, and the menu under the \
+         card is not a third:\n{carded}"
+    );
+    for choice in ["1. [ ] Logging", "2. [ ] Metrics", "3. [ ] Tracing"] {
+        assert_eq!(
+            carded.matches(choice).count(),
+            1,
+            "{choice} is on the card, and the pane's own copy of it is not:\n{carded}"
+        );
+    }
+
+    // The rows the vendor adds are the vendor's, and the card names them in its
+    // own words rather than drawing the menu they are on.
+    for furniture in ["Chat about this", "Enter to select", "☐ Features"] {
+        assert!(
+            !carded.contains(furniture),
+            "{furniture} is the menu's furniture:\n{carded}"
+        );
+    }
+    assert!(
+        carded.contains("words of your own"),
+        "with the free-text row named:\n{carded}"
+    );
+
+    // And what the card spends its window on is what is nowhere else on the
+    // screen: what the agent said before it asked.
+    assert!(
+        carded.contains("i wired the logging up"),
+        "the work above the box is what the card has room for now:\n{carded}"
+    );
 }
 
 #[test]
