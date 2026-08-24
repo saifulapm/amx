@@ -513,7 +513,7 @@ the notice is handed over and never waited for.
 
 ## Configuration
 
-`~/.config/amx/config.toml`, seven keys and no more:
+`~/.config/amx/config.toml`, nine keys and no more:
 
 ```toml
 agent = "claude"        # the command a new agent runs
@@ -527,12 +527,25 @@ trust = false           # answer claude's folder-trust screen for trees amx cuts
 model = "opus"
 permission = "plan"
 effort = "high"
+
+# What writes the one line a finished turn is worth. Left out, nothing runs.
+summary_command = "claude -p 'Sum this up in eight words. Answer with the words alone.'"
 ```
 
 Config is a convenience, never a gate. A file amx cannot read or parse falls
 back to these defaults with a warning, because losing an agent to a stray
 comma is the worse outcome. An unknown key is a warning and the rest of the
 file still applies, and so is a dial the configured agent would not take.
+
+`summary_command` is what a finished row says. What a turn leaves behind is an
+answer, and an answer does not open with a summary of itself, so without this
+the row shows its first line. With it, the first reader to see a turn end runs
+the command where the agent ran, hands it the whole answer on stdin with
+`$AMX_ID` naming the agent, and writes the first line it prints onto the record
+for every reader after. Nothing waits for it: the row keeps the answer until
+the line arrives, and a command that fails, that is not installed, or that says
+nothing costs the line and nothing else. Left out, nothing is run and nothing
+is spent.
 
 ## What is on disk
 

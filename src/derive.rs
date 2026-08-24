@@ -29,6 +29,13 @@
 //! it is doing at the moment it was looked at. It goes on the reading and
 //! never on the record — see [`doing`].
 //!
+//! And one thing a reader asks for rather than reads. What a turn leaves
+//! behind is an answer, not a line about one, so a row of an agent that has
+//! finished shows the answer's first sentence. Where somebody has configured a
+//! `summary_command`, the first reader to see the turn end sets it going, and
+//! the line it writes is on the record for every reader after — see
+//! [`wants_a_line`]. Nothing configured is nothing run.
+//!
 //! Whatever it concludes, it concludes once. Every reader of an agent — `ls`,
 //! `status`, the view, `--json` — is handed one [`View`], and what is on that
 //! view agrees with the phase on it. A record can disagree with itself; the
@@ -41,6 +48,7 @@
 
 use anyhow::Result;
 use serde::Serialize;
+use std::io::Write;
 use std::path::Path;
 
 use crate::rules::{Claim, Ruleset};
@@ -561,6 +569,141 @@ fn seen(meta: Meta, mut state: State, reading: Reading) -> View {
     View::new(meta, state, reading.verdict)
 }
 
+/// Whether this record is a turn that has ended with something to boil down.
+///
+/// What a row says about an agent that has finished is the first line of what
+/// the agent said, and an answer does not open with a summary of itself: it
+/// opens with `Done.` or with the first of five paragraphs. A line about the
+/// whole answer is a job for something that can read the whole answer, which
+/// is what [`ask_for_a_line`] is for.
+///
+/// Only where the turn is over, and only once. Mid-turn the row is saying what
+/// the agent is doing, which is worth more than a line about a turn that has
+/// not happened yet, and a line already written is one nobody pays for twice.
+fn wants_a_line(state: &State) -> bool {
+    (state.state == Phase::Idle || state.state.is_terminal())
+        && state.summary.is_none()
+        && state
+            .result
+            .as_deref()
+            .is_some_and(|answer| !answer.trim().is_empty())
+}
+
+/// The line the configured command makes of what an agent said.
+///
+/// Through `sh`, because the key holds a command line and a shell is what a
+/// command line is written for. The answer goes in on stdin whole — an answer
+/// is arbitrary text and an argv is the one place it could be read as syntax —
+/// and the command runs where the agent ran, with `AMX_ID` naming which agent
+/// it is about, so a command that wants more than the answer knows where to
+/// look for it.
+///
+/// What comes back is the first line with anything on it. A command that fails,
+/// that is not there, or that says nothing leaves the row exactly as it was:
+/// this is a line about the answer, and the answer is on the record either way.
+fn ask_for_a_line(command: &str, at: &Path, id: &str, answer: &str) -> Option<String> {
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(at)
+        .env("AMX_ID", id)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        // A command that reads a line and leaves is answering the question
+        // asked, so a pipe it stopped reading is not a failure.
+        let _ = stdin.write_all(answer.as_bytes());
+    }
+    let said = child.wait_with_output().ok()?;
+    if !said.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&said.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
+/// Ask for a turn's line and write it down.
+///
+/// Written with the observing hand rather than the recording one: amx heard
+/// nothing from the agent by asking somebody else about it, and moving the
+/// record's freshness would have the next reader believe this document over
+/// the pane it is meant to be checking.
+///
+/// Against the answer it was asked about, and no other. Whatever wrote the
+/// line took its time about it, and a record that has moved on to another turn
+/// is not the record this sentence is about. The answer is what says so rather
+/// than the clock: two turns of one second are told apart by what they said
+/// and not by when they said it.
+fn write_the_line(root: &Path, id: &str, at: &Path, command: &str, answer: &str) {
+    let Some(line) = ask_for_a_line(command, at, id, answer) else {
+        return;
+    };
+    let Ok(agent) = Agent::open(root, id) else {
+        return;
+    };
+    let _ = agent.writer().and_then(|writer| {
+        writer.observe(|current| {
+            if current.result.as_deref() == Some(answer) && current.summary.is_none() {
+                current.summary = Some(line);
+            }
+        })
+    });
+}
+
+/// The turns a line has already been asked about.
+///
+/// A reading is taken every second and the answer takes as long as it takes,
+/// so without this every look would put another command behind the same turn.
+/// A turn that was asked about and got nothing back stays in here too: a
+/// command that failed once fails the same way a second later, and a wall of
+/// finished agents would be a wall of subprocesses for as long as the view is
+/// open.
+static ASKED: std::sync::Mutex<std::collections::BTreeSet<(String, u64)>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// Set that going, with nobody waiting for it.
+///
+/// The thread is never joined, the way a look at a forge is not
+/// (`crate::pr`): a view is open for hours and has the line on its next
+/// reading, and a verb that exits first leaves the turn unsummarised, which
+/// costs the line and nothing else. A command that never returns costs the
+/// thread it is on.
+fn have_a_line_written(root: &Path, meta: &Meta, state: &State, command: &str) {
+    {
+        let Ok(mut asked) = ASKED.lock() else {
+            return;
+        };
+        if !asked.insert((meta.id.clone(), state.since)) {
+            return;
+        }
+    }
+
+    let (root, id) = (root.to_path_buf(), meta.id.clone());
+    let at = where_it_ran(meta);
+    let command = command.to_string();
+    let answer = state.result.clone().unwrap_or_default();
+    let _ = std::thread::Builder::new()
+        .name("amx-summary".to_string())
+        .spawn(move || write_the_line(&root, &id, &at, &command, &answer));
+}
+
+/// Where the command runs: the agent's own tree while it is there, else where
+/// the agent was started. A tree that has been removed leaves the directory
+/// the run was asked for, which is the repository it was cut from.
+fn where_it_ran(meta: &Meta) -> std::path::PathBuf {
+    match &meta.worktree {
+        Some(tree) if tree.is_dir() => tree.clone(),
+        _ => meta.dir.clone(),
+    }
+}
+
 /// Read one agent.
 pub fn view(root: &Path, id: &str, rules: &Ruleset, now: u64) -> Result<View> {
     let agent = Agent::open(root, id)?;
@@ -580,6 +723,11 @@ pub fn view(root: &Path, id: &str, rules: &Ruleset, now: u64) -> Result<View> {
     );
     if let Some(asking) = &reading.asking {
         note(&agent, &mut state, asking);
+    }
+    if let Some(command) = crate::config::current().summary_command.as_deref()
+        && wants_a_line(&state)
+    {
+        have_a_line_written(root, &meta, &state, command);
     }
 
     Ok(seen(meta, state, reading))
@@ -625,6 +773,11 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
         if let Some(asking) = &reading.asking {
             note(&agent, &mut state, asking);
         }
+        if let Some(command) = crate::config::current().summary_command.as_deref()
+            && wants_a_line(&state)
+        {
+            have_a_line_written(root, &meta, &state, command);
+        }
 
         views.push(seen(meta, state, reading));
     }
@@ -637,6 +790,7 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
 mod tests {
     use super::*;
     use crate::rules;
+    use tempfile::TempDir;
 
     const IDLE_SCREEN: &str = "\
 ✻ Worked for 2m 26s
@@ -1307,6 +1461,118 @@ mod tests {
             "and an agent amx cut no branch for has nothing to say here, \
              which is an empty list rather than a missing field"
         );
+    }
+
+    #[test]
+    fn summary_is_wanted_once_a_turn_has_ended_with_something_to_boil_down() {
+        let ended = |phase, result: Option<&str>, summary: Option<&str>| State {
+            state: phase,
+            result: result.map(str::to_string),
+            summary: summary.map(str::to_string),
+            ..State::default()
+        };
+
+        let answered = "Fixed the redirect and ran the suite.\n\nThe test was …";
+        assert!(wants_a_line(&ended(Phase::Idle, Some(answered), None)));
+        assert!(
+            wants_a_line(&ended(Phase::Done, Some(answered), None)),
+            "a run that has ended still said something worth a line"
+        );
+
+        // Mid-turn there is nothing to boil down: what is on the row then is
+        // what the agent is doing, and it is different by the next reading.
+        assert!(!wants_a_line(&ended(Phase::Working, Some(answered), None)));
+        assert!(!wants_a_line(&ended(Phase::Waiting, Some(answered), None)));
+        // A turn that ended without an answer, and a line already written.
+        assert!(!wants_a_line(&ended(Phase::Idle, None, None)));
+        assert!(!wants_a_line(&ended(Phase::Idle, Some("  \n "), None)));
+        assert!(!wants_a_line(&ended(
+            Phase::Idle,
+            Some(answered),
+            Some("Fixed the redirect")
+        )));
+    }
+
+    #[test]
+    fn summary_command_is_handed_the_answer_and_read_for_one_line() {
+        let at = TempDir::new().unwrap();
+        let said = "fixed the redirect\nand ran the suite\n";
+
+        // The answer arrives on stdin, whole, and what comes back is the first
+        // line with anything on it.
+        assert_eq!(
+            ask_for_a_line("tr a-z A-Z", at.path(), "fix-login-a1b", said).as_deref(),
+            Some("FIXED THE REDIRECT")
+        );
+        assert_eq!(
+            ask_for_a_line("printf '\\n   \\nsecond thoughts\\n'", at.path(), "x", said).as_deref(),
+            Some("second thoughts")
+        );
+
+        // It runs where the agent ran, and is told which agent it is about.
+        assert_eq!(
+            ask_for_a_line("pwd", at.path(), "fix-login-a1b", said).as_deref(),
+            Some(std::fs::canonicalize(at.path()).unwrap().to_str().unwrap())
+        );
+        assert_eq!(
+            ask_for_a_line(
+                "printf '%s\\n' \"$AMX_ID\"",
+                at.path(),
+                "fix-login-a1b",
+                said
+            )
+            .as_deref(),
+            Some("fix-login-a1b")
+        );
+
+        // A command that fails, and one that says nothing, say nothing. The
+        // row keeps the answer it had.
+        assert_eq!(ask_for_a_line("exit 3", at.path(), "x", said), None);
+        assert_eq!(ask_for_a_line("true", at.path(), "x", said), None);
+        assert_eq!(
+            ask_for_a_line("no-such-command-here", at.path(), "x", said),
+            None
+        );
+    }
+
+    #[test]
+    fn summary_line_goes_on_the_record_of_the_turn_it_was_asked_about() {
+        let root = TempDir::new().unwrap();
+        let at = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta()).unwrap();
+        let writer = agent.writer().unwrap();
+        let ended = writer
+            .update_state(|state| {
+                state.state = Phase::Idle;
+                state.result = Some("fixed the redirect\nand ran the suite".to_string());
+            })
+            .unwrap();
+        drop(writer);
+
+        let answer = ended.result.clone().unwrap();
+        write_the_line(root.path(), "fix-login-a1b", at.path(), "cat", &answer);
+
+        let written = agent.state().unwrap();
+        assert_eq!(written.summary.as_deref(), Some("fixed the redirect"));
+        assert_eq!(
+            written.last_event, ended.last_event,
+            "amx heard nothing from the agent by asking somebody else"
+        );
+        assert_eq!(written.since, ended.since, "and the turn is the same turn");
+
+        // The record moved on while the command was still running: this line
+        // is about a turn that is over, and the row is about the one it is on.
+        let writer = agent.writer().unwrap();
+        writer
+            .update_state(|state| {
+                state.state = Phase::Working;
+                state.summary = None;
+                state.result = None;
+            })
+            .unwrap();
+        drop(writer);
+        write_the_line(root.path(), "fix-login-a1b", at.path(), "cat", &answer);
+        assert_eq!(agent.state().unwrap().summary, None);
     }
 
     #[test]

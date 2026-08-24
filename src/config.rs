@@ -1,4 +1,4 @@
-//! `~/.config/amx/config.toml` — seven keys and nothing else.
+//! `~/.config/amx/config.toml` — nine keys and nothing else.
 //!
 //! Config is a convenience, never a gate: a file that cannot be read or
 //! parsed degrades to the defaults with a warning on stderr, because losing
@@ -10,7 +10,7 @@ use serde::Deserialize;
 use std::path::Path;
 
 /// Every key the file may carry. Anything else is warned about and ignored.
-pub const KNOWN_KEYS: [&str; 8] = [
+pub const KNOWN_KEYS: [&str; 9] = [
     "agent",
     "max_agents",
     "worktrees",
@@ -19,6 +19,7 @@ pub const KNOWN_KEYS: [&str; 8] = [
     "model",
     "permission",
     "effort",
+    "summary_command",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -45,6 +46,10 @@ pub struct Config {
     pub permission: Option<String>,
     /// Where the effort dial starts, under the same rule.
     pub effort: Option<String>,
+    /// What writes the one line a finished turn is worth. Absent is nothing
+    /// run and nothing spent, and a row that says what the agent said rather
+    /// than what somebody would have written about it.
+    pub summary_command: Option<String>,
 }
 
 impl Default for Config {
@@ -58,6 +63,7 @@ impl Default for Config {
             model: None,
             permission: None,
             effort: None,
+            summary_command: None,
         }
     }
 }
@@ -143,6 +149,24 @@ pub fn load_from(path: &Path) -> (Config, Vec<String>) {
     }
 }
 
+/// The config as a reader reaches it, read once for the life of the process.
+///
+/// Every other caller is handed the config `main` read at startup. A reader is
+/// not: `ls`, `status`, the view and the card all reach [`crate::derive`]
+/// without one, and threading a config through four surfaces to reach a single
+/// key would change more than the key is worth.
+///
+/// Read once because a reading is taken every second, and a file that nobody
+/// is editing does not want opening that often. A file somebody has just
+/// edited is picked up by the next amx they run, which is how every other key
+/// here behaves already. Warnings go unsaid here on purpose: `main` prints
+/// them from its own read, and saying them twice would put a parse error on
+/// the screen once a second.
+pub fn current() -> &'static Config {
+    static CURRENT: std::sync::OnceLock<Config> = std::sync::OnceLock::new();
+    CURRENT.get_or_init(|| load().0)
+}
+
 /// The config as amx runs with it, with warnings for the caller to print.
 pub fn load() -> (Config, Vec<String>) {
     match crate::paths::config_file() {
@@ -179,6 +203,8 @@ mod tests {
         assert_eq!(c.model, None);
         assert_eq!(c.permission, None);
         assert_eq!(c.effort, None);
+        // Nothing is run at the end of a turn until somebody says what to run.
+        assert_eq!(c.summary_command, None);
     }
 
     #[test]
@@ -224,19 +250,28 @@ mod tests {
         let (c, _) = parse("effort = \"high\"").unwrap();
         assert_eq!(c.effort.as_deref(), Some("high"));
         assert_eq!(c.permission, None);
+
+        let (c, w) = parse("summary_command = \"claude -p 'in eight words'\"").unwrap();
+        assert_eq!(
+            c.summary_command.as_deref(),
+            Some("claude -p 'in eight words'")
+        );
+        assert!(w.is_empty(), "{w:?}");
     }
 
     #[test]
-    fn all_seven_keys_together_parse() {
+    fn every_key_there_is_parses_beside_all_the_others() {
         let (c, w) = parse(
             r#"
                 agent = "claude --dangerously-skip-permissions"
                 max_agents = 3
                 worktrees = false
                 notifications = false
+                trust = true
                 model = "opus"
                 permission = "plan"
                 effort = "xhigh"
+                summary_command = "summarise"
             "#,
         )
         .unwrap();
@@ -244,10 +279,17 @@ mod tests {
         assert_eq!(c.max_agents, 3);
         assert!(!c.worktrees);
         assert!(!c.notifications);
+        assert!(c.trust);
         assert_eq!(c.model.as_deref(), Some("opus"));
         assert_eq!(c.permission.as_deref(), Some("plan"));
         assert_eq!(c.effort.as_deref(), Some("xhigh"));
+        assert_eq!(c.summary_command.as_deref(), Some("summarise"));
         assert!(w.is_empty(), "{w:?}");
+        assert_eq!(
+            KNOWN_KEYS.len(),
+            9,
+            "a key this file does not name is a key nothing here proves"
+        );
     }
 
     #[test]
