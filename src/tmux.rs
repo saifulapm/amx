@@ -718,8 +718,8 @@ mod tests {
     }
 
     #[test]
-    fn tmux_a_hidden_session_can_be_told_to_outlive_its_last_client() {
-        // What `--bg` rests on: without this, tmux destroys a session the
+    fn tmux_a_detached_session_can_be_told_to_outlive_its_last_client() {
+        // What every agent rests on: without this, tmux destroys a session the
         // moment nobody is attached to it.
         let server = TestServer::new();
         let (session, pane) = server.new_session(&idle()).unwrap();
