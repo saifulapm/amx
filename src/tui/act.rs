@@ -604,9 +604,19 @@ pub fn invitation(kind: Option<Kind>, options: &[String], asked: Option<&Ask>) -
         true => format!("{choices}, 1,3 for several"),
         false => choices,
     };
-    match (kind, asked.is_some_and(Ask::takes_notes)) {
-        (Some(Kind::Question), true) => format!("{several}, and words after it are a note"),
-        (Some(Kind::Question), false) => format!("{several}, or type an answer"),
+    match (kind, asked) {
+        (Some(Kind::Question), Some(ask)) if ask.takes_notes() => {
+            format!("{several}, and words after it are a note")
+        }
+        (Some(Kind::Question), _) => format!("{several}, or type an answer"),
+        // A question of a call, under a record that calls the screen something
+        // else. `AskUserQuestion` is the only thing that writes a question
+        // down, so a pending one is the vendor's own menu whatever an older amx
+        // wrote over it — and a menu has no y and no n to offer. The choices
+        // are all that is offered, because they are all this amx will send: the
+        // verb reads words against the same word for the kind, and a line that
+        // invited them here would be inviting what it is about to refuse.
+        (_, Some(_)) => several,
         _ => format!("{several}, y or n"),
     }
 }
@@ -1001,6 +1011,25 @@ mod tests {
                 invitation(kind, &[], None),
                 "press y, n or 1-9",
                 "with nothing read off the screen, the grammar itself: {kind:?}"
+            );
+        }
+
+        // And a question of a call under a record that calls the screen
+        // something else — an older amx wrote `permission` over every menu it
+        // saw, and records outlive the amx that wrote them. The screen is the
+        // menu the call drew, which has no y and no n on it, and the words the
+        // record's own word for the kind would have the verb refuse are not
+        // offered either.
+        for kind in [Some(Kind::Permission), Some(Kind::Trust), None] {
+            assert_eq!(
+                invitation(kind, &two, Some(&asked(false, false))),
+                "press 1-2",
+                "{kind:?}"
+            );
+            assert_eq!(
+                invitation(kind, &two, Some(&asked(true, false))),
+                "press 1-2, 1,3 for several",
+                "{kind:?}"
             );
         }
     }

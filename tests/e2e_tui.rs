@@ -1987,6 +1987,43 @@ fn card_over_a_live_menu_draws_the_question_once() {
 }
 
 #[test]
+fn card_answers_a_live_checkbox_menu_in_the_grammar_the_screen_takes() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+    let pane = parked_at_a_live_menu(&amx, "pick-a1b");
+    // An older amx wrote `permission` over every menu it saw, and records
+    // outlive the amx that wrote them. What the screen is showing is a menu,
+    // and a permission box's one key at a menu answers a question nobody chose.
+    let mut state = amx.state("pick-a1b");
+    state["question"]["kind"] = json!("permission");
+    amx.set_state("pick-a1b", state);
+
+    let carded = card_on(&amx, &view, "pick-a1b");
+    assert!(
+        carded.contains("press 1-3, 1,3 for several"),
+        "the boxes are checked by naming them:\n{carded}"
+    );
+    assert!(
+        !carded.contains("y or n"),
+        "and this screen has no y and no n on it:\n{carded}"
+    );
+
+    types(&amx, &view, "1,3");
+    press(&amx, &view, "Enter");
+
+    let said = answered(&amx, "pick-a1b");
+    assert_eq!(said["key"], "1,3");
+    assert_eq!(
+        said["answer"], "Logging, Tracing",
+        "the labels, in the order the boxes were checked"
+    );
+    amx.until("the digits to reach the menu", || {
+        amx.capture(&pane).contains("13").then_some(())
+    });
+}
+
+#[test]
 fn card_sends_the_note_the_vendor_lets_an_answer_ride_beside() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);
