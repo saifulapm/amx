@@ -473,6 +473,13 @@ impl List {
         if self.held.contains(&members[to]) != self.held.contains(&id) {
             return false;
         }
+        // And the rows a move can reach are the rows on the screen. A fold
+        // holds history back, and an agent moved behind one would go where the
+        // cursor could not follow it, leaving somebody's cursor on whoever
+        // came up in its place.
+        if !self.drawn(&members[to]) {
+            return false;
+        }
 
         members.swap(at, to);
         self.order.insert(group, members);
@@ -480,6 +487,14 @@ impl List {
         self.rebuild();
         self.follow(&on);
         true
+    }
+
+    /// Whether this agent has a row on the screen, as against being counted by
+    /// a heading that is shut or held back by a fold.
+    fn drawn(&self, id: &str) -> bool {
+        self.items
+            .iter()
+            .any(|item| self.agent(*item).is_some_and(|view| view.id() == id))
     }
 
     /// Where an agent sits in the order somebody put its group in, and past
@@ -1907,6 +1922,44 @@ mod tests {
         assert!(list.on_heading());
         assert!(!list.move_by(1));
         assert!(!list.hold_or_let_go());
+    }
+
+    #[test]
+    fn arranged_a_move_reaches_the_rows_on_the_screen_and_not_the_folded_ones() {
+        let mut list = listed(
+            (0..5)
+                .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
+                .collect(),
+        );
+        // Down to the last row the fold leaves standing.
+        for _ in 0..2 {
+            list.down();
+        }
+        assert_eq!(list.selected().unwrap().id(), "done-2");
+
+        assert!(
+            !list.move_by(1),
+            "the row under it is the fold, and behind that is history"
+        );
+        assert_eq!(
+            lines(&list),
+            ["completed (5)", "done-4", "done-3", "done-2", "… 2 more"]
+        );
+
+        // Opened, every row is a row a move can reach.
+        list.unfold();
+        assert!(list.move_by(1));
+        assert_eq!(
+            lines(&list),
+            [
+                "completed (5)",
+                "done-4",
+                "done-3",
+                "done-1",
+                "done-2",
+                "done-0"
+            ]
+        );
     }
 
     #[test]
