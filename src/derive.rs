@@ -657,48 +657,81 @@ fn write_the_line(root: &Path, id: &str, at: &Path, command: &str, answer: &str)
     });
 }
 
-/// What has been asked about, and whether anything is being asked now.
+/// Whether an ask is out already.
 ///
-/// `turns` is every turn a line has already been asked about, by agent and by
-/// when its turn ended, so a reading every second puts one command behind a
-/// turn rather than one behind every look. A turn that got nothing back stays
-/// in it: a command that failed once fails the same way a second later.
-///
-/// `busy` is the queue, and it is here because of what the command is. It is
-/// whatever somebody configured, routinely a model call, and a view opened on
-/// a week of finished agents would otherwise start one for every row at once —
-/// all of them at the same moment, for rows nobody is waiting on. One at a
-/// time turns that into a queue draining at the rate the command answers, and
-/// nobody is waiting for any of it.
-struct Asking {
-    turns: std::collections::BTreeSet<(String, u64)>,
-    busy: bool,
-}
+/// The command is whatever somebody configured, routinely a model call, and a
+/// view opened on a week of finished agents would otherwise start one for
+/// every row at once — all of them at the same moment, for rows nobody is
+/// waiting on. One at a time turns that into a queue draining at the rate the
+/// command answers, and nobody is waiting for any of it.
+static ASKING: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
 
-static ASKING: std::sync::Mutex<Asking> = std::sync::Mutex::new(Asking {
-    turns: std::collections::BTreeSet::new(),
-    busy: false,
-});
-
-/// Whether this turn is the one to ask about now. A turn refused because
-/// something else is being asked is not written down, so the next reading
-/// offers it again.
-fn may_ask(turn: (String, u64)) -> bool {
+/// Whether this is the moment to ask. A turn refused because something else is
+/// being asked about is claimed by nothing, so the next reading offers it
+/// again.
+fn may_ask() -> bool {
     let Ok(mut asking) = ASKING.lock() else {
         return false;
     };
-    if asking.busy || !asking.turns.insert(turn) {
+    if *asking {
         return false;
     }
-    asking.busy = true;
+    *asking = true;
     true
 }
 
 /// One question over, whatever it answered.
 fn done_asking() {
     if let Ok(mut asking) = ASKING.lock() {
-        asking.busy = false;
+        *asking = false;
     }
+}
+
+/// What the last ask was about, beside the record it was about.
+const ASKED: &str = "summary.asked";
+
+/// Claim a turn, so one amx asks about it rather than every amx that happens
+/// to read the agent.
+///
+/// A queue inside one process cannot do this: `amx ls --json` in a caller's
+/// loop is a new process every time, and each would find a finished turn with
+/// no line on it and start the command again, for as long as the loop runs.
+/// What outlives a process here is the record, so the claim goes beside it —
+/// the turn asked about, written under the writer's lock, which is the one
+/// thing exclusive across every amx on the machine.
+///
+/// A turn claimed is never asked about again, whatever came back. A command
+/// that failed once fails the same way a second later, and a turn nobody could
+/// summarise keeps the answer on its row, which is what it had before anybody
+/// configured anything.
+fn claim_the_turn(agent: &Agent, since: u64) -> bool {
+    // Read before locking, the way a question is: a claim already made costs
+    // one small file read, and a turn with a line on it never gets this far.
+    if claimed(agent.dir()) == Some(since) {
+        return false;
+    }
+    let Ok(_writer) = agent.writer() else {
+        return false;
+    };
+    if claimed(agent.dir()) == Some(since) {
+        return false;
+    }
+
+    let path = agent.dir().join(ASKED);
+    if std::fs::write(&path, since.to_string()).is_err() {
+        return false;
+    }
+    let _ = crate::paths::keep_to_the_owner(&path, crate::paths::FILE_MODE);
+    true
+}
+
+/// The turn the last ask was about, where one has been made.
+fn claimed(dir: &Path) -> Option<u64> {
+    std::fs::read_to_string(dir.join(ASKED))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// Set that going, with nobody waiting for it.
@@ -708,8 +741,12 @@ fn done_asking() {
 /// reading, and a verb that exits first leaves the turn unsummarised, which
 /// costs the line and nothing else. A command that never returns costs the
 /// thread it is on, and the queue behind it.
-fn have_a_line_written(root: &Path, meta: &Meta, state: &State, command: &str) {
-    if !may_ask((meta.id.clone(), state.since)) {
+fn have_a_line_written(root: &Path, agent: &Agent, meta: &Meta, state: &State, command: &str) {
+    if !may_ask() {
+        return;
+    }
+    if !claim_the_turn(agent, state.since) {
+        done_asking();
         return;
     }
 
@@ -761,7 +798,7 @@ pub fn view(root: &Path, id: &str, rules: &Ruleset, now: u64) -> Result<View> {
     if let Some(command) = crate::config::current().summary_command.as_deref()
         && wants_a_line(&state)
     {
-        have_a_line_written(root, &meta, &state, command);
+        have_a_line_written(root, &agent, &meta, &state, command);
     }
 
     Ok(seen(meta, state, reading))
@@ -810,7 +847,7 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
         if let Some(command) = crate::config::current().summary_command.as_deref()
             && wants_a_line(&state)
         {
-            have_a_line_written(root, &meta, &state, command);
+            have_a_line_written(root, &agent, &meta, &state, command);
         }
 
         views.push(seen(meta, state, reading));
@@ -1570,28 +1607,45 @@ mod tests {
     }
 
     #[test]
-    fn summary_asks_about_one_turn_at_a_time_and_about_each_turn_once() {
+    fn summary_asks_about_one_turn_at_a_time() {
         // What answers is whatever somebody configured, routinely a model
         // call, so a view opened on a week of finished agents queues them
         // rather than starting one for every row at once.
-        assert!(may_ask(("fix-login-a1b".to_string(), 10)));
-        assert!(
-            !may_ask(("port-cli-b2c".to_string(), 20)),
-            "somebody else's turn waits until this one is answered"
-        );
+        assert!(may_ask());
+        assert!(!may_ask(), "the next turn waits until this one is answered");
 
         done_asking();
-        assert!(may_ask(("port-cli-b2c".to_string(), 20)));
+        assert!(may_ask());
         done_asking();
+    }
 
-        // And a turn asked about once is not asked about again, whatever came
-        // back: a command that failed once fails the same way a second later.
-        assert!(!may_ask(("fix-login-a1b".to_string(), 10)));
+    #[test]
+    fn summary_claims_a_turn_so_one_amx_asks_about_it_and_not_five() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta()).unwrap();
+        let writer = agent.writer().unwrap();
+        let ended = writer
+            .update_state(|state| {
+                state.state = Phase::Idle;
+                state.result = Some("fixed the redirect".to_string());
+            })
+            .unwrap();
+        drop(writer);
+
+        assert!(claim_the_turn(&agent, ended.since));
         assert!(
-            may_ask(("fix-login-a1b".to_string(), 11)),
-            "the same agent's next turn is a different question"
+            !claim_the_turn(&agent, ended.since),
+            "a caller's next ls is a new process, and the record is the only \
+             thing either of them shares"
         );
-        done_asking();
+        // Whatever came back, including nothing: a command that failed once
+        // fails the same way a second later.
+        assert!(agent.state().unwrap().summary.is_none());
+
+        assert!(
+            claim_the_turn(&agent, ended.since + 1),
+            "the turn after it is a question of its own"
+        );
     }
 
     #[test]
