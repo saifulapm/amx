@@ -185,29 +185,6 @@ pub fn place(server: &Server, id: &str, cwd: &Path, command: &[String]) -> Resul
     Ok(pane)
 }
 
-/// Hold a lock for as long as the returned value lives.
-///
-/// Nothing a spawn does needs one: a session is claimed by the name it is
-/// given, and the id under that name was claimed by a directory before any of
-/// this. It is the front door that finds and then creates, and it is the front
-/// door that takes this.
-pub fn hold(path: &Path) -> Result<nix::fcntl::Flock<std::fs::File>> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-    let file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("opening {}", path.display()))?;
-    nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive)
-        .map_err(|(_, errno)| errno)
-        .with_context(|| format!("locking {}", path.display()))
-}
-
 /// `amx _boot <id>`: become the agent.
 ///
 /// The record is written by `new` once the pane exists, and this *is* that
