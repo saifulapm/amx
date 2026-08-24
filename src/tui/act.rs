@@ -21,11 +21,12 @@ use std::path::{Path, PathBuf};
 
 use super::paint::Card;
 use super::rows::Narrow;
-use crate::cli::{AgentArgs, NewArgs, StopArgs};
+use crate::cli::{AgentArgs, AnswerArgs, NewArgs, StopArgs};
 use crate::config::Config;
 use crate::derive::View;
-use crate::store::{Agent, Kind, Phase};
+use crate::store::{Agent, Ask, Kind, Phase};
 use crate::tmux::Server;
+use crate::verbs::answer::Answered;
 use crate::{derive, exit, registry, rules, spawn, store, verbs, worktree};
 
 /// A line somebody is typing, and what it is for.
@@ -299,11 +300,13 @@ pub enum Replied {
 /// Say something to the agent under the cursor.
 ///
 /// The grammar is `amx answer`'s, because it is the question's rather than
-/// amx's: the choices are read as choices wherever they are typed, and words
-/// are an answer only at the one prompt that offers a field to put them in.
-/// Words typed at a permission box would land on whatever is highlighted,
-/// which is an answer nobody chose, so they are refused before a byte of them
-/// reaches the pane.
+/// amx's: the choices are read as choices wherever they are typed, the boxes
+/// of a question that takes several are checked by naming them, and words are
+/// an answer only at the prompts that offer a row to put them in. Words typed
+/// at a permission box would land on whatever is highlighted, which is an
+/// answer nobody chose, so the verb refuses them before a byte of them reaches
+/// the pane — and refuses them here in the same words, because it is the same
+/// reading of the same record.
 pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
     let view = derive::view(root, id, rules::bundled(), store::now())?;
     let agent = Agent::open(root, id)?;
@@ -311,19 +314,10 @@ pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
 
     match view.phase() {
         Phase::Waiting => {
-            if let Some(key) = verbs::answer::named(text) {
-                verbs::answer::press(&agent, &server, &view.meta.pane, &key)?;
-                return Ok(Replied::Yes(format!("answered {id}")));
-            }
-            match view.kind() {
-                Some(Kind::Question) if !text.trim().is_empty() => {
-                    verbs::answer::say(&agent, &server, &view.meta.pane, text.trim())?;
-                    Ok(Replied::Yes(format!("answered {id}")))
-                }
-                kind => Ok(Replied::No(format!(
-                    "{id} is asking: {}",
-                    invitation(kind, &view.state.options)
-                ))),
+            let typed = card_line(text, view.state.pending());
+            match verbs::answer::given(&agent, &server, &view, &typed)? {
+                Answered::Yes => Ok(Replied::Yes(format!("answered {id}"))),
+                Answered::No(refused) => Ok(Replied::No(format!("{id}: {refused}"))),
             }
         }
         phase if phase.is_terminal() => Ok(Replied::No(format!(
@@ -336,25 +330,75 @@ pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
     }
 }
 
+/// The card's one line, as the command line the verb reads.
+///
+/// The card holds a line and not a command line, so everything typed on it is
+/// the answer — a key, the choices to check, or words of your own — and the
+/// verb tells the three apart exactly as it does at a shell prompt.
+///
+/// The note is the exception, and the shape it belongs to is what makes room
+/// for it. Measured against claude 2.1.240, a question whose choices carry a
+/// preview draws a notes field and no free-text row at all, so on that one
+/// question words are not an answer and there is nothing else for them to be:
+/// the key in front of them is the choice, and what follows it is the note it
+/// rides beside. Everywhere else the whole line goes to the verb, whatever is
+/// in it, so a line the question would refuse is quoted back whole rather than
+/// by its first word.
+fn card_line(text: &str, asked: Option<&Ask>) -> AnswerArgs {
+    let text = text.trim();
+    let whole = |key: &str| AnswerArgs {
+        key: Some(key.to_string()),
+        text: None,
+        note: None,
+    };
+
+    if !asked.is_some_and(Ask::takes_notes) {
+        return whole(text);
+    }
+    match text.split_once(char::is_whitespace) {
+        Some((key, note)) if verbs::answer::named(key).is_some() && !note.trim().is_empty() => {
+            AnswerArgs {
+                key: Some(key.to_string()),
+                text: None,
+                note: Some(note.trim().to_string()),
+            }
+        }
+        _ => whole(text),
+    }
+}
+
 /// What this question will take, in the words the card invites it with — and
 /// the words it is refused in, which are the same words for the same reason.
 ///
-/// Only what is true of the prompt in front of somebody: the choices it drew,
-/// numbered as every surface numbers them, and a field for words of their own
-/// where the vendor asked its own question. A permission box has no such
-/// field, so the invitation to type at it is never written; a question whose
-/// choices amx has not read yet does not name numbers it cannot stand behind.
-pub fn invitation(kind: Option<Kind>, options: &[String]) -> String {
+/// Only what is true of the prompt in front of somebody, which is why the
+/// question the call is showing comes into it: a question that takes more than
+/// one choice is answered by checking boxes, and a question whose choices
+/// carry a preview has a field for a note and no row for words of your own at
+/// all. A permission box has neither, so neither is ever written there; a
+/// question whose choices amx has not read yet does not name numbers it cannot
+/// stand behind, and with no numbers there is nothing to check or to hang a
+/// note on.
+pub fn invitation(kind: Option<Kind>, options: &[String], asked: Option<&Ask>) -> String {
     let choices = match options.len() {
         0 => None,
         1 => Some("press 1".to_string()),
         many => Some(format!("press 1-{}", many.min(9))),
     };
-    match (choices, kind) {
-        (Some(choices), Some(Kind::Question)) => format!("{choices}, or type an answer"),
-        (Some(choices), _) => format!("{choices}, y or n"),
-        (None, Some(Kind::Question)) => "type an answer".to_string(),
-        (None, _) => "press y, n or 1-9".to_string(),
+    let Some(choices) = choices else {
+        return match kind {
+            Some(Kind::Question) => "type an answer".to_string(),
+            _ => "press y, n or 1-9".to_string(),
+        };
+    };
+
+    let several = match asked.is_some_and(|ask| ask.multi) {
+        true => format!("{choices}, 1,3 for several"),
+        false => choices,
+    };
+    match (kind, asked.is_some_and(Ask::takes_notes)) {
+        (Some(Kind::Question), true) => format!("{several}, and words after it are a note"),
+        (Some(Kind::Question), false) => format!("{several}, or type an answer"),
+        _ => format!("{several}, y or n"),
     }
 }
 
@@ -565,7 +609,7 @@ fn one_line(written: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Meta;
+    use crate::store::{Choice, Meta};
     use crate::tmux::{PaneId, Socket};
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -673,6 +717,27 @@ mod tests {
         assert_eq!(message.prompt(), "message to fix-login-b2c");
     }
 
+    /// One question of a call, as the payload records one: `multi` is whether
+    /// it takes more than one choice, and a preview on a choice is what turns
+    /// the notes field on.
+    fn asked(multi: bool, previewed: bool) -> Ask {
+        let choice = |label: &str, preview: bool| Choice {
+            label: label.to_string(),
+            description: None,
+            preview: preview.then(|| "+----------+".to_string()),
+        };
+        Ask {
+            header: Some("Fixtures".to_string()),
+            text: "Which fixture should the port keep?".to_string(),
+            options: vec![
+                choice("the sqlite one", previewed),
+                choice("the docker one", false),
+            ],
+            multi,
+            answer: None,
+        }
+    }
+
     #[test]
     fn card_invites_the_answers_the_prompt_in_front_of_somebody_will_take() {
         let two = ["the sqlite one".to_string(), "the docker one".to_string()];
@@ -680,26 +745,101 @@ mod tests {
 
         // A question of the vendor's own offers choices and a field.
         assert_eq!(
-            invitation(Some(Kind::Question), &two),
+            invitation(Some(Kind::Question), &two, None),
             "press 1-2, or type an answer"
         );
         assert_eq!(
-            invitation(Some(Kind::Question), &[]),
+            invitation(Some(Kind::Question), &[], None),
             "type an answer",
             "and a menu whose choices amx has not read yet names none"
+        );
+
+        // One that takes more than one choice is answered by checking boxes,
+        // and the line says how they are named.
+        assert_eq!(
+            invitation(Some(Kind::Question), &two, Some(&asked(true, false))),
+            "press 1-2, 1,3 for several, or type an answer"
+        );
+        assert_eq!(
+            invitation(Some(Kind::Question), &[], Some(&asked(true, false))),
+            "type an answer",
+            "with no choices read there is nothing to check"
+        );
+
+        // And one whose choices carry a preview has a field for a note and no
+        // row for words of your own at all, so the words on the line are the
+        // note rather than an answer.
+        assert_eq!(
+            invitation(Some(Kind::Question), &two, Some(&asked(false, true))),
+            "press 1-2, and words after it are a note"
+        );
+        assert_eq!(
+            invitation(Some(Kind::Question), &two, Some(&asked(true, true))),
+            "press 1-2, 1,3 for several, and words after it are a note",
+            "and a checkbox question can carry one too"
         );
 
         // A permission box and the trust screen read one key, so the card
         // never invites words at either.
         for kind in [Some(Kind::Permission), Some(Kind::Trust), None] {
-            assert_eq!(invitation(kind, &two), "press 1-2, y or n", "{kind:?}");
-            assert_eq!(invitation(kind, &one), "press 1, y or n", "{kind:?}");
             assert_eq!(
-                invitation(kind, &[]),
+                invitation(kind, &two, None),
+                "press 1-2, y or n",
+                "{kind:?}"
+            );
+            assert_eq!(invitation(kind, &one, None), "press 1, y or n", "{kind:?}");
+            assert_eq!(
+                invitation(kind, &[], None),
                 "press y, n or 1-9",
                 "with nothing read off the screen, the grammar itself: {kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn card_hands_the_verb_the_whole_line_wherever_words_are_an_answer() {
+        let line = |text: &str, asked: Option<&Ask>| {
+            let args = card_line(text, asked);
+            (args.key, args.note)
+        };
+        let plain = asked(false, false);
+
+        // A key, the boxes to check and words of your own are one thing on the
+        // card, because the verb tells them apart at a shell prompt too.
+        for typed in ["2", "1,3", "neither, keep both"] {
+            assert_eq!(
+                line(typed, Some(&plain)),
+                (Some(typed.to_string()), None),
+                "{typed:?}"
+            );
+        }
+        assert_eq!(
+            line("  2  ", None),
+            (Some("2".to_string()), None),
+            "trimmed, so a stray space is not an answer of its own"
+        );
+
+        // The question that draws a notes field is the one that has no row for
+        // words, so what follows the key on that line is the note.
+        let previewed = asked(false, true);
+        assert_eq!(
+            line("1 prefer the stacked one", Some(&previewed)),
+            (
+                Some("1".to_string()),
+                Some("prefer the stacked one".to_string())
+            )
+        );
+        assert_eq!(
+            line("1", Some(&previewed)),
+            (Some("1".to_string()), None),
+            "and a choice with nothing after it rides alone"
+        );
+        assert_eq!(
+            line("prefer the stacked one", Some(&previewed)),
+            (Some("prefer the stacked one".to_string()), None),
+            "a line that does not open with a key is quoted back whole rather \
+             than by its first word"
+        );
     }
 
     #[test]

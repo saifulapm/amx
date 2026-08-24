@@ -758,7 +758,7 @@ fn float(
         frame.render_widget(Paragraph::new(Line::styled(added, dim())), adds);
     }
     if let Some(composer) = answering.filter(|_| typing > 0) {
-        answer_row(frame, card, composer, answer);
+        answer_row(frame, card, showing, composer, answer);
     }
 
     frame.render_widget(Paragraph::new(body(card, screen.height as usize)), screen);
@@ -1154,15 +1154,22 @@ const ANSWER: &str = "❯ ";
 /// Empty, it says what this question will take instead — which is the one
 /// thing somebody looking at a prompt they did not draw cannot work out for
 /// themselves, and it is said from the same place the refusal is written.
-fn answer_row(frame: &mut Frame, card: &Card, composer: &Composer, area: Rect) {
+fn answer_row(
+    frame: &mut Frame,
+    card: &Card,
+    showing: Option<Showing>,
+    composer: &Composer,
+    area: Rect,
+) {
     let width = area.width as usize;
     let room = width.saturating_sub(ANSWER.chars().count()).max(1);
     // The end of the line, because the end is where somebody is typing.
     let typed = composer_lines(&composer.text, room)
         .pop()
         .unwrap_or_default();
+    let asked = showing.map(|showing| showing.ask);
     let said = match composer.text.is_empty() {
-        true => Span::styled(act::invitation(card.kind, &card.options), dim()),
+        true => Span::styled(act::invitation(card.kind, &card.options, asked), dim()),
         false => Span::raw(typed.clone()),
     };
 

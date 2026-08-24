@@ -1507,6 +1507,29 @@ fn a_call_of_three() -> Vec<Value> {
     ]
 }
 
+/// The one question that carries a preview beside each choice, from the same
+/// measurement: the layout the vendor draws a notes field for and no row for
+/// words of your own.
+fn a_previewed_question() -> Vec<Value> {
+    vec![json!({
+        "header": "Layout",
+        "text": "Which header layout should the page use?",
+        "options": [
+            {
+                "label": "Stacked",
+                "description": "Title over subtitle",
+                "preview": "+----------+\n| TITLE    |\n+----------+",
+            },
+            {
+                "label": "Inline",
+                "description": "Title beside subtitle",
+                "preview": "+---------------------+\n| TITLE - subtitle    |\n+---------------------+",
+            },
+        ],
+        "multi": false,
+    })]
+}
+
 /// The card, opened on the agent the view is holding the cursor over.
 fn card_on(amx: &Harness, view: &str, id: &str) -> String {
     amx.until("the row", || screen(amx, view).contains(id).then_some(()));
@@ -1555,29 +1578,6 @@ fn card_says_which_question_of_the_call_it_is_showing() {
     );
 }
 
-/// The one question that carries a preview beside each choice, from the same
-/// measurement: the layout the vendor draws a notes field for and no row for
-/// words of your own.
-fn a_previewed_question() -> Vec<Value> {
-    vec![json!({
-        "header": "Layout",
-        "text": "Which header layout should the page use?",
-        "options": [
-            {
-                "label": "Stacked",
-                "description": "Title over subtitle",
-                "preview": "+----------+\n| TITLE    |\n+----------+",
-            },
-            {
-                "label": "Inline",
-                "description": "Title beside subtitle",
-                "preview": "+---------------------+\n| TITLE - subtitle    |\n+---------------------+",
-            },
-        ],
-        "multi": false,
-    })]
-}
-
 #[test]
 fn card_draws_a_box_beside_the_choices_of_a_question_that_takes_several() {
     let amx = Harness::new();
@@ -1595,6 +1595,11 @@ fn card_draws_a_box_beside_the_choices_of_a_question_that_takes_several() {
             "{choice} is a box to check, not a choice to make:\n{carded}"
         );
     }
+    assert!(
+        carded.contains("1,3 for several"),
+        "and the line says how to check more than one:\n{carded}"
+    );
+
     // The question in front of it takes one choice, and a box beside those
     // would be a screen offering something the vendor will not take.
     showing_the_pending_one(&amx, "pick-a1b", &a_call_of_three());
@@ -1603,6 +1608,10 @@ fn card_draws_a_box_beside_the_choices_of_a_question_that_takes_several() {
         drawn.contains("1. Node").then_some(drawn)
     });
     assert!(!drawn.contains("[ ] Node"), "{drawn}");
+    assert!(
+        !drawn.contains("for several"),
+        "and the line offers what this one takes:\n{drawn}"
+    );
 }
 
 #[test]
@@ -1682,6 +1691,111 @@ fn card_takes_words_where_the_question_asks_for_them() {
     });
 }
 
+/// The last answer amx wrote down for this agent, once it has written one.
+fn answered(amx: &Harness, id: &str) -> Value {
+    amx.until(&format!("{id} to be answered"), || {
+        amx.events(id)
+            .into_iter()
+            .rfind(|event| event["kind"] == "answer")
+    })["payload"]
+        .clone()
+}
+
+#[test]
+fn card_answers_the_tab_it_is_showing_and_leaves_the_one_behind_it_standing() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+    parked_on_a_call(&amx, "pick-a1b", &a_call_of_three());
+
+    let carded = card_on(&amx, &view, "pick-a1b");
+    assert!(carded.contains("Runtime · 1 of 3"), "{carded}");
+    types(&amx, &view, "1");
+    press(&amx, &view, "Enter");
+
+    assert_eq!(
+        answered(&amx, "pick-a1b")["key"],
+        "1",
+        "the key the vendor takes for that choice"
+    );
+    // Answering one question of a call does not end it: the vendor records the
+    // answer, moves to the tab after it, and the prompt is still up.
+    let moved = amx.until("the card to move to the tab behind it", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("Rollout · 2 of 3").then_some(drawn)
+    });
+    assert!(
+        moved.contains("1. [ ] Canary"),
+        "with the choices that tab offers, in the shape it offers them:\n{moved}"
+    );
+    assert_eq!(
+        amx.state("pick-a1b")["state"],
+        "waiting",
+        "and the agent is still waiting on the rest of the call"
+    );
+}
+
+#[test]
+fn card_checks_the_boxes_of_a_question_that_takes_more_than_one() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+
+    let mut call = a_call_of_three();
+    call[0]["answer"] = json!("Node");
+    parked_on_a_call(&amx, "pick-a1b", &call);
+
+    let carded = card_on(&amx, &view, "pick-a1b");
+    assert!(carded.contains("1. [ ] Canary"), "{carded}");
+    types(&amx, &view, "1,3");
+    press(&amx, &view, "Enter");
+
+    // Two boxes and the key that leaves the choices, which is the only way off
+    // them: on this shape every digit and every enter is a toggle.
+    let said = answered(&amx, "pick-a1b");
+    assert_eq!(said["key"], "1,3");
+    assert_eq!(
+        said["answer"], "Canary, Announce",
+        "written down the way the vendor's own answer map writes it: the \
+         labels, in the order the boxes were checked"
+    );
+    amx.until("the card to move to the tab behind it", || {
+        screen(&amx, &view)
+            .contains("Storage · 3 of 3")
+            .then_some(())
+    });
+}
+
+#[test]
+fn card_sends_the_note_the_vendor_lets_an_answer_ride_beside() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+    parked_on_a_call(&amx, "pick-a1b", &a_previewed_question());
+
+    let carded = card_on(&amx, &view, "pick-a1b");
+    assert!(
+        carded.contains("press 1-2, and words after it are a note"),
+        "that layout has no row for words of your own, so words on the line \
+         can only be the note:\n{carded}"
+    );
+
+    types(&amx, &view, "1 prefer the stacked one");
+    press(&amx, &view, "Enter");
+
+    let said = answered(&amx, "pick-a1b");
+    assert_eq!(said["key"], "1", "the choice the note rides beside");
+    assert_eq!(said["note"], "prefer the stacked one");
+    amx.until("the note to reach the agent's pane", || {
+        amx.capture(&amx.pane_of("pick-a1b"))
+            .contains("prefer the stacked one")
+            .then_some(())
+    });
+    amx.until("the call to be answered rather than repeated", || {
+        (amx.state("pick-a1b")["question"] == json!(null)).then_some(())
+    });
+}
+
 #[test]
 fn card_refuses_words_at_a_prompt_that_reads_one_key() {
     let amx = Harness::new();
@@ -1700,10 +1814,16 @@ fn card_refuses_words_at_a_prompt_that_reads_one_key() {
     types(&amx, &view, "neither, keep both");
     press(&amx, &view, "Enter");
 
+    // The verb's own refusal, in the verb's own words: the card and a shell
+    // prompt are two callers reading one line against one record.
     let refused = amx.until("the refusal", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("ask-a1b is asking").then_some(drawn)
+        drawn.contains("is not an answer").then_some(drawn)
     });
+    assert!(
+        refused.contains("use y, n, 1-9, enter or esc"),
+        "with what this prompt would have taken:\n{refused}"
+    );
     assert!(
         refused.contains("❯ neither, keep both"),
         "a line the question would not take is a line somebody is still \

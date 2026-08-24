@@ -112,28 +112,57 @@ pub fn run(root: &Path, id: &str, typed: &AnswerArgs) -> Result<i32> {
         return Ok(exit::BLOCKED);
     }
 
-    // Nothing is opened, let alone typed, until this holds: an answer this
-    // question cannot take is a mistake in the command line, and the agent
-    // must never see it.
-    let (answer, note) = match read(typed, view.kind(), &view.state) {
-        Ok(read) => read,
-        Err(refused) => {
-            eprintln!("amx: {refused}");
-            return Ok(exit::USAGE);
-        }
-    };
-
     let agent = Agent::open(root, id)?;
     let server = Server::from_socket(view.meta.socket.clone());
+    match given(&agent, &server, &view, typed)? {
+        Answered::Yes => Ok(exit::OK),
+        Answered::No(refused) => {
+            eprintln!("amx: {refused}");
+            Ok(exit::USAGE)
+        }
+    }
+}
+
+/// What answering came to.
+pub enum Answered {
+    /// It reached the pane, and the record says what was answered.
+    Yes,
+    /// Nothing was typed at the agent, and this says why.
+    No(String),
+}
+
+/// Answer the question this agent has stopped on, for a caller that has the
+/// reading already and nowhere to print a refusal.
+///
+/// The verb prints one and exits; the view has neither an exit code nor a
+/// stderr a terminal in raw mode could receive, so the refusal comes back as
+/// the sentence it is. Both callers read the same line against the same
+/// record, so a card and a shell prompt refuse the same thing in the same
+/// words — and the shapes measured in `docs/question-shapes.md` are driven
+/// from one place rather than two.
+///
+/// Nothing is typed until the line is something this question can take: an
+/// answer it cannot is a mistake in what was typed, and the agent must never
+/// see it.
+pub fn given(
+    agent: &Agent,
+    server: &Server,
+    view: &derive::View,
+    typed: &AnswerArgs,
+) -> Result<Answered> {
+    let (answer, note) = match read(typed, view.kind(), &view.state) {
+        Ok(read) => read,
+        Err(refused) => return Ok(Answered::No(refused)),
+    };
     reply(
-        &agent,
-        &server,
+        agent,
+        server,
         &view.meta.pane,
         answer,
         note.as_deref(),
         Shape::of(&view.state),
     )?;
-    Ok(exit::OK)
+    Ok(Answered::Yes)
 }
 
 /// What was typed at amx, once it is something this question can take.
@@ -478,51 +507,16 @@ fn grammar(kind: Option<Kind>, multi: bool) -> String {
     }
 }
 
-/// Type one key of the grammar at the agent, and record that it was typed.
-///
-/// One key and nothing after it: this is the view's way in, and what a key
-/// does to a screen amx has not read the shape of is not amx's to guess at.
-/// The record is what stops the question being answered twice — the vendor
-/// says nothing when a prompt is dismissed, so until its next hook arrives the
-/// only thing that knows the question is dealt with is this.
-pub fn press(agent: &Agent, server: &Server, pane: &PaneId, pressed: &str) -> Result<()> {
-    reply(
-        agent,
-        server,
-        pane,
-        Answer::Key(pressed.to_string()),
-        None,
-        Shape::default(),
-    )
-}
-
-/// Put words of the caller's own into the field the question offers, and
-/// record what was put there.
-///
-/// The cursor is moved onto that field before a byte of the words is sent, and
-/// that order is the whole of the care here. A menu reads a digit as a choice,
-/// so words delivered to a menu that is still on its first row would have
-/// their own digits picked out and pressed — "keep fixture 2" answering `2`,
-/// which is somebody else's answer and cannot be taken back. Once the field
-/// has the cursor every key is a character in it, and `Enter` submits what was
-/// typed rather than what was highlighted.
-///
-/// Which keys finish it is the record's to say, so the record is read: on a
-/// question that takes more than one choice the same `Enter` unchecks the row
-/// the words just checked.
-pub fn say(agent: &Agent, server: &Server, pane: &PaneId, words: &str) -> Result<()> {
-    let shape = Shape::of(&agent.state()?);
-    reply(
-        agent,
-        server,
-        pane,
-        Answer::Words(words.to_string()),
-        None,
-        shape,
-    )
-}
-
 /// Type an answer at the pane, and write down what was answered.
+///
+/// The cursor is moved onto whatever field the answer belongs in before a byte
+/// of it is sent, and that order is the whole of the care here. A menu reads a
+/// digit as a choice, so words delivered to a menu that is still on its first
+/// row would have their own digits picked out and pressed — "keep fixture 2"
+/// answering `2`, which is somebody else's answer and cannot be taken back.
+/// The record is what stops a question being answered twice: the vendor says
+/// nothing when a prompt is dismissed, so until its next hook arrives the only
+/// thing that knows the question is dealt with is this.
 fn reply(
     agent: &Agent,
     server: &Server,
