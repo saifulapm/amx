@@ -111,12 +111,11 @@ fn agents(amx: &Harness) -> Vec<String> {
     ids
 }
 
-/// Wait for a view with nothing in it, which on a terminal this size is the
-/// four groups saying what would land in them. The last of the four is what
-/// says the whole empty state is up.
+/// Wait for a view with nothing in it, which is the one line amx has for a
+/// wall nobody has put anything on.
 fn until_empty(amx: &Harness, view: &str) {
     amx.until("the empty view", || {
-        screen(amx, view).contains("here to read").then_some(())
+        screen(amx, view).contains("nobody asking").then_some(())
     });
 }
 
@@ -794,37 +793,36 @@ fn a_filter_line_narrows_the_axis_instead_of_starting_an_agent() {
 }
 
 #[test]
-fn a_wall_with_nothing_on_it_gets_the_headings_and_what_lands_under_each() {
+fn a_wall_with_nothing_on_it_says_so_in_one_line_of_amxs_own() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);
     until_empty(&amx, &view);
 
     let drawn = screen(&amx, &view);
-    for (group, said) in [
-        ("needs input", "stopped on a question"),
-        ("working", "starting or mid-turn"),
-        ("idle", "amx cannot account for"),
-        ("completed", "here to read"),
-    ] {
-        let at = drawn
-            .lines()
-            .position(|line| line.trim_end() == group)
-            .unwrap_or_else(|| panic!("no {group} heading in:\n{drawn}"));
+    let said: Vec<&str> = drawn
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+        .collect();
+    // The header's two rows, the line itself, and the keys under it. A wall
+    // with nothing on it is not the place for a lecture about the wall.
+    assert_eq!(said.len(), 4, "one line and the bands around it:\n{drawn}");
+    for group in ["needs input", "working", "idle", "completed"] {
         assert!(
-            drawn.lines().nth(at + 1).is_some_and(|l| l.contains(said)),
-            "{group} has nothing under it saying what lands there:\n{drawn}"
+            !drawn.contains(group),
+            "{group} is a heading over rows, and there are none:\n{drawn}"
         );
     }
     assert!(
-        !drawn.contains("no agents"),
-        "the four of them are said instead of the one sentence:\n{drawn}"
+        drawn.contains("nothing running, nothing broken, nobody asking"),
+        "and the wall says what it is in its own words:\n{drawn}"
     );
 
-    // And they go the moment there is anything to read off a row.
+    // And it goes the moment there is anything to read off a row.
     amx.play("ask-a1b", "asks-a-question");
     amx.until("the agent's own row", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("ask-a1b") && !drawn.contains("here to read")).then_some(())
+        (drawn.contains("ask-a1b") && !drawn.contains("nobody asking")).then_some(())
     });
 }
 
@@ -2488,7 +2486,7 @@ fn q_closes_the_view_and_gives_the_screen_back() {
         "closing a view is not a failure"
     );
     assert!(
-        !screen(&amx, &view).contains("here to read"),
+        !screen(&amx, &view).contains("nobody asking"),
         "the screen the view borrowed is handed back"
     );
 }

@@ -487,16 +487,14 @@ struct Columns {
     pr: usize,
 }
 
-/// How wide the list has to be for the empty state to say what lands in each
-/// group. The longest of the four takes 64 columns at the gutter the rows are
-/// indented by, so 72 is that with six columns to spare rather than a bound
-/// worked out to the character: the copy is copy, and the next edit to it
-/// should not quietly cross a cliff. A test measures the copy against this
-/// number, so an edit that outgrows it says so rather than being cut.
-const BLURBS_WIDE: usize = 72;
-
-/// And how tall: four headings with a line each under them.
-const BLURBS_TALL: usize = 2 * Group::ALL.len();
+/// What a wall nobody has put anything on says for itself.
+///
+/// One line of amx's own, where four headings with a sentence each used to
+/// stand: there is nothing to read off the rows, and a view that explains the
+/// list before there is a list is doing the manual's job on the screen a
+/// person came to work at. What is worth knowing about this wall is that it is
+/// the good one, and the keys under it already say which one starts an agent.
+const WELCOME: &str = "nothing running, nothing broken, nobody asking. enjoy it";
 
 /// The agents themselves.
 ///
@@ -506,16 +504,16 @@ const BLURBS_TALL: usize = 2 * Group::ALL.len();
 /// gets back by closing it.
 fn agents(frame: &mut Frame, list: &List, area: Rect, beat: usize, visible: u16) {
     if list.is_empty() {
-        let room = area.width as usize >= BLURBS_WIDE && area.height as usize >= BLURBS_TALL;
-        if list.unstarted() && room {
-            frame.render_widget(Paragraph::new(blurbs()), area);
-            return;
-        }
-        // Nothing to show is one thing while there are no agents, and another
-        // while a narrowing is holding every one of them back.
-        let said = match list.narrowing() {
-            Some(narrowing) => format!("nothing matches {narrowing}"),
-            None => "no agents".to_string(),
+        // Nothing to show is one thing while a narrowing is holding every
+        // agent back, another while nobody has started one, and the line for
+        // the second of those is a sentence rather than a label — so it is
+        // said whole or not at all, and a screen too narrow for it gets the
+        // label instead of two thirds of a joke.
+        let room = area.width as usize >= WELCOME.chars().count();
+        let said = match (list.narrowing(), list.unstarted() && room) {
+            (Some(narrowing), _) => format!("nothing matches {narrowing}"),
+            (None, true) => WELCOME.to_string(),
+            (None, false) => "no agents".to_string(),
         };
         frame.render_widget(Paragraph::new(Line::styled(said, dim())), area);
         return;
@@ -607,31 +605,6 @@ fn barred(line: Line<'static>, width: usize) -> Line<'static> {
         line.spans.push(Span::raw(" ".repeat(width - said)));
     }
     line.style(Style::new().bg(role::SELECTED))
-}
-
-/// Every group over a fleet nobody has started, with what lands in it under
-/// each one.
-///
-/// The one screen where a heading with nobody under it is worth drawing: there
-/// is nothing to read off the rows, so the groups say in a sentence what the
-/// rest of the time they say by what is standing beneath them. A heading with
-/// no line under it would be the fault this is for, so they come as pairs or
-/// not at all — which is why the room for all eight is asked for before any of
-/// them is drawn, and why they are never cut to fit.
-///
-/// The first heading is bold: the empty screen keeps the section highlight's
-/// "you are here", and here the cursor stands at the top, in the first group.
-fn blurbs() -> Vec<Line<'static>> {
-    Group::ALL
-        .into_iter()
-        .enumerate()
-        .flat_map(|(at, group)| {
-            [
-                Line::styled(group.title(), heading_style(at == 0)),
-                Line::styled(format!("{GUTTER}{}", group.blurb()), dim()),
-            ]
-        })
-        .collect()
 }
 
 /// A heading: what it stands for, and what it is answerable for.
@@ -2902,25 +2875,6 @@ mod tests {
     }
 
     #[test]
-    fn the_first_heading_over_a_fleet_nobody_has_started_wears_the_highlight() {
-        // The empty screen keeps the same "you are here": the cursor stands
-        // at the top, in the first group, and that heading is the bold one.
-        let screen = showing(Vec::new(), None);
-        let first = cells(&screen, WALL)[(0, 2)].clone();
-        assert!(
-            first.modifier.contains(Modifier::BOLD),
-            "{:?}",
-            first.modifier
-        );
-        let second = cells(&screen, WALL)[(0, 4)].clone();
-        assert!(
-            second.modifier.contains(Modifier::DIM) && !second.modifier.contains(Modifier::BOLD),
-            "the rest keep their dim: {:?}",
-            second.modifier
-        );
-    }
-
-    #[test]
     fn view_says_when_there_is_nothing_to_show() {
         let screen = drawn(Vec::new(), None, (40, 6));
         assert!(screen[0].starts_with("claude (default)"), "{:?}", screen[0]);
@@ -3116,29 +3070,47 @@ mod tests {
         assert_eq!(short[1], "working", "and the list starts a row sooner");
     }
 
-    /// Room for the four headings, their four lines, and the bands above and
-    /// below the list.
+    /// A screen with room for the bands above and below the list, and a group
+    /// or two under them.
     const WALL: (u16, u16) = (80, 12);
 
     #[test]
-    fn headings_that_explain_themselves_stand_over_a_fleet_nobody_has_started() {
+    fn a_wall_nobody_has_put_anything_on_says_so_in_one_line_of_its_own() {
         let screen = drawn(Vec::new(), None, WALL);
 
-        let mut at = 2;
-        for group in Group::ALL {
-            assert_eq!(screen[at], group.title(), "{screen:?}");
-            assert_eq!(screen[at + 1], format!("{GUTTER}{}", group.blurb()));
-            at += 2;
-        }
+        assert_eq!(screen[2], WELCOME, "{screen:?}");
+        // Everything under it down to the keys is the empty wall itself: one
+        // line where the four groups used to have a sentence each.
         assert!(
-            !screen.iter().any(|line| line.contains("no agents")),
-            "the four of them are said instead of the one sentence, not \
-             beside it: {screen:?}"
+            screen[3..screen.len() - 1].iter().all(String::is_empty),
+            "one line, and no more: {screen:?}"
         );
+        for group in Group::ALL {
+            assert!(
+                !screen.iter().any(|line| line.contains(group.title())),
+                "{} stands over rows, and there are none: {screen:?}",
+                group.title()
+            );
+        }
     }
 
     #[test]
-    fn headings_that_explain_themselves_go_the_moment_there_is_anything_to_read() {
+    fn the_wall_says_it_plainly_where_the_line_of_its_own_will_not_fit() {
+        // Said whole or not at all: a sentence cut by the terminal reads as a
+        // sentence that ends where the screen does, and this one is a joke as
+        // well, which is worse to be handed two thirds of.
+        let narrow = drawn(
+            Vec::new(),
+            None,
+            (WELCOME.chars().count() as u16 - 1, WALL.1),
+        );
+        assert_eq!(narrow[2], "no agents");
+        let wide = drawn(Vec::new(), None, (WELCOME.chars().count() as u16, WALL.1));
+        assert_eq!(wide[2], WELCOME);
+    }
+
+    #[test]
+    fn the_wall_has_its_line_to_itself_and_gives_it_up_to_the_first_row() {
         let one = drawn(
             vec![view("done-a1b", Phase::Done, Some("did it"), 60)],
             None,
@@ -3146,47 +3118,23 @@ mod tests {
         );
         assert_eq!(one[2], "completed");
         assert!(
-            !one.iter().any(|line| line.contains("here to read")),
+            !one.iter().any(|line| line.contains("nobody asking")),
             "one agent and there is something to read off the rows: {one:?}"
         );
 
         // A fleet somebody narrowed to nothing is not a fleet nobody started,
-        // and the view already has a sentence for that one.
+        // and the view owes them the words they typed rather than a joke.
         let mut screen = showing(Vec::new(), None);
         screen
             .list
             .narrow(vec![Narrow::Name(Some("nobody".to_string()))]);
         assert_eq!(painted(&screen, WALL)[2], "nothing matches a:nobody");
 
-        // On the project axis a heading is a place, and a place nobody is
-        // running anything in has nothing to explain.
+        // And the project axis is a list of places, which nobody arrives at
+        // with nothing to arrange.
         let mut screen = showing(Vec::new(), None);
         screen.list.turn();
         assert_eq!(painted(&screen, WALL)[2], "no agents");
-    }
-
-    #[test]
-    fn headings_that_explain_themselves_fit_the_width_they_ask_for() {
-        let widest = Group::ALL
-            .into_iter()
-            .map(|group| GUTTER.len() + group.blurb().chars().count())
-            .max()
-            .expect("four groups");
-        assert!(
-            widest <= BLURBS_WIDE,
-            "{widest} columns of copy in a list {BLURBS_WIDE} wide: the floor \
-             is a chosen number, so an edit that outgrows it moves the copy \
-             back rather than the floor"
-        );
-
-        // Under either floor the pair is dropped whole: half an explanation
-        // reads worse than the one sentence that was there before it. One row
-        // short is a screen whose list band is one short of the eight, which
-        // is the header's two rows and the keys' one over that.
-        let narrow = drawn(Vec::new(), None, (BLURBS_WIDE as u16 - 1, WALL.1));
-        assert_eq!(narrow[2], "no agents");
-        let short = drawn(Vec::new(), None, (WALL.0, BLURBS_TALL as u16 + 2));
-        assert_eq!(short[2], "no agents");
     }
 
     #[test]
@@ -3501,7 +3449,7 @@ mod tests {
         assert_eq!(painted[4], "task ▸ row-19");
         assert_eq!(painted[5], "       row-20");
         assert_eq!(
-            painted[1], "no agents",
+            painted[1], WELCOME,
             "the list is still there above it: {painted:?}"
         );
     }
