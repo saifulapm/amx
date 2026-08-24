@@ -39,9 +39,14 @@
 //! else's answer: `n` at a menu with no preview does nothing at all, and the
 //! note would be typed at the menu with its first digit answering it.
 //!
-//! A run of keys reaches this vendor's menu as some of them or none, so every
-//! key of an answer goes in a call of its own with a moment after it; see
-//! [`drive`].
+//! Two things about a menu are the screen's rather than the record's, and both
+//! were re-measured against 2.1.240 on 2026-08-25. The screen is numbered two
+//! rows past the payload — the vendor adds a free-text row and `Chat about
+//! this` to every menu it draws — so a digit is weighed against the question's
+//! own choices before it is pressed, and the rows past them are named rather
+//! than typed. And a run of keys reaches this vendor's menu as some of them or
+//! none, so every key of an answer goes in a call of its own with a moment
+//! after it; see [`drive`].
 
 use anyhow::Result;
 use std::path::Path;
@@ -342,6 +347,12 @@ fn answer(args: &AnswerArgs, kind: Option<Kind>, state: &State) -> Result<Answer
     if let Some(key) = named(typed) {
         return match (multi, one_choice(&key)) {
             (true, Some(_)) => boxes(&key, multi, pending),
+            (false, Some(at)) => {
+                if let Some(ask) = pending {
+                    a_choice_of(at, ask)?;
+                }
+                Ok(Answer::Key(key))
+            }
             _ => Ok(Answer::Key(key)),
         };
     }
@@ -353,9 +364,56 @@ fn answer(args: &AnswerArgs, kind: Option<Kind>, state: &State) -> Result<Answer
         }
         _ => Err(format!(
             "`{typed}` is not an answer. {}",
-            grammar(kind, multi)
+            grammar(kind, multi, pending)
         )),
     }
+}
+
+/// How many choices the question showing offers, as the record has them.
+///
+/// Zero where amx holds no call for it: a permission box, the trust screen, or
+/// a question a reader read off the pane. Nothing there says which of the
+/// screen's rows are the vendor's own, so nothing here weighs a digit against
+/// them.
+fn offered(pending: Option<&Ask>) -> usize {
+    pending.map(|ask| ask.options.len()).unwrap_or_default()
+}
+
+/// Whether the row this digit lands on is one of the question's own choices.
+///
+/// The screen is numbered two rows past the record. Measured against claude
+/// 2.1.240 on 2026-08-25 at 220 columns and written up in
+/// `docs/question-shapes.md`: a two-choice question draws `3. Type something.`
+/// and `4. Chat about this`, and a three-choice checkbox one draws
+/// `4. [ ] Type something` and `5. Chat about this`. Neither row is in the
+/// payload, so a caller counting rows off the pane types a digit the record
+/// has never heard of.
+///
+/// Pressing either was measured, and neither answers the question. On a plain
+/// menu the free-text row's digit moves the cursor onto the field and leaves
+/// the prompt exactly where it was — while amx writes the digit down as the
+/// answer and reports the agent back at work, which is the state a caller
+/// stops watching. On a checkbox menu it checks the empty field instead, which
+/// submits as an empty string. `Chat about this` is not an answer at all: it
+/// takes the agent out of the question.
+///
+/// A previewed question draws neither of them — no free-text row, and its
+/// `Chat about this` carries no number — so past its choices there is no row
+/// to name.
+fn a_choice_of(at: usize, pending: &Ask) -> Result<(), String> {
+    let offered = pending.options.len();
+    if at <= offered {
+        return Ok(());
+    }
+    if at == offered + 1 && !pending.takes_notes() {
+        return Err(format!(
+            "`{at}` is the row the vendor draws for words of your own, and pressing it \
+             answers nothing: give words with --text"
+        ));
+    }
+    Err(format!(
+        "this question offers {offered} choices, and `{at}` is not one of them"
+    ))
 }
 
 /// Read words for the row a question offers for words.
@@ -375,7 +433,7 @@ fn field(
     if kind != Some(Kind::Question) {
         return Err(format!(
             "this prompt has no row for words of your own. {}",
-            grammar(kind, multi)
+            grammar(kind, multi, pending)
         ));
     }
     if previewed(pending) {
@@ -428,7 +486,6 @@ fn boxes(typed: &str, multi: bool, pending: Option<&Ask>) -> Result<Answer, Stri
              and this one takes one choice"
         ));
     }
-    let offered = pending.map(|ask| ask.options.len()).unwrap_or_default();
     let mut checked = Vec::new();
     for part in typed.split(',') {
         let part = part.trim();
@@ -438,10 +495,8 @@ fn boxes(typed: &str, multi: bool, pending: Option<&Ask>) -> Result<Answer, Stri
         let Some(at) = one_choice(part) else {
             return Err(format!("`{part}` is not one of this question's choices"));
         };
-        if at > offered {
-            return Err(format!(
-                "this question offers {offered} choices, and `{part}` is not one of them"
-            ));
+        if let Some(ask) = pending {
+            a_choice_of(at, ask)?;
         }
         if checked.contains(&at) {
             return Err(format!(
@@ -502,12 +557,31 @@ fn steps(answer: &Answer, note: Option<&str>, shape: Shape) -> Vec<Step> {
 
 /// What this question would have taken, for the caller who typed something
 /// else.
-fn grammar(kind: Option<Kind>, multi: bool) -> String {
+///
+/// The digits run to the choices the question offers rather than to nine,
+/// because the screen carries rows the question never named and those are the
+/// digits that go wrong. Where amx holds no call — a permission box, the trust
+/// screen — it does not know how many rows there are, and the old `1-9` is
+/// what a prompt of two choices and one of five have in common.
+///
+/// Words are offered where there is a row to put them in, which is every
+/// question the vendor asks itself except the one it draws a preview beside.
+fn grammar(kind: Option<Kind>, multi: bool, pending: Option<&Ask>) -> String {
+    let offered = offered(pending);
+    let run = match offered {
+        0 => "1-9".to_string(),
+        1 => "1".to_string(),
+        last => format!("1-{last}"),
+    };
+    let and_words = match previewed(pending) {
+        true => "enter or esc",
+        false => "enter, esc, or words of your own",
+    };
     match (kind, multi) {
-        (Some(Kind::Question), true) => {
-            "use 1-9, 1,3 for several, enter, esc, or words of your own".to_string()
+        (Some(Kind::Question), true) if offered > 1 => {
+            format!("use {run}, 1,{offered} for several, {and_words}")
         }
-        (Some(Kind::Question), false) => "use 1-9, enter, esc, or words of your own".to_string(),
+        (Some(Kind::Question), _) => format!("use {run}, {and_words}"),
         _ => "use y, n, 1-9, enter or esc".to_string(),
     }
 }
@@ -863,6 +937,68 @@ mod tests {
     }
 
     #[test]
+    fn surfaces_the_rows_the_vendor_adds_are_not_the_questions_choices() {
+        // The screen is numbered two rows past the payload. Measured against
+        // 2.1.240 on 2026-08-25 at 220 columns, a two-choice question draws
+        // `3. Type something.` and `4. Chat about this`, and pressing the
+        // first moves the cursor onto the field and leaves the prompt
+        // standing — while amx would write the digit down as the answer and
+        // report the agent back at work.
+        let plain = a_plain_question();
+        let refused = answer(&given("3"), Some(Kind::Question), &plain).expect_err("not a choice");
+        assert!(refused.contains("--text"), "{refused}");
+        let refused = answer(&given("4"), Some(Kind::Question), &plain).expect_err("not a choice");
+        assert!(refused.contains("offers 2 choices"), "{refused}");
+
+        // On a checkbox menu the same digit checks the empty field instead,
+        // which submits as an empty string.
+        let checkbox = a_checkbox_question();
+        let refused = answer(&given("4"), Some(Kind::Question), &checkbox).expect_err("the field");
+        assert!(refused.contains("--text"), "{refused}");
+
+        // A previewed question draws neither row, so past its choices there is
+        // no row to name.
+        let previewed = a_previewed_question();
+        let refused = answer(&given("3"), Some(Kind::Question), &previewed).expect_err("no row");
+        assert!(refused.contains("offers 2 choices"), "{refused}");
+
+        // And a prompt amx holds no call for is not weighed against one: a
+        // permission box's rows are the box's own.
+        assert_eq!(
+            answer(&given("3"), Some(Kind::Permission), &a_permission_box()),
+            Ok(Answer::Key("3".to_string()))
+        );
+    }
+
+    #[test]
+    fn surfaces_the_grammar_counts_the_choices_the_question_offers() {
+        // Refusing `3` and then inviting `1-9` in the same breath is amx
+        // pointing at the row it just refused.
+        assert_eq!(
+            grammar(Some(Kind::Question), false, a_plain_question().pending()),
+            "use 1-2, enter, esc, or words of your own"
+        );
+        assert!(
+            grammar(Some(Kind::Question), true, a_checkbox_question().pending()).contains("1,3"),
+            "a question that takes several says how to give it several"
+        );
+        assert_eq!(
+            grammar(
+                Some(Kind::Question),
+                false,
+                a_previewed_question().pending()
+            ),
+            "use 1-2, enter or esc",
+            "a previewed question has no row for words of your own"
+        );
+
+        // A prompt amx holds no call for does not know how many rows it has,
+        // and 1-9 is what a box of two and a box of five have in common.
+        assert!(grammar(Some(Kind::Permission), false, None).contains("y, n, 1-9"));
+        assert!(grammar(Some(Kind::Question), false, None).contains("1-9"));
+    }
+
+    #[test]
     fn surfaces_a_question_that_takes_several_choices_takes_several() {
         // Measured against 2.1.240: a digit checks a box without moving the
         // cursor and without submitting, `→` leaves the choices for the Submit
@@ -1040,13 +1176,15 @@ mod tests {
         // layout has no free-text row at all, so the `Up` would land on a
         // choice and the words would be typed at the menu itself.
         let previewed = a_previewed_question();
-        for line in [given_text("stacked, please"), given("stacked, please")] {
-            let refused = answer(&line, Some(Kind::Question), &previewed).expect_err("no row");
-            assert!(
-                refused.contains("preview") || refused.contains("1-9"),
-                "{refused}"
-            );
-        }
+        let refused =
+            answer(&given_text("stacked"), Some(Kind::Question), &previewed).expect_err("no row");
+        assert!(refused.contains("preview"), "{refused}");
+
+        // The same words without the flag are refused by the grammar, and the
+        // grammar of a question with no row for words does not offer any.
+        let refused = answer(&given("stacked, please"), Some(Kind::Question), &previewed)
+            .expect_err("no row");
+        assert!(!refused.contains("words of your own"), "{refused}");
     }
 
     #[test]
@@ -1177,7 +1315,7 @@ mod tests {
                 answer(&given("neither, keep both"), kind, &state).is_err(),
                 "{kind:?}"
             );
-            assert!(grammar(kind, false).contains("y, n, 1-9"), "{kind:?}");
+            assert!(grammar(kind, false, None).contains("y, n, 1-9"), "{kind:?}");
         }
     }
 
@@ -1209,10 +1347,9 @@ mod tests {
                 "{blank:?}"
             );
         }
-        assert!(grammar(Some(Kind::Question), false).contains("words of your own"));
         assert!(
-            grammar(Some(Kind::Question), true).contains("1,3"),
-            "a question that takes several says how to give it several"
+            grammar(Some(Kind::Question), false, a_plain_question().pending())
+                .contains("words of your own")
         );
     }
 
