@@ -225,15 +225,15 @@ fn card_height(total: u16, band: u16, wanted: u16) -> u16 {
 
 /// How many rows the card would take to say everything it has: its two
 /// borders, which question of the call this is, what the agent is asking, the
-/// choices under that, the line the answer goes on, and the screen it is all
-/// happening on.
+/// choices under that, the row the vendor adds under them, the line the answer
+/// goes on, and the screen it is all happening on.
 fn card_rows(card: &Card, showing: Option<Showing>, answering: bool, width: u16) -> u16 {
     let inner = width.saturating_sub(2 + 2 * PADDING);
     let asked = card
         .question
         .as_deref()
         .map_or(0, |question| wrapped(question, inner).min(ASKED_TALL));
-    let listed = choices(&card.options, inner as usize).len();
+    let listed = choices(&card.options, inner as usize, boxed(showing)).len();
     // Counted no further than the card could ever grow, because the body can
     // be a patch of thousands of lines and this runs on every frame.
     let shown = body(card, CARD_TALL as usize).len();
@@ -242,6 +242,7 @@ fn card_rows(card: &Card, showing: Option<Showing>, answering: bool, width: u16)
         + asked as usize
         + usize::from(tab(showing).is_some())
         + listed
+        + usize::from(added(card, showing).is_some())
         + usize::from(answering)
         + shown;
     rows.min(u16::MAX as usize) as u16
@@ -662,8 +663,9 @@ const UNREAD: &str = "•";
 const ASKED_TALL: u16 = 3;
 
 /// The card: which question of the call this is, what one agent is asking, the
-/// choices it offers, the line the answer is typed on, and the screen it is all
-/// happening on — or, when that is what was asked for, what it has changed.
+/// choices it offers, the row the vendor adds under them, the line the answer
+/// is typed on, and the screen it is all happening on — or, when that is what
+/// was asked for, what it has changed.
 ///
 /// Full width, because the bottom of it is a picture of a terminal and a
 /// terminal cut down the middle is a picture of nothing. It floats over the
@@ -718,13 +720,16 @@ fn float(
     // else and offers somebody else's answers.
     let strip = tab(showing);
     let tabbed = take(u16::from(strip.is_some()));
-    let choices = choices(&options, inner.width as usize);
+    let choices = choices(&options, inner.width as usize, boxed(showing));
     let listed = take(choices.len() as u16);
+    let added = added(card, showing);
+    let adding = take(u16::from(added.is_some()));
 
-    let [tabbing, asking, listing, answer, screen] = Layout::vertical([
+    let [tabbing, asking, listing, adds, answer, screen] = Layout::vertical([
         Constraint::Length(tabbed),
         Constraint::Length(asked),
         Constraint::Length(listed),
+        Constraint::Length(adding),
         Constraint::Length(typing),
         Constraint::Min(0),
     ])
@@ -748,6 +753,9 @@ fn float(
             .map(Line::raw)
             .collect();
         frame.render_widget(Paragraph::new(lines), listing);
+    }
+    if let Some(added) = added.filter(|_| adding > 0) {
+        frame.render_widget(Paragraph::new(Line::styled(added, dim())), adds);
     }
     if let Some(composer) = answering.filter(|_| typing > 0) {
         answer_row(frame, card, composer, answer);
@@ -1058,6 +1066,46 @@ fn tab(showing: Option<Showing>) -> Option<String> {
     })
 }
 
+/// Whether the choices are boxes to check rather than a choice to make.
+fn boxed(showing: Option<Showing>) -> bool {
+    showing.is_some_and(|showing| showing.ask.multi)
+}
+
+/// The vendor's own empty box, drawn between the number and the label the way
+/// 2.1.240 draws it, so the row on the card reads as the row on the pane.
+///
+/// Empty, always. What amx holds is the payload, and the payload names the
+/// choices and never says which of them are checked — the boxes themselves are
+/// on the pane at the bottom of the card, where they are being checked.
+const BOX: &str = "[ ]";
+
+/// The row the vendor draws under the choices that no payload accounts for.
+///
+/// Every menu the tool draws carries one free-text row as its last choice, and
+/// a question whose choices carry a preview draws a notes field in its place
+/// and no free-text row at all — neither is in the payload, and both are what
+/// somebody about to answer needs to know is there. A permission box and the
+/// trust screen have neither, and choices amx has not read yet have nothing
+/// for this to stand under.
+fn added(card: &Card, showing: Option<Showing>) -> Option<&'static str> {
+    if card.options.is_empty() || card.kind != Some(Kind::Question) {
+        return None;
+    }
+    match showing.is_some_and(|showing| showing.ask.takes_notes()) {
+        true => Some(NOTES),
+        false => Some(OTHER),
+    }
+}
+
+/// The free-text row, named as the vendor's rather than the agent's: the
+/// payload does not carry it, so the pane below the card has a numbered row
+/// the choices above it do not.
+const OTHER: &str = "and under them, the vendor's row for words of your own";
+
+/// And the field the vendor draws where a choice carries a preview, which is
+/// the one layout that has no free-text row at all.
+const NOTES: &str = "and beside them, the vendor's field for a note";
+
 /// The choices under the question, numbered the way every surface numbers them
 /// and packed onto as few rows as the card is wide.
 ///
@@ -1066,9 +1114,22 @@ fn tab(showing: Option<Showing>) -> Option<String> {
 /// too wide for the card is cut with the ellipsis that says it was: a choice
 /// nobody can read is still a choice they can press, and its number is at the
 /// front where the cut cannot reach it.
-fn choices(options: &[String], width: usize) -> Vec<String> {
+///
+/// `boxed` puts the vendor's box between the number and the label, on the
+/// question that takes more than one choice. A number pressed there checks a
+/// box and submits nothing, and a row that looked the same either way would be
+/// a screen telling somebody they had answered.
+fn choices(options: &[String], width: usize, boxed: bool) -> Vec<String> {
+    let labels: Vec<String> = match boxed {
+        true => options
+            .iter()
+            .map(|label| format!("{BOX} {label}"))
+            .collect(),
+        false => options.to_vec(),
+    };
+
     let mut rows: Vec<String> = Vec::new();
-    for choice in numbered(options) {
+    for choice in numbered(&labels) {
         let room = width.saturating_sub(choice.chars().count() + BETWEEN.len());
         match rows.last_mut() {
             Some(row) if row.chars().count() <= room => {
@@ -1913,7 +1974,7 @@ mod tests {
         );
         assert_eq!(
             caret(&answering(question(), "the docker one"), (60, 14)),
-            (18, 9),
+            (18, 10),
             "with the terminal's own cursor at the end of what was typed"
         );
     }
@@ -2000,18 +2061,37 @@ mod tests {
     #[test]
     fn card_packs_the_choices_onto_as_few_rows_as_it_is_wide() {
         let two = ["the sqlite one".to_string(), "the docker one".to_string()];
-        assert_eq!(choices(&two, 40), ["1. the sqlite one   2. the docker one"]);
         assert_eq!(
-            choices(&two, 20),
+            choices(&two, 40, false),
+            ["1. the sqlite one   2. the docker one"]
+        );
+        assert_eq!(
+            choices(&two, 20, false),
             ["1. the sqlite one", "2. the docker one"],
             "and one to a row where they will not sit together"
         );
         assert_eq!(
-            choices(&two, 10),
+            choices(&two, 10, false),
             ["1. the sq…", "2. the do…"],
             "a choice wider than the card is cut, and says it was"
         );
-        assert!(choices(&[], 40).is_empty());
+        assert!(choices(&[], 40, false).is_empty());
+    }
+
+    #[test]
+    fn card_gives_a_question_that_takes_several_a_box_beside_every_choice() {
+        let two = ["the sqlite one".to_string(), "the docker one".to_string()];
+        assert_eq!(
+            choices(&two, 50, true),
+            ["1. [ ] the sqlite one   2. [ ] the docker one"],
+            "the vendor's own box, between the number and the label"
+        );
+        assert_eq!(
+            choices(&two, 20, true),
+            ["1. [ ] the sqlite o…", "2. [ ] the docker o…"],
+            "and a narrow card cuts the label rather than the box, because the \
+             box is what says the row is one"
+        );
     }
 
     #[test]

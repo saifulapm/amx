@@ -1555,6 +1555,88 @@ fn card_says_which_question_of_the_call_it_is_showing() {
     );
 }
 
+/// The one question that carries a preview beside each choice, from the same
+/// measurement: the layout the vendor draws a notes field for and no row for
+/// words of your own.
+fn a_previewed_question() -> Vec<Value> {
+    vec![json!({
+        "header": "Layout",
+        "text": "Which header layout should the page use?",
+        "options": [
+            {
+                "label": "Stacked",
+                "description": "Title over subtitle",
+                "preview": "+----------+\n| TITLE    |\n+----------+",
+            },
+            {
+                "label": "Inline",
+                "description": "Title beside subtitle",
+                "preview": "+---------------------+\n| TITLE - subtitle    |\n+---------------------+",
+            },
+        ],
+        "multi": false,
+    })]
+}
+
+#[test]
+fn card_draws_a_box_beside_the_choices_of_a_question_that_takes_several() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+
+    let mut call = a_call_of_three();
+    call[0]["answer"] = json!("Node");
+    parked_on_a_call(&amx, "pick-a1b", &call);
+
+    let carded = card_on(&amx, &view, "pick-a1b");
+    for choice in ["1. [ ] Canary", "2. [ ] Migrate", "3. [ ] Announce"] {
+        assert!(
+            carded.contains(choice),
+            "{choice} is a box to check, not a choice to make:\n{carded}"
+        );
+    }
+    // The question in front of it takes one choice, and a box beside those
+    // would be a screen offering something the vendor will not take.
+    showing_the_pending_one(&amx, "pick-a1b", &a_call_of_three());
+    let drawn = amx.until("the card on the plain question", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("1. Node").then_some(drawn)
+    });
+    assert!(!drawn.contains("[ ] Node"), "{drawn}");
+}
+
+#[test]
+fn card_names_the_rows_the_vendor_adds_that_no_payload_carries() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+
+    // Every menu the tool draws carries one free-text row as its last choice,
+    // and nothing in the payload accounts for it.
+    parked_on_a_call(&amx, "pick-a1b", &a_call_of_three());
+    let carded = card_on(&amx, &view, "pick-a1b");
+    assert!(
+        carded.contains("words of your own"),
+        "the row the vendor adds under the choices:\n{carded}"
+    );
+
+    // A previewed question has no such row, and has a field for a note
+    // instead.
+    showing_the_pending_one(&amx, "pick-a1b", &a_previewed_question());
+    let previewed = amx.until("the card on the previewed question", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("1. Stacked").then_some(drawn)
+    });
+    assert!(
+        previewed.contains("field for a note"),
+        "the field the vendor draws where a choice carries a preview:\n{previewed}"
+    );
+    assert!(
+        !previewed.contains("words of your own"),
+        "and that layout draws no free-text row at all:\n{previewed}"
+    );
+}
+
 #[test]
 fn card_takes_words_where_the_question_asks_for_them() {
     let amx = Harness::new();
