@@ -81,7 +81,9 @@ fn inert(text: &str) -> String {
     crate::tmux::sanitize(first_line(text)).trim().to_string()
 }
 
-/// How long since anything was heard, in the shortest form that says it.
+/// The reading's own number, in the shortest form that says it: how long a
+/// finished run took, how long a waiting agent has waited, and how long since
+/// anything was heard from one still going.
 fn age(view: &View) -> String {
     let seconds = view.verdict.age;
     match seconds {
@@ -105,22 +107,26 @@ mod tests {
     use crate::tmux::{PaneId, Socket};
     use std::path::PathBuf;
 
+    fn meta(id: &str, created: u64) -> Meta {
+        Meta {
+            id: id.to_string(),
+            task: "fix the login bug".to_string(),
+            dir: PathBuf::from("/srv/app"),
+            worktree: None,
+            branch: None,
+            base: None,
+            socket: Socket::Name("amx".to_string()),
+            pane: PaneId::new("%1").unwrap(),
+            bg: false,
+            session: None,
+            transcript: None,
+            created,
+        }
+    }
+
     fn view(id: &str, phase: Phase, age: u64, line: Option<&str>) -> View {
         View {
-            meta: Meta {
-                id: id.to_string(),
-                task: "fix the login bug".to_string(),
-                dir: PathBuf::from("/srv/app"),
-                worktree: None,
-                branch: None,
-                base: None,
-                socket: Socket::Name("amx".to_string()),
-                pane: PaneId::new("%1").unwrap(),
-                bg: false,
-                session: None,
-                transcript: None,
-                created: 1,
-            },
+            meta: meta(id, 1),
             state: State {
                 state: phase,
                 summary: line.map(str::to_string),
@@ -133,6 +139,15 @@ mod tests {
                 age,
             },
         }
+    }
+
+    /// A row worked out from a record the way `ls` works one out, rather than
+    /// written by hand: the last column is the reader's number, and this is
+    /// the surface a person reads it off.
+    fn reading(id: &str, state: State, created: u64, now: u64) -> View {
+        let verdict =
+            derive::read(&state, created, true, || None, rules::bundled(), now, 1).verdict;
+        View::new(meta(id, created), state, verdict)
     }
 
     fn printed(views: &[View]) -> String {
@@ -172,6 +187,41 @@ mod tests {
     #[test]
     fn reader_the_table_says_so_when_there_is_nothing_to_say() {
         assert_eq!(printed(&[]).trim(), "no agents");
+    }
+
+    #[test]
+    fn reader_the_last_column_ticks_while_an_agent_runs_and_freezes_when_it_ends() {
+        let mut record = State {
+            state: Phase::Working,
+            since: 1_000,
+            last_event: 1_000,
+            summary: Some("Running Bash".to_string()),
+            ..State::default()
+        };
+
+        // Still going: how long since anything was heard, moving with the
+        // clock, which is what says whether the rest of the row is worth
+        // believing.
+        for (now, said) in [(1_004, "4s"), (1_008, "8s")] {
+            let text = printed(&[reading("fix-login-a1b", record.clone(), 1_000, now)]);
+            assert!(text.contains(said), "{text}");
+        }
+
+        // Ended after five minutes. Read an hour later and a day later, it is
+        // the run it was both times.
+        record.state = Phase::Done;
+        record.since = 1_300;
+        record.last_event = 1_300;
+        record.ended = 1_300;
+        record.result = Some("the tests pass now".to_string());
+
+        let hour = printed(&[reading("fix-login-a1b", record.clone(), 1_000, 4_900)]);
+        assert!(hour.contains("5m"), "{hour}");
+        assert_eq!(
+            printed(&[reading("fix-login-a1b", record, 1_000, 90_000)]),
+            hour,
+            "a row of a run that took five minutes says five minutes"
+        );
     }
 
     #[test]
