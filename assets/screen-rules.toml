@@ -214,6 +214,10 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 #   * a checkbox choice draws as `❯ 1. [ ] Logging`, so its label comes off the
 #     row with the box glued to it, and an answered tab marks its choice with a
 #     trailing ` ✔`;
+#   * the unnumbered row a checkbox screen draws under its `Other` row reads
+#     `Submit` when no question follows and `Next` when one does, measured at
+#     220 columns on 2026-08-24. It names where the tab leads, so neither word
+#     tells a reader which shape it is on;
 #   * a previewed question puts the preview box on the SAME rows as the
 #     choices, drops the `Other` row, and leaves `Chat about this` with no
 #     number on it at all;

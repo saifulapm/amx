@@ -312,6 +312,59 @@ Answering never returns to the composer until the Submit tab is confirmed, which
 is what "answering one tab leaves the next pending" has to mean on the record: a
 prompt that is still up.
 
+#### A checkbox tab with a question behind it
+
+`multiSelect` is per question, so one call holds both kinds of tab and the keys
+that finish one do not finish the next. Measured on 2026-08-24 against v2.1.240
+at 220 columns, on the three questions above with `Rollout` moved from third to
+second so that a question follows the checkbox tab; options, descriptions and
+flags otherwise unchanged. `Enter` on `Node` answered the first tab and left the
+second showing:
+
+    ←  ☒ Runtime  ☐ Rollout  ☐ Storage  ✔ Submit  →
+
+    Which rollout steps should run?
+
+    ❯ 1. [ ] Canary
+      Five percent first
+      2. [ ] Migrate
+      Run the schema change
+      3. [ ] Announce
+      Post to the channel
+      4. [ ] Type something
+         Next
+    ────────────────────────────────────────────────────────────────────────
+      5. Chat about this
+
+    Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+
+The boxes, the two-column descriptions and the `Type something` with no full
+stop are section 1's checkbox screen to the letter. **The unnumbered row under
+the `Other` row is not.** It reads `Next` here and `Submit` in section 1, and
+what differs between the two is position: `Submit` when no question follows,
+`Next` when one does. So that row names where the tab leads, never what kind of
+screen is drawing it, and neither word tells a reader it is looking at
+checkboxes.
+
+| key | what it does on a checkbox tab |
+| --- | --- |
+| `Enter` on a choice | toggles it, and does **not** advance |
+| `1`–`9` | toggles that choice, cursor unmoved, tab unadvanced |
+| `→` / `Tab` | the next question's tab, not the Submit tab |
+| `←` | back a tab, the boxes kept |
+| `Enter` on `Next` | the next question's tab |
+
+The first two rows are the plain tab's own keys inverted. There `Enter` records
+and advances and a digit selects and submits the tab at once; here both toggle
+and neither moves on. The tab's mark flips `☐` to `☒` on the first box checked
+rather than on leaving the tab, so the strip says a tab has been touched and not
+that it is finished.
+
+Driven end to end the call took `Enter` on `Node`, then `2` and `Enter` on the
+`Rollout` tab, then the tab-moving keys in the table above — `→`, `←`, four `↓`
+and `Enter` on `Next` — which left both answers alone, then `Enter` on `Redis`,
+then `Enter` on the review tab.
+
 ### What answering it produced
 
     "answers": {
@@ -322,6 +375,15 @@ prompt that is still up.
 
 Keyed by the question text, verbatim — not by header, not by index. Two
 questions with the same text would collide in the vendor's own answer map.
+
+The reordered call driven above came back the same way, one entry per tab, keyed
+by its question's text:
+
+    "answers": {
+      "Which runtime should the service target?": "Node",
+      "Which rollout steps should run?": "Migrate, Canary",
+      "Which store should hold sessions?": "Redis"
+    }
 
 ## 3. The `Other` row
 
@@ -696,6 +758,12 @@ it asked, which is not a property of the question.
   checkbox one. `↓`, `Enter`, `Enter` finishes the checkbox case;
 * a digit answers a plain menu, toggles a checkbox menu, and types a character
   once the cursor is on the free-text row;
+* no one sequence drives a whole call. On a plain tab `Enter` records and
+  advances and a digit submits the tab outright; on a checkbox tab in the same
+  call both only toggle, `→` reaches the next question rather than the Submit
+  tab, and the row under the `Other` row reads `Next` where a last tab's reads
+  `Submit`. Which of the two a tab is is `multiSelect`, which is in the payload
+  and not on the strip;
 * the Submit tab needs a rule, and the question read at the moment `waiting` is
   first concluded needs to come from somewhere other than the last 24 rows of a
   half-empty pane.
