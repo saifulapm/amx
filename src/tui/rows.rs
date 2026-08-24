@@ -30,6 +30,7 @@
 //! line four is somebody else's by then.
 
 use crate::derive::View;
+use crate::pr::{self, Pr};
 use crate::store::{Ask, Meta, Phase};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -199,18 +200,21 @@ struct Filters {
 }
 
 impl Filters {
-    fn keeps(&self, view: &View) -> bool {
+    fn keeps(&self, view: &View, prs: &[Pr]) -> bool {
         let state = self
             .state
             .as_ref()
             .is_none_or(|want| view.phase().as_str() == want);
-        // Either word for the agent, because both are on the screen somebody
-        // is typing at: the id every other surface uses, and the name a person
-        // gave it because the id was not what they call it.
-        let name = self
-            .name
-            .as_ref()
-            .is_none_or(|want| view.id().contains(want) || called(view).contains(want));
+        // Every word for the agent that is on the screen somebody is typing
+        // at: the id every other surface uses, the name a person gave it
+        // because the id was not what they call it, and the `#12` its branch
+        // wears — which is routinely the only one of the three a person has in
+        // front of them, because they came to the wall from the pull request.
+        let name = self.name.as_ref().is_none_or(|want| {
+            view.id().contains(want)
+                || called(view).contains(want)
+                || prs.iter().any(|pr| pr.label().contains(want))
+        });
         state && name
     }
 
@@ -251,6 +255,14 @@ pub struct List {
     /// Whether a directory holds a repository. A field so that a test can say
     /// what the disk looks like, and count what was asked of it.
     probe: fn(&Path) -> bool,
+    /// What each agent's branch has open, by id. Taken with the reading rather
+    /// than once per agent, because a check goes green while somebody is
+    /// looking at the row — the look itself is a small file beside the record,
+    /// and the forge is asked from a thread nobody waits on.
+    prs: HashMap<String, Vec<Pr>>,
+    /// Where those come from. A field for the same reason `probe` is one: a
+    /// test says what the forge holds without one being anywhere near it.
+    asks: fn(&Meta) -> Vec<Pr>,
     /// Home as this view knows it, read once: a heading says `~/code/amx` the
     /// way a person writes it, and `$HOME` does not move while they read.
     home: Option<PathBuf>,
@@ -270,6 +282,8 @@ impl Default for List {
             projects: Vec::new(),
             roots: HashMap::new(),
             probe: holds_a_repository,
+            prs: HashMap::new(),
+            asks: pr::of,
             home: std::env::home_dir(),
         }
     }
@@ -287,6 +301,13 @@ impl List {
         }
     }
 
+    /// The same list over a stated forge, which is the seam the label and the
+    /// narrowing that finds it by number are proven at.
+    #[cfg(test)]
+    pub(super) fn asking(&mut self, asks: fn(&Meta) -> Vec<Pr>) {
+        self.asks = asks;
+    }
+
     /// Take a fresh reading.
     ///
     /// The cursor holds onto what it was on rather than the line number it was
@@ -294,9 +315,27 @@ impl List {
     /// cursor that stayed on line four would end up on whoever moved into it.
     pub fn show(&mut self, views: Vec<View>) {
         let held = self.on();
+        self.remember_the_requests(&views);
         self.views = views;
         self.rebuild();
         self.follow(&held);
+    }
+
+    /// What each agent's branch has open, taken again with the reading.
+    ///
+    /// Every agent every time, unlike the projects: which repository an agent
+    /// runs in does not move under it, and what its pull request is doing is
+    /// the thing on the row most likely to have changed since the last look.
+    fn remember_the_requests(&mut self, views: &[View]) {
+        self.prs = views
+            .iter()
+            .map(|view| (view.id().to_string(), (self.asks)(&view.meta)))
+            .collect();
+    }
+
+    /// What this agent's branch has open, in the order a surface reads them.
+    pub fn requests(&self, view: &View) -> &[Pr] {
+        self.prs.get(view.id()).map_or(&[], Vec::as_slice)
     }
 
     pub fn axis(&self) -> Axis {
@@ -416,6 +455,12 @@ impl List {
         self.views.iter().find(|view| view.id() == id)
     }
 
+    /// Whether a narrowing left this agent on the screen, with everything on
+    /// its row that a narrowing may be written against.
+    fn keeps(&self, view: &View) -> bool {
+        self.filters.keeps(view, self.requests(view))
+    }
+
     /// Whether an agent is drawn under this heading.
     fn belongs(&self, n: usize, under: Under) -> bool {
         match under {
@@ -470,7 +515,7 @@ impl List {
                 let count = self
                     .views
                     .iter()
-                    .filter(|view| self.filters.keeps(view))
+                    .filter(|view| self.keeps(view))
                     .filter(|view| Group::of(view.phase()) == group)
                     .count();
                 (count > 0).then_some((group, count))
@@ -572,7 +617,7 @@ impl List {
     /// gathered a different way.
     fn ordered(&self) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.views.len())
-            .filter(|&n| self.filters.keeps(&self.views[n]))
+            .filter(|&n| self.keeps(&self.views[n]))
             .collect();
         order.sort_by(|&a, &b| {
             rank(&self.views[a])
@@ -933,6 +978,7 @@ pub(super) fn shorten(path: &Path, home: Option<&Path>) -> String {
 mod tests {
     use super::*;
     use crate::derive::{Evidence, Verdict};
+    use crate::pr::Standing;
     use crate::store::{Meta, State};
     use crate::tmux::{PaneId, Socket};
     use std::path::PathBuf;
@@ -974,6 +1020,36 @@ mod tests {
     fn at(mut view: View, dir: &str) -> View {
         view.meta.dir = PathBuf::from(dir);
         view
+    }
+
+    /// The same reading, on a branch of its own.
+    fn on_a_branch(mut view: View, branch: &str) -> View {
+        view.meta.branch = Some(branch.to_string());
+        view
+    }
+
+    /// A forge where two of the branches have a request open, so the number
+    /// on the row is read from something rather than made up here.
+    fn a_forge(meta: &Meta) -> Vec<Pr> {
+        match meta.branch.as_deref() {
+            Some("amx/fix-login-a1b") => vec![Pr {
+                number: 12,
+                standing: Standing::Failing,
+            }],
+            Some("amx/port-importer-b2c") => vec![Pr {
+                number: 3,
+                standing: Standing::Ready,
+            }],
+            _ => Vec::new(),
+        }
+    }
+
+    /// A list reading that forge.
+    fn over_the_forge(views: Vec<View>) -> List {
+        let mut list = List::default();
+        list.asking(a_forge);
+        list.show(views);
+        list
     }
 
     /// The same reading, in a worktree amx made for it.
@@ -1785,6 +1861,76 @@ mod tests {
             ["idle (1)", "fix-login-a1b"],
             "and a narrowing takes the name off the row as readily as the id"
         );
+    }
+
+    #[test]
+    fn pr_the_row_carries_what_the_agents_branch_has_open() {
+        let list = over_the_forge(vec![
+            on_a_branch(view("fix-login-a1b", Phase::Done, 10), "amx/fix-login-a1b"),
+            view("no-branch-c3d", Phase::Done, 20),
+        ]);
+
+        let labelled = list.agent_by_id("fix-login-a1b").unwrap();
+        assert_eq!(list.requests(labelled)[0].label(), "#12");
+        assert_eq!(list.requests(labelled)[0].standing, Standing::Failing);
+        assert!(
+            list.requests(list.agent_by_id("no-branch-c3d").unwrap())
+                .is_empty(),
+            "an agent amx cut no branch for has nothing to label"
+        );
+    }
+
+    #[test]
+    fn pr_narrows_the_list_to_the_request_a_line_named() {
+        let mut list = over_the_forge(vec![
+            on_a_branch(view("fix-login-a1b", Phase::Idle, 10), "amx/fix-login-a1b"),
+            on_a_branch(
+                view("port-importer-b2c", Phase::Idle, 20),
+                "amx/port-importer-b2c",
+            ),
+        ]);
+
+        // Somebody has come to the wall from the request itself, and its
+        // number is the only word for the agent they have in front of them.
+        list.narrow(vec![Narrow::Name(Some("#12".to_string()))]);
+        assert_eq!(lines(&list), ["idle (1)", "fix-login-a1b"]);
+        assert_eq!(list.counts(), [(Group::Idle, 1)]);
+
+        list.narrow(vec![Narrow::Name(Some("#3".to_string()))]);
+        assert_eq!(lines(&list), ["idle (1)", "port-importer-b2c"]);
+
+        list.narrow(vec![Narrow::Name(Some("#99".to_string()))]);
+        assert!(
+            list.is_empty(),
+            "and a number nobody's branch wears finds nobody"
+        );
+    }
+
+    #[test]
+    fn pr_is_read_again_with_every_reading() {
+        // What a request is doing is the thing on a row most likely to have
+        // moved since the last look: a check goes green while somebody is
+        // reading it, and a row that answered from the first reading for as
+        // long as the view was open would be a row that never went green.
+        let mut list = over_the_forge(vec![view("fix-login-a1b", Phase::Working, 10)]);
+        assert!(
+            list.requests(list.agent_by_id("fix-login-a1b").unwrap())
+                .is_empty()
+        );
+
+        list.show(vec![on_a_branch(
+            view("fix-login-a1b", Phase::Working, 10),
+            "amx/fix-login-a1b",
+        )]);
+        assert_eq!(
+            list.requests(list.agent_by_id("fix-login-a1b").unwrap())[0].number,
+            12
+        );
+
+        // And an agent that has gone takes its number with it.
+        list.show(vec![view("port-importer-b2c", Phase::Working, 20)]);
+        assert!(list.agent_by_id("fix-login-a1b").is_none());
+        assert_eq!(list.prs.len(), 1, "{:?}", list.prs);
     }
 
     #[test]

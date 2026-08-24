@@ -14,8 +14,8 @@ mod hook;
 mod ids;
 mod install;
 mod notify;
-#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod paths;
+mod pr;
 mod registry;
 #[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod rules;
