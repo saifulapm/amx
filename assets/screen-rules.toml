@@ -230,6 +230,18 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 #     below the question. The rule still held, on `esc to cancel`, and the
 #     question read back empty.
 #
+# Seen live again against v2.1.240 on 2026-08-25 at 220 columns, this time
+# through amx rather than by hand: three agents started with `amx new`, one on a
+# checkbox question, one on a plain menu and one on a call of three questions,
+# and every capture while a menu was up read back `ask_menu` and `waiting`. The
+# footer's middle term was `↑/↓ to navigate` on the two single-question calls
+# and `Tab/Arrow keys to navigate` on the three-question one, and all three
+# opened with `Enter to select`. What that round did find is that nothing on
+# this screen distinguishes it from a permission box in the vendor's own
+# EVENTS — a menu fires `PermissionRequest` and a `permission_prompt`
+# notification of its own — which is why the rule claiming the screen now
+# outranks a record that says `permission`. See docs/question-shapes.md § 6.
+#
 # ── The screen with no footer, which nothing here claims ─────────────────────
 # Both shapes that need an explicit submit — a multi-select question, or more
 # than one question — end on a review tab that draws `Review your answers`, the

@@ -15,6 +15,11 @@ where it was taken, the payload beside it, and the keys that drive it. Nothing
 here was read off the vendor's source or inferred from a screen amx drew for
 itself.
 
+Sections 6 to 8 are a second sitting, on 2026-08-25, and they are about the
+parts amx got wrong rather than the parts the vendor draws: which events say a
+menu is up, what the vendor does with keys sent faster than it redraws, and what
+happens when the two rows the payload does not name are pressed.
+
 ## How these were measured
 
 One `claude 2.1.240` in a detached tmux session on 2026-08-24, driven with
@@ -33,6 +38,15 @@ matching `AskUserQuestion` in the probe project appended the hook's stdin to a
 file, and a `PostToolUse` hook did the same for the answer. Every `questions`
 block below is that hook's `tool_input`, and every `answers`/`annotations` block
 is its `tool_response`.
+
+The 2026-08-25 sitting was driven through amx itself rather than by hand: `amx
+new` on the same probe project, one agent per shape, at 220 columns. Its hook
+log is the whole event stream and not the two `AskUserQuestion` events, and the
+answers below are `amx answer` typing at the pane rather than a person. One
+thing that took an hour to find is worth saying here: this machine's own
+`~/.claude/settings.json` already wires amx's hooks, so a probe project that
+wires them again gets every payload folded twice, once by each binary. The
+second fold is by whatever `amx` is installed, which is not the one under test.
 
 That response carries three keys and not two. `questions` — the whole call, as
 it went in — sits beside `answers` and `annotations`, on both a one-question and
@@ -736,6 +750,138 @@ at `2. Cancel` with nothing beneath. Adding it means adding its name to
 `rules_the_bundled_file_is_the_ruleset` in `src/rules.rs`, which this task does
 not own; it belongs with the work that does.
 
+## 6. The three events behind one menu
+
+The screen above is one screen. The vendor fires three events about it, and two
+of them are about a permission box that does not exist. Measured on 2026-08-25
+against v2.1.240, once in manual permission mode and once in auto, with a hook
+on every event appending its stdin to a file:
+
+| when | event | what it carries |
+| --- | --- | --- |
+| `20:38:53.622` | `PreToolUse` | `tool_name` `AskUserQuestion`, and `tool_input` holding every question the menu will ask |
+| `20:38:53.632` | `PermissionRequest` | `tool_name` `AskUserQuestion`, and the same `tool_input` |
+| `20:38:59.650` | `Notification` | `notification_type` `permission_prompt`, and the message `Claude needs your permission` |
+
+The gap between the first two was 10 ms in manual mode and 27 ms in auto. The
+notification is six seconds behind, which is this vendor's own timer and not a
+mode. **The permission mode makes no difference at all**: the vendor asks itself
+for leave to use its own question tool either way, and `PermissionDenied` never
+fires — the box is never shown, because there is no box.
+
+So the event that knows what is being asked arrives first, and the two that know
+least arrive last. amx folded each one over the last, and what an agent standing
+at a menu read was this:
+
+    "kind": "permission",
+    "multi": false,
+    "questions": 0,
+    "options": ["[ ] Logging", "[ ] Metrics", "[ ] Tracing",
+                "[ ] Type something", "Chat about this"]
+
+`permission` because the notification's own type said so; `questions: 0` because
+writing the notification's words retired the call; and the five options because
+the words it wrote were `Claude needs your permission`, which is a placeholder a
+reader forgets, and forgetting it sent the reader to the pane for the rows.
+That is 02BQ6442 whole: the grammar amx offered was a permission box's, and the
+numbering was the screen's five rows rather than the question's three.
+
+Folding the same three payloads through the fixed hook leaves:
+
+    "kind": "question",
+    "multi": true,
+    "questions": [ { "header": "Features", "multi": true, "options": [ … ] } ],
+    "options": ["Logging", "Metrics", "Tracing"]
+
+## 7. What the vendor does with keys sent faster than it draws
+
+This is the one that cost an answer without saying so, and no stand-in can find
+it: a mock claude reads its pty and never redraws, so every sequence amx has
+ever sent passes against one and some of them do nothing against the real thing.
+
+Driven on the checkbox menu of section 1 at 220 columns on 2026-08-25. Each
+round starts with both boxes clear, sends `1`, `3`, `→`, `←`, and reads back how
+many of the two boxes survived the trip to the Submit tab and home again:
+
+| how the keys were sent | rounds that kept both boxes |
+| --- | --- |
+| one `send-keys` call carrying both digits | 0 of 3 |
+| a `send-keys` call each, no pause | 4 of 6 |
+| a `send-keys` call each, 50 ms apart | 16 of 16 |
+
+Two separate findings sit in that table.
+
+**Several keys in one call are not several keypresses.** `tmux send-keys -t %3
+1 3` writes both into the pty in one go, and the menu took neither: three rounds
+of three, the tab still `☐`, and the Submit tab drawing `⚠ You have not answered
+all questions`. `tmux send-keys -t %3 Right Enter` was worse than losing a key —
+the `Right` moved to the Submit tab and the `Enter` was answered against the tab
+it had just left, unchecking a box that was already checked, so the review tab
+showed `→ Tracing` where two boxes had been ticked.
+
+**A call each is necessary and not sufficient.** Back to back with nothing
+between them, two rounds of six lost both digits. The gap that a process start
+provides is not reliably a gap the vendor gets to draw in. Fifty milliseconds
+between calls was clean over sixteen rounds, which is what `answer.rs` now
+leaves: an answer is at most six keys, so a third of a second at the pane
+against an answer that silently does not take.
+
+None of this is reported by anything. The prompt stays up, amx writes down that
+the question was answered, the record says the agent is back at work, and
+whoever asked stops watching a row that will never move again.
+
+### What it looks like driven properly
+
+`amx answer <id> 1,3` at the checkbox menu, and the vendor's own transcript:
+
+    ● User answered Claude's questions:
+      ⎿  · Which features should be enabled? → Logging, Tracing
+
+with `"answers": { "Which features should be enabled?": "Logging, Tracing" }` in
+the `PostToolUse` payload. `amx answer <id> --text BSD-3-Clause` at the plain
+menu of section 3 gave `→ BSD-3-Clause`. The three-question call of section 2,
+answered `1`, then `1`, then `1,3`, advanced a tab at a time — the record showing
+`Runtime: Node`, then `Storage: Redis`, with the prompt still up between them —
+and the last answer pressed the vendor's own Submit tab:
+
+    ● User answered Claude's questions:
+      ⎿  · Which runtime should the service target? → Node
+         · Which store should hold sessions? → Redis
+         · Which rollout steps should run? → Canary, Announce
+
+## 8. Pressing the two rows the payload does not name
+
+Section 3 records that a digit on the `Other` row is a character in the field.
+What a digit *at* that row does, from a choice, is a different question, and it
+is the one a caller counting rows off the pane asks. Measured on 2026-08-25 at
+220 columns.
+
+On a plain menu of two choices, `3` is `Type something.`, and pressing it moves
+the cursor onto the field and stops:
+
+    ❯ 3. Type something.
+    Enter to select · ↑/↓ to navigate · ctrl+g to edit in Kak · Esc to cancel
+
+Nothing is submitted and the prompt is exactly where it was. So an `amx answer
+<id> 3` that pressed the digit would type a key, write `3` down as the answer,
+report the agent back at work, and leave it standing at an empty text field.
+
+On a checkbox menu of three choices, `4` is `Type something` and pressing it
+**checks the empty field**:
+
+      3. [ ] Tracing
+      4. [✔] Type something
+
+with the cursor still on row 1 and the tab flipping `☐` → `☒`. Submitting from
+there sends an empty string as the answer.
+
+`Chat about this` was not pressed. Its own label says where it goes, and it is
+not a row an answer to the question can land on.
+
+Neither row is an answer amx can make, so `amx answer` now names them instead of
+pressing them: the free-text row points at `--text`, and anything past it is
+refused against the count the payload carries.
+
 ## What the shipped ruleset makes of these
 
 Every capture above was run through the bundled ruleset's own matcher. It was
@@ -781,6 +927,11 @@ it asked, which is not a property of the question.
 
 ### What the next tasks take from this
 
+Five of these are now spent. The kind precedence, the numbering and the three
+keystroke findings are in `hook.rs`, `derive.rs` and `verbs/answer.rs`, driven
+against a live 2.1.240 and covered by `cargo test answer`. What is left is
+marked below.
+
 * the tabs, the descriptions, the `multiSelect` flag and the note are all in the
   payload and none of them can be read off a narrow pane. The record should hold
   the payload's version;
@@ -789,9 +940,11 @@ it asked, which is not a property of the question.
   question where there is no `Other` row and `Chat about this` has no number.
   Nothing on the screen distinguishes the vendor's rows from the agent's;
 * `Up`, paste, `Enter` answers a plain menu's `Other` row and unchecks a
-  checkbox one. `↓`, `Enter`, `Enter` finishes the checkbox case;
+  checkbox one. `↓`, `Enter`, `Enter` finishes the checkbox case — and every one
+  of those keys needs a call and a pause of its own, per section 7;
 * a digit answers a plain menu, toggles a checkbox menu, and types a character
-  once the cursor is on the free-text row;
+  once the cursor is on the free-text row. Past the question's own choices it
+  answers nothing at all, per section 8;
 * the `PostToolUse` payload echoes `questions` beside the answers, so a record
   that missed the call going out can still take the tabs and their options off
   the answer coming back;
@@ -807,4 +960,7 @@ it asked, which is not a property of the question.
   and not on the strip;
 * the Submit tab needs a rule, and the question read at the moment `waiting` is
   first concluded needs to come from somewhere other than the last 24 rows of a
-  half-empty pane.
+  half-empty pane. **Still open**: both belong to whatever owns `src/rules.rs`;
+* a menu fires a permission event and a permission notification of its own, so
+  nothing that reads either of them alone can tell a menu from a box. What tells
+  them apart is the tool call in front, per section 6.
