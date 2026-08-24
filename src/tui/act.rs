@@ -124,7 +124,7 @@ pub fn commanded(line: &str) -> Option<&str> {
 }
 
 /// The tokens a task line may be led with, and what each of them turns.
-const DIALS: [&str; 4] = ["m:", "p:", "w:", "agent:"];
+const DIALS: [&str; 5] = ["m:", "p:", "w:", "d:", "agent:"];
 
 /// What a line's leading tokens turn, for the one spawn they lead. Empty is
 /// the ordinary line, which leaves every dial where the config put it.
@@ -135,6 +135,10 @@ pub struct Turned {
     pub permission: Option<String>,
     /// Whether this agent is given a tree of its own, when the line said.
     pub worktree: Option<bool>,
+    /// Where this one runs, as it was typed. Kept as the word on the line
+    /// rather than a path: what `~` and a relative name mean is the running
+    /// view's business, and this is only what somebody asked for.
+    pub dir: Option<String>,
 }
 
 /// What starting an agent came to.
@@ -209,6 +213,12 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
                     _ => return Err(format!("w:{value}: on or off")),
                 });
             }
+            "d:" => {
+                if value.is_empty() {
+                    return Err("d: takes a directory".to_string());
+                }
+                turned.dir = Some((*value).to_string());
+            }
             "m:" => {
                 turned.model = Some(pointed(&agent, dial, entry.and_then(|e| e.model), value)?);
             }
@@ -268,7 +278,17 @@ pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
         ));
     }
 
-    let dir = std::env::current_dir().context("no working directory")?;
+    let here = std::env::current_dir().context("no working directory")?;
+    // Where this one runs, which is where the view is unless the line named
+    // somewhere else. Answered before anything is made: a directory nothing is
+    // at is a line somebody is still writing, not a spawn to clean up after.
+    let dir = match &turned.dir {
+        Some(said) => match aimed(said, &here) {
+            Ok(dir) => dir,
+            Err(refusal) => return Ok(Started::No(refusal)),
+        },
+        None => here,
+    };
     // A `w:` is a decision about this agent, so it is made where the config's
     // own answer is made rather than argued with downstream: `new` has a flag
     // for going without a tree and none for insisting on one.
@@ -295,6 +315,26 @@ pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
     };
 
     spawned(root, &dir, &config, &args, "started")
+}
+
+/// Where a `d:` points, read the way a shell prompt in `here` would read it,
+/// or why it points nowhere.
+///
+/// Both halves of that reading are amx's here, because there is no shell on
+/// this line to do either: a leading `~` is the home directory, and a name that
+/// is not absolute is under the directory the view is running in.
+fn aimed(said: &str, here: &Path) -> Result<PathBuf, String> {
+    let path = match said.strip_prefix('~') {
+        Some(under) => match std::env::home_dir() {
+            Some(home) => home.join(under.trim_start_matches('/')),
+            None => return Err(format!("d:{said}: there is no home directory")),
+        },
+        None => here.join(said),
+    };
+    if !path.is_dir() {
+        return Err(format!("d:{said}: nothing is at {}", path.display()));
+    }
+    Ok(path)
 }
 
 /// Run a shell command where the view is, as a row of its own.
@@ -998,6 +1038,7 @@ mod tests {
                 model: Some("opus".to_string()),
                 permission: Some("plan".to_string()),
                 worktree: Some(false),
+                dir: None,
             }
         );
         assert_eq!(task, "port the importer");
@@ -1033,6 +1074,60 @@ mod tests {
             assert_eq!(dials, Turned::default(), "{line:?}");
             assert_eq!(task, line, "{line:?} is a task, colons and all");
         }
+    }
+
+    #[test]
+    fn composer_aims_one_spawn_at_the_directory_its_line_names() {
+        let (dials, task) = turned(&as_claude(), "d:/srv/app port the importer").unwrap();
+        assert_eq!(dials.dir.as_deref(), Some("/srv/app"));
+        assert_eq!(task, "port the importer");
+
+        let (dials, task) = turned(&as_claude(), "d:~/code/amx  m:opus  fix it").unwrap();
+        assert_eq!(
+            dials.dir.as_deref(),
+            Some("~/code/amx"),
+            "as it was typed: what a path means is worked out where it is used"
+        );
+        assert_eq!(dials.model.as_deref(), Some("opus"));
+        assert_eq!(task, "fix it");
+
+        assert_eq!(
+            turned(&as_claude(), "d: port it").expect_err("refused"),
+            "d: takes a directory"
+        );
+    }
+
+    #[test]
+    fn composer_refuses_a_directory_nothing_is_at_before_anything_is_made() {
+        let root = TempDir::new().unwrap();
+        let here = TempDir::new().unwrap();
+
+        let Started::No(why) = start(
+            root.path(),
+            &Config::default(),
+            "d:nowhere/at/all port the importer",
+        )
+        .unwrap() else {
+            panic!("a spawn was aimed at a directory that is not there");
+        };
+        assert!(why.contains("nowhere/at/all"), "{why}");
+        assert!(
+            crate::store::list(root.path()).unwrap().is_empty(),
+            "and nothing was made on the way to finding out"
+        );
+
+        // A path is read against the directory the view is running in, the way
+        // a shell would read it.
+        assert_eq!(
+            aimed("app", here.path()).expect_err("no such directory"),
+            format!("d:app: nothing is at {}/app", here.path().display())
+        );
+        std::fs::create_dir(here.path().join("app")).unwrap();
+        assert_eq!(
+            aimed("app", here.path()).unwrap(),
+            here.path().join("app"),
+            "and a directory that is there is where the agent runs"
+        );
     }
 
     #[test]
