@@ -553,6 +553,54 @@ fn glyphs_say_the_states_apart_and_the_working_one_breathes() {
 }
 
 #[test]
+fn a_working_row_says_what_the_line_over_the_composer_says() {
+    let amx = Harness::new();
+    let mut pane_rows = vec![
+        "● Read(src/importer.rs)",
+        "  ⎿  Read 210 lines",
+        "",
+        "✽ Nesting… (15s · ↓ 1.3k tokens)",
+    ];
+    pane_rows.extend_from_slice(&CHROME);
+    let pane = a_pane_showing(&amx, &pane_rows);
+    amx.record("port-cli-b2c", &pane);
+    // The hooks have gone quiet inside the turn, which is the state a reader
+    // is at the pane for. What the record has to say about the turn is the
+    // tool call it last saw, and that call may have ended ten minutes ago.
+    let quiet_since = now() - 600;
+    amx.set_state(
+        "port-cli-b2c",
+        json!({
+            "state": "working",
+            "summary": "Running Read",
+            "since": quiet_since,
+            "last_event": quiet_since,
+        }),
+    );
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let row = amx.until("the row to say what the pane says", || {
+        row_of(&amx, &view, "port-cli-b2c").filter(|row| row.contains("Nesting"))
+    });
+    assert!(
+        row.contains("Nesting… (15s · ↓ 1.3k tokens)"),
+        "the vendor's line whole, less the glyph it pulses in front of it:\n{row}"
+    );
+    assert!(
+        !row.contains("Running Read"),
+        "the record's account of the same turn is the older one:\n{row}"
+    );
+
+    // Read and not written down: the line is about the second it was read in,
+    // and a record carrying it would have every later reader repeat it as news.
+    assert_eq!(
+        amx.state("port-cli-b2c")["summary"],
+        "Running Read",
+        "the record says what the hooks said"
+    );
+}
+
+#[test]
 fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
     let amx = Harness::new();
     let repo = amx.a_repo();
