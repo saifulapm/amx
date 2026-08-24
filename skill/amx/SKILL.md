@@ -71,6 +71,10 @@ sort it is. `.multi` in that same JSON does: when it is `true`, name the
 choices you want and amx checks each and submits, `amx answer <id> 1,3`. When
 it is `false` that command line is refused and nothing reaches the agent.
 
+Words that read as a key need `--text`, which says they are words:
+`amx answer <id> --text 2` answers with the character `2`, where a bare `2` is
+the second choice.
+
 Answering clears the question from the record, so the next `result` waits for
 the turn rather than handing you the same question back.
 

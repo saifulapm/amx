@@ -150,6 +150,7 @@ amx attach <id>        # hand this terminal to its pane
 amx send <id> "and now the linter"
 amx answer <id> y      # the keys a prompt reads: y, n, 1-9, enter, esc
 amx answer <id> 1,3    # a question that takes several: check these two
+amx answer <id> --text "keep the old importer"   # the row it offers for words
 amx diff <id>          # its worktree against the commit it was cut from
 amx diff <id> --stat   # the shape of it: a file per line, and the totals
 amx events --follow    # every agent's log, merged
@@ -174,6 +175,12 @@ the screen says which those are — `amx status <id> --json` says so under
 command line is refused rather than half taken, because a `1` there is chosen
 and submitted the moment it is typed and the `3` after it would land on
 whatever the agent drew next.
+
+`--text` is for the answer that reads as something else. The row a question
+offers for words of your own takes every key as a character, so
+`amx answer <id> --text 2` answers with the character `2` where a bare `2`
+would be the second choice. Words are still words without it, and the flag is
+refused at a prompt that offers no such row.
 
 `amx statusline` prints the two numbers a status line has room for, and nothing
 at all when no agent needs saying:

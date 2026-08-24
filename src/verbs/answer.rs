@@ -33,6 +33,7 @@
 use anyhow::Result;
 use std::path::Path;
 
+use crate::cli::AnswerArgs;
 use crate::derive;
 use crate::store::{Agent, Ask, Event, Kind, Phase, State};
 use crate::tmux::{PaneId, Server};
@@ -70,13 +71,13 @@ const OFF_THE_FIELD: &str = "Down";
 const TAKE_IT: &str = "Enter";
 
 /// Run the verb against the machine.
-pub fn from_env(id: &str, typed: &str) -> Result<i32> {
+pub fn from_env(id: &str, typed: &AnswerArgs) -> Result<i32> {
     let root = paths::state_root()?;
     run(&root, id, typed)
 }
 
 /// The verb, with the state directory named.
-pub fn run(root: &Path, id: &str, typed: &str) -> Result<i32> {
+pub fn run(root: &Path, id: &str, typed: &AnswerArgs) -> Result<i32> {
     let view = derive::view(root, id, rules::bundled(), store::now())?;
     let phase = view.phase();
     if phase.is_terminal() {
@@ -217,7 +218,7 @@ enum Step {
     Type(String),
 }
 
-/// Read what was typed as an answer to this question.
+/// Read the command line as an answer to this question.
 ///
 /// The grammar comes first wherever it applies: a bare `2` at a menu is the
 /// second choice, not a two-character opinion, and that is how every prompt
@@ -228,10 +229,17 @@ enum Step {
 /// because the same key is not the same act at every shape: at a plain menu a
 /// digit chooses and submits at once, and at a question that takes more than
 /// one choice it checks a box and leaves the prompt standing.
-fn answer(typed: &str, kind: Option<Kind>, state: &State) -> Result<Answer, String> {
+fn answer(args: &AnswerArgs, kind: Option<Kind>, state: &State) -> Result<Answer, String> {
     let pending = state.pending();
     let multi = state.multi();
 
+    // `--text` says which of the two a thing that reads as both is, so it is
+    // read before the grammar rather than through it.
+    if let Some(text) = &args.text {
+        return field(text, kind, pending, multi);
+    }
+
+    let typed = args.key.as_deref().unwrap_or_default();
     if a_list(typed) {
         return boxes(typed, multi, pending);
     }
@@ -244,7 +252,7 @@ fn answer(typed: &str, kind: Option<Kind>, state: &State) -> Result<Answer, Stri
     match kind {
         // Empty is never an answer, and at this prompt it is worse than
         // nothing: the vendor reads a blank submission as a cancel.
-        Some(Kind::Question) if !typed.trim().is_empty() => {
+        Some(Kind::Question) if !typed.trim().is_empty() && !previewed(pending) => {
             Ok(Answer::Words(typed.trim().to_string()))
         }
         _ => Err(format!(
@@ -252,6 +260,49 @@ fn answer(typed: &str, kind: Option<Kind>, state: &State) -> Result<Answer, Stri
             grammar(kind, multi)
         )),
     }
+}
+
+/// Read words for the row a question offers for words.
+///
+/// The refusals are what the flag is worth having for. A permission box and
+/// the trust screen have no such row, and words typed at one land on whatever
+/// is highlighted. Neither does a question the vendor draws a preview beside:
+/// measured against 2.1.240, that layout has no `Other` row at all, so the
+/// `Up` this sends would land on a choice and the words would be typed at the
+/// menu itself.
+fn field(
+    text: &str,
+    kind: Option<Kind>,
+    pending: Option<&Ask>,
+    multi: bool,
+) -> Result<Answer, String> {
+    if kind != Some(Kind::Question) {
+        return Err(format!(
+            "this prompt has no row for words of your own. {}",
+            grammar(kind, multi)
+        ));
+    }
+    if previewed(pending) {
+        return Err(
+            "this question draws a preview beside its choices, and that shape has no row \
+             for words of your own: answer it with a choice"
+                .to_string(),
+        );
+    }
+    if text.trim().is_empty() {
+        return Err(
+            "words with nothing in them are not an answer: the vendor reads a blank \
+             submission as a cancel"
+                .to_string(),
+        );
+    }
+    Ok(Answer::Words(text.trim().to_string()))
+}
+
+/// Whether the vendor draws this question with a preview beside its choices,
+/// which is the shape that has no free-text row.
+fn previewed(pending: Option<&Ask>) -> bool {
+    pending.is_some_and(Ask::takes_notes)
 }
 
 /// Whether what was typed is a list of choices rather than a sentence with a
@@ -541,6 +592,33 @@ mod tests {
         }])
     }
 
+    /// The previewed question of the same measurement: the vendor draws each
+    /// choice's `preview` beside it, and that layout carries a notes field and
+    /// no free-text row.
+    fn a_previewed_question() -> State {
+        asking(vec![Ask {
+            header: Some("Layout".to_string()),
+            text: "Which header layout should the page use?".to_string(),
+            options: vec![
+                Choice {
+                    label: "Stacked".to_string(),
+                    description: Some("Title over subtitle".to_string()),
+                    preview: Some("+----------+\n| TITLE    |\n+----------+".to_string()),
+                },
+                Choice {
+                    label: "Inline".to_string(),
+                    description: Some("Title beside subtitle".to_string()),
+                    preview: Some(
+                        "+---------------------+\n| TITLE - subtitle    |\n+---------------------+"
+                            .to_string(),
+                    ),
+                },
+            ],
+            multi: false,
+            answer: None,
+        }])
+    }
+
     /// A permission box: a question with no call behind it and one key to
     /// answer it.
     fn a_permission_box() -> State {
@@ -558,10 +636,31 @@ mod tests {
         named.iter().map(|key| Step::Key(key.to_string())).collect()
     }
 
-    /// What amx would type at this question to answer it this way.
-    fn typed(state: &State, at: &str) -> Vec<Step> {
-        let answer = answer(at, state.kind, state).expect("an answer this question takes");
+    /// The command line `amx answer <id> <answer>`.
+    fn given(answer: &str) -> AnswerArgs {
+        AnswerArgs {
+            key: Some(answer.to_string()),
+            ..AnswerArgs::default()
+        }
+    }
+
+    /// The command line `amx answer <id> --text <words>`.
+    fn given_text(words: &str) -> AnswerArgs {
+        AnswerArgs {
+            text: Some(words.to_string()),
+            ..AnswerArgs::default()
+        }
+    }
+
+    /// What amx would type at this question for this command line.
+    fn typed(state: &State, args: &AnswerArgs) -> Vec<Step> {
+        let answer = answer(args, state.kind, state).expect("an answer this question takes");
         steps(&answer, Shape::of(state))
+    }
+
+    /// The one step that is not a key.
+    fn words(text: &str) -> Step {
+        Step::Type(text.to_string())
     }
 
     #[test]
@@ -571,14 +670,17 @@ mod tests {
         // tab, and the `Enter` after it is the one on the review screen.
         let state = a_checkbox_question();
         assert_eq!(
-            answer("1,3", Some(Kind::Question), &state),
+            answer(&given("1,3"), Some(Kind::Question), &state),
             Ok(Answer::Toggle(vec![1, 3]))
         );
-        assert_eq!(typed(&state, "1,3"), keys(&["1", "3", "Right", "Enter"]));
+        assert_eq!(
+            typed(&state, &given("1,3")),
+            keys(&["1", "3", "Right", "Enter"])
+        );
 
         // Space around a choice is a shell's doing, not the caller's meaning.
         assert_eq!(
-            typed(&state, " 1 , 3 "),
+            typed(&state, &given(" 1 , 3 ")),
             keys(&["1", "3", "Right", "Enter"])
         );
     }
@@ -590,17 +692,20 @@ mod tests {
         // and the prompt stays up until something submits it.
         let checkbox = a_checkbox_question();
         assert_eq!(
-            answer("1", Some(Kind::Question), &checkbox),
+            answer(&given("1"), Some(Kind::Question), &checkbox),
             Ok(Answer::Toggle(vec![1]))
         );
-        assert_eq!(typed(&checkbox, "1"), keys(&["1", "Right", "Enter"]));
+        assert_eq!(
+            typed(&checkbox, &given("1")),
+            keys(&["1", "Right", "Enter"])
+        );
 
         let plain = a_plain_question();
         assert_eq!(
-            answer("1", Some(Kind::Question), &plain),
+            answer(&given("1"), Some(Kind::Question), &plain),
             Ok(Answer::Key("1".to_string()))
         );
-        assert_eq!(typed(&plain, "1"), keys(&["1"]));
+        assert_eq!(typed(&plain, &given("1")), keys(&["1"]));
     }
 
     #[test]
@@ -608,7 +713,7 @@ mod tests {
         // `1,3` at a plain menu would choose the first, submit the tab, and
         // leave the `3` to land on whatever the vendor drew next.
         for state in [a_plain_question(), a_permission_box(), State::default()] {
-            let refused = answer("1,3", state.kind, &state).expect_err("one choice");
+            let refused = answer(&given("1,3"), state.kind, &state).expect_err("one choice");
             assert!(refused.contains("one choice"), "{refused}");
         }
     }
@@ -621,13 +726,13 @@ mod tests {
         let state = a_checkbox_question();
         for refused in ["1,4", "1,9", "0,1"] {
             assert!(
-                answer(refused, Some(Kind::Question), &state).is_err(),
+                answer(&given(refused), Some(Kind::Question), &state).is_err(),
                 "{refused} is not a choice this question offers"
             );
         }
 
         // And checking the same box twice leaves it as it was.
-        let refused = answer("1,1", Some(Kind::Question), &state).expect_err("twice");
+        let refused = answer(&given("1,1"), Some(Kind::Question), &state).expect_err("twice");
         assert!(refused.contains("twice"), "{refused}");
     }
 
@@ -640,16 +745,109 @@ mod tests {
             a_checkbox_question().asking[0].clone(),
         ]);
         assert!(!Shape::of(&state).confirms, "two questions are outstanding");
-        assert_eq!(typed(&state, "1"), keys(&["1"]), "and the vendor advances");
+        assert_eq!(
+            typed(&state, &given("1")),
+            keys(&["1"]),
+            "and the vendor advances"
+        );
 
         state.answered("MIT");
         assert!(Shape::of(&state).confirms, "this one is the last of them");
-        assert_eq!(typed(&state, "1,3"), keys(&["1", "3", "Right", "Enter"]));
+        assert_eq!(
+            typed(&state, &given("1,3")),
+            keys(&["1", "3", "Right", "Enter"])
+        );
 
         // A lone plain menu draws no Submit tab at all: the digit submits it,
         // and an `Enter` after that would land in the composer.
         assert!(!Shape::of(&a_plain_question()).confirms);
         assert!(!Shape::of(&a_permission_box()).confirms);
+    }
+
+    #[test]
+    fn surfaces_words_of_your_own_go_in_the_row_the_question_offers_for_them() {
+        // On a plain menu the cursor wraps up onto that row, the words are
+        // pasted into it, and `Enter` submits what was typed rather than what
+        // was highlighted.
+        let plain = a_plain_question();
+        assert_eq!(
+            answer(&given_text("BSD-3-Clause"), Some(Kind::Question), &plain),
+            Ok(Answer::Words("BSD-3-Clause".to_string()))
+        );
+        assert_eq!(
+            typed(&plain, &given_text("BSD-3-Clause")),
+            vec![
+                Step::Key("Up".to_string()),
+                words("BSD-3-Clause"),
+                Step::Key("Enter".to_string())
+            ]
+        );
+
+        // On a checkbox menu that same `Enter` unchecks the row the words just
+        // checked, so the cursor leaves the row first and the vendor's own
+        // Submit row is what takes it.
+        let checkbox = a_checkbox_question();
+        assert_eq!(
+            typed(&checkbox, &given_text("Audit")),
+            vec![
+                Step::Key("Up".to_string()),
+                words("Audit"),
+                Step::Key("Down".to_string()),
+                Step::Key("Enter".to_string()),
+                Step::Key("Enter".to_string()),
+            ]
+        );
+
+        // Space around them is a shell's doing, not the caller's meaning, and
+        // a blank submission is read by the vendor as a cancel.
+        assert_eq!(
+            answer(&given_text("  Audit  "), Some(Kind::Question), &checkbox),
+            Ok(Answer::Words("Audit".to_string()))
+        );
+        assert!(answer(&given_text("   "), Some(Kind::Question), &checkbox).is_err());
+    }
+
+    #[test]
+    fn surfaces_the_row_for_words_reads_a_digit_as_the_character_it_is() {
+        // The reason the flag is there. Once the cursor is on that row every
+        // key is a character in it, so `--text 2` is the literal "2" the
+        // vendor recorded when it was measured, while a bare `2` is the second
+        // choice and is submitted the moment it is typed.
+        let state = a_plain_question();
+        assert_eq!(
+            answer(&given_text("2"), Some(Kind::Question), &state),
+            Ok(Answer::Words("2".to_string()))
+        );
+        assert_eq!(
+            answer(&given("2"), Some(Kind::Question), &state),
+            Ok(Answer::Key("2".to_string()))
+        );
+    }
+
+    #[test]
+    fn surfaces_a_prompt_with_no_row_for_words_is_offered_none() {
+        // A permission box and the trust screen read one key: words at either
+        // land on whatever is highlighted, which is an answer nobody chose.
+        for kind in [None, Some(Kind::Permission), Some(Kind::Trust)] {
+            let state = State {
+                kind,
+                ..a_permission_box()
+            };
+            let refused = answer(&given_text("keep both"), kind, &state).expect_err("no row");
+            assert!(refused.contains("y, n, 1-9"), "{refused}");
+        }
+
+        // And neither has a question the vendor draws a preview beside: that
+        // layout has no free-text row at all, so the `Up` would land on a
+        // choice and the words would be typed at the menu itself.
+        let previewed = a_previewed_question();
+        for line in [given_text("stacked, please"), given("stacked, please")] {
+            let refused = answer(&line, Some(Kind::Question), &previewed).expect_err("no row");
+            assert!(
+                refused.contains("preview") || refused.contains("1-9"),
+                "{refused}"
+            );
+        }
     }
 
     #[test]
@@ -702,12 +900,12 @@ mod tests {
     fn surfaces_a_question_of_the_vendors_own_takes_words() {
         let state = a_plain_question();
         assert_eq!(
-            answer("neither, keep both", Some(Kind::Question), &state),
+            answer(&given("neither, keep both"), Some(Kind::Question), &state),
             Ok(Answer::Words("neither, keep both".to_string()))
         );
         // Space around them is a shell's doing, not the caller's meaning.
         assert_eq!(
-            answer("  the sqlite one  ", Some(Kind::Question), &state),
+            answer(&given("  the sqlite one  "), Some(Kind::Question), &state),
             Ok(Answer::Words("the sqlite one".to_string()))
         );
     }
@@ -723,7 +921,7 @@ mod tests {
                 ..a_permission_box()
             };
             assert!(
-                answer("neither, keep both", kind, &state).is_err(),
+                answer(&given("neither, keep both"), kind, &state).is_err(),
                 "{kind:?}"
             );
             assert!(grammar(kind, false).contains("y, n, 1-9"), "{kind:?}");
@@ -739,7 +937,7 @@ mod tests {
         for key in ["2", "y", "enter", "esc"] {
             assert!(
                 matches!(
-                    answer(key, Some(Kind::Question), &state),
+                    answer(&given(key), Some(Kind::Question), &state),
                     Ok(Answer::Key(_))
                 ),
                 "{key:?}"
@@ -754,7 +952,7 @@ mod tests {
         let state = a_plain_question();
         for blank in ["", "   ", "\t\n"] {
             assert!(
-                answer(blank, Some(Kind::Question), &state).is_err(),
+                answer(&given(blank), Some(Kind::Question), &state).is_err(),
                 "{blank:?}"
             );
         }

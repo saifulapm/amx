@@ -80,9 +80,9 @@ pub enum Command {
     Answer {
         /// The agent that is waiting on one.
         id: String,
-        /// One key of the grammar, several choices, or words of your own.
-        #[arg(value_name = "ANSWER")]
-        key: String,
+        /// What the question is answered with.
+        #[command(flatten)]
+        key: AnswerArgs,
     },
 
     /// Wait for the agent's turn to end and print its answer.
@@ -220,6 +220,30 @@ pub struct AgentArgs {
     pub effort: Option<String>,
 }
 
+/// What a question is answered with.
+///
+/// One group because a question takes one answer. What is typed is the answer
+/// itself, and the flag is there for the answer that reads as something else:
+/// `--text 2` is the character `2` in the row the question offers for words of
+/// your own, which is what the vendor writes down when it is typed there, while
+/// a bare `2` is the second choice. Naming which one is meant is the only way
+/// to say it, so the two cannot be given together.
+#[derive(Debug, Args, Default)]
+pub struct AnswerArgs {
+    /// One key of the grammar, several choices, or words of your own.
+    #[arg(
+        value_name = "ANSWER",
+        required_unless_present = "text",
+        conflicts_with = "text"
+    )]
+    pub key: Option<String>,
+
+    /// Words for the free-text row the question offers, whatever they look
+    /// like.
+    #[arg(long, value_name = "WORDS")]
+    pub text: Option<String>,
+}
+
 #[derive(Debug, Args)]
 pub struct StopArgs {
     pub id: String,
@@ -320,6 +344,11 @@ mod tests {
             (&["amx", "status", "fix-a1b", "--json"], "status"),
             (&["amx", "send", "fix-a1b", "carry on"], "send"),
             (&["amx", "answer", "fix-a1b", "y"], "answer"),
+            (&["amx", "answer", "fix-a1b", "1,3"], "answer"),
+            (
+                &["amx", "answer", "fix-a1b", "--text", "the sqlite one"],
+                "answer",
+            ),
             (&["amx", "result", "fix-a1b"], "result"),
             (&["amx", "result", "fix-a1b", "--timeout", "30"], "result"),
             (&["amx", "attach", "fix-a1b"], "attach"),
@@ -503,6 +532,10 @@ mod tests {
             &["amx", "ls", "--nosuchflag"],
             &["amx", "status"],
             &["amx", "send", "fix-a1b"],
+            &["amx", "answer", "fix-a1b"],
+            // Which of the two a thing that reads as both is has to be said,
+            // and saying both says neither.
+            &["amx", "answer", "fix-a1b", "2", "--text", "2"],
             &["amx", "result", "fix-a1b", "--timeout", "soon"],
             &["amx", "stop", "fix-a1b", "--worktree", "burn"],
             &["amx", "resume"],
