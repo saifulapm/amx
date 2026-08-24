@@ -600,6 +600,81 @@ fn a_working_row_says_what_the_line_over_the_composer_says() {
     );
 }
 
+/// A turn that ended with five paragraphs, which is the shape a row cannot say
+/// anything useful about on its own: the answer opens with the work rather
+/// than with a line about the work.
+fn ended_with_an_answer(amx: &Harness, id: &str) {
+    let at = now() - 60;
+    amx.record(id, "%404");
+    amx.set_state(
+        id,
+        json!({
+            "state": "done",
+            "exit": 0,
+            "since": at,
+            "last_event": at,
+            "result": "ported the importer\n\nthe fixtures moved with it, and the suite is green.",
+        }),
+    );
+}
+
+#[test]
+fn summary_command_writes_the_line_a_finished_row_shows() {
+    let amx = Harness::new();
+    // Whatever somebody configures here is routinely a model call. This one
+    // answers the same way every time, which is the only difference that
+    // matters to the reader that runs it.
+    amx.config("summary_command = \"tr a-z A-Z\"\n");
+    ended_with_an_answer(&amx, "port-cli-b2c");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let row = amx.until("the row to say what the command made of the answer", || {
+        row_of(&amx, &view, "port-cli-b2c").filter(|row| row.contains("PORTED THE IMPORTER"))
+    });
+    assert!(
+        !row.contains("ported the importer"),
+        "the line stands where the answer's first line stood:\n{row}"
+    );
+
+    // On the record, so every reader after this one has the line without
+    // running the command again, and the ask is marked as having come back.
+    assert_eq!(
+        amx.state("port-cli-b2c")["summary"],
+        "PORTED THE IMPORTER",
+        "the whole answer went in, and the first line it printed came out"
+    );
+    let asked: Value = serde_json::from_slice(
+        &std::fs::read(amx.agent_dir("port-cli-b2c").join("summary.asked")).expect("the ask"),
+    )
+    .expect("the ask");
+    assert_eq!(asked["over"], true, "one ask per turn, whatever came back");
+}
+
+#[test]
+fn a_finished_row_without_a_summary_command_costs_nothing_and_keeps_the_answer() {
+    let amx = Harness::new();
+    // No config at all, which is the state every amx nobody has configured is
+    // in. Nothing is run and nothing is spent.
+    ended_with_an_answer(&amx, "port-cli-b2c");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let row = amx.until("the row", || {
+        row_of(&amx, &view, "port-cli-b2c").filter(|row| row.contains("ported the importer"))
+    });
+    assert!(
+        !row.contains("the fixtures moved with it"),
+        "the answer's first line, which is what a row has room for:\n{row}"
+    );
+
+    // Nothing was asked, so nothing was written down about an ask, and the
+    // record is where the turn left it.
+    assert!(
+        !amx.agent_dir("port-cli-b2c").join("summary.asked").exists(),
+        "no command is no question"
+    );
+    assert_eq!(amx.state("port-cli-b2c")["summary"], Value::Null);
+}
+
 #[test]
 fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
     let amx = Harness::new();
