@@ -57,11 +57,12 @@ impl Composer {
     /// What the line calls itself, so nobody types a task at an agent.
     ///
     /// A task line renames itself the moment what is typed into it would
-    /// narrow the list instead: the one thing a person needs to know before
-    /// pressing enter is what enter is about to do.
+    /// narrow the list or run a command instead: the one thing a person needs
+    /// to know before pressing enter is what enter is about to do.
     pub fn prompt(&self) -> String {
         match &self.asking {
             Asking::Task if self.narrows() => "narrow".to_string(),
+            Asking::Task if commanded(&self.text).is_some() => "run".to_string(),
             Asking::Task => "task".to_string(),
             Asking::Reply { id, question: true } => format!("answer {id} · y n 1-9 enter esc"),
             Asking::Reply { id, .. } => format!("message to {id}"),
@@ -106,6 +107,20 @@ pub fn narrowing(line: &str) -> Option<Vec<Narrow>> {
             })
             .collect(),
     )
+}
+
+/// What a line is led with to run it as a shell command rather than give it to
+/// an agent.
+const RUN: char = '!';
+
+/// The command a line asks for, when it opens with `!`.
+///
+/// Leading only, under the law the rest of the line reads by: a `!` anywhere
+/// else is a character in a task, and "fix the login bug!" is one somebody
+/// means. Everything behind it is the command, dial words included, because a
+/// command is a shell's to read and not amx's.
+pub fn commanded(line: &str) -> Option<&str> {
+    Some(line.trim_start().strip_prefix(RUN)?.trim_start())
 }
 
 /// The tokens a task line may be led with, and what each of them turns.
@@ -236,8 +251,13 @@ fn pointed(
     Ok(value.to_string())
 }
 
-/// Start an agent on what was typed, where the view is.
+/// Start an agent on what was typed, where the view is — or run what was
+/// typed, when the line opens with `!`.
 pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
+    if let Some(command) = commanded(line) {
+        return run(root, config, command);
+    }
+
     let (turned, task) = match turned(config, line) {
         Ok(read) => read,
         Err(refusal) => return Ok(Started::No(refusal)),
@@ -274,20 +294,55 @@ pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
         vendor_args: Vec::new(),
     };
 
+    spawned(root, &dir, &config, &args, "started")
+}
+
+/// Run a shell command where the view is, as a row of its own.
+///
+/// The same spawn `amx new --exec` makes, so the row ends done or failed by
+/// what the command exited with, and the dials the line could have turned are
+/// not read: there is no vendor here to turn them on.
+fn run(root: &Path, config: &Config, command: &str) -> Result<Started> {
+    if command.trim().is_empty() {
+        return Ok(Started::No("! takes a command to run".to_string()));
+    }
+
+    let dir = std::env::current_dir().context("no working directory")?;
+    let args = NewArgs {
+        task: command.to_string(),
+        name: None,
+        dir: None,
+        no_worktree: false,
+        exec: true,
+        agent: None,
+        vendor_args: Vec::new(),
+    };
+    spawned(root, &dir, config, &args, "running")
+}
+
+/// Hand the spawn to the verb, and say what came of it in the one line the
+/// view has room for.
+fn spawned(
+    root: &Path,
+    dir: &Path,
+    config: &Config,
+    args: &NewArgs,
+    said: &str,
+) -> Result<Started> {
     let (mut started, mut refused) = (Vec::new(), Vec::new());
     let code = verbs::new::run(
         root,
-        &dir,
+        dir,
         spawn::env_snapshot(std::env::vars()),
-        &config,
-        &args,
+        config,
+        args,
         &mut started,
         &mut refused,
     )?;
     if code != exit::OK {
         return Ok(Started::No(one_line(&refused)));
     }
-    Ok(Started::Yes(format!("started {}", one_line(&started))))
+    Ok(Started::Yes(format!("{said} {}", one_line(&started))))
 }
 
 /// What a reply came to.
@@ -893,6 +948,44 @@ mod tests {
             agent: "claude".to_string(),
             ..Config::default()
         }
+    }
+
+    #[test]
+    fn exec_a_line_that_opens_with_a_bang_is_a_command_to_run() {
+        assert_eq!(commanded("!cargo test --all"), Some("cargo test --all"));
+        assert_eq!(
+            commanded("  !  cargo test"),
+            Some("cargo test"),
+            "however it was spaced"
+        );
+        assert_eq!(
+            commanded("!m:opus echo hi"),
+            Some("m:opus echo hi"),
+            "and everything after the bang is the command, dial words and all"
+        );
+
+        for line in ["cargo test", "fix the login bug!", "", "   "] {
+            assert_eq!(commanded(line), None, "{line:?} is a task");
+        }
+    }
+
+    #[test]
+    fn exec_the_line_says_it_will_run_rather_than_start_an_agent() {
+        let mut composer = Composer::new(Asking::Task);
+        composer.text = "!cargo test".to_string();
+        assert_eq!(composer.prompt(), "run");
+
+        composer.text = "cargo test".to_string();
+        assert_eq!(composer.prompt(), "task", "and a task still is one");
+    }
+
+    #[test]
+    fn exec_a_bang_with_nothing_behind_it_is_refused_before_anything_is_made() {
+        let root = TempDir::new().unwrap();
+        let Started::No(why) = start(root.path(), &Config::default(), "!   ").unwrap() else {
+            panic!("a command with nothing in it started something");
+        };
+        assert!(why.contains('!'), "{why}");
     }
 
     #[test]

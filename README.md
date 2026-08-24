@@ -164,7 +164,10 @@ The line a task is typed on reads a few words of its own, at the front of it
 and nowhere else. `s:` and `a:` narrow the list by state and by name rather
 than starting anything: `s:waiting`, `a:import`, or `a:#12`. `m:`, `p:`, `w:`
 and `agent:` turn the dials for the one agent that line starts, as in
-`m:opus w:off port the importer`.
+`m:opus w:off port the importer`. A `!` in front runs the rest as a shell
+command instead of giving it to an agent — `!cargo test --all` is the row
+`amx new --exec` starts, and the line says `run` rather than `task` while one
+is being typed.
 
 ## Pull requests
 
