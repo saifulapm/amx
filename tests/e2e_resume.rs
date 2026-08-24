@@ -861,3 +861,31 @@ fn enter_from_inside_tmux_moves_the_client_to_the_session_it_brought_back() {
         "the client that was on the view is the one that moved"
     );
 }
+
+#[test]
+fn enter_on_a_claude_started_by_hand_says_which_half_is_missing() {
+    // The other thing that can be missing, at the view's door rather than the
+    // shell's. There is a session here and no command to carry it, and what
+    // the row says is that, not the name of a file amx keeps for itself.
+    let amx = Harness::new();
+    let id = "their-own-a1b";
+    let pane = adopted(&amx, id);
+    kill_pane(&amx, &pane);
+
+    let view = a_terminal(&amx, &[]);
+    amx.until("the row", || amx.capture(&view).contains(id).then_some(()));
+    amx.tmux(&["send-keys", "-t", &view, "Enter"]);
+
+    let said = amx.until("the view to say why", || {
+        let screen = amx.capture(&view);
+        screen.contains("by hand").then_some(screen)
+    });
+    assert!(
+        !said.contains("no pane any more"),
+        "which is a fact about the pane, not a reason: {said}"
+    );
+    assert!(
+        !said.contains("handoff"),
+        "the name of a file amx keeps is not a reason: {said}"
+    );
+}
