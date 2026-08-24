@@ -754,20 +754,27 @@ not own; it belongs with the work that does.
 
 The screen above is one screen. The vendor fires three events about it, and two
 of them are about a permission box that does not exist. Measured on 2026-08-25
-against v2.1.240, once in manual permission mode and once in auto, with a hook
-on every event appending its stdin to a file:
+against v2.1.240, with a hook on every event appending its stdin to a file:
 
 | when | event | what it carries |
 | --- | --- | --- |
-| `20:38:53.622` | `PreToolUse` | `tool_name` `AskUserQuestion`, and `tool_input` holding every question the menu will ask |
-| `20:38:53.632` | `PermissionRequest` | `tool_name` `AskUserQuestion`, and the same `tool_input` |
-| `20:38:59.650` | `Notification` | `notification_type` `permission_prompt`, and the message `Claude needs your permission` |
+| `21:11:57.019` | `PreToolUse` | `tool_name` `AskUserQuestion`, and `tool_input` holding every question the menu will ask |
+| `21:11:57.062` | `PermissionRequest` | `tool_name` `AskUserQuestion`, and the same `tool_input` |
+| `21:12:03.076` | `Notification` | `notification_type` `permission_prompt`, and the message `Claude needs your permission` |
 
-The gap between the first two was 10 ms in manual mode and 27 ms in auto. The
-notification is six seconds behind, which is this vendor's own timer and not a
-mode. **The permission mode makes no difference at all**: the vendor asks itself
-for leave to use its own question tool either way, and `PermissionDenied` never
-fires — the box is never shown, because there is no box.
+Driven six times over the day, three of them `--permission-mode auto` and
+`--permission-mode manual` back to back on the same question. **The mode makes
+no difference at all**: the same three events, in the same order, and no
+`PermissionDenied` on any of them, because the box is never shown. The gap
+between the first two ran from 10 to 43 ms. The notification is six seconds
+behind every time, which is this vendor's own timer.
+
+Two smaller things worth knowing. The `PermissionRequest` carries the whole
+call, `tool_input` and all, so it is the second and only other place the
+questions are ever sent — which is what a record that missed the tool call can
+learn them from. And its `permission_mode` field read `default` on all six,
+including the two the session was started in `manual` and `auto`, so that field
+is not the mode the footer shows and nothing should read it as one.
 
 So the event that knows what is being asked arrives first, and the two that know
 least arrive last. amx folded each one over the last, and what an agent standing
@@ -799,9 +806,10 @@ This is the one that cost an answer without saying so, and no stand-in can find
 it: a mock claude reads its pty and never redraws, so every sequence amx has
 ever sent passes against one and some of them do nothing against the real thing.
 
-Driven on the checkbox menu of section 1 at 220 columns on 2026-08-25. Each
-round starts with both boxes clear, sends `1`, `3`, `→`, `←`, and reads back how
-many of the two boxes survived the trip to the Submit tab and home again:
+Driven on the checkbox menu of section 1 at 220 columns on 2026-08-25. Every
+round starts with both boxes clear and sends `1` and then `3`; the last two rows
+of the table go on to `→` and `←`, so those numbers are boxes that survived the
+trip to the Submit tab and home again:
 
 | how the keys were sent | rounds that kept both boxes |
 | --- | --- |
@@ -945,9 +953,10 @@ marked below.
 * a digit answers a plain menu, toggles a checkbox menu, and types a character
   once the cursor is on the free-text row. Past the question's own choices it
   answers nothing at all, per section 8;
-* the `PostToolUse` payload echoes `questions` beside the answers, so a record
-  that missed the call going out can still take the tabs and their options off
-  the answer coming back;
+* the `PostToolUse` payload echoes `questions` beside the answers, and so does
+  the `PermissionRequest` the menu fires on its way up, so a record that missed
+  the call going out has two other places to take the tabs and their options
+  from;
 * a multi-select answer is one string in the order the boxes were checked, so
   the record cannot recover which options they were by matching the payload's
   order, and an answer that reproduces a recorded one has to toggle in the

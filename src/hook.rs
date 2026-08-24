@@ -327,9 +327,20 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         // has stopped and nothing else — the sentence it would otherwise write
         // is about a tool nobody is being asked to allow, and writing it took
         // the whole call off the record with it.
+        //
+        // It carries the call as well, byte for byte: measured at 2.1.240 on
+        // 2026-08-25, its `tool_input` is the tool call's own. That is worth
+        // nothing on the usual turn and everything on the one where amx missed
+        // the tool call — a hook wired mid-turn, a hook process that died —
+        // because it is the only other place the questions are ever sent. So a
+        // record with a call on it keeps the one it has, and a record with none
+        // takes this.
         "PermissionRequest" if payload["tool_name"] == THE_QUESTION_TOOL => {
             state.state = Phase::Waiting;
             state.summary = None;
+            if state.pending().is_none() {
+                state.asks_all(asked(&payload["tool_input"]));
+            }
             // A screen this tool drew is a question whatever amx missed of the
             // call behind it, and what kind of thing is being asked is what
             // decides what may be sent back.
@@ -817,6 +828,61 @@ mod tests {
             );
             assert!(state.multi(), "and it still takes more than one: {payload}");
         }
+    }
+
+    #[test]
+    fn hook_the_permission_box_over_a_menu_carries_the_menu() {
+        // Measured at 2.1.240 on 2026-08-25: the permission event the vendor
+        // fires over its own question tool carries that tool's `tool_input`
+        // byte for byte. On the usual turn that is worth nothing, because the
+        // call arrived 10 ms earlier and the record already has it. On the
+        // turn where amx missed the tool call it is the only other place the
+        // questions are ever sent.
+        let (state, _, _) = fold(json!({
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "AskUserQuestion",
+            "permission_mode": "default",
+            "tool_input": { "questions": [{
+                "question": "Which fixture should the port keep?",
+                "header": "Fixture",
+                "options": [{ "label": "SQLite" }, { "label": "Docker" }],
+                "multiSelect": false
+            }] }
+        }));
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(state.kind, Some(Kind::Question));
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Which fixture should the port keep?")
+        );
+        assert_eq!(state.options, ["SQLite", "Docker"]);
+
+        // And a record that has the call keeps the one it has: this event is
+        // about the same menu, so there is nothing here it does not know.
+        let mut state = State::default();
+        let mut meta = meta();
+        apply(
+            &json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "AskUserQuestion",
+                "tool_input": { "questions": [{
+                    "question": "Which fixture should the port keep?",
+                    "options": [{ "label": "the sqlite one" }]
+                }] }
+            }),
+            &mut state,
+            &mut meta,
+        );
+        apply(
+            &json!({
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "AskUserQuestion",
+                "tool_input": { "questions": [] }
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(state.options, ["the sqlite one"]);
     }
 
     #[test]
