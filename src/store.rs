@@ -297,6 +297,14 @@ pub struct State {
     /// Epoch seconds of the last event recorded. How fresh this document is,
     /// which decides whether a reader trusts it over the pane.
     pub last_event: u64,
+    /// Epoch seconds when the run ended, and zero while it is still going.
+    ///
+    /// A finished row says how long the run took rather than how long ago it
+    /// ended, so the moment it ended is something the record keeps. `since`
+    /// holds the same number for as long as the ending is the last thing that
+    /// changed, but `since` is about the phase an agent is in, and nothing
+    /// asking when a run ended should have to know that the two coincide.
+    pub ended: u64,
     /// Epoch seconds when somebody last looked at this agent, and zero for one
     /// nobody has opened. Read against `last_event`, it says whether what the
     /// agent has to say came before or after the last look at it.
@@ -416,6 +424,7 @@ struct Wire {
     source: Option<Source>,
     exit: Option<i32>,
     last_event: u64,
+    ended: u64,
     seen: u64,
 }
 
@@ -471,6 +480,7 @@ impl From<State> for Wire {
             source,
             exit,
             last_event,
+            ended,
             seen,
         } = state;
 
@@ -512,6 +522,7 @@ impl From<State> for Wire {
             source,
             exit,
             last_event,
+            ended,
             seen,
         }
     }
@@ -539,6 +550,7 @@ impl From<Wire> for State {
             source: wire.source,
             exit: wire.exit,
             last_event: wire.last_event,
+            ended: wire.ended,
             seen: wire.seen,
         }
     }
@@ -723,6 +735,11 @@ impl Writer<'_> {
     /// `since` moves only when the phase does: how long an agent has been
     /// working is the question a reader asks, and a summary arriving mid-turn
     /// must not reset the clock.
+    ///
+    /// The ending is stamped by the same rule, because it is the same event:
+    /// the write that turns a phase terminal is the run ending, and an answer
+    /// or an exit code arriving after it is not a second ending. An agent that
+    /// leaves a terminal phase has not ended at all, so the stamp goes with it.
     pub fn update_state(&self, change: impl FnOnce(&mut State)) -> Result<State> {
         let before = self.state()?;
         let mut after = before.clone();
@@ -731,6 +748,10 @@ impl Writer<'_> {
         let at = now();
         if after.state != before.state {
             after.since = at;
+            after.ended = match after.state.is_terminal() {
+                true => at,
+                false => 0,
+            };
         }
         after.last_event = at;
 
@@ -979,6 +1000,36 @@ mod tests {
         let root = TempDir::new().unwrap();
         assert!(Agent::open(root.path(), "../elsewhere").is_err());
         assert!(Agent::open(root.path(), "never-made-abc").is_err());
+    }
+
+    #[test]
+    fn store_stamps_the_moment_a_run_ended_and_leaves_it_there() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        let writer = agent.writer().unwrap();
+
+        let working = writer.update_state(|s| s.state = Phase::Working).unwrap();
+        assert_eq!(working.ended, 0, "nothing has ended");
+
+        let done = writer
+            .update_state(|s| {
+                s.state = Phase::Done;
+                s.exit = Some(0);
+            })
+            .unwrap();
+        assert!(done.ended > 0);
+        assert_eq!(done.ended, done.since);
+        assert_eq!(written(&agent)["ended"], done.ended);
+
+        // An answer written after the ending is not a second ending.
+        let after = writer
+            .update_state(|s| s.result = Some("wrote the parser".to_string()))
+            .unwrap();
+        assert_eq!(after.ended, done.ended);
+
+        // And an agent put back to work has not ended at all.
+        let again = writer.update_state(|s| s.state = Phase::Working).unwrap();
+        assert_eq!(again.ended, 0);
     }
 
     #[test]
@@ -1515,6 +1566,7 @@ mod tests {
         assert_eq!(state.state, Phase::Working);
         assert_eq!(state.seq, 3);
         assert_eq!(state.question, None);
+        assert_eq!(state.ended, 0, "and no run of it has ended");
 
         // A question written before amx could read the choices under it is a
         // string, and a string is still a question.
