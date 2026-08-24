@@ -746,6 +746,69 @@ mod tests {
     }
 
     #[test]
+    fn hook_coherence_the_question_that_notified_three_times() {
+        // The payloads themselves, captured on 2026-08-24 from a claude
+        // 2.1.240 in a tmux session of its own, in default permission mode,
+        // with a hook on every event appending its stdin to a file. One
+        // AskUserQuestion fired the tool call, the permission box over that
+        // same tool and the notification that repeats it, in this order, and
+        // all three end in waiting.
+        //
+        // The notification's message names no tool: it is "Claude needs your
+        // permission" and nothing more, against the box's own sentence and
+        // the menu's question. No reading of the words could have told one
+        // stop from three.
+        //
+        // What the last two do to the question on the record is the kind
+        // precedence 02BQ6442 is about, and nothing here says it is right.
+        let asking = json!({ "questions": [{
+            "question": "Which fixture should the port keep?",
+            "header": "Fixture choice",
+            "options": [
+                { "label": "SQLite fixture", "description": "Use the SQLite-based test fixture" },
+                { "label": "Docker fixture", "description": "Use the Docker-based test fixture" }
+            ],
+            "multiSelect": false
+        }] });
+
+        let mut state = State::default();
+        let mut meta = meta();
+        let told: Vec<Notice> = [
+            json!({ "hook_event_name": "SessionStart", "source": "startup" }),
+            json!({
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "Call the AskUserQuestion tool right now"
+            }),
+            json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "AskUserQuestion",
+                "tool_input": asking,
+                "tool_use_id": "toolu_01LREQkFsYwfpQu1XpSPa6rp"
+            }),
+            json!({
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "AskUserQuestion",
+                "tool_input": asking
+            }),
+            json!({
+                "hook_event_name": "Notification",
+                "message": "Claude needs your permission",
+                "notification_type": "permission_prompt"
+            }),
+        ]
+        .iter()
+        .filter_map(|payload| apply(payload, &mut state, &mut meta))
+        .collect();
+
+        assert_eq!(told.len(), 1, "one stop, one notice: {told:?}");
+        assert_eq!(
+            told[0].body, "Which fixture should the port keep?",
+            "the event that stopped the agent is the one that knew the question"
+        );
+        assert_eq!(state.state, Phase::Waiting, "and it is still waiting");
+    }
+
+    #[test]
     fn hook_a_stop_amx_cannot_name_is_still_one_interruption() {
         // A permission box whose payload names no tool goes up with nothing
         // amx can quote, so the notice says what it can. The words arrive six
