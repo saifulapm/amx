@@ -137,7 +137,13 @@ pub(super) enum Asked {
     /// A group somebody has asked to have cleared.
     Sweep(Sweep),
     /// A task barely long enough to be one, and the line it was typed on.
-    Slight { task: String, line: Composer },
+    /// `follow` is whether the key that asked was the one that goes with the
+    /// agent, which the answer has to carry for it.
+    Slight {
+        task: String,
+        line: Composer,
+        follow: bool,
+    },
 }
 
 impl Asked {
@@ -758,9 +764,9 @@ impl Screen {
         }
 
         match self.mode {
-            Mode::Typing(_) => self.typed(key, root, config),
+            Mode::Typing(_) => self.typed(key, root, config, here),
             Mode::Keys => Ok(self.reading_the_keys(key)),
-            Mode::Confirming(_) => self.answered(key, root, config),
+            Mode::Confirming(_) => self.answered(key, root, config, here),
             Mode::List => self.pressed(key, root, here),
         }
     }
@@ -970,7 +976,13 @@ impl Screen {
     /// put back unless the key was the end of it, which is what makes entering
     /// and cancelling the same one move: the line is gone either way. A line
     /// that was entered and refused was not the end of it, so it comes back.
-    fn typed(&mut self, key: KeyEvent, root: &Path, config: &Config) -> Result<Doing> {
+    fn typed(
+        &mut self,
+        key: KeyEvent,
+        root: &Path,
+        config: &Config,
+        here: Option<&Here>,
+    ) -> Result<Doing> {
         let Mode::Typing(mut composer) = std::mem::take(&mut self.mode) else {
             return Ok(Doing::Carry);
         };
@@ -1052,17 +1064,21 @@ impl Screen {
                     return Ok(Doing::Carry);
                 }
 
-                // A task barely long enough to be one is asked about before an
-                // agent is started on it, and only the once: the answer starts
-                // it, so nothing comes back round to this.
-                if let Some(task) = act::slight(config, &composer.text) {
-                    self.mode = Mode::Confirming(Asked::Slight {
-                        task,
-                        line: composer,
-                    });
-                    return Ok(Doing::Carry);
-                }
-                return self.starting(root, config, composer);
+                return self.entering(root, config, composer, false, here);
+            }
+            // The same line entered, with whoever pressed it going along: the
+            // agent is started and the terminal is put in front of it.
+            //
+            // On a task and nothing else. A narrowing has nothing to go to,
+            // and a reply goes to an agent already on the wall, which is a row
+            // away from a key that reaches one.
+            KeyCode::Char('n')
+                if chord(key) == KeyModifiers::ALT
+                    && matches!(composer.asking, Asking::Task)
+                    && !composer.narrows()
+                    && !composer.text.trim().is_empty() =>
+            {
+                return self.entering(root, config, composer, true, here);
             }
             // The line goes to the editor, and the mode is put back before it
             // does: what the editor writes lands on the line it was opened on.
@@ -1086,6 +1102,36 @@ impl Screen {
         }
 
         self.mode = Mode::Typing(composer);
+        Ok(Doing::Carry)
+    }
+
+    /// Put the agent that has just been started in front of whoever started it.
+    ///
+    /// Read from its record rather than looked for in the list: the wall is a
+    /// reading a second old, and this agent is younger than that.
+    fn landing(&mut self, root: &Path, id: &str, here: Option<&Here>) -> Result<Doing> {
+        let view = match derive::view(root, id, rules::bundled(), now()) {
+            Ok(view) => view,
+            // Started and unreachable is worth saying and not worth closing the
+            // view over: the agent is running either way, and `amx attach` is
+            // still a thing somebody can type.
+            Err(e) => {
+                self.notice = Some(Notice::Failed(format!("{e:#}")));
+                return Ok(Doing::Carry);
+            }
+        };
+
+        match reach(here, &view)? {
+            Reach::There => {}
+            Reach::Say(notice) => self.notice = Some(notice),
+            Reach::Lend(on, session) => {
+                return Ok(Doing::Lend {
+                    id: id.to_string(),
+                    on,
+                    session,
+                });
+            }
+        }
         Ok(Doing::Carry)
     }
 
@@ -1118,14 +1164,48 @@ impl Screen {
         Ok(Doing::Carry)
     }
 
+    /// Enter the line, which starts an agent on it — asking first where the
+    /// task is barely one, and only the once: the answer starts it, so nothing
+    /// comes back round to here.
+    ///
+    /// `follow` is whether whoever pressed the key is going with the agent.
+    fn entering(
+        &mut self,
+        root: &Path,
+        config: &Config,
+        composer: Composer,
+        follow: bool,
+        here: Option<&Here>,
+    ) -> Result<Doing> {
+        if let Some(task) = act::slight(config, &composer.text) {
+            self.mode = Mode::Confirming(Asked::Slight {
+                task,
+                line: composer,
+                follow,
+            });
+            return Ok(Doing::Carry);
+        }
+        self.starting(root, config, composer, follow, here)
+    }
+
     /// Start an agent on the line, under the dials the header is showing,
     /// which are what this view says the next agent will be started with.
-    fn starting(&mut self, root: &Path, config: &Config, composer: Composer) -> Result<Doing> {
+    fn starting(
+        &mut self,
+        root: &Path,
+        config: &Config,
+        composer: Composer,
+        follow: bool,
+        here: Option<&Here>,
+    ) -> Result<Doing> {
         let launching = self.profile.launching(config);
         match act::start(root, &launching, &composer.text) {
-            Ok(Started::Yes(said)) => {
+            Ok(Started::Yes { id, said }) => {
                 self.notice = Some(Notice::Advice(said));
                 self.acted();
+                if follow {
+                    return self.landing(root, &id, here);
+                }
             }
             // A line nothing was made from is a line somebody is still
             // writing, so it stays where they typed it with the reason under
@@ -1175,7 +1255,13 @@ impl Screen {
     /// back. A chord is not an answer either: it is somebody reaching for
     /// something else a beat after this opened, and what is on the other end of
     /// it is a group of records or a program.
-    fn answered(&mut self, key: KeyEvent, root: &Path, config: &Config) -> Result<Doing> {
+    fn answered(
+        &mut self,
+        key: KeyEvent,
+        root: &Path,
+        config: &Config,
+        here: Option<&Here>,
+    ) -> Result<Doing> {
         let Mode::Confirming(asked) = std::mem::take(&mut self.mode) else {
             return Ok(Doing::Carry);
         };
@@ -1224,7 +1310,7 @@ impl Screen {
                 self.notice = Some(Notice::Advice("nothing was started".to_string()));
                 Ok(Doing::Carry)
             }
-            Asked::Slight { line, .. } => self.starting(root, config, line),
+            Asked::Slight { line, follow, .. } => self.starting(root, config, line, follow, here),
         }
     }
 
@@ -2695,6 +2781,60 @@ mod tests {
         );
         assert!(screen.contains("p:nonsense: claude takes"), "{screen}");
         assert!(crate::store::list(root.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn composer_alt_n_enters_the_line_the_way_enter_does_and_goes_with_it() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = Screen::default();
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        // A line the dials refuse is refused whichever key entered it, and
+        // nothing was made on the way to finding out.
+        press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
+        for code in word("p:nonsense port it") {
+            press(&mut screen, KeyEvent::from(code));
+        }
+        press(&mut screen, alt('n'));
+        assert_eq!(
+            screen
+                .banded()
+                .expect("the line stays where it was typed")
+                .text,
+            "p:nonsense port it"
+        );
+        assert!(crate::store::list(root.path()).unwrap().is_empty());
+
+        // And a task barely long enough to be one is asked about first: the
+        // key that goes with the agent is still the key that starts it.
+        let mut screen = Screen::default();
+        press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
+        for code in word("fix") {
+            press(&mut screen, KeyEvent::from(code));
+        }
+        press(&mut screen, alt('n'));
+        let Mode::Confirming(Asked::Slight { follow, .. }) = &screen.mode else {
+            panic!("three letters were started without a question")
+        };
+        assert!(*follow, "and the answer takes whoever asked to the agent");
+    }
+
+    #[test]
+    fn acts_the_view_reaches_an_agent_it_started_by_reading_the_record_again() {
+        let root = TempDir::new().unwrap();
+        finished(root.path(), "first-a1b", "wrote the parser", 60);
+        let mut screen = Screen::default();
+
+        // Read from the record rather than from the list, which is a second
+        // old and knows nothing about an agent younger than that.
+        screen.landing(root.path(), "first-a1b", None).unwrap();
+        let Some(Notice::Advice(said)) = &screen.notice else {
+            panic!("nothing was said about where the agent went")
+        };
+        assert!(said.contains("first-a1b has no pane any more"), "{said}");
     }
 
     #[test]

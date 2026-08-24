@@ -146,6 +146,7 @@ behind a count. Rows nobody has been to read carry a mark down the gutter.
 | `enter` `→` | put its session in front of you, or shut the group under the cursor |
 | `esc` | put the card away, or leave a line alone |
 | `n` | start an agent |
+| `alt+n` | start the line and go to the agent it started |
 | `r` | reply: a message, or an answer on the card |
 | `d` | what it has changed |
 | `ctrl+x` | stop it, again to forget it, and on a heading clear the finished |
@@ -200,6 +201,12 @@ read it. A `!` in front runs the rest as a shell
 command instead of giving it to an agent — `!cargo test --all` is the row
 `amx new --exec` starts, and the line says `run` rather than `task` while one
 is being typed.
+
+`alt+n` enters that line and takes you with it: the agent is started and your
+terminal lands in its session, by the same two roads `enter` on a row takes.
+Everything else about it is what `enter` on the line would have done, the
+question a task of three letters is asked included, so the answer to that
+question is what carries you there.
 
 `ctrl+g` writes that line in your own editor. It opens `$VISUAL`, or `$EDITOR`,
 or `vi`, on a file holding whatever is on the line, hands it the terminal, and

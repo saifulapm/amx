@@ -144,8 +144,10 @@ pub struct Turned {
 
 /// What starting an agent came to.
 pub enum Started {
-    /// It is running, and this says which one.
-    Yes(String),
+    /// It is running: which one, and the line the view says so on. Both,
+    /// because the id is what a key that goes to the new agent addresses and
+    /// the line is what a person reads.
+    Yes { id: String, said: String },
     /// Nothing was made, and this says why.
     No(String),
 }
@@ -487,7 +489,13 @@ fn spawned(
     if code != exit::OK {
         return Ok(Started::No(one_line(&refused)));
     }
-    Ok(Started::Yes(format!("{said} {}", one_line(&started))))
+    // What the verb wrote is the id and nothing else, which is what a shell
+    // prompt gets from it too.
+    let id = one_line(&started);
+    Ok(Started::Yes {
+        said: format!("{said} {id}"),
+        id,
+    })
 }
 
 /// What a reply came to.
