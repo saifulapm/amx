@@ -344,9 +344,21 @@ struct Recorded {
     prs: Vec<Pr>,
 }
 
-/// Whether what is written down is this branch's and recent enough to stand.
+/// Whether what is written down is this branch's and still stands.
+///
+/// Recent enough, or about a branch whose every request is over. A merged
+/// request stays merged, and a wall of finished agents would otherwise put a
+/// subprocess and a network call behind every one of them once a minute for as
+/// long as the view is open, to be told the same thing every time. A branch
+/// with nothing on it is asked about again: a request can be opened later, and
+/// that is the whole point of the column for an agent that has finished.
 fn still_good(held: Option<&Recorded>, branch: &str, now: u64) -> bool {
-    held.is_some_and(|held| held.branch == branch && now.saturating_sub(held.asked) < FRESH)
+    let held = match held {
+        Some(held) if held.branch == branch => held,
+        _ => return false,
+    };
+    let over = !held.prs.is_empty() && held.prs.iter().all(|pr| pr.standing.settled());
+    over || now.saturating_sub(held.asked) < FRESH
 }
 
 /// What the last look wrote. A file that is not there, or that nothing can
@@ -720,6 +732,46 @@ mod tests {
         // A clock that has gone backwards is not a reason to stop reading what
         // is there.
         assert!(still_good(Some(&held), "amx/fix-login-a1b", 900));
+    }
+
+    #[test]
+    fn a_look_stops_asking_about_a_branch_whose_requests_are_all_over() {
+        // A merged request stays merged. A wall of finished agents would
+        // otherwise put a network call behind every one of them once a minute,
+        // for as long as somebody left the view open, to be told the same
+        // thing every time.
+        let over = Recorded {
+            asked: 1_000,
+            branch: "amx/fix-login-a1b".to_string(),
+            prs: vec![
+                Pr {
+                    number: 12,
+                    standing: Standing::Merged,
+                },
+                Pr {
+                    number: 9,
+                    standing: Standing::Closed,
+                },
+            ],
+        };
+        assert!(still_good(Some(&over), "amx/fix-login-a1b", 90_000));
+
+        let mut going = over.clone();
+        going.prs[0].standing = Standing::Ready;
+        assert!(
+            !still_good(Some(&going), "amx/fix-login-a1b", 90_000),
+            "one that is still going is asked about until it is not"
+        );
+
+        let none = Recorded {
+            prs: Vec::new(),
+            ..over
+        };
+        assert!(
+            !still_good(Some(&none), "amx/fix-login-a1b", 90_000),
+            "and a branch nobody has opened one for is asked about again, \
+             because opening one later is what the column is for"
+        );
     }
 
     #[test]

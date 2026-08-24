@@ -166,8 +166,10 @@ you arrive at the wall from the request rather than from the agent.
 Reading it is `gh`, and `glab` where gh has nothing to say. Neither is required
 and amx installs neither: without them the column is not drawn and nothing else
 changes. What the forge said is written down beside the agent's record and
-taken at its word for a minute; asking again happens in the background, because
-a list redrawn every second cannot stop for a network.
+taken at its word for a minute — or for good, once everything on the branch has
+been merged or closed and nothing more can happen to it. Asking again happens
+in the background, because a list redrawn every second cannot stop for a
+network.
 
 ## Looking, and answering
 
