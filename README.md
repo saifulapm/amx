@@ -194,6 +194,11 @@ command instead of giving it to an agent — `!cargo test --all` is the row
 `amx new --exec` starts, and the line says `run` rather than `task` while one
 is being typed.
 
+A task of fewer than four characters is asked about once before anything is
+started: `y` starts it and any other key hands the line back with what you
+typed still on it. `n` opens the line and the letter after a stray `n` is a
+task nobody meant, where `wip` is one somebody does.
+
 ## Pull requests
 
 An agent's work goes onto a branch, and what becomes of it after that is the

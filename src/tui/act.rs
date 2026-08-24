@@ -261,6 +261,33 @@ fn pointed(
     Ok(value.to_string())
 }
 
+/// How many characters a task is before the view takes it for one.
+///
+/// Four, measured against what a stray keystroke leaves behind: `n` opens the
+/// line and the letter after it is a task nobody typed, and an agent started on
+/// `w` is a minute of somebody's afternoon and a record to clear away. Nothing
+/// this short is refused — it is asked about, once, because "wip" is a task
+/// somebody means.
+const ENOUGH: usize = 4;
+
+/// The task on this line where it is too slight to start an agent on without
+/// asking, and nothing where the line stands on its own.
+///
+/// The task rather than the whole line: `m:opus fix` is three characters of
+/// instruction behind seven of dials, and the instruction is what the agent is
+/// given. A command and a narrowing are neither of them a task, so neither is
+/// ever asked about.
+pub fn slight(config: &Config, line: &str) -> Option<String> {
+    if commanded(line).is_some() || narrowing(line).is_some() {
+        return None;
+    }
+    let (_, task) = turned(config, line).ok()?;
+    // Said back on one row, whatever it was typed on: the question quotes it,
+    // and a newline in a line of prose is a row the footer does not have.
+    let task = task.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!task.is_empty() && task.chars().count() < ENOUGH).then_some(task)
+}
+
 /// Start an agent on what was typed, where the view is — or run what was
 /// typed, when the line opens with `!`.
 pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
@@ -988,6 +1015,29 @@ mod tests {
             agent: "claude".to_string(),
             ..Config::default()
         }
+    }
+
+    #[test]
+    fn composer_says_which_lines_are_too_slight_to_be_a_task() {
+        let slight = |line: &str| slight(&as_claude(), line);
+
+        assert_eq!(slight("fix"), Some("fix".to_string()));
+        assert_eq!(
+            slight("m:opus fix"),
+            Some("fix".to_string()),
+            "the task rather than the line: the dials are not the instruction"
+        );
+        assert_eq!(
+            slight("  n\n "),
+            Some("n".to_string()),
+            "and a stray keystroke is the one this is about"
+        );
+
+        for line in ["port it", "fix the login bug", "", "   "] {
+            assert_eq!(slight(line), None, "{line:?} stands on its own");
+        }
+        assert_eq!(slight("!ls"), None, "a short command is a command");
+        assert_eq!(slight("s:"), None, "and a narrowing starts nothing anyway");
     }
 
     #[test]

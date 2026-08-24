@@ -122,9 +122,36 @@ enum Mode {
     Typing(Composer),
     /// The keys themselves, on the screen.
     Keys,
-    /// A question about a group of agents, waiting for the one key that
-    /// answers it.
-    Confirming(Sweep),
+    /// A question of the view's own, waiting for the one key that answers it.
+    Confirming(Asked),
+}
+
+/// What the view is waiting to be told.
+///
+/// One key answers either of them and every other key does not, which is the
+/// way round a question has to be when a yes is the expensive answer: one of
+/// these forgets a group of records and the other starts a program.
+pub(super) enum Asked {
+    /// A group somebody has asked to have cleared.
+    Sweep(Sweep),
+    /// A task barely long enough to be one, and the line it was typed on.
+    Slight { task: String, line: Composer },
+}
+
+impl Asked {
+    /// The question itself, in the words the answer is given in.
+    pub(super) fn question(&self) -> String {
+        match self {
+            Asked::Sweep(sweep) => format!(
+                "forget {} finished under {}? y forgets them · anything else keeps them",
+                sweep.ids.len(),
+                sweep.under
+            ),
+            Asked::Slight { task, .. } => {
+                format!("start an agent on \"{task}\"? y starts it · anything else keeps the line")
+            }
+        }
+    }
 }
 
 /// A group somebody has asked to have cleared, waiting on the answer.
@@ -132,20 +159,9 @@ enum Mode {
 /// The agents are held by id and settled when the question is asked, not when
 /// it is answered: the wall is read again every second, and forgetting more
 /// than the question counted is the one thing a confirmation is for.
-struct Sweep {
+pub(super) struct Sweep {
     under: String,
     ids: Vec<String>,
-}
-
-impl Sweep {
-    /// The question itself, in the words the answer is given in.
-    fn question(&self) -> String {
-        format!(
-            "forget {} finished under {}? y forgets them · anything else keeps them",
-            self.ids.len(),
-            self.under
-        )
-    }
 }
 
 /// What the card is showing.
@@ -697,7 +713,7 @@ impl Screen {
         match self.mode {
             Mode::Typing(_) => self.typed(key, root, config),
             Mode::Keys => Ok(self.reading_the_keys(key)),
-            Mode::Confirming(_) => Ok(self.answered(key, root)),
+            Mode::Confirming(_) => self.answered(key, root, config),
             Mode::List => self.pressed(key, root, here),
         }
     }
@@ -974,28 +990,17 @@ impl Screen {
                     return Ok(Doing::Carry);
                 }
 
-                // Under the dials the header is showing, which are what this
-                // view says the next agent will be started with.
-                let launching = self.profile.launching(config);
-                match act::start(root, &launching, &composer.text) {
-                    Ok(Started::Yes(said)) => {
-                        self.notice = Some(Notice::Advice(said));
-                        self.acted();
-                    }
-                    // A line nothing was made from is a line somebody is still
-                    // writing, so it stays where they typed it with the reason
-                    // under it. A task retyped because a dial was misspelt is
-                    // a task somebody types shorter the second time.
-                    Ok(Started::No(why)) => {
-                        self.notice = Some(Notice::Advice(why));
-                        self.mode = Mode::Typing(composer);
-                    }
-                    Err(e) => {
-                        self.notice = Some(Notice::Failed(format!("{e:#}")));
-                        self.acted();
-                    }
+                // A task barely long enough to be one is asked about before an
+                // agent is started on it, and only the once: the answer starts
+                // it, so nothing comes back round to this.
+                if let Some(task) = act::slight(config, &composer.text) {
+                    self.mode = Mode::Confirming(Asked::Slight {
+                        task,
+                        line: composer,
+                    });
+                    return Ok(Doing::Carry);
                 }
-                return Ok(Doing::Carry);
+                return self.starting(root, config, composer);
             }
             KeyCode::Backspace => {
                 composer.text.pop();
@@ -1013,6 +1018,31 @@ impl Screen {
         }
 
         self.mode = Mode::Typing(composer);
+        Ok(Doing::Carry)
+    }
+
+    /// Start an agent on the line, under the dials the header is showing,
+    /// which are what this view says the next agent will be started with.
+    fn starting(&mut self, root: &Path, config: &Config, composer: Composer) -> Result<Doing> {
+        let launching = self.profile.launching(config);
+        match act::start(root, &launching, &composer.text) {
+            Ok(Started::Yes(said)) => {
+                self.notice = Some(Notice::Advice(said));
+                self.acted();
+            }
+            // A line nothing was made from is a line somebody is still
+            // writing, so it stays where they typed it with the reason under
+            // it. A task retyped because a dial was misspelt is a task
+            // somebody types shorter the second time.
+            Ok(Started::No(why)) => {
+                self.notice = Some(Notice::Advice(why));
+                self.mode = Mode::Typing(composer);
+            }
+            Err(e) => {
+                self.notice = Some(Notice::Failed(format!("{e:#}")));
+                self.acted();
+            }
+        }
         Ok(Doing::Carry)
     }
 
@@ -1038,50 +1068,67 @@ impl Screen {
             )));
             return;
         }
-        self.mode = Mode::Confirming(Sweep { under, ids });
+        self.mode = Mode::Confirming(Asked::Sweep(Sweep { under, ids }));
     }
 
-    /// The key a sweep is waiting for.
+    /// The key a question of the view's own is waiting for.
     ///
-    /// One key does it and every other key keeps them, which is the way round
-    /// a question about deleting things has to be. A chord is not an answer
-    /// either: it is somebody reaching for something else a beat after this
-    /// opened, and what is on the other end of it is a group of records.
-    fn answered(&mut self, key: KeyEvent, root: &Path) -> Doing {
-        let Mode::Confirming(sweep) = std::mem::take(&mut self.mode) else {
-            return Doing::Carry;
+    /// One key does it and every other key does not, which is the way round a
+    /// question has to be when it is asked about something that cannot be taken
+    /// back. A chord is not an answer either: it is somebody reaching for
+    /// something else a beat after this opened, and what is on the other end of
+    /// it is a group of records or a program.
+    fn answered(&mut self, key: KeyEvent, root: &Path, config: &Config) -> Result<Doing> {
+        let Mode::Confirming(asked) = std::mem::take(&mut self.mode) else {
+            return Ok(Doing::Carry);
         };
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
         {
-            self.mode = Mode::Confirming(sweep);
-            return Doing::Carry;
+            self.mode = Mode::Confirming(asked);
+            return Ok(Doing::Carry);
         }
+        let yes = matches!(key.code, KeyCode::Char('y' | 'Y'));
 
-        if !matches!(key.code, KeyCode::Char('y' | 'Y')) {
-            // Silence after a keystroke that could have deleted things is
-            // worse than the question was: say that nothing happened.
-            self.notice = Some(Notice::Advice(format!(
-                "nothing was forgotten under {}",
-                sweep.under
-            )));
-            return Doing::Carry;
+        match asked {
+            Asked::Sweep(sweep) => {
+                if !yes {
+                    // Silence after a keystroke that could have deleted things
+                    // is worse than the question was: say that nothing
+                    // happened.
+                    self.notice = Some(Notice::Advice(format!(
+                        "nothing was forgotten under {}",
+                        sweep.under
+                    )));
+                    return Ok(Doing::Carry);
+                }
+
+                // What the question counted, as the list has it now. An agent
+                // whose record has gone in the meantime is not an agent this
+                // can forget.
+                let swept = {
+                    let views: Vec<&View> = sweep
+                        .ids
+                        .iter()
+                        .filter_map(|id| self.list.agent_by_id(id))
+                        .collect();
+                    act::forget_all(root, &views)
+                };
+                self.notice = said(swept);
+                self.acted();
+                Ok(Doing::Carry)
+            }
+            // The line comes back exactly as it was typed, because that is
+            // what somebody who did not mean to press enter wants: a keystroke
+            // in the middle of a task should not cost them the task.
+            Asked::Slight { line, .. } if !yes => {
+                self.mode = Mode::Typing(line);
+                self.notice = Some(Notice::Advice("nothing was started".to_string()));
+                Ok(Doing::Carry)
+            }
+            Asked::Slight { line, .. } => self.starting(root, config, line),
         }
-
-        // What the question counted, as the list has it now. An agent whose
-        // record has gone in the meantime is not an agent this can forget.
-        let swept = {
-            let views: Vec<&View> = sweep
-                .ids
-                .iter()
-                .filter_map(|id| self.list.agent_by_id(id))
-                .collect();
-            act::forget_all(root, &views)
-        };
-        self.notice = said(swept);
-        self.acted();
-        Doing::Carry
     }
 
     /// A key while the keys themselves are on the screen. Any of them puts the
@@ -2146,7 +2193,7 @@ mod tests {
         let mode = match &screen.mode {
             Mode::List => "list".to_string(),
             Mode::Keys => "keys".to_string(),
-            Mode::Confirming(sweep) => format!("confirming {}", sweep.question()),
+            Mode::Confirming(asked) => format!("confirming {}", asked.question()),
             Mode::Typing(composer) => format!("typing {} {}", composer.prompt(), composer.text),
         };
         let look = match screen.look {
@@ -2498,6 +2545,33 @@ mod tests {
              writing: {screen}"
         );
         assert!(screen.contains("p:nonsense: claude takes"), "{screen}");
+        assert!(crate::store::list(root.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn composer_asks_once_before_starting_an_agent_on_a_task_of_three_letters() {
+        let root = TempDir::new().unwrap();
+        let mut keys = vec![KeyCode::Char('n')];
+        keys.extend(word("fix"));
+        keys.push(KeyCode::Enter);
+
+        let (code, asked) = held(root.path(), &keys);
+        assert_eq!(code, exit::OK);
+        assert!(
+            asked.contains("start an agent on \"fix\"? y"),
+            "the question quotes what would be started:\n{asked}"
+        );
+        assert!(
+            crate::store::list(root.path()).unwrap().is_empty(),
+            "and the question is all that has happened"
+        );
+
+        // Any key but the one it asked for keeps the line, exactly as it was
+        // typed: a task is worth more than the keystroke that interrupted it.
+        keys.push(KeyCode::Char('n'));
+        let (_, kept) = held(root.path(), &keys);
+        assert!(kept.contains("task ▸ fix"), "{kept}");
+        assert!(kept.contains("nothing was started"), "{kept}");
         assert!(crate::store::list(root.path()).unwrap().is_empty());
     }
 

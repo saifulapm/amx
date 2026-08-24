@@ -1587,8 +1587,8 @@ fn footer(screen: &Screen, width: u16) -> Line<'static> {
     }
     // A question about deleting things is not advice and not a key: it is the
     // one thing on the screen, in the colour of something waiting on a person.
-    if let Mode::Confirming(sweep) = &screen.mode {
-        return Line::styled(sweep.question(), Style::new().fg(role::WARNING));
+    if let Mode::Confirming(asked) = &screen.mode {
+        return Line::styled(asked.question(), Style::new().fg(role::WARNING));
     }
     Line::styled(
         match &screen.mode {
