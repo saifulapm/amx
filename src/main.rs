@@ -62,7 +62,10 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Hook) => hook::from_env(&mut std::io::stdin().lock(), config),
         Some(cli::Command::Exit { id, code }) => hook::exited_from_env(id, *code, config),
         Some(cli::Command::New(args)) => finish(verbs::new::from_env(config, args)),
-        Some(cli::Command::Ls { json }) => finish(verbs::ls::from_env(*json)),
+        Some(cli::Command::Ls { json, dir }) => finish(verbs::ls::from_env(
+            *json,
+            dir.as_deref().or(cli.dir.as_deref()),
+        )),
         Some(cli::Command::Status { id, json }) => finish(verbs::status::from_env(id, *json)),
         Some(cli::Command::Send { id, text }) => finish(verbs::send::from_env(id, text)),
         Some(cli::Command::Answer { id, key }) => finish(verbs::answer::from_env(id, key)),
@@ -85,7 +88,7 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Stop(args)) => finish(verbs::stop::from_env(args)),
         Some(cli::Command::Doctor { fix }) => finish(verbs::doctor::from_env(config, *fix)),
         Some(cli::Command::Uninstall) => finish(verbs::uninstall::from_env()),
-        None => finish(cockpit::from_env(config)),
+        None => finish(cockpit::from_env(config, cli.dir.as_deref())),
     }
 }
 

@@ -128,6 +128,10 @@ at, inside tmux or outside one. It builds nothing to draw in: the list is a
 program on a screen, and a screen is all it needs. Down a pipe it prints the
 table and exits, so `amx | grep waiting` is a reasonable thing to write.
 
+Down that pipe it takes a directory: `amx --dir /srv/app | grep waiting` is
+that project's agents and nobody else's, the reading described under
+[Looking, and answering](#looking-and-answering).
+
 The list answers one question, so it is gathered under the answer: the agents
 stopped on a question come first, then the ones mid-turn, then the ones sitting
 at their prompt, then the ones whose command has ended. A heading is a line like
@@ -209,6 +213,8 @@ network.
 ```sh
 amx ls                 # every agent, one line each
 amx ls --json          # the same reading, for a program
+amx ls --dir /srv/app  # only the agents working under that directory
+amx ls --dir .         # only this project's
 amx status <id>        # one agent, and which signal that state came from
 amx status <id> --json
 amx attach <id>        # hand this terminal to its pane
@@ -224,6 +230,15 @@ amx diff <id> --stat   # the shape of it: a file per line, and the totals
 amx events --follow    # every agent's log, merged
 amx events <id> --json # one object per event, payloads whole
 ```
+
+`--dir` is one machine read one project at a time. An agent belongs to a
+directory when it runs under it, and an agent in a worktree belongs to the
+repository the tree was cut from: the tree is `<repo>/.amx/worktrees/<id>`, and
+what you mean by the project is the repository. A directory reached through a
+link is the directory it leads to, so `amx ls --dir .` answers the same from
+either name. Nothing is written down and nothing is hidden anywhere else — it
+is one reading of one question, and an agent is in two of them when the
+directories nest.
 
 `send` refuses while an agent is waiting on a question. Text typed at a
 permission prompt answers the prompt, and that is not something you can take
@@ -379,7 +394,8 @@ Four questions, four commands, and the exit code is the answer:
 id=$(amx new --no-worktree --dir "$dir" "Read $brief and execute it exactly." \
      -- --session-id "$session")
 
-amx ls --json          # every agent: state, since, last_event, summary, question
+amx ls --json                 # every agent: state, since, last_event, summary, question
+amx ls --json --dir "$dir"    # the ones this run started, and no other run's
 
 said=$(amx result "$id" --timeout 900)
 case $? in

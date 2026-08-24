@@ -12,9 +12,11 @@
 
 use anyhow::Result;
 use std::io::IsTerminal;
+use std::path::Path;
 
 use crate::config::Config;
 use crate::store::now;
+use crate::verbs::ls::Scope;
 use crate::{paths, tui, verbs};
 
 /// Which door bare `amx` opens.
@@ -35,11 +37,16 @@ pub fn door(terminal: bool) -> Door {
 }
 
 /// Open the front door against the machine.
-pub fn from_env(config: &Config) -> Result<i32> {
+///
+/// The directory, when one is named, is the question rather than the door: it
+/// narrows the agents behind it to the ones working under that directory,
+/// which is the same narrowing `amx ls --dir` reads.
+pub fn from_env(config: &Config, dir: Option<&Path>) -> Result<i32> {
     let root = paths::state_root()?;
+    let scope = Scope::of(dir)?;
 
     match door(std::io::stdout().is_terminal()) {
-        Door::Table => verbs::ls::run(&root, false, now(), &mut std::io::stdout().lock()),
+        Door::Table => verbs::ls::run(&root, false, &scope, now(), &mut std::io::stdout().lock()),
         Door::View => tui::run(&root, config),
     }
 }

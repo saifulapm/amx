@@ -16,6 +16,14 @@ use std::path::PathBuf;
     disable_help_subcommand = true
 )]
 pub struct Cli {
+    /// Only the agents whose work is under this directory.
+    ///
+    /// The front door's own narrowing, so `amx --dir /srv/app` is the list of
+    /// that project's agents and nothing else, drawn or printed. A verb that
+    /// takes the same flag reads its own first.
+    #[arg(long, value_name = "PATH")]
+    pub dir: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -59,6 +67,16 @@ pub enum Command {
         /// Print the stable JSON instead of the table.
         #[arg(long)]
         json: bool,
+
+        /// Only the agents whose work is under this directory.
+        ///
+        /// An agent is that directory's when it runs under it, and a worktree
+        /// agent is its repository's wherever amx put the tree. Nothing is
+        /// hidden and nothing is written down: it is one reading of one
+        /// question, and the same agent is in two of them when the
+        /// directories nest.
+        #[arg(long, value_name = "PATH")]
+        dir: Option<PathBuf>,
     },
 
     /// Show one agent, and which signal that state came from.
@@ -405,6 +423,7 @@ pub fn usage_exit_code(err: &clap::Error) -> i32 {
 mod tests {
     use super::*;
     use crate::exit;
+    use std::path::Path;
 
     fn parse(argv: &[&str]) -> Result<Cli, clap::Error> {
         Cli::try_parse_from(argv)
@@ -422,6 +441,40 @@ mod tests {
         let cli = parse(&["amx"]).unwrap();
         assert!(cli.command.is_none());
         assert_eq!(cli.verb(), None);
+        assert_eq!(cli.dir, None, "the front door is about every agent");
+    }
+
+    #[test]
+    fn ls_the_front_door_takes_a_directory_and_is_still_the_front_door() {
+        // `amx --dir <path>` is the same door with a narrower question behind
+        // it, so what it is not is a usage error looking for a verb.
+        let cli = parse(&["amx", "--dir", "/srv/app"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.dir.as_deref(), Some(Path::new("/srv/app")));
+    }
+
+    #[test]
+    fn ls_the_verb_takes_the_directory_the_reading_is_about() {
+        let cli = parse(&["amx", "ls", "--dir", "/srv/app", "--json"]).unwrap();
+        let Some(Command::Ls { json, dir }) = cli.command else {
+            panic!("expected ls");
+        };
+        assert!(json);
+        assert_eq!(dir.as_deref(), Some(Path::new("/srv/app")));
+
+        // A relative directory is a directory: the shell is standing in one,
+        // and `--dir .` is the whole point of the flag.
+        let cli = parse(&["amx", "ls", "--dir", "."]).unwrap();
+        let Some(Command::Ls { dir, .. }) = cli.command else {
+            panic!("expected ls");
+        };
+        assert_eq!(dir.as_deref(), Some(Path::new(".")));
+
+        // The front door's own flag, in front of the verb, where somebody who
+        // narrowed the view once will type it again.
+        let cli = parse(&["amx", "--dir", "/srv/app", "ls"]).unwrap();
+        assert_eq!(cli.dir.as_deref(), Some(Path::new("/srv/app")));
+        assert!(matches!(cli.command, Some(Command::Ls { dir: None, .. })));
     }
 
     #[test]
@@ -430,6 +483,8 @@ mod tests {
             (&["amx", "new", "fix the bug"], "new"),
             (&["amx", "ls"], "ls"),
             (&["amx", "ls", "--json"], "ls"),
+            (&["amx", "ls", "--dir", "/srv/app"], "ls"),
+            (&["amx", "ls", "--dir", "/srv/app", "--json"], "ls"),
             (&["amx", "status", "fix-a1b"], "status"),
             (&["amx", "status", "fix-a1b", "--json"], "status"),
             (&["amx", "send", "fix-a1b", "carry on"], "send"),
@@ -711,6 +766,9 @@ mod tests {
         for argv in [
             &["amx", "nosuchverb"][..],
             &["amx", "ls", "--nosuchflag"],
+            // A narrowing has to say what to, at either door.
+            &["amx", "ls", "--dir"],
+            &["amx", "--dir"],
             &["amx", "status"],
             &["amx", "logs"],
             &["amx", "send", "fix-a1b"],
