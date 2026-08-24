@@ -33,6 +33,17 @@ use crate::store::{Agent, Ask, Choice, Kind, Meta, Phase, Source, State};
 /// pane's environment, so every process the vendor starts inherits it.
 pub const ID_ENV: &str = "AMX_ID";
 
+/// The one tool call that is not work: it draws a menu and waits on it.
+///
+/// Named here because three of the events below are about it, and two of them
+/// are the vendor asking itself for permission to use it. Measured against
+/// claude 2.1.240 on 2026-08-25, in manual mode and again in auto, on a
+/// checkbox question and a plain one: `PreToolUse` draws the menu,
+/// `PermissionRequest` lands 10 to 30 ms later naming this same tool, and the
+/// `permission_prompt` notification six seconds after that. Three events, one
+/// screen, and the screen is a menu the whole time.
+const THE_QUESTION_TOOL: &str = "AskUserQuestion";
+
 /// Record one hook payload. Answers with the process's exit code, which is
 /// always `OK`.
 pub fn from_env(stdin: &mut impl Read, config: &Config) -> i32 {
@@ -222,8 +233,10 @@ fn kind(payload: &Value) -> Option<&str> {
 ///   `AskUserQuestion`: it draws a menu and waits, and its payload carries
 ///   every question the menu will ask, whole.
 /// * `PermissionRequest` is the permission box the instant it goes up, tool
-///   and all; `PermissionDenied` is the only thing that says it closed with
-///   the tool refused, after which the turn is working again.
+///   and all — unless the tool it names is the one that draws the menu, in
+///   which case there is no box and the menu is what it is about;
+///   `PermissionDenied` is the only thing that says it closed with the tool
+///   refused, after which the turn is working again.
 /// * `Notification` means it has stopped on a question, and carries its words.
 ///   The choices under it are on the pane, which this command does not read;
 ///   a reader fills them in later. Its `notification_type` is the vendor's own
@@ -252,6 +265,19 @@ fn kind(payload: &Value) -> Option<&str> {
 /// waiting when the next screen goes up, and the person is told about a box
 /// they have answered and not about the menu in front of them. A menu says for
 /// itself that it is a stop of its own.
+///
+/// The same three decide what the agent is being asked, and there the order
+/// they arrive in is the wrong way round: the one that knows is first and the
+/// two that know least come after. So they do not overwrite it. A permission
+/// event about [`THE_QUESTION_TOOL`] is the vendor asking itself for leave to
+/// draw a menu, and a notification arriving while a call is still outstanding
+/// is about that menu, because a modal choice and a permission box are
+/// mutually exclusive states of the one program — the second could only be up
+/// if a `PreToolUse` for its own tool had already retired the call. Both say
+/// the agent has stopped and neither says what for, so both leave the question
+/// where the call put it. This is 02BQ6442: with a menu on the pane the card
+/// offered a permission box's grammar, because the box the vendor asked itself
+/// about arrived last and won.
 pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Notice> {
     if !payload["agent_id"].is_null() || state.state.is_terminal() {
         return None;
@@ -281,7 +307,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             Screen::Clear
         }
 
-        "PreToolUse" if payload["tool_name"] == "AskUserQuestion" => {
+        "PreToolUse" if payload["tool_name"] == THE_QUESTION_TOOL => {
             state.state = Phase::Waiting;
             // Not running anything: the menu is what it is doing.
             state.summary = None;
@@ -300,6 +326,33 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             }
             state.asks(None);
             Screen::Clear
+        }
+
+        // The vendor asking itself for leave to draw a menu. There is no box:
+        // the screen is the menu, drawn by the tool call 10 to 30 ms earlier,
+        // and that call carried every question on it. So this says the agent
+        // has stopped and nothing else — the sentence it would otherwise write
+        // is about a tool nobody is being asked to allow, and writing it took
+        // the whole call off the record with it.
+        //
+        // It carries the call as well, byte for byte: measured at 2.1.240 on
+        // 2026-08-25, its `tool_input` is the tool call's own. That is worth
+        // nothing on the usual turn and everything on the one where amx missed
+        // the tool call — a hook wired mid-turn, a hook process that died —
+        // because it is the only other place the questions are ever sent. So a
+        // record with a call on it keeps the one it has, and a record with none
+        // takes this.
+        "PermissionRequest" if payload["tool_name"] == THE_QUESTION_TOOL => {
+            state.state = Phase::Waiting;
+            state.summary = None;
+            if state.pending().is_none() {
+                state.asks_all(asked(&payload["tool_input"]));
+            }
+            // A screen this tool drew is a question whatever amx missed of the
+            // call behind it, and what kind of thing is being asked is what
+            // decides what may be sent back.
+            state.kind = Some(Kind::Question);
+            true
         }
 
         // Fired as the permission box goes up — six seconds before the
@@ -343,6 +396,19 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             state.summary = None;
             state.asks(None);
             Screen::Clear
+        }
+
+        // A call the vendor has not finished is the screen the agent is
+        // stopped on, and this notice says less about it than the call does:
+        // measured at 2.1.240 on 2026-08-25, the whole of its message is
+        // "Claude needs your permission". A permission box cannot be up over
+        // the menu — they are two states of the one program, and a box would
+        // have had a `PreToolUse` of its own tool in front of it, which retires
+        // the call. So the agent has stopped, and what it stopped on is what
+        // the call already says.
+        "Notification" if state.pending().is_some() => {
+            state.state = Phase::Waiting;
+            true
         }
 
         "Notification" => {
@@ -728,6 +794,167 @@ mod tests {
     }
 
     #[test]
+    fn hook_the_menu_decides_what_answers_it() {
+        // 02BQ6442, driven against a real claude 2.1.240 on 2026-08-25 in
+        // manual mode and again in auto: one AskUserQuestion fires three
+        // events, and the two that know least about the screen arrive last.
+        // The tool call carries every question the menu will ask; the
+        // permission box the vendor asks itself for over that same tool
+        // carries a tool name; the notification six seconds later carries
+        // "Claude needs your permission" and nothing else. Each of the last
+        // two used to write its own account over the call's, so an agent
+        // standing at a menu read `permission` with no choices on it, and the
+        // card offered "press 1-5, y or n".
+        let mut state = State::default();
+        let mut meta = meta();
+
+        apply(
+            &json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "AskUserQuestion",
+                "tool_input": { "questions": [{
+                    "question": "Which features should be enabled?",
+                    "header": "Features",
+                    "options": [
+                        { "label": "Logging", "description": "Write a log file" },
+                        { "label": "Metrics", "description": "Export counters" },
+                        { "label": "Tracing", "description": "Emit spans" }
+                    ],
+                    "multiSelect": true
+                }] }
+            }),
+            &mut state,
+            &mut meta,
+        );
+
+        for payload in [
+            json!({
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "AskUserQuestion",
+                "tool_input": { "questions": [] }
+            }),
+            json!({
+                "hook_event_name": "Notification",
+                "message": "Claude needs your permission",
+                "notification_type": "permission_prompt"
+            }),
+        ] {
+            apply(&payload, &mut state, &mut meta);
+            assert_eq!(state.state, Phase::Waiting, "{payload}");
+            assert_eq!(
+                state.kind,
+                Some(Kind::Question),
+                "the screen is the menu the whole time: {payload}"
+            );
+            assert_eq!(
+                state.question.as_deref(),
+                Some("Which features should be enabled?"),
+                "{payload}"
+            );
+            assert_eq!(
+                state.options,
+                ["Logging", "Metrics", "Tracing"],
+                "{payload}"
+            );
+            assert!(state.multi(), "and it still takes more than one: {payload}");
+        }
+    }
+
+    #[test]
+    fn hook_the_permission_box_over_a_menu_carries_the_menu() {
+        // Measured at 2.1.240 on 2026-08-25: the permission event the vendor
+        // fires over its own question tool carries that tool's `tool_input`
+        // byte for byte. On the usual turn that is worth nothing, because the
+        // call arrived 10 ms earlier and the record already has it. On the
+        // turn where amx missed the tool call it is the only other place the
+        // questions are ever sent.
+        let (state, _, _) = fold(json!({
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "AskUserQuestion",
+            "permission_mode": "default",
+            "tool_input": { "questions": [{
+                "question": "Which fixture should the port keep?",
+                "header": "Fixture",
+                "options": [{ "label": "SQLite" }, { "label": "Docker" }],
+                "multiSelect": false
+            }] }
+        }));
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(state.kind, Some(Kind::Question));
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Which fixture should the port keep?")
+        );
+        assert_eq!(state.options, ["SQLite", "Docker"]);
+
+        // And a record that has the call keeps the one it has: this event is
+        // about the same menu, so there is nothing here it does not know.
+        let mut state = State::default();
+        let mut meta = meta();
+        apply(
+            &json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "AskUserQuestion",
+                "tool_input": { "questions": [{
+                    "question": "Which fixture should the port keep?",
+                    "options": [{ "label": "the sqlite one" }]
+                }] }
+            }),
+            &mut state,
+            &mut meta,
+        );
+        apply(
+            &json!({
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "AskUserQuestion",
+                "tool_input": { "questions": [] }
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(state.options, ["the sqlite one"]);
+    }
+
+    #[test]
+    fn hook_a_box_over_another_tool_is_still_a_box() {
+        // The menu does not shelter the next prompt. A permission box is about
+        // a tool the agent is trying to call, and the vendor fires that tool's
+        // own `PreToolUse` in front of it — which retires the call, so the
+        // box arrives at a record with nothing outstanding and says what it
+        // has always said.
+        let mut state = State::default();
+        let mut meta = meta();
+
+        apply(
+            &json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "AskUserQuestion",
+                "tool_input": { "questions": [{
+                    "question": "Which fixture should the port keep?",
+                    "options": [{ "label": "the sqlite one" }]
+                }] }
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(state.kind, Some(Kind::Question));
+
+        for payload in [
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash" }),
+            json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash" }),
+        ] {
+            apply(&payload, &mut state, &mut meta);
+        }
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(state.kind, Some(Kind::Permission));
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Claude needs your permission to use Bash")
+        );
+        assert!(state.asking.is_empty(), "and the menu is gone");
+    }
+
+    #[test]
     fn hook_one_stop_interrupts_once_however_many_events_say_so() {
         // Filed on 2026-08-24 off the first run of the wall: one
         // AskUserQuestion put three notifications on the desktop. The tool
@@ -790,7 +1017,8 @@ mod tests {
         // stop from three.
         //
         // What the last two do to the question on the record is the kind
-        // precedence 02BQ6442 is about, and nothing here says it is right.
+        // precedence 02BQ6442 is about: they do nothing to it, which is what
+        // the assertions at the end of this check on the vendor's own bytes.
         let asking = json!({ "questions": [{
             "question": "Which fixture should the port keep?",
             "header": "Fixture choice",
@@ -836,6 +1064,15 @@ mod tests {
             "the event that stopped the agent is the one that knew the question"
         );
         assert_eq!(state.state, Phase::Waiting, "and it is still waiting");
+
+        // And waiting on the menu, not on a box. The same event that knew the
+        // question is the only one of the three that knew anything about it.
+        assert_eq!(state.kind, Some(Kind::Question));
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Which fixture should the port keep?")
+        );
+        assert_eq!(state.options, ["SQLite fixture", "Docker fixture"]);
     }
 
     #[test]

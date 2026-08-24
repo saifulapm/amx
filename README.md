@@ -305,11 +305,20 @@ command line is refused rather than half taken, because a `1` there is chosen
 and submitted the moment it is typed and the `3` after it would land on
 whatever the agent drew next.
 
-`--text` is for the answer that reads as something else. The row a question
-offers for words of your own takes every key as a character, so
-`amx answer <id> --text 2` answers with the character `2` where a bare `2`
-would be the second choice. Words are still words without it, and the flag is
-refused at a prompt that offers no such row.
+The numbers are the question's own choices and they stop there. Every menu the
+vendor draws carries two rows under them that no question asked for — one for
+words of your own, and `Chat about this` — so a question of three choices is
+five numbered rows on the screen, and `.options` in the JSON is the three. A
+number past them is refused and told which row it is, because pressing the
+first parks the cursor in a text field and answers nothing, and pressing it at a
+question that takes several checks that empty field, which submits as an empty
+string.
+
+`--text` is for the answer that reads as something else, and it is how that row
+is filled. It takes every key as a character, so `amx answer <id> --text 2`
+answers with the character `2` where a bare `2` would be the second choice.
+Words are still words without it, and the flag is refused at a prompt that
+offers no such row.
 
 `--note` rides beside a choice, at the questions that draw a field for one.
 The vendor draws that field where its choices carry a preview, and there it
