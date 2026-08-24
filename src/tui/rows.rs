@@ -788,13 +788,29 @@ pub fn called(view: &View) -> &str {
 /// Read against the clock rather than against a flag, so the mark comes back
 /// on its own: an agent that was read at its prompt and then stopped on a
 /// question has said something since the last look at it.
+///
+/// Against the last thing it said and not against the end of its run: an
+/// answer routinely lands after the exit is recorded, and a row holding one
+/// nobody has read is exactly what the mark is for.
 pub fn unread(view: &View) -> bool {
-    Group::of(view.phase()) != Group::Working && view.state.seen < ended(view)
+    Group::of(view.phase()) != Group::Working && view.state.seen < said(view)
 }
 
-/// When an agent's turn ended, as well as the record can say.
-fn ended(view: &View) -> u64 {
+/// When the agent last said anything, as well as the record can say.
+fn said(view: &View) -> u64 {
     view.state.last_event.max(view.state.since)
+}
+
+/// When an agent's run ended.
+///
+/// The stamp the ending wrote, where there is one. A record that has none is
+/// dated from the last thing the agent said: an older amx wrote it, or the
+/// pane went and nothing got to record an exit.
+fn ended(view: &View) -> u64 {
+    match view.state.ended {
+        0 => said(view),
+        at => at,
+    }
 }
 
 /// The question an agent is showing, and where it comes in the call that asked
@@ -1080,6 +1096,22 @@ mod tests {
             ["completed (3)", "stopped-c3d", "failed-b2c", "done-a1b"],
             "newest ending first"
         );
+    }
+
+    #[test]
+    fn view_orders_the_finished_agents_by_when_their_run_ended() {
+        // Something arrives after the exit is recorded: a hook that fired as
+        // the pane went, an answer written down late. The newest ending is
+        // still the newest ending, so the group goes by the stamp the ending
+        // wrote rather than by whatever was written last.
+        let mut early = view("done-a1b", Phase::Done, 100);
+        early.state.ended = 100;
+        early.state.last_event = 400;
+        let mut late = view("done-b2c", Phase::Done, 300);
+        late.state.ended = 300;
+
+        let list = listed(vec![early, late]);
+        assert_eq!(lines(&list), ["completed (2)", "done-b2c", "done-a1b"]);
     }
 
     #[test]
@@ -1711,6 +1743,16 @@ mod tests {
             unread(&ended),
             "something said after the look is news again"
         );
+
+        // Including on a record that stamped its ending: the mark is about
+        // what the agent has said since somebody looked, and a run that ended
+        // at ten can have an answer written down at twenty.
+        let mut stamped = view("done-c3d", Phase::Done, 10);
+        stamped.state.ended = 10;
+        stamped.state.seen = 10;
+        assert!(!unread(&stamped));
+        stamped.state.last_event = 20;
+        assert!(unread(&stamped));
 
         // An agent still going is not holding anything to read: what it is
         // doing is on the row already, and it changes with every reading.
