@@ -31,7 +31,7 @@ use super::act::{self, Asking, Composer};
 use super::rows::{self, Axis, Group, Item, List, Showing, Tally};
 use super::{Mode, Profile, Screen};
 use crate::ansi::{self, Colour, Painted};
-use crate::derive::View;
+use crate::derive::{self, View};
 use crate::pr::{Pr, Standing};
 use crate::registry::DEFAULT;
 use crate::store::{Kind, Phase};
@@ -674,7 +674,10 @@ fn row(
 ) -> Line<'static> {
     let Columns { names, status, pr } = columns;
     let phase = view.phase();
-    let age = age(view.verdict.age);
+    // The reading's own number and the reading's own units: a row and a table
+    // that worked the words out for themselves would agree until one of them
+    // was edited.
+    let age = derive::in_words(view.verdict.age);
     // The one word on a row a person typed rather than amx minting it, so it
     // is neutralised here as well as where it was written down.
     let name = fit(&inert(rows::called(view)), names);
@@ -785,7 +788,12 @@ fn float(
 ) {
     let title = match card.changes {
         true => format!(" {} · what it has changed ", card.id),
-        false => format!(" {} · {} {} ", card.id, card.phase.as_str(), age(card.age)),
+        false => format!(
+            " {} · {} {} ",
+            card.id,
+            card.phase.as_str(),
+            derive::in_words(card.age)
+        ),
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -1793,16 +1801,6 @@ fn tail(rows: &[&str], wanted: usize) -> Range<usize> {
 
 /// The width the age is given, which fits everything up to `365d`.
 const AGE: usize = 4;
-
-/// How long since anything was heard, in the shortest form that says it.
-fn age(seconds: u64) -> String {
-    match seconds {
-        0..=59 => format!("{seconds}s"),
-        60..=3599 => format!("{}m", seconds / 60),
-        3600..=86_399 => format!("{}h", seconds / 3600),
-        _ => format!("{}d", seconds / 86_400),
-    }
-}
 
 /// One line of it, so a paragraph of an answer cannot take over a row.
 fn first_line(text: &str) -> &str {
@@ -4137,12 +4135,25 @@ mod tests {
     }
 
     #[test]
-    fn view_ages_read_as_a_person_would_say_them() {
-        assert_eq!(age(0), "0s");
-        assert_eq!(age(59), "59s");
-        assert_eq!(age(60), "1m");
-        assert_eq!(age(3_600), "1h");
-        assert_eq!(age(86_400), "1d");
+    fn view_ages_are_the_readings_own_number_in_the_readings_own_words() {
+        // Both the number and the units come from the reading, and the row
+        // only asks for them. A row that worked the words out for itself would
+        // agree with the table until the next hand touched one of the two, and
+        // the person with both open is who finds out.
+        for age in [0, 59, 60, 3_599, 3_600, 86_400] {
+            let row = drawn(
+                vec![view("busy-a1b", Phase::Working, None, age)],
+                None,
+                WALL,
+            )
+            .into_iter()
+            .find(|line| line.contains("busy-a1b"))
+            .expect("the agent's row");
+            assert!(
+                row.ends_with(&derive::in_words(age)),
+                "{age} seconds is drawn as {row:?}"
+            );
+        }
     }
 
     #[test]
