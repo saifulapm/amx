@@ -134,6 +134,21 @@ impl Ruleset {
             Claim::Unsettled(rule)
         }
     }
+
+    /// What the screen is asking, without asking it what the agent is doing.
+    ///
+    /// [`claim`](Ruleset::claim) weighs a screen against what amx already
+    /// believes, because naming a screen can end a turn and that is a decision
+    /// about the record. Reading the question off one is not: the caller here
+    /// has a record that says the agent is waiting and cannot say what for.
+    /// The same rule order decides, and the quiescence gate has nothing to say
+    /// — it governs which rule may end a turn, and no rule that asks a
+    /// question is quiescent.
+    pub fn asking(&self, capture: &str) -> Option<Question> {
+        let screen = Screen::new(capture);
+        let rule = self.rules.iter().find(|rule| rule.holds(&screen))?;
+        rule.question(capture)
+    }
 }
 
 impl Rule {
@@ -972,6 +987,33 @@ $
             "a label the vendor wrapped is read as far as its own row goes: the \
              rows under it are where the menu keeps its descriptions"
         );
+    }
+
+    #[test]
+    fn rules_a_screen_says_what_it_is_asking_whatever_amx_believes() {
+        // A reader that wants a question already has a record saying the agent
+        // is waiting; what it has not got is what for. So this door takes
+        // neither a state nor a count of looks, and it answers with what the
+        // claimed screens above said.
+        let rules = bundled();
+        let permission = rules
+            .asking(PERMISSION_BOX)
+            .expect("a box that blocks is asking something");
+        assert_eq!(permission.text, "Do you want to proceed?");
+        assert_eq!(permission.options, ["Yes", "No"]);
+        assert_eq!(
+            rules.asking(ASK_MENU_80).map(|asked| asked.text),
+            Some("Should this project be indented with spaces or tabs?".to_string())
+        );
+
+        for (what, screen) in [
+            ("an idle prompt", IDLE_SCREEN),
+            ("a running turn", WORKING_SCREEN),
+            ("a shell", A_SHELL),
+            ("a quotation of a box", QUOTED_PERMISSION_BOX),
+        ] {
+            assert_eq!(rules.asking(screen), None, "{what} is asking nothing");
+        }
     }
 
     #[test]
