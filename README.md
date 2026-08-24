@@ -179,6 +179,8 @@ amx ls --json          # the same reading, for a program
 amx status <id>        # one agent, and which signal that state came from
 amx status <id> --json
 amx attach <id>        # hand this terminal to its pane
+amx logs <id>          # the last of what its pane has printed, without attaching
+amx logs <id> --lines 40
 amx send <id> "and now the linter"
 amx answer <id> y      # the keys a prompt reads: y, n, 1-9, enter, esc
 amx answer <id> 1,3    # a question that takes several: check these two
@@ -220,6 +222,15 @@ The vendor draws that field where its choices carry a preview, and there it
 has no row for words instead, so the two flags are never both an answer to the
 same question. A note without a choice is refused as well: submitting from
 inside that field answers with no choice at all.
+
+`logs` is the pane without taking the terminal for it: the last hundred lines it
+has drawn, or however many `--lines` asks for, with nothing in them a terminal
+will act on. It is a picture of a screen rather than a transcript. The vendor
+redraws its own screen as it works, and what has scrolled past is only there
+while tmux's history holds it — what the agent *said* is `amx result`, which
+hands back its own words. Once the pane is gone the record is what is left, and
+`logs` prints the answer amx captured from it, so the same command line says
+something about an agent whether or not it is still running.
 
 `amx statusline` prints the two numbers a status line has room for, and nothing
 at all when no agent needs saying:

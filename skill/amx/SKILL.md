@@ -22,6 +22,7 @@ Nothing here needs a screen scraped or a state file polled.
 | `amx status <id> [--json]` | One agent, and which signal that state came from. |
 | `amx events [<ids>] [--follow] [--json]` | Every agent's log, merged in time order. |
 | `amx diff <id> [--stat]` | What it has changed, against the commit its tree was cut from. |
+| `amx logs <id> [--lines N]` | The last of what its pane has printed, without attaching to it. |
 | `amx stop <id> [--force]` | End it, and say what happens to its worktree and branch. |
 
 Three more are for a person rather than a script: `amx attach <id>` hands the
@@ -182,7 +183,9 @@ when one is in a state you did not expect.
   has a turn you have to catch first, and nothing in `ls` says what it is for.
 - **Read the answer with `result`.** It hands back what the agent wrote,
   verbatim. The pane holds a redrawn screen, escape codes and whatever has
-  scrolled past.
+  scrolled past. `amx logs <id>` is for when the screen itself is the question —
+  an agent that is taking longer than it should, or one whose state you did not
+  expect — and what it hands you is a picture of that screen, never the answer.
 - **Spawning never moves anybody.** Every agent goes in a detached tmux
   session of its own, `amx-<id>`, so `amx new` from inside tmux leaves whoever
   typed it looking at what they were looking at.

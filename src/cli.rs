@@ -32,6 +32,7 @@ impl Cli {
             Answer { .. } => "answer",
             Result { .. } => "result",
             Attach { .. } => "attach",
+            Logs { .. } => "logs",
             Stop(_) => "stop",
             Diff { .. } => "diff",
             Resume { .. } => "resume",
@@ -95,6 +96,25 @@ pub enum Command {
 
     /// Attach to the agent's pane.
     Attach { id: String },
+
+    /// Print an agent's recent output without attaching to it.
+    ///
+    /// While the pane is there this is the pane: the last of what it has drawn,
+    /// and as much of what has scrolled off it as tmux still holds. It is a
+    /// picture of a screen rather than the agent's own words — `amx result`
+    /// hands back those. Once the pane is gone the record is what is left, and
+    /// what the agent answered with is what this prints.
+    Logs {
+        id: String,
+        /// How many lines of it to print.
+        #[arg(
+            long,
+            value_name = "N",
+            default_value_t = crate::verbs::logs::LINES,
+            value_parser = clap::value_parser!(u32).range(1..),
+        )]
+        lines: u32,
+    },
 
     /// Stop an agent and decide what happens to its worktree and branch.
     Stop(StopArgs),
@@ -361,6 +381,8 @@ mod tests {
             (&["amx", "result", "fix-a1b"], "result"),
             (&["amx", "result", "fix-a1b", "--timeout", "30"], "result"),
             (&["amx", "attach", "fix-a1b"], "attach"),
+            (&["amx", "logs", "fix-a1b"], "logs"),
+            (&["amx", "logs", "fix-a1b", "--lines", "40"], "logs"),
             (&["amx", "stop", "fix-a1b"], "stop"),
             (&["amx", "stop", "fix-a1b", "--force"], "stop"),
             (&["amx", "stop", "fix-a1b", "--delete"], "stop"),
@@ -540,6 +562,7 @@ mod tests {
             &["amx", "nosuchverb"][..],
             &["amx", "ls", "--nosuchflag"],
             &["amx", "status"],
+            &["amx", "logs"],
             &["amx", "send", "fix-a1b"],
             &["amx", "answer", "fix-a1b"],
             // Which of the two a thing that reads as both is has to be said,
@@ -549,6 +572,9 @@ mod tests {
             &["amx", "answer", "fix-a1b", "--note", "keep it short"],
             &["amx", "answer", "fix-a1b", "--text", "2", "--note", "short"],
             &["amx", "result", "fix-a1b", "--timeout", "soon"],
+            // A reading of no lines is not a reading.
+            &["amx", "logs", "fix-a1b", "--lines", "0"],
+            &["amx", "logs", "fix-a1b", "--lines", "all"],
             &["amx", "stop", "fix-a1b", "--worktree", "burn"],
             &["amx", "resume"],
             &["amx", "resume", "fix-a1b", "--all"],
