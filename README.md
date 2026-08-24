@@ -381,6 +381,9 @@ One directory per agent under `~/.local/state/amx/agents/<id>/`:
 - `events.jsonl` holds one line per event, in the order they arrived.
 - `pr.json` holds what its branch's pull requests were doing when the view last
   asked, and is only there once one has.
+- `scratch/` is the agent's own directory to write in. Every pane amx starts is
+  told where it is in `$AMX_AGENT_DIR`, and it goes when the record goes, so
+  anything worth keeping belongs in the worktree with the rest of the work.
 
 Writes go through a lock, one at a time; readers never lock and never see half
 a document. `ls` sweeps records whose agent finished more than a week ago. A

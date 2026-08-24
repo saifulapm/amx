@@ -10,6 +10,12 @@
 //! the vendor with `amx _exit` behind it. From then on the pane belongs to the
 //! vendor, and amx is only ever a reader of the record and the screen.
 //!
+//! Three variables are amx's own, and they go in over whatever the snapshot
+//! carried: `AMX_BIN`, `AMX_ID`, which is how a hook says which agent it
+//! belongs to, and `AMX_AGENT_DIR`, a directory of the agent's own to write
+//! in. A spawn typed inside another agent's pane inherits that pane's, and the
+//! new agent is not the old one.
+//!
 //! Two things travel in the handoff file rather than on the tmux command line.
 //! The **task** is arbitrary text, and a tmux command line is the one place it
 //! could be read as syntax. The **environment** is the one `new` was run with:
@@ -23,7 +29,7 @@ use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::registry;
@@ -32,6 +38,13 @@ use crate::tmux::{PaneId, Server, Spawn};
 
 /// What the pane is handed at birth.
 pub const HANDOFF: &str = "handoff.json";
+
+/// Where a pane is told to find the directory that is its own to write in.
+pub const AGENT_DIR_ENV: &str = "AMX_AGENT_DIR";
+
+/// What that directory is called, inside the one the agent's record is kept
+/// in.
+const SCRATCH: &str = "scratch";
 
 /// tmux's own default socket name, which is the server a bare `tmux` reaches.
 const DEFAULT_SOCKET: &str = "default";
@@ -131,6 +144,30 @@ pub fn write_handoff(dir: &Path, handoff: &Handoff) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))
 }
 
+/// The directory an agent is given to write in, made if it is not there.
+///
+/// Beside the record rather than in it. A file dropped next to `state.json` is
+/// one name away from being the record, and what an agent scribbles is not
+/// something amx will ever read.
+///
+/// It goes when the record goes, which is what makes it scratch: `stop
+/// --delete`, forgetting a finished row and the weekly sweep all take the
+/// agent's whole directory. Nothing kept here outlives the agent that wrote
+/// it, so what has to be kept belongs in the worktree with the rest of the
+/// work.
+pub fn scratch(agent_dir: &Path) -> Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let dir = agent_dir.join(SCRATCH);
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(crate::paths::DIR_MODE)
+        .create(&dir)
+        .with_context(|| format!("creating {}", dir.display()))?;
+    crate::paths::keep_to_the_owner(&dir, crate::paths::DIR_MODE)?;
+    Ok(dir)
+}
+
 pub fn read_handoff(dir: &Path) -> Result<Handoff> {
     let path = dir.join(HANDOFF);
     let text =
@@ -210,15 +247,35 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
         .arg(vendor)
         .args(&handoff.command[1..]);
 
-    for (name, value) in &handoff.env {
+    for (name, value) in pane_env(&handoff.env, &std::env::current_exe()?, id, &scratch(&dir)?) {
         command.env(name, value);
     }
-    command
-        .env("AMX_BIN", std::env::current_exe()?)
-        .env(crate::hook::ID_ENV, id);
 
     // Exec, so the pane's process is the vendor's and amx is not in its way.
     Err(command.exec()).context("starting the agent's command")
+}
+
+/// The environment the pane runs in: the one the spawn snapshotted, and the
+/// three variables amx puts in over the top of it.
+///
+/// Over the top, because those three are about this pane and this pane only.
+/// The snapshot is whatever environment `new` was typed in, and that is often
+/// another agent's pane — a spawn from inside one would otherwise hand the new
+/// agent the old one's id and the old one's directory to write in.
+fn pane_env(
+    snapshot: &BTreeMap<String, String>,
+    bin: &Path,
+    id: &str,
+    scratch: &Path,
+) -> BTreeMap<String, String> {
+    let mut env = snapshot.clone();
+    env.insert("AMX_BIN".to_string(), bin.to_string_lossy().into_owned());
+    env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
+    env.insert(
+        AGENT_DIR_ENV.to_string(),
+        scratch.to_string_lossy().into_owned(),
+    );
+    env
 }
 
 /// `_boot`, against the machine's own state directory.
@@ -419,5 +476,55 @@ mod tests {
     fn spawn_boot_gives_up_rather_than_waiting_for_a_record_that_is_not_coming() {
         let root = TempDir::new().unwrap();
         assert!(boot(root.path(), "../elsewhere").is_err(), "not an id");
+    }
+
+    #[test]
+    fn exec_a_pane_is_given_a_directory_of_its_own_beside_the_record() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = TempDir::new().unwrap();
+        let agent = root.path().join("fix-login-a1b");
+        std::fs::create_dir_all(&agent).unwrap();
+
+        let dir = scratch(&agent).unwrap();
+        assert_eq!(dir, agent.join(SCRATCH), "beside the record, not in it");
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700,
+            "what an agent writes is its owner's, like the record next to it"
+        );
+        assert_eq!(
+            scratch(&agent).unwrap(),
+            dir,
+            "and a pane started again gets the directory it had"
+        );
+    }
+
+    #[test]
+    fn exec_every_pane_is_told_which_directory_is_its_own() {
+        // The environment a spawn snapshots is the one somebody typed the
+        // command in, and that may be another agent's pane. What amx puts in
+        // is about this pane, so it is written over what was inherited —
+        // otherwise the second agent writes in the first one's directory.
+        let inherited = env_snapshot(vars(&[
+            ("PATH", "/usr/bin"),
+            ("AMX_ID", "fix-login-a1b"),
+            ("AMX_AGENT_DIR", "/state/agents/fix-login-a1b/scratch"),
+        ]));
+
+        let env = pane_env(
+            &inherited,
+            Path::new("/usr/local/bin/amx"),
+            "port-it-b2c",
+            Path::new("/state/agents/port-it-b2c/scratch"),
+        );
+
+        assert_eq!(
+            env.get(AGENT_DIR_ENV).unwrap(),
+            "/state/agents/port-it-b2c/scratch"
+        );
+        assert_eq!(env.get(crate::hook::ID_ENV).unwrap(), "port-it-b2c");
+        assert_eq!(env.get("AMX_BIN").unwrap(), "/usr/local/bin/amx");
+        assert_eq!(env.get("PATH").unwrap(), "/usr/bin", "and the rest stands");
     }
 }
