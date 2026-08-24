@@ -30,7 +30,7 @@
 //! line four is somebody else's by then.
 
 use crate::derive::View;
-use crate::store::{Meta, Phase};
+use crate::store::{Ask, Meta, Phase};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -795,6 +795,53 @@ pub fn unread(view: &View) -> bool {
 /// When an agent's turn ended, as well as the record can say.
 fn ended(view: &View) -> u64 {
     view.state.last_event.max(view.state.since)
+}
+
+/// The question an agent is showing, and where it comes in the call that asked
+/// it.
+///
+/// A fact about the row for the same reason [`called`] is one: it is read off
+/// the record and it is what a surface draws. None of it can be read off the
+/// pane. `AskUserQuestion` draws its questions as tabs on one screen, and
+/// measured against claude 2.1.240 the strip elides its own headers as the
+/// pane narrows — at 24 columns the showing tab's name is an ellipsis and
+/// nothing else. How many questions there are, what each is called, and
+/// whether one takes more than one choice are in the payload and only there
+/// (`docs/question-shapes.md`).
+#[derive(Clone, Copy)]
+pub struct Showing<'a> {
+    /// The question on the screen, as the payload wrote it.
+    pub ask: &'a Ask,
+    /// Which of the call's questions it is, counting from one.
+    pub at: usize,
+    /// And how many the call holds.
+    pub of: usize,
+}
+
+impl Showing<'_> {
+    /// What the tab strip would call it, where the payload named it.
+    pub fn header(&self) -> Option<&str> {
+        self.ask.header.as_deref().filter(|word| !word.is_empty())
+    }
+}
+
+/// What the record holds about the question this agent has stopped on, where
+/// the call it came from was ever written down.
+///
+/// The question showing is the first with no answer on it, which is the same
+/// rule the record itself uses: answering one does not end a call, so the tab
+/// after it is what the vendor has on the screen.
+pub fn showing(view: &View) -> Option<Showing<'_>> {
+    let at = view
+        .state
+        .asking
+        .iter()
+        .position(|ask| ask.answer.is_none())?;
+    Some(Showing {
+        ask: &view.state.asking[at],
+        at: at + 1,
+        of: view.state.asking.len(),
+    })
 }
 
 /// Where an agent comes in the reading order.

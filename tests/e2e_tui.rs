@@ -8,7 +8,7 @@
 mod common;
 
 use common::Harness;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1422,6 +1422,136 @@ fn parked_on_a_menu(amx: &Harness, id: &str) {
             "since": now(),
             "last_event": now(),
         }),
+    );
+}
+
+/// Park an agent on a whole call of the vendor's own: every question it holds,
+/// the sentences under their choices and the flag saying how many may be
+/// taken, as a hook that carried the payload leaves them.
+///
+/// The question showing is the first with no answer on it, and it goes where
+/// every reader has always found the question — which is what `asks_all` does
+/// in the record's own code, done here by hand because a test writes the
+/// document rather than the struct.
+fn parked_on_a_call(amx: &Harness, id: &str, asking: &[Value]) {
+    amx.play(id, "works-without-end");
+    amx.until_state(id, "working");
+    showing_the_pending_one(amx, id, asking);
+}
+
+/// Write the call down with the question it is showing where the question
+/// goes, without starting anything: the record moving on under a card that is
+/// already open.
+fn showing_the_pending_one(amx: &Harness, id: &str, asking: &[Value]) {
+    let pending = asking
+        .iter()
+        .find(|ask| ask["answer"].is_null())
+        .expect("a question with nothing on it");
+    let options: Vec<Value> = pending["options"]
+        .as_array()
+        .expect("the choices under it")
+        .iter()
+        .map(|choice| choice["label"].clone())
+        .collect();
+
+    amx.set_state(
+        id,
+        json!({
+            "state": "waiting",
+            "question": {
+                "text": pending["text"],
+                "options": options,
+                "kind": "question",
+                "asking": asking,
+            },
+            "since": now(),
+            "last_event": now(),
+        }),
+    );
+}
+
+/// The three questions of one `AskUserQuestion` call, as the payload measured
+/// against claude 2.1.240 on 2026-08-24 records them in
+/// `docs/question-shapes.md`: a question that takes one choice, a checkbox
+/// question behind it, and a third that takes one.
+fn a_call_of_three() -> Vec<Value> {
+    vec![
+        json!({
+            "header": "Runtime",
+            "text": "Which runtime should the service target?",
+            "options": [
+                { "label": "Node", "description": "Widest library support" },
+                { "label": "Deno", "description": "Batteries included" },
+            ],
+            "multi": false,
+        }),
+        json!({
+            "header": "Rollout",
+            "text": "Which rollout steps should run?",
+            "options": [
+                { "label": "Canary", "description": "Five percent first" },
+                { "label": "Migrate", "description": "Run the schema change" },
+                { "label": "Announce", "description": "Post to the channel" },
+            ],
+            "multi": true,
+        }),
+        json!({
+            "header": "Storage",
+            "text": "Which store should hold sessions?",
+            "options": [
+                { "label": "Redis", "description": "Fast, volatile" },
+                { "label": "Postgres", "description": "Durable, already deployed" },
+            ],
+            "multi": false,
+        }),
+    ]
+}
+
+/// The card, opened on the agent the view is holding the cursor over.
+fn card_on(amx: &Harness, view: &str, id: &str) -> String {
+    amx.until("the row", || screen(amx, view).contains(id).then_some(()));
+    press(amx, view, "Space");
+    amx.until("the card", || {
+        let drawn = screen(amx, view);
+        drawn
+            .lines()
+            .any(|line| line.trim_start().starts_with('╭'))
+            .then_some(drawn)
+    })
+}
+
+#[test]
+fn card_says_which_question_of_the_call_it_is_showing() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+
+    // A call of three questions. Nothing on the pane says how many there are:
+    // the vendor's tab strip elides its own headers as the pane narrows, so
+    // this is amx saying what only the payload knows.
+    let mut call = a_call_of_three();
+    parked_on_a_call(&amx, "pick-a1b", &call);
+    let carded = card_on(&amx, &view, "pick-a1b");
+    assert!(
+        carded.contains("Runtime · 1 of 3"),
+        "which question of the call, and what its tab is called:\n{carded}"
+    );
+
+    // Answering one does not end the call: the vendor moves to the tab after
+    // it and the prompt is still up, so the card moves with it.
+    call[0]["answer"] = json!("Node");
+    showing_the_pending_one(&amx, "pick-a1b", &call);
+    let moved = amx.until("the card to move to the tab behind it", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("Rollout · 2 of 3").then_some(drawn)
+    });
+    assert!(
+        moved.contains("Which rollout steps should run?"),
+        "with the question that tab is asking:\n{moved}"
+    );
+    assert!(
+        !moved.contains("1 of 3"),
+        "and one question of it on the card at a time:\n{moved}"
     );
 }
 

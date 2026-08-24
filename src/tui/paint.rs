@@ -28,7 +28,7 @@ use std::ops::Range;
 use std::sync::OnceLock;
 
 use super::act::{self, Asking, Composer};
-use super::rows::{self, Axis, Group, Item, List, Tally};
+use super::rows::{self, Axis, Group, Item, List, Showing, Tally};
 use super::{Mode, Profile, Screen};
 use crate::ansi::{self, Colour, Painted};
 use crate::derive::View;
@@ -154,11 +154,21 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     .areas(area);
 
     frame.render_widget(Paragraph::new(header(screen, top)), top);
+    // What the record holds about the question the card is showing, which is
+    // the half of a question no pane carries. It is read off the row's own
+    // reading rather than carried on the card, because the card is a picture
+    // of one agent and the reading is what the list is already holding.
+    let showing = screen
+        .card
+        .as_ref()
+        .filter(|card| card.asks())
+        .and_then(|card| screen.list.agent_by_id(&card.id))
+        .and_then(rows::showing);
     let floating = match (helping, &screen.card) {
         (false, Some(card)) => card_height(
             area.height,
             middle.height,
-            card_rows(card, screen.answering().is_some(), middle.width),
+            card_rows(card, showing, screen.answering().is_some(), middle.width),
         ),
         _ => 0,
     };
@@ -177,7 +187,13 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     if floating > 0
         && let Some(card) = &screen.card
     {
-        float(frame, card, screen.answering(), over(middle, floating));
+        float(
+            frame,
+            card,
+            showing,
+            screen.answering(),
+            over(middle, floating),
+        );
     }
     if let Some(composer) = banded {
         composing_line(frame, composer, line);
@@ -208,9 +224,10 @@ fn card_height(total: u16, band: u16, wanted: u16) -> u16 {
 }
 
 /// How many rows the card would take to say everything it has: its two
-/// borders, what the agent is asking, the choices under that, the line the
-/// answer goes on, and the screen it is all happening on.
-fn card_rows(card: &Card, answering: bool, width: u16) -> u16 {
+/// borders, which question of the call this is, what the agent is asking, the
+/// choices under that, the line the answer goes on, and the screen it is all
+/// happening on.
+fn card_rows(card: &Card, showing: Option<Showing>, answering: bool, width: u16) -> u16 {
     let inner = width.saturating_sub(2 + 2 * PADDING);
     let asked = card
         .question
@@ -221,7 +238,12 @@ fn card_rows(card: &Card, answering: bool, width: u16) -> u16 {
     // be a patch of thousands of lines and this runs on every frame.
     let shown = body(card, CARD_TALL as usize).len();
 
-    let rows = 2 + asked as usize + listed + usize::from(answering) + shown;
+    let rows = 2
+        + asked as usize
+        + usize::from(tab(showing).is_some())
+        + listed
+        + usize::from(answering)
+        + shown;
     rows.min(u16::MAX as usize) as u16
 }
 
@@ -639,15 +661,21 @@ const UNREAD: &str = "•";
 /// words of it a person needs to decide, with the pane underneath for the rest.
 const ASKED_TALL: u16 = 3;
 
-/// The card: what one agent is asking, the choices it offers, the line the
-/// answer is typed on, and the screen it is all happening on — or, when that
-/// is what was asked for, what it has changed.
+/// The card: which question of the call this is, what one agent is asking, the
+/// choices it offers, the line the answer is typed on, and the screen it is all
+/// happening on — or, when that is what was asked for, what it has changed.
 ///
 /// Full width, because the bottom of it is a picture of a terminal and a
 /// terminal cut down the middle is a picture of nothing. It floats over the
 /// rows rather than pushing them up, so the wall is where it was when the card
 /// closes.
-fn float(frame: &mut Frame, card: &Card, answering: Option<&Composer>, area: Rect) {
+fn float(
+    frame: &mut Frame,
+    card: &Card,
+    showing: Option<Showing>,
+    answering: Option<&Composer>,
+    area: Rect,
+) {
     let title = match card.changes {
         true => format!(" {} · what it has changed ", card.id),
         false => format!(" {} · {} {} ", card.id, card.phase.as_str(), age(card.age)),
@@ -685,10 +713,16 @@ fn float(frame: &mut Frame, card: &Card, answering: Option<&Composer>, area: Rec
             .as_deref()
             .map_or(0, |question| wrapped(question, inner.width).min(ASKED_TALL)),
     );
+    // Which question of the call this is comes before the choices, because it
+    // decides what the choices mean: the tab behind this one asks something
+    // else and offers somebody else's answers.
+    let strip = tab(showing);
+    let tabbed = take(u16::from(strip.is_some()));
     let choices = choices(&options, inner.width as usize);
     let listed = take(choices.len() as u16);
 
-    let [asking, listing, answer, screen] = Layout::vertical([
+    let [tabbing, asking, listing, answer, screen] = Layout::vertical([
+        Constraint::Length(tabbed),
         Constraint::Length(asked),
         Constraint::Length(listed),
         Constraint::Length(typing),
@@ -696,6 +730,9 @@ fn float(frame: &mut Frame, card: &Card, answering: Option<&Composer>, area: Rec
     ])
     .areas(inner);
 
+    if let Some(strip) = strip.filter(|_| tabbed > 0) {
+        frame.render_widget(Paragraph::new(Line::styled(strip, dim())), tabbing);
+    }
     if let Some(question) = question {
         frame.render_widget(
             Paragraph::new(question)
@@ -1003,6 +1040,22 @@ fn mode_footer(row: &str) -> bool {
 /// behind when the turn is over by the ellipsis and the elapsed time.
 fn spinning(row: &str) -> bool {
     SPINNING.iter().all(|fragment| row.contains(fragment))
+}
+
+/// Which question of the call the card is showing, and how many there are.
+///
+/// The one thing on the card that is nowhere on the pane under it. Measured
+/// against claude 2.1.240, the vendor's tab strip elides its own headers as
+/// the pane narrows and at 24 columns draws the showing tab's name as an
+/// ellipsis and nothing else, so no reader can count or name the tabs from a
+/// screen. A call of one question is not a strip and says nothing here.
+fn tab(showing: Option<Showing>) -> Option<String> {
+    let showing = showing.filter(|showing| showing.of > 1)?;
+    let counted = format!("{} of {}", showing.at, showing.of);
+    Some(match showing.header() {
+        Some(header) => format!("{header}{SEPARATOR}{counted}"),
+        None => counted,
+    })
 }
 
 /// The choices under the question, numbered the way every surface numbers them
@@ -3388,7 +3441,7 @@ mod tests {
         // Two borders and the one row left under them, not the six rows the
         // capture has: a card that measured before it cut would spend its
         // height on the vendor's furniture.
-        assert_eq!(card_rows(&card, false, 60), 3);
+        assert_eq!(card_rows(&card, None, false, 60), 3);
     }
 
     #[test]
