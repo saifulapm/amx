@@ -18,8 +18,9 @@
 //! are also letters cannot have a composer that swallows them.
 //!
 //! Nothing here is in the byte path. What a card shows is a `capture-pane`,
-//! and attaching is tmux bringing the agent's own window forward — the view
-//! stays where it is, in its window, for whoever comes back to it.
+//! and reaching an agent is tmux putting the agent's own session in front of
+//! whoever is looking — the view is never torn down to do it, so coming back
+//! is coming back to the screen they left.
 //!
 //! The reading is taken from disk on a clock rather than pushed at the view by
 //! anything: nothing amx runs stays resident, so there is nobody to push.
@@ -34,6 +35,7 @@ use crossterm::event::{
     KeyModifiers,
 };
 use crossterm::execute;
+use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use serde::{Deserialize, Serialize};
@@ -100,6 +102,13 @@ impl Keys for Keyboard {
 enum Doing {
     Carry,
     Close,
+    /// Lend the terminal to a tmux client on this agent's session, and go
+    /// round again when it is handed back.
+    Lend {
+        id: String,
+        on: Server,
+        session: SessionId,
+    },
 }
 
 /// What the keys are doing at the moment.
@@ -471,13 +480,53 @@ where
             Typed::Nothing => {}
             Typed::Gone => return Ok(exit::OK),
             Typed::Paste(text) => screen.pasted(&text),
-            Typed::Key(key) => {
-                if let Doing::Close = screen.act(key, root, config, here.as_ref())? {
-                    return Ok(exit::OK);
+            Typed::Key(key) => match screen.act(key, root, config, here.as_ref())? {
+                Doing::Carry => {}
+                Doing::Close => return Ok(exit::OK),
+                Doing::Lend { id, on, session } => {
+                    screen.notice = lend(terminal, &id, &on, &session)?;
                 }
-            }
+            },
         }
     }
+}
+
+/// Lend the terminal to tmux for as long as somebody is looking at the agent.
+///
+/// The view and a tmux client both want a whole terminal, and outside tmux
+/// there is one terminal: so the view puts the screen back the way it found
+/// it, waits, and takes it again. That wait is the whole point — detaching
+/// lands back on the list rather than at a shell prompt, which is what
+/// `switch-client` gives somebody who was inside tmux to begin with.
+fn lend<B>(
+    terminal: &mut Terminal<B>,
+    id: &str,
+    on: &Server,
+    session: &SessionId,
+) -> Result<Option<Notice>>
+where
+    B: Backend,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+    ratatui::try_restore().context("giving the terminal to tmux")?;
+
+    let handed = on.attach_command(session).status();
+
+    enable_raw_mode().context("taking the terminal back")?;
+    execute!(std::io::stdout(), EnterAlternateScreen).context("taking the terminal back")?;
+    let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+    // Whatever the client left on the screen, none of it is what the view last
+    // drew, so the next frame is drawn whole.
+    terminal.clear()?;
+
+    Ok(match handed {
+        Ok(status) if status.success() => None,
+        // tmux said why on a terminal the view has just taken back, so it says
+        // it again where there is room for it.
+        Ok(_) => Some(Notice::Failed(format!("tmux would not open {id}"))),
+        Err(e) => Some(Notice::Failed(format!("reaching {id}: {e}"))),
+    })
 }
 
 impl Screen {
@@ -676,7 +725,14 @@ impl Screen {
                 } else if self.list.on_fold() {
                     self.list.unfold();
                 } else if let Some(view) = self.list.selected() {
-                    self.notice = attach(here, view)?;
+                    let id = view.id().to_string();
+                    match reach(here, view)? {
+                        Reach::There => {}
+                        Reach::Say(notice) => self.notice = Some(notice),
+                        Reach::Lend(on, session) => {
+                            return Ok(Doing::Lend { id, on, session });
+                        }
+                    }
                 }
             }
             KeyCode::Char('?') if plain => self.mode = Mode::Keys,
@@ -1072,44 +1128,61 @@ impl Here {
     }
 }
 
-/// Put the agent in front of whoever is looking at the view, and answer with
-/// what to say when it could not be done.
-///
-/// Attaching from the view is not `amx attach`: that verb becomes tmux, and
-/// this one has a view to hold open. The agent's window is brought forward on
-/// its own server instead, so the view is still in its own window for whoever
-/// comes back to it.
-///
-/// Nothing it answers with is a failure: an agent that cannot be brought
-/// forward from here is one somebody can still reach, and the answer says how.
-fn attach(here: Option<&Here>, view: &View) -> Result<Option<Notice>> {
-    let elsewhere = format!("run `amx attach {}` to reach it", view.id());
-    let Some(here) = here else {
-        return Ok(Some(Notice::Advice(elsewhere)));
-    };
+/// What pressing enter on a row comes to.
+enum Reach {
+    /// The agent is in front of them, and there is nothing to say about it.
+    There,
+    /// It is not, and this says why, and how to reach it where there is a way.
+    Say(Notice),
+    /// The terminal is the view's own to give, and this is the session that
+    /// takes it.
+    Lend(Server, SessionId),
+}
 
+/// Put the agent in front of whoever is looking at the view.
+///
+/// This is not `amx attach`: that verb becomes tmux and is done with it, and
+/// this one has a view to hold open behind whatever happens next. Which is why
+/// there are two ways through. Inside tmux the client already on the terminal
+/// switches to the agent's session, and the view is left drawing in the
+/// session it was in, for whoever switches back. Outside tmux the view *is*
+/// the terminal, so it lends it out and waits.
+///
+/// Nothing it answers with is a failure: an agent this view cannot reach is
+/// one somebody can still reach, and the answer says how.
+fn reach(here: Option<&Here>, view: &View) -> Result<Reach> {
     let server = Server::from_socket(view.meta.socket.clone());
     if !server.pane_alive(&view.meta.pane) {
-        return Ok(Some(Notice::Advice(format!(
+        return Ok(Reach::Say(Notice::Advice(format!(
             "{} has no pane any more",
             view.id()
         ))));
     }
-    if server.pane_field(&view.meta.pane, "#{pid}")? != here.pid {
-        return Ok(Some(Notice::Advice(format!(
-            "{} is on another tmux. {elsewhere}",
-            view.id()
+    // A client cannot be asked to switch to a session on a server it is not
+    // attached to, and starting a second client inside the first is what
+    // "sessions should be nested with care" is about.
+    if let Some(here) = here
+        && server.pane_field(&view.meta.pane, "#{pid}")? != here.pid
+    {
+        return Ok(Reach::Say(Notice::Advice(format!(
+            "{id} is on another tmux. run `amx attach {id}` to reach it",
+            id = view.id()
         ))));
     }
 
     server.run(&["select-window", "-t", view.meta.pane.as_str()])?;
     server.run(&["select-pane", "-t", view.meta.pane.as_str()])?;
 
+    let session = SessionId::new(server.pane_field(&view.meta.pane, "#{session_id}")?)
+        .with_context(|| format!("finding the session {} is in", view.id()))?;
+
+    let Some(here) = here else {
+        return Ok(Reach::Lend(server, session));
+    };
+
     // Another session on the same server: the terminal's own client goes to
     // it, by name, because a server may have several and only one of them is
     // this one.
-    let session = SessionId::new(server.pane_field(&view.meta.pane, "#{session_id}")?)
-        .with_context(|| format!("finding the session {} is in", view.id()))?;
     if let Some(ours) = &here.session
         && ours != &session
     {
@@ -1120,7 +1193,7 @@ fn attach(here: Option<&Here>, view: &View) -> Result<Option<Notice>> {
             server.run(&["switch-client", "-c", tty, "-t", session.as_str()])?;
         }
     }
-    Ok(None)
+    Ok(Reach::There)
 }
 
 #[cfg(test)]
@@ -2066,8 +2139,8 @@ mod tests {
 
         let (_, screen) = held(root.path(), &[KeyCode::Enter, KeyCode::Char('q')]);
         assert!(
-            screen.contains("run `amx attach first-a1b`"),
-            "outside tmux there is no client to hand it to: {screen}"
+            screen.contains("first-a1b has no pane any more"),
+            "an agent whose command has ended is nowhere to be taken: {screen}"
         );
     }
 

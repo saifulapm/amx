@@ -106,7 +106,7 @@ behind a count. Rows nobody has been to read carry a mark down the gutter.
 | --- | ------------ |
 | `↑` `↓` | walk the agents |
 | `space` | the card: what one is asking, and the answer |
-| `enter` `→` | bring its window forward, or shut the group under the cursor |
+| `enter` `→` | put its session in front of you, or shut the group under the cursor |
 | `esc` | put the card away, or leave a line alone |
 | `n` | start an agent |
 | `r` | reply: a message, or an answer on the card |
@@ -121,6 +121,12 @@ behind a count. Rows nobody has been to read carry a mark down the gutter.
 | `shift+tab` | what the next agent may do without asking |
 | `?` | every key, over the list |
 | `q` `ctrl+c` | close the view |
+
+Inside tmux, `enter` moves your client to the agent's session and leaves the
+view drawing in the session it was already in, so switching back lands on the
+list where you left it. Outside tmux the view is the only thing on the
+terminal, so it lends the terminal to a tmux client instead and takes it back
+when you detach.
 
 Every key answers to the one chord it is written under, so the `alt+q` of
 somebody arranging their windows closes nothing. The four dials are about the

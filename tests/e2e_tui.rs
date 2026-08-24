@@ -317,6 +317,61 @@ fn sessions(amx: &Harness) -> Vec<String> {
         .collect()
 }
 
+/// An agent as every agent is: a detached session of its own named for the id,
+/// with a line on its screen to know it by.
+fn an_agent_session(amx: &Harness, id: &str) -> String {
+    let pane = amx.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        &format!("amx-{id}"),
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "--",
+        "sh",
+        "-c",
+        "printf 'the agent at work\\n'; while :; do sleep 0.05; done",
+    ]);
+    amx.record(id, &pane);
+    pane
+}
+
+/// A person looking at a session: a tmux client of their own, on a terminal of
+/// its own, the way somebody who typed `tmux attach` has one.
+///
+/// tmux's two variables are cleared for it, because the pane the client is
+/// started in is itself inside tmux and a client that knows that declines to
+/// nest.
+fn watching(amx: &Harness, session: &str) -> String {
+    amx.tmux(&[
+        "new-session",
+        "-d",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "--",
+        "env",
+        "-u",
+        "TMUX",
+        "-u",
+        "TMUX_PANE",
+        "tmux",
+        "-L",
+        amx.socket(),
+        "-f",
+        "/dev/null",
+        "attach-session",
+        "-t",
+        session,
+    ])
+}
+
+/// The terminals of whoever is looking at a session, if anybody is.
+fn clients_on(amx: &Harness, session: &str) -> String {
+    amx.tmux(&["list-clients", "-t", session, "-F", "#{client_tty}"])
+}
+
 #[test]
 fn bare_amx_draws_the_list_in_the_terminal_it_was_typed_in() {
     let amx = Harness::new();
@@ -945,40 +1000,72 @@ fn card_tail_leaves_a_prompt_whole_where_the_vendor_drew_no_footer() {
 fn enter_puts_the_agent_in_front_of_the_terminal() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);
-    let session = amx.tmux(&["display-message", "-p", "-t", &view, "#{session_id}"]);
+    let holding = pane_field(&amx, &view, "#{session_name}");
+    until_empty(&amx, &view);
 
-    // An agent in a window beside the view's, which nobody is looking at.
-    let pane = amx.tmux(&[
-        "new-window",
-        "-d",
-        "-t",
-        &session,
-        "-P",
-        "-F",
-        "#{pane_id}",
-        "--",
-        "sh",
-        "-c",
-        "printf 'the agent at work\\n'; while :; do sleep 0.05; done",
-    ]);
-    amx.record("fix-login-a1b", &pane);
-    amx.until("the row", || {
-        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+    // Somebody looking at the view, on a terminal of their own. Without a
+    // client there is nothing for enter to move, and a view nobody has
+    // attached to is not a view anybody is reading.
+    let terminal = watching(&amx, &holding);
+    let tty = amx.until("a client on the view", || {
+        let clients = clients_on(&amx, &holding);
+        (!clients.is_empty()).then_some(clients)
     });
 
-    amx.tmux(&["send-keys", "-t", &view, "Enter"]);
-    amx.until("the agent's window to come forward", || {
-        let active = amx.tmux(&["display-message", "-p", "-t", &pane, "#{window_active}"]);
-        (active == "1").then_some(())
+    an_agent_session(&amx, "fix-login-a1b");
+    amx.until("the row", || row_of(&amx, &view, "fix-login-a1b").map(drop));
+
+    press(&amx, &view, "Enter");
+    amx.until("the agent on their screen", || {
+        screen(&amx, &terminal)
+            .contains("the agent at work")
+            .then_some(())
     });
     assert_eq!(
-        amx.tmux(&["display-message", "-p", "-t", &pane, "#{pane_active}"]),
-        "1",
-        "and the agent's own pane within it"
+        clients_on(&amx, "amx-fix-login-a1b"),
+        tty,
+        "the client that was on the view is the one that moved"
     );
+
+    // And back the way they came, because the view never left the session it
+    // was drawing in.
+    amx.tmux(&["switch-client", "-c", &tty, "-t", &holding]);
+    amx.until("the list again", || {
+        screen(&amx, &terminal).contains("? keys").then_some(())
+    });
     assert!(
-        amx.pane_alive(&view),
-        "the view is still there to come back to"
+        row_of(&amx, &terminal, "fix-login-a1b").is_some(),
+        "with the agent still on it"
+    );
+}
+
+#[test]
+fn enter_lends_the_terminal_to_a_view_that_has_it_to_itself() {
+    let amx = Harness::new();
+    let view = outside_tmux(&amx);
+    until_empty(&amx, &view);
+
+    an_agent_session(&amx, "fix-login-a1b");
+    amx.until("the row", || row_of(&amx, &view, "fix-login-a1b").map(drop));
+
+    // Outside tmux there is no client to move, so what the view has to give is
+    // the terminal itself.
+    press(&amx, &view, "Enter");
+    amx.until("the agent on the screen", || {
+        screen(&amx, &view)
+            .contains("the agent at work")
+            .then_some(())
+    });
+
+    // Detaching is how somebody comes back, and what they come back to is the
+    // list they left: the view waited rather than exiting.
+    amx.tmux(&["detach-client", "-s", "amx-fix-login-a1b"]);
+    amx.until("the list again", || {
+        screen(&amx, &view).contains("? keys").then_some(())
+    });
+    assert!(
+        row_of(&amx, &view, "fix-login-a1b").is_some(),
+        "with the agent still on it"
     );
 }
 
