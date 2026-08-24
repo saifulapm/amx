@@ -66,6 +66,11 @@ What it will take depends on what kind of question it is, which
 | `question` | `1` to `9`, `enter`, `esc`, or words of your own: `amx answer <id> "keep the old importer"` |
 | `trust` | `enter`. This is the folder-trust screen, and amx has already answered it for a worktree it cut. |
 
+A `question` may take more than one choice, and the screen does not say which
+sort it is. `.multi` in that same JSON does: when it is `true`, name the
+choices you want and amx checks each and submits, `amx answer <id> 1,3`. When
+it is `false` that command line is refused and nothing reaches the agent.
+
 Answering clears the question from the record, so the next `result` waits for
 the turn rather than handing you the same question back.
 

@@ -149,6 +149,7 @@ amx status <id> --json
 amx attach <id>        # hand this terminal to its pane
 amx send <id> "and now the linter"
 amx answer <id> y      # the keys a prompt reads: y, n, 1-9, enter, esc
+amx answer <id> 1,3    # a question that takes several: check these two
 amx diff <id>          # its worktree against the commit it was cut from
 amx diff <id> --stat   # the shape of it: a file per line, and the totals
 amx events --follow    # every agent's log, merged
@@ -165,6 +166,14 @@ the folder-trust screen read one key. A question the vendor asked itself offers
 choices and a field, so it also takes words of your own:
 `amx answer <id> "keep the old importer"`. Anything outside that grammar is
 refused before a byte reaches the pane.
+
+Some of the vendor's own questions take more than one choice, and nothing on
+the screen says which those are — `amx status <id> --json` says so under
+`.multi`. Name the choices and amx checks each one and submits:
+`amx answer <id> 1,3`. At a question that takes a single choice the same
+command line is refused rather than half taken, because a `1` there is chosen
+and submitted the moment it is typed and the `3` after it would land on
+whatever the agent drew next.
 
 `amx statusline` prints the two numbers a status line has room for, and nothing
 at all when no agent needs saying:

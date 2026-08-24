@@ -69,16 +69,18 @@ pub enum Command {
     /// Send a message to a working or idle agent.
     Send { id: String, text: String },
 
-    /// Answer a waiting agent's question: y, n, 1-9, enter, esc, or words.
+    /// Answer a waiting agent's question: y, n, 1-9, 1,3, enter, esc, or words.
     ///
     /// The grammar is the question's rather than amx's. A permission prompt
     /// and the folder-trust screen read one key. A question the vendor asked
     /// itself offers a field beside its choices, so words of your own are an
-    /// answer to that one and to nothing else.
+    /// answer to that one and to nothing else, and a question that takes more
+    /// than one choice — `.multi` in `amx status --json` — is answered by
+    /// naming them: `1,3`.
     Answer {
         /// The agent that is waiting on one.
         id: String,
-        /// One key of the grammar, or words of your own.
+        /// One key of the grammar, several choices, or words of your own.
         #[arg(value_name = "ANSWER")]
         key: String,
     },
@@ -731,7 +733,7 @@ mod tests {
                 "the verb no longer reads `{key}`"
             );
         }
-        for key in ["y", "n", "1-9", "enter", "esc"] {
+        for key in ["y", "n", "1-9", "1,3", "enter", "esc"] {
             assert!(
                 offered.iter().any(|word| word == key),
                 "the help does not offer `{key}`: {offered:?}"
