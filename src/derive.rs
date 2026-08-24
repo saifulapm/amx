@@ -92,10 +92,15 @@ impl View {
     /// The exception is `unknown`, which is a reader saying it cannot tell. It
     /// cannot tell that the question was answered either, and the one thing on
     /// a pane that somebody has to act on is the last thing to hide from them.
+    ///
+    /// The other half of one answer is that a question handed out is one
+    /// somebody can act on. A sentence the vendor sent in place of a question
+    /// is not, so it goes no further than here — see [`forget_the_placeholder`].
     pub fn new(meta: Meta, mut state: State, verdict: Verdict) -> View {
         if !matches!(verdict.phase, Phase::Waiting | Phase::Unknown) {
             state.asks(None);
         }
+        forget_the_placeholder(&mut state);
         View {
             meta,
             state,
@@ -218,6 +223,52 @@ pub struct Reading {
     pub asking: Option<Question>,
 }
 
+/// The sentences the vendor sends about a dialog it will not describe.
+///
+/// Measured against claude 2.1.240 on 2026-08-24, read out of the binary's own
+/// dialog host: six seconds after a dialog goes up it fires a
+/// `permission_prompt` notification whose whole message is that dialog's
+/// title, and the title it gives every tool dialog is `Claude needs your
+/// permission` — no tool, no command, nothing anybody could weigh. A tool
+/// permission box has a notifier of its own on the same six-second timer, and
+/// that one sends `Claude needs your permission to use <tool>`. Which of the
+/// two lands last is the vendor's business, so what is recognised here is a
+/// whole sentence and never the start of one: the sentence that names the tool
+/// is one a caller can act on.
+///
+/// The idle nudge is the other, and it is not about a question at all: the
+/// vendor sends it about a session with nothing open on it. One that says so
+/// in its own payload is turned away where hooks are folded, but an older
+/// vendor sends it with no type on it, and records outlive the amx that wrote
+/// them.
+const PLACEHOLDERS: [&str; 2] = [
+    "Claude needs your permission",
+    "Claude is waiting for your input",
+];
+
+/// Whether a question on the record is one of those, or has no words in it at
+/// all. Either way there is nothing in it about what is being asked.
+fn placeholder(question: &str) -> bool {
+    let question = question.trim();
+    question.is_empty() || PLACEHOLDERS.contains(&question)
+}
+
+/// Forget a question that says nothing about what is being asked.
+///
+/// A row carrying one says an agent is waiting, which is what a row carrying
+/// nothing says, and it says it in words that read like an answer — so a
+/// caller stops looking and a person reads the pane themselves. The choices go
+/// with it, the way choices always go where their question goes.
+///
+/// What kind of thing is being asked stays. The vendor said that much, it is
+/// not in the words, and it is what decides what may be sent back.
+fn forget_the_placeholder(state: &mut State) {
+    if state.question.as_deref().is_some_and(placeholder) {
+        state.question = None;
+        state.options.clear();
+    }
+}
+
 /// Whether the pane is worth reading for a question the record has not got.
 ///
 /// The vendor's own events say an agent has stopped on a question earlier and
@@ -229,7 +280,7 @@ pub struct Reading {
 /// stale would hand back a waiting agent with nothing to answer — which is
 /// what `status` and `answer` did on the first ask, every time.
 fn wants_the_question(state: &State) -> bool {
-    state.state == Phase::Waiting && state.question.is_none()
+    state.state == Phase::Waiting && state.question.as_deref().is_none_or(placeholder)
 }
 
 /// Work out what an agent is doing.
@@ -312,10 +363,16 @@ pub fn read(
 /// and throwing away what they read there would leave every caller to capture
 /// the pane and parse it again for itself.
 ///
+/// A placeholder is dropped first, and dropped from the document as well as
+/// from the reading. It holds the one field the screen was going to fill, so a
+/// record still carrying one has nothing to learn, and every reader after this
+/// would find it there and go back to the pane for what this look already had.
+///
 /// The writer's lock is taken only when there is something new to write, so
 /// the promise that readers never wait on writers holds for every look but the
 /// one that finds the question.
 fn note(agent: &Agent, state: &mut State, asking: &Question) {
+    forget_the_placeholder(state);
     if !state.learns_from(asking) {
         return;
     }
@@ -326,6 +383,7 @@ fn note(agent: &Agent, state: &mut State, asking: &Question) {
             // A hook that arrived while the pane was being read is the
             // vendor's own account of a moment this picture is already behind.
             if current.last_event == heard {
+                forget_the_placeholder(current);
                 current.learn(asking);
             }
         })
@@ -421,6 +479,10 @@ mod tests {
 ";
 
     const A_SHELL: &str = "$ ls\nCargo.toml  src\n$\n";
+
+    /// The vendor's own notification about a dialog it will not describe,
+    /// whole. It says a question exists and not one word about what it wants.
+    const A_PLACEHOLDER: &str = "Claude needs your permission";
 
     /// A permission box, which is a screen with a question on it.
     const A_BLOCKING_SCREEN: &str = "\
@@ -532,6 +594,94 @@ mod tests {
         assert_eq!(unreadable.verdict.phase, Phase::Waiting);
         assert_eq!(unreadable.verdict.evidence, Evidence::Hooks);
         assert_eq!(unreadable.asking, None);
+    }
+
+    #[test]
+    fn reader_reads_the_pane_past_a_question_that_names_nothing() {
+        // The vendor's dialog host sends the dialog's title and nothing else,
+        // so the record ends up holding a sentence that says a question
+        // exists. A caller can do as much with that as with an empty field,
+        // and the pane is where the rest of it is.
+        let mut placeheld = state(Phase::Waiting, 1_000);
+        placeheld.question = Some(A_PLACEHOLDER.to_string());
+        let asking = reading(&placeheld, true, Some(A_BLOCKING_SCREEN), 1_000)
+            .asking
+            .expect("a sentence that names nothing leaves the question unasked");
+        assert_eq!(asking.text, "Do you want to proceed?");
+        assert_eq!(asking.options, ["Yes", "No"]);
+
+        // The sentence that does name the tool is the vendor telling a caller
+        // something, and a reader holding one does not go to the pane at all.
+        let mut told = state(Phase::Waiting, 1_000);
+        told.question = Some(format!("{A_PLACEHOLDER} to use Bash"));
+        assert_eq!(
+            reading(&told, true, Some(A_BLOCKING_SCREEN), 1_000).asking,
+            None,
+            "the placeholder is a whole sentence, not the start of one"
+        );
+    }
+
+    #[test]
+    fn reader_never_hands_a_caller_the_placeholder() {
+        use crate::store::Kind;
+
+        // Whatever the pane said or failed to say, none of these reaches
+        // anybody: a row carrying one says an agent is waiting, which is what
+        // a row carrying nothing says, and it says it in words that read like
+        // an answer.
+        for nothing in [A_PLACEHOLDER, "Claude is waiting for your input", "   "] {
+            let held = State {
+                state: Phase::Waiting,
+                question: Some(nothing.to_string()),
+                options: vec!["Yes".to_string()],
+                kind: Some(Kind::Permission),
+                ..State::default()
+            };
+            let waiting = View::new(meta(), held, verdict(Phase::Waiting, Evidence::Hooks, None));
+
+            assert_eq!(waiting.line(), None, "{nothing:?} is not a question");
+            assert_eq!(waiting.json()["question"], serde_json::Value::Null);
+            assert!(
+                waiting.state.options.is_empty(),
+                "and they are nobody's choices"
+            );
+            assert_eq!(
+                waiting.kind(),
+                Some(Kind::Permission),
+                "what kind of thing is being asked is still known"
+            );
+        }
+    }
+
+    #[test]
+    fn reader_lets_the_pane_answer_what_the_placeholder_was_holding() {
+        use crate::store::Kind;
+
+        // The forgetting comes before the record is asked whether the screen
+        // tells it anything. Otherwise the placeholder sits in the one field
+        // the screen was going to fill, the record learns nothing, and the
+        // next reader finds it there and asks the pane all over again.
+        let mut state = State {
+            state: Phase::Waiting,
+            question: Some(A_PLACEHOLDER.to_string()),
+            kind: Some(Kind::Permission),
+            ..State::default()
+        };
+        let seen = Question {
+            text: "Do you want to proceed?".to_string(),
+            options: vec!["Yes".to_string(), "No".to_string()],
+        };
+
+        forget_the_placeholder(&mut state);
+        assert!(state.learns_from(&seen), "there is something to learn now");
+        state.learn(&seen);
+        assert_eq!(state.question.as_deref(), Some("Do you want to proceed?"));
+        assert_eq!(state.options, ["Yes", "No"]);
+        assert_eq!(
+            state.kind,
+            Some(Kind::Permission),
+            "and it was a permission box all along"
+        );
     }
 
     #[test]
