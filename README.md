@@ -335,7 +335,7 @@ Four questions, four commands, and the exit code is the answer:
 | ---- | ----- |
 | `0`  | done: the answer, if there is one, is on stdout |
 | `1`  | failed, stopped, or ended without an answer; nothing more is coming |
-| `2`  | blocked: `result` and `send` on an agent that is asking, `answer` with nothing pending, `new` at the agent cap |
+| `2`  | blocked: `result` and `send` on an agent that is asking, `answer` with nothing pending, `new` or `fork` at the agent cap |
 | `3`  | `result --timeout` expired |
 | `64` | the command line was wrong, including an answer the question would not take |
 

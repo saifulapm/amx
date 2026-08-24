@@ -43,8 +43,8 @@ the conversation it had, and `amx doctor` says what the machine is missing.
 
 `send` exits `2` while the agent is waiting on a question: text typed at a
 permission prompt answers the prompt, so answer it first rather than queueing a
-message behind it. `answer` exits `2` when nothing is pending. `new` exits `2`
-at the agent cap.
+message behind it. `answer` exits `2` when nothing is pending. `new` and `fork`
+exit `2` at the agent cap.
 
 ## Reading the question
 
