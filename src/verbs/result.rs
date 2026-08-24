@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 use crate::derive::{self, Evidence, View};
 use crate::store::{Agent, Event, Phase};
 use crate::verbs::send::{self, nothing_more_is_coming, waiting_on_a_question};
-use crate::{exit, paths, rules, store};
+use crate::{complain, exit, paths, rules, store};
 
 /// How often the record is read while waiting. Short enough that a caller
 /// chaining turns is not waiting on amx, long enough to cost nothing.
@@ -80,7 +80,7 @@ pub fn run(
             Settled::Question => return waiting_on_a_question(&view, to_terminal, out),
             // The command ended, and the message it was sent went with it.
             Settled::Unanswered => {
-                eprintln!("amx: {id} ended without answering");
+                complain!("amx: {id} ended without answering");
                 return Ok(exit::FAILURE);
             }
             Settled::Nothing => return Ok(nothing_more_is_coming(id, phase)),
@@ -168,7 +168,7 @@ fn ended_past_the_last_message(events: &[Event]) -> bool {
 /// cannot trust that has nothing to branch on.
 fn answer(view: &View, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
     let Some(answer) = view.state.result.clone().or_else(|| transcript(view)) else {
-        eprintln!(
+        complain!(
             "amx: {} ended its turn, but amx captured no answer",
             view.id()
         );

@@ -26,7 +26,7 @@ use crate::config::Config;
 use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, Phase, State};
 use crate::tmux::Server;
-use crate::{derive, exit, paths, rules, store, worktree};
+use crate::{complain, derive, exit, paths, rules, store, warn, worktree};
 
 /// What amx records when it brings an agent back.
 const RESUMED: &str = "resume";
@@ -122,14 +122,14 @@ fn one(
     // Starting a second command over the top of it is the one outcome nobody
     // asked for.
     if !view.phase().is_terminal() {
-        eprintln!(
+        warn!(
             "amx resume: {id} is {}. stop it before starting it again",
             view.phase()
         );
         return Ok(exit::BLOCKED);
     }
     if let Some(full) = at_capacity(root, config)? {
-        eprintln!("amx resume: {full}");
+        warn!("amx resume: {full}");
         return Ok(exit::BLOCKED);
     }
 
@@ -160,7 +160,7 @@ fn sweep(
 
     for view in stopped {
         if let Some(full) = at_capacity(root, config)? {
-            eprintln!("amx resume: {full}");
+            warn!("amx resume: {full}");
             return Ok(exit::BLOCKED);
         }
         // One agent that cannot come back is not the sweep's ending. The
@@ -168,7 +168,7 @@ fn sweep(
         // whole wall went at once.
         match bring_back(root, view.id(), env) {
             Ok(()) => writeln!(out, "{} resumed", view.id())?,
-            Err(e) => eprintln!("amx resume: {}: {e:#}", view.id()),
+            Err(e) => complain!("amx resume: {}: {e:#}", view.id()),
         }
     }
     Ok(exit::OK)

@@ -47,7 +47,7 @@ use crate::derive;
 use crate::store::{Agent, Ask, Event, Kind, Phase, State};
 use crate::tmux::{PaneId, Server};
 use crate::verbs::send::nothing_more_is_coming;
-use crate::{exit, paths, rules, store};
+use crate::{exit, paths, rules, store, warn};
 
 /// The key that moves a menu's cursor onto the vendor's own free-text row.
 ///
@@ -108,7 +108,7 @@ pub fn run(root: &Path, id: &str, typed: &AnswerArgs) -> Result<i32> {
         return Ok(nothing_more_is_coming(id, phase));
     }
     if phase != Phase::Waiting {
-        eprintln!("amx: {id} has no pending question; nothing to answer");
+        warn!("amx: {id} has no pending question; nothing to answer");
         return Ok(exit::BLOCKED);
     }
 
@@ -117,7 +117,7 @@ pub fn run(root: &Path, id: &str, typed: &AnswerArgs) -> Result<i32> {
     match given(&agent, &server, &view, typed)? {
         Answered::Yes => Ok(exit::OK),
         Answered::No(refused) => {
-            eprintln!("amx: {refused}");
+            warn!("amx: {refused}");
             Ok(exit::USAGE)
         }
     }

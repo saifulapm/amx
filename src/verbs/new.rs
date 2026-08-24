@@ -14,7 +14,7 @@ use crate::cli::NewArgs;
 use crate::config::Config;
 use crate::spawn::{self, Dials, Handoff};
 use crate::store::{Meta, now};
-use crate::{exit, ids, paths, registry, trust, worktree};
+use crate::{Severity, exit, ids, paths, registry, said, trust, worktree};
 
 /// What this spawn launches: the vendor's command, and where its dials are
 /// pointed for this one agent.
@@ -106,12 +106,27 @@ pub fn from_env(config: &Config, args: &NewArgs) -> Result<i32> {
     };
     let env = spawn::env_snapshot(std::env::vars());
     let mut out = std::io::stdout().lock();
+    let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());
     let mut problems = std::io::stderr().lock();
 
-    run(&root, &dir, env, config, args, &mut out, &mut problems)
+    run_aloud(
+        &root,
+        &dir,
+        env,
+        config,
+        args,
+        &mut out,
+        &mut problems,
+        to_terminal,
+    )
 }
 
-/// The verb, with everything it reads named.
+/// The verb, with everything it reads named and its refusals in the words
+/// alone.
+///
+/// The view spawns through here, and what it does with a refusal is put it in
+/// the notice at the foot of its own screen, in the colour that band paints its
+/// notices. Paint amx wrote would be paint the view has to take back out.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     root: &Path,
@@ -122,13 +137,36 @@ pub fn run(
     out: &mut impl Write,
     problems: &mut impl Write,
 ) -> Result<i32> {
+    run_aloud(root, dir, env, config, args, out, problems, false)
+}
+
+/// The same, told to a stderr that is a terminal and wants the colour.
+#[allow(clippy::too_many_arguments)]
+fn run_aloud(
+    root: &Path,
+    dir: &Path,
+    env: std::collections::BTreeMap<String, String>,
+    config: &Config,
+    args: &NewArgs,
+    out: &mut impl Write,
+    problems: &mut impl Write,
+    to_terminal: bool,
+) -> Result<i32> {
     // Before anything is made: a dial the vendor would not take is a
     // malformed command line, and there is nothing to clean up if it is
     // answered here.
     let launch = match Launch::resolve(config, args) {
         Ok(launch) => launch,
         Err(refusal) => {
-            writeln!(problems, "amx new: {refusal}")?;
+            writeln!(
+                problems,
+                "{}",
+                said(
+                    Severity::Warned,
+                    &format!("amx new: {refusal}"),
+                    to_terminal
+                )
+            )?;
             return Ok(exit::USAGE);
         }
     };
@@ -141,9 +179,16 @@ pub fn run(
     if live.len() >= config.max_agents {
         writeln!(
             problems,
-            "amx new: {} agents already running, and max_agents is {}",
-            live.len(),
-            config.max_agents
+            "{}",
+            said(
+                Severity::Warned,
+                &format!(
+                    "amx new: {} agents already running, and max_agents is {}",
+                    live.len(),
+                    config.max_agents
+                ),
+                to_terminal
+            )
         )?;
         return Ok(exit::BLOCKED);
     }
@@ -154,7 +199,16 @@ pub fn run(
     // worse than one that does not. The directory is this spawn's own — the
     // claim made it — so removing it can never take another spawn's record.
     match start(
-        root, &agent_dir, dir, env, config, args, &launch, &id, problems,
+        root,
+        &agent_dir,
+        dir,
+        env,
+        config,
+        args,
+        &launch,
+        &id,
+        problems,
+        to_terminal,
     ) {
         Ok(()) => {
             writeln!(out, "{id}")?;
@@ -211,6 +265,7 @@ fn start(
     launch: &Launch,
     id: &str,
     problems: &mut impl Write,
+    to_terminal: bool,
 ) -> Result<()> {
     let tree = cut_worktree(dir, id, config, args)?;
     let cwd = tree
@@ -218,7 +273,14 @@ fn start(
         .map(|tree| tree.path.clone())
         .unwrap_or_else(|| dir.to_path_buf());
     if let Some(tree) = &tree {
-        trust_the_tree(config, &env, &launch.agent, &tree.path, problems);
+        trust_the_tree(
+            config,
+            &env,
+            &launch.agent,
+            &tree.path,
+            problems,
+            to_terminal,
+        );
     }
 
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
@@ -313,6 +375,7 @@ fn trust_the_tree(
     agent: &str,
     tree: &Path,
     problems: &mut impl Write,
+    to_terminal: bool,
 ) {
     // The store is the person's own file, and nothing is written to it until
     // they have said so once — `trust = true` in the config, the same consent
@@ -331,7 +394,11 @@ fn trust_the_tree(
     // what already covers it when the person has trusted the repository.
     let inherits = worktree::main_repo(tree).ok();
     if let Err(e) = trust::seed(&store, tree, inherits.as_deref(), now()) {
-        let _ = writeln!(problems, "amx new: {e:#}");
+        let _ = writeln!(
+            problems,
+            "{}",
+            said(Severity::Warned, &format!("amx new: {e:#}"), to_terminal)
+        );
     }
 }
 
@@ -447,6 +514,40 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_is_yellow_on_a_terminal_and_plain_down_a_pipe() {
+        // A dial the vendor would refuse is answered before an id is minted or
+        // a directory is made, so this reaches the writer with nothing behind
+        // it — and the writer is the stderr the verb was handed.
+        let dir = tempfile::TempDir::new().unwrap();
+        let refused = |to_terminal| {
+            let (mut out, mut problems) = (Vec::new(), Vec::new());
+            let code = run_aloud(
+                dir.path(),
+                dir.path(),
+                std::collections::BTreeMap::new(),
+                &Config::default(),
+                &spawn(None, [None, Some("acceptedits"), None]),
+                &mut out,
+                &mut problems,
+                to_terminal,
+            )
+            .unwrap();
+            assert_eq!(code, exit::USAGE);
+            String::from_utf8(problems).unwrap()
+        };
+
+        let plain = refused(false);
+        assert!(plain.starts_with("amx new: "), "{plain:?}");
+        assert!(!plain.contains('\u{1b}'), "{plain:?}");
+
+        // A refusal is amx working as it should, so it is yellow and not red.
+        let painted = refused(true);
+        assert!(painted.starts_with("\u{1b}[33mamx new: "), "{painted:?}");
+        assert!(painted.trim_end().ends_with("\u{1b}[39m"), "{painted:?}");
+        assert!(painted.contains("acceptEdits"), "{painted:?}");
+    }
+
+    #[test]
     fn dials_a_full_model_name_is_taken_because_that_dial_is_open() {
         let launch = Launch::resolve(
             &Config::default(),
@@ -545,7 +646,14 @@ mod tests {
         let (tree, env) = a_tree(&dir);
         let mut problems = Vec::new();
 
-        trust_the_tree(&Config::default(), &env, "claude", &tree, &mut problems);
+        trust_the_tree(
+            &Config::default(),
+            &env,
+            "claude",
+            &tree,
+            &mut problems,
+            false,
+        );
 
         assert!(
             !trust::store_in(&env).unwrap().exists(),
@@ -560,7 +668,7 @@ mod tests {
         let (tree, env) = a_tree(&dir);
         let mut problems = Vec::new();
 
-        trust_the_tree(&agreed(), &env, "claude", &tree, &mut problems);
+        trust_the_tree(&agreed(), &env, "claude", &tree, &mut problems, false);
 
         let store = trust::store_in(&env).unwrap();
         let written: serde_json::Value =
@@ -579,7 +687,14 @@ mod tests {
         let (tree, env) = a_tree(&dir);
         let mut problems = Vec::new();
 
-        trust_the_tree(&agreed(), &env, "mock-claude --pane", &tree, &mut problems);
+        trust_the_tree(
+            &agreed(),
+            &env,
+            "mock-claude --pane",
+            &tree,
+            &mut problems,
+            false,
+        );
 
         assert!(
             !trust::store_in(&env).unwrap().exists(),
@@ -597,11 +712,14 @@ mod tests {
         std::fs::write(&store, "{ not json at all }").unwrap();
         let mut problems = Vec::new();
 
-        trust_the_tree(&agreed(), &env, "claude", &tree, &mut problems);
+        trust_the_tree(&agreed(), &env, "claude", &tree, &mut problems, true);
 
-        let said = String::from_utf8(problems).unwrap();
-        assert!(said.contains("trust store amx can read"), "{said}");
-        assert_eq!(said.lines().count(), 1, "{said}");
+        // A store amx cannot write is a warning and not a failure: the spawn
+        // went ahead, and what is left is a screen somebody answers by hand.
+        let told = String::from_utf8(problems).unwrap();
+        assert!(told.contains("trust store amx can read"), "{told}");
+        assert_eq!(told.lines().count(), 1, "{told}");
+        assert!(told.starts_with("\u{1b}[33mamx new: "), "{told:?}");
     }
 
     #[test]

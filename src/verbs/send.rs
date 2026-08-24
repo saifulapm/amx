@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use crate::derive::{self, View};
 use crate::store::{Agent, Event, Kind, Phase};
 use crate::tmux::{PaneId, Server};
-use crate::{exit, paths, rules, store};
+use crate::{complain, exit, paths, rules, store, warn};
 
 /// The event amx records for a message it sent.
 pub const SEND: &str = "send";
@@ -84,14 +84,14 @@ pub fn run(
     // An agent that is mid-turn will not submit this until the turn it is on
     // ends, which is not a stall and may be a long way off.
     if phase == Phase::Working {
-        eprintln!("amx: {id} is working; the message is queued behind the turn it is on");
+        warn!("amx: {id} is working; the message is queued behind the turn it is on");
         return Ok(exit::OK);
     }
 
     if took_it(&agent, taken, CONFIRM)? {
         return Ok(exit::OK);
     }
-    eprintln!(
+    complain!(
         "amx: {id} did not start working within {}s; the message may not have reached it",
         CONFIRM.as_secs()
     );
@@ -184,7 +184,7 @@ pub fn waiting_on_a_question(view: &View, to_terminal: bool, out: &mut impl Writ
             line(&rendered(&choice, to_terminal), out)?;
         }
     }
-    eprintln!(
+    warn!(
         "amx: {id} is waiting on a question. answer it with `{}`",
         how_to_answer(id, view.kind())
     );
@@ -216,7 +216,7 @@ pub fn how_to_answer(id: &str, kind: Option<Kind>) -> String {
 
 /// Exit `FAILURE`: this agent is not going to answer anybody.
 pub fn nothing_more_is_coming(id: &str, phase: Phase) -> i32 {
-    eprintln!("amx: {id} is {phase}. {}", remedy(id, phase));
+    complain!("amx: {id} is {phase}. {}", remedy(id, phase));
     exit::FAILURE
 }
 

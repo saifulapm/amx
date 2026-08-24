@@ -23,7 +23,7 @@ use std::path::Path;
 use crate::store::Agent;
 use crate::tmux::{PaneId, Server};
 use crate::verbs::send;
-use crate::{exit, paths, tmux};
+use crate::{complain, exit, paths, tmux, warn};
 
 /// How much of the pane a reading shows when nobody says otherwise. A screenful
 /// and then some: enough to see what led to what is on the screen now, and
@@ -71,7 +71,7 @@ fn screen(
     if tail.is_empty() {
         // A live pane with nothing on it is an answer, and an empty stdout on
         // its own reads as amx having failed to look.
-        eprintln!("amx: {id} has a pane, and it has printed nothing yet");
+        warn!("amx: {id} has a pane, and it has printed nothing yet");
         return Ok(exit::OK);
     }
     send::line(&tail, out)?;
@@ -85,7 +85,7 @@ fn screen(
 /// pipe, inert on a terminal.
 fn recorded(agent: &Agent, id: &str, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
     let Some(answer) = agent.state()?.result else {
-        eprintln!("amx: {id} has no pane any more, and amx captured no answer from it");
+        complain!("amx: {id} has no pane any more, and amx captured no answer from it");
         return Ok(exit::FAILURE);
     };
     send::line(&send::rendered(&answer, to_terminal), out)?;

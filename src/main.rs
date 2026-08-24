@@ -37,7 +37,7 @@ use std::process::ExitCode;
 /// Say on stderr that something amx was asked to do could not be done.
 ///
 /// Takes what `format!` takes. Every verb reaches stderr through this or
-/// through [`warn`], so what a line is worth is written down where the line is
+/// through [`warn!`], so what a line is worth is written down where the line is
 /// and nowhere else.
 #[macro_export]
 macro_rules! complain {
@@ -298,6 +298,42 @@ mod tests {
         assert!(line.starts_with("\u{1b}[31m"), "{line:?}");
         assert!(line.ends_with("\u{1b}[39m"), "{line:?}");
         assert!(line.contains("]0;PWNED"), "still readable: {line:?}");
+    }
+
+    /// Every source that has anything to say on stderr. A verb printing there
+    /// with `eprintln!` is one saying it in whatever colour was already in
+    /// force, which is the split this pair of macros exists to keep.
+    const VERBS: [(&str, &str); 17] = [
+        ("adopt", include_str!("verbs/adopt.rs")),
+        ("answer", include_str!("verbs/answer.rs")),
+        ("attach", include_str!("verbs/attach.rs")),
+        ("diff", include_str!("verbs/diff.rs")),
+        ("doctor", include_str!("verbs/doctor.rs")),
+        ("events", include_str!("verbs/events.rs")),
+        ("fork", include_str!("verbs/fork.rs")),
+        ("logs", include_str!("verbs/logs.rs")),
+        ("ls", include_str!("verbs/ls.rs")),
+        ("new", include_str!("verbs/new.rs")),
+        ("result", include_str!("verbs/result.rs")),
+        ("resume", include_str!("verbs/resume.rs")),
+        ("send", include_str!("verbs/send.rs")),
+        ("status", include_str!("verbs/status.rs")),
+        ("statusline", include_str!("verbs/statusline.rs")),
+        ("stop", include_str!("verbs/stop.rs")),
+        ("uninstall", include_str!("verbs/uninstall.rs")),
+    ];
+
+    #[test]
+    fn every_verb_says_its_piece_through_one_of_the_two_severities() {
+        for (verb, source) in VERBS {
+            // Only what ships: a test of its own may print however it likes,
+            // and what it prints goes to whoever is running the suite.
+            let code = source.split("#[cfg(test)]").next().unwrap_or(source);
+            assert!(
+                !code.contains("eprint"),
+                "{verb} says something on stderr without saying how loudly"
+            );
+        }
     }
 
     #[test]

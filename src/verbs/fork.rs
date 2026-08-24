@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, now};
-use crate::{exit, ids, paths};
+use crate::{Severity, exit, ids, paths, said};
 
 /// What amx records when it copies a conversation.
 const FORKED: &str = "fork";
@@ -54,11 +54,22 @@ pub fn from_env(config: &Config, id: &str, task: Option<&str>) -> Result<i32> {
     let root = paths::state_root()?;
     let env = spawn::env_snapshot(std::env::vars());
     let mut out = std::io::stdout().lock();
+    let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());
     let mut problems = std::io::stderr().lock();
-    run(&root, config, id, task, &env, &mut out, &mut problems)
+    run(
+        &root,
+        config,
+        id,
+        task,
+        &env,
+        &mut out,
+        &mut problems,
+        to_terminal,
+    )
 }
 
 /// The verb, with everything it reads named.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     root: &Path,
     config: &Config,
@@ -67,6 +78,7 @@ pub fn run(
     env: &BTreeMap<String, String>,
     out: &mut impl Write,
     problems: &mut impl Write,
+    to_terminal: bool,
 ) -> Result<i32> {
     let origin = Agent::open(root, id)?;
     let meta = origin.meta()?;
@@ -90,9 +102,16 @@ pub fn run(
     if live.len() >= config.max_agents {
         writeln!(
             problems,
-            "amx fork: {} agents already running, and max_agents is {}",
-            live.len(),
-            config.max_agents
+            "{}",
+            said(
+                Severity::Warned,
+                &format!(
+                    "amx fork: {} agents already running, and max_agents is {}",
+                    live.len(),
+                    config.max_agents
+                ),
+                to_terminal
+            )
         )?;
         return Ok(exit::BLOCKED);
     }
@@ -517,15 +536,26 @@ mod tests {
 
     /// The verb, with nowhere for its output to go but a buffer.
     fn fork(root: &Path, id: &str) -> Result<(i32, String, String)> {
+        forked(root, id, &Config::default(), false)
+    }
+
+    /// The same, with the config and the kind of stderr named.
+    fn forked(
+        root: &Path,
+        id: &str,
+        config: &Config,
+        to_terminal: bool,
+    ) -> Result<(i32, String, String)> {
         let (mut out, mut problems) = (Vec::new(), Vec::new());
         let code = run(
             root,
-            &Config::default(),
+            config,
             id,
             None,
             &BTreeMap::new(),
             &mut out,
             &mut problems,
+            to_terminal,
         )?;
         Ok((
             code,
@@ -574,6 +604,33 @@ mod tests {
         assert_eq!(written[0].kind, FORKED);
         assert_eq!(written[0].payload["from"], "fix-login-a1b");
         assert_eq!(written[0].payload["session"], "abc-123");
+    }
+
+    #[test]
+    fn fork_refuses_at_the_cap_in_yellow_on_a_terminal_and_plain_down_a_pipe() {
+        // The cap is a refusal and not a failure: nothing went wrong, and amx
+        // is saying what it will not do. Yellow says which of the two it is.
+        let here = TempDir::new().unwrap();
+        let (root, _) = a_record(Some("abc-123"), here.path());
+        let origin = Agent::open(root.path(), "fix-login-a1b").unwrap();
+        spawn::write_handoff(
+            origin.dir(),
+            &handoff(&["claude", "fix the login bug"], "fix the login bug"),
+        )
+        .unwrap();
+        let full = Config {
+            max_agents: 0,
+            ..Config::default()
+        };
+
+        let (code, _, plain) = forked(root.path(), "fix-login-a1b", &full, false).unwrap();
+        assert_eq!(code, exit::BLOCKED);
+        assert!(plain.starts_with("amx fork: "), "{plain:?}");
+        assert!(!plain.contains('\u{1b}'), "{plain:?}");
+
+        let (_, _, painted) = forked(root.path(), "fix-login-a1b", &full, true).unwrap();
+        assert!(painted.starts_with("\u{1b}[33mamx fork: "), "{painted:?}");
+        assert!(painted.trim_end().ends_with("\u{1b}[39m"), "{painted:?}");
     }
 
     #[test]
