@@ -48,7 +48,7 @@ use crate::store::{Phase, now};
 use crate::tmux::{PaneId, Server, SessionId};
 use crate::verbs::ls::Scope;
 use crate::{exit, registry, rules};
-use act::{Asking, Composer, Renamed, Replied, Started};
+use act::{Asking, Composer, Edited, Renamed, Replied, Started};
 use paint::{Card, Notice};
 use rows::{Arrangement, List};
 
@@ -110,6 +110,8 @@ enum Doing {
         on: Server,
         session: SessionId,
     },
+    /// Lend it to an editor for as long as somebody is writing the line in it.
+    Edit,
 }
 
 /// What the keys are doing at the moment.
@@ -537,6 +539,7 @@ where
                 Doing::Lend { id, on, session } => {
                     screen.notice = lend(terminal, &id, &on, &session)?;
                 }
+                Doing::Edit => edit_the_line(terminal, &mut screen)?,
             },
         }
     }
@@ -559,17 +562,7 @@ where
     B: Backend,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
-    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
-    ratatui::try_restore().context("giving the terminal to tmux")?;
-
-    let handed = on.attach_command(session).status();
-
-    enable_raw_mode().context("taking the terminal back")?;
-    execute!(std::io::stdout(), EnterAlternateScreen).context("taking the terminal back")?;
-    let _ = execute!(std::io::stdout(), EnableBracketedPaste);
-    // Whatever the client left on the screen, none of it is what the view last
-    // drew, so the next frame is drawn whole.
-    terminal.clear()?;
+    let handed = borrowed(terminal, || on.attach_command(session).status())?;
 
     Ok(match handed {
         Ok(status) if status.success() => None,
@@ -578,6 +571,60 @@ where
         Ok(_) => Some(Notice::Failed(format!("tmux would not open {id}"))),
         Err(e) => Some(Notice::Failed(format!("reaching {id}: {e}"))),
     })
+}
+
+/// Give the terminal to an editor, and put what somebody wrote in it on the
+/// line the view was holding.
+///
+/// A line that was being typed and a line the editor filled are the same line:
+/// what comes back is the text and nothing else, so enter still does what the
+/// prompt in front of it says it will do.
+fn edit_the_line<B>(terminal: &mut Terminal<B>, screen: &mut Screen) -> Result<()>
+where
+    B: Backend,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    let Mode::Typing(composer) = &screen.mode else {
+        return Ok(());
+    };
+    let text = composer.text.clone();
+    let written = borrowed(terminal, || act::edited(&text))?;
+
+    screen.notice = match written {
+        Ok(Edited::Line(text)) => {
+            if let Mode::Typing(composer) = &mut screen.mode {
+                composer.text = text;
+            }
+            None
+        }
+        Ok(Edited::No(why)) => Some(Notice::Advice(why)),
+        Err(e) => Some(Notice::Failed(format!("{e:#}"))),
+    };
+    Ok(())
+}
+
+/// Give the terminal up for as long as something else needs the whole of it,
+/// and take it back when that is done.
+///
+/// Both the things that borrow it are whole-screen programs of somebody else's
+/// — a tmux client, an editor — and neither can share a terminal with a view
+/// drawing on it. What comes back is the screen the view left, drawn again from
+/// nothing, because what was on it in the meantime was not the view's.
+fn borrowed<B, T>(terminal: &mut Terminal<B>, doing: impl FnOnce() -> T) -> Result<T>
+where
+    B: Backend,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+    ratatui::try_restore().context("giving the terminal up")?;
+
+    let outcome = doing();
+
+    enable_raw_mode().context("taking the terminal back")?;
+    execute!(std::io::stdout(), EnterAlternateScreen).context("taking the terminal back")?;
+    let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+    terminal.clear()?;
+    Ok(outcome)
 }
 
 impl Screen {
@@ -801,6 +848,13 @@ impl Screen {
             }
             KeyCode::Char('?') if plain => self.mode = Mode::Keys,
             KeyCode::Char('n') if plain => self.mode = Mode::Typing(Composer::new(Asking::Task)),
+            // The same line, opened in the editor somebody already has their
+            // fingers in. A task worth a paragraph is a task worth writing
+            // where writing is what the keys are for.
+            KeyCode::Char('g') if ctrl => {
+                self.mode = Mode::Typing(Composer::new(Asking::Task));
+                return Ok(Doing::Edit);
+            }
             // A name for the agent under the cursor, opened on the one it is
             // going by: what somebody wants is usually a word of the current
             // name, and a line that started empty would have them type the
@@ -1001,6 +1055,12 @@ impl Screen {
                     return Ok(Doing::Carry);
                 }
                 return self.starting(root, config, composer);
+            }
+            // The line goes to the editor, and the mode is put back before it
+            // does: what the editor writes lands on the line it was opened on.
+            KeyCode::Char('g') if chord(key) == KeyModifiers::CONTROL => {
+                self.mode = Mode::Typing(composer);
+                return Ok(Doing::Edit);
             }
             KeyCode::Backspace => {
                 composer.text.pop();
@@ -2243,16 +2303,20 @@ mod tests {
 
     /// Press one key on a view standing where `stand` puts it, and answer
     /// whether the key did anything at all.
+    ///
+    /// A key that leaves the screen where it was may still have done
+    /// something: the ones that hand the terminal to a tmux client or to an
+    /// editor say so by what they answer with rather than by what they change.
     fn acts_on(key: KeyEvent, root: &Path, stand: fn(&mut Screen)) -> bool {
         let mut screen = watching(a_wall());
         stand(&mut screen);
 
         let before = standing(&screen);
-        let closed = matches!(
+        let did = !matches!(
             screen.act(key, root, &Config::default(), None),
-            Ok(Doing::Close)
+            Ok(Doing::Carry)
         );
-        closed || standing(&screen) != before
+        did || standing(&screen) != before
     }
 
     #[test]
@@ -2549,6 +2613,34 @@ mod tests {
     }
 
     #[test]
+    fn composer_ctrl_g_takes_the_line_to_the_editor_and_leaves_it_open() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = Screen::default();
+
+        // On the list it opens a task line and goes straight to the editor
+        // with it, so a task worth a paragraph costs one keystroke.
+        let doing = screen.act(ctrl('g'), root.path(), &config, None).unwrap();
+        assert!(matches!(doing, Doing::Edit));
+        let line = screen.banded().expect("a line for the editor to fill");
+        assert_eq!(line.prompt(), "task");
+        assert!(line.text.is_empty());
+
+        // And on a line somebody is already typing, it is that line that goes
+        // and that line the view is still holding when it comes back.
+        let Mode::Typing(composer) = &mut screen.mode else {
+            panic!("no line to edit")
+        };
+        composer.text = "port the importer".to_string();
+        let doing = screen.act(ctrl('g'), root.path(), &config, None).unwrap();
+        assert!(matches!(doing, Doing::Edit));
+        assert_eq!(
+            screen.banded().expect("the line is still there").text,
+            "port the importer"
+        );
+    }
+
+    #[test]
     fn composer_asks_once_before_starting_an_agent_on_a_task_of_three_letters() {
         let root = TempDir::new().unwrap();
         let mut keys = vec![KeyCode::Char('n')];
@@ -2601,8 +2693,11 @@ mod tests {
         let (_, screen) = held(root.path(), &[KeyCode::Char('?'), KeyCode::Char('q')]);
         // Seven rows of overlay on a terminal this short, so the keys are in
         // bands: the first of them down the left, and the next one beside it.
-        assert!(screen.contains("walk the agents"), "{screen}");
+        // What a screen this small gives up is what the keys say rather than
+        // which keys they are, so every one of them is still on it.
+        assert!(screen.contains("↑ ↓"), "{screen}");
         assert!(screen.contains("shift+tab"), "{screen}");
+        assert!(screen.contains("ctrl+g"), "{screen}");
         assert!(screen.contains("any key goes back"), "{screen}");
     }
 }

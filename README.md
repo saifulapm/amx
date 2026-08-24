@@ -150,6 +150,7 @@ behind a count. Rows nobody has been to read carry a mark down the gutter.
 | `d` | what it has changed |
 | `ctrl+x` | stop it, again to forget it, and on a heading clear the finished |
 | `ctrl+r` | call it something else |
+| `ctrl+g` | write the line in `$EDITOR` |
 | `ctrl+s` | gather them by state or by project |
 | `ctrl+t` | hold it at the top of its group |
 | `shift+↑` `shift+↓` | move it up or down its group |
@@ -193,6 +194,12 @@ read it. A `!` in front runs the rest as a shell
 command instead of giving it to an agent — `!cargo test --all` is the row
 `amx new --exec` starts, and the line says `run` rather than `task` while one
 is being typed.
+
+`ctrl+g` writes that line in your own editor. It opens `$VISUAL`, or `$EDITOR`,
+or `vi`, on a file holding whatever is on the line, hands it the terminal, and
+puts back what you wrote when you close it — pressed on the list it opens a
+task line first, so a task worth a paragraph is one keystroke away. An editor
+that exits unhappily, which is `:cq` in vim, leaves the line exactly as it was.
 
 A task of fewer than four characters is asked about once before anything is
 started: `y` starts it and any other key hands the line back with what you

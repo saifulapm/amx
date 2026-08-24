@@ -17,6 +17,7 @@
 //! still typing.
 
 use anyhow::{Context, Result, bail};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::paint::Card;
@@ -259,6 +260,83 @@ fn pointed(
         ));
     }
     Ok(value.to_string())
+}
+
+/// What editing a line in an editor came to.
+pub enum Edited {
+    /// The editor was closed on this, and it is the line now.
+    Line(String),
+    /// It said it wanted none of it, and this says how: the line stays where
+    /// it was, with what was typed on it.
+    No(String),
+}
+
+/// What a line is edited in: what somebody configured, and `vi` where they
+/// configured nothing, which is the editor a unix box is obliged to have.
+///
+/// `$VISUAL` first, because that is the one that names a program for a terminal
+/// somebody is sitting at, and this line is being edited on the terminal they
+/// are sitting at.
+fn editor() -> String {
+    ["VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .find(|said| !said.trim().is_empty())
+        .unwrap_or_else(|| "vi".to_string())
+}
+
+/// Give the line to an editor and take back whatever it was left holding.
+///
+/// A file rather than a pipe, because an editor is a program that opens a file:
+/// `$EDITOR` is routinely a command line of its own, so the whole of it is
+/// handed to a shell with the file behind it, exactly as `git commit` does it.
+pub fn edited(text: &str) -> Result<Edited> {
+    let path = std::env::temp_dir().join(format!("amx-task-{}.md", std::process::id()));
+    edited_in(&editor(), &path, text)
+}
+
+/// The same, with the editor and the file it opens both named, because a test
+/// has to be able to say what the person at the terminal would have done.
+fn edited_in(editor: &str, path: &Path, text: &str) -> Result<Edited> {
+    // Unlinked and then made new rather than truncated: the directory this
+    // sits in is everybody's, and a name amx can work out is a name somebody
+    // else can work out too. Making it new refuses a file already standing
+    // there instead of writing through whatever it points at.
+    let _ = std::fs::remove_file(path);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    file.write_all(text.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    drop(file);
+    crate::paths::keep_to_the_owner(path, 0o600)?;
+
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} {}", quoted(path)))
+        .status()
+        .with_context(|| format!("running {editor}"))?;
+    let written = std::fs::read_to_string(path);
+    // Whatever came of it, the task is not left lying in a directory everybody
+    // can read.
+    let _ = std::fs::remove_file(path);
+
+    if !status.success() {
+        return Ok(Edited::No(format!("{editor} left the line as it was")));
+    }
+    let written = written.with_context(|| format!("reading {} back", path.display()))?;
+    // The newline a file ends with is the file's own. Everything above it is
+    // the task, newlines and all.
+    Ok(Edited::Line(
+        written.trim_end_matches('\n').replace("\r\n", "\n"),
+    ))
+}
+
+/// A path as one word to a shell, whatever is in it.
+fn quoted(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
 }
 
 /// How many characters a task is before the view takes it for one.
@@ -1038,6 +1116,49 @@ mod tests {
         }
         assert_eq!(slight("!ls"), None, "a short command is a command");
         assert_eq!(slight("s:"), None, "and a narrowing starts nothing anyway");
+    }
+
+    #[test]
+    fn composer_hands_the_line_to_an_editor_and_takes_back_what_was_written() {
+        let here = TempDir::new().unwrap();
+        let path = here.path().join("task.md");
+
+        // An editor that edits: what it is given is what was on the line, and
+        // what it leaves behind is the line afterwards.
+        let Edited::Line(text) =
+            edited_in("sed -i -e s/fix/port/", &path, "fix the importer").unwrap()
+        else {
+            panic!("the editor was not read back");
+        };
+        assert_eq!(text, "port the importer");
+        assert!(
+            !path.exists(),
+            "and the file it was written in does not outlive the edit"
+        );
+
+        let Edited::Line(text) =
+            edited_in("printf 'port it\\n' >", &path, "port the importer").unwrap()
+        else {
+            panic!("the editor was not read back");
+        };
+        assert_eq!(
+            text, "port it",
+            "the newline a file ends with is the file's rather than the task's"
+        );
+    }
+
+    #[test]
+    fn composer_keeps_the_line_an_editor_would_not_write() {
+        let here = TempDir::new().unwrap();
+        let path = here.path().join("task.md");
+
+        // `:cq` is how a person says they meant none of it, and what it comes
+        // back as is a status.
+        let Edited::No(why) = edited_in("false", &path, "port the importer").unwrap() else {
+            panic!("an editor that refused took the line with it");
+        };
+        assert!(why.contains("false"), "{why}");
+        assert!(!path.exists());
     }
 
     #[test]
