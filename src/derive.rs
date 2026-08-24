@@ -1677,8 +1677,26 @@ mod tests {
         );
     }
 
+    /// The queue is one place for the whole process, and every test about it
+    /// is a thread of one test binary sharing that place. Two of them running
+    /// at once would each see the other's turn in the queue and read it as its
+    /// own, so they take turns here instead.
+    ///
+    /// Taken through a poisoned lock rather than around one: a test that
+    /// panicked holding this has failed already, and the next one failing for
+    /// having asked about it is a second failure about the first.
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn the_queue_to_itself() -> std::sync::MutexGuard<'static, ()> {
+        ONE_AT_A_TIME
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+    }
+
     #[test]
     fn summary_asks_about_one_turn_at_a_time() {
+        let _queue = the_queue_to_itself();
+
         // What answers is whatever somebody configured, routinely a model
         // call, so a view opened on a week of finished agents queues them
         // rather than starting one for every row at once.
@@ -1729,6 +1747,8 @@ mod tests {
 
     #[test]
     fn summary_claims_a_turn_so_one_amx_asks_about_it_and_not_five() {
+        let _queue = the_queue_to_itself();
+
         let root = TempDir::new().unwrap();
         let agent = Agent::create(root.path(), &meta()).unwrap();
         let writer = agent.writer().unwrap();
