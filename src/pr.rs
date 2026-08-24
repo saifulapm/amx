@@ -82,6 +82,25 @@ pub enum Standing {
 }
 
 impl Standing {
+    /// What the card says beside the number.
+    ///
+    /// A row has one colour for this and the colours are five, so two
+    /// standings can wear one: the colour answers how it is going, and these
+    /// words answer which of the four questions the colour came from — which
+    /// is the thing a person opens a card to find out.
+    pub fn says(self) -> &'static str {
+        match self {
+            Standing::Merged => "merged",
+            Standing::Closed => "closed",
+            Standing::Draft => "draft",
+            Standing::Failing => "checks failing",
+            Standing::Changes => "changes requested",
+            Standing::Running => "checks running",
+            Standing::Ready => "approved",
+            Standing::Open => "open",
+        }
+    }
+
     /// Whether nothing more is going to happen to it.
     pub fn settled(self) -> bool {
         matches!(self, Standing::Merged | Standing::Closed)

@@ -32,6 +32,7 @@ use super::rows::{self, Axis, Group, Item, List, Showing, Tally};
 use super::{Mode, Profile, Screen};
 use crate::ansi::{self, Colour, Painted};
 use crate::derive::View;
+use crate::pr::{Pr, Standing};
 use crate::registry::DEFAULT;
 use crate::store::{Kind, Phase};
 use crate::verbs::send::numbered;
@@ -158,17 +159,28 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     // the half of a question no pane carries. It is read off the row's own
     // reading rather than carried on the card, because the card is a picture
     // of one agent and the reading is what the list is already holding.
-    let showing = screen
+    let on = screen
         .card
         .as_ref()
-        .filter(|card| card.asks())
-        .and_then(|card| screen.list.agent_by_id(&card.id))
+        .and_then(|card| screen.list.agent_by_id(&card.id));
+    let showing = on
+        .filter(|_| screen.card.as_ref().is_some_and(Card::asks))
         .and_then(rows::showing);
+    // And what its branch has open, read from the same place for the same
+    // reason: a pull request is a fact about the agent rather than about the
+    // question, so the card carries neither and asks the list for both.
+    let prs = on.map_or(&[][..], |view| screen.list.requests(view));
     let floating = match (helping, &screen.card) {
         (false, Some(card)) => card_height(
             area.height,
             middle.height,
-            card_rows(card, showing, screen.answering().is_some(), middle.width),
+            card_rows(
+                card,
+                showing,
+                prs,
+                screen.answering().is_some(),
+                middle.width,
+            ),
         ),
         _ => 0,
     };
@@ -191,6 +203,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
             frame,
             card,
             showing,
+            prs,
             screen.answering(),
             over(middle, floating),
         );
@@ -224,10 +237,16 @@ fn card_height(total: u16, band: u16, wanted: u16) -> u16 {
 }
 
 /// How many rows the card would take to say everything it has: its two
-/// borders, which question of the call this is, what the agent is asking, the
-/// choices under that, the row the vendor adds under them, the line the answer
-/// goes on, and the screen it is all happening on.
-fn card_rows(card: &Card, showing: Option<Showing>, answering: bool, width: u16) -> u16 {
+/// borders, what its branch has open, which question of the call this is, what
+/// the agent is asking, the choices under that, the row the vendor adds under
+/// them, the line the answer goes on, and the screen it is all happening on.
+fn card_rows(
+    card: &Card,
+    showing: Option<Showing>,
+    prs: &[Pr],
+    answering: bool,
+    width: u16,
+) -> u16 {
     let inner = width.saturating_sub(2 + 2 * PADDING);
     let asked = card
         .question
@@ -239,6 +258,7 @@ fn card_rows(card: &Card, showing: Option<Showing>, answering: bool, width: u16)
     let shown = body(card, CARD_TALL as usize).len();
 
     let rows = 2
+        + usize::from(!requests(prs).is_empty())
         + asked as usize
         + usize::from(tab(showing).is_some())
         + listed
@@ -429,6 +449,10 @@ struct Columns {
     /// The state a row carries, which is a column only where the heading does
     /// not say it. Zero is no column at all.
     status: usize,
+    /// The pull request number, which is a column only where somebody in this
+    /// list has one. Zero is no column at all, and that is every list on a
+    /// machine with no forge on it.
+    pr: usize,
 }
 
 /// How wide the list has to be for the empty state to say what lands in each
@@ -511,7 +535,7 @@ fn line(
         Item::Heading(under, tally) => heading(list.title(under), tally, selected || section),
         Item::Fold(hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
         Item::Agent(_) => match list.agent(item) {
-            Some(view) => row(view, selected, columns, width, beat),
+            Some(view) => row(view, list.requests(view), selected, columns, width, beat),
             None => Line::raw(""),
         },
         Item::Blank => Line::raw(""),
@@ -591,23 +615,41 @@ fn heading(title: String, tally: Tally, marked: bool) -> Line<'static> {
     Line::from(spans)
 }
 
-/// An agent's row: what state it is in, what it is called, what it is up to,
-/// and how long since anybody heard from it.
+/// An agent's row: what state it is in, what it is called, what its work is
+/// waiting on out in the world, what it is up to, and how long since anybody
+/// heard from it.
 ///
 /// The state is on the row twice where it is on it at all — as the mark, and
 /// as the word beside the name. The mark is worth reading at a glance across a
 /// whole screen and the word is worth reading on one row, and under a project
 /// heading nothing else says which state a row is in.
-fn row(view: &View, selected: bool, columns: Columns, width: usize, beat: usize) -> Line<'static> {
-    let Columns { names, status } = columns;
+fn row(
+    view: &View,
+    prs: &[Pr],
+    selected: bool,
+    columns: Columns,
+    width: usize,
+    beat: usize,
+) -> Line<'static> {
+    let Columns { names, status, pr } = columns;
     let phase = view.phase();
     let age = age(view.verdict.age);
     // The one word on a row a person typed rather than amx minting it, so it
     // is neutralised here as well as where it was written down.
     let name = fit(&inert(rows::called(view)), names);
-    // The gutter, the icon and its space, the name and its gap, the status
-    // column and its gap where there is one, the age and the space before it.
-    let spent = GUTTER.len() + 2 + names + 2 + status + 2 * usize::from(status > 0) + AGE + 1;
+    // The gutter, the icon and its space, the name and its gap, the status and
+    // pull request columns and the gap after each where there is one, the age
+    // and the space before it.
+    let spent = GUTTER.len()
+        + 2
+        + names
+        + 2
+        + status
+        + 2 * usize::from(status > 0)
+        + pr
+        + 2 * usize::from(pr > 0)
+        + AGE
+        + 1;
     let room = width.saturating_sub(spent);
     let said = fit(first_line(view.line().unwrap_or("")), room);
 
@@ -628,6 +670,16 @@ fn row(view: &View, selected: bool, columns: Columns, width: usize, beat: usize)
             format!("{:<status$}  ", fit(phase.as_str(), status)),
             colour(phase),
         ));
+    }
+    if pr > 0 {
+        // The one this branch is being read for, which is whatever of them is
+        // still live. The rest are on the card, where there is room to list
+        // them and to say what each is waiting on.
+        let (label, paint) = match prs.first() {
+            Some(first) => (first.label(), request_colour(first.standing)),
+            None => (String::new(), Style::new()),
+        };
+        spans.push(Span::styled(format!("{label:<pr$}  "), paint));
     }
     spans.push(Span::styled(format!("{said:<room$} "), dim()));
     spans.push(Span::styled(format!("{age:>AGE$}"), dim()));
@@ -662,10 +714,10 @@ const UNREAD: &str = "•";
 /// words of it a person needs to decide, with the pane underneath for the rest.
 const ASKED_TALL: u16 = 3;
 
-/// The card: which question of the call this is, what one agent is asking, the
-/// choices it offers, the row the vendor adds under them, the line the answer
-/// is typed on, and the screen it is all happening on — or, when that is what
-/// was asked for, what it has changed.
+/// The card: what its branch has open, which question of the call this is,
+/// what one agent is asking, the choices it offers, the row the vendor adds
+/// under them, the line the answer is typed on, and the screen it is all
+/// happening on — or, when that is what was asked for, what it has changed.
 ///
 /// Full width, because the bottom of it is a picture of a terminal and a
 /// terminal cut down the middle is a picture of nothing. It floats over the
@@ -675,6 +727,7 @@ fn float(
     frame: &mut Frame,
     card: &Card,
     showing: Option<Showing>,
+    prs: &[Pr],
     answering: Option<&Composer>,
     area: Rect,
 ) {
@@ -703,6 +756,11 @@ fn float(
         taken
     };
     let typing = take(u16::from(answering.is_some()));
+    // Every request this branch has, above everything the card says about the
+    // turn: what happened to the work after the turn ended is the question
+    // somebody opening a finished agent's card came with.
+    let open = requests(prs);
+    let opened = take(u16::from(!open.is_empty()));
     // The question and the choices are the agent's own words, and the choices
     // are the keys a person is about to press: both go through `inert` before
     // anything draws them. ratatui would *delete* the invisible format
@@ -725,7 +783,8 @@ fn float(
     let added = added(card, showing);
     let adding = take(u16::from(added.is_some()));
 
-    let [tabbing, asking, listing, adds, answer, screen] = Layout::vertical([
+    let [requesting, tabbing, asking, listing, adds, answer, screen] = Layout::vertical([
+        Constraint::Length(opened),
         Constraint::Length(tabbed),
         Constraint::Length(asked),
         Constraint::Length(listed),
@@ -735,6 +794,9 @@ fn float(
     ])
     .areas(inner);
 
+    if opened > 0 {
+        frame.render_widget(Paragraph::new(Line::from(open)), requesting);
+    }
     if let Some(strip) = strip.filter(|_| tabbed > 0) {
         frame.render_widget(Paragraph::new(Line::styled(strip, dim())), tabbing);
     }
@@ -762,6 +824,31 @@ fn float(
     }
 
     frame.render_widget(Paragraph::new(body(card, screen.height as usize)), screen);
+}
+
+/// Every pull request the agent's branch has, as the one row the card gives
+/// them.
+///
+/// The row says the number in its own colour and then, in words, which of the
+/// four questions that colour came from — a row has only the colour, and two
+/// standings share one. All of them and not the first: a branch that has been
+/// through this twice is a branch where the second attempt is the news and the
+/// first is the reason there was a second.
+///
+/// Nothing here comes off a pane, so nothing here is neutralised: the numbers
+/// are amx's own formatting of an integer, and the words are this file's.
+fn requests(prs: &[Pr]) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for pr in prs {
+        if !spans.is_empty() {
+            spans.push(Span::styled(SEPARATOR, dim()));
+        }
+        spans.push(Span::styled(
+            format!("{} {}", pr.label(), pr.standing.says()),
+            request_colour(pr.standing),
+        ));
+    }
+    spans
 }
 
 /// What the card has under everything else, in the paint it was drawn in and
@@ -1519,6 +1606,11 @@ fn columns(list: &List) -> Columns {
                 .max()
                 .unwrap_or(0),
         },
+        pr: shown()
+            .filter_map(|view| list.requests(view).first())
+            .map(|pr| pr.label().chars().count())
+            .max()
+            .unwrap_or(0),
     }
 }
 
@@ -1686,6 +1778,27 @@ fn colour(phase: Phase) -> Style {
     }
 }
 
+/// What a pull request's standing is worth saying in colour.
+///
+/// The same five roles the rest of the view is painted in, asked the same
+/// question: how did it go. A merged request and an approved one went the way
+/// they were meant to; a failing check was attempted and failed; a reviewer
+/// asking for changes is a thing waiting on a person; a request that was shut
+/// was ended by hand. Two of them take the terminal's own colour, because a
+/// request whose checks are still running and one nobody has read yet have the
+/// same answer to that question — nothing yet. Which of the two it is, is what
+/// the card says in words.
+fn request_colour(standing: Standing) -> Style {
+    match standing {
+        Standing::Merged | Standing::Ready => Style::new().fg(role::SUCCESS),
+        Standing::Failing => Style::new().fg(role::ERROR),
+        Standing::Changes => Style::new().fg(role::WARNING),
+        Standing::Closed => Style::new().fg(role::INACTIVE),
+        Standing::Draft => dim(),
+        Standing::Running | Standing::Open => Style::new(),
+    }
+}
+
 /// A heading's label: dim and bare, whatever it stands for. The rows under it
 /// carry the state's colour, so the label repeating it would say nothing —
 /// and a label with no weight of its own leaves bold free to mark the section
@@ -1809,6 +1922,43 @@ mod tests {
     fn at(mut view: View, dir: &str) -> View {
         view.meta.dir = PathBuf::from(dir);
         view
+    }
+
+    /// The same reading, on a branch of its own.
+    fn on_a_branch(mut view: View, branch: &str) -> View {
+        view.meta.branch = Some(branch.to_string());
+        view
+    }
+
+    /// A forge holding one failing request for the agent that is asking, and
+    /// two for the one beside it — the second attempt and the first.
+    fn a_forge(meta: &crate::store::Meta) -> Vec<Pr> {
+        match meta.branch.as_deref() {
+            Some("amx/ask-a1b") => vec![Pr {
+                number: 12,
+                standing: Standing::Failing,
+            }],
+            Some("amx/busy-b2c") => vec![
+                Pr {
+                    number: 40,
+                    standing: Standing::Open,
+                },
+                Pr {
+                    number: 7,
+                    standing: Standing::Merged,
+                },
+            ],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The view over that forge.
+    fn over_the_forge(views: Vec<View>, card: Option<Card>) -> Screen {
+        let mut screen = Screen::default();
+        screen.list.asking(a_forge);
+        screen.list.show(views);
+        screen.card = card;
+        screen
     }
 
     /// The view with the agents gathered by where they are running.
@@ -3503,6 +3653,163 @@ mod tests {
             .collect()
     }
 
+    /// Every standing there is, so a table over them cannot quietly miss one.
+    const EVERY_STANDING: [Standing; 8] = [
+        Standing::Merged,
+        Standing::Closed,
+        Standing::Draft,
+        Standing::Failing,
+        Standing::Changes,
+        Standing::Running,
+        Standing::Ready,
+        Standing::Open,
+    ];
+
+    /// The colour a word on a row was painted in.
+    fn word_colour(screen: &Screen, size: (u16, u16), row: u16, word: &str) -> Color {
+        let buffer = cells(screen, size);
+        let line: String = (0..size.0)
+            .map(|column| buffer[(column, row)].symbol())
+            .collect();
+        let at = line
+            .find(word)
+            .unwrap_or_else(|| panic!("{word:?} is not on {line:?}"));
+        buffer[(line[..at].chars().count() as u16, row)].fg
+    }
+
+    #[test]
+    fn pr_the_row_says_what_the_branchs_request_is_doing() {
+        let screen = over_the_forge(
+            vec![
+                on_a_branch(view("ask-a1b", Phase::Waiting, None, 30), "amx/ask-a1b"),
+                on_a_branch(
+                    view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
+                    "amx/busy-b2c",
+                ),
+            ],
+            None,
+        );
+        let size = (60, 10);
+        let lines = painted(&screen, size);
+        let row = |word: &str| {
+            lines
+                .iter()
+                .position(|line| line.contains(word))
+                .unwrap_or_else(|| panic!("no row says {word:?}: {lines:?}"))
+        };
+
+        let asking = row("ask-a1b");
+        assert!(lines[asking].contains("#12"), "{:?}", lines[asking]);
+        assert_eq!(
+            word_colour(&screen, size, asking as u16, "#12"),
+            role::ERROR,
+            "a failing check is a thing that was attempted and failed"
+        );
+
+        // One column, so the numbers read down the screen rather than
+        // wandering with the length of the name beside them.
+        let busy = row("busy-b2c");
+        let column = |line: &str, word: &str| {
+            let at = line.find(word).expect("the number on the row");
+            line[..at].chars().count()
+        };
+        assert_eq!(
+            column(&lines[asking], "#12"),
+            column(&lines[busy], "#40"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[busy].contains("Running Bash"),
+            "and what the agent is doing is still on it: {:?}",
+            lines[busy]
+        );
+        assert!(
+            !lines[busy].contains("#7"),
+            "the row is read for the attempt that is still going, and the \
+             one before it is on the card: {:?}",
+            lines[busy]
+        );
+    }
+
+    #[test]
+    fn pr_costs_the_list_nothing_where_no_branch_has_one() {
+        // Which is every list on a machine with no forge on it, and the whole
+        // of what such a machine loses.
+        let fleet = || {
+            vec![
+                view("ask-a1b", Phase::Waiting, None, 30),
+                view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
+            ]
+        };
+        assert_eq!(
+            painted(&over_the_forge(fleet(), None), (60, 10)),
+            painted(&showing(fleet(), None), (60, 10)),
+            "a fleet with no requests draws the rows amx always drew"
+        );
+    }
+
+    #[test]
+    fn pr_the_card_lists_every_request_the_branch_has() {
+        let mut card = asking(&[], None);
+        card.id = "busy-b2c".to_string();
+        card.phase = Phase::Working;
+        card.question = None;
+        let screen = over_the_forge(
+            vec![on_a_branch(
+                view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
+                "amx/busy-b2c",
+            )],
+            Some(card),
+        );
+        let size = (60, 14);
+        let lines = painted(&screen, size);
+
+        let row = lines
+            .iter()
+            .position(|line| line.contains("#40 open"))
+            .unwrap_or_else(|| panic!("nothing on the card lists them: {lines:?}"));
+        assert!(
+            lines[row].contains("#7 merged"),
+            "every request the branch has, each with the question its colour \
+             came from: {:?}",
+            lines[row]
+        );
+        assert!(
+            lines[..row].iter().any(|line| line.starts_with('╭')),
+            "on the card rather than on the row behind it: {lines:?}"
+        );
+        assert_eq!(word_colour(&screen, size, row as u16, "#7"), role::SUCCESS);
+    }
+
+    #[test]
+    fn pr_every_standing_has_a_word_and_a_colour() {
+        // Eight standings and eight words, so a card never says one thing for
+        // two of them. The colours are five and are meant to be shared: they
+        // answer how it is going, and two standings can have the same answer.
+        let said: Vec<&str> = EVERY_STANDING.into_iter().map(Standing::says).collect();
+        assert_eq!(
+            said.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            EVERY_STANDING.len(),
+            "{said:?}"
+        );
+        for standing in EVERY_STANDING {
+            assert_eq!(
+                request_colour(standing).bg,
+                None,
+                "{standing:?} is a word on a row, not a bar under one"
+            );
+        }
+        assert_eq!(request_colour(Standing::Merged).fg, Some(role::SUCCESS));
+        assert_eq!(request_colour(Standing::Failing).fg, Some(role::ERROR));
+        assert_eq!(request_colour(Standing::Changes).fg, Some(role::WARNING));
+        assert_eq!(request_colour(Standing::Closed).fg, Some(role::INACTIVE));
+        assert_eq!(
+            request_colour(Standing::Open).fg,
+            None,
+            "a request nobody has read yet has nothing to say about how it went"
+        );
+    }
+
     #[test]
     fn view_tail_says_so_when_a_capture_is_nothing_but_chrome() {
         let mut card = asking(&[], None);
@@ -3528,7 +3835,7 @@ mod tests {
         // Two borders and the one row left under them, not the six rows the
         // capture has: a card that measured before it cut would spend its
         // height on the vendor's furniture.
-        assert_eq!(card_rows(&card, None, false, 60), 3);
+        assert_eq!(card_rows(&card, None, &[], false, 60), 3);
     }
 
     #[test]
