@@ -41,6 +41,45 @@ const START_SESSION: &str = "--session-id";
 /// with it: a directory it was given access to is one it still needs.
 const NAMES_A_SESSION: [&str; 3] = [START_SESSION, RESUME, "-r"];
 
+/// What bringing an agent back came to, for the doors that reach an agent
+/// rather than start one.
+pub enum Comeback {
+    /// It is in a pane again, on the session it had.
+    Back,
+    /// Nothing was started, and this says why.
+    No(String),
+}
+
+/// Bring back an agent whose pane is gone, for the two doors somebody reaches
+/// one through.
+///
+/// `amx attach` and the view's enter key are both a person asking to look at
+/// an agent, and an agent whose pane went is one there is nothing to look at.
+/// Picking its session up is the answer to what they asked for rather than a
+/// second command they have to think of.
+///
+/// The caller has already found the pane gone, so there is no has-it-ended
+/// question left here: what is left is whether there is a session behind it
+/// and whether the machine has room, and both of those come back as the
+/// sentence to put in front of somebody. Anything else is a failure and is
+/// raised.
+pub fn again(
+    root: &Path,
+    config: &Config,
+    id: &str,
+    env: &BTreeMap<String, String>,
+) -> Result<Comeback> {
+    let agent = Agent::open(root, id)?;
+    if let Err(why) = to_continue(&agent.meta()?) {
+        return Ok(Comeback::No(why));
+    }
+    if let Some(full) = at_capacity(root, config)? {
+        return Ok(Comeback::No(full));
+    }
+    bring_back(root, id, env)?;
+    Ok(Comeback::Back)
+}
+
 /// Run the verb against the machine.
 pub fn from_env(config: &Config, id: Option<&str>, all: bool) -> Result<i32> {
     let root = paths::state_root()?;
@@ -163,18 +202,7 @@ fn bring_back(root: &Path, id: &str, env: &BTreeMap<String, String>) -> Result<(
         bail!("{id} is already going again");
     }
 
-    let Some(session) = meta.session.as_deref() else {
-        bail!(
-            "no session was ever recorded for {id}, so there is nothing to continue. \
-             start a fresh agent with `amx new`"
-        );
-    };
-    // The recorded id was written from a hook payload, and this is the one
-    // place it becomes part of a command line: it is checked at the moment it
-    // is used, not only at the moment it was written down.
-    if !is_session_id(session) {
-        bail!("the session recorded for {id} is not a session id, so it will not be handed on");
-    }
+    let session = to_continue(&meta).map_err(anyhow::Error::msg)?;
 
     let recorded = spawn::read_handoff(agent.dir())
         .with_context(|| format!("reading what {id} was started with"))?;
@@ -320,6 +348,32 @@ fn repo_above(tree: &Path) -> Result<PathBuf> {
         above = dir.parent();
     }
     bail!("nothing is left of {}", tree.display())
+}
+
+/// The session this agent is carried on by, or the sentence saying why there
+/// is none to carry it.
+///
+/// Read out of the record in one place, because two commands ask it: the verb
+/// on its way to a respawn, and the doors that only want to know whether there
+/// is anything to bring back before they say so to somebody.
+fn to_continue(meta: &Meta) -> Result<&str, String> {
+    let Some(session) = meta.session.as_deref() else {
+        return Err(format!(
+            "no session was ever recorded for {}, so there is nothing to continue. \
+             start a fresh agent with `amx new`",
+            meta.id
+        ));
+    };
+    // The recorded id was written from a hook payload, and a resume is where it
+    // becomes part of a command line: it is checked at the moment it is used,
+    // not only at the moment it was written down.
+    if !is_session_id(session) {
+        return Err(format!(
+            "the session recorded for {} is not a session id, so it will not be handed on",
+            meta.id
+        ));
+    }
+    Ok(session)
 }
 
 /// Whether a recorded session id is one.
