@@ -155,20 +155,20 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     .areas(area);
 
     frame.render_widget(Paragraph::new(header(screen, top)), top);
-    // What the record holds about the question the card is showing, which is
-    // the half of a question no pane carries. It is read off the row's own
-    // reading rather than carried on the card, because the card is a picture
-    // of one agent and the reading is what the list is already holding.
+    // The reading behind the card, for the two things the card needs and does
+    // not carry. A card is a picture of one agent, and the reading is what the
+    // list is already holding.
     let on = screen
         .card
         .as_ref()
         .and_then(|card| screen.list.agent_by_id(&card.id));
+    // What the record holds about the question the card is showing, which is
+    // the half of a question no pane carries.
     let showing = on
         .filter(|_| screen.card.as_ref().is_some_and(Card::asks))
         .and_then(rows::showing);
-    // And what its branch has open, read from the same place for the same
-    // reason: a pull request is a fact about the agent rather than about the
-    // question, so the card carries neither and asks the list for both.
+    // And what its branch has open, which no pane carries either: a pull
+    // request is a fact about the agent rather than about the turn.
     let prs = on.map_or(&[][..], |view| screen.list.requests(view));
     let floating = match (helping, &screen.card) {
         (false, Some(card)) => card_height(
