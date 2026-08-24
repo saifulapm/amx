@@ -38,14 +38,14 @@ impl<'a> Caller<'a> {
         Caller { amx }
     }
 
-    /// Start a worker in a directory the caller has already prepared, out of
-    /// sight of anybody's terminal, on the conversation id the caller minted.
-    /// The handle is the id this prints; nothing else about it is read.
+    /// Start a worker in a directory the caller has already prepared, on the
+    /// conversation id the caller minted. It goes in a session of its own,
+    /// where nothing it does reaches anybody's screen. The handle is the id
+    /// this prints; nothing else about it is read.
     fn dispatch(&self, dir: &Path, scenario: &str) -> Output {
         self.amx
             .amx_command(&[
                 "new",
-                "--bg",
                 "--dir",
                 &dir.to_string_lossy(),
                 "--no-worktree",

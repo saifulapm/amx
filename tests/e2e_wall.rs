@@ -1,23 +1,25 @@
-//! The front door: what `amx` on its own does, and the room it opens.
+//! Where an agent goes: a tmux session of its own, on the server the person
+//! already has, and nothing of amx's standing beside it.
 
 mod common;
 
 use common::Harness;
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// A server of amx's own, on a socket this test alone uses.
+/// A socket nothing has touched yet, standing in for the person's default
+/// server.
 ///
 /// Its own socket rather than the harness's, because the only way to see what
 /// a server was *born* with is to be there when it is born: tmux reads a
 /// config file when it starts a server and on no later call.
-struct Private(String);
+struct Theirs(String);
 
-impl Private {
-    fn new() -> Private {
+impl Theirs {
+    fn new() -> Theirs {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        Private(format!(
-            "amx-cockpit-{}-{}",
+        Theirs(format!(
+            "amx-theirs-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))
@@ -27,54 +29,12 @@ impl Private {
         &self.0
     }
 
-    /// Ask this server something, or `None` while nothing is listening on it.
     fn ask(&self, args: &[&str]) -> Option<String> {
         ask(&self.0, args)
     }
-
-    /// Every window on it, as `<session> <window>` lines.
-    fn windows(&self) -> Vec<String> {
-        self.ask(&["list-windows", "-a", "-F", "#{session_name} #{window_name}"])
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_string)
-            .collect()
-    }
-
-    /// The wall's panes, each with whether amx has it marked as its own empty
-    /// state.
-    ///
-    /// The marker is read by position off a single-space split: an unset user
-    /// option expands to nothing, and the trailing space it leaves behind is
-    /// trimmed off the last line before this ever sees it.
-    fn wall(&self) -> Vec<(String, bool)> {
-        self.ask(&[
-            "list-panes",
-            "-a",
-            "-F",
-            "#{window_name} #{pane_id} #{@amx_placeholder}",
-        ])
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|line| line.strip_prefix("amx-wall "))
-        .map(|rest| {
-            let mut field = rest.split(' ');
-            (
-                field.next().unwrap_or_default().to_string(),
-                field.next() == Some("1"),
-            )
-        })
-        .collect()
-    }
-
-    /// What is on one of its panes now.
-    fn capture(&self, pane: &str) -> String {
-        self.ask(&["capture-pane", "-p", "-J", "-t", pane])
-            .unwrap_or_default()
-    }
 }
 
-impl Drop for Private {
+impl Drop for Theirs {
     fn drop(&mut self) {
         let _ = Command::new("tmux")
             .args(["-L", &self.0, "kill-server"])
@@ -84,6 +44,9 @@ impl Drop for Private {
 
 /// Ask the server on this socket something, or `None` while nothing is
 /// listening on it.
+///
+/// No `-f`: what these tests ask about is the config a server was born with,
+/// and a flag here would be a second answer to the same question.
 fn ask(socket: &str, args: &[&str]) -> Option<String> {
     let out = Command::new("tmux")
         .args(["-L", socket])
@@ -95,14 +58,206 @@ fn ask(socket: &str, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
 
-/// A terminal that is not inside tmux, which is where the cockpit is opened
-/// from, with amx's own server pinned to `cockpit`.
-fn outside_tmux(cockpit: &Private) -> [(&str, &str); 3] {
-    [
-        ("TMUX", ""),
-        ("TMUX_PANE", ""),
-        ("AMX_TMUX_SOCKET", cockpit.socket()),
-    ]
+/// Ask the harness's server about one of its panes, windows or sessions.
+fn field(amx: &Harness, target: &str, format: &str) -> String {
+    amx.tmux(&["display-message", "-p", "-t", target, format])
+}
+
+/// Start an agent that keeps running, with `env` on top of the harness's own.
+fn start(amx: &Harness, env: &[(&str, &str)], task: &str) -> Output {
+    let mut command = amx.amx_command(&["new", "--no-worktree", "--agent", &amx.mock(), task]);
+    command.env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"));
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    command.output().expect("running amx new")
+}
+
+fn id_of(out: &Output) -> String {
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// The environment of a terminal that is inside tmux, and the pane it is in.
+fn inside_tmux(amx: &Harness) -> (Vec<(String, String)>, String) {
+    let env = amx.inside_tmux();
+    let pane = env
+        .iter()
+        .find(|(name, _)| name == "TMUX_PANE")
+        .map(|(_, pane)| pane.clone())
+        .expect("the pane the terminal is in");
+    (env, pane)
+}
+
+#[test]
+fn an_agent_lives_in_a_session_named_for_it() {
+    let amx = Harness::new();
+    let id = id_of(&start(&amx, &[], "look busy"));
+
+    let pane = amx.pane_of(&id);
+    assert_eq!(
+        field(&amx, &pane, "#{session_name}"),
+        format!("amx-{id}"),
+        "one session per agent, and the id is what it is called"
+    );
+
+    let session = field(&amx, &pane, "#{session_id}");
+    assert_eq!(
+        amx.tmux(&["list-panes", "-s", "-t", &session, "-F", "#{pane_id}"])
+            .lines()
+            .count(),
+        1,
+        "and nothing else is in it"
+    );
+    assert_eq!(
+        amx.tmux(&["show-options", "-t", &session, "-v", "destroy-unattached"]),
+        "off",
+        "so looking in on it and leaving again does not end it"
+    );
+}
+
+#[test]
+fn an_agent_started_from_inside_tmux_leaves_the_window_where_it_was() {
+    // The whole of why an agent gets a session rather than a window. tmux
+    // switches to a window it has just made unless it is told not to, so
+    // `amx new` used to take the screen out from under whoever typed it.
+    let amx = Harness::new();
+    let (env, pane) = inside_tmux(&amx);
+    let session = field(&amx, &pane, "#{session_id}");
+
+    // A second window, so the one being looked at is a choice and not the
+    // only thing there is to look at.
+    amx.tmux(&[
+        "new-window",
+        "-d",
+        "-t",
+        &session,
+        "--",
+        "sh",
+        "-c",
+        "while :; do sleep 0.05; done",
+    ]);
+    let windows = amx.tmux(&["list-windows", "-t", &session, "-F", "#{window_id}"]);
+    let watching = field(&amx, &session, "#{window_id}");
+
+    let mut command =
+        amx.amx_command(&["new", "--no-worktree", "--agent", &amx.mock(), "look busy"]);
+    command.env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"));
+    command.envs(env);
+    let id = id_of(&command.output().expect("running amx new"));
+
+    assert_eq!(
+        field(&amx, &session, "#{window_id}"),
+        watching,
+        "the window a person was looking at is the window they are still looking at"
+    );
+    assert_eq!(
+        amx.tmux(&["list-windows", "-t", &session, "-F", "#{window_id}"]),
+        windows,
+        "and nothing was added to the session they were in"
+    );
+    assert_eq!(
+        field(&amx, &amx.pane_of(&id), "#{session_name}"),
+        format!("amx-{id}"),
+        "the agent is on the same server, in a session of its own"
+    );
+}
+
+#[test]
+fn agents_never_share_a_window_and_never_wait_on_each_other() {
+    let amx = Harness::new();
+    let (env, _) = inside_tmux(&amx);
+
+    let mut ids = Vec::new();
+    for task in ["the first", "the second"] {
+        let mut command = amx.amx_command(&["new", "--no-worktree", "--agent", &amx.mock(), task]);
+        command.env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"));
+        command.envs(env.clone());
+        ids.push(id_of(&command.output().expect("running amx new")));
+    }
+
+    let sessions: Vec<String> = ids
+        .iter()
+        .map(|id| field(&amx, &amx.pane_of(id), "#{session_name}"))
+        .collect();
+    assert_eq!(
+        sessions,
+        ids.iter().map(|id| format!("amx-{id}")).collect::<Vec<_>>(),
+        "a session each, not a wall they are tiled into together"
+    );
+}
+
+#[test]
+fn amx_puts_no_window_of_its_own_between_a_person_and_their_agents() {
+    // The wall, and the pane that stood on it saying what to type while it was
+    // empty, are both gone. What amx makes on a person's server is one session
+    // per agent and nothing besides.
+    let amx = Harness::new();
+    let (env, pane) = inside_tmux(&amx);
+    let theirs = field(&amx, &pane, "#{session_name}");
+
+    let mut command =
+        amx.amx_command(&["new", "--no-worktree", "--agent", &amx.mock(), "look busy"]);
+    command.env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"));
+    command.envs(env);
+    let id = id_of(&command.output().expect("running amx new"));
+
+    let mut windows: Vec<String> = amx
+        .tmux(&["list-windows", "-a", "-F", "#{session_name} #{window_name}"])
+        .lines()
+        .map(str::to_string)
+        .collect();
+    windows.sort();
+    assert_eq!(
+        windows.len(),
+        2,
+        "the person's window and the agent's, and nothing amx put up: {windows:?}"
+    );
+    assert!(
+        windows
+            .iter()
+            .all(|line| line.starts_with(&theirs) || line.starts_with(&format!("amx-{id} "))),
+        "{windows:?}"
+    );
+    assert!(
+        !windows.iter().any(|line| line.contains("amx-wall")),
+        "{windows:?}"
+    );
+}
+
+#[test]
+fn the_server_an_agent_lands_on_reads_the_config_the_person_wrote() {
+    // amx carries no tmux config of its own any more. The server an agent
+    // lands on is the person's, and whichever call starts it, it is born
+    // reading their file and nobody else's.
+    let amx = Harness::new();
+    let theirs = Theirs::new();
+    std::fs::write(amx.home().join(".tmux.conf"), "set -g history-limit 4242\n")
+        .expect("the person's own tmux config");
+
+    let out = start(&amx, &[("AMX_TMUX_SOCKET", theirs.socket())], "look busy");
+    id_of(&out);
+
+    assert_eq!(
+        theirs
+            .ask(&["show-options", "-g", "-v", "history-limit"])
+            .as_deref(),
+        Some("4242"),
+        "the server amx started read ~/.tmux.conf"
+    );
+    let state = amx.state_root();
+    assert!(
+        !state
+            .parent()
+            .expect("the state root has a parent")
+            .join("amx.tmux.conf")
+            .exists(),
+        "and amx wrote no config of its own for it to read instead"
+    );
 }
 
 #[test]
@@ -140,225 +295,5 @@ fn inside_tmux_the_view_opens_where_it_was_asked_from() {
             .lines()
             .any(|name| name == "amx-view"),
         "in place means in the terminal it was asked from, not in a room of its own"
-    );
-}
-
-#[test]
-fn outside_tmux_the_front_door_opens_the_cockpit() {
-    let amx = Harness::new();
-    let cockpit = Private::new();
-    amx.record("fix-login-a1b", "%404");
-
-    let pane = amx.in_a_terminal(&outside_tmux(&cockpit), &[]);
-
-    let mut windows = amx.until("the cockpit", || {
-        let windows = cockpit.windows();
-        (windows.len() == 2).then_some(windows)
-    });
-    windows.sort();
-    assert_eq!(
-        windows,
-        ["amx amx-view", "amx amx-wall"],
-        "one room, with both halves of it in it"
-    );
-
-    // And the terminal the command was typed in is now looking at it.
-    amx.until("the view to reach the terminal", || {
-        amx.capture(&pane).contains("fix-login-a1b").then_some(())
-    });
-    assert!(
-        !cockpit
-            .ask(&["list-clients", "-F", "#{client_tty}"])
-            .unwrap_or_default()
-            .is_empty(),
-        "the command a person typed and the room they end up in are one thing"
-    );
-}
-
-#[test]
-fn the_cockpit_is_the_room_the_agents_are_in() {
-    let amx = Harness::new();
-    let cockpit = Private::new();
-    let mock = amx.mock();
-
-    // The cockpit first, and an agent into it afterwards.
-    amx.in_a_terminal(&outside_tmux(&cockpit), &[]);
-    amx.until("the cockpit", || {
-        (cockpit.windows().len() == 2).then_some(())
-    });
-
-    let out = amx
-        .amx_command(&["new", "--no-worktree", "--agent", &mock, "look busy"])
-        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"))
-        .env("AMX_TMUX_SOCKET", cockpit.socket())
-        .output()
-        .expect("running amx new");
-    assert!(
-        out.status.success(),
-        "amx new: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let mut windows = amx.until("the agent's wall", || {
-        let windows = cockpit.windows();
-        (windows.len() == 2).then_some(windows)
-    });
-    windows.sort();
-    assert_eq!(windows, ["amx amx-view", "amx amx-wall"]);
-
-    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    assert!(
-        cockpit
-            .wall()
-            .iter()
-            .any(|(pane, _)| *pane == amx.pane_of(&id)),
-        "the agent went on the wall of the room that was already open"
-    );
-}
-
-#[test]
-fn a_cockpit_opened_after_an_agent_joins_the_room_it_made() {
-    let amx = Harness::new();
-    let cockpit = Private::new();
-    let mock = amx.mock();
-
-    let out = amx
-        .amx_command(&["new", "--no-worktree", "--agent", &mock, "look busy"])
-        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"))
-        .env("AMX_TMUX_SOCKET", cockpit.socket())
-        .output()
-        .expect("running amx new");
-    assert!(
-        out.status.success(),
-        "amx new: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(cockpit.windows(), ["amx amx-wall"]);
-    let wall = cockpit.wall();
-
-    amx.in_a_terminal(&outside_tmux(&cockpit), &[]);
-
-    let mut windows = amx.until("the view", || {
-        let windows = cockpit.windows();
-        (windows.len() == 2).then_some(windows)
-    });
-    windows.sort();
-    assert_eq!(
-        windows,
-        ["amx amx-view", "amx amx-wall"],
-        "one room, not a second one beside it"
-    );
-    assert_eq!(
-        cockpit.wall(),
-        wall,
-        "a wall with an agent on it is not empty, and gets no hint beside it"
-    );
-}
-
-#[test]
-fn opening_the_cockpit_twice_leaves_one_view_and_one_placeholder() {
-    let amx = Harness::new();
-    let cockpit = Private::new();
-
-    for _ in 0..2 {
-        amx.in_a_terminal(&outside_tmux(&cockpit), &[]);
-    }
-
-    amx.until("both terminals to arrive", || {
-        let clients = cockpit.ask(&["list-clients", "-F", "#{client_tty}"])?;
-        (clients.lines().count() == 2).then_some(())
-    });
-    let mut windows = cockpit.windows();
-    windows.sort();
-    assert_eq!(windows, ["amx amx-view", "amx amx-wall"]);
-    assert_eq!(
-        cockpit.wall().len(),
-        1,
-        "the second cockpit found the empty state rather than putting another one up"
-    );
-}
-
-#[test]
-fn an_empty_wall_shows_a_placeholder_and_the_first_agent_replaces_it() {
-    let amx = Harness::new();
-    let cockpit = Private::new();
-    let mock = amx.mock();
-
-    amx.in_a_terminal(&outside_tmux(&cockpit), &[]);
-
-    // The wall is there before any agent is, and what stands on it is amx's
-    // own pane — marked, so amx can find it again — rather than somebody's
-    // login shell.
-    let pane = amx.until("the wall's empty state", || {
-        match cockpit.wall().as_slice() {
-            [(pane, true)] => Some(pane.clone()),
-            _ => None,
-        }
-    });
-    amx.until("the hint", || {
-        cockpit.capture(&pane).contains("type a task").then_some(())
-    });
-
-    let out = amx
-        .amx_command(&["new", "--no-worktree", "--agent", &mock, "look busy"])
-        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"))
-        .env("AMX_TMUX_SOCKET", cockpit.socket())
-        .output()
-        .expect("running amx new");
-    assert!(
-        out.status.success(),
-        "amx new: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
-
-    // The first agent takes that pane's place rather than splitting the wall
-    // beside it, and the hint's marker comes off with the hint.
-    assert_eq!(cockpit.wall(), [(pane.clone(), false)]);
-    assert_eq!(
-        amx.pane_of(&id),
-        pane,
-        "the record names the pane the agent is in"
-    );
-    // And the pane the hint was in is running the agent, hint and all gone:
-    // the respawn carries the handoff the same way a split does.
-    amx.until("the agent to say something", || {
-        let screen = cockpit.capture(&pane);
-        (screen.contains("watching the log") && !screen.contains("type a task")).then_some(())
-    });
-}
-
-#[test]
-fn the_private_server_is_born_with_amxs_own_settings() {
-    // amx's config rides every call that could start its server, because tmux
-    // reads one on no other call. Whichever call gets there first, the server
-    // it starts is amx's own and not the machine's.
-    let amx = Harness::new();
-    let history = ["show-options", "-g", "-v", "history-limit"];
-
-    let cockpit = Private::new();
-    amx.in_a_terminal(&outside_tmux(&cockpit), &[]);
-    assert_eq!(
-        amx.until("the cockpit's server", || cockpit.ask(&history)),
-        "50000",
-        "the cockpit started it"
-    );
-
-    let spawned = Private::new();
-    let out = amx
-        .amx_command(&["new", "--no-worktree", "--agent", &amx.mock(), "look busy"])
-        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"))
-        .env("AMX_TMUX_SOCKET", spawned.socket())
-        .output()
-        .expect("running amx new");
-    assert!(
-        out.status.success(),
-        "amx new: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(
-        spawned.ask(&history).as_deref(),
-        Some("50000"),
-        "an agent started it"
     );
 }

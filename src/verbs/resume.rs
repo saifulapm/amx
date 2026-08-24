@@ -20,7 +20,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-use crate::spawn::{self, Handoff, Placement};
+use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, Phase, State};
 use crate::tmux::Server;
 use crate::{derive, exit, paths, rules, store, worktree};
@@ -209,19 +209,16 @@ fn bring_back(root: &Path, id: &str, env: &BTreeMap<String, String>) -> Result<(
         }
     })?;
 
-    let server = spawn::server(root)?;
+    let server = spawn::server()?;
     let boot = vec![
         std::env::current_exe()?.to_string_lossy().into_owned(),
         "_boot".to_string(),
         id.to_string(),
     ];
-    // Where it was started is where it comes back: an agent put out of sight
-    // was put there on purpose.
-    let placement = match meta.bg {
-        true => Placement::Background,
-        false => Placement::Wall,
-    };
-    let pane = spawn::place(&server, placement, id, &dir, &boot, &spawn::wall_lock(root))?;
+    // The session the agent had is gone with the pane that held it, and the
+    // one this makes wears the same name: an id is what addresses an agent,
+    // whichever pane it is in this time.
+    let pane = spawn::place(&server, id, &dir, &boot)?;
 
     // Still under the writer taken at the top: a hook the new pane fires
     // waits at the lock until the pane is on the record, and update_meta

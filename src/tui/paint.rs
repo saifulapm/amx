@@ -61,7 +61,7 @@ pub(super) const HELP: [(&str, &str); 20] = [
     ("space", "the card: what one is asking, and the answer"),
     ("enter →", "bring its window forward · shut a group"),
     ("esc", "put the card away · leave a line alone"),
-    ("n", "start an agent · tab starts it out of sight"),
+    ("n", "start an agent"),
     ("r", "reply: a message, or an answer on the card"),
     ("d", "what it has changed"),
     (
@@ -1368,10 +1368,7 @@ fn footer(screen: &Screen, width: u16) -> Line<'static> {
                 "enter narrows it · s: or a: alone clears · esc cancels".to_string()
             }
             Mode::Typing(composer) => match composer.asking {
-                Asking::Task => {
-                    "enter starts it · alt+enter newline · tab out of sight · esc cancels"
-                        .to_string()
-                }
+                Asking::Task => "enter starts it · alt+enter newline · esc cancels".to_string(),
                 Asking::Reply { .. } => {
                     "enter sends it · alt+enter newline · esc cancels".to_string()
                 }
@@ -3074,7 +3071,7 @@ mod tests {
         let painted = painted(&screen, (60, 6));
         assert_eq!(painted[3], "task ▸ port the importer");
         assert!(painted[5].contains("enter starts it"), "{:?}", painted[5]);
-        assert!(painted[5].contains("tab out of sight"), "{:?}", painted[5]);
+        assert!(painted[5].contains("alt+enter newline"), "{:?}", painted[5]);
     }
 
     #[test]

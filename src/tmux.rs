@@ -20,8 +20,12 @@
 //!   one exception says so in its own name: `capture_painted` keeps the
 //!   escapes because they are what it was called for, and hands the reader the
 //!   job of walking them.
-//! * **The conf rides every call.** A server born without `-f` reads
-//!   `~/.tmux.conf`, and the server is born by whichever call arrives first.
+//! * **A conf, where one is asked for, rides every call.** tmux reads a config
+//!   file when it starts a server and on no later call, and the server is born
+//!   by whichever call arrives first. amx asks for none: an agent's session
+//!   goes on the person's own server, under the file they wrote for it. It is
+//!   the tests that ask, so that nothing in a developer's `~/.tmux.conf` can
+//!   change what they measure.
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -130,8 +134,8 @@ impl Server {
         Self { socket, conf: None }
     }
 
-    /// Ride this conf on every call, so whichever one starts the server does
-    /// so with amx's settings instead of the user's `~/.tmux.conf`.
+    /// Ride this conf on every call, so whichever one starts the server reads
+    /// it rather than `~/.tmux.conf`.
     pub fn with_conf(mut self, conf: impl Into<PathBuf>) -> Self {
         self.conf = Some(conf.into());
         self
@@ -667,7 +671,7 @@ mod tests {
         assert_eq!(PaneId::new("%3").unwrap().as_str(), "%3");
         assert_eq!(WindowId::new("@1").unwrap().to_string(), "@1");
         assert_eq!(SessionId::new("$0").unwrap().as_str(), "$0");
-        for bad in ["", "%", "3", "amx-wall", "build: api", "@1"] {
+        for bad in ["", "%", "3", "amx-view", "build: api", "@1"] {
             assert!(PaneId::new(bad).is_err(), "{bad:?} is not a pane id");
         }
     }
@@ -759,18 +763,18 @@ mod tests {
         );
         assert_eq!(server.session_named("elsewhere").unwrap(), None);
 
-        assert_eq!(server.window_named(&session, "amx-wall").unwrap(), None);
+        assert_eq!(server.window_named(&session, "amx-view").unwrap(), None);
         let (window, _) = server
             .new_window(
                 &session,
                 &Spawn {
-                    name: Some("amx-wall"),
+                    name: Some("amx-view"),
                     ..idle()
                 },
             )
             .unwrap();
         assert_eq!(
-            server.window_named(&session, "amx-wall").unwrap().as_ref(),
+            server.window_named(&session, "amx-view").unwrap().as_ref(),
             Some(&window)
         );
 

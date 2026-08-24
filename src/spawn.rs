@@ -1,5 +1,10 @@
 //! Starting an agent: where its pane goes, and what the pane is handed.
 //!
+//! An agent is one detached tmux session, `amx-<id>`, on the server the person
+//! is already using. Nothing is tiled, nothing is bundled, and nothing amx
+//! does moves anybody's screen: `new-session -d` cannot, and there is no other
+//! way in here.
+//!
 //! Nothing amx starts stays resident. A pane runs `amx _boot <id>`, which
 //! reads the handoff its record holds, puts the environment back, and execs
 //! the vendor with `amx _exit` behind it. From then on the pane belongs to the
@@ -18,37 +23,21 @@ use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::registry;
 use crate::store::{Agent, Meta};
-use crate::tmux::{PaneId, Server, SessionId, Spawn, WindowId};
+use crate::tmux::{PaneId, Server, Spawn};
 
 /// What the pane is handed at birth.
 pub const HANDOFF: &str = "handoff.json";
 
-/// The window agents tile into.
-pub const WALL: &str = "amx-wall";
+/// tmux's own default socket name, which is the server a bare `tmux` reaches.
+const DEFAULT_SOCKET: &str = "default";
 
-/// The pane option marking amx's own pane on an empty wall, so the first agent
-/// knows which pane to take the place of.
-pub const PLACEHOLDER: &str = "@amx_placeholder";
-
-/// What an empty wall says, and what to type to fill it.
-///
-/// Two lines a person can act on, and nothing about tmux: somebody looking at
-/// an empty wall for the first time is being told how to start an agent, not
-/// which key moves between panes.
-const HINT: &str = "type a task";
-const EXAMPLE: &str = r#"amx new "fix the login bug""#;
-
-/// The socket amx's own server listens on, and the session it keeps the wall
-/// in.
-pub const PRIVATE: &str = "amx";
-
-/// Test-only override of the private server's socket name, so a suite never
-/// reaches the machine's real agents.
+/// Test-only override of the socket amx puts agents on, so a suite never
+/// reaches the machine's real tmux.
 const SOCKET_ENV: &str = "AMX_TMUX_SOCKET";
 
 /// The variables that belong to the pane a command was typed in, not to the
@@ -67,15 +56,6 @@ pub struct Handoff {
     pub command: Vec<String>,
     /// The environment to run it in.
     pub env: BTreeMap<String, String>,
-}
-
-/// Where a new agent's pane goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Placement {
-    /// Tiled into the wall, where somebody can see it.
-    Wall,
-    /// In a session of its own that nobody is attached to.
-    Background,
 }
 
 /// The environment an agent inherits, given the one `new` was run with.
@@ -158,9 +138,13 @@ pub fn read_handoff(dir: &Path) -> Result<Handoff> {
     serde_json::from_str(&text).with_context(|| format!("reading {}", path.display()))
 }
 
-/// The server this agent will live on: the one the caller is already inside,
-/// or amx's own.
-pub fn server(state_root: &Path) -> Result<Server> {
+/// The server an agent lives on: the one the caller is already inside, or the
+/// machine's default.
+///
+/// No conf rides these calls. The server is the person's, and what it reads
+/// when it starts is the config they wrote for it — amx has none of its own to
+/// put in front of that.
+pub fn server() -> Result<Server> {
     if let Some(inside) = std::env::var("TMUX").ok().filter(|v| !v.is_empty())
         && let Some(server) = Server::from_tmux_env(&inside)
     {
@@ -170,279 +154,43 @@ pub fn server(state_root: &Path) -> Result<Server> {
     let socket = std::env::var(SOCKET_ENV)
         .ok()
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| PRIVATE.to_string());
-    Ok(Server::named(socket).with_conf(conf_file(state_root)?))
+        .unwrap_or_else(|| DEFAULT_SOCKET.to_string());
+    Ok(Server::named(socket))
 }
 
-/// amx's own tmux conf, put where a server can be told to read it.
+/// What the session holding an agent is called.
+fn session_name(id: &str) -> String {
+    format!("amx-{id}")
+}
+
+/// Start the agent's pane: a detached session of its own, named for the id.
 ///
-/// It is written out rather than pointed at inside the binary because tmux
-/// reads a path; it is rewritten whenever it differs, so an amx that has been
-/// upgraded does not leave the old one behind.
-pub fn conf_file(state_root: &Path) -> Result<PathBuf> {
-    let bundled = include_str!("../assets/amx.tmux.conf");
-    let root = state_root.parent().unwrap_or(state_root);
-    std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
-
-    let path = root.join("amx.tmux.conf");
-    if std::fs::read_to_string(&path).is_ok_and(|existing| existing == bundled) {
-        return Ok(path);
-    }
-    std::fs::write(&path, bundled).with_context(|| format!("writing {}", path.display()))?;
-    Ok(path)
-}
-
-/// Start a pane running `command`, where `placement` says it goes.
-pub fn place(
-    server: &Server,
-    placement: Placement,
-    id: &str,
-    cwd: &Path,
-    command: &[String],
-    lock: &Path,
-) -> Result<PaneId> {
-    match placement {
-        Placement::Background => background(server, id, cwd, command),
-        Placement::Wall => wall(server, cwd, command, lock),
-    }
-}
-
-/// A session of its own that nobody is attached to.
-fn background(server: &Server, id: &str, cwd: &Path, command: &[String]) -> Result<PaneId> {
-    let name = format!("amx-{id}");
-    let mut args = vec![
-        "new-session".to_string(),
-        "-d".to_string(),
-        "-s".to_string(),
-        name,
-        "-c".to_string(),
-        cwd.to_string_lossy().into_owned(),
-        "-P".to_string(),
-        "-F".to_string(),
-        "#{session_id} #{pane_id}".to_string(),
-        "--".to_string(),
-    ];
-    args.extend(command.iter().cloned());
-
-    let printed = server.run(&borrow(&args))?;
-    let (session, pane) = printed
-        .split_once(' ')
-        .with_context(|| format!("new-session printed {printed:?}"))?;
+/// `-d` is what keeps a spawn from moving anybody. tmux switches to a window
+/// it has just made unless it is told not to, so an agent that arrived as a
+/// window in the caller's session took the screen out from under whoever typed
+/// the command. A session nobody is attached to cannot.
+pub fn place(server: &Server, id: &str, cwd: &Path, command: &[String]) -> Result<PaneId> {
+    let name = session_name(id);
+    let command = borrow(command);
+    let (session, pane) = server.new_session(&Spawn {
+        name: Some(&name),
+        cwd: Some(cwd),
+        command: &command,
+        ..Spawn::default()
+    })?;
 
     // Without this, tmux destroys the session the moment whoever looked in on
     // it detaches again.
-    server.set_session_option(&SessionId::new(session)?, "destroy-unattached", "off")?;
-    PaneId::new(pane)
-}
-
-/// Tiled into the wall, made if it is not there.
-///
-/// The lock is what keeps two `new`s a moment apart from building two walls:
-/// finding and creating are two steps, and between them the answer to "is
-/// there a wall?" is still no.
-fn wall(server: &Server, cwd: &Path, command: &[String], lock: &Path) -> Result<PaneId> {
-    let _held = hold(lock)?;
-
-    let session = match session_for_wall(server)? {
-        Some(session) => session,
-        // No server, no session: one call makes the server, the session, the
-        // wall and the agent's own pane.
-        None => return open_wall_session(server, cwd, command),
-    };
-
-    match server.window_named(&session, WALL)? {
-        Some(window) => {
-            // A wall that was empty is amx's own pane saying so, and the first
-            // agent takes its place rather than splitting the wall beside it.
-            if let Some(hint) = placeholder_in(server, &window)? {
-                return replace(server, &hint, cwd, command);
-            }
-            let mut args = vec![
-                "split-window".to_string(),
-                "-t".to_string(),
-                window.as_str().to_string(),
-                "-c".to_string(),
-                cwd.to_string_lossy().into_owned(),
-                "-P".to_string(),
-                "-F".to_string(),
-                "#{pane_id}".to_string(),
-                "--".to_string(),
-            ];
-            args.extend(command.iter().cloned());
-            let pane = PaneId::new(server.run(&borrow(&args))?)?;
-            server.select_layout(&window, "tiled")?;
-            Ok(pane)
-        }
-        None => {
-            let mut args = vec![
-                "new-window".to_string(),
-                "-t".to_string(),
-                session.as_str().to_string(),
-                "-n".to_string(),
-                WALL.to_string(),
-                "-c".to_string(),
-                cwd.to_string_lossy().into_owned(),
-                "-P".to_string(),
-                "-F".to_string(),
-                "#{pane_id}".to_string(),
-                "--".to_string(),
-            ];
-            args.extend(command.iter().cloned());
-            PaneId::new(server.run(&borrow(&args))?)
-        }
-    }
-}
-
-/// The wall's empty state: amx's own pane, saying what to type.
-///
-/// A wall is opened far more often than an agent is started, and until one is
-/// there is nothing on it. What used to stand there was the person's login
-/// shell, which makes the first thing a new cockpit shows somebody's own
-/// prompt with no sign of what amx is waiting for.
-///
-/// The caller holds the wall lock: this finds and then creates, and between
-/// those two steps the answer to "is there a wall?" is still no.
-pub fn ensure_wall(server: &Server, session: &SessionId) -> Result<()> {
-    // A wall that exists has panes on it, and panes on the wall are agents or
-    // the hint that is already there. Either way there is nothing to put up.
-    if server.window_named(session, WALL)?.is_some() {
-        return Ok(());
-    }
-
-    let command = placeholder_command();
-    let (_, pane) = server.new_window(
-        session,
-        &Spawn {
-            name: Some(WALL),
-            command: &borrow(&command),
-            ..Spawn::default()
-        },
-    )?;
-    server.set_pane_option(&pane, PLACEHOLDER, "1")
-}
-
-/// What the empty wall's pane runs.
-///
-/// It prints the hint once and then waits for nothing, and the waiting is the
-/// point: a pane whose command ends is a pane tmux closes, and a window goes
-/// with its last pane — so a hint that returned would take the wall with it.
-///
-/// A shell rather than an amx verb of its own, because nothing amx starts
-/// stays resident. The hint is two lines of output and a wait, and an amx
-/// sitting in a pane forever to produce them would be the only resident amx
-/// there is.
-///
-/// The words travel as arguments, never in the script: `$0` and `$1` are the
-/// two lines, by the same law that keeps a task out of a shell's hands.
-fn placeholder_command() -> Vec<String> {
-    [
-        "sh",
-        "-c",
-        r#"printf '\n  %s\n\n  %s\n' "$0" "$1"; while :; do sleep 86400; done"#,
-        HINT,
-        EXAMPLE,
-    ]
-    .map(str::to_string)
-    .to_vec()
-}
-
-/// The empty state's pane on this wall, while it is still standing.
-fn placeholder_in(server: &Server, window: &WindowId) -> Result<Option<PaneId>> {
-    let listed = server.run(&[
-        "list-panes",
-        "-t",
-        window.as_str(),
-        "-F",
-        &format!("#{{pane_id}} #{{{PLACEHOLDER}}}"),
-    ])?;
-    marked(&listed).map(PaneId::new).transpose()
-}
-
-/// The marked pane in a `<pane id> <marker>` listing.
-///
-/// An unset user option expands to nothing, so the marker is read by position
-/// off a single-space split and never by counting words — and the last line of
-/// all has had its empty marker trimmed off it before this sees it.
-fn marked(listed: &str) -> Option<&str> {
-    listed
-        .lines()
-        .find(|line| line.split(' ').nth(1) == Some("1"))
-        .and_then(|line| line.split(' ').next())
-}
-
-/// The first agent takes the empty state's place.
-///
-/// `respawn-pane -k` rather than closing the hint and splitting what is left:
-/// the hint is the wall's only pane, and closing it would take the window with
-/// it. The pane keeps its id through the respawn, so the record names the pane
-/// the agent is really in.
-///
-/// The marker comes off before the respawn, and the order is the point. A pane
-/// left marked with an agent in it would be respawned over by the next `new`;
-/// the other way round costs a hint standing beside the agents until the wall
-/// empties again.
-fn replace(server: &Server, pane: &PaneId, cwd: &Path, command: &[String]) -> Result<PaneId> {
-    server.unset_pane_option(pane, PLACEHOLDER)?;
-
-    let mut args = vec![
-        "respawn-pane".to_string(),
-        "-k".to_string(),
-        "-c".to_string(),
-        cwd.to_string_lossy().into_owned(),
-        "-t".to_string(),
-        pane.as_str().to_string(),
-        "--".to_string(),
-    ];
-    args.extend(command.iter().cloned());
-    server.run(&borrow(&args))?;
-    Ok(pane.clone())
-}
-
-/// The session the wall belongs in: the caller's own when there is one, else
-/// amx's.
-fn session_for_wall(server: &Server) -> Result<Option<SessionId>> {
-    // Inside tmux, the caller's pane says which session it is in. A value read
-    // on a pane that is gone answers emptily, which reads as "not inside".
-    if let Ok(pane) = std::env::var("TMUX_PANE")
-        && !pane.is_empty()
-        && let Ok(session) = server.run(&["display-message", "-p", "-t", &pane, "#{session_id}"])
-        && !session.is_empty()
-    {
-        return Ok(Some(SessionId::new(session)?));
-    }
-
-    // Otherwise amx's own session, if this server is running one.
-    server.session_named(PRIVATE)
-}
-
-/// The first agent on amx's own server: everything at once.
-fn open_wall_session(server: &Server, cwd: &Path, command: &[String]) -> Result<PaneId> {
-    let mut args = vec![
-        "new-session".to_string(),
-        "-d".to_string(),
-        "-s".to_string(),
-        PRIVATE.to_string(),
-        "-n".to_string(),
-        WALL.to_string(),
-        "-c".to_string(),
-        cwd.to_string_lossy().into_owned(),
-        "-P".to_string(),
-        "-F".to_string(),
-        "#{pane_id}".to_string(),
-        "--".to_string(),
-    ];
-    args.extend(command.iter().cloned());
-    PaneId::new(server.run(&borrow(&args))?)
-}
-
-/// The lock everything that could build a wall takes first — an agent
-/// arriving, and a person opening the cockpit. It is one lock or it is no
-/// lock at all, so the path lives here rather than at each caller.
-pub fn wall_lock(root: &Path) -> PathBuf {
-    root.join("wall.lock")
+    server.set_session_option(&session, "destroy-unattached", "off")?;
+    Ok(pane)
 }
 
 /// Hold a lock for as long as the returned value lives.
+///
+/// Nothing a spawn does needs one: a session is claimed by the name it is
+/// given, and the id under that name was claimed by a directory before any of
+/// this. It is the front door that finds and then creates, and it is the front
+/// door that takes this.
 pub fn hold(path: &Path) -> Result<nix::fcntl::Flock<std::fs::File>> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -671,35 +419,6 @@ mod tests {
     }
 
     #[test]
-    fn spawn_the_placeholder_says_what_to_type_and_then_waits_for_nothing() {
-        let command = placeholder_command();
-        let script = &command[2];
-
-        assert_eq!(command[0], "sh");
-        assert!(
-            command[3..].contains(&HINT.to_string()),
-            "the words are arguments, so nothing a person reads is ever syntax"
-        );
-        assert!(!script.contains(HINT), "{script}");
-        assert!(
-            script.contains("while :"),
-            "a pane whose command ends is a pane tmux closes, and the wall goes with it"
-        );
-    }
-
-    #[test]
-    fn spawn_the_placeholder_is_found_by_its_marker_and_not_by_where_it_sits() {
-        assert_eq!(marked("%1 \n%2 \n%3 1"), Some("%3"));
-        assert_eq!(marked("%1 1\n%2 "), Some("%1"));
-        assert_eq!(marked("%1 \n%2 "), None, "a wall of agents is not empty");
-        assert_eq!(
-            marked("%1\n%2"),
-            None,
-            "the last line has had its empty marker trimmed off it"
-        );
-    }
-
-    #[test]
     fn spawn_a_handoff_is_readable_by_nobody_else() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -717,29 +436,6 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o600, "somebody's environment is in it");
         assert_eq!(read_handoff(dir.path()).unwrap(), handoff);
-    }
-
-    #[test]
-    fn spawn_the_conf_is_written_where_a_server_can_read_it() {
-        let root = TempDir::new().unwrap();
-        let state = root.path().join("agents");
-
-        let path = conf_file(&state).unwrap();
-        assert_eq!(path, root.path().join("amx.tmux.conf"));
-        assert!(
-            std::fs::read_to_string(&path)
-                .unwrap()
-                .contains("history-limit")
-        );
-
-        // An amx that has been upgraded replaces what the last one left.
-        std::fs::write(&path, "set -g mouse off\n").unwrap();
-        let again = conf_file(&state).unwrap();
-        assert!(
-            std::fs::read_to_string(&again)
-                .unwrap()
-                .contains("history-limit")
-        );
     }
 
     #[test]

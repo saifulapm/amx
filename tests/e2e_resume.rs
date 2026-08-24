@@ -223,15 +223,15 @@ fn resume_picks_up_an_agent_whose_command_ran_to_the_end() {
 }
 
 #[test]
-fn resume_puts_a_background_agent_back_in_the_background() {
-    // An agent started out of sight was put there on purpose — it is an
-    // orchestrator's worker — and a resume must not move it onto the wall.
+fn resume_puts_the_agent_back_in_a_session_of_its_own() {
+    // The pane the agent had went with the session that held it, and a resume
+    // makes both again under the same name: an id is what addresses an agent,
+    // whichever pane it is in this time.
     let amx = Harness::new();
     let id = "quiet-fix-a1b";
     let out = amx
         .amx_command(&[
             "new",
-            "--bg",
             "--name",
             id,
             "--dir",
@@ -264,7 +264,7 @@ fn resume_puts_a_background_agent_back_in_the_background() {
     assert_eq!(
         session,
         format!("amx-{id}"),
-        "back where it was started, not on the wall"
+        "back in the session the id names"
     );
 }
 

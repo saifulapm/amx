@@ -177,7 +177,7 @@ fn the_agent_gets_the_environment_new_was_run_with() {
 }
 
 #[test]
-fn agents_started_from_inside_tmux_tile_into_one_wall() {
+fn agents_started_from_inside_tmux_get_a_session_each() {
     let amx = Harness::new();
     let mock = amx.mock();
     let inside = amx.inside_tmux();
@@ -197,57 +197,25 @@ fn agents_started_from_inside_tmux_tile_into_one_wall() {
             .unwrap(),
     );
 
-    let window_of = |id: &str| {
+    let session_of = |id: &str| {
         let pane = amx.meta(id)["pane"].as_str().unwrap().to_string();
-        amx.tmux(&["display-message", "-p", "-t", &pane, "#{window_id}"])
+        amx.tmux(&["display-message", "-p", "-t", &pane, "#{session_name}"])
     };
-    let (first_window, second_window) = (window_of(&first), window_of(&second));
-
-    assert_eq!(first_window, second_window, "one wall, not two");
+    assert_eq!(session_of(&first), format!("amx-{first}"));
+    assert_eq!(session_of(&second), format!("amx-{second}"));
     assert_eq!(
         amx.tmux(&[
-            "display-message",
-            "-p",
+            "show-options",
             "-t",
-            &first_window,
-            "#{window_name}"
+            &format!("amx-{first}"),
+            "-v",
+            "destroy-unattached"
         ]),
-        "amx-wall"
-    );
-    assert_eq!(
-        amx.tmux(&["list-panes", "-t", &first_window, "-F", "#{pane_id}"])
-            .lines()
-            .count(),
-        2,
-        "both agents are on it"
-    );
-}
-
-#[test]
-fn an_agent_started_in_the_background_is_out_of_the_way() {
-    let amx = Harness::new();
-    let mock = amx.mock();
-    let inside = amx.inside_tmux();
-
-    let id = id_of(
-        &amx.amx_command(&["new", "--bg", "--no-worktree", "--agent", &mock, "quietly"])
-            .env("MOCK_CLAUDE_SCENARIO", amx.scenario("happy-turn"))
-            .envs(inside)
-            .output()
-            .unwrap(),
-    );
-
-    let pane = amx.meta(&id)["pane"].as_str().unwrap().to_string();
-    let window = amx.tmux(&["display-message", "-p", "-t", &pane, "#{window_name}"]);
-    assert_ne!(window, "amx-wall", "a background agent is not on the wall");
-
-    let session = amx.tmux(&["display-message", "-p", "-t", &pane, "#{session_id}"]);
-    assert_eq!(
-        amx.tmux(&["show-options", "-t", &session, "-v", "destroy-unattached"]),
         "off",
-        "and it outlives whoever is not watching it"
+        "and each of them outlives whoever is not watching it"
     );
-    amx.until_state(&id, "idle");
+    amx.until_state(&first, "idle");
+    amx.until_state(&second, "idle");
 }
 
 #[test]

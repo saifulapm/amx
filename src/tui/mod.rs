@@ -866,7 +866,7 @@ impl Screen {
                 // Under the dials the header is showing, which are what this
                 // view says the next agent will be started with.
                 let launching = self.profile.launching(config);
-                match act::start(root, &launching, &composer.text, composer.hidden) {
+                match act::start(root, &launching, &composer.text) {
                     Ok(Started::Yes(said)) => {
                         self.notice = Some(Notice::Advice(said));
                         self.acted();
@@ -889,7 +889,6 @@ impl Screen {
             KeyCode::Backspace => {
                 composer.text.pop();
             }
-            KeyCode::Tab => composer.hidden = !composer.hidden,
             // A key held down with control or alt is somebody reaching for
             // something else, not a character they meant to type.
             KeyCode::Char(typed)
@@ -1441,7 +1440,10 @@ mod tests {
             panic!("still typing")
         };
         assert_eq!(composer.text, "m", "a letter without the chord is a letter");
-        assert!(composer.hidden, "and tab on its own is still the other key");
+        assert_eq!(
+            screen.profile.permission, "auto",
+            "and tab on its own is not the chord that turns the dial"
+        );
     }
 
     /// A reading of an agent, as a reader hands one to the view.

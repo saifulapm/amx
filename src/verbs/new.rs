@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::NewArgs;
 use crate::config::Config;
-use crate::spawn::{self, Dials, Handoff, Placement};
+use crate::spawn::{self, Dials, Handoff};
 use crate::store::{Meta, now};
 use crate::{exit, ids, paths, registry, trust, worktree};
 
@@ -236,18 +236,13 @@ fn start(
         },
     )?;
 
-    let server = spawn::server(root)?;
-    let placement = if args.bg {
-        Placement::Background
-    } else {
-        Placement::Wall
-    };
+    let server = spawn::server()?;
     let boot = vec![
         std::env::current_exe()?.to_string_lossy().into_owned(),
         "_boot".to_string(),
         id.to_string(),
     ];
-    let pane = spawn::place(&server, placement, id, &cwd, &boot, &spawn::wall_lock(root))?;
+    let pane = spawn::place(&server, id, &cwd, &boot)?;
 
     spawn::record(
         root,
@@ -260,7 +255,9 @@ fn start(
             base: tree.as_ref().map(|tree| tree.base.clone()),
             socket: server.socket().clone(),
             pane,
-            bg: args.bg,
+            // Nothing is out of sight any more: an agent is a session nobody
+            // is attached to until somebody looks in on it.
+            bg: false,
             session: None,
             transcript: None,
             created: now(),
@@ -350,7 +347,6 @@ mod tests {
         let [model, permission, effort] = dials;
         NewArgs {
             task: "port the importer".to_string(),
-            bg: false,
             name: None,
             dir: None,
             no_worktree: false,

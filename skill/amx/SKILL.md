@@ -135,7 +135,7 @@ the vendor's own setup.
 Spawn, drive, end it:
 
 ```sh
-id=$(amx new --bg "review docs/plan/tracks/03-orchestration.md and list every risk")
+id=$(amx new "review docs/plan/tracks/03-orchestration.md and list every risk")
 loop.sh "$id"
 amx stop "$id" --force
 ```
@@ -145,7 +145,7 @@ its own agent and the rest keep working while it does:
 
 ```sh
 for track in docs/plan/tracks/*.md; do
-    ids="$ids $(amx new --bg "review $track and list every risk")"
+    ids="$ids $(amx new "review $track and list every risk")"
 done
 for id in $ids; do
     amx result "$id" --timeout 900
@@ -169,9 +169,9 @@ when one is in a state you did not expect.
 - **Read the answer with `result`.** It hands back what the agent wrote,
   verbatim. The pane holds a redrawn screen, escape codes and whatever has
   scrolled past.
-- **Spawn with `--bg`** when nobody is at a terminal. The agent goes in a
-  session nobody is attached to instead of tiling into a window someone is
-  looking at.
+- **Spawning never moves anybody.** Every agent goes in a detached tmux
+  session of its own, `amx-<id>`, so `amx new` from inside tmux leaves whoever
+  typed it looking at what they were looking at.
 - **Worktrees are already the default.** Each agent gets its own at
   `<repo>/.amx/worktrees/<id>` on branch `amx/<id>`, so two of them cannot
   collide in one checkout. `amx diff <id>` is how you read that work. Nothing

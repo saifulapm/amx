@@ -32,8 +32,6 @@ use crate::{derive, exit, registry, rules, spawn, store, verbs, worktree};
 pub struct Composer {
     pub asking: Asking,
     pub text: String,
-    /// Start the agent where nobody is looking.
-    pub hidden: bool,
 }
 
 /// What entering the line will do.
@@ -52,7 +50,6 @@ impl Composer {
         Composer {
             asking,
             text: String::new(),
-            hidden: false,
         }
     }
 
@@ -64,7 +61,6 @@ impl Composer {
     pub fn prompt(&self) -> String {
         match &self.asking {
             Asking::Task if self.narrows() => "narrow".to_string(),
-            Asking::Task if self.hidden => "task · out of sight".to_string(),
             Asking::Task => "task".to_string(),
             Asking::Reply { id, question: true } => format!("answer {id} · y n 1-9 enter esc"),
             Asking::Reply { id, .. } => format!("message to {id}"),
@@ -240,7 +236,7 @@ fn pointed(
 }
 
 /// Start an agent on what was typed, where the view is.
-pub fn start(root: &Path, config: &Config, line: &str, hidden: bool) -> Result<Started> {
+pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
     let (turned, task) = match turned(config, line) {
         Ok(read) => read,
         Err(refusal) => return Ok(Started::No(refusal)),
@@ -269,7 +265,6 @@ pub fn start(root: &Path, config: &Config, line: &str, hidden: bool) -> Result<S
     let named = dials.command.is_some() || dials.model.is_some() || dials.permission.is_some();
     let args = NewArgs {
         task,
-        bg: hidden,
         name: None,
         dir: None,
         no_worktree: false,
@@ -653,10 +648,8 @@ mod tests {
 
     #[test]
     fn a_line_says_what_it_is_for_before_anybody_types_into_it() {
-        let mut composer = Composer::new(Asking::Task);
+        let composer = Composer::new(Asking::Task);
         assert_eq!(composer.prompt(), "task");
-        composer.hidden = true;
-        assert!(composer.prompt().contains("out of sight"), "somewhere else");
 
         let asking = Composer::new(Asking::Reply {
             id: "ask-a1b".to_string(),

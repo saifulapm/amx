@@ -166,10 +166,6 @@ pub struct NewArgs {
     #[arg(value_parser = a_task)]
     pub task: String,
 
-    /// Start out of sight, in a hidden session.
-    #[arg(long)]
-    pub bg: bool,
-
     /// Name the agent instead of deriving a name from the task.
     #[arg(long)]
     pub name: Option<String>,
@@ -355,7 +351,6 @@ mod tests {
             "amx",
             "new",
             "port the importer",
-            "--bg",
             "--name",
             "importer",
             "--dir",
@@ -375,7 +370,6 @@ mod tests {
             panic!("expected new");
         };
         assert_eq!(args.task, "port the importer");
-        assert!(args.bg);
         assert_eq!(args.name.as_deref(), Some("importer"));
         assert_eq!(args.dir, Some(PathBuf::from("/srv/app")));
         assert!(args.no_worktree);
@@ -536,7 +530,7 @@ mod tests {
             &["amx", "new", ""][..],
             &["amx", "new", "   "],
             &["amx", "new", "\t\n"],
-            &["amx", "new", "", "--bg"],
+            &["amx", "new", "", "--no-worktree"],
         ] {
             assert_eq!(code(argv), exit::USAGE, "{argv:?}");
         }

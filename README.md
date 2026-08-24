@@ -7,7 +7,7 @@ starts it, watches it from the outside, and then gets out of the way. It is
 never between the agent and your terminal, and nothing it starts stays
 resident. Attaching to an agent is tmux attaching. Killing amx kills nothing.
 
-That buys two things at once. A person gets a wall of agents they can look in
+That buys two things at once. A person gets a list of agents they can look in
 on, answer and stop. A program gets four commands that say what happened in an
 exit code: start one, ask after it, take its answer, end it.
 
@@ -54,16 +54,15 @@ the events. `amx doctor` says when they are missing.
 ```sh
 amx new "fix the login bug"            # in a repository: its own worktree
 amx new --no-worktree "run the tests"  # in this directory, as it is
-amx new --bg "watch the log"           # out of sight
 amx new --name importer "port it"      # a name you chose
 amx new --dir /srv/app "tail the log"  # somewhere other than here
 ```
 
-Where the pane goes depends on where you typed it. Inside tmux, agents tile
-into an `amx-wall` window of the session you are in. Outside tmux, they go on
-amx's own server (`tmux -L amx`), so the tmux on your machine is never the
-thing standing between you and your agents. `--bg` puts one in a session
-nobody is attached to.
+Every agent is one detached tmux session called `amx-<id>`, on the server you
+are already in or on your default one. Nothing is tiled and nothing is
+switched to: starting an agent from inside tmux leaves the window you were
+looking at exactly where it was. The server is yours, so it reads the
+`~/.tmux.conf` you wrote for it and amx brings no config of its own.
 
 `new` prints the agent's id and nothing else. Everything after this takes that
 id.
@@ -92,10 +91,10 @@ twice.
 
 ## The view
 
-Typing `amx` on its own opens the room. That is amx's own tmux session, with
-the list of agents in one window and the wall the agents tile into beside it.
-Inside tmux it opens the list where you are. Down a pipe it prints the table and
-exits, so `amx | grep waiting` is a reasonable thing to write.
+Typing `amx` on its own opens the list of agents. Inside tmux it opens where
+you are. Outside one it opens a tmux session of its own to draw in, since it
+needs a terminal to hold the list. Down a pipe it prints the table and exits,
+so `amx | grep waiting` is a reasonable thing to write.
 
 The list answers one question, so it is gathered under the answer: the agents
 stopped on a question come first, then the ones mid-turn, then the ones sitting
@@ -109,7 +108,7 @@ behind a count. Rows nobody has been to read carry a mark down the gutter.
 | `space` | the card: what one is asking, and the answer |
 | `enter` `→` | bring its window forward, or shut the group under the cursor |
 | `esc` | put the card away, or leave a line alone |
-| `n` | start an agent, and `tab` starts it out of sight |
+| `n` | start an agent |
 | `r` | reply: a message, or an answer on the card |
 | `d` | what it has changed |
 | `ctrl+x` | stop it, again to forget it, and on a heading clear the finished |
@@ -211,7 +210,7 @@ Four questions, four commands, and the exit code is the answer:
 | `64` | the command line was wrong, including an answer the question would not take |
 
 ```sh
-id=$(amx new --bg --no-worktree --dir "$dir" "Read $brief and execute it exactly." \
+id=$(amx new --no-worktree --dir "$dir" "Read $brief and execute it exactly." \
      -- --session-id "$session")
 
 amx ls --json          # every agent: state, since, last_event, summary, question

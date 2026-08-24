@@ -4,26 +4,25 @@
 //! rather than anything on its command line. A program reading amx's output
 //! wants the table and nothing else. A person already inside tmux wants the
 //! view where they are, because they arranged that terminal themselves. A
-//! person at a bare terminal wants the room: amx's own tmux, so the one on the
-//! machine is never the thing standing between them and their agents.
+//! person at a bare terminal wants a tmux to look at their agents from, and
+//! has not got one.
 //!
-//! The room is one session on amx's own server — the view in a window, and
-//! beside it the wall the agents tile into. Either half can arrive first: an
-//! agent started from outside tmux makes the wall long before anybody looks
-//! in on it, and a cockpit opened before any agent makes a wall with nothing
-//! on it but amx's own pane saying what to type.
+//! The room is one session on the person's own tmux, holding the view. The
+//! agents are not in it: each of them is a session of its own beside it, which
+//! is what `enter` on a row reaches.
 
 use anyhow::{Context, Result};
 use std::io::IsTerminal;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-use crate::spawn::{self, PRIVATE};
+use crate::spawn;
 use crate::store::now;
 use crate::tmux::{Server, SessionId, Spawn, WindowId};
 use crate::{exit, paths, tui, verbs};
 
-/// The window the view lives in.
+/// The session the room is, and the window the view lives in.
+pub const ROOM: &str = "amx";
 pub const VIEW: &str = "amx-view";
 
 /// Which door bare `amx` opens.
@@ -65,30 +64,25 @@ pub fn from_env(config: &Config) -> Result<i32> {
 
 /// Build the room and become its client.
 fn open(root: &Path, view_command: &Path) -> Result<i32> {
-    // Outside tmux, so this is amx's own server — carrying amx's own config on
-    // every call that could be the one that starts it.
-    let server = spawn::server(root)?;
-    let session = ensure(&server, view_command, &spawn::wall_lock(root))?;
+    let server = spawn::server()?;
+    let session = ensure(&server, view_command, &lock(root))?;
     attach(&server, &session)
 }
 
+/// The lock a cockpit takes before it looks for a room.
+///
+/// Two `amx`s a moment apart must not build two rooms: finding and creating
+/// are two steps, and between them the answer to "is there a session?" is
+/// still no.
+fn lock(root: &Path) -> PathBuf {
+    root.join("cockpit.lock")
+}
+
 /// The room, however much of it is there already.
-///
-/// A cockpit is opened far more often than it is made: an agent started from
-/// outside tmux has the session and the wall up already, and what that leaves
-/// out is the one pane a person types in.
-///
-/// Whichever half is missing is put up here, and that includes a wall with no
-/// agents on it yet — an empty wall is amx's own pane saying what to type, and
-/// the room is not much of a room with only one half of it.
-///
-/// The lock is the wall's own. A cockpit and an agent arriving together must
-/// not make two rooms: finding and creating are two steps, and between them
-/// the answer to "is there a session?" is still no.
 fn ensure(server: &Server, view_command: &Path, lock: &Path) -> Result<SessionId> {
     let _held = spawn::hold(lock)?;
 
-    let session = match server.session_named(PRIVATE)? {
+    let session = match server.session_named(ROOM)? {
         Some(session) => session,
         None => open_session(server, view_command)?,
     };
@@ -96,7 +90,6 @@ fn ensure(server: &Server, view_command: &Path, lock: &Path) -> Result<SessionId
         Some(window) => window,
         None => new_view(server, &session, view_command)?,
     };
-    spawn::ensure_wall(server, &session)?;
 
     // Whatever was last on the screen, `amx` was typed to be back at the view.
     server.run(&["select-window", "-t", window.as_str()])?;
@@ -104,15 +97,10 @@ fn ensure(server: &Server, view_command: &Path, lock: &Path) -> Result<SessionId
 }
 
 /// The room from nothing: a session whose first window is the view.
-///
-/// The config rides this call rather than a `start-server` of its own, and
-/// that is the whole trick — a server with no session in it exits the moment
-/// it starts, so the call that makes the first session is the only one whose
-/// config a server lives to remember.
 fn open_session(server: &Server, view_command: &Path) -> Result<SessionId> {
     let command = view_command.to_string_lossy();
     let (session, _) = server.new_session(&Spawn {
-        name: Some(PRIVATE),
+        name: Some(ROOM),
         window: Some(VIEW),
         command: &[&command],
         ..Spawn::default()
@@ -120,8 +108,7 @@ fn open_session(server: &Server, view_command: &Path) -> Result<SessionId> {
     Ok(session)
 }
 
-/// The view for a room that has none — the one an agent made before anybody
-/// looked in on it.
+/// The view for a room that has none.
 fn new_view(server: &Server, session: &SessionId, view_command: &Path) -> Result<WindowId> {
     let command = view_command.to_string_lossy();
     let (window, _) = server.new_window(

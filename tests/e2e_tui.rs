@@ -969,9 +969,9 @@ fn the_composer_starts_an_agent_where_the_view_is() {
 
     let pane = meta["pane"].as_str().expect("a pane").to_string();
     assert_eq!(
-        pane_field(&amx, &pane, "#{window_name}"),
-        "amx-wall",
-        "and tiles into the wall of the session the view is in"
+        pane_field(&amx, &pane, "#{session_name}"),
+        format!("amx-{id}"),
+        "in a session of its own, leaving the view where it was"
     );
 
     // It is a real agent: it runs, and it appears in the list the composer was
@@ -1026,34 +1026,6 @@ fn the_composer_takes_a_paste_as_one_edit_and_grows_to_its_cap() {
         Some(pasted.as_str()),
         "one task, with every line of the paste in it"
     );
-}
-
-#[test]
-fn an_agent_can_be_composed_out_of_sight() {
-    let amx = Harness::new();
-    let view = a_view_that_dispatches(&amx, "happy-turn");
-
-    types(&amx, &view, "n");
-    types(&amx, &view, "watch the log");
-    press(&amx, &view, "Tab");
-    amx.until("the composer to say where it is going", || {
-        screen(&amx, &view).contains("out of sight").then_some(())
-    });
-    press(&amx, &view, "Enter");
-
-    let id = composed(&amx);
-    let pane = amx.meta(&id)["pane"].as_str().expect("a pane").to_string();
-    assert_ne!(
-        pane_field(&amx, &pane, "#{window_name}"),
-        "amx-wall",
-        "an agent started out of sight is not on the wall"
-    );
-    assert_eq!(
-        pane_field(&amx, &pane, "#{session_name}"),
-        format!("amx-{id}"),
-        "it has a session nobody is attached to"
-    );
-    amx.until_state(&id, "idle");
 }
 
 #[test]
