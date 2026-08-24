@@ -269,6 +269,72 @@ fn resume_puts_the_agent_back_in_a_session_of_its_own() {
 }
 
 #[test]
+fn resume_from_inside_tmux_leaves_the_window_where_it_was() {
+    // The second door that starts a pane, held to what the first one promises:
+    // whoever typed the command is looking at a window they chose, and nothing
+    // amx does may take it from them.
+    let amx = Harness::new();
+    let id = "quiet-fix-a1b";
+    start(&amx, id, amx.home(), "happy-turn");
+    amx.until_state(id, "idle");
+    amx.amx(&["stop", id, "--force"]);
+
+    let env = amx.inside_tmux();
+    let pane = env
+        .iter()
+        .find(|(name, _)| name == "TMUX_PANE")
+        .map(|(_, pane)| pane.clone())
+        .expect("the pane the terminal is in");
+    let watching = amx.tmux(&["display-message", "-p", "-t", &pane, "#{session_id}"]);
+
+    // A second window, so the one being looked at is a choice and not the only
+    // thing there is to look at.
+    amx.tmux(&[
+        "new-window",
+        "-d",
+        "-t",
+        &watching,
+        "--",
+        "sh",
+        "-c",
+        "while :; do sleep 0.05; done",
+    ]);
+    let windows = amx.tmux(&["list-windows", "-t", &watching, "-F", "#{window_id}"]);
+    let window = amx.tmux(&["display-message", "-p", "-t", &watching, "#{window_id}"]);
+
+    let out = amx
+        .amx_command(&["resume", id])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
+        .env("MOCK_CLAUDE_SESSION_2", CONTINUED)
+        .envs(env)
+        .output()
+        .expect("running amx resume");
+    assert!(said(&out).contains(id), "it says what came back");
+
+    assert_eq!(
+        amx.tmux(&["display-message", "-p", "-t", &watching, "#{window_id}"]),
+        window,
+        "the window a person was looking at is the window they are still looking at"
+    );
+    assert_eq!(
+        amx.tmux(&["list-windows", "-t", &watching, "-F", "#{window_id}"]),
+        windows,
+        "and nothing was added to the session they were in"
+    );
+    assert_eq!(
+        amx.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &amx.pane_of(id),
+            "#{session_name}",
+        ]),
+        format!("amx-{id}"),
+        "the agent came back beside them, in a session of its own"
+    );
+}
+
+#[test]
 fn resume_all_brings_back_everything_a_dead_server_took() {
     let amx = Harness::new();
     let ids = ["fix-login-a1b", "port-importer-c3d"];
