@@ -45,10 +45,23 @@ keys on and it survived every shape measured, but its wording is not one string:
     Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel
                                                         (an option has a preview)
 
-and while the cursor sits in a text field — the `Other` row or the notes field —
-it gains one more term:
+and where the cursor is on a text row — the `Other` row or the notes field — it
+gains one more term:
 
     Enter to select · ↑/↓ to navigate · ctrl+g to edit in Kak · Esc to cancel
+
+That term belongs to two rows rather than one. Stepped down a checkbox screen a
+row at a time on 2026-08-24 against v2.1.240, with the footer read at each stop:
+
+| cursor on | footer |
+| --- | --- |
+| `3. [ ] Tests` | `Enter to select · ↑/↓ to navigate · Esc to cancel` |
+| `4. [ ] Type something` | the same, with `ctrl+g to edit in Kak` before `Esc to cancel` |
+| `Submit` | the same again, the term still there |
+
+and walking back up drops it at the choice rows again. So it is not evidence
+that the cursor is in text: it is drawn on the field's row and on the
+`Submit`/`Next` row under it, which is the row that ends the answer.
 
 `Kak` there is this machine's `$EDITOR`, so that term names a local setting and
 can never be an anchor. What every one of them opens with is `Enter to select`,
