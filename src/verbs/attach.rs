@@ -69,7 +69,27 @@ fn client(
 fn switches(server: &Server, inside: Option<&str>) -> bool {
     inside
         .and_then(Server::from_tmux_env)
-        .is_some_and(|here| here.socket() == server.socket())
+        .is_some_and(|here| same_server(&here, server))
+}
+
+/// Whether two ways of writing a server address the same one.
+///
+/// Written the same way, they do, and that is answered without asking tmux
+/// anything. Written differently, only tmux can say: `$TMUX` names a socket by
+/// path, and an agent started outside tmux was recorded on `-L default`, which
+/// is that same socket spelled the way each side learned it. A server nothing
+/// is listening on has no path to give, and two silences are not a match.
+fn same_server(here: &Server, there: &Server) -> bool {
+    if here.socket() == there.socket() {
+        return true;
+    }
+    let path = |server: &Server| {
+        server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .ok()
+            .filter(|path| !path.is_empty())
+    };
+    matches!((path(here), path(there)), (Some(here), Some(there)) if here == there)
 }
 
 /// Become tmux.
@@ -84,6 +104,50 @@ fn exec(command: &mut Command) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tmux::Spawn;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A socket name of this test's own.
+    fn tag() -> String {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        format!(
+            "amx-test-attach-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    /// A server of this test's own, gone when the test is.
+    struct TestServer {
+        name: String,
+        server: Server,
+    }
+
+    impl TestServer {
+        /// A server with one idle session on it, and its socket's path.
+        fn new() -> (TestServer, String) {
+            let name = tag();
+            // An empty conf, so nothing in the developer's ~/.tmux.conf can
+            // change what these tests measure.
+            let server = Server::named(&name).with_conf("/dev/null");
+            server
+                .new_session(&Spawn {
+                    command: &["sh", "-c", "while :; do sleep 0.05; done"],
+                    ..Spawn::default()
+                })
+                .expect("a server to ask about");
+            let path = server
+                .run(&["display-message", "-p", "#{socket_path}"])
+                .expect("where its socket is");
+            (TestServer { name, server }, path)
+        }
+    }
+
+    impl Drop for TestServer {
+        fn drop(&mut self) {
+            let _ = self.server.kill();
+        }
+    }
 
     #[test]
     fn attach_asks_the_client_that_is_already_here_to_switch() {
@@ -95,15 +159,34 @@ mod tests {
     }
 
     #[test]
+    fn attach_switches_when_the_socket_was_written_down_the_other_way() {
+        // An agent started outside tmux is recorded on `-L default`, and the
+        // `$TMUX` of the terminal it is attached from names that same socket by
+        // path. Two spellings of one server, and only tmux can say so.
+        let (here, path) = TestServer::new();
+        let inside = format!("{path},4242,0");
+
+        assert!(switches(&Server::named(&here.name), Some(&inside)));
+
+        // A second server, live and answering, is still a different one.
+        let (elsewhere, _) = TestServer::new();
+        assert!(!switches(&Server::named(&elsewhere.name), Some(&inside)));
+    }
+
+    #[test]
     fn attach_from_elsewhere_starts_a_client_of_its_own() {
-        let amx = Server::named("amx");
+        // Sockets of this test's own throughout: a server the developer is
+        // sitting in must not be what decides how this comes out.
+        let agents = Server::named(tag());
         // Outside tmux entirely.
-        assert!(!switches(&amx, None));
-        assert!(!switches(&amx, Some("")));
-        // Inside tmux, but a different server: amx's own agents are not on it.
-        assert!(!switches(&amx, Some("/tmp/tmux-1000/default,4242,0")));
-        // And a pane on the person's server, from inside a different one.
-        let theirs = Server::at("/tmp/tmux-1000/default");
-        assert!(!switches(&theirs, Some("/tmp/tmux-1000/work,4242,0")));
+        assert!(!switches(&agents, None));
+        assert!(!switches(&agents, Some("")));
+        // Inside tmux, but a server the agents are not on — and a socket
+        // nothing is listening on cannot answer its way into a match.
+        let elsewhere = format!("/tmp/{}/socket", tag());
+        assert!(!switches(&agents, Some(&format!("{elsewhere},4242,0"))));
+        // And a pane on one server, from inside another.
+        let theirs = Server::at(format!("/tmp/{}/socket", tag()));
+        assert!(!switches(&theirs, Some(&format!("{elsewhere},4242,0"))));
     }
 }
