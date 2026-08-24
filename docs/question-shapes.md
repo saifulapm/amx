@@ -187,6 +187,17 @@ unanswered. The sequence that works is `Up`, paste, `↓`, `Enter`, `Enter`.
 One string, the labels joined with `, `. Typed text comes back the same way:
 `"Which checks should run?": "Audit"`.
 
+**The labels are in the order the boxes were checked, not the order the payload
+offers them.** Measured on 2026-08-24 against v2.1.240 on the `Format`,
+`Clippy`, `Tests` menu above: `Enter` on `3. Tests` and then the digit `1` for
+`Format` drew `→ Tests, Format` on the review tab and recorded
+
+    "answers": { "Which checks should the hook run?": "Tests, Format" }
+
+with `Format` still option one in the payload. So the string carries the
+keystrokes that produced it, and two callers who chose the same boxes in
+different orders hand the agent two different strings.
+
 ## 2. The multi-tab screen
 
 Three questions in one call. Measured at 220, 80, 54, 40 and 24 columns on
@@ -384,6 +395,10 @@ by its question's text:
       "Which rollout steps should run?": "Migrate, Canary",
       "Which store should hold sessions?": "Redis"
     }
+
+`Migrate, Canary` is the order the two boxes were checked and not the order the
+payload lists them in, which is the same finding as section 1's on a tab rather
+than on a screen of its own.
 
 ## 3. The `Other` row
 
@@ -758,6 +773,10 @@ it asked, which is not a property of the question.
   checkbox one. `↓`, `Enter`, `Enter` finishes the checkbox case;
 * a digit answers a plain menu, toggles a checkbox menu, and types a character
   once the cursor is on the free-text row;
+* a multi-select answer is one string in the order the boxes were checked, so
+  the record cannot recover which options they were by matching the payload's
+  order, and an answer that reproduces a recorded one has to toggle in the
+  recorded order to get the same string back;
 * no one sequence drives a whole call. On a plain tab `Enter` records and
   advances and a digit submits the tab outright; on a checkbox tab in the same
   call both only toggle, `→` reaches the next question rather than the Submit
