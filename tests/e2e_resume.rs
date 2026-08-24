@@ -101,6 +101,56 @@ fn a_terminal(amx: &Harness, args: &[&str]) -> String {
     )
 }
 
+/// The same terminal, inside tmux, which is where most people type `amx`.
+///
+/// A pane is inside tmux by birth, so this is [`a_terminal`] with tmux's own
+/// two variables left where tmux put them. The view answers to them: inside
+/// one it has a client to move and outside one it has the terminal itself.
+fn a_terminal_inside_tmux(amx: &Harness, args: &[&str]) -> String {
+    let scenario = amx.scenario("continues-a-session");
+    amx.in_a_terminal(
+        &[
+            ("MOCK_CLAUDE_SCENARIO", &scenario.to_string_lossy()),
+            ("MOCK_CLAUDE_SESSION_2", CONTINUED),
+        ],
+        args,
+    )
+}
+
+/// A person looking at a session: a tmux client of their own, on a terminal of
+/// its own, the way somebody who typed `tmux attach` has one.
+///
+/// tmux's two variables are cleared for it, because the pane the client starts
+/// in is itself inside tmux and a client that knows that declines to nest.
+fn watching(amx: &Harness, session: &str) -> String {
+    amx.tmux(&[
+        "new-session",
+        "-d",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "--",
+        "env",
+        "-u",
+        "TMUX",
+        "-u",
+        "TMUX_PANE",
+        "tmux",
+        "-L",
+        amx.socket(),
+        "-f",
+        "/dev/null",
+        "attach-session",
+        "-t",
+        session,
+    ])
+}
+
+/// The terminals of whoever is looking at a session, if anybody is.
+fn clients_on(amx: &Harness, session: &str) -> String {
+    amx.tmux(&["list-clients", "-t", session, "-F", "#{client_tty}"])
+}
+
 /// Wait for the continued session to be drawing on this terminal.
 fn until_looking_at_it(amx: &Harness, terminal: &str) {
     amx.until("the agent on the screen", || {
@@ -771,5 +821,43 @@ fn enter_on_an_agent_with_nothing_to_resume_says_why() {
     assert!(
         !said.contains("no pane any more"),
         "which is a fact about the pane, not a reason: {said}"
+    );
+}
+
+#[test]
+fn enter_from_inside_tmux_moves_the_client_to_the_session_it_brought_back() {
+    // The view's other way through, and the one most people are on. Inside
+    // tmux the terminal is not the view's to lend: there is a client on it
+    // already, and that client is what moves. What it moves to is the session
+    // the resume has just made, which is not the session the row named when
+    // the key went down.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let gone = ran_and_stopped(&amx, id);
+
+    let view = a_terminal_inside_tmux(&amx, &[]);
+    let holding = amx.tmux(&["display-message", "-p", "-t", &view, "#{session_name}"]);
+
+    // Without a client there is nothing for enter to move, and a view nobody
+    // has attached to is not a view anybody is reading.
+    let terminal = watching(&amx, &holding);
+    let tty = amx.until("a client on the view", || {
+        let clients = clients_on(&amx, &holding);
+        (!clients.is_empty()).then_some(clients)
+    });
+
+    amx.until("the row", || amx.capture(&view).contains(id).then_some(()));
+    amx.tmux(&["send-keys", "-t", &view, "Enter"]);
+
+    until_continued(&amx, id);
+    let pane = amx.pane_of(id);
+    assert_ne!(pane, gone, "a pane of its own again");
+    assert!(amx.pane_alive(&pane));
+
+    until_looking_at_it(&amx, &terminal);
+    assert_eq!(
+        clients_on(&amx, &format!("amx-{id}")),
+        tty,
+        "the client that was on the view is the one that moved"
     );
 }
