@@ -154,10 +154,22 @@ impl View {
     /// vendor's account of its own state and a rule is amx's reading of a
     /// picture of it, so the screen fills what the hooks left empty and
     /// corrects nothing.
+    ///
+    /// The vendor's own menu is the exception, and it earns it twice over.
+    /// `ask_menu` anchors on `Enter to select`, which no other screen this
+    /// vendor draws carries, so a rule that claimed it is not a guess about
+    /// what is on the pane — it is the one screen amx can name with certainty.
+    /// And a rule only gets to speak once the hooks have gone quiet, which is
+    /// to say once the record is old news: an amx written before the vendor was
+    /// found asking itself for permission to draw a menu wrote `permission`
+    /// over every menu it saw, and records outlive the amx that wrote them. A
+    /// kind is what decides what may be sent back, and a permission box's one
+    /// key at a menu is how a caller answers a question nobody chose.
     pub fn kind(&self) -> Option<crate::store::Kind> {
-        self.state
-            .kind
-            .or_else(|| asked_kind(self.verdict.rule.as_deref()))
+        match asked_kind(self.verdict.rule.as_deref()) {
+            seen @ Some(crate::store::Kind::Question) => seen,
+            seen => self.state.kind.or(seen),
+        }
     }
 
     /// The stable shape `--json` prints. Fields are added, never renamed or
@@ -232,6 +244,9 @@ impl View {
 /// The folder-trust screen is here and nowhere else: it stands in front of the
 /// session that every hook comes from, so no hook can ever report it, and the
 /// pane is the only place it is ever seen.
+///
+/// `ask_menu` is the one entry a reader lets stand in front of the record —
+/// see [`View::kind`] for why that screen and no other.
 fn asked_kind(rule: Option<&str>) -> Option<crate::store::Kind> {
     use crate::store::Kind;
 
@@ -992,6 +1007,27 @@ mod tests {
     /// whole. It says a question exists and not one word about what it wants.
     const A_PLACEHOLDER: &str = "Claude needs your permission";
 
+    /// The vendor's own menu, captured off a live claude 2.1.240 at 220
+    /// columns on 2026-08-25 and cut to the rows a floor of 24 would reach.
+    /// The two rows under the choices are the vendor's own furniture: neither
+    /// is in the payload the tool call carried.
+    const A_MENU: &str = "\
+────────────────────────────────────────────────────────
+ ☐ License
+
+Which license should the LICENSE file contain?
+
+❯ 1. MIT
+     Short and permissive
+  2. Apache-2.0
+     Permissive with a patent grant
+  3. Type something.
+────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
     /// A permission box, which is a screen with a question on it.
     const A_BLOCKING_SCREEN: &str = "\
 ────────────────────────────────
@@ -1139,6 +1175,56 @@ mod tests {
             reading(&told, true, Some(A_BLOCKING_SCREEN), 1_000).asking,
             None,
             "the placeholder is a whole sentence, not the start of one"
+        );
+    }
+
+    #[test]
+    fn reader_lets_the_menu_on_the_screen_say_what_answers_it() {
+        use crate::store::Kind;
+
+        // A record an older amx wrote: the vendor asks itself for permission
+        // to use its own question tool, that event arrived after the tool call
+        // that drew the menu, and `permission` is what was left on the record.
+        // The menu is on the pane, and a caller reading `permission` is told
+        // to answer a menu with y or n.
+        let mut stale = state(Phase::Waiting, 1_000);
+        stale.kind = Some(Kind::Permission);
+        stale.question = Some("Claude needs your permission to use Ask User Question".to_string());
+
+        let menu = reading(&stale, true, Some(A_MENU), 1_100);
+        assert_eq!(menu.verdict.rule.as_deref(), Some("ask_menu"));
+        let view = View::new(meta(), stale, menu.verdict);
+        assert_eq!(
+            view.kind(),
+            Some(Kind::Question),
+            "the one screen no other prompt can be mistaken for"
+        );
+        assert_eq!(view.json()["kind"], "question");
+
+        // It goes the one way only. A record that says a question is being
+        // asked is the vendor's own account of its own state, and a rule that
+        // named some other screen is amx's reading of a picture: the screen
+        // fills what the hooks left empty and corrects nothing.
+        let mut told = state(Phase::Waiting, 1_000);
+        told.kind = Some(Kind::Question);
+        let box_screen = reading(&told, true, Some(A_BLOCKING_SCREEN), 1_100);
+        assert_eq!(
+            box_screen.verdict.rule.as_deref(),
+            Some("permission_prompt")
+        );
+        assert_eq!(
+            View::new(meta(), told, box_screen.verdict).kind(),
+            Some(Kind::Question)
+        );
+
+        // And a screen no rule claimed says nothing about the kind either way.
+        let mut held = state(Phase::Waiting, 1_000);
+        held.kind = Some(Kind::Permission);
+        let unclaimed = reading(&held, true, Some(A_SHELL), 1_500);
+        assert_eq!(unclaimed.verdict.rule, None);
+        assert_eq!(
+            View::new(meta(), held, unclaimed.verdict).kind(),
+            Some(Kind::Permission)
         );
     }
 
