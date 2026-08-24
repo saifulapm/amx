@@ -4,8 +4,10 @@
 mod common;
 
 use common::Harness;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tempfile::TempDir;
 
 /// A socket nothing has touched yet, standing in for the person's default
 /// server.
@@ -48,14 +50,69 @@ impl Drop for Theirs {
 /// No `-f`: what these tests ask about is the config a server was born with,
 /// and a flag here would be a second answer to the same question.
 fn ask(socket: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new("tmux")
-        .args(["-L", socket])
-        .args(args)
-        .output()
-        .ok()?;
+    ask_in(None, socket, args)
+}
+
+/// The same, with tmux's socket directory pointed somewhere of the test's own.
+fn ask_in(tmpdir: Option<&Path>, socket: &str, args: &[&str]) -> Option<String> {
+    let mut command = Command::new("tmux");
+    command.args(["-L", socket]).args(args);
+    if let Some(tmpdir) = tmpdir {
+        command.env("TMUX_TMPDIR", tmpdir);
+    }
+    let out = command.output().ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim_end().to_string())
+}
+
+/// The server a bare `tmux` reaches, in a socket directory of this test's own.
+///
+/// tmux keeps that socket under `$TMUX_TMPDIR`, so a directory nothing else
+/// shares is how a test can ask what amx does when no socket was named without
+/// going anywhere near the machine's real server.
+struct Bare(TempDir);
+
+impl Bare {
+    fn new() -> Bare {
+        Bare(TempDir::new().expect("a socket directory"))
+    }
+
+    fn tmpdir(&self) -> &Path {
+        self.0.path()
+    }
+
+    fn ask(&self, args: &[&str]) -> Option<String> {
+        ask_in(Some(self.tmpdir()), "default", args)
+    }
+
+    /// Every socket sitting in the directory, whatever it is called. tmux puts
+    /// them in one directory of its own per user, and this is the only place
+    /// where a private server of amx's would show up.
+    fn sockets(&self) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(self.tmpdir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .flat_map(|dir: PathBuf| std::fs::read_dir(dir).into_iter().flatten().flatten())
+            .map(|socket| socket.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+impl Drop for Bare {
+    fn drop(&mut self) {
+        // Every socket, not only the default one: a test that finds a server
+        // it did not expect has to take that one with it too, or a failure
+        // leaves an agent running with nothing left to reach it by.
+        for socket in self.sockets() {
+            let _ = ask_in(Some(self.tmpdir()), &socket, &["kill-server"]);
+        }
+    }
 }
 
 /// Ask the harness's server about one of its panes, windows or sessions.
@@ -257,6 +314,41 @@ fn the_server_an_agent_lands_on_reads_the_config_the_person_wrote() {
             .join("amx.tmux.conf")
             .exists(),
         "and amx wrote no config of its own for it to read instead"
+    );
+}
+
+#[test]
+fn outside_tmux_an_agent_lands_on_the_server_a_bare_tmux_reaches() {
+    // The default server, and no other: a person who types `tmux ls` after
+    // starting an agent has to find it there. amx used to keep its agents on a
+    // private `-L amx` server, where nothing they already had could see them.
+    let amx = Harness::new();
+    let bare = Bare::new();
+
+    let mut command =
+        amx.amx_command(&["new", "--no-worktree", "--agent", &amx.mock(), "look busy"]);
+    command
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"))
+        .env("TMUX_TMPDIR", bare.tmpdir())
+        // The harness pins every other test to a socket of its own. This one is
+        // about what amx does when nobody has named a socket at all.
+        .env_remove("AMX_TMUX_SOCKET");
+    let id = id_of(&command.output().expect("running amx new"));
+
+    assert_eq!(
+        bare.ask(&["list-sessions", "-F", "#{session_name}"]),
+        Some(format!("amx-{id}")),
+        "the agent is a session on the server a bare tmux reaches"
+    );
+    assert_eq!(
+        bare.sockets(),
+        ["default"],
+        "and amx started no server of its own beside it"
+    );
+    assert_eq!(
+        ask(amx.socket(), &["list-sessions"]),
+        None,
+        "nothing was left on the socket this harness names either"
     );
 }
 
