@@ -28,6 +28,11 @@
 //! `status`, the view, `--json` — is handed one [`View`], and what is on that
 //! view agrees with the phase on it. A record can disagree with itself; the
 //! answer a reader gives from it may not.
+//!
+//! Beside the phase goes one number, and it answers whichever question of the
+//! clock the phase makes worth asking: how long a finished run took, how long
+//! a waiting agent has waited, how long since anything was heard from one
+//! still going — see [`clock`].
 
 use anyhow::Result;
 use serde::Serialize;
@@ -67,7 +72,10 @@ pub struct Verdict {
     pub evidence: Evidence,
     /// The rule that claimed the screen, when one did.
     pub rule: Option<String>,
-    /// Seconds since anything was last heard from the agent.
+    /// The seconds a surface puts beside this agent, which is not one question
+    /// but three — see [`clock`]. A run that has ended says how long it took, an
+    /// agent stopped on a question says how long it has waited, and anything
+    /// still going says how long since it was last heard from.
     pub age: u64,
 }
 
@@ -147,9 +155,15 @@ impl View {
             "state": self.verdict.phase.as_str(),
             "evidence": self.verdict.evidence,
             "rule": self.verdict.rule,
+            // The seconds a row shows: how long a finished run took, how long
+            // a waiting agent has waited, and how long since anything was
+            // heard from one still going. The stamps it is worked out from are
+            // all here too, so a caller that wants a different question of the
+            // clock has what it needs to ask it.
             "age": self.verdict.age,
             "since": self.state.since,
             "last_event": self.state.last_event,
+            "ended": self.state.ended,
             "seq": self.state.seq,
             "summary": self.state.summary,
             "question": self.state.question,
@@ -283,27 +297,85 @@ fn wants_the_question(state: &State) -> bool {
     state.state == Phase::Waiting && state.question.as_deref().is_none_or(placeholder)
 }
 
+/// When anything was last heard from the agent, as the record has it.
+///
+/// Whichever of the two stamps is later: a record written before its first
+/// event has a `since` and no `last_event`, and the agent is not therefore an
+/// hour out of touch.
+fn heard(state: &State) -> u64 {
+    state.last_event.max(state.since)
+}
+
+/// The seconds a surface puts beside an agent.
+///
+/// One column, three questions, because the answer worth reading changes with
+/// what the agent is doing.
+///
+/// **A run that has ended** is asked how long it took, counting from the
+/// moment the agent was started, and that number never moves again: an agent
+/// that finished in four minutes finished in four minutes, and a column
+/// counting up from there is timing how long the record has sat on a disk. The
+/// stamp the ending wrote says when it ended; a record that has none — an
+/// older amx wrote it, or the pane went and nothing got to record an exit — is
+/// dated from the last thing the agent said, which is the last moment amx can
+/// vouch for it running.
+///
+/// **An agent stopped on a question** is asked how long it has waited, which
+/// is how long since it stopped and not how long since the last hook: the
+/// vendor sends its own notification about a dialog six seconds after putting
+/// it up, and a wait that reset to zero on that would be timing amx's news.
+/// Only the record can say when the wait began, so a wait amx concluded off a
+/// screen — the record says mid-turn, and the screen has a question on it —
+/// falls back to how long since anything was heard. A picture of a box says a
+/// question is up and not when it went up.
+///
+/// **Anything still going** is asked how long since it was last heard from,
+/// which is what says whether the rest of the row is worth believing, and it
+/// is what the column has always said.
+fn clock(phase: Phase, state: &State, created: u64, now: u64) -> u64 {
+    let heard = heard(state);
+    if phase.is_terminal() {
+        let ended = match state.ended {
+            0 => heard,
+            at => at,
+        };
+        return ended.saturating_sub(created);
+    }
+    if phase == Phase::Waiting && state.state == Phase::Waiting && state.since > 0 {
+        return now.saturating_sub(state.since);
+    }
+    now.saturating_sub(heard)
+}
+
 /// Work out what an agent is doing.
 ///
 /// `alive` is whether its pane is still there, and `capture` is asked for the
 /// screen only when it is going to be read: a fresh record needs no tmux call
 /// at all unless it is a record of an agent waiting on a question it cannot
 /// name, which is what keeps `ls` cheap with a wall full of agents.
+///
+/// `created` is when the agent was started, which is where a finished run's
+/// length is measured from. It is the one thing here that is not on the state
+/// document: how long a run took is a fact about the whole agent.
 pub fn read(
     state: &State,
+    created: u64,
     alive: bool,
     capture: impl FnOnce() -> Option<String>,
     rules: &Ruleset,
     now: u64,
     looks: usize,
 ) -> Reading {
-    let age = now.saturating_sub(state.last_event.max(state.since));
+    // How stale the record is, which is what decides whether a reader believes
+    // it over the pane. What a row shows beside the agent is a different
+    // question of the same clock, and `clock` is where that one is answered.
+    let quiet = now.saturating_sub(heard(state));
     let told = |phase, evidence, rule: Option<&str>| Reading {
         verdict: Verdict {
             phase,
             evidence,
             rule: rule.map(str::to_string),
-            age,
+            age: clock(phase, state, created, now),
         },
         asking: None,
     };
@@ -317,7 +389,7 @@ pub fn read(
         return told(Phase::Stopped, Evidence::Gone, None);
     }
 
-    if age <= FRESH {
+    if quiet <= FRESH {
         // A record that says waiting and cannot say what for is half an
         // answer, and the half it is missing is the half somebody has to act
         // on. The hooks still decide the phase — this is the same conclusion
@@ -343,7 +415,7 @@ pub fn read(
                 phase: rule.state,
                 evidence: Evidence::Screen,
                 rule: Some(rule.name.clone()),
-                age,
+                age: clock(rule.state, state, created, now),
             },
             asking: rule.question(&screen),
         },
@@ -407,6 +479,7 @@ pub fn view(root: &Path, id: &str, rules: &Ruleset, now: u64) -> Result<View> {
     let alive = state.state.is_terminal() || server.pane_alive(&meta.pane);
     let reading = read(
         &state,
+        meta.created,
         alive,
         || server.capture(&meta.pane).ok(),
         rules,
@@ -450,6 +523,7 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
 
         let reading = read(
             &state,
+            meta.created,
             alive,
             || server.capture(&meta.pane).ok(),
             rules,
@@ -531,8 +605,21 @@ mod tests {
     }
 
     fn reading(state: &State, alive: bool, screen: Option<&str>, now: u64) -> Reading {
+        started(0, state, alive, screen, now)
+    }
+
+    /// The same reading of an agent started at a stated moment, which is where
+    /// a finished run's length is measured from.
+    fn started(
+        created: u64,
+        state: &State,
+        alive: bool,
+        screen: Option<&str>,
+        now: u64,
+    ) -> Reading {
         read(
             state,
+            created,
             alive,
             || screen.map(str::to_string),
             rules::bundled(),
@@ -789,6 +876,78 @@ mod tests {
         // A pane that cannot be captured is the same answer.
         let unreadable = decided(&state(Phase::Working, 1_000), true, None, 1_500);
         assert_eq!(unreadable.phase, Phase::Unknown);
+    }
+
+    #[test]
+    fn reader_freezes_the_clock_on_a_run_that_has_ended() {
+        // Started at 1_000 and ended at 1_300: a five-minute run, and a run
+        // that took five minutes took five minutes whenever anybody asks.
+        let mut done = state(Phase::Done, 1_300);
+        done.ended = 1_300;
+
+        assert_eq!(started(1_000, &done, true, None, 1_310).verdict.age, 300);
+        assert_eq!(
+            started(1_000, &done, true, None, 90_000).verdict.age,
+            300,
+            "a day later it is still the run it was"
+        );
+
+        let view = View::new(
+            Meta {
+                created: 1_000,
+                ..meta()
+            },
+            done.clone(),
+            started(1_000, &done, true, None, 90_000).verdict,
+        );
+        assert_eq!(view.json()["age"], 300);
+        assert_eq!(view.json()["ended"], 1_300, "and when it ended, whole");
+    }
+
+    #[test]
+    fn reader_dates_an_ending_nobody_stamped_from_the_last_thing_it_said() {
+        // A record written by an older amx has no stamp on it, and records
+        // outlive the amx that wrote them.
+        let unstamped = state(Phase::Done, 1_300);
+        assert_eq!(unstamped.ended, 0);
+        assert_eq!(
+            started(1_000, &unstamped, true, None, 5_000).verdict.age,
+            300
+        );
+
+        // The pane went without recording an exit: the reader ends the run,
+        // and the run is as long as the last thing anybody heard.
+        let killed = state(Phase::Working, 1_300);
+        let verdict = started(1_000, &killed, false, None, 5_000).verdict;
+        assert_eq!(verdict.phase, Phase::Stopped);
+        assert_eq!(verdict.evidence, Evidence::Gone);
+        assert_eq!(verdict.age, 300, "and it does not tick after it");
+
+        // An ending before the agent was started is a record somebody edited,
+        // and a run of no length is the only honest answer to it.
+        assert_eq!(started(9_000, &unstamped, true, None, 9_100).verdict.age, 0);
+    }
+
+    #[test]
+    fn reader_says_how_long_a_waiting_agent_has_waited() {
+        // It stopped on a question at 1_000. The vendor's own notification
+        // about the box lands six seconds later, and a row that started
+        // counting there would be timing amx's news rather than the wait.
+        let mut asked = state(Phase::Waiting, 1_000);
+        asked.last_event = 1_006;
+        let verdict = started(900, &asked, true, Some(A_BLOCKING_SCREEN), 1_300).verdict;
+        assert_eq!(verdict.phase, Phase::Waiting);
+        assert_eq!(verdict.age, 300, "since it stopped, not since it spoke");
+
+        // A screen amx read a question off says a question is up and not when
+        // it went up: the record is still mid-turn, so how long since anything
+        // was heard is the whole of what amx can say.
+        let mut mid_turn = state(Phase::Working, 1_000);
+        mid_turn.last_event = 1_100;
+        let verdict = started(900, &mid_turn, true, Some(A_BLOCKING_SCREEN), 1_300).verdict;
+        assert_eq!(verdict.phase, Phase::Waiting);
+        assert_eq!(verdict.evidence, Evidence::Screen);
+        assert_eq!(verdict.age, 200);
     }
 
     #[test]
