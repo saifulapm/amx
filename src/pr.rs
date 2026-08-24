@@ -746,6 +746,20 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_with_no_forge_on_it_loses_the_column_and_nothing_else() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(
+            run(dir.path(), "amx-no-forge-by-this-name", &["--version"]),
+            None,
+            "a program that is not installed is not a failure to report"
+        );
+        assert!(
+            ask(dir.path(), "amx/fix-login-a1b").is_empty(),
+            "and neither is a directory the forge has nothing to say about"
+        );
+    }
+
+    #[test]
     fn hardening_a_forge_runs_nothing_the_tree_it_reads_names() {
         // Both forges shell out to git, and the tree they run in is the tree
         // the agent writes. `core.fsmonitor` names a program git starts before
