@@ -174,8 +174,12 @@ fn inert(text: &str) -> String {
 }
 
 /// The reading's own number, in the shortest form that says it: how long a
-/// finished run took, how long a waiting agent has waited, and how long since
+/// finished run worked, how long a waiting agent has waited, and how long since
 /// anything was heard from one still going.
+///
+/// The number is the reading's and not this table's, and the view says the
+/// same one in the same units off the same reading, so a person who has both
+/// open is never told two things about one agent.
 fn age(view: &View) -> String {
     let seconds = view.verdict.age;
     match seconds {
@@ -299,21 +303,30 @@ mod tests {
             assert!(text.contains(said), "{text}");
         }
 
-        // Ended after five minutes. Read an hour later and a day later, it is
-        // the run it was both times.
+        // It worked ten seconds and stood at a question for the hour before
+        // that. Read an hour later and a day later, it is the run it was both
+        // times, and the hour it spent waiting is nobody's ten seconds.
         record.state = Phase::Done;
-        record.since = 1_300;
-        record.last_event = 1_300;
-        record.ended = 1_300;
+        record.since = 4_610;
+        record.last_event = 4_610;
+        record.ended = 4_610;
+        record.worked = 10;
         record.result = Some("the tests pass now".to_string());
 
-        let hour = printed(&[reading("fix-login-a1b", record.clone(), 1_000, 4_900)]);
-        assert!(hour.contains("5m"), "{hour}");
+        let hour = printed(&[reading("fix-login-a1b", record.clone(), 1_000, 8_210)]);
+        assert!(hour.contains("10s"), "{hour}");
         assert_eq!(
-            printed(&[reading("fix-login-a1b", record, 1_000, 90_000)]),
+            printed(&[reading("fix-login-a1b", record.clone(), 1_000, 90_000)]),
             hour,
-            "a row of a run that took five minutes says five minutes"
+            "a row of a run that worked ten seconds says ten seconds"
         );
+
+        // The row is the reading's own number put into words, and not a second
+        // number this table worked out for itself. It is what the view reads
+        // and how the view says it, so the two surfaces cannot disagree.
+        let read = reading("fix-login-a1b", record, 1_000, 90_000);
+        assert_eq!(read.verdict.age, 10);
+        assert!(hour.contains(&age(&read)), "{hour}");
     }
 
     /// An agent of a directory, with the worktree amx cut for it if it has

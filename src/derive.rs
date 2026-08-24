@@ -42,8 +42,8 @@
 //! answer a reader gives from it may not.
 //!
 //! Beside the phase goes one number, and it answers whichever question of the
-//! clock the phase makes worth asking: how long a finished run took, how long
-//! a waiting agent has waited, how long since anything was heard from one
+//! clock the phase makes worth asking: how long a finished run worked, how
+//! long a waiting agent has waited, how long since anything was heard from one
 //! still going — see [`clock`].
 
 use anyhow::Result;
@@ -86,8 +86,8 @@ pub struct Verdict {
     /// The rule that claimed the screen, when one did.
     pub rule: Option<String>,
     /// The seconds a surface puts beside this agent, which is not one question
-    /// but three — see [`clock`]. A run that has ended says how long it took, an
-    /// agent stopped on a question says how long it has waited, and anything
+    /// but three — see [`clock`]. A run that has ended says how long it worked,
+    /// an agent stopped on a question says how long it has waited, and anything
     /// still going says how long since it was last heard from.
     pub age: u64,
 }
@@ -178,8 +178,8 @@ impl View {
             "state": self.verdict.phase.as_str(),
             "evidence": self.verdict.evidence,
             "rule": self.verdict.rule,
-            // The seconds a row shows: how long a finished run took, how long
-            // a waiting agent has waited, and how long since anything was
+            // The seconds a row shows: how long a finished run worked, how
+            // long a waiting agent has waited, and how long since anything was
             // heard from one still going. The stamps it is worked out from are
             // all here too, so a caller that wants a different question of the
             // clock has what it needs to ask it.
@@ -187,6 +187,9 @@ impl View {
             "since": self.state.since,
             "last_event": self.state.last_event,
             "ended": self.state.ended,
+            // The spans of work the record has added up, as it has them: a run
+            // still going has everything but the span it is in.
+            "worked": self.state.worked,
             "seq": self.state.seq,
             "summary": self.state.summary,
             "question": self.state.question,
@@ -390,14 +393,24 @@ fn heard(state: &State) -> u64 {
 /// One column, three questions, because the answer worth reading changes with
 /// what the agent is doing.
 ///
-/// **A run that has ended** is asked how long it took, counting from the
-/// moment the agent was started, and that number never moves again: an agent
-/// that finished in four minutes finished in four minutes, and a column
-/// counting up from there is timing how long the record has sat on a disk. The
-/// stamp the ending wrote says when it ended; a record that has none — an
-/// older amx wrote it, or the pane went and nothing got to record an exit — is
-/// dated from the last thing the agent said, which is the last moment amx can
-/// vouch for it running.
+/// **A run that has ended** is asked how long it worked, which is the spans
+/// the record added up as the phase moved in and out of working. That number
+/// never moves again: an agent that worked four minutes worked four minutes,
+/// and a column counting up from there is timing how long the record has sat
+/// on a disk. Nor is it the wall clock over the run, which would count the
+/// afternoon an agent spent standing at a question nobody answered as an
+/// afternoon's work.
+///
+/// A span nothing closed is closed here. The record adds up at the write that
+/// moves the phase, so an agent the pane went out from under is still on the
+/// record as working, and its last span runs to the last moment amx can vouch
+/// for it running. That is the stamp the ending wrote, or where there is none
+/// — an older amx wrote the record, or the pane went and nothing got to record
+/// an exit — the last thing the agent said.
+///
+/// A record with no spans on it at all is one amx cannot answer that question
+/// about: written before any of this, or of an agent that never worked. It is
+/// asked the old one instead, and says how long the run was alive.
 ///
 /// **An agent stopped on a question** is asked how long it has waited, which
 /// is how long since it stopped and not how long since the last hook: the
@@ -418,7 +431,10 @@ fn clock(phase: Phase, state: &State, created: u64, now: u64) -> u64 {
             0 => heard,
             at => at,
         };
-        return ended.saturating_sub(created);
+        return match state.worked_by(ended) {
+            0 => ended.saturating_sub(created),
+            worked => worked,
+        };
     }
     if phase == Phase::Waiting && state.state == Phase::Waiting && state.since > 0 {
         return now.saturating_sub(state.since);
@@ -433,9 +449,10 @@ fn clock(phase: Phase, state: &State, created: u64, now: u64) -> u64 {
 /// at all unless it is a record of an agent waiting on a question it cannot
 /// name, which is what keeps `ls` cheap with a wall full of agents.
 ///
-/// `created` is when the agent was started, which is where a finished run's
-/// length is measured from. It is the one thing here that is not on the state
-/// document: how long a run took is a fact about the whole agent.
+/// `created` is when the agent was started, which is what a finished run with
+/// no spans of work on it is measured from. It is the one thing here that is
+/// not on the state document: how long a run was alive is a fact about the
+/// whole agent.
 pub fn read(
     state: &State,
     created: u64,
@@ -1025,8 +1042,8 @@ mod tests {
         started(0, state, alive, screen, now)
     }
 
-    /// The same reading of an agent started at a stated moment, which is where
-    /// a finished run's length is measured from.
+    /// The same reading of an agent started at a stated moment, which is what
+    /// a finished run with no spans of work on it is measured from.
     fn started(
         created: u64,
         state: &State,
@@ -1363,15 +1380,17 @@ mod tests {
 
     #[test]
     fn reader_freezes_the_clock_on_a_run_that_has_ended() {
-        // Started at 1_000 and ended at 1_300: a five-minute run, and a run
-        // that took five minutes took five minutes whenever anybody asks.
-        let mut done = state(Phase::Done, 1_300);
-        done.ended = 1_300;
+        // Started at 1_000, worked ten seconds and stood at a question for the
+        // hour in between. Ten seconds is what it worked, and a run that
+        // worked ten seconds worked ten seconds whenever anybody asks.
+        let mut done = state(Phase::Done, 4_610);
+        done.ended = 4_610;
+        done.worked = 10;
 
-        assert_eq!(started(1_000, &done, true, None, 1_310).verdict.age, 300);
+        assert_eq!(started(1_000, &done, true, None, 4_620).verdict.age, 10);
         assert_eq!(
             started(1_000, &done, true, None, 90_000).verdict.age,
-            300,
+            10,
             "a day later it is still the run it was"
         );
 
@@ -1383,8 +1402,38 @@ mod tests {
             done.clone(),
             started(1_000, &done, true, None, 90_000).verdict,
         );
-        assert_eq!(view.json()["age"], 300);
-        assert_eq!(view.json()["ended"], 1_300, "and when it ended, whole");
+        assert_eq!(view.json()["age"], 10);
+        assert_eq!(view.json()["worked"], 10, "and the spans it was added from");
+        assert_eq!(view.json()["ended"], 4_610, "and when it ended, whole");
+    }
+
+    #[test]
+    fn reader_counts_a_span_of_work_nothing_ever_closed() {
+        // The pane went out from under a turn, so nothing wrote the phase out
+        // of working and the last span is open on the record. It closes where
+        // every ending amx did not see closes: at the last thing it heard.
+        let mut killed = state(Phase::Working, 1_300);
+        killed.since = 1_200;
+        killed.worked = 20;
+
+        let verdict = started(1_000, &killed, false, None, 5_000).verdict;
+        assert_eq!(verdict.phase, Phase::Stopped);
+        assert_eq!(
+            verdict.age, 120,
+            "twenty seconds, and the hundred it was in"
+        );
+    }
+
+    #[test]
+    fn reader_reads_a_run_with_no_spans_on_it_as_the_whole_of_the_run() {
+        // A record written before amx added spans up, and one of an agent that
+        // never worked at all, are the same record to a reader: with nothing
+        // added up, the row says how long the run was alive, which is what it
+        // has always said.
+        let mut older = state(Phase::Done, 1_300);
+        older.ended = 1_300;
+        assert_eq!(older.worked, 0);
+        assert_eq!(started(1_000, &older, true, None, 9_000).verdict.age, 300);
     }
 
     #[test]
