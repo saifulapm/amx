@@ -128,8 +128,9 @@ at, inside tmux or outside one. It builds nothing to draw in: the list is a
 program on a screen, and a screen is all it needs. Down a pipe it prints the
 table and exits, so `amx | grep waiting` is a reasonable thing to write.
 
-Down that pipe it takes a directory: `amx --dir /srv/app | grep waiting` is
-that project's agents and nobody else's, the reading described under
+`amx --dir /srv/app` opens the same list about that directory alone, drawn on
+the terminal or printed down the pipe by the same rule. It is the reading
+`amx ls --dir` takes, described under
 [Looking, and answering](#looking-and-answering).
 
 The list answers one question, so it is gathered under the answer: the agents
@@ -215,6 +216,7 @@ amx ls                 # every agent, one line each
 amx ls --json          # the same reading, for a program
 amx ls --dir /srv/app  # only the agents working under that directory
 amx ls --dir .         # only this project's
+amx --dir /srv/app     # the same narrowing at the front door, drawn or printed
 amx status <id>        # one agent, and which signal that state came from
 amx status <id> --json
 amx attach <id>        # hand this terminal to its pane

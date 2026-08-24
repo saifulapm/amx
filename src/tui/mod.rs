@@ -46,6 +46,7 @@ use crate::config::Config;
 use crate::derive::{self, View};
 use crate::store::{Phase, now};
 use crate::tmux::{PaneId, Server, SessionId};
+use crate::verbs::ls::Scope;
 use crate::{exit, registry, rules};
 use act::{Asking, Composer, Renamed, Replied, Started};
 use paint::{Card, Notice};
@@ -368,13 +369,20 @@ struct Screen {
 /// newline in it is an enter: a truncated task dispatched, and the rest of the
 /// lines queued up to dispatch themselves after it. It is the same law amx has
 /// always sent text to an agent under, facing the other way.
-pub fn run(root: &Path, config: &Config) -> Result<i32> {
+pub fn run(root: &Path, config: &Config, scope: &Scope) -> Result<i32> {
     let mut terminal = ratatui::try_init().context("taking the terminal")?;
     // A terminal that declines is one amx cannot tell a paste from typing on,
     // which is what the composer did before it asked at all.
     let bracketed = execute!(std::io::stdout(), EnableBracketedPaste).is_ok();
 
-    let outcome = watch(root, config, &mut terminal, &mut Keyboard, Here::read());
+    let outcome = watch(
+        root,
+        config,
+        scope,
+        &mut terminal,
+        &mut Keyboard,
+        Here::read(),
+    );
 
     // Whatever happened, the screen goes back the way it was found.
     if bracketed {
@@ -448,6 +456,7 @@ struct Remembered {
 fn watch<B>(
     root: &Path,
     config: &Config,
+    scope: &Scope,
     terminal: &mut Terminal<B>,
     keys: &mut impl Keys,
     here: Option<Here>,
@@ -471,7 +480,7 @@ where
 
     loop {
         if screen.read.is_none_or(|at| at.elapsed() >= REFRESH) {
-            screen.reread(root)?;
+            screen.reread(root, scope)?;
         }
         screen.step();
         terminal.draw(|frame| paint::draw(frame, &screen))?;
@@ -530,10 +539,10 @@ where
 }
 
 impl Screen {
-    /// Read the agents again.
-    fn reread(&mut self, root: &Path) -> Result<()> {
+    /// Read the agents again, the ones the view was opened about.
+    fn reread(&mut self, root: &Path, scope: &Scope) -> Result<()> {
         self.list
-            .show(derive::views(root, rules::bundled(), now())?);
+            .show(scope.narrow(derive::views(root, rules::bundled(), now())?));
         self.read = Some(Instant::now());
         self.follow_the_cursor();
         Ok(())
@@ -1233,13 +1242,18 @@ mod tests {
     /// An agent whose command ended `ago` seconds back: no pane, and nothing
     /// to ask tmux about.
     fn finished(root: &Path, id: &str, result: &str, ago: u64) {
+        finished_in(root, id, result, ago, "/srv/app");
+    }
+
+    /// The same, for a test about which directory an agent worked in.
+    fn finished_in(root: &Path, id: &str, result: &str, ago: u64, dir: &str) {
         let at = now() - ago;
         let agent = Agent::create(
             root,
             &Meta {
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
-                dir: PathBuf::from("/srv/app"),
+                dir: PathBuf::from(dir),
                 worktree: None,
                 branch: None,
                 base: None,
@@ -1288,10 +1302,17 @@ mod tests {
     /// And the same for a script with anything else in it: a paste is not a
     /// key, and the view has to be handed one to be shown taking it.
     fn driving(root: &Path, script: Vec<Typed>) -> (i32, String) {
+        drawn_about(root, &Scope::default(), script)
+    }
+
+    /// And the same for a view opened about one directory rather than the
+    /// whole machine.
+    fn drawn_about(root: &Path, scope: &Scope, script: Vec<Typed>) -> (i32, String) {
         let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
         let code = watch(
             root,
             &Config::default(),
+            scope,
             &mut terminal,
             &mut Script(script.into_iter()),
             None,
@@ -2102,6 +2123,44 @@ mod tests {
     fn view_closes_when_somebody_closes_it() {
         let root = TempDir::new().unwrap();
         assert_eq!(held(root.path(), &[KeyCode::Char('q')]).0, exit::OK);
+    }
+
+    #[test]
+    fn view_opened_about_a_directory_draws_that_directory_alone() {
+        let root = TempDir::new().unwrap();
+        finished_in(root.path(), "here-a1b", "wrote the parser", 60, "/srv/app");
+        finished_in(
+            root.path(),
+            "deeper-b2c",
+            "wrote the tests",
+            90,
+            "/srv/app/importer",
+        );
+        // The one a comparison of strings alone would have drawn with them.
+        finished_in(root.path(), "alike-c3d", "read the log", 120, "/srv/app2");
+        finished_in(root.path(), "far-d4e", "cut a release", 150, "/srv/other");
+
+        let scope = Scope::of(Some(Path::new("/srv/app"))).unwrap();
+        let (code, screen) = drawn_about(
+            root.path(),
+            &scope,
+            vec![Typed::Key(KeyEvent::from(KeyCode::Char('q')))],
+        );
+
+        assert_eq!(code, exit::OK);
+        for drawn in ["here-a1b", "deeper-b2c"] {
+            assert!(screen.contains(drawn), "{drawn} is under it:\n{screen}");
+        }
+        for other in ["alike-c3d", "far-d4e"] {
+            assert!(
+                !screen.contains(other),
+                "{other} is somebody else's afternoon:\n{screen}"
+            );
+        }
+        assert!(
+            screen.contains("2 done"),
+            "and the count is of what was drawn, not of the machine:\n{screen}"
+        );
     }
 
     #[test]

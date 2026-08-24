@@ -39,15 +39,16 @@ pub fn door(terminal: bool) -> Door {
 /// Open the front door against the machine.
 ///
 /// The directory, when one is named, is the question rather than the door: it
-/// narrows the agents behind it to the ones working under that directory,
-/// which is the same narrowing `amx ls --dir` reads.
+/// narrows what is behind both of them to the agents working under that
+/// directory, so `amx --dir /srv/app` is that project's agents drawn on a
+/// terminal and that project's agents down a pipe.
 pub fn from_env(config: &Config, dir: Option<&Path>) -> Result<i32> {
     let root = paths::state_root()?;
     let scope = Scope::of(dir)?;
 
     match door(std::io::stdout().is_terminal()) {
         Door::Table => verbs::ls::run(&root, false, &scope, now(), &mut std::io::stdout().lock()),
-        Door::View => tui::run(&root, config),
+        Door::View => tui::run(&root, config, &scope),
     }
 }
 
