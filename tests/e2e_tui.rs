@@ -827,6 +827,34 @@ fn a_wall_with_nothing_on_it_says_so_in_one_line_of_amxs_own() {
 }
 
 #[test]
+fn a_blank_line_stands_the_list_off_from_the_header() {
+    let amx = Harness::new();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let drawn = amx.until("the first heading", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("needs input").then_some(drawn)
+    });
+
+    let lines: Vec<&str> = drawn.lines().map(str::trim_end).collect();
+    let at = lines
+        .iter()
+        .position(|line| *line == "needs input")
+        .unwrap_or_else(|| panic!("no needs input heading in:\n{drawn}"));
+    assert!(
+        lines[at - 1].is_empty(),
+        "the first heading is stood off from the header the way the next one \
+         is stood off from it:\n{drawn}"
+    );
+    assert!(
+        lines[at - 2].contains("running"),
+        "and what the space is under is the header:\n{drawn}"
+    );
+}
+
+#[test]
 fn completed_agents_fold_into_a_count_until_they_are_opened() {
     let amx = Harness::new();
     for (n, id) in ["one-a1b", "two-b2c", "three-c3d", "four-d4e", "five-e5f"]

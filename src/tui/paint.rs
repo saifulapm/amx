@@ -138,22 +138,25 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     let area = frame.area();
     let helping = matches!(screen.mode, Mode::Keys);
     let head = header_rows(area.height);
+    let space = space_rows(area.height);
     let permission = permission(screen);
     let allowing = u16::from(permission.is_some());
 
     // The line being typed, where it is not the one the card is holding: an
     // answer is typed on the card itself, so it is not a band as well.
     let banded = screen.banded();
-    // Every band that is not the list: the header, the keys, the row under the
-    // composer, and the line itself counted at the one row it never goes below.
-    let chrome = head + 1 + allowing;
+    // Every band that is not the list: the header, the space under it, the
+    // keys, the row under the composer, and the line itself counted at the one
+    // row it never goes below.
+    let chrome = head + space + 1 + allowing;
     let composing = match banded {
         Some(composer) => composer_height(composer, area, chrome),
         None => 0,
     };
 
-    let [top, middle, line, allowed, keys] = Layout::vertical([
+    let [top, _, middle, line, allowed, keys] = Layout::vertical([
         Constraint::Length(head),
+        Constraint::Length(space),
         Constraint::Min(1),
         Constraint::Length(composing),
         Constraint::Length(allowing),
@@ -307,6 +310,16 @@ const NARROW: usize = 90;
 /// view is for.
 const SHORT: usize = 10;
 
+/// From this many rows up there is a blank one between the header and the
+/// list. The groups stand off from each other that way, and the first of them
+/// has the chrome above it rather than nothing at all.
+///
+/// It is the first row to go on a screen running out of them, for the reason
+/// [`SHORT`] is a rule: four rows of chrome over ten of terminal is most of
+/// what a person opened the view to read, and a row of air is worth less than
+/// a row of agents.
+const SPACED: usize = 12;
+
 /// Fewer columns than this left for a directory and it is not on the row at
 /// all: a path cut to three characters is not a path.
 const SHORTEST_DIR: usize = 8;
@@ -317,6 +330,11 @@ fn header_rows(height: u16) -> u16 {
         true => 1,
         false => 2,
     }
+}
+
+/// And how many stand between it and the list.
+fn space_rows(height: u16) -> u16 {
+    u16::from((height as usize) >= SPACED)
 }
 
 /// What is above the list: what the next agent will be started with, and what
@@ -2150,9 +2168,9 @@ mod tests {
             (60, 14),
         );
 
-        assert_eq!(screen[2], "needs input", "{screen:?}");
+        assert_eq!(screen[3], "needs input", "{screen:?}");
         assert!(
-            screen[3].contains("ask-a1b"),
+            screen[4].contains("ask-a1b"),
             "the row the card was opened from is still on the screen: {screen:?}"
         );
 
@@ -2787,15 +2805,33 @@ mod tests {
     }
 
     #[test]
-    fn headings_stand_off_from_the_group_above_them() {
-        // A blank line above every heading but the first, so the groups read
-        // as groups instead of one run of rows.
-        let screen = drawn(a_fleet(), None, (60, 10));
-        assert_eq!(screen[2], "needs input", "the first heading, unspaced");
-        assert!(screen[3].contains("ask-a1b"), "{screen:?}");
-        assert_eq!(screen[4], "", "a blank line stands the next group off");
-        assert_eq!(screen[5], "working");
-        assert!(screen[6].contains("busy-b2c"), "{screen:?}");
+    fn headings_stand_off_from_whatever_is_above_them() {
+        // A blank line above every heading, so the groups read as groups
+        // instead of one run of rows — and the first of them is stood off from
+        // the header the same way, so the list starts where the chrome ends
+        // rather than against it.
+        let screen = drawn(a_fleet(), None, (60, 12));
+        assert!(screen[1].contains("running"), "the header: {screen:?}");
+        assert_eq!(screen[2], "", "the space over the list");
+        assert_eq!(screen[3], "needs input", "the first heading");
+        assert!(screen[4].contains("ask-a1b"), "{screen:?}");
+        assert_eq!(screen[5], "", "a blank line stands the next group off");
+        assert_eq!(screen[6], "working");
+        assert!(screen[7].contains("busy-b2c"), "{screen:?}");
+    }
+
+    #[test]
+    fn the_space_over_the_list_is_the_first_row_a_short_screen_takes_back() {
+        // Air is worth a row where there are rows to spare and not where there
+        // are none: the header has already given its second row up by then,
+        // and this one goes the same way.
+        let tall = drawn(a_fleet(), None, (60, SPACED as u16));
+        assert_eq!(tall[2], "", "{tall:?}");
+        assert_eq!(tall[3], "needs input", "{tall:?}");
+
+        let short = drawn(a_fleet(), None, (60, SPACED as u16 - 1));
+        assert_eq!(short[2], "needs input", "{short:?}");
+        assert!(short[3].contains("ask-a1b"), "{short:?}");
     }
 
     #[test]
@@ -2930,7 +2966,8 @@ mod tests {
             "what the fleet is, and the gate the next one meets: {:?}",
             screen[1]
         );
-        assert_eq!(screen[2], "needs input", "and the list starts under it");
+        assert_eq!(screen[2], "", "a blank row stands the list off from it");
+        assert_eq!(screen[3], "needs input", "and the list starts under that");
     }
 
     #[test]
@@ -3070,19 +3107,19 @@ mod tests {
         assert_eq!(short[1], "working", "and the list starts a row sooner");
     }
 
-    /// A screen with room for the bands above and below the list, and a group
-    /// or two under them.
+    /// A screen with room for the bands above and below the list, the space
+    /// between the header and it, and a group or two under that.
     const WALL: (u16, u16) = (80, 12);
 
     #[test]
     fn a_wall_nobody_has_put_anything_on_says_so_in_one_line_of_its_own() {
         let screen = drawn(Vec::new(), None, WALL);
 
-        assert_eq!(screen[2], WELCOME, "{screen:?}");
+        assert_eq!(screen[3], WELCOME, "{screen:?}");
         // Everything under it down to the keys is the empty wall itself: one
         // line where the four groups used to have a sentence each.
         assert!(
-            screen[3..screen.len() - 1].iter().all(String::is_empty),
+            screen[4..screen.len() - 1].iter().all(String::is_empty),
             "one line, and no more: {screen:?}"
         );
         for group in Group::ALL {
@@ -3104,9 +3141,9 @@ mod tests {
             None,
             (WELCOME.chars().count() as u16 - 1, WALL.1),
         );
-        assert_eq!(narrow[2], "no agents");
+        assert_eq!(narrow[3], "no agents");
         let wide = drawn(Vec::new(), None, (WELCOME.chars().count() as u16, WALL.1));
-        assert_eq!(wide[2], WELCOME);
+        assert_eq!(wide[3], WELCOME);
     }
 
     #[test]
@@ -3116,7 +3153,7 @@ mod tests {
             None,
             WALL,
         );
-        assert_eq!(one[2], "completed");
+        assert_eq!(one[3], "completed");
         assert!(
             !one.iter().any(|line| line.contains("nobody asking")),
             "one agent and there is something to read off the rows: {one:?}"
@@ -3128,13 +3165,13 @@ mod tests {
         screen
             .list
             .narrow(vec![Narrow::Name(Some("nobody".to_string()))]);
-        assert_eq!(painted(&screen, WALL)[2], "nothing matches a:nobody");
+        assert_eq!(painted(&screen, WALL)[3], "nothing matches a:nobody");
 
         // And the project axis is a list of places, which nobody arrives at
         // with nothing to arrange.
         let mut screen = showing(Vec::new(), None);
         screen.list.turn();
-        assert_eq!(painted(&screen, WALL)[2], "no agents");
+        assert_eq!(painted(&screen, WALL)[3], "no agents");
     }
 
     #[test]
@@ -3552,7 +3589,7 @@ mod tests {
 
         // Tall enough for every key in one band, so each of them has the row
         // to itself and every description is whole.
-        let tall = HELP.len() as u16 + header_rows(24) + 1;
+        let tall = HELP.len() as u16 + header_rows(24) + space_rows(24) + 1;
         let painted = painted(&screen, (60, tall)).join("\n");
         for (key, does) in HELP {
             assert!(painted.contains(key), "{key} is missing:\n{painted}");
@@ -3569,9 +3606,10 @@ mod tests {
 
     #[test]
     fn keymap_the_keys_lay_out_down_one_band_and_on_to_the_next() {
-        // Two rows of header and one of keys leave twelve for the overlay,
-        // which is fewer than there are keys: they only all fit if the band
-        // that would have run off the bottom stands beside the first instead.
+        // Two rows of header, one of space and one of keys leave eleven for
+        // the overlay, which is fewer than there are keys: they only all fit
+        // if the band that would have run off the bottom stands beside the
+        // first instead.
         let painted = overlay((140, 15));
         let all = painted.join("\n");
         for (key, _) in HELP {
@@ -3581,12 +3619,12 @@ mod tests {
 
         // Down before across: the second key is under the first rather than
         // beside it, which is the way a column is read.
-        assert!(painted[2].starts_with(HELP[0].0), "{:?}", painted[2]);
-        assert!(painted[3].starts_with(HELP[1].0), "{:?}", painted[3]);
+        assert!(painted[3].starts_with(HELP[0].0), "{:?}", painted[3]);
+        assert!(painted[4].starts_with(HELP[1].0), "{:?}", painted[4]);
         assert!(
-            painted[2].chars().count() > 70,
+            painted[3].chars().count() > 70,
             "and the next band stands beside the first: {:?}",
-            painted[2]
+            painted[3]
         );
     }
 
