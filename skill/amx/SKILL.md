@@ -198,10 +198,11 @@ when one is in a state you did not expect.
   runs it in a pane and hands back an id, so a build you would otherwise sit
   through runs beside the agents. Do not wait on it with `result`: a command
   answers nothing, it exits, so `amx status <id> --json` is where the ending is
-  — `.state` is `done` or `failed` and `.exit` is the code — and `amx logs
-  <id>` is what it printed. Each pane amx starts, this one included, is given a
-  directory of its own to write in at `$AMX_AGENT_DIR`, and that directory goes
-  when the agent's record goes.
+  — `.state` is `done` or `failed` and `.exit` is the code. Its pane goes when
+  it does, so redirect any output you mean to read: `amx new --exec 'make
+  release > build.log 2>&1'`. Each pane amx starts, this one included, is given
+  a directory of its own to write in at `$AMX_AGENT_DIR`, and that directory
+  goes when the agent's record goes.
 - **Never block for ever.** Every `result` in an unattended script takes
   `--timeout`. A question ends the call on its own with exit `2`, so a deadline
   cannot bound the answering: bound that yourself, the way the loop above stops

@@ -109,12 +109,17 @@ either, so the four dials and anything after `--` are refused beside `--exec`
 rather than quietly dropped.
 
 The row ends `done` or `failed` by what the command exited with, and the code
-itself is `exit` in the JSON. `amx logs` is how you read what it printed;
-`amx result` has nothing to hand back, because a command answers nothing, it
-exits. While it runs there are no hook events to hear from, so after the first
-few seconds the row reads `unknown` — which is amx saying it cannot account for
-what is on that screen, and it cannot: the screen belongs to somebody else's
-program.
+itself is `exit` in the JSON. `amx result` has nothing to hand back — a command
+answers nothing, it exits — and `amx logs` reads the pane only while the
+command is still in it, because the pane goes when the command does. Output
+worth reading afterwards is output to redirect somewhere:
+`amx new --exec 'make release > build.log 2>&1'`.
+
+Like every pane amx starts, it is told where its own scratch directory is in
+`$AMX_AGENT_DIR`. While it runs there are no hook events to hear from, so after
+the first few seconds the row reads `unknown` — amx saying it cannot account
+for what is on that screen, which it cannot: the screen belongs to somebody
+else's program.
 
 ## The view
 
