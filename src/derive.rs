@@ -8,7 +8,10 @@
 //! 2. **The pane is gone.** No pane, no agent: it is stopped, whatever the
 //!    last hook said.
 //! 3. **The hooks are fresh.** Inside [`FRESH`] seconds the vendor's own
-//!    events are the best account there is.
+//!    events are the best account there is — of what the agent is doing. They
+//!    can say it has stopped on a question without saying which, and that part
+//!    is on the pane and nowhere else, so it is read from there at once rather
+//!    than waited for.
 //! 4. **The screen, against the rules.** Older than that, the pane is captured
 //!    and matched. A rule that claims it decides.
 //! 5. **Neither.** The screen is claimed by nothing, so the answer is
@@ -208,17 +211,33 @@ fn source_name(source: Source) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reading {
     pub verdict: Verdict,
-    /// What the screen says the agent is asking, when the screen is what
-    /// answered. Only ever the screen's: a question a hook reported is on the
-    /// record already, and the screen is where the choices under it are.
+    /// What the screen says the agent is asking, when the screen was read —
+    /// because it answered, or because the record said waiting and could not
+    /// say what for. Only ever the screen's: a question a hook reported is on
+    /// the record already, and the screen is where the choices under it are.
     pub asking: Option<Question>,
+}
+
+/// Whether the pane is worth reading for a question the record has not got.
+///
+/// The vendor's own events say an agent has stopped on a question earlier and
+/// surer than any screen does, and they can say it without saying what the
+/// question is: `PermissionRequest` fires as the box goes up carrying the tool
+/// it is about, so a box with no tool named leaves nothing written down at
+/// all. The notification that describes it is six seconds behind and the
+/// freshness window is eight, so a reader that waited for the record to go
+/// stale would hand back a waiting agent with nothing to answer — which is
+/// what `status` and `answer` did on the first ask, every time.
+fn wants_the_question(state: &State) -> bool {
+    state.state == Phase::Waiting && state.question.is_none()
 }
 
 /// Work out what an agent is doing.
 ///
 /// `alive` is whether its pane is still there, and `capture` is asked for the
-/// screen only when it is going to be read — a fresh record needs no tmux call
-/// at all, which is what keeps `ls` cheap with a wall full of agents.
+/// screen only when it is going to be read: a fresh record needs no tmux call
+/// at all unless it is a record of an agent waiting on a question it cannot
+/// name, which is what keeps `ls` cheap with a wall full of agents.
 pub fn read(
     state: &State,
     alive: bool,
@@ -248,7 +267,19 @@ pub fn read(
     }
 
     if age <= FRESH {
-        return told(state.state, Evidence::Hooks, None);
+        // A record that says waiting and cannot say what for is half an
+        // answer, and the half it is missing is the half somebody has to act
+        // on. The hooks still decide the phase — this is the same conclusion
+        // with the question beside it, on the first look rather than on the
+        // one after the freshness runs out.
+        let asking = wants_the_question(state)
+            .then(capture)
+            .flatten()
+            .and_then(|screen| rules.asking(&screen));
+        return Reading {
+            asking,
+            ..told(state.state, Evidence::Hooks, None)
+        };
     }
 
     let Some(screen) = capture() else {
@@ -468,17 +499,60 @@ mod tests {
     }
 
     #[test]
-    fn reader_has_no_question_from_a_screen_it_never_looked_at() {
-        // Fresh hooks answer without a capture, so there is nothing to read a
-        // question out of — and the record already has whatever they reported.
-        let fresh = reading(
+    fn reader_reads_the_pane_the_moment_the_hooks_say_waiting() {
+        // The record says waiting and cannot say what for: the event that put
+        // the box up carried no tool name, and the notification that would
+        // have described it is six seconds behind. The hooks are as fresh as
+        // they ever get, and the pane is still the only place the question and
+        // the choices under it are written.
+        let first_look = reading(
             &state(Phase::Waiting, 1_000),
             true,
             Some(A_BLOCKING_SCREEN),
             1_000,
         );
+        assert_eq!(first_look.verdict.phase, Phase::Waiting);
+        assert_eq!(
+            first_look.verdict.evidence,
+            Evidence::Hooks,
+            "the hooks still say what the agent is doing"
+        );
+        assert_eq!(
+            first_look.verdict.rule, None,
+            "the screen was read for the question, not for the state"
+        );
+
+        let asking = first_look.asking.expect("the pane is asking something");
+        assert_eq!(asking.text, "Do you want to proceed?");
+        assert_eq!(asking.options, ["Yes", "No"]);
+
+        // A pane that cannot be read leaves the conclusion exactly where the
+        // hooks left it.
+        let unreadable = reading(&state(Phase::Waiting, 1_000), true, None, 1_000);
+        assert_eq!(unreadable.verdict.phase, Phase::Waiting);
+        assert_eq!(unreadable.verdict.evidence, Evidence::Hooks);
+        assert_eq!(unreadable.asking, None);
+    }
+
+    #[test]
+    fn reader_has_no_question_from_a_screen_it_never_looked_at() {
+        // A record that already says what is being asked has nothing to learn
+        // from the pane, so fresh hooks answer without a capture.
+        let mut told = state(Phase::Waiting, 1_000);
+        told.question = Some("Do you want to proceed?".to_string());
+        let fresh = reading(&told, true, Some(A_BLOCKING_SCREEN), 1_000);
         assert_eq!(fresh.verdict.evidence, Evidence::Hooks);
         assert_eq!(fresh.asking, None);
+
+        // Neither has an agent that is working, whatever is on its screen.
+        let mid_turn = reading(
+            &state(Phase::Working, 1_000),
+            true,
+            Some(A_BLOCKING_SCREEN),
+            1_000,
+        );
+        assert_eq!(mid_turn.verdict.phase, Phase::Working);
+        assert_eq!(mid_turn.asking, None);
 
         // And a screen that is not asking anything says nothing about it.
         let quiet = reading(
