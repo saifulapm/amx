@@ -206,9 +206,10 @@ One string, the labels joined with `, `. Typed text comes back the same way:
 `"Which checks should run?": "Audit"`.
 
 **The labels are in the order the boxes were checked, not the order the payload
-offers them.** Measured on 2026-08-24 against v2.1.240 on the `Format`,
-`Clippy`, `Tests` menu above: `Enter` on `3. Tests` and then the digit `1` for
-`Format` drew `→ Tests, Format` on the review tab and recorded
+offers them.** Measured on 2026-08-24 against v2.1.240, on the same `Format`,
+`Clippy`, `Tests` question as the 24-column capture above and driven at 220:
+`Enter` on `3. Tests` and then the digit `1` for `Format` drew
+`→ Tests, Format` on the review tab and recorded
 
     "answers": { "Which checks should the hook run?": "Tests, Format" }
 
@@ -367,9 +368,9 @@ second showing:
 
     Enter to select · Tab/Arrow keys to navigate · Esc to cancel
 
-The boxes, the two-column descriptions and the `Type something` with no full
-stop are section 1's checkbox screen to the letter. **The unnumbered row under
-the `Other` row is not.** It reads `Next` here and `Submit` in section 1, and
+The boxes, the descriptions indented two columns and the `Type something` with
+no full stop are section 1's checkbox screen to the letter. **The unnumbered
+row under the `Other` row is not.** It reads `Next` here and `Submit` there, and
 what differs between the two is position: `Submit` when no question follows,
 `Next` when one does. So that row names where the tab leads, never what kind of
 screen is drawing it, and neither word tells a reader it is looking at
@@ -392,7 +393,7 @@ that it is finished.
 Driven end to end the call took `Enter` on `Node`, then `2` and `Enter` on the
 `Rollout` tab, then the tab-moving keys in the table above — `→`, `←`, four `↓`
 and `Enter` on `Next` — which left both answers alone, then `Enter` on `Redis`,
-then `Enter` on the review tab.
+then `Enter` on the review tab. What came back is at the end of this section.
 
 ### What answering it produced
 
@@ -415,7 +416,7 @@ by its question's text:
     }
 
 `Migrate, Canary` is the order the two boxes were checked and not the order the
-payload lists them in, which is the same finding as section 1's on a tab rather
+payload lists them in — section 1's finding again, on a tab this time rather
 than on a screen of its own.
 
 ## 3. The `Other` row
