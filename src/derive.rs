@@ -742,6 +742,13 @@ fn claimed(dir: &Path) -> Option<u64> {
 /// costs the line and nothing else. A command that never returns costs the
 /// thread it is on, and the queue behind it.
 fn have_a_line_written(root: &Path, agent: &Agent, meta: &Meta, state: &State, command: &str) {
+    // Before the queue rather than after it. A turn somebody has already asked
+    // about is one this reading will never ask about, and a row that stood in
+    // the queue holding a place it cannot use would keep every row under it
+    // from ever being asked about at all.
+    if claimed(agent.dir()) == Some(state.since) {
+        return;
+    }
     if !may_ask() {
         return;
     }
@@ -1641,6 +1648,13 @@ mod tests {
         // Whatever came back, including nothing: a command that failed once
         // fails the same way a second later.
         assert!(agent.state().unwrap().summary.is_none());
+
+        // And a turn nobody may ask about again does not stand in the queue
+        // for the rows under it, which is the whole of what those rows would
+        // get: this one is the first row of every reading.
+        have_a_line_written(root.path(), &agent, &meta(), &ended, "true");
+        assert!(may_ask(), "the queue is where it was");
+        done_asking();
 
         assert!(
             claim_the_turn(&agent, ended.since + 1),
