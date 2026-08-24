@@ -146,6 +146,13 @@ impl View {
             "summary": self.state.summary,
             "question": self.state.question,
             "options": self.state.options,
+            // The question showing above, and the whole of the call it came
+            // from here: every question in it with its own choices, the
+            // sentences under them and the flag saying how many may be taken.
+            // `multi` is the showing one's, because that is the question a
+            // caller is about to answer.
+            "questions": self.state.asking,
+            "multi": self.state.multi(),
             "result": self.state.result,
             "source": self.state.source.map(source_name),
             "exit": self.state.exit,
@@ -622,6 +629,108 @@ mod tests {
             verdict: claimed("permission_prompt"),
         };
         assert_eq!(told.kind(), Some(Kind::Question));
+    }
+
+    /// A call of two questions, the second taking more than one choice, as a
+    /// hook folded it onto the record.
+    fn a_call_of_two() -> State {
+        use crate::store::{Ask, Choice, Kind};
+
+        let choice = |label: &str, description: &str| Choice {
+            label: label.to_string(),
+            description: Some(description.to_string()),
+            preview: None,
+        };
+        let mut state = State {
+            state: Phase::Waiting,
+            kind: Some(Kind::Question),
+            ..State::default()
+        };
+        state.asks_all(vec![
+            Ask {
+                header: Some("Runtime".to_string()),
+                text: "Which runtime should the service target?".to_string(),
+                options: vec![
+                    choice("Node", "Widest library support"),
+                    choice("Deno", "Batteries included"),
+                ],
+                multi: false,
+                answer: None,
+            },
+            Ask {
+                header: Some("Rollout".to_string()),
+                text: "Which rollout steps should run?".to_string(),
+                options: vec![
+                    choice("Canary", "Five percent first"),
+                    choice("Announce", "Post to the channel"),
+                ],
+                multi: true,
+                answer: None,
+            },
+        ]);
+        state
+    }
+
+    #[test]
+    fn reader_hands_a_caller_every_question_of_the_call() {
+        let waiting = View::new(
+            meta(),
+            a_call_of_two(),
+            verdict(Phase::Waiting, Evidence::Hooks, None),
+        );
+        let json = waiting.json();
+
+        // What was there before means what it always meant: the question on
+        // the screen and the choices under it.
+        assert_eq!(json["question"], "Which runtime should the service target?");
+        assert_eq!(json["options"][0], "Node");
+        assert_eq!(json["options"][1], "Deno");
+        assert_eq!(json["kind"], "question");
+
+        // And beside them, the part no screen carries.
+        assert_eq!(json["multi"], false, "the one showing takes one choice");
+        assert_eq!(json["questions"].as_array().unwrap().len(), 2);
+        assert_eq!(json["questions"][0]["header"], "Runtime");
+        assert_eq!(
+            json["questions"][0]["options"][0]["description"],
+            "Widest library support"
+        );
+        assert_eq!(json["questions"][1]["multi"], true);
+        assert_eq!(json["questions"][0]["answer"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn reader_says_which_question_of_a_call_is_the_one_showing() {
+        // A caller answering a call of several is told what to answer next by
+        // the same fields it read the first time.
+        let mut state = a_call_of_two();
+        state.answered("Node");
+
+        let waiting = View::new(
+            meta(),
+            state,
+            verdict(Phase::Waiting, Evidence::Hooks, None),
+        );
+        let json = waiting.json();
+        assert_eq!(json["question"], "Which rollout steps should run?");
+        assert_eq!(json["options"][0], "Canary");
+        assert_eq!(json["multi"], true, "and this one takes more than one");
+        assert_eq!(json["questions"][0]["answer"], "Node");
+    }
+
+    #[test]
+    fn reader_coherence_a_call_that_is_over_goes_with_its_question() {
+        // The questions behind the one showing are as answered as it is, and
+        // an agent that is back at work is not being asked any of them.
+        let working = View::new(
+            meta(),
+            a_call_of_two(),
+            verdict(Phase::Working, Evidence::Screen, Some("thinking")),
+        );
+        assert_eq!(working.json()["question"], serde_json::Value::Null);
+        assert_eq!(working.json()["questions"], serde_json::json!([]));
+        assert_eq!(working.json()["multi"], false);
+        assert!(working.state.asking.is_empty());
     }
 
     #[test]
