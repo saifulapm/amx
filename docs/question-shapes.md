@@ -34,6 +34,11 @@ file, and a `PostToolUse` hook did the same for the answer. Every `questions`
 block below is that hook's `tool_input`, and every `answers`/`annotations` block
 is its `tool_response`.
 
+That response carries three keys and not two. `questions` — the whole call, as
+it went in — sits beside `answers` and `annotations`, on both a one-question and
+a three-question call measured on 2026-08-24 against v2.1.240. So what was asked
+can be read off the answer coming back, not only off the question going out.
+
 ## What every question screen shares
 
 A full-width rule, a header strip, the question, the numbered choices, a second
@@ -786,6 +791,9 @@ it asked, which is not a property of the question.
   checkbox one. `↓`, `Enter`, `Enter` finishes the checkbox case;
 * a digit answers a plain menu, toggles a checkbox menu, and types a character
   once the cursor is on the free-text row;
+* the `PostToolUse` payload echoes `questions` beside the answers, so a record
+  that missed the call going out can still take the tabs and their options off
+  the answer coming back;
 * a multi-select answer is one string in the order the boxes were checked, so
   the record cannot recover which options they were by matching the payload's
   order, and an answer that reproduces a recorded one has to toggle in the
