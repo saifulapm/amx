@@ -1013,6 +1013,17 @@ fn enter_puts_the_agent_in_front_of_the_terminal() {
     });
 
     an_agent_session(&amx, "fix-login-a1b");
+    // A window the agent opened for itself and left in front of its own, which
+    // is not the one somebody pressing enter is asking after.
+    amx.tmux(&[
+        "new-window",
+        "-t",
+        "amx-fix-login-a1b",
+        "--",
+        "sh",
+        "-c",
+        "while :; do sleep 0.05; done",
+    ]);
     amx.until("the row", || row_of(&amx, &view, "fix-login-a1b").map(drop));
 
     press(&amx, &view, "Enter");
