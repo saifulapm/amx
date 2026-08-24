@@ -726,7 +726,7 @@ fn row(
         top,
         Span::styled(format!("{} ", icon(phase, moment.beat)), colour(phase)),
         Span::styled(
-            format!("{name:<names$}  "),
+            format!("{}  ", padded(&name, names)),
             if selected {
                 Style::new().add_modifier(Modifier::BOLD)
             } else {
@@ -754,7 +754,7 @@ fn row(
         true => Style::new().fg(role::WARNING),
         false => dim(),
     };
-    spans.push(Span::styled(format!("{said:<room$} "), summary));
+    spans.push(Span::styled(format!("{} ", padded(&said, room)), summary));
     spans.push(Span::styled(format!("{age:>AGE$}"), dim()));
     Line::from(spans)
 }
@@ -1863,15 +1863,44 @@ fn first_line(text: &str) -> &str {
 }
 
 /// `text`, cut to `width` with an ellipsis for what was cut.
+/// The columns `text` takes on a screen, which is not its characters: an
+/// emoji is one char and two columns, and a row measured in characters
+/// pushes its last column off the terminal's edge. ratatui's own measure,
+/// so a row is cut by the same arithmetic it is drawn with.
+fn width_of(text: &str) -> usize {
+    Span::raw(text).width()
+}
+
 fn fit(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
+    if width_of(text) <= width {
         return text.to_string();
     }
     match width {
         0 => String::new(),
         1 => "…".to_string(),
-        _ => text.chars().take(width - 1).chain(['…']).collect(),
+        _ => {
+            let mut kept = String::new();
+            let mut used = 0;
+            for one in text.chars() {
+                let wide = width_of(one.encode_utf8(&mut [0; 4]));
+                if used + wide > width - 1 {
+                    break;
+                }
+                used += wide;
+                kept.push(one);
+            }
+            kept.push('…');
+            kept
+        }
     }
+}
+
+/// `text` padded with spaces to `width` columns — `format!("{text:<width$}")`
+/// counts characters, and a wide glyph would carry the pad one column too
+/// far.
+fn padded(text: &str, width: usize) -> String {
+    let pad = " ".repeat(width.saturating_sub(width_of(text)));
+    format!("{text}{pad}")
 }
 
 /// What a row is indented by, so an agent reads as sitting under the heading
@@ -4320,5 +4349,36 @@ mod tests {
         assert_eq!(fit("too long by far", 8), "too lon…");
         assert_eq!(fit("anything", 1), "…");
         assert_eq!(fit("anything", 0), "");
+    }
+
+    #[test]
+    fn view_a_wide_glyph_in_the_summary_does_not_push_the_age_off_the_edge() {
+        // Measured on the wall 2026-08-25: `Hello! 👋` — one char, two
+        // columns — shifted everything after it right by one, and the row's
+        // age lost its unit to the terminal's edge, reading `5` where every
+        // other row read `5m`. A row is measured in columns, not characters.
+        let row = drawn(
+            vec![view(
+                "waves-a1b",
+                Phase::Done,
+                Some("Hello! 👋 done and dusted"),
+                345,
+            )],
+            None,
+            WALL,
+        )
+        .into_iter()
+        .find(|line| line.contains("waves-a1b"))
+        .expect("the agent's row");
+        assert!(
+            row.trim_end().ends_with("5m"),
+            "the unit survives the emoji: {row:?}"
+        );
+
+        // And the clip itself counts columns: four emoji are eight columns,
+        // whole at eight and one emoji plus the ellipsis at four.
+        assert_eq!(fit("👋👋👋👋", 8), "👋👋👋👋");
+        assert_eq!(fit("👋👋👋👋", 4), "👋…");
+        assert_eq!(fit("ab👋cd", 5), "ab👋…");
     }
 }
