@@ -657,16 +657,49 @@ fn write_the_line(root: &Path, id: &str, at: &Path, command: &str, answer: &str)
     });
 }
 
-/// The turns a line has already been asked about.
+/// What has been asked about, and whether anything is being asked now.
 ///
-/// A reading is taken every second and the answer takes as long as it takes,
-/// so without this every look would put another command behind the same turn.
-/// A turn that was asked about and got nothing back stays in here too: a
-/// command that failed once fails the same way a second later, and a wall of
-/// finished agents would be a wall of subprocesses for as long as the view is
-/// open.
-static ASKED: std::sync::Mutex<std::collections::BTreeSet<(String, u64)>> =
-    std::sync::Mutex::new(std::collections::BTreeSet::new());
+/// `turns` is every turn a line has already been asked about, by agent and by
+/// when its turn ended, so a reading every second puts one command behind a
+/// turn rather than one behind every look. A turn that got nothing back stays
+/// in it: a command that failed once fails the same way a second later.
+///
+/// `busy` is the queue, and it is here because of what the command is. It is
+/// whatever somebody configured, routinely a model call, and a view opened on
+/// a week of finished agents would otherwise start one for every row at once —
+/// all of them at the same moment, for rows nobody is waiting on. One at a
+/// time turns that into a queue draining at the rate the command answers, and
+/// nobody is waiting for any of it.
+struct Asking {
+    turns: std::collections::BTreeSet<(String, u64)>,
+    busy: bool,
+}
+
+static ASKING: std::sync::Mutex<Asking> = std::sync::Mutex::new(Asking {
+    turns: std::collections::BTreeSet::new(),
+    busy: false,
+});
+
+/// Whether this turn is the one to ask about now. A turn refused because
+/// something else is being asked is not written down, so the next reading
+/// offers it again.
+fn may_ask(turn: (String, u64)) -> bool {
+    let Ok(mut asking) = ASKING.lock() else {
+        return false;
+    };
+    if asking.busy || !asking.turns.insert(turn) {
+        return false;
+    }
+    asking.busy = true;
+    true
+}
+
+/// One question over, whatever it answered.
+fn done_asking() {
+    if let Ok(mut asking) = ASKING.lock() {
+        asking.busy = false;
+    }
+}
 
 /// Set that going, with nobody waiting for it.
 ///
@@ -674,24 +707,25 @@ static ASKED: std::sync::Mutex<std::collections::BTreeSet<(String, u64)>> =
 /// (`crate::pr`): a view is open for hours and has the line on its next
 /// reading, and a verb that exits first leaves the turn unsummarised, which
 /// costs the line and nothing else. A command that never returns costs the
-/// thread it is on.
+/// thread it is on, and the queue behind it.
 fn have_a_line_written(root: &Path, meta: &Meta, state: &State, command: &str) {
-    {
-        let Ok(mut asked) = ASKED.lock() else {
-            return;
-        };
-        if !asked.insert((meta.id.clone(), state.since)) {
-            return;
-        }
+    if !may_ask((meta.id.clone(), state.since)) {
+        return;
     }
 
     let (root, id) = (root.to_path_buf(), meta.id.clone());
     let at = where_it_ran(meta);
     let command = command.to_string();
     let answer = state.result.clone().unwrap_or_default();
-    let _ = std::thread::Builder::new()
+    let asking = std::thread::Builder::new()
         .name("amx-summary".to_string())
-        .spawn(move || write_the_line(&root, &id, &at, &command, &answer));
+        .spawn(move || {
+            write_the_line(&root, &id, &at, &command, &answer);
+            done_asking();
+        });
+    if asking.is_err() {
+        done_asking();
+    }
 }
 
 /// Where the command runs: the agent's own tree while it is there, else where
@@ -1533,6 +1567,31 @@ mod tests {
             ask_for_a_line("no-such-command-here", at.path(), "x", said),
             None
         );
+    }
+
+    #[test]
+    fn summary_asks_about_one_turn_at_a_time_and_about_each_turn_once() {
+        // What answers is whatever somebody configured, routinely a model
+        // call, so a view opened on a week of finished agents queues them
+        // rather than starting one for every row at once.
+        assert!(may_ask(("fix-login-a1b".to_string(), 10)));
+        assert!(
+            !may_ask(("port-cli-b2c".to_string(), 20)),
+            "somebody else's turn waits until this one is answered"
+        );
+
+        done_asking();
+        assert!(may_ask(("port-cli-b2c".to_string(), 20)));
+        done_asking();
+
+        // And a turn asked about once is not asked about again, whatever came
+        // back: a command that failed once fails the same way a second later.
+        assert!(!may_ask(("fix-login-a1b".to_string(), 10)));
+        assert!(
+            may_ask(("fix-login-a1b".to_string(), 11)),
+            "the same agent's next turn is a different question"
+        );
+        done_asking();
     }
 
     #[test]

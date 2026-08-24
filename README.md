@@ -544,8 +544,9 @@ the command where the agent ran, hands it the whole answer on stdin with
 `$AMX_ID` naming the agent, and writes the first line it prints onto the record
 for every reader after. Nothing waits for it: the row keeps the answer until
 the line arrives, and a command that fails, that is not installed, or that says
-nothing costs the line and nothing else. Left out, nothing is run and nothing
-is spent.
+nothing costs the line and nothing else. One turn is asked about at a time, so
+a view opened on a week of finished agents is a queue rather than a week of
+model calls at once. Left out, nothing is run and nothing is spent.
 
 ## What is on disk
 
