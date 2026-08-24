@@ -55,7 +55,30 @@ const SOCKET_ENV: &str = "AMX_TMUX_SOCKET";
 
 /// The variables that belong to the pane a command was typed in, not to the
 /// pane it starts: tmux's own two, and the shell's idea of where it is.
-const NOT_INHERITED: [&str; 4] = ["TMUX", "TMUX_PANE", "PWD", "OLDPWD"];
+const NOT_INHERITED: [&str; 11] = [
+    "TMUX",
+    "TMUX_PANE",
+    "PWD",
+    "OLDPWD",
+    // The rest name the claude session `new` was typed inside, when it was
+    // typed inside one — an agent driving amx, or amx's own skill. A vendor
+    // handed its spawner's markers believes it is a child of that session:
+    // measured at 2.1.240 on 2026-08-25, it came up with `Transcript saving
+    // is off — inherited CLAUDE_CODE_CHILD_SESSION marker`, and an agent
+    // with no transcript is one `result` cannot quote and `resume` and
+    // `fork` cannot continue. Preferences (`CLAUDE_CODE_NO_FLICKER`, the
+    // `DISABLE_*` switches) are about the person and ride along; these name
+    // the session, and the agent is not in it. `CLAUDE_EFFORT` goes with
+    // them because it is the spawner's dial, and a dial nobody turned on
+    // this agent is a flag amx does not pass.
+    "CLAUDECODE",
+    "CLAUDE_PID",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_EFFORT",
+];
 
 /// How long `_boot` waits for the record whose pane it is.
 const RECORD_PATIENCE: Duration = Duration::from_secs(10);
@@ -365,6 +388,51 @@ mod tests {
                 "{gone} describes where the command was typed, not where the agent runs"
             );
         }
+    }
+
+    #[test]
+    fn spawn_a_claude_spawning_another_does_not_make_it_a_child() {
+        // Measured against a live claude 2.1.240 on 2026-08-25: an agent
+        // handed its spawner's session markers came up with `Transcript
+        // saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker` on its
+        // own screen, and an agent with no transcript is one `result` cannot
+        // quote and `resume` and `fork` cannot continue.
+        let snapshot = env_snapshot(vars(&[
+            ("CLAUDECODE", "1"),
+            ("CLAUDE_PID", "12345"),
+            ("CLAUDE_CODE_SESSION_ID", "abc-123"),
+            ("CLAUDE_CODE_CHILD_SESSION", "1"),
+            ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+            ("CLAUDE_CODE_EXECPATH", "/opt/claude/claude"),
+            ("CLAUDE_EFFORT", "high"),
+            ("CLAUDE_CODE_NO_FLICKER", "1"),
+            ("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY", "1"),
+        ]));
+
+        for lineage in [
+            "CLAUDECODE",
+            "CLAUDE_PID",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_EXECPATH",
+        ] {
+            assert!(
+                !snapshot.contains_key(lineage),
+                "{lineage} names the session the command was typed in, \
+                 not the agent"
+            );
+        }
+        assert!(
+            !snapshot.contains_key("CLAUDE_EFFORT"),
+            "the spawner's effort is a dial nobody turned on this agent"
+        );
+        // A preference is about the person, not the session, and rides along.
+        assert_eq!(snapshot.get("CLAUDE_CODE_NO_FLICKER").unwrap(), "1");
+        assert_eq!(
+            snapshot.get("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY").unwrap(),
+            "1"
+        );
     }
 
     #[test]
