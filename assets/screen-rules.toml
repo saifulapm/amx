@@ -40,7 +40,8 @@
 # underneath — which is why it comes first.
 #
 # Measured against v2.1.226 on 2026-08-12 at 220 and 54 columns, reconfirmed
-# byte for byte against v2.1.237 on 2026-08-21 at the same two widths:
+# byte for byte against v2.1.237 on 2026-08-21 at the same two widths, and
+# again against v2.1.240 on 2026-08-24 at 220 columns:
 #
 #   Quick safety check: Is this a project you created or one you trust? (Like
 #   your own code, …). If not, take a moment to review what's in this folder
@@ -194,6 +195,48 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 # Esc to cancel` unchanged to the letter. The eight-width, five-mode matrix
 # above is a rendering fact about how this vendor wraps text, not wording it
 # could silently change; it was not redriven this round.
+#
+# ── The other four shapes this one tool draws ────────────────────────────────
+# The screen above is the tool's plainest shape. Driven live against v2.1.240
+# on 2026-08-24 at 220, 80, 54, 40 and 24 columns, the same tool also draws a
+# checkbox list, a strip of question tabs, a note field beside a preview, and a
+# free-text `Other` row — captures, payloads and keystrokes in
+# docs/question-shapes.md. This rule came through all four unchanged, and the
+# reason is the anchor: the footer's middle term is `↑/↓ to navigate` on one
+# question, `Tab/Arrow keys to navigate` on several, and gains `n to add notes`
+# and `ctrl+g to edit in <editor>` besides — but every one of them still OPENS
+# with `Enter to select`, at every width measured. `not_below` was never wrong
+# on any of the forty-odd captures.
+#
+# What the rule cannot do on those shapes is read what is on them, and that is
+# a matter for whatever owns the reading rather than for a string here:
+#
+#   * a checkbox choice draws as `❯ 1. [ ] Logging`, so its label comes off the
+#     row with the box glued to it, and an answered tab marks its choice with a
+#     trailing ` ✔`;
+#   * a previewed question puts the preview box on the SAME rows as the
+#     choices, drops the `Other` row, and leaves `Chat about this` with no
+#     number on it at all;
+#   * a tab strip elides its headers as the pane narrows — `☐ St…` at 40
+#     columns, the current tab's own header gone at 24 — so how many tabs there
+#     are and what they are called is in the payload and nowhere else;
+#   * the vendor pads the screen it drew rather than sitting at the bottom of
+#     it. Measured on a 50-row pane: the box occupied rows 17 to 33 and left 17
+#     blank rows under the footer, which put the floor's 24 rows seven rows
+#     below the question. The rule still held, on `esc to cancel`, and the
+#     question read back empty.
+#
+# ── The screen with no footer, which nothing here claims ─────────────────────
+# Both shapes that need an explicit submit — a multi-select question, or more
+# than one question — end on a review tab that draws `Review your answers`, the
+# answers so far, `Ready to submit your answers?` and `❯ 1. Submit answers`,
+# and NO footer of any kind. Measured at 220, 54 and 24 columns on 2026-08-24.
+# `enter to select` is not on it, so this rule cannot reach it; `ready` without
+# `execute` misses plan_approval; the mode footer a blocking prompt never draws
+# misses idle_prompt. An agent one keystroke from finishing an answer therefore
+# reads `unknown`. The anchor those captures support is `review your answers`,
+# which is 19 columns, whole at every width measured, and the fragment its row
+# opens with.
 [[rule]]
 name = "ask_menu"
 state = "waiting"
@@ -310,6 +353,15 @@ all = ["… (", "s · "]
 # unchanged from the table above. The stillness timings were not re-measured
 # this round; nothing about a version bump changes how long a model takes to
 # pause between tokens.
+#
+# Seen live again in auto mode against v2.1.240 on 2026-08-24 at 220 columns,
+# where the footer's tail has changed on its own:
+#
+#   ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents
+#
+# `← for agents` now counts them. This rule did not notice, because the tail is
+# not what it reads — which is the anchor law paying for itself twice in three
+# vendor bumps.
 [[rule]]
 name = "idle_prompt"
 state = "idle"
