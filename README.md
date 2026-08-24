@@ -26,6 +26,8 @@ idle     tidy-the-imports-d4e      2m  the imports are sorted
 - A coding agent CLI. amx runs `claude` unless told otherwise, and expects it
   to speak the same hook events.
 - git, for the worktrees `new` cuts. Only needed if you use them.
+- `gh` or `glab`, to put a pull request number on a row. Only that, and only
+  for agents with a branch of their own.
 
 ## Installing
 
@@ -135,9 +137,37 @@ about what is already running, and the header says where they point.
 
 The line a task is typed on reads a few words of its own, at the front of it
 and nowhere else. `s:` and `a:` narrow the list by state and by name rather
-than starting anything: `s:waiting`, or `a:import`. `m:`, `p:`, `w:` and
-`agent:` turn the dials for the one agent that line starts, as in
+than starting anything: `s:waiting`, `a:import`, or `a:#12`. `m:`, `p:`, `w:`
+and `agent:` turn the dials for the one agent that line starts, as in
 `m:opus w:off port the importer`.
+
+## Pull requests
+
+An agent's work goes onto a branch, and what becomes of it after that is the
+one thing the rest of a row cannot say. Where the branch has a pull request,
+the row carries its number:
+
+```
+  ● fix-the-login-bug-a1b  #12  the login bug is fixed          4m
+  ✻ port-the-importer-k3f  #40  Running Bash                    4s
+```
+
+The number is coloured by how it is going, in the same colours the rest of the
+view uses. Merged and approved are green, a failing check is red, changes
+requested is yellow, a request closed without going in is grey, and a draft is
+dimmed. A request whose checks are still running and one nobody has read yet
+both take your terminal's own colour, because neither has an answer to that
+question yet. The card says which of the two it is in words, and lists every
+request the branch has rather than the one the row had room for.
+
+`a:#12` narrows the list to it. That is the word you have in front of you when
+you arrive at the wall from the request rather than from the agent.
+
+Reading it is `gh`, and `glab` where gh has nothing to say. Neither is required
+and amx installs neither: without them the column is not drawn and nothing else
+changes. What the forge said is written down beside the agent's record and
+taken at its word for a minute; asking again happens in the background, because
+a list redrawn every second cannot stop for a network.
 
 ## Looking, and answering
 
@@ -333,6 +363,8 @@ One directory per agent under `~/.local/state/amx/agents/<id>/`:
 - `meta.json` holds how it was started and where to find it again.
 - `state.json` holds what it is doing, as the last event left it.
 - `events.jsonl` holds one line per event, in the order they arrived.
+- `pr.json` holds what its branch's pull requests were doing when the view last
+  asked, and is only there once one has.
 
 Writes go through a lock, one at a time; readers never lock and never see half
 a document. `ls` sweeps records whose agent finished more than a week ago. A
