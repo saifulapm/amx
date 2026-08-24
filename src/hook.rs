@@ -352,7 +352,10 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             // call behind it, and what kind of thing is being asked is what
             // decides what may be sent back.
             state.kind = Some(Kind::Question);
-            true
+            // The menu itself was the fresh screen, and the call that drew it
+            // said so; the vendor asking itself for leave is news only when
+            // that call never made the record.
+            Screen::Waiting
         }
 
         // Fired as the permission box goes up — six seconds before the
@@ -408,7 +411,9 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         // the call already says.
         "Notification" if state.pending().is_some() => {
             state.state = Phase::Waiting;
-            true
+            // It repeats a stop the call already put on the record, so it is
+            // news only to a record that was not waiting.
+            Screen::Waiting
         }
 
         "Notification" => {
