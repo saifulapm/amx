@@ -51,6 +51,25 @@ pub fn agent_dir(id: &str) -> Result<PathBuf> {
     agent_dir_in(&state_root()?, id)
 }
 
+/// What the view keeps between runs: the way it was gathered, the agents held
+/// at the top of their groups, the order somebody put a group in, and whether
+/// the status line has been offered.
+///
+/// Beside the agents rather than among them. Nothing in it belongs to an agent
+/// — it is the reader's own — and a file inside the agents directory would be
+/// an entry every walk of that directory has to know is not an agent.
+pub fn view_file(state_root: &Path) -> Option<PathBuf> {
+    state_root
+        .parent()
+        // A relative root has an empty parent, which names wherever the
+        // process happens to be running rather than anywhere amx keeps things.
+        .filter(|root| !root.as_os_str().is_empty())
+        .map(|root| root.join(VIEW))
+}
+
+/// What that file is called.
+const VIEW: &str = "view.json";
+
 /// The config file amx reads, whether or not it exists.
 pub fn config_file() -> Result<PathBuf> {
     let xdg = env_path(std::env::var_os("XDG_CONFIG_HOME"));
@@ -115,6 +134,27 @@ mod tests {
         assert_eq!(
             state_root_from(Some(Path::new("/tmp/t1")), Path::new("/home/dev")),
             Path::new("/tmp/t1/agents")
+        );
+    }
+
+    #[test]
+    fn the_view_keeps_its_own_file_beside_the_agents() {
+        assert_eq!(
+            view_file(&state_root_from(None, Path::new("/home/dev"))),
+            Some(PathBuf::from("/home/dev/.local/state/amx/view.json"))
+        );
+        assert_eq!(
+            view_file(&state_root_from(
+                Some(Path::new("/tmp/t1")),
+                Path::new("/home/dev")
+            )),
+            Some(PathBuf::from("/tmp/t1/view.json")),
+            "and it follows the state root wherever that was pointed"
+        );
+        assert_eq!(
+            view_file(Path::new("agents")),
+            None,
+            "a root with nowhere above it is not a place to write"
         );
     }
 

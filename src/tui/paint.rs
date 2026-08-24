@@ -57,7 +57,7 @@ const ANSWERS: &str = "enter answers it · esc closes it";
 /// the one they pressed. A test presses everything a terminal can send and
 /// holds what acted against this table, so a binding that is not here is a
 /// binding the screen would have to grow a row for.
-pub(super) const HELP: [(&str, &str); 20] = [
+pub(super) const HELP: [(&str, &str); 23] = [
     ("↑ ↓", "walk the agents"),
     ("space", "the card: what one is asking, and the answer"),
     ("enter →", "bring its window forward · shut a group"),
@@ -71,6 +71,9 @@ pub(super) const HELP: [(&str, &str); 20] = [
     ),
     ("ctrl+r", "call it something else"),
     ("ctrl+s", "gather them by state or by project"),
+    ("ctrl+t", "hold it at the top of its group"),
+    ("shift+↑", "move it up its group"),
+    ("shift+↓", "move it down its group"),
     ("alt+enter", "a newline in the line, without sending it"),
     ("alt+v", "which vendor the next agent runs"),
     ("alt+m", "which model the next agent is given"),
@@ -535,7 +538,15 @@ fn line(
         Item::Heading(under, tally) => heading(list.title(under), tally, selected || section),
         Item::Fold(hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
         Item::Agent(_) => match list.agent(item) {
-            Some(view) => row(view, list.requests(view), selected, columns, width, beat),
+            Some(view) => row(
+                view,
+                list.requests(view),
+                list.holding(view),
+                selected,
+                columns,
+                width,
+                beat,
+            ),
             None => Line::raw(""),
         },
         Item::Blank => Line::raw(""),
@@ -626,6 +637,7 @@ fn heading(title: String, tally: Tally, marked: bool) -> Line<'static> {
 fn row(
     view: &View,
     prs: &[Pr],
+    held: bool,
     selected: bool,
     columns: Columns,
     width: usize,
@@ -653,8 +665,10 @@ fn row(
     let room = width.saturating_sub(spent);
     let said = fit(first_line(view.line().unwrap_or("")), room);
 
+    let [read, top] = marks(view, held);
     let mut spans = vec![
-        unread(view),
+        read,
+        top,
         Span::styled(format!("{} ", icon(phase, beat)), colour(phase)),
         Span::styled(
             format!("{name:<names$}  "),
@@ -686,29 +700,38 @@ fn row(
     Line::from(spans)
 }
 
-/// The mark on a row nobody has been to read, in the gutter every row is
-/// already indented by.
+/// The two columns every row is already indented by, and what each of them is
+/// for: a row nobody has been to read is marked in the first, and one somebody
+/// is holding at the top of its group in the second.
 ///
-/// It costs the list no width, and down a wall of rows the marks line up into
-/// a column of their own — which is the thing worth reading here: not what
-/// this agent is, but which of them somebody has not caught up with. In the
-/// colour of a thing waiting on a person, because that is what it is.
-fn unread(view: &View) -> Span<'static> {
-    match rows::unread(view) {
-        true => Span::styled(
-            // The mark takes the first column of the gutter and gives back the
-            // rest, so a row with one is not a row that starts a column over.
-            format!("{UNREAD}{}", " ".repeat(GUTTER.chars().count() - 1)),
-            Style::new().fg(role::WARNING),
-        ),
-        false => Span::raw(GUTTER),
-    }
+/// They cost the list no width, and down a wall of rows each lines up into a
+/// column of its own — which is the thing worth reading here: not what this
+/// agent is, but which of them somebody has not caught up with, and which of
+/// them they said to keep in front of them. The first is in the colour of a
+/// thing waiting on a person, because that is what it is; the second is not
+/// about the agent at all but about how somebody laid the wall out, so it is
+/// drawn in the terminal's own.
+fn marks(view: &View, held: bool) -> [Span<'static>; MARKS] {
+    [
+        match rows::unread(view) {
+            true => Span::styled(UNREAD, Style::new().fg(role::WARNING)),
+            false => Span::raw(" "),
+        },
+        match held {
+            true => Span::raw(HELD),
+            false => Span::raw(" "),
+        },
+    ]
 }
 
-/// What that mark is drawn with. One column wide, and not a frame of the pulse
-/// or a resting glyph: it sits beside both, and a wall where the two are told
-/// apart by size would be a wall nobody reads either off.
+/// What those marks are drawn with. One column each, and neither a frame of
+/// the pulse nor a resting glyph: they sit beside both, and a wall where two
+/// things are told apart by size would be a wall nobody reads either off.
 const UNREAD: &str = "•";
+const HELD: &str = "▲";
+
+/// How many of them a row carries, which is what the gutter is wide.
+const MARKS: usize = 2;
 
 /// How many rows of a wrapped question the card gives before it stops: the
 /// words of it a person needs to decide, with the pane underneath for the rest.
@@ -1667,8 +1690,10 @@ fn fit(text: &str, width: usize) -> String {
 }
 
 /// What a row is indented by, so an agent reads as sitting under the heading
-/// it belongs to rather than beside it.
+/// it belongs to rather than beside it. One column for each mark a row can
+/// carry, which is what lets the marks cost the list no width at all.
 const GUTTER: &str = "  ";
+const _: () = assert!(GUTTER.len() == MARKS);
 
 /// The vendor's glyph set for a terminal. Ghostty draws the eight-spoked
 /// asterisk where everything else gets a plain one, and that is the only thing

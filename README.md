@@ -151,6 +151,8 @@ behind a count. Rows nobody has been to read carry a mark down the gutter.
 | `ctrl+x` | stop it, again to forget it, and on a heading clear the finished |
 | `ctrl+r` | call it something else |
 | `ctrl+s` | gather them by state or by project |
+| `ctrl+t` | hold it at the top of its group |
+| `shift+↑` `shift+↓` | move it up or down its group |
 | `alt+enter` | a newline in the line, without sending it |
 | `alt+v` | which vendor the next agent runs |
 | `alt+m` | which model the next agent is given |
@@ -169,6 +171,16 @@ Every key answers to the one chord it is written under, so the `alt+q` of
 somebody arranging their windows closes nothing. The four dials are about the
 agent that does not exist yet: they change what the next `n` starts and nothing
 about what is already running, and the header says where they point.
+
+The order the list puts agents in is amx's until you say otherwise. `ctrl+t`
+holds the one under the cursor at the top of its group, so the agent you are
+watching stays where you are looking, and its row carries a `▲` beside the `•`
+of a row nobody has read. `shift+↑` and `shift+↓` move an agent a row at a time
+past the others in its group; an agent that starts after you have put a group
+in order joins the bottom of it, because a group you arranged by hand is not
+one amx goes on sorting under you. Both of those and whichever way `ctrl+s`
+last gathered the fleet are written to `~/.local/state/amx/view.json` as you
+go, so the next view opens on the wall you left.
 
 The line a task is typed on reads a few words of its own, at the front of it
 and nowhere else. `s:` and `a:` narrow the list by state and by name rather
@@ -496,6 +508,11 @@ One directory per agent under `~/.local/state/amx/agents/<id>/`:
 - `scratch/` is the agent's own directory to write in. Every pane amx starts is
   told where it is in `$AMX_AGENT_DIR`, and it goes when the record goes, so
   anything worth keeping belongs in the worktree with the rest of the work.
+
+Beside that directory rather than in it, `~/.local/state/amx/view.json` is the
+view's own: how you last arranged the list, and whether the status line has
+been offered. Nothing in it belongs to an agent, and deleting it costs you the
+arrangement and nothing else.
 
 Writes go through a lock, one at a time; readers never lock and never see half
 a document. `ls` sweeps records whose agent finished more than a week ago. A

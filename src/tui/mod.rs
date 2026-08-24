@@ -39,7 +39,7 @@ use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
@@ -50,7 +50,7 @@ use crate::verbs::ls::Scope;
 use crate::{exit, registry, rules};
 use act::{Asking, Composer, Renamed, Replied, Started};
 use paint::{Card, Notice};
-use rows::List;
+use rows::{Arrangement, List};
 
 /// How often the agents are read again.
 const REFRESH: Duration = Duration::from_millis(1000);
@@ -356,6 +356,9 @@ struct Screen {
     notice: Option<Notice>,
     /// When the agents were last read.
     read: Option<Instant>,
+    /// Where what somebody arranges is kept, where there is anywhere to keep
+    /// it.
+    remembering: Option<PathBuf>,
     /// Which frame of the working pulse the rows are on.
     beat: usize,
     /// When that frame came up.
@@ -375,6 +378,7 @@ pub fn run(root: &Path, config: &Config, scope: &Scope) -> Result<i32> {
     // which is what the composer did before it asked at all.
     let bracketed = execute!(std::io::stdout(), EnableBracketedPaste).is_ok();
 
+    let remembering = crate::paths::view_file(root);
     let outcome = watch(
         root,
         config,
@@ -382,6 +386,7 @@ pub fn run(root: &Path, config: &Config, scope: &Scope) -> Result<i32> {
         &mut terminal,
         &mut Keyboard,
         Here::read(),
+        remembering.as_deref(),
     );
 
     // Whatever happened, the screen goes back the way it was found.
@@ -394,17 +399,12 @@ pub fn run(root: &Path, config: &Config, scope: &Scope) -> Result<i32> {
     // room for it and nothing to answer. Not over a view that failed: what
     // went wrong is the thing to read then.
     if outcome.is_ok()
-        && let Some(offer) = offer_the_statusline(root)
+        && let Some(offer) = remembering.and_then(|path| offer_the_statusline(&path))
     {
         println!("{offer}");
     }
     outcome
 }
-
-/// What the view remembers between runs, beside the agents rather than among
-/// them: this is the reader's own file, and no agent has anything to do with
-/// it.
-const VIEW: &str = "view.json";
 
 /// The line somebody pastes, which is the verb amx already has with a clock
 /// beside it.
@@ -416,12 +416,8 @@ const STATUSLINE: &str = "set -g status-right '#(amx statusline) | %H:%M'";
 /// of a terminal somebody was already using, which is a file of theirs, and
 /// nothing in amx writes it: the line is printed for them to paste, once,
 /// because a suggestion that comes back at every quit is an advertisement.
-fn offer_the_statusline(root: &Path) -> Option<String> {
-    let path = root.parent()?.join(VIEW);
-    let mut remembered: Remembered = std::fs::read(&path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
+fn offer_the_statusline(path: &Path) -> Option<String> {
+    let mut remembered = Remembered::read(path);
     if remembered.statusline {
         return None;
     }
@@ -429,12 +425,7 @@ fn offer_the_statusline(root: &Path) -> Option<String> {
     // A file that will not be written costs the offer again next time, which
     // is a better failure than an error over a screen that is already gone.
     remembered.statusline = true;
-    let _ = serde_json::to_vec_pretty(&remembered)
-        .map_err(anyhow::Error::from)
-        .and_then(|mut bytes| {
-            bytes.push(b'\n');
-            crate::store::write_atomic(&path, &bytes)
-        });
+    let _ = remembered.write(path);
 
     Some(format!(
         "amx can keep the fleet in the corner of your tmux status line:\n\n    \
@@ -450,9 +441,35 @@ fn offer_the_statusline(root: &Path) -> Option<String> {
 struct Remembered {
     /// Whether the status line has been offered.
     statusline: bool,
+    /// How somebody arranged the list, as the list itself states it.
+    arrangement: Arrangement,
+}
+
+impl Remembered {
+    /// What the file says, and nothing where it says nothing: this is the
+    /// view's own convenience, and a view that would not open because a
+    /// half-written file could not be parsed would be a poor trade.
+    fn read(path: &Path) -> Remembered {
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    /// The whole document, so a second view reading it while this one writes
+    /// sees what was there or all of this.
+    fn write(&self, path: &Path) -> Result<()> {
+        let mut bytes = serde_json::to_vec_pretty(self).context("writing what the view keeps")?;
+        bytes.push(b'\n');
+        crate::store::write_atomic(path, &bytes)
+    }
 }
 
 /// The view itself: draw what is there, act on what is typed, read again.
+///
+/// `remembering` is where what somebody arranges is kept, where there is
+/// anywhere to keep it. A view with nowhere still arranges itself; it just
+/// does not outlive the run.
 fn watch<B>(
     root: &Path,
     config: &Config,
@@ -460,6 +477,7 @@ fn watch<B>(
     terminal: &mut Terminal<B>,
     keys: &mut impl Keys,
     here: Option<Here>,
+    remembering: Option<&Path>,
 ) -> Result<i32>
 where
     B: Backend,
@@ -475,8 +493,16 @@ where
             std::env::current_dir().ok().as_deref(),
             std::env::home_dir().as_deref(),
         ),
+        remembering: remembering.map(Path::to_path_buf),
         ..Screen::default()
     };
+    // The list opens the way it was left, before anything is drawn on it: a
+    // view that gathered itself one way and then jumped to the other would be
+    // saying the arrangement is something it does rather than something
+    // somebody said.
+    if let Some(path) = remembering {
+        screen.list.arrange(Remembered::read(path).arrangement);
+    }
 
     loop {
         if screen.read.is_none_or(|at| at.elapsed() >= REFRESH) {
@@ -709,8 +735,21 @@ impl Screen {
     fn pressed(&mut self, key: KeyEvent, root: &Path, here: Option<&Here>) -> Result<Doing> {
         let plain = chord(key).is_empty();
         let ctrl = chord(key) == KeyModifiers::CONTROL;
+        // The one chord an arrow key arrives under, which is the only place
+        // shift is a key of its own rather than the character it typed.
+        let shift = plain && key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
             KeyCode::Char('q') if plain => return Ok(Doing::Close),
+            // The cursor with shift held moves the agent it is on instead of
+            // moving off it, which is the shape every list that reorders uses.
+            KeyCode::Down if shift => {
+                let moved = self.list.move_by(1);
+                self.keep(moved);
+            }
+            KeyCode::Up if shift => {
+                let moved = self.list.move_by(-1);
+                self.keep(moved);
+            }
             KeyCode::Down if plain => {
                 self.list.down();
                 self.moved();
@@ -807,6 +846,13 @@ impl Screen {
             KeyCode::Char('s') if ctrl => {
                 self.list.turn();
                 self.follow_the_cursor();
+                self.keep(true);
+            }
+            // The agent under the cursor held at the top of its group, so that
+            // the one somebody is watching stays where they are looking.
+            KeyCode::Char('t') if ctrl => {
+                let held = self.list.hold_or_let_go();
+                self.keep(held);
             }
             _ => {}
         }
@@ -1063,6 +1109,26 @@ impl Screen {
     fn acted(&mut self) {
         self.read = None;
     }
+
+    /// Keep how the list is arranged, where a key changed it.
+    ///
+    /// As it changes rather than as the view closes: a view whose terminal
+    /// went is a view that closed, and somebody who spent a minute arranging
+    /// a wall should not lose it to that.
+    ///
+    /// Read before written, so the rest of the file is what it was: the offer
+    /// at the foot of this one lives in it too, and two views open at once are
+    /// two people arranging one wall.
+    fn keep(&self, changed: bool) {
+        let Some(path) = self.remembering.as_ref().filter(|_| changed) else {
+            return;
+        };
+        let mut remembered = Remembered::read(path);
+        remembered.arrangement = self.list.arrangement();
+        // Nothing on the screen is waiting on this, and the one line the view
+        // has to say things on is worth more than a failure nobody can act on.
+        let _ = remembered.write(path);
+    }
 }
 
 /// What an action had to say, at the severity the writer knows it earned: what
@@ -1302,12 +1368,17 @@ mod tests {
     /// And the same for a script with anything else in it: a paste is not a
     /// key, and the view has to be handed one to be shown taking it.
     fn driving(root: &Path, script: Vec<Typed>) -> (i32, String) {
-        drawn_about(root, &Scope::default(), script)
+        drawn_about(root, &Scope::default(), script, None)
     }
 
     /// And the same for a view opened about one directory rather than the
-    /// whole machine.
-    fn drawn_about(root: &Path, scope: &Scope, script: Vec<Typed>) -> (i32, String) {
+    /// whole machine, or one that keeps what somebody arranges.
+    fn drawn_about(
+        root: &Path,
+        scope: &Scope,
+        script: Vec<Typed>,
+        remembering: Option<&Path>,
+    ) -> (i32, String) {
         let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
         let code = watch(
             root,
@@ -1316,6 +1387,7 @@ mod tests {
             &mut terminal,
             &mut Script(script.into_iter()),
             None,
+            remembering,
         )
         .unwrap();
         let buffer = terminal.backend().buffer().clone();
@@ -1710,7 +1782,9 @@ mod tests {
         let root = state.path().join("agents");
         std::fs::create_dir_all(&root).unwrap();
 
-        let offer = offer_the_statusline(&root).expect("the first quit offers");
+        let kept = crate::paths::view_file(&root).expect("somewhere to keep it");
+
+        let offer = offer_the_statusline(&kept).expect("the first quit offers");
         assert!(
             offer.contains("set -g status-right '#(amx statusline) | %H:%M'"),
             "it is pasted, so it is the whole line tmux takes: {offer}"
@@ -1721,14 +1795,147 @@ mod tests {
         );
 
         assert_eq!(
-            offer_the_statusline(&root),
+            offer_the_statusline(&kept),
             None,
             "an offer that comes back every time is an advertisement"
         );
-        assert!(
-            state.path().join(VIEW).exists(),
+        assert_eq!(
+            kept.parent(),
+            Some(state.path()),
             "and it is remembered beside the agents rather than among them, \
              so the next view knows"
+        );
+        assert!(kept.exists());
+    }
+
+    /// The agents the list is drawing, in the order it has them.
+    fn ordered(screen: &Screen) -> Vec<String> {
+        screen
+            .list
+            .items()
+            .iter()
+            .filter_map(|item| screen.list.agent(*item))
+            .map(|view| view.id().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn acts_shift_with_an_arrow_moves_the_agent_rather_than_the_cursor() {
+        let root = TempDir::new().unwrap();
+        let working = |id: &str| {
+            reading(
+                id,
+                Phase::Working,
+                State {
+                    state: Phase::Working,
+                    since: 1,
+                    last_event: 1,
+                    ..State::default()
+                },
+            )
+        };
+        let mut screen = watching(vec![
+            working("busy-a1b"),
+            working("busy-b2c"),
+            working("busy-c3d"),
+        ]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen
+                .act(key, root.path(), &Config::default(), None)
+                .unwrap();
+        };
+        let shift = |code| KeyEvent::new(code, KeyModifiers::SHIFT);
+
+        assert_eq!(ordered(&screen), ["busy-a1b", "busy-b2c", "busy-c3d"]);
+        press(&mut screen, shift(KeyCode::Down));
+        assert_eq!(ordered(&screen), ["busy-b2c", "busy-a1b", "busy-c3d"]);
+        assert_eq!(
+            screen.list.selected().unwrap().id(),
+            "busy-a1b",
+            "the cursor goes with the agent rather than off it"
+        );
+
+        press(&mut screen, shift(KeyCode::Up));
+        assert_eq!(
+            ordered(&screen),
+            ["busy-a1b", "busy-b2c", "busy-c3d"],
+            "and back where it was"
+        );
+
+        // One of them held at the top, and then the row it is on is not one
+        // the agents under it can be moved into.
+        press(&mut screen, KeyEvent::from(KeyCode::Down));
+        press(&mut screen, ctrl('t'));
+        assert_eq!(ordered(&screen), ["busy-b2c", "busy-a1b", "busy-c3d"]);
+        press(&mut screen, KeyEvent::from(KeyCode::Down));
+        press(&mut screen, shift(KeyCode::Up));
+        assert_eq!(ordered(&screen), ["busy-b2c", "busy-a1b", "busy-c3d"]);
+        assert_eq!(
+            screen.list.selected().unwrap().id(),
+            "busy-a1b",
+            "a move that was refused is not a cursor that moved"
+        );
+
+        press(&mut screen, KeyEvent::from(KeyCode::Up));
+        assert_eq!(
+            screen.list.selected().unwrap().id(),
+            "busy-b2c",
+            "and the arrow without the chord walks the list as it always did"
+        );
+    }
+
+    #[test]
+    fn acts_what_the_view_keeps_opens_the_next_one_and_leaves_the_file_alone() {
+        let root = TempDir::new().unwrap();
+        finished(root.path(), "first-a1b", "wrote the parser", 60);
+        finished(root.path(), "second-b2c", "wrote the tests", 120);
+
+        // A file an older amx wrote, which knows about the offer and nothing
+        // about arranging anything.
+        let kept = root.path().join("view.json");
+        std::fs::write(&kept, b"{\"statusline\": true}\n").unwrap();
+
+        let at = |screen: &str, id: &str| {
+            screen
+                .lines()
+                .position(|line| line.contains(id))
+                .unwrap_or_else(|| panic!("no row for {id} in:\n{screen}"))
+        };
+        let (_, screen) = drawn_about(
+            root.path(),
+            &Scope::default(),
+            vec![
+                Typed::Key(KeyEvent::from(KeyCode::Down)),
+                Typed::Key(ctrl('t')),
+                Typed::Key(ctrl('s')),
+                Typed::Key(KeyEvent::from(KeyCode::Char('q'))),
+            ],
+            Some(&kept),
+        );
+        assert!(
+            at(&screen, "second-b2c") < at(&screen, "first-a1b"),
+            "the one being held is at the top of its group:\n{screen}"
+        );
+
+        let (_, again) = drawn_about(
+            root.path(),
+            &Scope::default(),
+            vec![Typed::Key(KeyEvent::from(KeyCode::Char('q')))],
+            Some(&kept),
+        );
+        assert!(
+            at(&again, "second-b2c") < at(&again, "first-a1b"),
+            "and the next view opens on it, having been told nothing else:\n{again}"
+        );
+        assert!(
+            again.contains("/srv/app"),
+            "gathered the way the last one was left, too:\n{again}"
+        );
+
+        let written = std::fs::read_to_string(&kept).unwrap();
+        assert!(
+            written.contains("\"statusline\": true"),
+            "what the file already said is still in it: {written}"
         );
     }
 
@@ -2145,6 +2352,7 @@ mod tests {
             root.path(),
             &scope,
             vec![Typed::Key(KeyEvent::from(KeyCode::Char('q')))],
+            None,
         );
 
         assert_eq!(code, exit::OK);

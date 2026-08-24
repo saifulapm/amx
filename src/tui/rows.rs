@@ -28,19 +28,30 @@
 //! for them. What was shut is remembered against the group itself rather than
 //! against a line number, because the list is laid out again every second and
 //! line four is somebody else's by then.
+//!
+//! An order the list works out is an order somebody may disagree with, so two
+//! things are theirs to say: which agent is held at the top of its group, and
+//! what order the rest of that group goes in. Both are said against the agents
+//! and the group rather than against the screen, which is what lets them
+//! outlive the view they were said in.
 
 use crate::derive::View;
 use crate::pr::{self, Pr};
 use crate::store::{Ask, Meta, Phase};
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// How many finished agents are shown before the rest fold into a count.
 pub const FOLD: usize = 3;
 
 /// What an agent is, to somebody deciding what to do next.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Written down as the word it is titled with, because an order somebody put a
+/// group in is kept against the group and read back by a later view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Group {
     /// Stopped on a question: nothing happens until somebody answers it.
     NeedsInput,
@@ -119,13 +130,30 @@ impl Group {
 }
 
 /// Which way the agents are gathered.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Axis {
     /// Under what they need, which is what somebody opens the view for.
     #[default]
     State,
     /// Under the project they are running in.
     Project,
+}
+
+/// How somebody has arranged the list, in terms that outlive the view they
+/// arranged it in: which way it is gathered, the agents held at the top of
+/// their group, and the order a group was put in.
+///
+/// Agents by id and groups by name, because that is what a later view has to
+/// find them by. An id in here that no longer names an agent costs a lookup
+/// that misses, which is what a view opened on a fleet that has moved on
+/// should cost.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Arrangement {
+    axis: Axis,
+    held: BTreeSet<String>,
+    order: BTreeMap<Group, Vec<String>>,
 }
 
 /// What a heading stands for.
@@ -243,6 +271,11 @@ pub struct List {
     unfolded: bool,
     /// The groups somebody has shut, by what they stand for.
     shut: HashSet<Key>,
+    /// The agents somebody is holding at the top of their group.
+    held: BTreeSet<String>,
+    /// The order somebody put a group in, as the ids of the agents that were
+    /// under it when they said so.
+    order: BTreeMap<Group, Vec<String>>,
     axis: Axis,
     filters: Filters,
     /// The projects the headings name, in the order they are drawn.
@@ -277,6 +310,8 @@ impl Default for List {
             landed: false,
             unfolded: false,
             shut: HashSet::new(),
+            held: BTreeSet::new(),
+            order: BTreeMap::new(),
             axis: Axis::default(),
             filters: Filters::default(),
             projects: Vec::new(),
@@ -353,6 +388,108 @@ impl List {
         };
         self.rebuild();
         self.follow(&held);
+    }
+
+    /// How the list stands arranged, to be kept and given back to the next
+    /// view that opens.
+    pub fn arrangement(&self) -> Arrangement {
+        Arrangement {
+            axis: self.axis,
+            held: self.held.clone(),
+            order: self.order.clone(),
+        }
+    }
+
+    /// Put the list back the way it was arranged. The cursor holds what it was
+    /// on, for the same reason it does across a turn of the axis.
+    pub fn arrange(&mut self, arrangement: Arrangement) {
+        let on = self.on();
+        self.axis = arrangement.axis;
+        self.held = arrangement.held;
+        self.order = arrangement.order;
+        self.rebuild();
+        self.follow(&on);
+    }
+
+    /// Whether this agent is one somebody is holding at the top of its group.
+    pub fn holding(&self, view: &View) -> bool {
+        self.held.contains(view.id())
+    }
+
+    /// Hold the agent under the cursor at the top of its group, or let it go.
+    ///
+    /// About the agent and not about the group: an agent that is held stays
+    /// held when it moves group, because what somebody said is that this agent
+    /// is the one they want in front of them.
+    ///
+    /// Answers whether there was an agent to do it to, which is what tells a
+    /// key pressed on a heading from a key that changed something.
+    pub fn hold_or_let_go(&mut self) -> bool {
+        let Some(id) = self.selected().map(|view| view.id().to_string()) else {
+            return false;
+        };
+        if !self.held.remove(&id) {
+            self.held.insert(id);
+        }
+        let on = self.on();
+        self.rebuild();
+        self.follow(&on);
+        true
+    }
+
+    /// Move the agent under the cursor a row up or down its own group.
+    ///
+    /// The whole group's order is written down, not the one move: an order is
+    /// a sequence, and half of one would leave the agents nobody moved with
+    /// nothing said about where they go. An agent that arrives afterwards is
+    /// not in it and sits under the ones that are — a group somebody has
+    /// arranged by hand is not a group amx goes on sorting under them.
+    ///
+    /// What a narrowing was hiding is not in it either, for the same reason it
+    /// is not on the screen: an arrangement is made of the agents it was made
+    /// among.
+    pub fn move_by(&mut self, by: isize) -> bool {
+        let Some(view) = self.selected() else {
+            return false;
+        };
+        let id = view.id().to_string();
+        let group = Group::of(view.phase());
+        let mut members: Vec<String> = self
+            .ordered()
+            .into_iter()
+            .filter(|&n| Group::of(self.views[n].phase()) == group)
+            .map(|n| self.views[n].id().to_string())
+            .collect();
+
+        let Some(at) = members.iter().position(|other| *other == id) else {
+            return false;
+        };
+        let Some(to) = at.checked_add_signed(by).filter(|to| *to < members.len()) else {
+            return false;
+        };
+        // A held agent is above the rest by the holding, so a move across that
+        // line is one the list could not draw: it is refused rather than
+        // written down and then ignored.
+        if self.held.contains(&members[to]) != self.held.contains(&id) {
+            return false;
+        }
+
+        members.swap(at, to);
+        self.order.insert(group, members);
+        let on = self.on();
+        self.rebuild();
+        self.follow(&on);
+        true
+    }
+
+    /// Where an agent sits in the order somebody put its group in, and past
+    /// the end of it for one nobody has placed.
+    fn seat(&self, n: usize) -> usize {
+        let view = &self.views[n];
+        self.order
+            .get(&Group::of(view.phase()))
+            .and_then(|ids| ids.iter().position(|id| id == view.id()))
+            .unwrap_or(usize::MAX)
     }
 
     /// Narrow the list to part of the fleet, changing only what was named.
@@ -608,13 +745,17 @@ impl List {
     }
 
     /// Every agent a narrowing left, in the one order both axes draw them in:
-    /// by what they need, and inside that the order they were started in —
-    /// except the finished ones, where the newest ending comes first, because
-    /// what just finished is what somebody scanning them came for.
+    /// by what they need, and inside that whatever somebody said — the ones
+    /// they are holding at the top, then the order they put the rest in, then
+    /// the order the agents were started in, except the finished ones, where
+    /// the newest ending comes first because what just finished is what
+    /// somebody scanning them came for.
     ///
     /// One order for both axes is what keeps a row's neighbours its own: an
     /// agent does not change who it sits beside merely because the fleet was
-    /// gathered a different way.
+    /// gathered a different way. It is also what a hand-made order means here:
+    /// somebody arranging the list is arranging the fleet, not one screen of
+    /// it.
     fn ordered(&self) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.views.len())
             .filter(|&n| self.keeps(&self.views[n]))
@@ -622,6 +763,13 @@ impl List {
         order.sort_by(|&a, &b| {
             rank(&self.views[a])
                 .cmp(&rank(&self.views[b]))
+                // Held first, and held agents among themselves by everything
+                // that orders the rest.
+                .then_with(|| {
+                    self.holding(&self.views[b])
+                        .cmp(&self.holding(&self.views[a]))
+                })
+                .then_with(|| self.seat(a).cmp(&self.seat(b)))
                 .then_with(|| match Group::of(self.views[a].phase()) {
                     Group::Completed => ended(&self.views[b])
                         .cmp(&ended(&self.views[a]))
@@ -1639,6 +1787,158 @@ mod tests {
         assert_eq!(
             lines(&list),
             ["/src/web (1)", "busy-b2c", "", "/src/api (1) shut"]
+        );
+    }
+
+    #[test]
+    fn arranged_a_held_agent_comes_first_in_its_group_and_is_still_held_in_the_next_one() {
+        let mut list = listed(vec![
+            view("ask-a1b", Phase::Waiting, 10),
+            view("busy-b2c", Phase::Working, 20),
+            view("busy-c3d", Phase::Working, 30),
+            view("busy-d4e", Phase::Working, 40),
+        ]);
+        for _ in 0..3 {
+            list.down();
+        }
+        assert_eq!(list.selected().unwrap().id(), "busy-c3d");
+
+        assert!(list.hold_or_let_go());
+        assert_eq!(
+            lines(&list),
+            [
+                "needs input (1)",
+                "ask-a1b",
+                "",
+                "working (3)",
+                "busy-c3d",
+                "busy-b2c",
+                "busy-d4e",
+            ]
+        );
+        assert!(list.holding(list.agent_by_id("busy-c3d").unwrap()));
+
+        // It stops on a question, and it is at the top of the group it lands
+        // in: what somebody said is that this agent is the one they want in
+        // front of them, not that the working group has a favourite.
+        list.show(vec![
+            view("ask-a1b", Phase::Waiting, 10),
+            view("busy-b2c", Phase::Working, 20),
+            view("busy-c3d", Phase::Waiting, 30),
+            view("busy-d4e", Phase::Working, 40),
+        ]);
+        assert_eq!(
+            lines(&list),
+            [
+                "needs input (2)",
+                "busy-c3d",
+                "ask-a1b",
+                "",
+                "working (2)",
+                "busy-b2c",
+                "busy-d4e",
+            ]
+        );
+    }
+
+    #[test]
+    fn arranged_an_order_somebody_put_a_group_in_outlives_the_readings_after_it() {
+        let mut list = listed(vec![
+            view("busy-a1b", Phase::Working, 10),
+            view("busy-b2c", Phase::Working, 20),
+            view("busy-c3d", Phase::Working, 30),
+        ]);
+
+        assert!(list.move_by(1));
+        assert_eq!(
+            lines(&list),
+            ["working (3)", "busy-b2c", "busy-a1b", "busy-c3d"]
+        );
+        assert_eq!(
+            list.selected().unwrap().id(),
+            "busy-a1b",
+            "the cursor goes with the agent it moved"
+        );
+
+        list.show(vec![
+            view("busy-a1b", Phase::Working, 10),
+            view("busy-b2c", Phase::Working, 20),
+            view("busy-c3d", Phase::Working, 30),
+            view("busy-e5f", Phase::Working, 40),
+        ]);
+        assert_eq!(
+            lines(&list),
+            [
+                "working (4)",
+                "busy-b2c",
+                "busy-a1b",
+                "busy-c3d",
+                "busy-e5f"
+            ],
+            "and one started since joins the bottom of a group somebody \
+             arranged, rather than being sorted into the middle of it"
+        );
+    }
+
+    #[test]
+    fn arranged_a_move_stops_at_the_ends_of_a_group_and_at_the_ones_being_held() {
+        let mut list = listed(vec![
+            view("busy-a1b", Phase::Working, 10),
+            view("busy-b2c", Phase::Working, 20),
+        ]);
+        assert!(!list.move_by(-1), "nothing is above the first of a group");
+        list.down();
+        assert!(!list.move_by(1), "and nothing is under the last");
+
+        list.hold_or_let_go();
+        assert_eq!(lines(&list), ["working (2)", "busy-b2c", "busy-a1b"]);
+        list.down();
+        assert_eq!(list.selected().unwrap().id(), "busy-a1b");
+        assert!(
+            !list.move_by(-1),
+            "a held agent is above the rest by the holding, so the row it is \
+             on is not one to be moved into"
+        );
+        assert_eq!(lines(&list), ["working (2)", "busy-b2c", "busy-a1b"]);
+
+        // And a heading is not an agent either to move or to hold.
+        list.up();
+        list.up();
+        assert!(list.on_heading());
+        assert!(!list.move_by(1));
+        assert!(!list.hold_or_let_go());
+    }
+
+    #[test]
+    fn arranged_a_list_opens_on_the_arrangement_the_last_one_was_left_in() {
+        let fleet = || {
+            vec![
+                at(view("busy-a1b", Phase::Working, 10), "/src/api"),
+                at(view("busy-b2c", Phase::Working, 20), "/src/api"),
+                at(view("busy-c3d", Phase::Working, 30), "/src/api"),
+            ]
+        };
+        let mut list = over_the_disk(fleet());
+        assert!(list.move_by(1));
+        for _ in 0..2 {
+            list.down();
+        }
+        assert!(list.hold_or_let_go());
+
+        let left = lines(&list);
+        assert_eq!(
+            left,
+            ["/src/api (3)", "busy-c3d", "busy-b2c", "busy-a1b"],
+            "the one being held, and under it the order they were put in"
+        );
+
+        let mut opened = List::probing(a_disk_with_repos, Some(PathBuf::from("/home/dev")));
+        opened.arrange(list.arrangement());
+        opened.show(fleet());
+        assert_eq!(
+            lines(&opened),
+            left,
+            "another view, gathered the same way and holding the same agent"
         );
     }
 
