@@ -349,11 +349,11 @@ impl List {
     /// at: agents change groups while somebody is looking at them, and a
     /// cursor that stayed on line four would end up on whoever moved into it.
     pub fn show(&mut self, views: Vec<View>) {
-        let held = self.on();
+        let on = self.on();
         self.remember_the_requests(&views);
         self.views = views;
         self.rebuild();
-        self.follow(&held);
+        self.follow(&on);
     }
 
     /// What each agent's branch has open, taken again with the reading.
@@ -381,13 +381,13 @@ impl List {
     /// because turning the axis is a question about the fleet and not about
     /// the one agent somebody was looking at.
     pub fn turn(&mut self) {
-        let held = self.on();
+        let on = self.on();
         self.axis = match self.axis {
             Axis::State => Axis::Project,
             Axis::Project => Axis::State,
         };
         self.rebuild();
-        self.follow(&held);
+        self.follow(&on);
     }
 
     /// How the list stands arranged, to be kept and given back to the next
@@ -637,9 +637,9 @@ impl List {
         if !self.shut.remove(&key) {
             self.shut.insert(key);
         }
-        let held = self.on();
+        let on = self.on();
         self.rebuild();
-        self.follow(&held);
+        self.follow(&on);
     }
 
     /// Whether this is a fleet nobody has started, rather than one a narrowing
