@@ -303,6 +303,46 @@ fn pane_field(amx: &Harness, pane: &str, format: &str) -> String {
     amx.tmux(&["display-message", "-p", "-t", pane, format])
 }
 
+/// A terminal amx cannot tell is inside tmux, which is what tmux's own two
+/// variables say and the only thing that says it.
+fn outside_tmux(amx: &Harness) -> String {
+    amx.in_a_terminal(&[("TMUX", ""), ("TMUX_PANE", "")], &[])
+}
+
+/// The sessions on this harness's server, by name.
+fn sessions(amx: &Harness) -> Vec<String> {
+    amx.tmux(&["list-sessions", "-F", "#{session_name}"])
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn bare_amx_draws_the_list_in_the_terminal_it_was_typed_in() {
+    let amx = Harness::new();
+
+    // The same command at two terminals: one inside tmux, one that as far as
+    // amx can tell is not.
+    let inside = amx.in_a_terminal(&[], &[]);
+    let outside = outside_tmux(&amx);
+
+    for view in [&inside, &outside] {
+        until_empty(&amx, view);
+        assert_eq!(
+            pane_field(&amx, view, "#{pane_current_command}"),
+            "amx",
+            "the view is the terminal's own program, not a client attached to \
+             one somewhere else"
+        );
+    }
+
+    let named = sessions(&amx);
+    assert!(
+        !named.iter().any(|name| name == "amx"),
+        "and nothing was built to draw it in: {named:?}"
+    );
+}
+
 #[test]
 fn the_view_gathers_the_agents_under_what_they_need() {
     let amx = Harness::new();

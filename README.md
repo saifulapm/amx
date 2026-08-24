@@ -91,10 +91,10 @@ twice.
 
 ## The view
 
-Typing `amx` on its own opens the list of agents. Inside tmux it opens where
-you are. Outside one it opens a tmux session of its own to draw in, since it
-needs a terminal to hold the list. Down a pipe it prints the table and exits,
-so `amx | grep waiting` is a reasonable thing to write.
+Typing `amx` on its own opens the list of agents on the terminal you typed it
+at, inside tmux or outside one. It builds nothing to draw in: the list is a
+program on a screen, and a screen is all it needs. Down a pipe it prints the
+table and exits, so `amx | grep waiting` is a reasonable thing to write.
 
 The list answers one question, so it is gathered under the answer: the agents
 stopped on a question come first, then the ones mid-turn, then the ones sitting
