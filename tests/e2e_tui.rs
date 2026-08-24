@@ -880,17 +880,21 @@ fn card_tail_cuts_the_chrome_claude_draws_under_its_pane() {
         let drawn = screen(&amx, &view);
         drawn.contains("i ported the importer").then_some(drawn)
     });
-    for furniture in [
-        "accept edits on",
-        "execute amx-v2",
-        "amx-main (main)",
-        "still thinking",
-    ] {
+    for furniture in ["accept edits on", "execute amx-v2", "amx-main (main)"] {
         assert!(
             !carded.contains(furniture),
             "{furniture} is claude's, not the agent's:\n{carded}"
         );
     }
+    // The spinner line is claude's too and is cut from the card with the rest
+    // of the chrome. It is on the row by then, because a working row says what
+    // the vendor's own line says it is doing, so once on the screen is the
+    // whole of it and twice would be the card drawing it again.
+    assert_eq!(
+        carded.matches("still thinking").count(),
+        1,
+        "the row says it and the card does not:\n{carded}"
+    );
 }
 
 #[test]
