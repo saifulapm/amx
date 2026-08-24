@@ -38,9 +38,14 @@
 //! such thing, and the refusal is what keeps a key from landing on somebody
 //! else's answer: `n` at a menu with no preview does nothing at all, and the
 //! note would be typed at the menu with its first digit answering it.
+//!
+//! A run of keys reaches this vendor's menu as some of them or none, so every
+//! key of an answer goes in a call of its own with a moment after it; see
+//! [`drive`].
 
 use anyhow::Result;
 use std::path::Path;
+use std::time::Duration;
 
 use crate::cli::AnswerArgs;
 use crate::derive;
@@ -525,33 +530,84 @@ fn reply(
     note: Option<&str>,
     shape: Shape,
 ) -> Result<()> {
-    drive(server, pane, &steps(&answer, note, shape))?;
+    drive(&(server, pane), &steps(&answer, note, shape))?;
     answered(agent, &answer, note)
 }
 
-/// Type one sequence at the pane.
+/// What a sequence is typed at.
 ///
-/// Runs of keys go in one call, because tmux takes them in order and a pane
-/// that has begun reading them should not have to wait on another process
-/// being started for the next.
-fn drive(server: &Server, pane: &PaneId, steps: &[Step]) -> Result<()> {
-    let mut pressing: Vec<&str> = Vec::new();
-    for step in steps {
+/// The pane behind a trait so that how many calls an answer takes, and what is
+/// in each, is a fact a test can read. It turned out to be the fact the vendor
+/// cares about, and nothing about a `Vec<Step>` shows it.
+trait Keyboard {
+    /// One `send-keys` call, carrying these keys in this order.
+    fn keys(&self, keys: &[&str]) -> Result<()>;
+    /// Text, into whatever field has the cursor.
+    fn words(&self, text: &str) -> Result<()>;
+    /// Leave the vendor its moment to redraw before the next key.
+    fn settle(&self);
+}
+
+impl Keyboard for (&Server, &PaneId) {
+    fn keys(&self, keys: &[&str]) -> Result<()> {
+        self.0.send_keys(self.1, keys)
+    }
+
+    fn words(&self, text: &str) -> Result<()> {
+        self.0.paste(self.1, text)
+    }
+
+    fn settle(&self) {
+        std::thread::sleep(SETTLES);
+    }
+}
+
+/// How long the vendor is left to redraw between two keys of one answer.
+///
+/// A key that arrives before the screen it is meant for has been drawn is
+/// answered against the screen before it, and the vendor's menu is a program
+/// that redraws on every keystroke. Measured on a live checkbox menu at 220
+/// columns against claude 2.1.240 on 2026-08-25, driving `1`, `3`, `→`, `←`
+/// and reading back how many boxes survived the round trip:
+///
+///   one call carrying both digits    0 of 3 rounds kept them
+///   a call each, no pause            4 of 6
+///   a call each, 50ms apart         16 of 16
+///
+/// So it is two separate things, and an answer needs both: a key of its own
+/// per call, and a moment after it. Fifty milliseconds is the shortest pause
+/// measured clean, and an answer is at most six keys — a third of a second at
+/// the pane, against an answer that silently does not take.
+const SETTLES: Duration = Duration::from_millis(50);
+
+/// Type one sequence at the pane: a call for each key, and [`SETTLES`] between
+/// them.
+///
+/// Runs of keys used to go in one call, because tmux takes them in order and a
+/// pane that has begun reading them should not have to wait on another process
+/// being started for the next. Driven against a live claude 2.1.240 on
+/// 2026-08-25 that is wrong twice over, and wrong in the direction that costs
+/// the answer rather than the time. `send-keys -t %3 1 3` checked neither box,
+/// three rounds of three; the same digits as a call each checked both, but
+/// only four rounds of six, and the losing rounds lost both. `send-keys -t %3
+/// Right Enter` in one call was worse than losing a key: the `Right` moved to
+/// the Submit tab and the `Enter` went to the tab it had just left, unchecking
+/// a box that was already checked.
+///
+/// None of it is reported. The prompt stays up, the record says the question
+/// was answered and the agent is back at work, and whoever asked stops
+/// watching. The captures and the rounds are in `docs/question-shapes.md`.
+fn drive(keyboard: &impl Keyboard, steps: &[Step]) -> Result<()> {
+    for (after_the_first, step) in steps.iter().enumerate() {
+        if after_the_first > 0 {
+            keyboard.settle();
+        }
         match step {
-            Step::Key(key) => pressing.push(key),
-            Step::Type(text) => {
-                if !pressing.is_empty() {
-                    server.send_keys(pane, &pressing)?;
-                    pressing.clear();
-                }
-                server.paste(pane, text)?;
-            }
+            Step::Key(key) => keyboard.keys(&[key.as_str()])?,
+            Step::Type(text) => keyboard.words(text)?,
         }
     }
-    match pressing.is_empty() {
-        true => Ok(()),
-        false => server.send_keys(pane, &pressing),
-    }
+    Ok(())
 }
 
 /// Write down that the question was answered, and what is left of the call it
@@ -738,6 +794,72 @@ mod tests {
     /// The one step that is not a key.
     fn words(text: &str) -> Step {
         Step::Type(text.to_string())
+    }
+
+    /// A pane that writes down what was typed at it, one call to a row.
+    #[derive(Default)]
+    struct Typed(std::cell::RefCell<Vec<Vec<String>>>);
+
+    impl Keyboard for Typed {
+        fn keys(&self, keys: &[&str]) -> Result<()> {
+            self.0
+                .borrow_mut()
+                .push(keys.iter().map(|key| key.to_string()).collect());
+            Ok(())
+        }
+
+        fn words(&self, text: &str) -> Result<()> {
+            self.0.borrow_mut().push(vec![format!("paste {text}")]);
+            Ok(())
+        }
+
+        fn settle(&self) {
+            self.0.borrow_mut().push(vec!["settle".to_string()]);
+        }
+    }
+
+    #[test]
+    fn surfaces_every_key_of_an_answer_is_a_call_of_its_own() {
+        // Measured against 2.1.240 on 2026-08-25, on a live checkbox menu at
+        // 220 columns: `send-keys -t %1 1 3` checked neither box three times
+        // of three, and the same two digits as two calls back to back checked
+        // both, three times of three. A run of keys in one call is not a
+        // quicker way of pressing them at this vendor, it is a way of not
+        // pressing them.
+        let checkbox = a_checkbox_question();
+        let typist = Typed::default();
+        drive(&typist, &typed(&checkbox, &given("1,3"))).unwrap();
+        assert_eq!(
+            *typist.0.borrow(),
+            vec![
+                vec!["1"],
+                vec!["settle"],
+                vec!["3"],
+                vec!["settle"],
+                vec!["Right"],
+                vec!["settle"],
+                vec!["Enter"],
+            ],
+        );
+
+        // And the words of an answer of your own, which reach the field as a
+        // paste with a key each side of it.
+        let typist = Typed::default();
+        drive(&typist, &typed(&checkbox, &given_text("Audit"))).unwrap();
+        assert_eq!(
+            *typist.0.borrow(),
+            vec![
+                vec!["Up"],
+                vec!["settle"],
+                vec!["paste Audit"],
+                vec!["settle"],
+                vec!["Down"],
+                vec!["settle"],
+                vec!["Enter"],
+                vec!["settle"],
+                vec!["Enter"],
+            ],
+        );
     }
 
     #[test]
