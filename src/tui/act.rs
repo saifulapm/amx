@@ -269,6 +269,7 @@ pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
         name: None,
         dir: None,
         no_worktree: false,
+        exec: false,
         agent: named.then_some(dials),
         vendor_args: Vec::new(),
     };

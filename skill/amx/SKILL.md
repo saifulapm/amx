@@ -15,6 +15,7 @@ Nothing here needs a screen scraped or a state file polled.
 | Verb | What it does |
 |---|---|
 | `amx new "<task>"` | Start an agent on the task. Prints its id, and nothing else. |
+| `amx new --exec "<command>"` | Run a shell command as a row of its own, `done` or `failed` by its exit code. |
 | `amx result <id> [--timeout N]` | Block until the turn ends, then print what it said. |
 | `amx answer <id> <key>` | Answer the question it stopped on. |
 | `amx send <id> "<text>"` | Give a working or idle agent its next turn. |
@@ -193,6 +194,14 @@ when one is in a state you did not expect.
   `<repo>/.amx/worktrees/<id>` on branch `amx/<id>`, so two of them cannot
   collide in one checkout. `amx diff <id>` is how you read that work. Nothing
   is merged for you.
+- **A long command can have a row too.** `amx new --exec 'cargo test --all'`
+  runs it in a pane and hands back an id, so a build you would otherwise sit
+  through runs beside the agents. Do not wait on it with `result`: a command
+  answers nothing, it exits, so `amx status <id> --json` is where the ending is
+  — `.state` is `done` or `failed` and `.exit` is the code — and `amx logs
+  <id>` is what it printed. Each pane amx starts, this one included, is given a
+  directory of its own to write in at `$AMX_AGENT_DIR`, and that directory goes
+  when the agent's record goes.
 - **Never block for ever.** Every `result` in an unattended script takes
   `--timeout`. A question ends the call on its own with exit `2`, so a deadline
   cannot bound the answering: bound that yourself, the way the loop above stops

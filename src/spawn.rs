@@ -127,6 +127,18 @@ pub fn vendor_command(
     command
 }
 
+/// A shell command's argv: the command itself, for a shell to read.
+///
+/// Whole and unparsed, because what is in it is the person's business and a
+/// shell is what it was written for. `npm test && echo ok` is one row and one
+/// exit code, and so is a pipeline, a redirect or a `cd` in front of the rest.
+///
+/// `sh` rather than the login shell: this is the command a row runs, and what
+/// it does should not change with whose machine it is on.
+pub fn exec_command(command: &str) -> Vec<String> {
+    vec!["sh".to_string(), "-c".to_string(), command.to_string()]
+}
+
 /// Write the handoff, readable by nobody else: the person's environment is in
 /// it.
 pub fn write_handoff(dir: &Path, handoff: &Handoff) -> Result<()> {
@@ -476,6 +488,16 @@ mod tests {
     fn spawn_boot_gives_up_rather_than_waiting_for_a_record_that_is_not_coming() {
         let root = TempDir::new().unwrap();
         assert!(boot(root.path(), "../elsewhere").is_err(), "not an id");
+    }
+
+    #[test]
+    fn exec_a_command_is_handed_to_a_shell_whole() {
+        assert_eq!(
+            exec_command("npm test && echo ok > log"),
+            ["sh", "-c", "npm test && echo ok > log"],
+            "a pipeline, an && and a redirect are one row, because a shell is \
+             what reads them"
+        );
     }
 
     #[test]

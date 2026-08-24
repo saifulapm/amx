@@ -91,6 +91,31 @@ amx new "port the importer" -- --model opus --session-id "$uuid"
 claude's own flag, and amx stands its dial down rather than send the flag
 twice.
 
+## A shell command as a row
+
+Not everything worth keeping an eye on is an agent. `--exec` runs a plain
+command in a pane, and it gets a row beside the rest:
+
+```sh
+amx new --exec 'cargo test --all'
+amx new --exec 'ssh build01 make release && curl -fsS "$HOOK"'
+```
+
+The whole command goes to `sh -c`, so a pipeline, an `&&` or a redirect is one
+row and one exit code. It runs where you typed it rather than in a worktree of
+its own: a command has no conversation to keep apart from the next one, and a
+fresh checkout is not where `cargo test` was meant to run. There is no vendor
+either, so the four dials and anything after `--` are refused beside `--exec`
+rather than quietly dropped.
+
+The row ends `done` or `failed` by what the command exited with, and the code
+itself is `exit` in the JSON. `amx logs` is how you read what it printed;
+`amx result` has nothing to hand back, because a command answers nothing, it
+exits. While it runs there are no hook events to hear from, so after the first
+few seconds the row reads `unknown` — which is amx saying it cannot account for
+what is on that screen, and it cannot: the screen belongs to somebody else's
+program.
+
 ## The view
 
 Typing `amx` on its own opens the list of agents on the terminal you typed it

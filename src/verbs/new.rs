@@ -226,12 +226,7 @@ fn start(
         agent_dir,
         &Handoff {
             task: args.task.clone(),
-            command: spawn::vendor_command(
-                &launch.agent,
-                &launch.dials,
-                &args.vendor_args,
-                &args.task,
-            ),
+            command: launched(args, launch),
             env,
         },
     )?;
@@ -266,15 +261,32 @@ fn start(
     Ok(())
 }
 
+/// What the pane runs: a shell command when that is what was asked for, else
+/// the vendor with the task after it.
+///
+/// A command spawn has no vendor and no dials — the command line refuses them
+/// beside `--exec` — so nothing about the launch is resolved for it. What was
+/// typed is what runs.
+fn launched(args: &NewArgs, launch: &Launch) -> Vec<String> {
+    match args.exec {
+        true => spawn::exec_command(&args.task),
+        false => spawn::vendor_command(&launch.agent, &launch.dials, &args.vendor_args, &args.task),
+    }
+}
+
 /// A worktree of its own, when the agent is being sent into a repository and
 /// nobody has said not to.
+///
+/// Never for a command. A worktree is there to keep one conversation's work
+/// apart from another's, and a command has no conversation: it was typed to
+/// run *here*, against this checkout and whatever is already built in it.
 fn cut_worktree(
     dir: &Path,
     id: &str,
     config: &Config,
     args: &NewArgs,
 ) -> Result<Option<worktree::Worktree>> {
-    if args.no_worktree || !config.worktrees {
+    if args.exec || args.no_worktree || !config.worktrees {
         return Ok(None);
     }
     if !dir.is_dir() {
@@ -350,12 +362,27 @@ mod tests {
             name: None,
             dir: None,
             no_worktree: false,
+            exec: false,
             agent: Some(AgentArgs {
                 command: agent.map(str::to_string),
                 model: model.map(str::to_string),
                 permission: permission.map(str::to_string),
                 effort: effort.map(str::to_string),
             }),
+            vendor_args: Vec::new(),
+        }
+    }
+
+    /// A spawn of a shell command, which names no vendor because it launches
+    /// none.
+    fn a_command(command: &str) -> NewArgs {
+        NewArgs {
+            task: command.to_string(),
+            name: None,
+            dir: None,
+            no_worktree: false,
+            exec: true,
+            agent: None,
             vendor_args: Vec::new(),
         }
     }
@@ -438,6 +465,43 @@ mod tests {
         .unwrap_err();
         assert!(refusal.contains("--model"), "{refusal}");
         assert!(refusal.contains("mock-claude"), "{refusal}");
+    }
+
+    #[test]
+    fn exec_the_pane_is_handed_the_command_instead_of_a_vendor() {
+        let launch = Launch::resolve(&Config::default(), &a_command("cargo test")).unwrap();
+
+        assert_eq!(
+            launched(&a_command("cargo test"), &launch),
+            ["sh", "-c", "cargo test"],
+            "no vendor, no dials, and no task appended after it"
+        );
+        assert_eq!(
+            launched(&spawn(Some("claude"), [None; 3]), &launch),
+            ["claude", "port the importer"],
+            "and an ordinary spawn is launched the way it always was"
+        );
+    }
+
+    #[test]
+    fn exec_a_command_runs_where_it_was_typed_and_never_in_a_tree_of_its_own() {
+        // A command is not a conversation: it has nothing to keep apart from
+        // the next one, and a tree amx cut is a checkout without the build a
+        // `cargo test` or an `npm test` was typed to run. So the question is
+        // not asked at all — this directory is not one to work in, and a
+        // command spawn never gets far enough to find out.
+        let nowhere = Path::new("/nowhere/at/all");
+        let config = Config::default();
+
+        assert!(
+            cut_worktree(nowhere, "cargo-test-a1b", &config, &a_command("cargo test"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            cut_worktree(nowhere, "port-it-b2c", &config, &spawn(None, [None; 3])).is_err(),
+            "where an agent is asked for one and there is nowhere to cut it"
+        );
     }
 
     #[test]

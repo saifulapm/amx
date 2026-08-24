@@ -200,6 +200,19 @@ pub struct NewArgs {
     #[arg(long)]
     pub no_worktree: bool,
 
+    /// Run the task as a shell command rather than give it to an agent.
+    ///
+    /// The whole of it goes to `sh -c`, so a pipeline or an `&&` is one row,
+    /// and the row ends done or failed by what the command exits with. It runs
+    /// in the directory as it is: a command has no conversation to keep, so
+    /// there is nothing for a worktree of its own to keep it apart from.
+    ///
+    /// There is no vendor here, which is why amx's four agent flags are
+    /// refused beside it, and nothing is passed through: the command is the
+    /// whole of what runs.
+    #[arg(long, conflicts_with_all = ["AgentArgs", "vendor_args"])]
+    pub exec: bool,
+
     /// The vendor and the dials for this one spawn, `None` when the caller
     /// named none of them and the config answers for all four.
     #[command(flatten)]
@@ -472,6 +485,35 @@ mod tests {
         assert_eq!(named.model.as_deref(), Some("opus"));
         assert_eq!(named.permission.as_deref(), Some("plan"));
         assert_eq!(named.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn exec_new_runs_a_command_where_it_would_have_started_an_agent() {
+        let cli = parse(&["amx", "new", "--exec", "npm test && npm run lint"]).unwrap();
+        let Some(Command::New(args)) = cli.command else {
+            panic!("expected new");
+        };
+        assert!(args.exec);
+        assert_eq!(
+            args.task, "npm test && npm run lint",
+            "the command is what the row is for, so it is the task"
+        );
+    }
+
+    #[test]
+    fn exec_a_command_has_no_vendor_and_so_none_of_a_vendors_flags() {
+        for argv in [
+            &["amx", "new", "--exec", "npm test", "--agent", "claude"][..],
+            &["amx", "new", "--exec", "npm test", "--model", "opus"],
+            &["amx", "new", "--exec", "npm test", "--permission", "plan"],
+            &["amx", "new", "--exec", "npm test", "--effort", "high"],
+            // A command is the whole of what runs, so there is nowhere for
+            // arguments after the separator to go. Dropping them quietly is
+            // the one thing worse than saying so.
+            &["amx", "new", "--exec", "npm test", "--", "--watch"],
+        ] {
+            assert_eq!(code(argv), exit::USAGE, "{argv:?}");
+        }
     }
 
     #[test]
