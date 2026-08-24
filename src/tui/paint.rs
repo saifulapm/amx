@@ -57,7 +57,7 @@ const ANSWERS: &str = "enter answers it · esc closes it";
 /// the one they pressed. A test presses everything a terminal can send and
 /// holds what acted against this table, so a binding that is not here is a
 /// binding the screen would have to grow a row for.
-pub(super) const HELP: [(&str, &str); 25] = [
+pub(super) const HELP: [(&str, &str); 26] = [
     ("↑ ↓", "walk the agents"),
     ("space", "the card: what one is asking, and the answer"),
     ("enter →", "bring its window forward · shut a group"),
@@ -71,6 +71,7 @@ pub(super) const HELP: [(&str, &str); 25] = [
     ),
     ("ctrl+r", "call it something else"),
     ("ctrl+g", "write the line in $EDITOR"),
+    ("alt+1..9", "reach one by where it is on the wall"),
     ("ctrl+s", "gather them by state or by project"),
     ("ctrl+t", "hold it at the top of its group"),
     ("shift+↑", "move it up its group"),

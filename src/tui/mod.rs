@@ -798,6 +798,7 @@ impl Screen {
     fn pressed(&mut self, key: KeyEvent, root: &Path, here: Option<&Here>) -> Result<Doing> {
         let plain = chord(key).is_empty();
         let ctrl = chord(key) == KeyModifiers::CONTROL;
+        let alt = chord(key) == KeyModifiers::ALT;
         // The one chord an arrow key arrives under, which is the only place
         // shift is a key of its own rather than the character it typed.
         let shift = plain && key.modifiers.contains(KeyModifiers::SHIFT);
@@ -845,6 +846,13 @@ impl Screen {
                         }
                     }
                 }
+            }
+            // The agents by where they are on the wall, which is the number a
+            // person watching one has already counted off the screen. Nine of
+            // them, because there is no tenth key.
+            KeyCode::Char(digit @ '1'..='9') if alt => {
+                let at = digit.to_digit(10).unwrap_or_default() as usize;
+                return self.reach_the_nth(at, here);
             }
             KeyCode::Char('?') if plain => self.mode = Mode::Keys,
             KeyCode::Char('n') if plain => self.mode = Mode::Typing(Composer::new(Asking::Task)),
@@ -1078,6 +1086,35 @@ impl Screen {
         }
 
         self.mode = Mode::Typing(composer);
+        Ok(Doing::Carry)
+    }
+
+    /// Bring forward the agent standing at `at` on the wall, counted from the
+    /// top of the list as it is drawn.
+    ///
+    /// Agents rather than lines: a heading and the fold are not things a person
+    /// counts when they are looking for the third agent, and a group somebody
+    /// has shut holds none that can be counted to at all.
+    fn reach_the_nth(&mut self, at: usize, here: Option<&Here>) -> Result<Doing> {
+        let nth = self
+            .list
+            .items()
+            .iter()
+            .filter_map(|item| self.list.agent(*item))
+            .nth(at.saturating_sub(1));
+        let Some(view) = nth else {
+            self.notice = Some(Notice::Advice(format!(
+                "the wall has fewer than {at} agents"
+            )));
+            return Ok(Doing::Carry);
+        };
+
+        let id = view.id().to_string();
+        match reach(here, view)? {
+            Reach::There => {}
+            Reach::Say(notice) => self.notice = Some(notice),
+            Reach::Lend(on, session) => return Ok(Doing::Lend { id, on, session }),
+        }
         Ok(Doing::Carry)
     }
 
@@ -2148,6 +2185,36 @@ mod tests {
     }
 
     #[test]
+    fn acts_alt_and_a_digit_reach_the_agent_at_that_place_on_the_wall() {
+        let root = TempDir::new().unwrap();
+        finished(root.path(), "first-a1b", "wrote the parser", 60);
+        finished(root.path(), "second-b2c", "wrote the tests", 120);
+
+        // Both have ended, so neither has a pane to be taken to and the view
+        // says so by name — which is how a test reads which row was counted
+        // to. The cursor is on the first of them and was never moved.
+        let (_, second) = pressing(
+            root.path(),
+            vec![alt('2'), KeyEvent::from(KeyCode::Char('q'))],
+        );
+        assert!(second.contains("second-b2c has no pane"), "{second}");
+
+        let (_, first) = pressing(
+            root.path(),
+            vec![alt('1'), KeyEvent::from(KeyCode::Char('q'))],
+        );
+        assert!(first.contains("first-a1b has no pane"), "{first}");
+
+        // A digit past the end of the wall says so rather than going quiet:
+        // the digits count agents, and a heading is not one.
+        let (_, past) = pressing(
+            root.path(),
+            vec![alt('9'), KeyEvent::from(KeyCode::Char('q'))],
+        );
+        assert!(past.contains("fewer than 9"), "{past}");
+    }
+
+    #[test]
     fn acts_ctrl_r_opens_the_line_on_the_name_the_row_is_carrying() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
@@ -2244,7 +2311,25 @@ mod tests {
         let named = named(key);
         paint::HELP
             .iter()
-            .any(|(keys, _)| keys.split(' ').any(|key| key == named))
+            .any(|(keys, _)| keys.split(' ').any(|key| key == named || runs(key, &named)))
+    }
+
+    /// Whether a key column naming a run of keys names this one.
+    ///
+    /// `alt+1..9` is nine bindings, and nine rows saying the same words nine
+    /// times would be a screen somebody has to read to find out they all do
+    /// the same thing.
+    fn runs(column: &str, named: &str) -> bool {
+        let Some((first, last)) = column.split_once("..") else {
+            return false;
+        };
+        let Some((chord, from)) = first.split_at_checked(first.len() - 1) else {
+            return false;
+        };
+        match named.strip_prefix(chord) {
+            Some(key) if key.len() == 1 => (from..=last).contains(&key),
+            _ => false,
+        }
     }
 
     /// Everything one keypress could leave different, as something two

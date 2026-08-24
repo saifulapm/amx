@@ -151,6 +151,7 @@ behind a count. Rows nobody has been to read carry a mark down the gutter.
 | `ctrl+x` | stop it, again to forget it, and on a heading clear the finished |
 | `ctrl+r` | call it something else |
 | `ctrl+g` | write the line in `$EDITOR` |
+| `alt+1..9` | reach the agent at that place on the wall |
 | `ctrl+s` | gather them by state or by project |
 | `ctrl+t` | hold it at the top of its group |
 | `shift+↑` `shift+↓` | move it up or down its group |
@@ -167,6 +168,11 @@ view drawing in the session it was already in, so switching back lands on the
 list where you left it. Outside tmux the view is the only thing on the
 terminal, so it lends the terminal to a tmux client instead and takes it back
 when you detach.
+
+`alt+1..9` does the same for the first nine agents by where they are on the
+wall, counting rows from the top and skipping the headings, without walking the
+cursor to them first. It is the fleet you already have in front of you, reached
+by the number you were about to count to.
 
 Every key answers to the one chord it is written under, so the `alt+q` of
 somebody arranging their windows closes nothing. The four dials are about the
