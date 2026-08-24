@@ -31,7 +31,24 @@ mod worktree;
 
 use anyhow::Result;
 use clap::Parser;
+use std::io::IsTerminal;
 use std::process::ExitCode;
+
+/// Say on stderr that something amx was asked to do could not be done.
+///
+/// Takes what `format!` takes. Every verb reaches stderr through this or
+/// through [`warn`], so what a line is worth is written down where the line is
+/// and nowhere else.
+#[macro_export]
+macro_rules! complain {
+    ($($arg:tt)*) => { $crate::tell($crate::Severity::Failed, &format!($($arg)*)) };
+}
+
+/// Say on stderr a warning, or a refusal that is not a failure.
+#[macro_export]
+macro_rules! warn {
+    ($($arg:tt)*) => { $crate::tell($crate::Severity::Warned, &format!($($arg)*)) };
+}
 
 fn main() -> ExitCode {
     let code = match cli::Cli::try_parse_from(std::env::args_os()) {
@@ -43,7 +60,7 @@ fn main() -> ExitCode {
             let internal = parsed.verb().is_some_and(|verb| verb.starts_with('_'));
             if !internal {
                 for warning in warnings {
-                    eprintln!("{}", complaint(&warning));
+                    warn!("amx: {warning}");
                 }
             }
             run(&parsed, &config)
@@ -99,23 +116,83 @@ fn finish(outcome: Result<i32>) -> i32 {
         Ok(code) => code,
         Err(e) if broke_the_pipe(&e) => exit::OK,
         Err(e) => {
-            eprintln!("{}", complaint(&format!("{e:#}")));
+            complain!("amx: {e:#}");
             exit::FAILURE
         }
     }
 }
 
-/// One line about something that went wrong, with nothing in it a terminal
-/// will act on.
+/// What a line on stderr is worth, and so the colour it is said in.
 ///
-/// Every complaint quotes something amx did not write: the id as it was typed
-/// at the shell, a path out of a record, git's own words about a repository it
-/// would not read. A terminal is an interpreter, and the same bytes that name
-/// an agent can retitle the window or clear the screen, so they go through the
-/// sieve a captured pane goes through. Line breaks live, because git says its
-/// piece in as many lines as it likes and the breaks in it are how it reads.
-fn complaint(text: &str) -> String {
-    format!("amx: {}", tmux::sanitize(text))
+/// Two channels, the split the view's notices already make at the foot of the
+/// screen: something amx was asked to do and could not is red, and a warning
+/// or a refusal — amx working as it should, and saying so — is yellow. One
+/// colour for both teaches people to read neither.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Severity {
+    /// It was attempted and it failed.
+    Failed,
+    /// A warning, or a refusal that is not a failure.
+    Warned,
+}
+
+impl Severity {
+    /// The foreground this severity is said in.
+    ///
+    /// The terminal's own red and yellow rather than the values the view
+    /// measured out of the vendor's binary: a line here lands in a shell among
+    /// git's and cargo's, where the person's own theme is what everything else
+    /// obeys.
+    fn colour(self) -> &'static str {
+        match self {
+            Severity::Failed => "31",
+            Severity::Warned => "33",
+        }
+    }
+}
+
+/// One line for stderr: made inert first, then painted by what it is worth.
+///
+/// Every line amx says for itself quotes something it did not write: the id as
+/// it was typed at the shell, a path out of a record, git's own words about a
+/// repository it would not read. A terminal is an interpreter, and the same
+/// bytes that name an agent can retitle the window or clear the screen, so they
+/// go through the sieve a captured pane goes through. Line breaks live, because
+/// git says its piece in as many lines as it likes and the breaks in it are how
+/// it reads.
+///
+/// **The words are made inert before the colour goes on, never after.** A sieve
+/// run over the paint would take the paint with it, and paint laid over an
+/// escape somebody else wrote would be handing that escape to a terminal in
+/// amx's own voice.
+///
+/// The colour is opened and closed on every row it covers, so a complaint git
+/// wrote in four rows leaves nothing open across a break another program's
+/// output may arrive in. `39` closes the foreground and nothing else, because a
+/// foreground is all that was opened.
+pub fn said(severity: Severity, text: &str, to_terminal: bool) -> String {
+    let inert = tmux::sanitize(text);
+    if !to_terminal {
+        return inert;
+    }
+    inert
+        .split('\n')
+        .map(|row| match row.is_empty() {
+            true => String::new(),
+            false => format!("\u{1b}[{}m{row}\u{1b}[39m", severity.colour()),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Say one line on stderr, in colour when stderr is a terminal.
+///
+/// **Whether *stderr* is a terminal is the question, and stdout's answer is not
+/// it.** `amx result fix-login-a1b | jq` took stdout and left this line on the
+/// screen it was always going to; `amx new "…" 2>notes` wants the words in the
+/// file and nothing else. The two macros above are how this is reached.
+pub fn tell(severity: Severity, text: &str) {
+    eprintln!("{}", said(severity, text, std::io::stderr().is_terminal()));
 }
 
 /// Whether what went wrong is the far end of a pipe closing.
@@ -148,19 +225,79 @@ mod tests {
         // Every line amx prints about a failure quotes something it did not
         // write. The id is whatever was typed at the shell, and it is quoted
         // back in the refusal.
-        let said = complaint("no agent `x\u{1b}]0;PWNED\u{7}y`");
-        assert!(said.starts_with("amx: no agent"), "{said:?}");
-        assert!(said.contains("]0;PWNED"), "still readable: {said:?}");
+        let line = said(
+            Severity::Failed,
+            "amx: no agent `x\u{1b}]0;PWNED\u{7}y`",
+            false,
+        );
+        assert!(line.starts_with("amx: no agent"), "{line:?}");
+        assert!(line.contains("]0;PWNED"), "still readable: {line:?}");
         assert_eq!(
-            said.chars().filter(|c| c.is_control()).count(),
+            line.chars().filter(|c| c.is_control()).count(),
             0,
-            "and inert: {said:?}"
+            "and inert: {line:?}"
         );
 
         // git says its piece in as many lines as it likes, and the breaks in
         // it are how it reads.
-        let git = complaint("git diff 0f1e2d3: fatal: bad object\nsecond line");
+        let git = said(
+            Severity::Failed,
+            "amx: git diff 0f1e2d3: fatal: bad object\nsecond line",
+            false,
+        );
         assert!(git.ends_with("bad object\nsecond line"), "{git:?}");
+    }
+
+    #[test]
+    fn a_failure_is_red_and_a_warning_yellow_on_a_terminal() {
+        assert_eq!(
+            said(Severity::Failed, "amx: no agent `fix-login-a1b`", true),
+            "\u{1b}[31mamx: no agent `fix-login-a1b`\u{1b}[39m"
+        );
+        assert_eq!(
+            said(Severity::Warned, "amx: nothing to answer", true),
+            "\u{1b}[33mamx: nothing to answer\u{1b}[39m"
+        );
+    }
+
+    #[test]
+    fn nothing_is_painted_down_a_pipe() {
+        // `amx send x y 2>notes` wants the words in the file and nothing else,
+        // and a caller matching on stderr is reading text, not paint.
+        for severity in [Severity::Failed, Severity::Warned] {
+            assert_eq!(
+                said(severity, "amx: no agent `fix-login-a1b`", false),
+                "amx: no agent `fix-login-a1b`"
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_of_several_rows_opens_and_closes_its_colour_on_each() {
+        // A colour left open across a row boundary is one that bleeds into
+        // whatever is printed next, and git says its piece in as many rows as
+        // it likes.
+        assert_eq!(
+            said(Severity::Failed, "amx: fatal: bad object\nsecond", true),
+            "\u{1b}[31mamx: fatal: bad object\u{1b}[39m\n\u{1b}[31msecond\u{1b}[39m"
+        );
+        // A row with nothing on it is nothing to paint.
+        assert_eq!(
+            said(Severity::Warned, "one\n\ntwo", true),
+            "\u{1b}[33mone\u{1b}[39m\n\n\u{1b}[33mtwo\u{1b}[39m"
+        );
+    }
+
+    #[test]
+    fn hardening_the_only_escapes_in_a_painted_line_are_the_ones_amx_wrote() {
+        // The words are made inert before the colour goes on, never after: a
+        // sanitiser run over the paint would take the paint with it, and paint
+        // laid over an escape somebody else wrote would hand it to a terminal.
+        let line = said(Severity::Failed, "amx: `x\u{1b}]0;PWNED\u{7}y`", true);
+        assert_eq!(line.matches('\u{1b}').count(), 2, "{line:?}");
+        assert!(line.starts_with("\u{1b}[31m"), "{line:?}");
+        assert!(line.ends_with("\u{1b}[39m"), "{line:?}");
+        assert!(line.contains("]0;PWNED"), "still readable: {line:?}");
     }
 
     #[test]
