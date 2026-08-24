@@ -594,9 +594,10 @@ fn wants_a_line(state: &State) -> bool {
 /// Through `sh`, because the key holds a command line and a shell is what a
 /// command line is written for. The answer goes in on stdin whole — an answer
 /// is arbitrary text and an argv is the one place it could be read as syntax —
-/// and the command runs where the agent ran, with `AMX_ID` naming which agent
-/// it is about, so a command that wants more than the answer knows where to
-/// look for it.
+/// and the command runs where the agent ran, with [`crate::hook::ID_ENV`]
+/// naming which agent it is about, so a command that wants more than the
+/// answer knows where to look for it. The same variable a pane is handed, so
+/// a command written for one is written for the other.
 ///
 /// What comes back is the first line with anything on it. A command that fails,
 /// that is not there, or that says nothing leaves the row exactly as it was:
@@ -606,7 +607,7 @@ fn ask_for_a_line(command: &str, at: &Path, id: &str, answer: &str) -> Option<St
         .arg("-c")
         .arg(command)
         .current_dir(at)
-        .env("AMX_ID", id)
+        .env(crate::hook::ID_ENV, id)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
