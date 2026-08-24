@@ -3,9 +3,14 @@
 //! `_hook` is wired into the vendor's settings and fires on the events amx
 //! listens to. It reads one payload on stdin, appends it to the agent's event
 //! log, folds it into the agent's state, and **always exits 0**. Every way it
-//! can fail — no agent named in the environment, a record that is not there, a
-//! payload that is not JSON — ends in silence, because a hook that fails is a
-//! hook that interrupts somebody's agent to tell them about amx.
+//! can fail — nothing that says whose the payload is, a record that is not
+//! there, a payload that is not JSON — ends in silence, because a hook that
+//! fails is a hook that interrupts somebody's agent to tell them about amx.
+//!
+//! Whose the payload is has two answers. A pane amx started carries the id in
+//! its environment, and that is the whole of it. A claude that was already
+//! there when amx arrived carries nothing, so the payload's own session id is
+//! what finds the record — see [`by_session`].
 //!
 //! It touches nothing but the agent's own directory. In particular it makes no
 //! tmux calls: this runs on every prompt and every tool call, and the pane it
@@ -43,13 +48,6 @@ pub fn run(id: Option<&str>, root: &Path, stdin: &mut impl Read, config: &Config
     // Every early return here is a hook that is not amx's business, or a
     // record amx cannot reach. Both end quietly: this process is standing
     // between the vendor and its next token.
-    let Some(id) = id else {
-        return exit::OK;
-    };
-    let Ok(agent) = Agent::open(root, id) else {
-        return exit::OK;
-    };
-
     let mut text = String::new();
     if stdin.read_to_string(&mut text).is_err() {
         return exit::OK;
@@ -57,9 +55,57 @@ pub fn run(id: Option<&str>, root: &Path, stdin: &mut impl Read, config: &Config
     let Ok(payload) = serde_json::from_str::<Value>(&text) else {
         return exit::OK;
     };
+    let Some(agent) = whose(id, root, &payload) else {
+        return exit::OK;
+    };
 
     let _ = record(&agent, &payload, config);
     exit::OK
+}
+
+/// Which agent a payload belongs to.
+///
+/// The environment first, because a pane amx started says so itself and says
+/// it without reading anything. An id that names no record is not a reason to
+/// go looking: the pane answered, and the answer was an agent that is gone.
+fn whose(id: Option<&str>, root: &Path, payload: &Value) -> Option<Agent> {
+    match id {
+        Some(id) => Agent::open(root, id).ok(),
+        None => by_session(root, payload["session_id"].as_str()?),
+    }
+}
+
+/// The record for a session, for the payloads that arrive with nothing else
+/// saying whose they are.
+///
+/// A claude `amx adopt` took over was launched by somebody else, so amx never
+/// put its id in that pane's environment and never will — the session the
+/// vendor stamps on every payload is the only thing tying the two together,
+/// and it is on the record because adopting is what wrote it there.
+///
+/// One conversation can be on two records: an agent amx started and stopped,
+/// and the claude somebody resumed it in by hand and adopted. A payload is
+/// about a session that is running, so a record that has ended is not it, and
+/// the newest of what is left answers for the rest.
+///
+/// This reads every record on the machine, which is a cost the usual hook
+/// never pays: it runs only for a claude amx did not start.
+fn by_session(root: &Path, session: &str) -> Option<Agent> {
+    if session.is_empty() {
+        return None;
+    }
+
+    let mut ids = crate::store::list(root).ok()?;
+    ids.sort();
+    ids.into_iter()
+        .filter_map(|id| {
+            let agent = Agent::open(root, &id).ok()?;
+            let meta = agent.meta().ok()?;
+            (meta.session.as_deref() == Some(session)).then_some((meta.created, agent))
+        })
+        .filter(|(_, agent)| !agent.state().is_ok_and(|state| state.state.is_terminal()))
+        .max_by_key(|(created, _)| *created)
+        .map(|(_, agent)| agent)
 }
 
 /// Record how the agent's command ended.
@@ -1266,6 +1312,96 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "PreToolUse");
         assert_eq!(events[0].payload["tool_name"], "Bash");
+    }
+
+    #[test]
+    fn hook_an_adopted_claude_is_found_by_the_session_its_payload_names() {
+        // A claude amx did not start has no `AMX_ID` in its pane, so the only
+        // thing in the payload that says whose it is is the session — which is
+        // what `adopt` wrote down.
+        let root = TempDir::new().unwrap();
+        let adopted = Agent::create(
+            root.path(),
+            &Meta {
+                session: Some("abc-123".to_string()),
+                ..meta()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            run(
+                None,
+                root.path(),
+                &mut r#"{"session_id":"abc-123","hook_event_name":"PreToolUse","tool_name":"Bash"}"#
+                    .as_bytes(),
+                &quiet(),
+            ),
+            exit::OK
+        );
+        let state = adopted.state().unwrap();
+        assert_eq!(state.state, Phase::Working);
+        assert_eq!(state.summary.as_deref(), Some("Running Bash"));
+        assert_eq!(adopted.events().unwrap().len(), 1, "and it is written down");
+
+        // A session amx has no record of is a claude that is nobody's.
+        assert_eq!(
+            run(
+                None,
+                root.path(),
+                &mut r#"{"session_id":"def-456","hook_event_name":"Stop","last_assistant_message":"done"}"#
+                    .as_bytes(),
+                &quiet(),
+            ),
+            exit::OK
+        );
+        assert_eq!(adopted.state().unwrap().result, None);
+    }
+
+    #[test]
+    fn hook_an_adopted_session_reaches_the_record_that_is_still_running() {
+        // One conversation can be on two records: an agent amx started and
+        // stopped, and the claude somebody resumed it in by hand and adopted.
+        // The payload is about the one that has not ended.
+        let root = TempDir::new().unwrap();
+        let stopped = Agent::create(
+            root.path(),
+            &Meta {
+                session: Some("abc-123".to_string()),
+                created: 1,
+                ..meta()
+            },
+        )
+        .unwrap();
+        stopped
+            .writer()
+            .unwrap()
+            .update_state(|state| state.state = Phase::Stopped)
+            .unwrap();
+        let adopted = Agent::create(
+            root.path(),
+            &Meta {
+                id: "adopted-app-b2c".to_string(),
+                session: Some("abc-123".to_string()),
+                created: 2,
+                ..meta()
+            },
+        )
+        .unwrap();
+
+        run(
+            None,
+            root.path(),
+            &mut r#"{"session_id":"abc-123","hook_event_name":"UserPromptSubmit"}"#.as_bytes(),
+            &quiet(),
+        );
+
+        assert_eq!(adopted.state().unwrap().state, Phase::Working);
+        assert_eq!(
+            stopped.state().unwrap().state,
+            Phase::Stopped,
+            "and a record that has ended stays where it was"
+        );
     }
 
     #[test]
