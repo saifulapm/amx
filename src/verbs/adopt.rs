@@ -80,15 +80,21 @@ pub fn run(
     out: &mut impl Write,
 ) -> Result<i32> {
     // Everything that would stop an adoption is asked before anything is
-    // written: which pane, whose conversation, and whether amx is looking at
-    // that pane already.
-    let pane = this_pane(env)?;
-    let session = this_session(env)?;
+    // written: whether this pane is amx's own, which pane it is, whose
+    // conversation is in it, and whether amx is looking at it already.
+    //
+    // A pane amx started says so in its own environment, and that is the
+    // cheapest answer there is. An id with no record behind it is not one: the
+    // agent it named has been forgotten, and what is in the pane now is a
+    // claude like any other.
     if let Some(id) = env.get(crate::hook::ID_ENV)
         && Agent::open(root, id).is_ok()
     {
         bail!("this pane is agent `{id}` already, which amx started");
     }
+
+    let pane = this_pane(env)?;
+    let session = this_session(env)?;
     if !server.pane_alive(&pane) {
         bail!("{pane} is not a pane on the tmux server this is running on");
     }
@@ -140,6 +146,10 @@ pub fn run(
         },
     )?;
 
+    // Nothing after the record is written is undone if it fails. The record
+    // names a live pane, which is the whole of what an agent is, so what a
+    // failure here costs is the opening line of the log and one reading that
+    // the next look at the pane makes again.
     let writer = agent.writer()?;
     writer.append(&Event::new(
         ADOPTED,

@@ -88,8 +88,12 @@ fn whose(id: Option<&str>, root: &Path, payload: &Value) -> Option<Agent> {
 /// about a session that is running, so a record that has ended is not it, and
 /// the newest of what is left answers for the rest.
 ///
-/// This reads every record on the machine, which is a cost the usual hook
-/// never pays: it runs only for a claude amx did not start.
+/// This reads every record on the machine, and it runs for every claude amx
+/// did not start, adopted or not — a hook fired by a pane amx opened never
+/// arrives here at all. What it costs is a directory listing and two small
+/// files per agent, against the several milliseconds this process took to
+/// start; an index of sessions would be quicker and would be one more thing
+/// that can disagree with the records it was built from.
 fn by_session(root: &Path, session: &str) -> Option<Agent> {
     if session.is_empty() {
         return None;
