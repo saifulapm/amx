@@ -236,12 +236,22 @@ fn kind(payload: &Value) -> Option<&str> {
 ///   not the agent's state.
 /// * A record that has already ended stays ended. A late hook is a hook about
 ///   a turn that is over.
+///
+/// What comes back is the one notice a stop is worth. Somebody is told when
+/// the record moves into waiting, with the question if the event that moved it
+/// there carried one, and everything arriving while it already says waiting is
+/// folded in silently. Three of the events above end in waiting and one
+/// `AskUserQuestion` fires all three — the tool call that draws the menu, the
+/// permission box over that same tool, and the notification that repeats the
+/// box. They are three different sentences, so nothing but the record's own
+/// phase tells one stop from three.
 pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Notice> {
     if !payload["agent_id"].is_null() || state.state.is_terminal() {
         return None;
     }
+    let was_waiting = state.state == Phase::Waiting;
 
-    match kind(payload)? {
+    let waiting = match kind(payload)? {
         "SessionStart" => {
             if let Some(session) = payload["session_id"].as_str() {
                 meta.session = Some(session.to_string());
@@ -249,7 +259,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             if let Some(transcript) = payload["transcript_path"].as_str() {
                 meta.transcript = Some(transcript.into());
             }
-            None
+            false
         }
 
         "UserPromptSubmit" => {
@@ -261,7 +271,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             // record, and `result` would hand it to a caller as this turn's.
             state.result = None;
             state.source = None;
-            None
+            false
         }
 
         "PreToolUse" if payload["tool_name"] == "AskUserQuestion" => {
@@ -273,7 +283,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             // Nothing else will say this agent is waiting. The vendor notifies
             // about an idle session only when nothing is open on it, and a
             // menu is open on this one.
-            Some(Notice::waiting(&meta.id, state.question.as_deref()))
+            true
         }
 
         "PreToolUse" => {
@@ -282,7 +292,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
                 state.summary = Some(format!("Running {tool}"));
             }
             state.asks(None);
-            None
+            false
         }
 
         // Fired as the permission box goes up — six seconds before the
@@ -300,7 +310,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
                     .map(|tool| format!("Claude needs your permission to use {}", rendered(tool))),
             );
             state.kind = Some(Kind::Permission);
-            Some(Notice::waiting(&meta.id, state.question.as_deref()))
+            true
         }
 
         // The one hook that says the box closed without the tool running: no
@@ -311,7 +321,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             state.state = Phase::Working;
             state.summary = None;
             state.asks(None);
-            None
+            false
         }
 
         // The vendor nudges about an idle session only when nothing is open on
@@ -325,7 +335,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             state.state = Phase::Idle;
             state.summary = None;
             state.asks(None);
-            None
+            false
         }
 
         "Notification" => {
@@ -341,17 +351,12 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             {
                 return None;
             }
-            // The permission notification repeats, six seconds later, a box
-            // PermissionRequest has usually announced already. A notice that
-            // tells nobody anything new interrupts nobody twice.
-            let told = state.state == Phase::Waiting
-                && state.question.as_deref() == payload["message"].as_str();
             state.state = Phase::Waiting;
             state.asks(payload["message"].as_str().map(str::to_string));
             if payload["notification_type"] == "permission_prompt" {
                 state.kind = Some(Kind::Permission);
             }
-            (!told).then(|| Notice::waiting(&meta.id, state.question.as_deref()))
+            true
         }
 
         "Stop" => {
@@ -362,11 +367,16 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
                 state.result = Some(answer.to_string());
                 state.source = Some(Source::Payload);
             }
-            None
+            false
         }
 
-        _ => None,
-    }
+        _ => false,
+    };
+
+    // One stop, one interruption. An agent that was already waiting when this
+    // arrived is one somebody has been told about, whatever this event calls
+    // the thing it is waiting on.
+    (waiting && !was_waiting).then(|| Notice::waiting(&meta.id, state.question.as_deref()))
 }
 
 /// A tool's name the way the vendor writes it into the permission sentence,
@@ -376,8 +386,9 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
 /// digit (the vendor's `\b\w`), not only after an underscore. That carries a
 /// kebab-case name past its dashes, leaves a built-in like `Bash` as it
 /// stands, and keeps a digit's word one word. The sentence written at
-/// `PermissionRequest` has to be the one the notification will repeat, or the
-/// echo reads as news and one box interrupts twice.
+/// `PermissionRequest` has to be the one the notification will repeat: it is
+/// what every reader quotes for the six seconds until the echo lands, and the
+/// echo writes the vendor's own words over it.
 fn rendered(tool: &str) -> String {
     let mut boundary = true;
     tool.rsplit("__")
@@ -687,13 +698,129 @@ mod tests {
     }
 
     #[test]
+    fn hook_one_stop_interrupts_once_however_many_events_say_so() {
+        // Filed on 2026-08-24 off the first run of the wall: one
+        // AskUserQuestion put three notifications on the desktop. The tool
+        // call that draws the menu, the permission box over that same tool
+        // and the notification that repeats the box a few seconds later are
+        // three different sentences, so matching the words catches none of
+        // them. What they have in common is that the agent had already
+        // stopped when they arrived.
+        let mut state = State::default();
+        let mut meta = meta();
+
+        let told = apply(
+            &json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "AskUserQuestion",
+                "tool_input": { "questions": [{
+                    "question": "Which fixture should the port keep?",
+                    "options": [{ "label": "the sqlite one" }]
+                }] }
+            }),
+            &mut state,
+            &mut meta,
+        )
+        .expect("the transition into waiting is the interruption");
+        assert_eq!(told.body, "Which fixture should the port keep?");
+
+        for payload in [
+            json!({ "hook_event_name": "PermissionRequest", "tool_name": "AskUserQuestion" }),
+            json!({
+                "hook_event_name": "Notification",
+                "message": "Claude needs your permission to use Ask User Question",
+                "notification_type": "permission_prompt"
+            }),
+            json!({
+                "hook_event_name": "Notification",
+                "message": "Claude is waiting for your input"
+            }),
+        ] {
+            assert_eq!(
+                apply(&payload, &mut state, &mut meta),
+                None,
+                "one stop, one interruption: {payload}"
+            );
+            assert_eq!(state.state, Phase::Waiting, "{payload}");
+        }
+    }
+
+    #[test]
+    fn hook_a_stop_amx_cannot_name_is_still_one_interruption() {
+        // A permission box whose payload names no tool goes up with nothing
+        // amx can quote, so the notice says what it can. The words arrive six
+        // seconds later with the notification and they reach the record,
+        // which is where a reader looks; nobody is told a second time.
+        let mut state = State::default();
+        let mut meta = meta();
+
+        let told = apply(
+            &json!({ "hook_event_name": "PermissionRequest" }),
+            &mut state,
+            &mut meta,
+        )
+        .expect("somebody still has to be told");
+        assert!(!told.body.is_empty(), "there is always something to say");
+
+        let again = apply(
+            &json!({
+                "hook_event_name": "Notification",
+                "message": "Claude needs your permission to use Bash",
+                "notification_type": "permission_prompt"
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(again, None, "one stop, one interruption");
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Claude needs your permission to use Bash"),
+            "and the words still reach the record"
+        );
+    }
+
+    #[test]
+    fn hook_the_stop_after_the_agent_went_back_to_work_is_told() {
+        // One notice per stop, not one per agent. Whatever put the agent back
+        // to work — a box refused, a menu answered, a new prompt — the next
+        // thing it stops on is news.
+        let mut state = State::default();
+        let mut meta = meta();
+
+        assert!(
+            apply(
+                &json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash" }),
+                &mut state,
+                &mut meta,
+            )
+            .is_some()
+        );
+        apply(
+            &json!({ "hook_event_name": "PermissionDenied", "tool_name": "Bash" }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(state.state, Phase::Working);
+
+        assert!(
+            apply(
+                &json!({ "hook_event_name": "PermissionRequest", "tool_name": "Write" }),
+                &mut state,
+                &mut meta,
+            )
+            .is_some(),
+            "a second box is a second stop"
+        );
+    }
+
+    #[test]
     fn hook_an_mcp_tools_box_is_worded_the_vendors_way_and_said_once() {
         // The payload names the tool `mcp__<server>__<tool>`; the vendor's
         // sentence — on the box, and in the notification that repeats it —
         // renders the last `__` segment with underscores as spaces and each
-        // word's first letter raised. A sentence written any other way
-        // differs from the pane until the echo lands, and the echo reads as
-        // news: one box, two interruptions.
+        // word's first letter raised. A sentence written any other way is
+        // what every reader quotes while the box is up, against a pane that
+        // says something else.
         let mut state = State::default();
         let mut meta = meta();
         let told = apply(
@@ -729,7 +856,7 @@ mod tests {
         // that is not a letter or a digit — not only after an underscore.
         // Raised the underscore way, a kebab-case name reads
         // 'Resolve-library-id' against the pane's 'Resolve-Library-Id', and
-        // the echo lands as news: one box, two interruptions.
+        // the record hands whoever is answering a sentence nothing drew.
         assert_eq!(
             rendered("mcp__context7__resolve-library-id"),
             "Resolve-Library-Id"
