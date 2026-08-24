@@ -149,6 +149,69 @@ pub enum Kind {
     Trust,
 }
 
+/// One choice under a question, as the vendor wrote it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Choice {
+    /// What an answer names it by, and what comes back when it is chosen.
+    pub label: String,
+    /// The sentence the screen draws under the label. The label is the answer;
+    /// this is what explains it to whoever is reading.
+    pub description: Option<String>,
+    /// The block the vendor draws beside the choice instead of the
+    /// descriptions. It is also what turns the notes field on — a question
+    /// whose choices carry no preview takes no note — and the chosen one rides
+    /// back beside the note in the vendor's own answer.
+    pub preview: Option<String>,
+}
+
+/// One question of a call that asks more than one.
+///
+/// `AskUserQuestion` takes up to four questions and draws them as tabs on a
+/// single screen, and the payload is the only place their number, their names,
+/// the sentences under their choices and the flag saying how many may be taken
+/// are ever written down. Measured against 2.1.240 on 2026-08-24 and recorded
+/// in `docs/question-shapes.md`: the tab strip elides its headers as the pane
+/// narrows, and at 24 columns the showing tab's own name is drawn as nothing
+/// but an ellipsis. So this is the payload's version of the question, and
+/// nothing here is ever read off a screen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Ask {
+    /// The short word the tab strip draws for it.
+    pub header: Option<String>,
+    /// What is being asked.
+    pub text: String,
+    /// The choices under it, in the order the screen lists them.
+    pub options: Vec<Choice>,
+    /// Whether it takes more than one choice. The flag is per question and not
+    /// per call: a checkbox tab and two plain ones sit in the same prompt, and
+    /// the keys that drive one are not the keys that drive the next.
+    pub multi: bool,
+    /// What was sent back for it, once somebody has answered it. A call with
+    /// more than one question does not end when one is answered — the vendor
+    /// moves to the next tab and the prompt is still up — so the answer goes
+    /// on the question it belongs to.
+    pub answer: Option<String>,
+}
+
+impl Ask {
+    /// The choices as an answer names them.
+    pub fn labels(&self) -> Vec<String> {
+        self.options
+            .iter()
+            .map(|option| option.label.clone())
+            .collect()
+    }
+
+    /// Whether the vendor draws a notes field on this question. It draws one
+    /// when a choice carries a preview and only then: `n` on a menu without
+    /// one does nothing at all.
+    pub fn takes_notes(&self) -> bool {
+        self.options.iter().any(|option| option.preview.is_some())
+    }
+}
+
 /// How the agent was started, and how to reach it again.
 ///
 /// Fields are added, never renamed or removed: a record outlives the version
@@ -214,6 +277,13 @@ pub struct State {
     /// They belong to the question above them and go wherever it goes; the
     /// record has no place for options with no question over them.
     pub options: Vec<String>,
+    /// The whole of the call the question came from, where the call is the
+    /// vendor asking its own: every question in it, the sentences under their
+    /// choices, and which of them have been answered. One question of it is
+    /// on the screen at a time, and that one is `question` and `options`
+    /// above — which is where everything that wants the question on the screen
+    /// has always looked.
+    pub asking: Vec<Ask>,
     /// What kind of thing is being asked, where something has said so. It can
     /// be known when the words are not: a menu whose payload amx could not
     /// read is still a menu somebody has to answer.
@@ -246,9 +316,58 @@ impl State {
     pub fn asks(&mut self, question: Option<String>) {
         self.question = question;
         self.options.clear();
+        self.asking.clear();
         if self.question.is_none() {
             self.kind = None;
         }
+    }
+
+    /// Set the whole of what a call is asking.
+    ///
+    /// The question on the screen is the first with no answer on it, and it
+    /// goes where every reader has always found the question. The rest is the
+    /// part no screen carries: how many questions there are, what they are
+    /// called, what the sentences under their choices say, and which of them
+    /// take more than one choice.
+    pub fn asks_all(&mut self, asking: Vec<Ask>) {
+        self.asking = asking;
+        self.shows_the_pending_one();
+    }
+
+    /// Record what was sent back for the question on the screen, and put up
+    /// the one after it.
+    ///
+    /// Answering does not end a call that asks more than one question: the
+    /// vendor moves to the next tab and the prompt is still up. So the answer
+    /// goes on the question it belongs to, and the question is the next one
+    /// with nothing on it. When every question has an answer there is nothing
+    /// left to ask and the answers stand on the record, which is what the
+    /// vendor's own Submit tab is showing.
+    pub fn answered(&mut self, answer: impl Into<String>) {
+        if let Some(pending) = self.asking.iter_mut().find(|ask| ask.answer.is_none()) {
+            pending.answer = Some(answer.into());
+        }
+        self.shows_the_pending_one();
+    }
+
+    /// The question of the call that is on the screen.
+    pub fn pending(&self) -> Option<&Ask> {
+        self.asking.iter().find(|ask| ask.answer.is_none())
+    }
+
+    /// Whether the question on the screen takes more than one choice.
+    pub fn multi(&self) -> bool {
+        self.pending().is_some_and(|ask| ask.multi)
+    }
+
+    /// Put the question the call is showing where the question goes.
+    fn shows_the_pending_one(&mut self) {
+        let (text, options) = self
+            .pending()
+            .map(|ask| (ask.text.clone(), ask.labels()))
+            .unzip();
+        self.question = text;
+        self.options = options.unwrap_or_default();
     }
 
     /// Whether a screen's reading would tell the record anything it has not
@@ -278,12 +397,12 @@ impl State {
 /// A state document as it is written down.
 ///
 /// It differs from [`State`] in one place, and this is the only place the two
-/// shapes meet: the record keeps a question and the answers it offers under a
-/// single `question` key, because they are one thing to everything that reads
-/// them, while in memory the text is a field of its own, because the text
-/// alone is what most of amx asks for. Options with no question over them are
-/// not written at all, which is what keeps an answered question from leaving
-/// its choices behind.
+/// shapes meet: the record keeps a question, the answers it offers and the
+/// call it came from under a single `question` key, because they are one thing
+/// to everything that reads them, while in memory the text is a field of its
+/// own, because the text alone is what most of amx asks for. Options and
+/// questions with no question over them are not written at all, which is what
+/// keeps an answered question from leaving its choices behind.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct Wire {
@@ -325,6 +444,12 @@ struct Known {
     options: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<Kind>,
+    /// The call the question came from, whole. The question showing and its
+    /// choices are written above as well as here, because they are what every
+    /// reader of this document has always read and this adds a field rather
+    /// than moving one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    asking: Vec<Ask>,
 }
 
 impl From<State> for Wire {
@@ -340,6 +465,7 @@ impl From<State> for Wire {
             summary,
             question,
             options,
+            asking,
             kind,
             result,
             source,
@@ -360,20 +486,26 @@ impl From<State> for Wire {
                 // from leaving its choices behind.
                 (None, None) => None,
                 // A question amx knows the kind of and not the words: a menu
-                // whose payload it could not read. The kind is the whole of
-                // what there is to say about it, and choices with no question
-                // over them are nobody's to press.
+                // whose payload it could not read, or a call whose questions
+                // have all been answered and is waiting to be submitted. The
+                // choices showing under nothing are nobody's to press, but the
+                // call itself is what is on the screen and holds the answers
+                // given to it so far.
                 (None, kind) => Some(Asked::Whole(Known {
                     kind,
+                    asking,
                     ..Known::default()
                 })),
                 // The words alone, as amx has always written a question a hook
                 // has only just carried.
-                (Some(text), None) if options.is_empty() => Some(Asked::Words(text)),
+                (Some(text), None) if options.is_empty() && asking.is_empty() => {
+                    Some(Asked::Words(text))
+                }
                 (text, kind) => Some(Asked::Whole(Known {
                     text,
                     options,
                     kind,
+                    asking,
                 })),
             },
             result,
@@ -387,10 +519,10 @@ impl From<State> for Wire {
 
 impl From<Wire> for State {
     fn from(wire: Wire) -> State {
-        let (question, options, kind) = match wire.question {
-            Some(Asked::Words(text)) => (Some(text), Vec::new(), None),
-            Some(Asked::Whole(asked)) => (asked.text, asked.options, asked.kind),
-            None => (None, Vec::new(), None),
+        let (question, options, kind, asking) = match wire.question {
+            Some(Asked::Words(text)) => (Some(text), Vec::new(), None, Vec::new()),
+            Some(Asked::Whole(asked)) => (asked.text, asked.options, asked.kind, asked.asking),
+            None => (None, Vec::new(), None, Vec::new()),
         };
 
         State {
@@ -401,6 +533,7 @@ impl From<Wire> for State {
             summary: wire.summary,
             question,
             options,
+            asking,
             kind,
             result: wire.result,
             source: wire.source,
@@ -967,6 +1100,201 @@ mod tests {
         assert_eq!(agent.state().unwrap().kind, Some(Kind::Question));
     }
 
+    /// A choice with the sentence the screen draws under it.
+    fn choice(label: &str, description: &str) -> Choice {
+        Choice {
+            label: label.to_string(),
+            description: Some(description.to_string()),
+            preview: None,
+        }
+    }
+
+    /// The three-question call measured against claude 2.1.240 on 2026-08-24,
+    /// as `docs/question-shapes.md` records its payload: two questions taking
+    /// one choice each and a third taking several.
+    fn a_call_of_three() -> Vec<Ask> {
+        vec![
+            Ask {
+                header: Some("Runtime".to_string()),
+                text: "Which runtime should the service target?".to_string(),
+                options: vec![
+                    choice("Node", "Widest library support"),
+                    choice("Deno", "Batteries included"),
+                ],
+                multi: false,
+                answer: None,
+            },
+            Ask {
+                header: Some("Storage".to_string()),
+                text: "Which store should hold sessions?".to_string(),
+                options: vec![
+                    choice("Redis", "Fast, volatile"),
+                    choice("Postgres", "Durable, already deployed"),
+                ],
+                multi: false,
+                answer: None,
+            },
+            Ask {
+                header: Some("Rollout".to_string()),
+                text: "Which rollout steps should run?".to_string(),
+                options: vec![
+                    choice("Canary", "Five percent first"),
+                    choice("Migrate", "Run the schema change"),
+                    choice("Announce", "Post to the channel"),
+                ],
+                multi: true,
+                answer: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn store_writes_every_question_of_a_call_that_asks_several() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .update_state(|s| {
+                s.state = Phase::Waiting;
+                s.asks_all(a_call_of_three());
+                s.kind = Some(Kind::Question);
+            })
+            .unwrap();
+
+        // The question showing is where a question has always been.
+        let document = written(&agent);
+        assert_eq!(
+            document["question"]["text"],
+            "Which runtime should the service target?"
+        );
+        assert_eq!(document["question"]["options"][0], "Node");
+        assert_eq!(document["question"]["kind"], "question");
+
+        // And the rest of the call is under it: what no screen carries.
+        let asking = &document["question"]["asking"];
+        assert_eq!(asking.as_array().unwrap().len(), 3);
+        assert_eq!(asking[1]["header"], "Storage");
+        assert_eq!(
+            asking[0]["options"][0]["description"],
+            "Widest library support"
+        );
+        assert_eq!(asking[0]["multi"], false);
+        assert_eq!(asking[2]["multi"], true);
+
+        let read = agent.state().unwrap();
+        assert_eq!(read.asking, a_call_of_three());
+        assert_eq!(
+            read.question.as_deref(),
+            Some("Which runtime should the service target?")
+        );
+        assert_eq!(read.options, ["Node", "Deno"]);
+        assert!(!read.multi(), "and the one showing takes one choice");
+    }
+
+    #[test]
+    fn store_answering_one_question_leaves_the_next_one_pending() {
+        // Measured against 2.1.240: answering a tab does not return the vendor
+        // to its composer. It records the answer, moves to the tab after it,
+        // and the prompt is still up.
+        let mut state = State {
+            state: Phase::Waiting,
+            kind: Some(Kind::Question),
+            ..State::default()
+        };
+        state.asks_all(a_call_of_three());
+
+        state.answered("Node");
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Which store should hold sessions?")
+        );
+        assert_eq!(state.options, ["Redis", "Postgres"]);
+        assert_eq!(state.asking[0].answer.as_deref(), Some("Node"));
+        assert_eq!(state.kind, Some(Kind::Question), "the prompt is still up");
+
+        state.answered("Redis");
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Which rollout steps should run?")
+        );
+        assert!(state.multi(), "and this one takes more than one choice");
+
+        // Every question answered: nothing left to ask, every answer on the
+        // record, and the vendor's own Submit tab on the screen.
+        state.answered("Canary, Announce");
+        assert_eq!(state.pending(), None);
+        assert_eq!(state.question, None);
+        assert!(state.options.is_empty());
+        assert!(!state.multi());
+        let said: Vec<_> = state
+            .asking
+            .iter()
+            .filter_map(|ask| ask.answer.as_deref())
+            .collect();
+        assert_eq!(said, ["Node", "Redis", "Canary, Announce"]);
+
+        // With nothing pending there is nothing an answer belongs to.
+        state.answered("late");
+        assert_eq!(state.asking[2].answer.as_deref(), Some("Canary, Announce"));
+    }
+
+    #[test]
+    fn store_leaves_no_call_behind_when_its_question_is_over() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        let writer = agent.writer().unwrap();
+        writer
+            .update_state(|s| {
+                s.state = Phase::Waiting;
+                s.asks_all(a_call_of_three());
+                s.kind = Some(Kind::Question);
+            })
+            .unwrap();
+
+        // The questions of a call belong to the call. Once nothing is
+        // outstanding they are answers nobody can give to a screen that is
+        // gone, exactly as the choices under one question are.
+        writer.update_state(|s| s.asks(None)).unwrap();
+        assert_eq!(written(&agent)["question"], serde_json::Value::Null);
+        assert!(agent.state().unwrap().asking.is_empty());
+    }
+
+    #[test]
+    fn store_keeps_the_preview_that_puts_a_notes_field_on_a_question() {
+        // Measured against 2.1.240 on 2026-08-24: the vendor draws the notes
+        // field when a choice carries a preview, and `n` on a menu without one
+        // does nothing. Nothing on the screen says which sort it is looking
+        // at, so the record has to.
+        let previewed = Ask {
+            header: Some("Layout".to_string()),
+            text: "Which header layout should the page use?".to_string(),
+            options: vec![Choice {
+                label: "Stacked".to_string(),
+                description: Some("Title over subtitle".to_string()),
+                preview: Some("+----------+\n| TITLE    |\n+----------+".to_string()),
+            }],
+            multi: false,
+            answer: None,
+        };
+        assert!(previewed.takes_notes());
+        assert!(!a_call_of_three()[0].takes_notes());
+
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .update_state(|s| {
+                s.state = Phase::Waiting;
+                s.asks_all(vec![previewed.clone()]);
+                s.kind = Some(Kind::Question);
+            })
+            .unwrap();
+
+        assert_eq!(agent.state().unwrap().asking, [previewed]);
+    }
+
     #[test]
     fn store_writes_a_kind_it_has_no_words_for() {
         // What kind of thing is outstanding is worth having even where the
@@ -1198,6 +1526,22 @@ mod tests {
         let state = agent.state().unwrap();
         assert_eq!(state.question.as_deref(), Some("Do you want to proceed?"));
         assert!(state.options.is_empty());
+        assert!(state.asking.is_empty());
+
+        // And a question written before amx held the call it came from is one
+        // question, with nothing behind it.
+        std::fs::write(
+            dir.join(STATE),
+            r#"{"state":"waiting","question":{"text":"Do you want to proceed?",
+                "options":["Yes","No"],"kind":"question"}}"#,
+        )
+        .unwrap();
+        let state = agent.state().unwrap();
+        assert_eq!(state.options, ["Yes", "No"]);
+        assert_eq!(state.kind, Some(Kind::Question));
+        assert!(state.asking.is_empty());
+        assert_eq!(state.pending(), None);
+        assert!(!state.multi());
     }
 
     #[test]
