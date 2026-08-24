@@ -309,6 +309,15 @@ pub struct State {
     /// nobody has opened. Read against `last_event`, it says whether what the
     /// agent has to say came before or after the last look at it.
     pub seen: u64,
+    /// The seconds this agent has spent working, summed over every span of it.
+    ///
+    /// A run that took an afternoon because nobody answered its question until
+    /// four did not work for an afternoon, and the wall clock over a finished
+    /// run cannot tell the two apart. The spans are added up at the writes that
+    /// move the phase in and out of `working`, because those are the moments
+    /// amx is told about; what a span is worth is settled once, at the write
+    /// that ends it, and never worked out again from stamps that have moved on.
+    pub worked: u64,
 }
 
 impl State {
@@ -378,6 +387,24 @@ impl State {
         self.options = options.unwrap_or_default();
     }
 
+    /// The seconds worked as of a stated moment, counting a span still open.
+    ///
+    /// The total is added up at the write that ends a span, so a record left
+    /// mid-turn — the pane went, and nothing got to write the phase out of
+    /// working — is carrying one nothing closed. `at` is how far to count it,
+    /// which is whoever is asking's business: the last moment amx can say the
+    /// agent was running, or the moment it is being asked in.
+    ///
+    /// A record with no moment to date the open span from is one amx cannot say
+    /// worked at all, so it says nothing rather than counting from the epoch.
+    pub fn worked_by(&self, at: u64) -> u64 {
+        let open = match (self.state, self.since) {
+            (Phase::Working, since) if since > 0 => at.saturating_sub(since),
+            _ => 0,
+        };
+        self.worked.saturating_add(open)
+    }
+
     /// Whether a screen's reading would tell the record anything it has not
     /// got. Asked before the writer's lock is taken, because a reader that has
     /// learned nothing has no business holding it.
@@ -426,6 +453,7 @@ struct Wire {
     last_event: u64,
     ended: u64,
     seen: u64,
+    worked: u64,
 }
 
 /// A question on the record: its words alone, or the whole of it.
@@ -482,6 +510,7 @@ impl From<State> for Wire {
             last_event,
             ended,
             seen,
+            worked,
         } = state;
 
         Wire {
@@ -524,6 +553,7 @@ impl From<State> for Wire {
             last_event,
             ended,
             seen,
+            worked,
         }
     }
 }
@@ -552,6 +582,7 @@ impl From<Wire> for State {
             last_event: wire.last_event,
             ended: wire.ended,
             seen: wire.seen,
+            worked: wire.worked,
         }
     }
 }
@@ -740,13 +771,26 @@ impl Writer<'_> {
     /// the write that turns a phase terminal is the run ending, and an answer
     /// or an exit code arriving after it is not a second ending. An agent that
     /// leaves a terminal phase has not ended at all, so the stamp goes with it.
+    ///
+    /// And a span of work is added up by the same rule again: a phase moving
+    /// out of `working` is the span ending, and this write is the only moment
+    /// amx is told so. What the span was worth is settled here rather than
+    /// worked out later from `since`, which the next phase takes for itself.
     pub fn update_state(&self, change: impl FnOnce(&mut State)) -> Result<State> {
+        self.update_state_at(now(), change)
+    }
+
+    /// The same, with the clock named, so a test can lay a span of work out in
+    /// the past rather than sit through one.
+    fn update_state_at(&self, at: u64, change: impl FnOnce(&mut State)) -> Result<State> {
         let before = self.state()?;
         let mut after = before.clone();
         change(&mut after);
 
-        let at = now();
         if after.state != before.state {
+            if before.state == Phase::Working {
+                after.worked = before.worked_by(at);
+            }
             after.since = at;
             after.ended = match after.state.is_terminal() {
                 true => at,
@@ -1030,6 +1074,77 @@ mod tests {
         // And an agent put back to work has not ended at all.
         let again = writer.update_state(|s| s.state = Phase::Working).unwrap();
         assert_eq!(again.ended, 0);
+    }
+
+    #[test]
+    fn store_adds_up_the_spans_an_agent_spent_working() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        let writer = agent.writer().unwrap();
+
+        // Six seconds of work, and then a question nobody answers for an hour.
+        writer
+            .update_state_at(1_000, |s| s.state = Phase::Working)
+            .unwrap();
+        let asked = writer
+            .update_state_at(1_006, |s| s.state = Phase::Waiting)
+            .unwrap();
+        assert_eq!(asked.worked, 6);
+
+        let answered = writer
+            .update_state_at(4_606, |s| s.state = Phase::Working)
+            .unwrap();
+        assert_eq!(
+            answered.worked, 6,
+            "an hour of waiting is not an hour's work"
+        );
+
+        // Four seconds more, and the run ends.
+        let done = writer
+            .update_state_at(4_610, |s| {
+                s.state = Phase::Done;
+                s.exit = Some(0);
+            })
+            .unwrap();
+        assert_eq!(done.worked, 10);
+        assert_eq!(written(&agent)["worked"], 10);
+
+        // Nothing written after the ending is work.
+        let after = writer
+            .update_state_at(9_000, |s| s.result = Some("the tests pass now".to_string()))
+            .unwrap();
+        assert_eq!(after.worked, 10);
+    }
+
+    #[test]
+    fn store_counts_a_span_of_work_nothing_ever_closed() {
+        // The record adds up at the write that moves the phase, so an agent the
+        // pane went out from under is still on the record as working with its
+        // last span open. Whoever asks says how far to count it.
+        let working = State {
+            state: Phase::Working,
+            since: 1_200,
+            worked: 20,
+            ..State::default()
+        };
+        assert_eq!(working.worked_by(1_300), 120);
+
+        // A phase that is not work has nothing open to count.
+        let waiting = State {
+            state: Phase::Waiting,
+            since: 1_200,
+            worked: 20,
+            ..State::default()
+        };
+        assert_eq!(waiting.worked_by(9_000), 20);
+
+        // And a document with no moment to date a span from is one amx cannot
+        // say worked at all.
+        let undated = State {
+            state: Phase::Working,
+            ..State::default()
+        };
+        assert_eq!(undated.worked_by(9_000), 0);
     }
 
     #[test]
@@ -1567,6 +1682,7 @@ mod tests {
         assert_eq!(state.seq, 3);
         assert_eq!(state.question, None);
         assert_eq!(state.ended, 0, "and no run of it has ended");
+        assert_eq!(state.worked, 0, "and no span of work is added up on it");
 
         // A question written before amx could read the choices under it is a
         // string, and a string is still a question.
