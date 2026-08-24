@@ -22,7 +22,7 @@ use std::path::Path;
 use crate::config::Config;
 use crate::exit;
 use crate::notify::{self, Notice};
-use crate::store::{Agent, Kind, Meta, Phase, Source, State};
+use crate::store::{Agent, Ask, Choice, Kind, Meta, Phase, Source, State};
 
 /// How the hook learns which agent it belongs to. `_boot` puts it in the
 /// pane's environment, so every process the vendor starts inherits it.
@@ -169,8 +169,8 @@ fn kind(payload: &Value) -> Option<&str> {
 ///   every payload carries one, and a subagent's is not the agent's.
 /// * `UserPromptSubmit` and `PreToolUse` mean the agent is working, and the
 ///   tool call says what it is doing. The one tool that is not work is
-///   `AskUserQuestion`: it draws a menu and waits, and its payload carries the
-///   question and every choice under it.
+///   `AskUserQuestion`: it draws a menu and waits, and its payload carries
+///   every question the menu will ask, whole.
 /// * `PermissionRequest` is the permission box the instant it goes up, tool
 ///   and all; `PermissionDenied` is the only thing that says it closed with
 ///   the tool refused, after which the turn is working again.
@@ -218,9 +218,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             state.state = Phase::Waiting;
             // Not running anything: the menu is what it is doing.
             state.summary = None;
-            let (text, options) = question_asked(&payload["tool_input"]).unzip();
-            state.asks(text);
-            state.options = options.unwrap_or_default();
+            state.asks_all(asked(&payload["tool_input"]));
             state.kind = Some(Kind::Question);
             // Nothing else will say this agent is waiting. The vendor notifies
             // about an idle session only when nothing is open on it, and a
@@ -349,27 +347,53 @@ fn rendered(tool: &str) -> String {
         .collect()
 }
 
-/// The question an `AskUserQuestion` call is about to put on the pane, and the
-/// choices under it.
+/// Every question an `AskUserQuestion` call is about to put on the pane.
 ///
-/// The tool takes up to four questions and asks them one at a time, so the
-/// first is the one on the screen. A choice is its label: the sentence beside
-/// it explains it to whoever is reading, but the label is what an answer
-/// names. Anything else in the payload is the vendor's business.
-fn question_asked(input: &Value) -> Option<(String, Vec<String>)> {
-    let asking = input["questions"].as_array()?.first()?;
-    let text = asking["question"].as_str()?.to_string();
-    let options = asking["options"]
-        .as_array()
-        .map(|options| {
-            options
-                .iter()
-                .filter_map(|option| option["label"].as_str())
-                .map(str::to_string)
-                .collect()
+/// The tool takes up to four and draws them as tabs on one screen, asking them
+/// one at a time, so the first is the one showing and the rest are a keystroke
+/// behind it. All of them are taken: what they are called, the sentences under
+/// their choices, the previews that turn the notes field on and the flag that
+/// says how many choices each takes are in the payload and nowhere else, and a
+/// pane narrow enough to elide the tab strip does not even say how many there
+/// are.
+///
+/// A question with no words is not one anybody can be asked, so it is left
+/// out rather than written down empty.
+fn asked(input: &Value) -> Vec<Ask> {
+    let Some(questions) = input["questions"].as_array() else {
+        return Vec::new();
+    };
+    questions
+        .iter()
+        .filter_map(|question| {
+            Some(Ask {
+                header: question["header"].as_str().map(str::to_string),
+                text: question["question"].as_str()?.to_string(),
+                options: choices(&question["options"]),
+                multi: question["multiSelect"] == true,
+                answer: None,
+            })
         })
-        .unwrap_or_default();
-    Some((text, options))
+        .collect()
+}
+
+/// The choices under one question. A choice is its label: the sentence beside
+/// it explains it to whoever is reading, but the label is what an answer names
+/// and what comes back when it is chosen.
+fn choices(options: &Value) -> Vec<Choice> {
+    let Some(options) = options.as_array() else {
+        return Vec::new();
+    };
+    options
+        .iter()
+        .filter_map(|option| {
+            Some(Choice {
+                label: option["label"].as_str()?.to_string(),
+                description: option["description"].as_str().map(str::to_string),
+                preview: option["preview"].as_str().map(str::to_string),
+            })
+        })
+        .collect()
 }
 
 /// The answer at the end of a transcript, if the turn has ended.
@@ -840,11 +864,141 @@ mod tests {
     }
 
     #[test]
+    fn hook_a_call_that_asks_several_questions_reaches_the_record_whole() {
+        // The payload measured against 2.1.240 on 2026-08-24 and recorded in
+        // docs/question-shapes.md: three questions in one call, drawn as tabs,
+        // with multiSelect per question rather than per call. Only the first
+        // is on the screen; the rest are one keystroke behind it, and the
+        // payload is the only place they are ever written down.
+        let (state, _, notice) = fold(json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "AskUserQuestion",
+            "tool_input": {
+                "questions": [
+                    {
+                        "question": "Which runtime should the service target?",
+                        "header": "Runtime",
+                        "options": [
+                            { "label": "Node", "description": "Widest library support" },
+                            { "label": "Deno", "description": "Batteries included" }
+                        ],
+                        "multiSelect": false
+                    },
+                    {
+                        "question": "Which store should hold sessions?",
+                        "header": "Storage",
+                        "options": [
+                            { "label": "Redis", "description": "Fast, volatile" },
+                            { "label": "Postgres", "description": "Durable, already deployed" }
+                        ],
+                        "multiSelect": false
+                    },
+                    {
+                        "question": "Which rollout steps should run?",
+                        "header": "Rollout",
+                        "options": [
+                            { "label": "Canary", "description": "Five percent first" },
+                            { "label": "Migrate", "description": "Run the schema change" },
+                            { "label": "Announce", "description": "Post to the channel" }
+                        ],
+                        "multiSelect": true
+                    }
+                ]
+            }
+        }));
+
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(state.kind, Some(Kind::Question));
+        assert!(notice.is_some(), "no notification follows this one");
+
+        // The question on the screen, where every reader looks for it.
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Which runtime should the service target?")
+        );
+        assert_eq!(state.options, ["Node", "Deno"]);
+
+        // And the two behind it, with what no screen carries.
+        assert_eq!(state.asking.len(), 3);
+        assert_eq!(state.asking[1].header.as_deref(), Some("Storage"));
+        assert_eq!(state.asking[1].text, "Which store should hold sessions?");
+        assert_eq!(state.asking[1].labels(), ["Redis", "Postgres"]);
+        assert_eq!(
+            state.asking[0].options[0].description.as_deref(),
+            Some("Widest library support")
+        );
+        assert!(!state.asking[0].multi);
+        assert!(state.asking[2].multi, "the flag is per question");
+        assert!(state.asking.iter().all(|ask| ask.answer.is_none()));
+        assert!(!state.multi(), "and the one showing takes one choice");
+    }
+
+    #[test]
+    fn hook_a_question_that_takes_more_than_one_choice_says_so() {
+        // Nothing else does. The screen draws `[ ]` boxes and a Submit row,
+        // and a reader that took the labels off it would come back with
+        // `[ ] Logging` for a label and no way to tell the shape apart from a
+        // plain menu at the moment the record is written.
+        let (state, _, _) = fold(json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "AskUserQuestion",
+            "tool_input": {
+                "questions": [{
+                    "question": "Which features should be enabled?",
+                    "header": "Features",
+                    "options": [
+                        { "label": "Logging", "description": "Write a log file" },
+                        { "label": "Metrics", "description": "Export counters" }
+                    ],
+                    "multiSelect": true
+                }]
+            }
+        }));
+        assert!(state.multi());
+        assert_eq!(state.options, ["Logging", "Metrics"]);
+        assert!(!state.asking[0].takes_notes(), "and it offers no note");
+    }
+
+    #[test]
+    fn hook_a_choices_preview_is_what_puts_a_notes_field_on_a_question() {
+        // Measured against 2.1.240: `preview` on any choice is what draws the
+        // notes field, and `n` on a menu without one does nothing at all. The
+        // previewed screen also drops the free-text row and the number on
+        // `Chat about this`, so nothing on the pane tells the two apart.
+        let (state, _, _) = fold(json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "AskUserQuestion",
+            "tool_input": {
+                "questions": [{
+                    "question": "Which header layout should the page use?",
+                    "header": "Layout",
+                    "options": [
+                        {
+                            "label": "Stacked",
+                            "description": "Title over subtitle",
+                            "preview": "+----------+\n| TITLE    |\n+----------+"
+                        },
+                        { "label": "Inline", "description": "Title beside subtitle" }
+                    ],
+                    "multiSelect": false
+                }]
+            }
+        }));
+        assert!(state.asking[0].takes_notes());
+        assert_eq!(
+            state.asking[0].options[0].preview.as_deref(),
+            Some("+----------+\n| TITLE    |\n+----------+")
+        );
+        assert_eq!(state.asking[0].options[1].preview, None);
+    }
+
+    #[test]
     fn hook_a_question_amx_cannot_read_is_still_a_question_of_that_kind() {
         // A menu amx cannot quote is still a menu somebody has to answer.
         for input in [
             json!({ "questions": [] }),
             json!({ "questions": "malformed" }),
+            json!({ "questions": [{ "header": "Fixture", "options": [] }] }),
             json!({}),
         ] {
             let (state, _, _) = fold(json!({
@@ -855,6 +1009,7 @@ mod tests {
             assert_eq!(state.state, Phase::Waiting, "{}", state.state);
             assert_eq!(state.kind, Some(Kind::Question));
             assert_eq!(state.question, None);
+            assert!(state.asking.is_empty(), "{input}");
         }
     }
 
