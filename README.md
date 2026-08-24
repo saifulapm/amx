@@ -297,6 +297,42 @@ over. The copy's log opens with a `fork` line naming the agent it came from and
 the conversation it took, before the vendor has said anything at all:
 `amx events <id> --json` is where to read it.
 
+## A claude that was already there
+
+Not every agent is one amx started. `adopt` writes the record a claude you
+started yourself has been missing, so it joins the list beside the rest:
+
+```sh
+amx adopt                                   # the claude this is typed inside
+amx adopt --task "port the importer"        # and what the row should say
+amx adopt --name importer --task "port it"  # a name you chose
+```
+
+It is typed inside the claude being adopted — ask the agent to run it, or run it
+yourself in its shell mode — and that is what says which pane and which
+conversation are meant. Two variables carry it, and both describe the claude
+that ran the command and no other: tmux's own `$TMUX_PANE`, and
+`$CLAUDE_CODE_SESSION_ID`, which claude puts in the environment of every command
+it starts. Without them there is nothing to adopt and amx says so rather than
+guessing at which claude on the machine was meant.
+
+Nothing is started and nothing is sent. The agent goes on with whatever it was
+in the middle of, amx prints the new id the way `new` does, and the row is there
+the moment the command returns with what the pane was showing already on it — a
+question and its choices, if that is where the agent is standing.
+
+That session id is what keeps it working afterwards. amx cannot put its own
+`AMX_ID` in a pane it did not open, so this agent's hook events arrive with
+nothing on them saying whose they are, and amx finds the record by the session
+the vendor stamps on every one of them instead.
+
+What amx did not do for this agent it does not claim. There is no worktree, no
+branch and no commit to measure against, so `amx diff` has nothing to show and
+`amx stop` takes the pane and nothing else — the pane that claude is sitting in,
+so stopping an adopted agent is what ends it. amx holds no command it was
+launched with either, so `resume` and `fork` have nothing to start again: it was
+started by hand, and can be again.
+
 ## Ending one
 
 ```sh

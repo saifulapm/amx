@@ -37,6 +37,7 @@ impl Cli {
             Diff { .. } => "diff",
             Resume { .. } => "resume",
             Fork { .. } => "fork",
+            Adopt(_) => "adopt",
             Events { .. } => "events",
             Statusline => "statusline",
             Doctor { .. } => "doctor",
@@ -157,6 +158,22 @@ pub enum Command {
         task: Option<String>,
     },
 
+    /// Put the claude already running in this pane on the wall.
+    ///
+    /// For the agent you started yourself, in your own tmux, and then wanted
+    /// beside the ones amx started: it gets a record, an id and a row, and
+    /// every verb that reads or answers an agent works on it from then on.
+    ///
+    /// It is typed *inside* the claude being adopted, which is what tells amx
+    /// which pane and which conversation are meant — ask the agent to run it,
+    /// or run it yourself in its shell mode. Nothing is started, nothing is
+    /// sent, and the agent goes on with whatever it was doing.
+    ///
+    /// amx cut no worktree for it and holds no command it was launched with,
+    /// so `stop` takes its pane and nothing else, and there is nothing for
+    /// `resume` or `fork` to start again.
+    Adopt(AdoptArgs),
+
     /// Print the agents' event streams, merged.
     Events {
         /// Agents to read; every agent when none are named.
@@ -242,6 +259,20 @@ pub struct NewArgs {
     /// Arguments passed to the agent command verbatim.
     #[arg(last = true, value_name = "AGENT_ARGS")]
     pub vendor_args: Vec<String>,
+}
+
+#[derive(Debug, Args, Default)]
+pub struct AdoptArgs {
+    /// What the agent is working on, for the row to say. Without one the row
+    /// is named after the directory the pane is in.
+    ///
+    /// It is a label and nothing else: adopting sends the agent nothing.
+    #[arg(long, value_name = "TEXT", value_parser = a_task)]
+    pub task: Option<String>,
+
+    /// Name the agent instead of deriving a name from the task.
+    #[arg(long)]
+    pub name: Option<String>,
 }
 
 /// Which vendor a spawn runs, and where its dials are pointed.
@@ -426,6 +457,8 @@ mod tests {
             (&["amx", "resume", "--all"], "resume"),
             (&["amx", "fork", "fix-a1b"], "fork"),
             (&["amx", "fork", "fix-a1b", "try it with sqlite"], "fork"),
+            (&["amx", "adopt"], "adopt"),
+            (&["amx", "adopt", "--task", "port the importer"], "adopt"),
             (&["amx", "events"], "events"),
             (&["amx", "events", "fix-a1b", "--follow"], "events"),
             (&["amx", "events", "--json"], "events"),
@@ -618,6 +651,39 @@ mod tests {
             panic!("expected fork");
         };
         assert_eq!(task.as_deref(), Some("try it with sqlite"));
+    }
+
+    #[test]
+    fn adopt_takes_a_label_for_the_row_and_nothing_about_where_to_look() {
+        // Which pane and which conversation come from the environment of the
+        // claude that ran it, so there is nothing to type: what is left is
+        // what the row should say.
+        let cli = parse(&["amx", "adopt"]).unwrap();
+        let Some(Command::Adopt(args)) = cli.command else {
+            panic!("expected adopt");
+        };
+        assert_eq!(args.task, None);
+        assert_eq!(args.name, None);
+
+        let cli = parse(&[
+            "amx",
+            "adopt",
+            "--task",
+            "port the importer",
+            "--name",
+            "importer",
+        ])
+        .unwrap();
+        let Some(Command::Adopt(args)) = cli.command else {
+            panic!("expected adopt");
+        };
+        assert_eq!(args.task.as_deref(), Some("port the importer"));
+        assert_eq!(args.name.as_deref(), Some("importer"));
+
+        // A label with nothing in it is not a label, and a pane is not
+        // something this takes.
+        assert_eq!(code(&["amx", "adopt", "--task", "  "]), exit::USAGE);
+        assert_eq!(code(&["amx", "adopt", "%7"]), exit::USAGE);
     }
 
     #[test]

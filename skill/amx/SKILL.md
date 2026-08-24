@@ -31,6 +31,11 @@ Three more are for a person rather than a script: `amx attach <id>` hands the
 terminal to the agent's pane, `amx resume <id>` starts a stopped agent again on
 the conversation it had, and `amx doctor` says what the machine is missing.
 
+One is about you rather than about an agent. `amx adopt`, run in a tmux pane,
+registers the claude that ran it — you — as an agent of amx's, so the user sees
+this session on their wall beside the ones amx started. Run it when they ask for
+that and never on your own. It starts nothing and sends nothing.
+
 ## Exit codes are the interface
 
 | Code | Means | Do |

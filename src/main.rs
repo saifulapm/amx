@@ -73,6 +73,7 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Resume { id, all }) => {
             finish(verbs::resume::from_env(config, id.as_deref(), *all))
         }
+        Some(cli::Command::Adopt(args)) => finish(verbs::adopt::from_env(args)),
         Some(cli::Command::Fork { id, task }) => {
             finish(verbs::fork::from_env(config, id, task.as_deref()))
         }
