@@ -278,34 +278,16 @@ pub struct Reading {
     pub doing: Option<String>,
 }
 
-/// The sentences the vendor sends about a dialog it will not describe.
+/// Whether a question on the record says nothing about what is being asked:
+/// one of the sentences the vendor sends in place of one, or no words at all.
 ///
-/// Measured against claude 2.1.240 on 2026-08-24, read out of the binary's own
-/// dialog host: six seconds after a dialog goes up it fires a
-/// `permission_prompt` notification whose whole message is that dialog's
-/// title, and the title it gives every tool dialog is `Claude needs your
-/// permission` — no tool, no command, nothing anybody could weigh. A tool
-/// permission box has a notifier of its own on the same six-second timer, and
-/// that one sends `Claude needs your permission to use <tool>`. Which of the
-/// two lands last is the vendor's business, so what is recognised here is a
-/// whole sentence and never the start of one: the sentence that names the tool
-/// is one a caller can act on.
-///
-/// The idle nudge is the other, and it is not about a question at all: the
-/// vendor sends it about a session with nothing open on it. One that says so
-/// in its own payload is turned away where hooks are folded, but an older
-/// vendor sends it with no type on it, and records outlive the amx that wrote
-/// them.
-const PLACEHOLDERS: [&str; 2] = [
-    "Claude needs your permission",
-    "Claude is waiting for your input",
-];
-
-/// Whether a question on the record is one of those, or has no words in it at
-/// all. Either way there is nothing in it about what is being asked.
+/// Which sentences those are is the vendor's own wording, so they are written
+/// down where the rest of its screens are — see the `placeholders` key of
+/// `assets/screen-rules.toml`. An empty question is nobody's wording and is
+/// recognised here.
 fn placeholder(question: &str) -> bool {
     let question = question.trim();
-    question.is_empty() || PLACEHOLDERS.contains(&question)
+    question.is_empty() || crate::rules::bundled().placeholder(question)
 }
 
 /// Forget a question that says nothing about what is being asked.

@@ -42,6 +42,32 @@
 # written here — src/vendor/claude.rs points at this file, and the program an
 # agent command runs is what finds that entry. One document per vendor.
 
+# ── The sentences that stand in for a question ───────────────────────────────
+# What the vendor sends about a dialog it will not describe. A record can end
+# up holding one of these where the question should be, and a row carrying one
+# says an agent is waiting — which is what a row carrying nothing says, and it
+# says it in words that read like an answer, so a caller stops looking and a
+# person reads the pane themselves. A reader drops them and goes to the screen.
+#
+# Measured against claude 2.1.240 on 2026-08-24, read out of the binary's own
+# dialog host: six seconds after a dialog goes up it fires a
+# `permission_prompt` notification whose whole message is that dialog's title,
+# and the title it gives every tool dialog is `Claude needs your permission` —
+# no tool, no command, nothing anybody could weigh. A tool permission box has a
+# notifier of its own on the same six-second timer, and that one sends `Claude
+# needs your permission to use <tool>`. Which of the two lands last is the
+# vendor's business, so these are matched as WHOLE SENTENCES and never as the
+# start of one: the sentence that names the tool is one a caller can act on.
+#
+# The idle nudge is the other, and it is not about a question at all: the
+# vendor sends it about a session with nothing open on it. One that says so in
+# its own payload is turned away where hooks are folded, but an older vendor
+# sends it with no type on it, and records outlive the amx that wrote them.
+placeholders = [
+  "Claude needs your permission",
+  "Claude is waiting for your input",
+]
+
 # ── The furniture ────────────────────────────────────────────────────────────
 # The chrome claude draws under every pane it has the room for, as the anchors
 # that find it: composer box, statusline, mode footer, and the line it spins

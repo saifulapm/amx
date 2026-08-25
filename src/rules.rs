@@ -46,6 +46,8 @@ pub const SETTLED_LOOKS: usize = 30;
 pub struct Ruleset {
     #[serde(default)]
     furniture: Furniture,
+    #[serde(default)]
+    placeholders: Vec<String>,
     #[serde(default, rename = "rule")]
     rules: Vec<Rule>,
 }
@@ -190,6 +192,17 @@ impl Ruleset {
     /// surface printing one cuts off it — see [`crate::furniture`].
     pub fn furniture(&self) -> &Furniture {
         &self.furniture
+    }
+
+    /// Whether this is one of the sentences the vendor sends in place of a
+    /// question — a message about a dialog that says nothing about what the
+    /// dialog is asking.
+    ///
+    /// A whole sentence and never the start of one. The vendor sends a longer
+    /// one naming the tool it is about, and that one is something a caller can
+    /// act on; which of the two lands last is the vendor's business.
+    pub fn placeholder(&self, sentence: &str) -> bool {
+        self.placeholders.iter().any(|said| said == sentence)
     }
 
     /// Ask the screen what it is.
@@ -934,6 +947,32 @@ $
         for agent in ["claude", "claude --add-dir ..", "my-claude", ""] {
             assert_eq!(named(of(agent)), named(bundled()), "{agent:?}");
         }
+    }
+
+    #[test]
+    fn rules_a_sentence_that_stands_in_for_a_question_is_the_vendors_own() {
+        // The vendor sends these about a dialog it will not describe, and a
+        // reader that took one for an answer would leave somebody reading the
+        // pane themselves. Which sentences they are is the vendor's own
+        // wording and nobody else's.
+        let claude = bundled();
+        assert!(claude.placeholder("Claude needs your permission"));
+        assert!(
+            !claude.placeholder("Claude needs your permission to use Bash"),
+            "a whole sentence and never the start of one: the one that names \
+             the tool is something a caller can act on"
+        );
+
+        let second = Ruleset::parse(SECOND.screens.unwrap()).unwrap();
+        assert!(second.placeholder("it wants something"));
+        assert!(
+            !second.placeholder("Claude needs your permission"),
+            "another vendor's sentence is not this vendor's"
+        );
+        assert!(
+            !unmeasured().placeholder("it wants something"),
+            "a vendor nobody has measured has none of these either"
+        );
     }
 
     #[test]
