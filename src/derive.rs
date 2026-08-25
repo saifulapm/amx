@@ -171,7 +171,7 @@ impl View {
     /// kind is what decides what may be sent back, and a permission box's one
     /// key at a menu is how a caller answers a question nobody chose.
     pub fn kind(&self) -> Option<crate::store::Kind> {
-        match asked_kind(self.verdict.rule.as_deref()) {
+        match asked_kind(crate::rules::bundled(), self.verdict.rule.as_deref()) {
             seen @ Some(crate::store::Kind::Question) => seen,
             seen => self.state.kind.or(seen),
         }
@@ -241,30 +241,17 @@ impl View {
 
 /// What kind of thing the screen a rule claimed is asking for.
 ///
-/// The rules say which screen is on the pane; this says what that screen wants
-/// back, which is the part anything answering an agent needs. It is by name
-/// because the screens are told apart by name everywhere else in amx, and a
-/// name amx does not know asks for nothing it can describe.
+/// The rules say which screen is on the pane; the same rule says what that
+/// screen wants back, which is the part anything answering an agent needs. By
+/// name, because the name is all a verdict carries — the rule that spoke is
+/// looked up again in the document it came out of, and a name that document
+/// has never heard of asks for nothing amx can describe.
 ///
-/// The folder-trust screen is here and nowhere else: it stands in front of the
-/// session that every hook comes from, so no hook can ever report it, and the
-/// pane is the only place it is ever seen.
-///
-/// `ask_menu` is the one entry a reader lets stand in front of the record —
-/// see [`View::kind`] for why that screen and no other.
-fn asked_kind(rule: Option<&str>) -> Option<crate::store::Kind> {
-    use crate::store::Kind;
-
-    match rule? {
-        "permission_prompt" => Some(Kind::Permission),
-        // An approval, answered yes or no about something the agent is about
-        // to do. That the vendor draws it as a menu does not make it a
-        // question with an answer of your own.
-        "plan_approval" => Some(Kind::Permission),
-        "ask_menu" => Some(Kind::Question),
-        "folder_trust" => Some(Kind::Trust),
-        _ => None,
-    }
+/// The vendor's own menu is the one screen a reader lets stand in front of the
+/// record — see [`View::kind`] for why that one and no other.
+fn asked_kind(screens: &Ruleset, rule: Option<&str>) -> Option<crate::store::Kind> {
+    let name = rule?;
+    screens.rules().iter().find(|rule| rule.name == name)?.kind
 }
 
 fn source_name(source: Source) -> &'static str {
@@ -1688,24 +1675,57 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
         // Every rule that stops an agent stops it on something somebody has to
         // answer, and what may be sent back depends on which. A blocking rule
-        // added without a kind here would leave a caller guessing again.
-        for rule in rules::bundled().rules() {
-            let kind = asked_kind(Some(&rule.name));
-            assert_eq!(
-                kind.is_some(),
-                rule.state == Phase::Waiting,
-                "{} claims a {} screen",
-                rule.name,
-                rule.state
-            );
+        // added without a kind would leave a caller guessing again — in any
+        // document, because the law is about screens that block and not about
+        // whose they are.
+        let second = second_vendors_screens();
+        for screens in [rules::bundled(), &second] {
+            for rule in screens.rules() {
+                let kind = asked_kind(screens, Some(&rule.name));
+                assert_eq!(
+                    kind.is_some(),
+                    rule.state == Phase::Waiting,
+                    "{} claims a {} screen",
+                    rule.name,
+                    rule.state
+                );
+            }
         }
-        assert_eq!(asked_kind(Some("folder_trust")), Some(Kind::Trust));
-        assert_eq!(asked_kind(Some("ask_menu")), Some(Kind::Question));
-        assert_eq!(asked_kind(None), None);
+
+        let claude = rules::bundled();
+        assert_eq!(asked_kind(claude, Some("folder_trust")), Some(Kind::Trust));
+        assert_eq!(asked_kind(claude, Some("ask_menu")), Some(Kind::Question));
+        assert_eq!(asked_kind(claude, None), None);
         assert_eq!(
-            asked_kind(Some("a rule from a ruleset amx has not met")),
+            asked_kind(claude, Some("a rule from a ruleset amx has not met")),
             None
         );
+    }
+
+    #[test]
+    fn reader_takes_what_a_screen_wants_back_from_the_document_that_named_it() {
+        use crate::store::Kind;
+
+        // The rules say which screen is on the pane and the same rule says
+        // what that screen wants back. Written in Rust as a match on rule
+        // names, this read every other vendor's document with claude's names
+        // in hand: its own screens would each have answered nothing at all.
+        let second = second_vendors_screens();
+        assert_eq!(asked_kind(&second, Some("choice")), Some(Kind::Question));
+        assert_eq!(
+            asked_kind(&second, Some("permission_prompt")),
+            None,
+            "that screen is not on this vendor's pane"
+        );
+    }
+
+    /// The screens of the vendor amx keeps to prove that none of this is
+    /// claude's shape.
+    fn second_vendors_screens() -> Ruleset {
+        let screens = crate::vendor::second::SECOND
+            .screens
+            .expect("the second vendor draws screens of its own");
+        Ruleset::parse(screens).expect("and they parse")
     }
 
     #[test]

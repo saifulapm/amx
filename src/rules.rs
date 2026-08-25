@@ -78,6 +78,11 @@ pub struct Rule {
     /// do not keep it where a screen usually does.
     #[serde(default)]
     pub asks: Asks,
+    /// What this screen wants back, which is what decides what may be sent to
+    /// it. Every screen that blocks has one; a screen that is a state rather
+    /// than a question wants nothing and says so by leaving this out.
+    #[serde(default)]
+    pub kind: Option<crate::store::Kind>,
 }
 
 /// What the screen had to say.
@@ -975,6 +980,39 @@ $
                         needle,
                         &needle.to_lowercase(),
                         "{vendor}'s {}: {needle:?} must be written folded",
+                        rule.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rules_no_screen_is_named_in_rust_to_decide_anything() {
+        // A match arm on a rule name reads one vendor's document with
+        // another's names in hand, and the second vendor's screens are called
+        // something else entirely: every arm would miss them without a word.
+        // What a screen wants — where its question is, what it asks for — is
+        // written beside the rule, and the name a verdict carries is only ever
+        // looked up in the document it came out of.
+        let ships = |source: &str| {
+            source
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap_or(source)
+                .to_string()
+        };
+        let reading = [
+            ships(include_str!("rules.rs")),
+            ships(include_str!("derive.rs")),
+        ];
+
+        for (vendor, screens) in documents() {
+            for rule in screens.rules() {
+                for source in &reading {
+                    assert!(
+                        !source.contains(&format!("\"{}\"", rule.name)),
+                        "{vendor}'s {} is spelled out in Rust",
                         rule.name
                     );
                 }

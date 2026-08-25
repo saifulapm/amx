@@ -37,11 +37,10 @@
 # WIDTHS, with the capture and the date recorded beside it, or it is wrong.
 
 # ── Whose screens these are ──────────────────────────────────────────────────
-# Every string below is this vendor's own and means nothing on anybody else's
-# pane, so the document a reader uses is the one naming the program the agent
-# command runs. amx ships one of these per vendor; a command it ships none for
-# is read with the first, which is the vendor amx was written against.
-vendor = "claude"
+# claude's, and nobody else's: every string below is this vendor's own and
+# means nothing on anybody else's pane. Which document a reader uses is not
+# written here — src/vendor/claude.rs points at this file, and the program an
+# agent command runs is what finds that entry. One document per vendor.
 
 # claude asks this before its prompt exists, so nothing else it draws can be
 # underneath — which is why it comes first.
@@ -79,6 +78,7 @@ vendor = "claude"
 [[rule]]
 name = "folder_trust"
 state = "waiting"
+kind = "trust"
 all = ["trust"]
 any = ["❯ 1.", "enter to confirm"]
 within = 16
@@ -168,6 +168,7 @@ asks = { sentence = "trust" }
 [[rule]]
 name = "permission_prompt"
 state = "waiting"
+kind = "permission"
 all = ["do you want to"]
 any = ["❯ 1.", "esc to cancel"]
 within = 16
@@ -275,6 +276,7 @@ asks = { sentence = "do you want to" }
 [[rule]]
 name = "ask_menu"
 state = "waiting"
+kind = "question"
 all = ["enter to select"]
 any = ["❯ 1.", "esc to cancel"]
 within = 24
@@ -315,6 +317,7 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 [[rule]]
 name = "plan_approval"
 state = "waiting"
+kind = "permission"
 all = ["ready", "execute"]
 any = ["❯ 1."]
 within = 16

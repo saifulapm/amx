@@ -78,6 +78,7 @@ bottom = 1
 [[rule]]
 name = "choice"
 state = "waiting"
+kind = "question"
 all = ["pick one"]
 any = ["1. "]
 within = 4
