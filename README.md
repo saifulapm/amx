@@ -418,7 +418,9 @@ conversation are meant. Two variables carry it, and both describe the claude
 that ran the command and no other: tmux's own `$TMUX_PANE`, and
 `$CLAUDE_CODE_SESSION_ID`, which claude puts in the environment of every command
 it starts. Without them there is nothing to adopt and amx says so rather than
-guessing at which claude on the machine was meant.
+guessing at which claude on the machine was meant. A claude outside tmux
+cannot be adopted at all: adopt needs it to be running inside a tmux pane,
+because a pane is the only thing amx can watch and type at.
 
 Nothing is started and nothing is sent. The agent goes on with whatever it was
 in the middle of, amx prints the new id the way `new` does, and the row is there

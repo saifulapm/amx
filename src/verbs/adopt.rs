@@ -188,8 +188,9 @@ fn seed(state: &mut State, rules: &Ruleset, screen: &str) {
 fn this_pane(env: &BTreeMap<String, String>) -> Result<PaneId> {
     let Some(pane) = env.get(PANE_ENV).filter(|pane| !pane.is_empty()) else {
         bail!(
-            "no ${PANE_ENV} here, so this is not a tmux pane. \
-             `amx adopt` is run inside the claude it adopts"
+            "no ${PANE_ENV} here: `amx adopt` needs the claude to be running \
+             inside a tmux pane, because a pane is the only thing amx can \
+             watch and type at"
         );
     };
     PaneId::new(pane.clone()).with_context(|| format!("${PANE_ENV} holds {pane:?}"))
@@ -494,6 +495,14 @@ mod tests {
             adopt(root.path(), &pane, &outside, &AdoptArgs::default()).unwrap_err()
         );
         assert!(said.contains(PANE_ENV), "{said}");
+        assert!(
+            said.contains("inside a tmux pane"),
+            "the refusal names the limitation rather than the variable alone: {said}"
+        );
+        assert!(
+            said.contains("watch"),
+            "and why: a pane is the only thing amx can watch and type at: {said}"
+        );
 
         let shell = BTreeMap::from([(PANE_ENV.to_string(), pane.pane.to_string())]);
         let said = format!(
