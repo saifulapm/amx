@@ -4,12 +4,13 @@
 //! `attach` hands the terminal over and keeps it until you leave. This is a
 //! look, and it reads the best account there is:
 //!
-//! * **The conversation**, where the vendor keeps one. The record holds the
-//!   transcript's path from the session's own announcement, and its tail is
-//!   the agent's recent history whole — every prompt, answer and tool call —
-//!   where a pane could only ever hold one screen of it. A full-screen vendor
-//!   scrolls nothing into tmux's history, so the pane is a keyhole and the
-//!   transcript is the room.
+//! * **The conversation**, where the vendor keeps one — which is a question
+//!   for the table, and asked there before a path off a record is opened. The
+//!   record holds the transcript's path from the session's own announcement,
+//!   and its tail is the agent's recent history whole — every prompt, answer
+//!   and tool call — where a pane could only ever hold one screen of it. A
+//!   full-screen vendor scrolls nothing into tmux's history, so the pane is a
+//!   keyhole and the transcript is the room.
 //! * **The screen**, when there is no conversation to read: a command row, an
 //!   agent adopted mid-session, a vendor whose hooks never announced a
 //!   transcript. The picture comes with the vendor's own furniture — composer,
@@ -17,7 +18,8 @@
 //!   takes, because none of it is the agent's work.
 //! * **The recorded answer**, once the pane is gone and the record is what is
 //!   left. Whether an agent is still running is not something a caller should
-//!   have to know before it can ask.
+//!   have to know before it can ask. An agent that left not even that gets a
+//!   line naming what was missing, the vendor's own gap included.
 //!
 //! `amx result` is still the one that hands back a turn's answer alone,
 //! verbatim, and blocks for it. This is the other question: what has been
@@ -29,8 +31,9 @@ use std::path::Path;
 
 use crate::store::Agent;
 use crate::tmux::{PaneId, Server};
+use crate::vendor::{Capability, Vendor};
 use crate::verbs::send;
-use crate::{complain, exit, furniture, paths, tmux, warn};
+use crate::{complain, exit, furniture, paths, spawn, tmux, warn};
 
 /// How much of the pane a reading shows when nobody says otherwise. A screenful
 /// and then some: enough to see what led to what is on the screen now, and
@@ -57,11 +60,21 @@ pub fn run(
     let meta = agent.meta()?;
     let server = Server::from_socket(meta.socket.clone());
 
+    // Which vendor this agent runs, out of what it was started with. An agent
+    // amx never started has no recorded command, and a command amx has no
+    // entry for is one amx has measured nothing about: both come back as no
+    // vendor, and neither is a reason to hold a reading back.
+    let started = spawn::read_handoff(agent.dir()).ok();
+    let vendor = started.as_ref().and_then(spawn::vendor_of);
+    let said = keeps_a_conversation(vendor)
+        .then(|| meta.transcript.as_deref().and_then(conversation))
+        .flatten();
+
     // Whether there is a screen to read is a question for the pane list and not
     // for the record: the phase says what amx was last told, and this verb is
     // asking what has been going on over there right now.
     match server.pane_alive(&meta.pane) {
-        true => match meta.transcript.as_deref().and_then(conversation) {
+        true => match said {
             Some(said) => {
                 let tail = last_lines(&said, lines as usize);
                 send::line(&send::rendered(&tail, to_terminal), out)?;
@@ -69,8 +82,19 @@ pub fn run(
             }
             None => screen(&server, &meta.pane, id, lines, out),
         },
-        false => recorded(&agent, id, to_terminal, out),
+        false => recorded(&agent, id, vendor, to_terminal, out),
     }
+}
+
+/// Whether this vendor keeps the conversation in a file amx can read back.
+///
+/// A transcript's path reaches a record on a hook payload, so a vendor that
+/// keeps none never puts one there — and asking the table first is what keeps
+/// a reading from opening a path that was never going to be a conversation,
+/// whatever a record carries. A command amx has no entry for is measured
+/// neither way, and its record is taken at its word.
+fn keeps_a_conversation(vendor: Option<&Vendor>) -> bool {
+    vendor.is_none_or(|vendor| vendor.can(Capability::Transcript))
 }
 
 /// The agent's recent conversation, read from the transcript the vendor keeps.
@@ -171,13 +195,33 @@ fn screen(
 /// The answer on the record, which is the agent's own words rather than a
 /// picture of them, so it goes out the way `result` sends it: verbatim down a
 /// pipe, inert on a terminal.
-fn recorded(agent: &Agent, id: &str, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
+fn recorded(
+    agent: &Agent,
+    id: &str,
+    vendor: Option<&Vendor>,
+    to_terminal: bool,
+    out: &mut impl Write,
+) -> Result<i32> {
     let Some(answer) = agent.state()?.result else {
-        complain!("amx: {id} has no pane any more, and amx captured no answer from it");
+        complain!("{}", nothing_left(id, vendor));
         return Ok(exit::FAILURE);
     };
     send::line(&send::rendered(&answer, to_terminal), out)?;
     Ok(exit::OK)
+}
+
+/// The line for an agent with a pane that has gone and nothing on its record.
+///
+/// Every account this verb has is exhausted here, so the line says which were
+/// missing rather than only the last of them. A vendor that keeps no
+/// conversation is named, because the transcript is the account somebody would
+/// otherwise go looking for by hand.
+fn nothing_left(id: &str, vendor: Option<&Vendor>) -> String {
+    let gap = match vendor.filter(|vendor| !vendor.can(Capability::Transcript)) {
+        Some(vendor) => format!(", {} keeps no conversation to read back", vendor.name),
+        None => String::new(),
+    };
+    format!("amx: {id} has no pane any more{gap}, and amx captured no answer from it")
 }
 
 /// Ask tmux for the pane's recent output.
@@ -224,6 +268,7 @@ mod tests {
     use super::*;
     use crate::store::{Meta, Phase, now};
     use crate::tmux::{Socket, Spawn};
+    use crate::vendor::second::SECOND;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
@@ -518,6 +563,41 @@ mod tests {
         let (code, said) = printed(root.path(), "fix-login-a1b", LINES);
         assert_eq!(code, exit::FAILURE);
         assert!(said.is_empty(), "{said:?}");
+    }
+
+    #[test]
+    fn logs_look_for_a_conversation_only_where_the_vendor_keeps_one() {
+        // The transcript's path arrives on a hook payload, so a vendor that
+        // keeps none never puts one on a record. Asking the table first is
+        // what keeps `amx logs` from looking for a file that was never going
+        // to be there, whatever a record says.
+        assert!(keeps_a_conversation(crate::registry::entry("claude")));
+        assert!(!keeps_a_conversation(Some(&SECOND)));
+        assert!(
+            keeps_a_conversation(None),
+            "a command amx has no entry for is one amx has measured nothing \
+             about, and nothing measured is not a measurement"
+        );
+    }
+
+    #[test]
+    fn logs_of_an_agent_that_left_nothing_behind_name_the_gap() {
+        // Three ways there is nothing to print, and the reading says which.
+        // A vendor that keeps no conversation is the one somebody would
+        // otherwise go looking for the transcript of.
+        let said = nothing_left("fix-login-a1b", Some(&SECOND));
+        assert!(said.contains("fix-login-a1b"), "{said}");
+        assert!(said.contains(SECOND.name), "{said}");
+        assert!(said.contains("no conversation"), "{said}");
+
+        for measured in [crate::registry::entry("claude"), None] {
+            let said = nothing_left("fix-login-a1b", measured);
+            assert!(said.contains("no pane"), "{said}");
+            assert!(
+                !said.contains("no conversation"),
+                "a vendor that keeps one has nothing to answer for here: {said}"
+            );
+        }
     }
 
     #[test]
