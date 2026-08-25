@@ -2,10 +2,11 @@
 #
 # When the hooks have gone quiet, a reader looks at the bottom of the pane and
 # matches it against these rules. This file is the whole of what amx knows how
-# to see: claude's three blocking prompts, the line it spins while a turn runs,
-# and the furniture it leaves under an idle prompt. It is deliberately small. A
-# screen no rule claims is reported as `unknown` rather than guessed at — a
-# missing rule costs a row that says "I can't tell", a sloppy one costs a lie.
+# to see on a claude pane: its four blocking prompts, the line it spins while a
+# turn runs, the furniture it leaves under an idle prompt, and the sentences it
+# sends about a dialog it will not describe. It is deliberately small. A screen
+# no rule claims is reported as `unknown` rather than guessed at — a missing
+# rule costs a row that says "I can't tell", a sloppy one costs a lie.
 #
 # Rules are ORDERED: the first whose conditions hold decides, so the more
 # specific screens come first. A rule holds when every string in `all` appears
@@ -36,6 +37,75 @@
 # So: any string recognising the vendor's UI is measured across its MODES and
 # WIDTHS, with the capture and the date recorded beside it, or it is wrong.
 
+# ── Whose screens these are ──────────────────────────────────────────────────
+# claude's, and nobody else's: every string below is this vendor's own and
+# means nothing on anybody else's pane. Which document a reader uses is not
+# written here — src/vendor/claude.rs points at this file, and the program an
+# agent command runs is what finds that entry. One document per vendor.
+
+# ── The sentences that stand in for a question ───────────────────────────────
+# What the vendor sends about a dialog it will not describe. A record can end
+# up holding one of these where the question should be, and a row carrying one
+# says an agent is waiting — which is what a row carrying nothing says, and it
+# says it in words that read like an answer, so a caller stops looking and a
+# person reads the pane themselves. A reader drops them and goes to the screen.
+#
+# Measured against claude 2.1.240 on 2026-08-24, read out of the binary's own
+# dialog host: six seconds after a dialog goes up it fires a
+# `permission_prompt` notification whose whole message is that dialog's title,
+# and the title it gives every tool dialog is `Claude needs your permission` —
+# no tool, no command, nothing anybody could weigh. A tool permission box has a
+# notifier of its own on the same six-second timer, and that one sends `Claude
+# needs your permission to use <tool>`. Which of the two lands last is the
+# vendor's business, so these are matched as WHOLE SENTENCES and never as the
+# start of one: the sentence that names the tool is one a caller can act on.
+#
+# The idle nudge is the other, and it is not about a question at all: the
+# vendor sends it about a session with nothing open on it. One that says so in
+# its own payload is turned away where hooks are folded, but an older vendor
+# sends it with no type on it, and records outlive the amx that wrote them.
+placeholders = [
+  "Claude needs your permission",
+  "Claude is waiting for your input",
+]
+
+# ── The furniture ────────────────────────────────────────────────────────────
+# The chrome claude draws under every pane it has the room for, as the anchors
+# that find it: composer box, statusline, mode footer, and the line it spins
+# while a turn runs. `src/furniture.rs` walks up from the bottom of a capture
+# over these, so that a card and `amx logs` show the rows an agent earned and
+# not the rows the vendor drew under them.
+#
+# `mode` is the footer's opening glyphs and nothing after them: the words
+# truncate as the pane narrows and are gone by 30 columns, while these two are
+# present in all six permission modes at every width from 24 to 220 — the same
+# measurement the rules below anchor on, and it is written out under
+# `permission_prompt`.
+#
+# `spinner` is the two punctuation fragments the turn spinner always carries,
+# the ellipsis before its elapsed time and the separator after it, both on the
+# one row. Punctuation rather than any word, so the vendor renaming its gerunds
+# does not move the anchor, and neither fragment is on the line it leaves
+# behind when the turn is over — see the `spinner` rule below for the samples.
+#
+# `rule` is the glyph the composer's box is drawn with. `statusline` is how
+# many rows of it the walk will step over to reach that box's bottom border: a
+# margin over the one row measured, not a measured maximum, and the cap is what
+# keeps the walk off the transcript. `bottom` is how many rows the bottom
+# border can take — one at 22 columns and wider, which is every pane 2.1.237
+# draws a footer in at all, and two below that, where the box is wider than the
+# pane and wraps.
+#
+# Measured against a live claude 2.1.237 on 2026-08-21 at 100, 30, 24, 23, 22,
+# 21 and 20 columns and at pane heights 30, 12, 10, 9 and 8, with the composer
+# empty and with three and ten rows staged in it.
+[furniture]
+mode = ["⏵⏵", "⏸"]
+spinner = ["… (", "s · "]
+rule = "─"
+statusline = 2
+bottom = 2
+
 # claude asks this before its prompt exists, so nothing else it draws can be
 # underneath — which is why it comes first.
 #
@@ -63,13 +133,21 @@
 # be in the same box rather than merely on the same screen: 16 rows is the
 # widest one measured, the trust screen at 54 columns, where eleven rows of
 # wrapped guidance sit between the word and the marker.
+#
+# `asks` is where the question itself is, once the rule has claimed the screen.
+# Under this one's question sit a sentence about what claude will be able to do
+# and a link to the security guide, and neither of those is being asked, so the
+# question is the sentence the rule's own anchor is on and not the one above
+# the choices.
 [[rule]]
 name = "folder_trust"
 state = "waiting"
+kind = "trust"
 all = ["trust"]
 any = ["❯ 1.", "enter to confirm"]
 within = 16
 not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
+asks = { sentence = "trust" }
 
 # claude's permission box, measured live against v2.1.226 on 2026-08-12 at 220
 # columns. It takes forcing: a machine whose claude runs in auto mode approves
@@ -147,13 +225,19 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 # hold at the three widths re-checked — intact at 46 columns, `(shift+tab to`
 # at 40, gone by 30. Bypass-permissions and don't-ask were not re-driven this
 # round; nothing about this vendor bump touched the footer's wording.
+#
+# `asks` again: what sits above this screen's question is what the request is
+# about — the tool, its arguments, the rule that stopped it — and that is not
+# what is being asked, so the question is the row the anchor is on.
 [[rule]]
 name = "permission_prompt"
 state = "waiting"
+kind = "permission"
 all = ["do you want to"]
 any = ["❯ 1.", "esc to cancel"]
 within = 16
 not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
+asks = { sentence = "do you want to" }
 
 # The third blocking prompt: the menu claude's AskUserQuestion tool draws.
 # Measured against v2.1.229 on 2026-08-15 in five modes at eight widths from 24
@@ -256,6 +340,7 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 [[rule]]
 name = "ask_menu"
 state = "waiting"
+kind = "question"
 all = ["enter to select"]
 any = ["❯ 1.", "esc to cancel"]
 within = 24
@@ -296,6 +381,7 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 [[rule]]
 name = "plan_approval"
 state = "waiting"
+kind = "permission"
 all = ["ready", "execute"]
 any = ["❯ 1."]
 within = 16

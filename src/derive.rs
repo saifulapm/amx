@@ -160,18 +160,22 @@ impl View {
     /// picture of it, so the screen fills what the hooks left empty and
     /// corrects nothing.
     ///
-    /// The vendor's own menu is the exception, and it earns it twice over.
-    /// `ask_menu` anchors on `Enter to select`, which no other screen this
-    /// vendor draws carries, so a rule that claimed it is not a guess about
-    /// what is on the pane — it is the one screen amx can name with certainty.
-    /// And a rule only gets to speak once the hooks have gone quiet, which is
-    /// to say once the record is old news: an amx written before the vendor was
-    /// found asking itself for permission to draw a menu wrote `permission`
-    /// over every menu it saw, and records outlive the amx that wrote them. A
-    /// kind is what decides what may be sent back, and a permission box's one
-    /// key at a menu is how a caller answers a question nobody chose.
+    /// The vendor's own menu is the exception, and it earns it twice over. It
+    /// is the one screen amx can name with certainty — claude's anchors on
+    /// `Enter to select`, which no other screen it draws carries — so a rule
+    /// claiming it is not a guess about what is on the pane. And a rule only
+    /// gets to speak once the hooks have gone quiet, which is to say once the
+    /// record is old news: an amx written before the vendor was found asking
+    /// itself for permission to draw a menu wrote `permission` over every menu
+    /// it saw, and records outlive the amx that wrote them. A kind is what
+    /// decides what may be sent back, and a permission box's one key at a menu
+    /// is how a caller answers a question nobody chose.
+    ///
+    /// The exception is the kind rather than the screen, which is what lets it
+    /// hold for whichever vendor is being read: the name on the verdict is
+    /// looked up in the document that named it.
     pub fn kind(&self) -> Option<crate::store::Kind> {
-        match asked_kind(self.verdict.rule.as_deref()) {
+        match asked_kind(crate::rules::bundled(), self.verdict.rule.as_deref()) {
             seen @ Some(crate::store::Kind::Question) => seen,
             seen => self.state.kind.or(seen),
         }
@@ -241,30 +245,17 @@ impl View {
 
 /// What kind of thing the screen a rule claimed is asking for.
 ///
-/// The rules say which screen is on the pane; this says what that screen wants
-/// back, which is the part anything answering an agent needs. It is by name
-/// because the screens are told apart by name everywhere else in amx, and a
-/// name amx does not know asks for nothing it can describe.
+/// The rules say which screen is on the pane; the same rule says what that
+/// screen wants back, which is the part anything answering an agent needs. By
+/// name, because the name is all a verdict carries — the rule that spoke is
+/// looked up again in the document it came out of, and a name that document
+/// has never heard of asks for nothing amx can describe.
 ///
-/// The folder-trust screen is here and nowhere else: it stands in front of the
-/// session that every hook comes from, so no hook can ever report it, and the
-/// pane is the only place it is ever seen.
-///
-/// `ask_menu` is the one entry a reader lets stand in front of the record —
-/// see [`View::kind`] for why that screen and no other.
-fn asked_kind(rule: Option<&str>) -> Option<crate::store::Kind> {
-    use crate::store::Kind;
-
-    match rule? {
-        "permission_prompt" => Some(Kind::Permission),
-        // An approval, answered yes or no about something the agent is about
-        // to do. That the vendor draws it as a menu does not make it a
-        // question with an answer of your own.
-        "plan_approval" => Some(Kind::Permission),
-        "ask_menu" => Some(Kind::Question),
-        "folder_trust" => Some(Kind::Trust),
-        _ => None,
-    }
+/// The vendor's own menu is the one screen a reader lets stand in front of the
+/// record — see [`View::kind`] for why that one and no other.
+fn asked_kind(screens: &Ruleset, rule: Option<&str>) -> Option<crate::store::Kind> {
+    let name = rule?;
+    screens.rules().iter().find(|rule| rule.name == name)?.kind
 }
 
 fn source_name(source: Source) -> &'static str {
@@ -291,34 +282,16 @@ pub struct Reading {
     pub doing: Option<String>,
 }
 
-/// The sentences the vendor sends about a dialog it will not describe.
+/// Whether a question on the record says nothing about what is being asked:
+/// one of the sentences the vendor sends in place of one, or no words at all.
 ///
-/// Measured against claude 2.1.240 on 2026-08-24, read out of the binary's own
-/// dialog host: six seconds after a dialog goes up it fires a
-/// `permission_prompt` notification whose whole message is that dialog's
-/// title, and the title it gives every tool dialog is `Claude needs your
-/// permission` — no tool, no command, nothing anybody could weigh. A tool
-/// permission box has a notifier of its own on the same six-second timer, and
-/// that one sends `Claude needs your permission to use <tool>`. Which of the
-/// two lands last is the vendor's business, so what is recognised here is a
-/// whole sentence and never the start of one: the sentence that names the tool
-/// is one a caller can act on.
-///
-/// The idle nudge is the other, and it is not about a question at all: the
-/// vendor sends it about a session with nothing open on it. One that says so
-/// in its own payload is turned away where hooks are folded, but an older
-/// vendor sends it with no type on it, and records outlive the amx that wrote
-/// them.
-const PLACEHOLDERS: [&str; 2] = [
-    "Claude needs your permission",
-    "Claude is waiting for your input",
-];
-
-/// Whether a question on the record is one of those, or has no words in it at
-/// all. Either way there is nothing in it about what is being asked.
+/// Which sentences those are is the vendor's own wording, so they are written
+/// down where the rest of its screens are — see the `placeholders` key of
+/// `assets/screen-rules.toml`. An empty question is nobody's wording and is
+/// recognised here.
 fn placeholder(question: &str) -> bool {
     let question = question.trim();
-    question.is_empty() || PLACEHOLDERS.contains(&question)
+    question.is_empty() || crate::rules::bundled().placeholder(question)
 }
 
 /// Forget a question that says nothing about what is being asked.
@@ -347,23 +320,22 @@ fn forget_the_placeholder(state: &mut State) {
 ///   ✽ Nesting… (15s · still thinking with xhigh effort)
 ///   · Infusing… (2m 2s · ↓ 6.9k tokens)
 ///
-/// The row is found by what the spinner rule anchors on
-/// (`assets/screen-rules.toml`): the ellipsis before the parenthesis and the
-/// elapsed seconds before the `·`, both on the one row, because a row carrying
-/// half of it is not the line the rule was measured against. The lowest such
+/// The row is found by the fragments the vendor's own document says its
+/// spinner always carries, all of them on the one row, because a row carrying
+/// half of it is not the line those were measured against. The lowest such
 /// row, and only inside the floor the rules themselves read, so an agent's own
 /// output further up the transcript is not mistaken for the vendor's chrome.
 ///
 /// Read but not recorded. A line that says an agent has been at something for
 /// 22 seconds is true for a second, and a record carrying it would have every
 /// later reader repeat it as news.
-fn doing(capture: &str) -> Option<String> {
+fn doing(screens: &Ruleset, capture: &str) -> Option<String> {
     let rows: Vec<&str> = capture.lines().collect();
     let floor = rows.len().saturating_sub(crate::rules::FLOOR_LINES);
     let line = rows[floor..]
         .iter()
         .rev()
-        .find(|row| row.contains("… (") && row.contains("s · "))?;
+        .find(|row| screens.furniture().spinning(row))?;
     Some(unglyphed(line))
 }
 
@@ -573,7 +545,7 @@ pub fn read(
             // vendor's spinner line on it, and that line is fresher than
             // anything the record can say about the same turn.
             doing: (rule.state == Phase::Working)
-                .then(|| doing(&screen))
+                .then(|| doing(rules, &screen))
                 .flatten(),
         },
         // A rule claims the screen but may not end a turn that is on the
@@ -1402,6 +1374,29 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     }
 
     #[test]
+    fn reader_finds_the_spinning_line_by_the_vendors_own_fragments() {
+        // Two punctuation fragments are what claude's line always carries, and
+        // they are claude's: another vendor spins a line of its own, on which
+        // they never appear. Both are read off the document that says so.
+        let second = second_vendors_screens();
+        let its_own = " thinking for 12s about the file you named\n = compose =\n";
+        assert_eq!(
+            doing(&second, its_own).as_deref(),
+            Some("thinking for 12s about the file you named")
+        );
+        assert_eq!(
+            doing(rules::bundled(), its_own),
+            None,
+            "claude spins nothing that reads like that"
+        );
+        assert_eq!(
+            doing(&second, A_WORKING_SCREEN),
+            None,
+            "and its fragments are on no screen claude draws"
+        );
+    }
+
+    #[test]
     fn reader_says_what_an_agent_is_doing_only_where_it_read_it() {
         // Fresh hooks, so no screen is captured at all and the record's own
         // account of the turn stands.
@@ -1688,24 +1683,57 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
         // Every rule that stops an agent stops it on something somebody has to
         // answer, and what may be sent back depends on which. A blocking rule
-        // added without a kind here would leave a caller guessing again.
-        for rule in rules::bundled().rules() {
-            let kind = asked_kind(Some(&rule.name));
-            assert_eq!(
-                kind.is_some(),
-                rule.state == Phase::Waiting,
-                "{} claims a {} screen",
-                rule.name,
-                rule.state
-            );
+        // added without a kind would leave a caller guessing again — in any
+        // document, because the law is about screens that block and not about
+        // whose they are.
+        let second = second_vendors_screens();
+        for screens in [rules::bundled(), &second] {
+            for rule in screens.rules() {
+                let kind = asked_kind(screens, Some(&rule.name));
+                assert_eq!(
+                    kind.is_some(),
+                    rule.state == Phase::Waiting,
+                    "{} claims a {} screen",
+                    rule.name,
+                    rule.state
+                );
+            }
         }
-        assert_eq!(asked_kind(Some("folder_trust")), Some(Kind::Trust));
-        assert_eq!(asked_kind(Some("ask_menu")), Some(Kind::Question));
-        assert_eq!(asked_kind(None), None);
+
+        let claude = rules::bundled();
+        assert_eq!(asked_kind(claude, Some("folder_trust")), Some(Kind::Trust));
+        assert_eq!(asked_kind(claude, Some("ask_menu")), Some(Kind::Question));
+        assert_eq!(asked_kind(claude, None), None);
         assert_eq!(
-            asked_kind(Some("a rule from a ruleset amx has not met")),
+            asked_kind(claude, Some("a rule from a ruleset amx has not met")),
             None
         );
+    }
+
+    #[test]
+    fn reader_takes_what_a_screen_wants_back_from_the_document_that_named_it() {
+        use crate::store::Kind;
+
+        // The rules say which screen is on the pane and the same rule says
+        // what that screen wants back. Written in Rust as a match on rule
+        // names, this read every other vendor's document with claude's names
+        // in hand: its own screens would each have answered nothing at all.
+        let second = second_vendors_screens();
+        assert_eq!(asked_kind(&second, Some("choice")), Some(Kind::Question));
+        assert_eq!(
+            asked_kind(&second, Some("permission_prompt")),
+            None,
+            "that screen is not on this vendor's pane"
+        );
+    }
+
+    /// The screens of the vendor amx keeps to prove that none of this is
+    /// claude's shape.
+    fn second_vendors_screens() -> Ruleset {
+        let screens = crate::vendor::second::SECOND
+            .screens
+            .expect("the second vendor draws screens of its own");
+        Ruleset::parse(screens).expect("and they parse")
     }
 
     #[test]

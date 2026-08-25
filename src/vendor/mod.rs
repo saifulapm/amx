@@ -156,6 +156,16 @@ pub struct Vendor {
     /// [`Capability::Hooks`] says and the reason both are here: the capability
     /// is what a verb asks, and this is what `install` and `hook` read.
     pub hooks: Option<Hooks>,
+    /// What this vendor's screens look like, as the document that says what
+    /// each of them means — its rules, the chrome it draws under them, and the
+    /// sentences it sends about a dialog it will not describe. `crate::rules`
+    /// reads it; the whole of what belongs here is which document is this
+    /// vendor's.
+    ///
+    /// `None` from a vendor nobody has sat in front of yet, and then its pane
+    /// is watched and never named. Screens are measured against a running
+    /// program, and a document written from anywhere else is a transcription.
+    pub screens: Option<&'static str>,
 }
 
 /// Something amx can do only where the vendor takes part.
@@ -544,6 +554,26 @@ mod tests {
             assert!(
                 vendor.not_inherited.contains(&session),
                 "{} hands {session} to the agents it spawns",
+                vendor.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_vendor_that_declares_screens_declares_ones_that_parse() {
+        // The document is read once, at the first look at a pane, and a
+        // document that will not parse takes the binary with it there. Here
+        // instead, where the vendor is being read anyway.
+        for vendor in known() {
+            let Some(screens) = vendor.screens else {
+                continue;
+            };
+            let screens = crate::rules::Ruleset::parse(screens)
+                .unwrap_or_else(|e| panic!("{}'s screens: {e:#}", vendor.name));
+            assert!(
+                !screens.rules().is_empty(),
+                "{} declares a document with no screen in it, which is the \
+                 same as declaring none",
                 vendor.name
             );
         }

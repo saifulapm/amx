@@ -45,4 +45,58 @@ pub const SECOND: Vendor = Vendor {
     // what it is doing, which is the shape install has to leave alone and the
     // reason the capability above is asked before either is touched.
     hooks: None,
+    // Screens of its own, drawn out of nothing claude draws: see [`SCREENS`].
+    screens: Some(SCREENS),
 };
+
+/// The second vendor's screens.
+///
+/// A document rather than a file, because nothing ships it: it exists so that
+/// a reader passing over both documents is reading the machinery and not
+/// claude. Every string in it disagrees with the first document — a different
+/// footer, a different rule glyph, a different spinner, choices with no cursor
+/// glyph in front of them, and a question the vendor writes above its options
+/// instead of on the anchor row.
+///
+/// The pane it describes:
+///
+/// ```text
+///   It did the thing.
+///
+///  = compose =
+///  >
+///  ===========
+///   model: small
+///   mode: careful
+/// ```
+pub const SCREENS: &str = r#"
+placeholders = ["it wants something"]
+
+[furniture]
+mode = ["mode:"]
+spinner = ["thinking for "]
+rule = "="
+statusline = 1
+bottom = 1
+
+[[rule]]
+name = "choice"
+state = "waiting"
+kind = "question"
+all = ["pick one"]
+any = ["1. "]
+within = 4
+not_below = ["mode:"]
+asks = { sentence = "pick one" }
+
+[[rule]]
+name = "busy"
+state = "working"
+all = ["thinking for "]
+
+[[rule]]
+name = "prompt"
+state = "idle"
+quiescent = true
+any = ["mode:"]
+"#;

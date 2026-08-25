@@ -3,18 +3,27 @@
 //! Hooks are precise and win while they flow. When they stop — the vendor was
 //! interrupted with Escape, or nothing has happened for a while — the pane
 //! itself is the only witness left, and this is what amx knows how to see in
-//! it: the rules in `assets/screen-rules.toml`, matched against the bottom of
-//! the capture.
+//! it: the rules in the vendor's own screens document — claude's is
+//! `assets/screen-rules.toml` — matched against the bottom of the capture.
 //!
 //! The ruleset is small on purpose. A screen no rule claims is `unknown`, and
 //! `unknown` with its age shown is a better answer than a confident wrong one:
 //! naming a screen also clears any question off the row, so a wrong match can
 //! delete a question a person is being asked.
+//!
+//! One document per vendor, and the vendor's own entry in the table is what
+//! points at it. Every string in a document is that vendor's own — the words
+//! in its widgets, the glyphs it draws its chrome with, the sentences it sends
+//! about a dialog it will not describe — so which document is read follows
+//! from the program an agent command runs, and no vendor's screen is spelled
+//! out in Rust here.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::sync::OnceLock;
 
+use crate::furniture::Furniture;
+use crate::registry;
 use crate::store::{Phase, Question};
 
 /// How many rows up from the bottom of the capture a rule may see. The
@@ -31,10 +40,15 @@ pub const FLOOR_LINES: usize = 24;
 /// before the Stop hook arrived; this is three times that.
 pub const SETTLED_LOOKS: usize = 30;
 
-/// The rules, in the order they are asked.
+/// Everything amx knows how to read on one vendor's screens: the rules, in
+/// the order they are asked, and the chrome underneath them.
 #[derive(Debug, Deserialize)]
 pub struct Ruleset {
-    #[serde(rename = "rule")]
+    #[serde(default)]
+    furniture: Furniture,
+    #[serde(default)]
+    placeholders: Vec<String>,
+    #[serde(default, rename = "rule")]
     rules: Vec<Rule>,
 }
 
@@ -65,6 +79,15 @@ pub struct Rule {
     /// a running turn.
     #[serde(default)]
     pub quiescent: bool,
+    /// Where this screen keeps the question it is asking, for the screens that
+    /// do not keep it where a screen usually does.
+    #[serde(default)]
+    pub asks: Asks,
+    /// What this screen wants back, which is what decides what may be sent to
+    /// it. Every screen that blocks has one; a screen that is a state rather
+    /// than a question wants nothing and says so by leaving this out.
+    #[serde(default)]
+    pub kind: Option<crate::store::Kind>,
 }
 
 /// What the screen had to say.
@@ -97,13 +120,62 @@ impl Claim<'_> {
     }
 }
 
-/// The ruleset amx ships with.
-pub fn bundled() -> &'static Ruleset {
-    static BUNDLED: OnceLock<Ruleset> = OnceLock::new();
-    BUNDLED.get_or_init(|| {
-        Ruleset::parse(include_str!("../assets/screen-rules.toml"))
-            .expect("the bundled ruleset is part of the binary")
+/// Every registered vendor's screens, parsed once and kept by the name of the
+/// vendor that draws them.
+///
+/// A vendor that declares none is not in here at all, which is the difference
+/// between screens amx has measured and screens it has not.
+fn parsed() -> &'static [(&'static str, Ruleset)] {
+    static PARSED: OnceLock<Vec<(&'static str, Ruleset)>> = OnceLock::new();
+    PARSED.get_or_init(|| {
+        registry::entries()
+            .iter()
+            .filter_map(|vendor| {
+                let screens = Ruleset::parse(vendor.screens?)
+                    .expect("a vendor's screens are part of the binary");
+                Some((vendor.name, screens))
+            })
+            .collect()
     })
+}
+
+/// The screens amx reads on the pane of an agent running `agent`.
+///
+/// The vendor that command runs, and for a command amx has no entry for the
+/// vendor it runs by default. An unregistered command is not another vendor:
+/// it is a command line somebody wrote, routinely a wrapper around the vendor
+/// amx was written against. Every anchor in that vendor's document is its own,
+/// so a pane it was not drawn for is claimed by nothing rather than claimed
+/// wrongly, and a wrapper keeps the reading it has always had.
+///
+/// A vendor whose screens nobody has measured reads nothing whatsoever, which
+/// is the floor an entry stands on before anybody has sat in front of it: a
+/// pane to watch, and no claim about what is in it.
+pub fn of(agent: &str) -> &'static Ruleset {
+    let vendor = registry::entry(agent).or_else(|| registry::entries().first());
+    select(parsed(), vendor.map_or("", |vendor| vendor.name)).unwrap_or_else(unmeasured)
+}
+
+/// The screens amx reads when nothing has said which vendor's pane it is
+/// looking at, which is every reader there is today: a record says which pane
+/// an agent is in, not what is running in it. [`of`] is the door for anything
+/// that does know.
+pub fn bundled() -> &'static Ruleset {
+    of(registry::entries().first().map_or("", |vendor| vendor.name))
+}
+
+/// The screens `vendor` draws, out of the ones amx has parsed.
+fn select<'a>(parsed: &'a [(&'static str, Ruleset)], vendor: &str) -> Option<&'a Ruleset> {
+    parsed
+        .iter()
+        .find(|(name, _)| *name == vendor)
+        .map(|(_, screens)| screens)
+}
+
+/// The screens of a vendor amx has measured none of: no rule, so no claim.
+fn unmeasured() -> &'static Ruleset {
+    static NOTHING: OnceLock<Ruleset> = OnceLock::new();
+    NOTHING.get_or_init(|| Ruleset::parse("").expect("no rules at all is a ruleset"))
 }
 
 impl Ruleset {
@@ -113,6 +185,24 @@ impl Ruleset {
 
     pub fn rules(&self) -> &[Rule] {
         &self.rules
+    }
+
+    /// The chrome this vendor draws under every pane it has the room for, as
+    /// the anchors that find it. The rules read a screen; this is what a
+    /// surface printing one cuts off it — see [`crate::furniture`].
+    pub fn furniture(&self) -> &Furniture {
+        &self.furniture
+    }
+
+    /// Whether this is one of the sentences the vendor sends in place of a
+    /// question — a message about a dialog that says nothing about what the
+    /// dialog is asking.
+    ///
+    /// A whole sentence and never the start of one. The vendor sends a longer
+    /// one naming the tool it is about, and that one is something a caller can
+    /// act on; which of the two lands last is the vendor's business.
+    pub fn placeholder(&self, sentence: &str) -> bool {
+        self.placeholders.iter().any(|said| said == sentence)
     }
 
     /// Ask the screen what it is.
@@ -200,7 +290,7 @@ impl Rule {
 
         let screen = Screen::new(capture);
         let choices = screen.first_option();
-        let (from, to) = match self.asks() {
+        let (from, to) = match &self.asks {
             Asks::Sentence(anchor) => screen.sentence_at(screen.row_above(choices, anchor)?),
             Asks::AboveOptions => screen.sentence_above(choices?)?,
         };
@@ -210,29 +300,6 @@ impl Rule {
             options: screen.options_below(to),
             text,
         })
-    }
-
-    /// Where this screen keeps the question it is asking.
-    ///
-    /// By name, because the blocking screens do not all keep it in the same
-    /// place and no one reading finds it on every one of them. Both of these
-    /// were chosen against the captures in this file's tests, at each of the
-    /// widths those were measured at.
-    fn asks(&self) -> Asks {
-        match self.name.as_str() {
-            // The question is the row the rule's own anchor is on. What is
-            // above it is what the request is about — the tool, its arguments,
-            // the rule that stopped it — and that is not what is being asked.
-            "permission_prompt" => Asks::Sentence("do you want to"),
-            // The same, and for the same reason: under this screen's question
-            // sit a sentence about what claude will be able to do and a link
-            // to the security guide, and neither is the question.
-            "folder_trust" => Asks::Sentence("trust"),
-            // Every other blocking screen puts the question straight above the
-            // choices with a blank row between, which is also where a screen
-            // amx has not met yet is likeliest to put it.
-            _ => Asks::AboveOptions,
-        }
     }
 
     /// Whether this rule may speak, given what amx already believes.
@@ -254,13 +321,24 @@ impl Rule {
 }
 
 /// Where on a claimed screen its question is written.
-enum Asks {
+///
+/// The blocking screens do not all keep it in the same place and no one
+/// reading finds it on every one of them, so each rule says which of these its
+/// own screen wants. `asks = { sentence = "do you want to" }` in the document,
+/// or nothing at all for the usual place.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Asks {
+    /// The sentence that ends just above the first choice, which is where a
+    /// screen amx has not met yet is likeliest to keep it — so it is what a
+    /// rule saying nothing gets.
+    #[default]
+    AboveOptions,
     /// The sentence the lowest row carrying this string belongs to, wrap and
     /// all. For the screens that draw something under their question that is
-    /// not part of it.
-    Sentence(&'static str),
-    /// The sentence that ends just above the first choice.
-    AboveOptions,
+    /// not part of it: the tool a request is about, a sentence about what the
+    /// vendor will be able to do, a link to a guide.
+    Sentence(String),
 }
 
 /// The part of a capture a rule is allowed to look at: the bottom rows, twice
@@ -407,6 +485,8 @@ fn wrapped(row: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vendor::claude;
+    use crate::vendor::second::SECOND;
 
     // ── Screens measured off a live claude ───────────────────────────────────
     // Every capture below came off a running vendor, at the version, date and
@@ -796,6 +876,17 @@ cancel
   ⏵⏵ auto mode on (shift+tab to      ·
 ";
 
+    /// The second vendor stopped on a question, drawn the way its own
+    /// document describes: its anchor on the row the question opens with, and
+    /// choices numbered with no cursor glyph in front of them.
+    const A_SECOND_VENDOR_ASKING: &str = "\
+ pick one and I will carry on
+ about the file you named
+ 1. keep it
+ 2. drop it
+ answer with a number
+";
+
     /// Nothing this ruleset knows: an ordinary shell, which is what a pane
     /// shows when the vendor has exited.
     const A_SHELL: &str = "\
@@ -806,6 +897,104 @@ $
 
     fn claim<'a>(rules: &'a Ruleset, screen: &str, recorded: Phase) -> Claim<'a> {
         rules.claim(screen, recorded, SETTLED_LOOKS)
+    }
+
+    /// The two documents these tests weigh against each other: the one amx
+    /// ships and the second vendor's, which shares no string with it. A law
+    /// that holds for both is a law about the machinery.
+    fn documents() -> Vec<(&'static str, Ruleset)> {
+        [claude::VENDOR, SECOND]
+            .iter()
+            .map(|vendor| {
+                let screens = vendor.screens.expect("both of these have screens");
+                (vendor.name, Ruleset::parse(screens).expect(vendor.name))
+            })
+            .collect()
+    }
+
+    /// The names of the rules in a document, which is what says which document
+    /// it is.
+    fn named(screens: &Ruleset) -> Vec<&str> {
+        screens
+            .rules()
+            .iter()
+            .map(|rule| rule.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn rules_the_screens_read_are_the_ones_the_vendor_draws() {
+        let documents = documents();
+        assert_eq!(
+            named(select(&documents, "second").expect("the second vendor's screens")),
+            ["choice", "busy", "prompt"]
+        );
+        assert_eq!(
+            select(&documents, "claude").map(named),
+            Some(named(bundled()))
+        );
+        assert!(
+            select(&documents, "nobody").is_none(),
+            "a vendor nobody has measured has no screens to read"
+        );
+    }
+
+    #[test]
+    fn rules_an_agent_command_is_read_as_the_vendor_it_runs() {
+        // `agent` is a command line rather than a program name, and a command
+        // amx has no entry for is a wrapper around one it has: both are read
+        // with the screens of the vendor that ends up drawing them.
+        for agent in ["claude", "claude --add-dir ..", "my-claude", ""] {
+            assert_eq!(named(of(agent)), named(bundled()), "{agent:?}");
+        }
+
+        // And what a command with no entry falls back to is the vendor amx
+        // would run if nobody had configured one, which is the first in the
+        // table. Two ways of saying the default, and they have to agree.
+        assert_eq!(
+            registry::program(&crate::config::Config::default().agent),
+            registry::entries().first().map_or("", |vendor| vendor.name)
+        );
+    }
+
+    #[test]
+    fn rules_a_sentence_that_stands_in_for_a_question_is_the_vendors_own() {
+        // The vendor sends these about a dialog it will not describe, and a
+        // reader that took one for an answer would leave somebody reading the
+        // pane themselves. Which sentences they are is the vendor's own
+        // wording and nobody else's.
+        let claude = bundled();
+        assert!(claude.placeholder("Claude needs your permission"));
+        assert!(
+            !claude.placeholder("Claude needs your permission to use Bash"),
+            "a whole sentence and never the start of one: the one that names \
+             the tool is something a caller can act on"
+        );
+
+        let second = Ruleset::parse(SECOND.screens.unwrap()).unwrap();
+        assert!(second.placeholder("it wants something"));
+        assert!(
+            !second.placeholder("Claude needs your permission"),
+            "another vendor's sentence is not this vendor's"
+        );
+        assert!(
+            !unmeasured().placeholder("it wants something"),
+            "a vendor nobody has measured has none of these either"
+        );
+    }
+
+    #[test]
+    fn rules_a_vendor_nobody_has_measured_claims_nothing() {
+        // The floor an entry stands on before anybody has sat in front of it.
+        // Claiming nothing is what `unknown` is made of, and it is the right
+        // answer about a screen amx has never seen.
+        let none = unmeasured();
+        assert!(none.rules().is_empty());
+        assert_eq!(
+            none.claim(PERMISSION_BOX, Phase::Working, 1),
+            Claim::Unclaimed
+        );
+        assert_eq!(none.asking(PERMISSION_BOX), None);
     }
 
     #[test]
@@ -829,15 +1018,61 @@ $
     #[test]
     fn rules_every_anchor_is_folded_the_way_the_screen_is() {
         // Matching folds the capture's case; an anchor with a capital in it
-        // could never match, and would fail silently.
-        for rule in bundled().rules() {
-            for needle in rule.all.iter().chain(&rule.any).chain(&rule.not_below) {
-                assert_eq!(
-                    needle,
-                    &needle.to_lowercase(),
-                    "{}: {needle:?} must be written folded",
-                    rule.name
-                );
+        // could never match, and would fail silently. True of every document,
+        // because it is the matching that folds and not the vendor.
+        for (vendor, screens) in documents() {
+            for rule in screens.rules() {
+                let asks = match &rule.asks {
+                    Asks::Sentence(anchor) => Some(anchor),
+                    Asks::AboveOptions => None,
+                };
+                for needle in rule
+                    .all
+                    .iter()
+                    .chain(&rule.any)
+                    .chain(&rule.not_below)
+                    .chain(asks)
+                {
+                    assert_eq!(
+                        needle,
+                        &needle.to_lowercase(),
+                        "{vendor}'s {}: {needle:?} must be written folded",
+                        rule.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rules_no_screen_is_named_in_rust_to_decide_anything() {
+        // A match arm on a rule name reads one vendor's document with
+        // another's names in hand, and the second vendor's screens are called
+        // something else entirely: every arm would miss them without a word.
+        // What a screen wants — where its question is, what it asks for — is
+        // written beside the rule, and the name a verdict carries is only ever
+        // looked up in the document it came out of.
+        let ships = |source: &str| {
+            source
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap_or(source)
+                .to_string()
+        };
+        let reading = [
+            ships(include_str!("rules.rs")),
+            ships(include_str!("derive.rs")),
+        ];
+
+        for (vendor, screens) in documents() {
+            for rule in screens.rules() {
+                for source in &reading {
+                    assert!(
+                        !source.contains(&format!("\"{}\"", rule.name)),
+                        "{vendor}'s {} is spelled out in Rust",
+                        rule.name
+                    );
+                }
             }
         }
     }
@@ -906,6 +1141,54 @@ $
         };
         rule.question(screen)
             .expect("a screen that blocks says what it is blocking on")
+    }
+
+    #[test]
+    fn rules_where_a_screen_keeps_its_question_is_the_documents_to_say() {
+        // Two of claude's blocking screens draw something under their question
+        // that is not part of it, so on those the question is the sentence the
+        // rule's own anchor is on rather than the one above the choices. Which
+        // of the two a screen wants is a fact about that screen: written in
+        // Rust it would be one vendor's rule names deciding what is read off
+        // another's pane.
+        let asks = |name: &str| {
+            let rule = bundled().rules().iter().find(|rule| rule.name == name);
+            rule.map(|rule| rule.asks.clone())
+        };
+        assert_eq!(
+            asks("permission_prompt"),
+            Some(Asks::Sentence("do you want to".to_string()))
+        );
+        assert_eq!(
+            asks("folder_trust"),
+            Some(Asks::Sentence("trust".to_string()))
+        );
+        assert_eq!(
+            asks("ask_menu"),
+            Some(Asks::AboveOptions),
+            "a screen that says nothing keeps it above the choices"
+        );
+    }
+
+    #[test]
+    fn rules_a_second_vendors_question_is_read_where_its_own_document_says() {
+        // The same machinery over a document that shares no string with
+        // claude's: an anchor of its own, choices with no cursor glyph in
+        // front of them, and a sentence the vendor wrapped across two rows.
+        let screens = Ruleset::parse(SECOND.screens.unwrap()).unwrap();
+        let Claim::Ruled(rule) = screens.claim(A_SECOND_VENDOR_ASKING, Phase::Working, 1) else {
+            panic!("the second vendor's own rule claims its own screen");
+        };
+        assert_eq!(rule.name, "choice");
+
+        let asked = rule
+            .question(A_SECOND_VENDOR_ASKING)
+            .expect("a screen that blocks says what it is blocking on");
+        assert_eq!(
+            asked.text,
+            "pick one and I will carry on about the file you named"
+        );
+        assert_eq!(asked.options, ["keep it", "drop it"]);
     }
 
     #[test]
