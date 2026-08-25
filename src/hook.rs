@@ -383,16 +383,16 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         // Fired as the permission box goes up — six seconds before the
         // notification that repeats it, which was the whole of what said so
         // before this event was wired. The payload carries the tool and not
-        // the vendor's sentence, so the sentence is written here the way the
-        // vendor will write it, and a box with no tool named waits for a
-        // reader to quote the pane.
+        // the vendor's sentence, so the vendor is asked for the sentence it
+        // will write, and a box with no tool named waits for a reader to quote
+        // the pane.
         Moment::Asked => {
             state.state = Phase::Waiting;
             state.summary = None;
             state.asks(
                 payload["tool_name"]
                     .as_str()
-                    .map(|tool| format!("Claude needs your permission to use {}", rendered(tool))),
+                    .map(claude::permission_sentence),
             );
             state.kind = Some(Kind::Permission);
             Screen::Waiting
@@ -496,35 +496,6 @@ enum Screen {
     /// been on the pane before, and whatever the record was waiting on is
     /// behind it — answered, approved, or gone with the tool that ran.
     Fresh,
-}
-
-/// A tool's name the way the vendor writes it into the permission sentence,
-/// measured at 2.1.237: the last `__` segment — an MCP tool arrives as
-/// `mcp__<server>__<tool>` — with underscores as spaces and a letter raised
-/// wherever a word starts, which is after anything that is not a letter or a
-/// digit (the vendor's `\b\w`), not only after an underscore. That carries a
-/// kebab-case name past its dashes, leaves a built-in like `Bash` as it
-/// stands, and keeps a digit's word one word. The sentence written at
-/// `PermissionRequest` has to be the one the notification will repeat: it is
-/// what every reader quotes for the six seconds until the echo lands, and the
-/// echo writes the vendor's own words over it.
-fn rendered(tool: &str) -> String {
-    let mut boundary = true;
-    tool.rsplit("__")
-        .next()
-        .unwrap_or(tool)
-        .chars()
-        .map(|letter| {
-            let letter = if letter == '_' { ' ' } else { letter };
-            let raised = if boundary {
-                letter.to_ascii_uppercase()
-            } else {
-                letter
-            };
-            boundary = !letter.is_ascii_alphanumeric();
-            raised
-        })
-        .collect()
 }
 
 /// Every question a [`menu`] call is about to put on the pane.
@@ -1469,24 +1440,6 @@ mod tests {
             &mut meta,
         );
         assert_eq!(again, None, "one box, one interruption");
-    }
-
-    #[test]
-    fn hook_a_tools_name_is_raised_at_every_word_boundary() {
-        // The vendor raises a letter wherever a word starts — after anything
-        // that is not a letter or a digit — not only after an underscore.
-        // Raised the underscore way, a kebab-case name reads
-        // 'Resolve-library-id' against the pane's 'Resolve-Library-Id', and
-        // the record hands whoever is answering a sentence nothing drew.
-        assert_eq!(
-            rendered("mcp__context7__resolve-library-id"),
-            "Resolve-Library-Id"
-        );
-        assert_eq!(rendered("mcp__playwright__browser_click"), "Browser Click");
-        assert_eq!(rendered("mcp__acme__fs.read_file"), "Fs.Read File");
-        // A digit neither opens a word nor ends one: nothing raises after it.
-        assert_eq!(rendered("mcp__totp__get2fa-codes"), "Get2fa-Codes");
-        assert_eq!(rendered("Bash"), "Bash");
     }
 
     #[test]
