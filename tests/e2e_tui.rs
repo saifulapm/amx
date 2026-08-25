@@ -960,29 +960,26 @@ fn enter_shuts_the_group_its_headings_stand_over_and_opens_it_again() {
 }
 
 #[test]
-fn card_floats_over_the_list_with_the_question_and_the_pane() {
+fn card_floats_over_the_list_with_the_question_alone() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
     amx.until_state("ask-a1b", "waiting");
 
     let view = amx.in_a_terminal(&[], &[]);
-    amx.until("the row", || {
-        screen(&amx, &view).contains("ask-a1b").then_some(())
-    });
+    let carded = card_on(&amx, &view, "ask-a1b");
 
-    press(&amx, &view, "Space");
-    let carded = amx.until("the card", || {
-        let drawn = screen(&amx, &view);
-        drawn.contains("rm -rf build").then_some(drawn)
-    });
-
-    // The screen the agent is sitting on, and the question it is sitting on it
-    // for — which is on its row as well, so the card is the second of the two.
-    assert!(carded.contains("Do you want to proceed?"), "{carded}");
+    // The question the agent stopped on — which is on its row as well, so the
+    // card is the second of the two. The pane it stopped on is not under it:
+    // the prompt there is the same question behind an echo of the command,
+    // and every row of it is noise below the answer line.
     assert_eq!(
         carded.matches("Claude needs your permission").count(),
         2,
         "the row asks it and the card asks it again:\n{carded}"
+    );
+    assert!(
+        !carded.contains("rm -rf build") && !carded.contains("Do you want to proceed?"),
+        "the question block is the whole of the card:\n{carded}"
     );
 
     // A box, with the list it was opened from still drawn above it.
@@ -1008,7 +1005,10 @@ fn card_floats_over_the_list_with_the_question_and_the_pane() {
     // Esc puts it away and leaves the wall as it was.
     press(&amx, &view, "Escape");
     amx.until("the card to go", || {
-        (!screen(&amx, &view).contains("rm -rf build")).then_some(())
+        (!screen(&amx, &view)
+            .lines()
+            .any(|line| line.trim_start().starts_with('╭')))
+        .then_some(())
     });
 }
 
@@ -1120,39 +1120,6 @@ fn card_tail_keeps_the_paint_the_agent_drew_its_screen_in() {
         painted.contains("\u{1b}[1m"),
         "and so is the weight:\n{painted:?}"
     );
-}
-
-#[test]
-fn card_tail_leaves_a_prompt_whole_where_the_vendor_drew_no_footer() {
-    let amx = Harness::new();
-    let pane = a_pane_showing(
-        &amx,
-        &[
-            "─────────────────────────────────────────────",
-            " Bash command",
-            "   rm -rf build",
-            " Permission rule Bash requires confirmation.",
-            " Do you want to proceed?",
-            " ❯ 1. Yes",
-            "   2. No",
-        ],
-    );
-    amx.record("port-cli-b2c", &pane);
-
-    let view = amx.in_a_terminal(&[], &[]);
-    amx.until("the row", || {
-        screen(&amx, &view).contains("port-cli-b2c").then_some(())
-    });
-
-    press(&amx, &view, "Space");
-    let carded = amx.until("the card", || {
-        let drawn = screen(&amx, &view);
-        drawn.contains("rm -rf build").then_some(drawn)
-    });
-    // Every row of it, options included: a screen with a real prompt on it does
-    // not end in a footer, and cutting one that has none would take the answer
-    // the card was opened to give.
-    assert!(carded.contains("2. No"), "{carded}");
 }
 
 #[test]
@@ -1543,7 +1510,8 @@ fn card_answers_the_question_the_agent_stopped_on() {
     press(&amx, &view, "Space");
     amx.until("the card, with a line to answer on", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("rm -rf build") && drawn.contains('❯')).then_some(())
+        (drawn.matches("Claude needs your permission").count() == 2 && drawn.contains('❯'))
+            .then_some(())
     });
 
     // A key of the grammar that is nowhere on the agent's own screen, so what
@@ -2010,11 +1978,12 @@ fn card_over_a_live_menu_draws_the_question_once() {
         "with the free-text row named:\n{carded}"
     );
 
-    // And what the card spends its window on is what is nowhere else on the
-    // screen: what the agent said before it asked.
+    // And nothing of the pane at all, what the agent said before it asked
+    // included: the question block is the whole of the card, and the work is
+    // still on the pane for the enter that brings it forward.
     assert!(
-        carded.contains("i wired the logging up"),
-        "the work above the box is what the card has room for now:\n{carded}"
+        !carded.contains("i wired the logging up"),
+        "the card spends no window on the pane:\n{carded}"
     );
 }
 
@@ -2098,7 +2067,11 @@ fn card_refuses_words_at_a_prompt_that_reads_one_key() {
 
     press(&amx, &view, "Space");
     amx.until("the card", || {
-        screen(&amx, &view).contains("rm -rf build").then_some(())
+        (screen(&amx, &view)
+            .matches("Claude needs your permission")
+            .count()
+            == 2)
+            .then_some(())
     });
     types(&amx, &view, "neither, keep both");
     press(&amx, &view, "Enter");

@@ -945,14 +945,17 @@ fn requests(prs: &[Pr]) -> Vec<Span<'static>> {
 /// A screen is read from the bottom, where the newest of it is; a diff is read
 /// from the top, where the first file it touched is.
 ///
+/// A card holding a question has nothing under everything else at all. The
+/// question block — the tab strip, the question, the choices and the rows
+/// under them — is the whole of what that card is for, and the pane beneath
+/// it is the vendor's drawing of the same box behind an echo of the prompt:
+/// every row of it is noise below the answer line. Only the waiting card
+/// whose question amx has not read keeps its capture, because the pane is
+/// the one place that question is written at all.
+///
 /// claude's own furniture comes off the screen *before* the rows are counted.
 /// After would be worse than not at all: the card would spend its window on
 /// the vendor's composer and then have nothing left for the work.
-///
-/// The menu is furniture too, on the one card that is drawing it: a card
-/// holding a question has the question, its choices and the rows under them on
-/// it already, so what the screen underneath is worth is the work above the
-/// box and never the box a second time.
 fn body(card: &Card, rows: usize) -> Vec<Line<'static>> {
     if card.changes {
         // A patch is amx's own reading of a repository rather than a pane, so
@@ -963,6 +966,9 @@ fn body(card: &Card, rows: usize) -> Vec<Line<'static>> {
             .take(rows)
             .map(|text| Line::styled(inert(text), dim()))
             .collect();
+    }
+    if card.asks() && card.question.is_some() {
+        return Vec::new();
     }
 
     // The escapes are walked into styling here and nowhere else, so nothing
@@ -977,10 +983,6 @@ fn body(card: &Card, rows: usize) -> Vec<Line<'static>> {
     let kept = match card.phase.is_terminal() {
         true => plain.len(),
         false => cut(&plain).len(),
-    };
-    let kept = match card.asks() && card.question.is_some() {
-        true => menu(&plain[..kept]).len(),
-        false => kept,
     };
     let shown: Vec<Line<'static>> = read[tail(&plain[..kept], rows)]
         .iter()
@@ -1232,95 +1234,6 @@ fn mode_footer(row: &str) -> bool {
 /// behind when the turn is over by the ellipsis and the elapsed time.
 fn spinning(row: &str) -> bool {
     SPINNING.iter().all(|fragment| row.contains(fragment))
-}
-
-/// The vendor's own question screen, cut off the bottom of a capture the card
-/// is drawing the question from.
-///
-/// Everything in the box is on the card already, in amx's own numbering and
-/// with the two rows no payload carries named rather than drawn. What is above
-/// the box is the only thing on that pane the card has nowhere else to get:
-/// what the agent said before it asked.
-///
-/// **Read from the bottom, like the chrome above it, and every step capped.**
-/// The anchor is the footer, which `docs/question-shapes.md` measures on every
-/// shape of question screen at every width and on no other screen this vendor
-/// draws — a permission box, the trust screen and the plan box carry none of
-/// it, and cutting one of those would take the answer the card was opened to
-/// give. The top of the box is the header strip, which every shape draws and
-/// which is one row under the rule the box opens with. A capture with no strip
-/// in it is one the box is taller than, so there is nothing above the box to
-/// keep and the whole of it goes.
-///
-/// A glyph of the strip's own inside the box — an agent that labelled a choice
-/// with one — stops the walk early, which leaves the top of the box on the
-/// screen and takes no row of work with it.
-fn menu<'a, 'b>(rows: &'a [&'b str]) -> &'a [&'b str] {
-    // Past the rows the vendor pads the screen out with: it draws its box where
-    // the transcript ended rather than at the foot of the pane.
-    let mut at = rows.len();
-    while at > 0 && blank(rows[at - 1]) {
-        at -= 1;
-    }
-
-    // The anchor, which wraps onto rows of its own on a narrow pane, so it is
-    // looked for over the rows it wraps onto rather than on the last one alone.
-    let mut footer = None;
-    for step in 0..FOOTER.min(at) {
-        if selecting(rows[at - 1 - step]) {
-            footer = Some(at - 1 - step);
-            break;
-        }
-    }
-    let Some(footer) = footer else {
-        return rows;
-    };
-
-    // Up the box to the strip at the top of it. Every row between is taken by
-    // position, because what is in a box is whatever the agent asked and the
-    // vendor drew under it, and the walk cannot run past the capture.
-    let mut at = footer;
-    while at > 0 && !strip(rows[at - 1]) {
-        at -= 1;
-    }
-    if at == 0 {
-        return &rows[..0];
-    }
-    at -= 1;
-
-    // And the rule the box opens with, above the strip.
-    match at > 0 && rule_row(rows[at - 1]) {
-        true => &rows[..at - 1],
-        false => &rows[..at],
-    }
-}
-
-/// What every question screen's footer opens with. The words after it are the
-/// keys this shape offers and are not one string — `docs/question-shapes.md`
-/// records four wordings — and at 24 columns the footer wraps, so this opening
-/// fragment is the whole of what can be relied on.
-const SELECT: &str = "enter to select";
-
-/// How many rows of that footer the walk will step over to reach it: a margin
-/// over the four measured at 24 columns, which is the narrowest pane the vendor
-/// draws one in.
-const FOOTER: usize = 6;
-
-/// The header strip at the top of the box, which is the tabs on a call that
-/// needs a submit and the one question's own checkbox otherwise. Both are drawn
-/// out of the two glyphs, and nothing else on a question screen carries either.
-const TABS: [char; 2] = ['☐', '☒'];
-
-/// A row that opens the vendor's footer, whatever the keys it goes on to name.
-fn selecting(row: &str) -> bool {
-    row.trim_start()
-        .get(..SELECT.len())
-        .is_some_and(|opening| opening.eq_ignore_ascii_case(SELECT))
-}
-
-/// The header strip, which is the top row of the box.
-fn strip(row: &str) -> bool {
-    row.contains(TABS)
 }
 
 /// Which question of the call the card is showing, and how many there are.
@@ -2290,8 +2203,8 @@ mod tests {
             screen[top + 1]
         );
         assert!(
-            screen.iter().any(|line| line.contains("Do you want to")),
-            "and the screen it is asking on is under it: {screen:?}"
+            !screen.iter().any(|line| line.contains("Do you want to")),
+            "and the pane it is asking on is not echoed under it: {screen:?}"
         );
 
         let bottom = screen
@@ -2377,8 +2290,9 @@ mod tests {
         );
         assert_eq!(
             caret(&answering(question(), "the docker one"), (60, 14)),
-            (18, 10),
-            "with the terminal's own cursor at the end of what was typed"
+            (18, 11),
+            "with the terminal's own cursor at the end of what was typed, on \
+             a card that is the question block's own size"
         );
     }
 
@@ -3337,7 +3251,10 @@ mod tests {
     }
 
     #[test]
-    fn card_shows_the_question_over_the_screen_it_is_asked_on() {
+    fn card_shows_the_question_alone_and_none_of_the_pane_it_is_asked_on() {
+        // The pane under a question is the vendor's drawing of the same box
+        // the card already says in rows of its own, behind an echo of the
+        // prompt: everything on it is noise below the answer line.
         let screen = drawn(
             vec![view("ask-a1b", Phase::Waiting, None, 30)],
             Some(Card {
@@ -3353,7 +3270,10 @@ mod tests {
         let all = screen.join("\n");
         assert!(all.contains("ask-a1b · waiting"), "{all}");
         assert!(all.contains("Claude needs your permission"), "{all}");
-        assert!(all.contains("Do you want to proceed?"), "{all}");
+        assert!(
+            !all.contains("Do you want to proceed?"),
+            "the question block is the whole of the card: {all}"
+        );
         assert_eq!(
             screen[11], "space closes it · enter attach · ctrl+x stop · ? keys",
             "the keys stay on the screen under the card, saying what they do \
@@ -3362,6 +3282,21 @@ mod tests {
         assert!(
             screen.iter().any(|line| line.contains("ask-a1b")),
             "and the list is still there above it: {all}"
+        );
+
+        let top = screen
+            .iter()
+            .position(|line| line.starts_with('╭'))
+            .expect("the top of the card");
+        let bottom = screen
+            .iter()
+            .rposition(|line| line.starts_with('╰'))
+            .expect("the foot of the card");
+        assert_eq!(
+            bottom - top,
+            2,
+            "and the card is the question's own size, with no window kept \
+             for a pane it will not draw: {screen:?}"
         );
     }
 
@@ -4000,135 +3935,13 @@ mod tests {
         assert_eq!(cut(&screen), &CAPTURED[..2]);
     }
 
-    /// The vendor's checkbox menu, from `docs/question-shapes.md` § 1: the rule
-    /// the box opens with, the tab strip, the question, the boxes with their
-    /// descriptions, the two rows no payload carries, and the footer.
-    const MENU: [&str; 17] = [
-        "──────────────────────────────────────────────────",
-        "←  ☐ Features  ✔ Submit  →",
-        "",
-        "Which features should be enabled?",
-        "",
-        "❯ 1. [ ] Logging",
-        "  Write a log file",
-        "  2. [ ] Metrics",
-        "  Export counters",
-        "  3. [ ] Tracing",
-        "  Emit spans",
-        "  4. [ ] Type something",
-        "     Submit",
-        "──────────────────────────────────────────────────",
-        "  5. Chat about this",
-        "",
-        "Enter to select · ↑/↓ to navigate · Esc to cancel",
-    ];
-
-    /// That menu with the work above it and the pane's own padding under it.
-    fn menued(rows: &[&'static str]) -> Vec<&'static str> {
-        let mut screen = vec![SAID, ""];
-        screen.extend_from_slice(rows);
-        screen.push("");
-        screen
-    }
-
     #[test]
-    fn view_tail_cuts_the_menu_the_card_is_already_drawing() {
-        assert_eq!(
-            menu(&menued(&MENU)),
-            [SAID, ""].as_slice(),
-            "the box goes whole, rule and strip included"
-        );
-    }
-
-    #[test]
-    fn view_tail_cuts_a_menu_whose_footer_wrapped_onto_rows_of_its_own() {
-        // The same screen at 24 columns, where the footer takes three rows and
-        // the question two. Measured at 2.1.240 and recorded in § 1.
-        let narrow = [
-            "────────────────────────",
-            "←  ☒ Checks  ✔ Submit  →",
-            "",
-            "Which checks should the",
-            "hook run?",
-            "",
-            "❯ 1. [✔] Format",
-            "  Run rustfmt",
-            "  2. [ ] Clippy",
-            "  Run the linter",
-            "────────────────────────",
-            "  3. Chat about this",
-            "",
-            "Enter to select · ↑/↓ to",
-            "navigate · Esc to",
-            "cancel",
-        ];
-        assert_eq!(menu(&menued(&narrow)), [SAID, ""].as_slice());
-    }
-
-    #[test]
-    fn view_tail_leaves_every_screen_that_is_not_a_menu_alone() {
-        // A permission box ends at its own confirm row, the plan box at the
-        // path it wrote, and neither carries the menu's footer. Cutting either
-        // would take the question the card was opened to answer.
-        let box_ = [
-            " Bash command",
-            "   rm -rf build",
-            " Do you want to proceed?",
-            " ❯ 1. Yes",
-            "   2. No",
-            " Esc to cancel · Tab to amend · ctrl+e to explain",
-        ];
-        assert_eq!(menu(&box_), box_.as_slice());
-
-        let plan = [
-            " Claude has written up a plan. Would you like to proceed?",
-            " ❯ 1. Yes, and use auto mode",
-            "   2. Tell Claude what to change",
-            "",
-            " ctrl+g to edit in Kak · ~/.claude/plans/port-the-importer.md",
-        ];
-        assert_eq!(menu(&plan), plan.as_slice());
-
-        // And the vendor's own review tab, which draws no footer at all: § 5
-        // measured it at three widths and found none.
-        let review = [
-            "Review your answers",
-            "",
-            " ● Which features should be enabled?",
-            "   → Logging, Tracing",
-            "",
-            "❯ 1. Submit answers",
-            "  2. Cancel",
-        ];
-        assert_eq!(menu(&review), review.as_slice());
-    }
-
-    #[test]
-    fn view_tail_takes_a_menu_the_pane_is_shorter_than_whole() {
-        // A box taller than the pane it is drawn in: § 4 measured the previewed
-        // question at 24 columns taking 47 rows of a 50-row pane, and a row
-        // more than that is a capture with the strip off the top of it. Every
-        // row is the vendor's and none of it is the work.
-        let mut tall = vec!["  2. Inline    │  │"];
-        tall.extend((0..24).map(|_| "               │  │"));
-        tall.extend_from_slice(&[
-            "               └──┘",
-            "",
-            "────────────────────────",
-            "  Chat about this",
-            "",
-            "Enter to select · ↑/↓ to",
-            "navigate · Esc to cancel",
-        ]);
-        assert!(menu(&tall).is_empty());
-    }
-
-    #[test]
-    fn view_tail_keeps_the_menu_the_card_has_no_question_to_draw() {
-        // The one card the box belongs on: amx missed the call that drew it, so
-        // the pane is the only place the question is written at all.
+    fn view_tail_keeps_the_capture_the_card_has_no_question_to_draw() {
+        // The one asking card that still shows its pane: amx missed the call
+        // that drew the menu, so the pane is the only place the question is
+        // written at all.
         let mut card = asking(&[], Some(Kind::Question));
-        card.body = menued(&MENU).join("\n");
+        card.body = format!("{SAID}\n\nWhich features should be enabled?\n");
         card.question = None;
         assert!(
             said(&card, 24).contains(&"Which features should be enabled?".to_string()),
@@ -4136,9 +3949,10 @@ mod tests {
             said(&card, 24)
         );
 
-        // And with the question on it, the card's window goes to the work.
+        // And with the question on it, the card is the question block alone:
+        // the pane under it is the same box behind an echo of the prompt.
         card.question = Some("Which features should be enabled?".to_string());
-        assert_eq!(said(&card, 24), [SAID]);
+        assert!(said(&card, 24).is_empty(), "{:?}", said(&card, 24));
     }
 
     /// What a card's body says, with the paint it says it in set aside.

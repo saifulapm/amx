@@ -1553,7 +1553,12 @@ fn said(outcome: Result<String>) -> Option<Notice> {
 /// of them.
 fn card_of(view: &View) -> Card {
     let server = Server::from_socket(view.meta.socket.clone());
-    let screen = (!view.phase().is_terminal())
+    // A card holding a question is the question block and nothing else, so
+    // there is no capture to take for it. The waiting agent whose question amx
+    // has not read still gets one, because the pane is the one place that
+    // question is written at all.
+    let asks = view.phase() == Phase::Waiting && view.state.question.is_some();
+    let screen = (!asks && !view.phase().is_terminal())
         .then(|| server.capture_painted(&view.meta.pane).ok())
         .flatten()
         // Emptiness is a question about the words, and a screen can carry
@@ -1567,9 +1572,14 @@ fn card_of(view: &View) -> Card {
         question: view.state.question.clone(),
         options: view.state.options.clone(),
         kind: view.kind(),
-        body: screen
-            .or_else(|| view.state.result.clone())
-            .unwrap_or_default(),
+        // No falling back to the answer a finished turn left, either: a card
+        // that is asking shows nothing older than the question.
+        body: match asks {
+            true => String::new(),
+            false => screen
+                .or_else(|| view.state.result.clone())
+                .unwrap_or_default(),
+        },
         changes: false,
     }
 }
