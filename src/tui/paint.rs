@@ -24,6 +24,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
+use std::cell::Cell;
 use std::ops::Range;
 use std::sync::OnceLock;
 
@@ -133,6 +134,33 @@ impl Card {
     }
 }
 
+/// Where the card's body stands against its natural edge — the bottom of a
+/// screen or an answer, the top of a patch — and how far one page is.
+///
+/// The keys add and subtract; the paint owns the clamp, because only the
+/// paint knows how many rows the body was given. Cells, so a draw that is
+/// otherwise a pure reading of the view can write back what it kept: a body
+/// that fits is pinned to its edge, and a press past the end lands on the
+/// last page rather than beyond it.
+#[derive(Default)]
+pub struct Scroll {
+    /// Rows between what the card shows and the body's natural edge.
+    pub away: Cell<usize>,
+    /// The rows the body had last frame, which is what one press moves by.
+    pub page: Cell<usize>,
+}
+
+impl Scroll {
+    /// Clamp the offset to the last page this body and window allow, remember
+    /// what a page is, and say where the card now stands.
+    fn kept(&self, length: usize, window: usize) -> usize {
+        let away = self.away.get().min(length.saturating_sub(window));
+        self.away.set(away);
+        self.page.set(window.max(1));
+        away
+    }
+}
+
 /// Draw everything.
 pub fn draw(frame: &mut Frame, screen: &Screen) {
     let area = frame.area();
@@ -218,6 +246,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
             showing,
             prs,
             screen.answering(),
+            &screen.scroll,
             over(middle, floating),
         );
     }
@@ -268,7 +297,7 @@ fn card_rows(
     let listed = choices(&card.options, inner as usize, boxed(showing)).len();
     // Counted no further than the card could ever grow, because the body can
     // be a patch of thousands of lines and this runs on every frame.
-    let shown = body(card, CARD_TALL as usize).len();
+    let shown = body(card, CARD_TALL as usize, 0).len();
 
     let rows = 2
         + usize::from(!requests(prs).is_empty())
@@ -812,6 +841,7 @@ fn float(
     showing: Option<Showing>,
     prs: &[Pr],
     answering: Option<&Composer>,
+    scroll: &Scroll,
     area: Rect,
 ) {
     let title = match card.changes {
@@ -823,15 +853,12 @@ fn float(
             derive::in_words(card.age)
         ),
     };
-    let block = Block::bordered()
+    let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(dim())
         .padding(Padding::horizontal(PADDING))
         .title(Span::styled(title, colour(card.phase)));
     let inner = block.inner(area);
-    // Whatever the list drew here, the card is in front of it.
-    frame.render_widget(Clear, area);
-    frame.render_widget(block, area);
 
     // What the card is for comes first and the pane takes what is left. The
     // row being typed on comes before even the question: the question is on
@@ -870,6 +897,23 @@ fn float(
     let listed = take(choices.len() as u16);
     let added = added(card, showing);
     let adding = take(u16::from(added.is_some()));
+
+    // What is left is the body's window, which is what a page key moves by
+    // and what the offset is clamped against. A card paged away from its
+    // natural edge says so on its frame, because what it is showing is no
+    // longer the newest of the screen or the first of the patch.
+    let held = scroll.kept(length(card), room as usize);
+    if held > 0 {
+        let edge = match card.changes {
+            true => '↑',
+            false => '↓',
+        };
+        block = block
+            .title_bottom(Line::styled(format!(" {edge} {held} more "), dim()).right_aligned());
+    }
+    // Whatever the list drew here, the card is in front of it.
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
 
     let [requesting, tabbing, asking, listing, adds, answer, screen] = Layout::vertical([
         Constraint::Length(opened),
@@ -911,7 +955,19 @@ fn float(
         answer_row(frame, card, showing, composer, answer);
     }
 
-    frame.render_widget(Paragraph::new(body(card, screen.height as usize)), screen);
+    frame.render_widget(
+        Paragraph::new(body(card, screen.height as usize, held)),
+        screen,
+    );
+}
+
+/// How many rows the body could give a card, which is what the last page is
+/// measured against.
+fn length(card: &Card) -> usize {
+    match card.changes {
+        true => card.body.lines().count(),
+        false => body(card, usize::MAX, 0).len(),
+    }
 }
 
 /// Every pull request the agent's branch has, as the one row the card gives
@@ -956,13 +1012,15 @@ fn requests(prs: &[Pr]) -> Vec<Span<'static>> {
 /// claude's own furniture comes off the screen *before* the rows are counted.
 /// After would be worse than not at all: the card would spend its window on
 /// the vendor's composer and then have nothing left for the work.
-fn body(card: &Card, rows: usize) -> Vec<Line<'static>> {
+fn body(card: &Card, rows: usize, away: usize) -> Vec<Line<'static>> {
     if card.changes {
         // A patch is amx's own reading of a repository rather than a pane, so
-        // there is no paint on it to keep.
+        // there is no paint on it to keep. Its natural edge is the top, and a
+        // paged card starts that many rows below it.
         return card
             .body
             .lines()
+            .skip(away)
             .take(rows)
             .map(|text| Line::styled(inert(text), dim()))
             .collect();
@@ -984,7 +1042,7 @@ fn body(card: &Card, rows: usize) -> Vec<Line<'static>> {
         true => plain.len(),
         false => cut(&plain).len(),
     };
-    let shown: Vec<Line<'static>> = read[tail(&plain[..kept], rows)]
+    let shown: Vec<Line<'static>> = read[tail(&plain[..kept], rows, away)]
         .iter()
         .map(|row| as_painted(row))
         .collect();
@@ -1760,11 +1818,13 @@ fn wrapped(text: &str, width: u16) -> u16 {
 /// A window rather than the rows themselves, because the words a row says and
 /// the paint it says them in are two readings of one screen and both are
 /// wanted here.
-fn tail(rows: &[&str], wanted: usize) -> Range<usize> {
+fn tail(rows: &[&str], wanted: usize, back: usize) -> Range<usize> {
     let mut end = rows.len();
     while end > 0 && rows[end - 1].trim().is_empty() {
         end -= 1;
     }
+    // A paged card stands that many rows above the bottom it is read from.
+    let end = end.saturating_sub(back);
     end.saturating_sub(wanted)..end
 }
 
@@ -3467,6 +3527,116 @@ mod tests {
         assert!(!all.contains("+ line 39"), "{all}");
     }
 
+    /// The card over a patch of this many lines, which can be more than any
+    /// card has rows for.
+    fn a_long_patch(lines: usize) -> Card {
+        Card {
+            id: "fix-login-a1b".to_string(),
+            phase: Phase::Working,
+            age: 3,
+            question: None,
+            options: Vec::new(),
+            kind: None,
+            body: (0..lines)
+                .map(|n| format!("+ line {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            changes: true,
+        }
+    }
+
+    #[test]
+    fn card_pages_a_patch_from_its_offset_and_says_how_far() {
+        let screen = showing(
+            vec![view("fix-login-a1b", Phase::Working, None, 3)],
+            Some(a_long_patch(40)),
+        );
+        screen.scroll.away.set(20);
+
+        let all = painted(&screen, (60, 14)).join("\n");
+        assert!(all.contains("+ line 20"), "the page it was sent to: {all}");
+        assert!(!all.contains("+ line 0"), "{all}");
+        assert!(!all.contains("+ line 39"), "{all}");
+        assert!(all.contains("↑ 20 more"), "how far from the top: {all}");
+        assert_eq!(screen.scroll.away.get(), 20);
+    }
+
+    #[test]
+    fn card_stops_a_page_at_the_end_of_the_patch() {
+        let screen = showing(
+            vec![view("fix-login-a1b", Phase::Working, None, 3)],
+            Some(a_long_patch(40)),
+        );
+        screen.scroll.away.set(1000);
+
+        let all = painted(&screen, (60, 14)).join("\n");
+        assert!(all.contains("+ line 39"), "the last of it: {all}");
+        assert_eq!(
+            screen.scroll.away.get(),
+            40 - screen.scroll.page.get(),
+            "written back as the last page there is: {all}"
+        );
+    }
+
+    #[test]
+    fn card_holds_a_fitting_body_at_its_edge() {
+        let screen = showing(
+            vec![view("fix-login-a1b", Phase::Working, None, 3)],
+            Some(a_long_patch(3)),
+        );
+        screen.scroll.away.set(5);
+
+        let all = painted(&screen, (60, 14)).join("\n");
+        assert!(all.contains("+ line 0"), "{all}");
+        assert!(all.contains("+ line 2"), "{all}");
+        assert!(!all.contains("more"), "nothing is hidden: {all}");
+        assert_eq!(screen.scroll.away.get(), 0, "nothing to page over");
+    }
+
+    #[test]
+    fn card_pages_a_result_up_from_its_bottom() {
+        let screen = showing(
+            vec![view("fix-login-a1b", Phase::Done, None, 3)],
+            Some(Card {
+                id: "fix-login-a1b".to_string(),
+                phase: Phase::Done,
+                age: 3,
+                question: None,
+                options: Vec::new(),
+                kind: None,
+                body: (0..40)
+                    .map(|n| format!("said {n}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                changes: false,
+            }),
+        );
+        screen.scroll.away.set(7);
+
+        let all = painted(&screen, (60, 14)).join("\n");
+        assert!(
+            all.contains("said 32"),
+            "seven rows above the bottom: {all}"
+        );
+        assert!(!all.contains("said 39"), "{all}");
+        assert!(all.contains("↓ 7 more"), "how far from the bottom: {all}");
+        assert_eq!(screen.scroll.away.get(), 7);
+    }
+
+    #[test]
+    fn card_holding_a_question_never_leaves_its_edge() {
+        let screen = showing(a_fleet(), Some(asking(&["1. Yes", "2. No"], None)));
+        screen.scroll.away.set(5);
+
+        let all = painted(&screen, (60, 14)).join("\n");
+        assert!(!all.contains("more"), "{all}");
+        assert_eq!(
+            screen.scroll.away.get(),
+            0,
+            "a question block does not page"
+        );
+    }
+
     /// A screen with room for the composer to reach its cap and a list above
     /// it: ten rows is a third of thirty.
     const TALL: (u16, u16) = (60, 30);
@@ -3803,13 +3973,16 @@ mod tests {
 
     #[test]
     fn view_reads_the_bottom_of_a_screen_and_drops_what_is_blank() {
-        let shown = |text: &'static str, wanted: usize| {
+        let shown = |text: &'static str, wanted: usize, back: usize| {
             let rows: Vec<&str> = text.lines().collect();
-            rows[tail(&rows, wanted)].to_vec()
+            rows[tail(&rows, wanted, back)].to_vec()
         };
-        assert_eq!(shown("a\nb\nc\n\n\n", 2), ["b", "c"]);
-        assert_eq!(shown("a\nb", 5), ["a", "b"]);
-        assert!(shown("", 3).is_empty());
+        assert_eq!(shown("a\nb\nc\n\n\n", 2, 0), ["b", "c"]);
+        assert_eq!(shown("a\nb", 5, 0), ["a", "b"]);
+        assert!(shown("", 3, 0).is_empty());
+        // Paged back, the window stands above the bottom it is read from.
+        assert_eq!(shown("a\nb\nc\nd\n\n", 2, 1), ["b", "c"]);
+        assert!(shown("a\nb", 2, 5).is_empty());
     }
 
     /// The five rows claude draws at the bottom of every pane it has the room
@@ -3957,7 +4130,7 @@ mod tests {
 
     /// What a card's body says, with the paint it says it in set aside.
     fn said(card: &Card, rows: usize) -> Vec<String> {
-        body(card, rows)
+        body(card, rows, 0)
             .iter()
             .map(|line| {
                 line.spans

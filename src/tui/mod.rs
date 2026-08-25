@@ -402,6 +402,10 @@ struct Screen {
     mode: Mode,
     look: Look,
     card: Option<Card>,
+    /// How far the card's body has been paged from its natural edge, and how
+    /// far one page is. The paint owns the clamp: only it knows the rows the
+    /// body was given.
+    scroll: paint::Scroll,
     notice: Option<Notice>,
     /// The finished row a press has armed, where one is armed.
     arm: Option<Arm>,
