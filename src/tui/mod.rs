@@ -578,8 +578,12 @@ where
     let mut called = String::new();
 
     loop {
-        if screen.read.is_none_or(|at| at.elapsed() >= REFRESH) {
-            screen.reread(root, scope)?;
+        match screen.read.is_none_or(|at| at.elapsed() >= REFRESH) {
+            true => screen.reread(root, scope)?,
+            // The reread has just taken the card; between rereads a question
+            // card is taken again anyway, so it never holds a question the
+            // record has moved past.
+            false => screen.freshen(),
         }
         screen.step();
         terminal.draw(|frame| paint::draw(frame, &screen))?;
@@ -714,6 +718,22 @@ impl Screen {
         if self.stepped.is_none_or(|at| at.elapsed() >= FRAME) {
             self.beat = self.beat.wrapping_add(1);
             self.stepped = Some(Instant::now());
+        }
+    }
+
+    /// Take the question card again on this pass, between rereads.
+    ///
+    /// The card is a snapshot, and for an agent that is only working the
+    /// wall's own cadence keeps it fresh enough. A question is different:
+    /// answering one tab of a call moves the record to the next question at
+    /// once, while the vendor is still redrawing the pane behind the card —
+    /// a snapshot cut on that moment pairs the new question with the old
+    /// tab's capture, and held to the reread cadence the pair stands mixed
+    /// on the screen for a second. Taken again every pass, the card settles
+    /// the moment the pane does.
+    fn freshen(&mut self) {
+        if self.card.as_ref().is_some_and(Card::asks) {
+            self.follow_the_cursor();
         }
     }
 
@@ -2097,6 +2117,63 @@ mod tests {
         assert!(screen.card.is_none());
         assert!(screen.answering().is_none());
         assert!(matches!(screen.mode, Mode::List), "back on the agents");
+    }
+
+    #[test]
+    fn card_is_taken_again_every_pass_while_it_asks() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![stopped_on_a_question("ask-a1b")]);
+        screen
+            .act(
+                KeyEvent::from(KeyCode::Char(' ')),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+
+        // The call moves to its next question: answering one tab advances the
+        // record at once, while the vendor is still redrawing its pane.
+        screen.list.show(vec![reading(
+            "ask-a1b",
+            Phase::Waiting,
+            State {
+                state: Phase::Waiting,
+                question: Some("And which docker tag?".to_string()),
+                options: vec!["latest".to_string(), "pinned".to_string()],
+                kind: Some(Kind::Question),
+                since: 1,
+                last_event: 2,
+                ..State::default()
+            },
+        )]);
+
+        // The pass between rereads takes the card again, so a question the
+        // record has moved past is never left on the screen.
+        screen.freshen();
+        assert_eq!(
+            screen
+                .card
+                .as_ref()
+                .and_then(|card| card.question.as_deref()),
+            Some("And which docker tag?")
+        );
+        assert!(
+            screen.answering().is_some(),
+            "and the line being typed on the card survives the retake"
+        );
+
+        // A diff was taken when somebody asked for it, and a pass is not
+        // somebody asking again.
+        screen.look = Look::Changes;
+        screen.card.as_mut().expect("the card is open").changes = true;
+        screen.card.as_mut().expect("the card is open").body = "+ a line".to_string();
+        screen.freshen();
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.body.as_str()),
+            Some("+ a line")
+        );
     }
 
     #[test]
