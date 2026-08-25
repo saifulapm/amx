@@ -211,6 +211,20 @@ struct Held {
 /// vendor never looks at: it only ever asks whether the directory exists.
 const OWNER: &str = "owner";
 
+/// What came of naming the directory at a lock path.
+enum Marked {
+    /// The marker landed, and the lock is this taker's.
+    Held(Held),
+    /// There is no directory at the path to put a marker in. A sweep has one
+    /// aside for the moment it takes to judge it, and hands back what it
+    /// finds live, so this taker has a directory coming back to it.
+    Aside,
+    /// The directory there carries a marker already, so the lock is somebody
+    /// else's. A directory that will not take a marker for any other reason
+    /// reads the same way, that being the safe way to read it.
+    Theirs,
+}
+
 impl Held {
     /// Take it, or answer `None` when somebody else has it and will not let go
     /// inside `patience`.
@@ -222,18 +236,31 @@ impl Held {
         }
 
         let waiting = Instant::now();
+        // Set from the moment this taker makes a directory until a marker
+        // settles who the path belongs to. A directory made and not yet named
+        // is one nobody else will ever name, so it is not a thing to walk
+        // away from: whoever gave up on one left a lock at the vendor's own
+        // path that nobody holds and only the stale rule can clear.
+        let mut unnamed = false;
         loop {
             match std::fs::create_dir(&path) {
-                Ok(()) => {
-                    if let Some(held) = Held::mark(&path) {
-                        return Ok(Some(held));
-                    }
-                    // A preempted sweep put the lock it had caught back over
-                    // this create before the marker landed. The path is that
-                    // holder's; try again like any other taker.
-                }
+                Ok(()) => unnamed = true,
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(e).with_context(|| format!("taking {}", path.display())),
+            }
+            if unnamed {
+                match Held::mark(&path) {
+                    Marked::Held(held) => return Ok(Some(held)),
+                    // A sweep has this taker's own directory aside while it
+                    // judges it. Look again at once rather than counting the
+                    // wait: what a sweep finds live it puts straight back,
+                    // and nobody but this taker is waiting to name it.
+                    Marked::Aside => continue,
+                    // A preempted sweep put the lock it had caught back over
+                    // this create before the marker landed. The path is that
+                    // holder's; wait for it like any other taker.
+                    Marked::Theirs => unnamed = false,
+                }
             }
             if abandoned(&path, stale) {
                 sweep(&path, stale);
@@ -246,14 +273,14 @@ impl Held {
         }
     }
 
-    /// Name the directory just created as this taker's, and answer whether it
-    /// was still this taker's to name.
+    /// Name the directory at `path` as this taker's, and say what was there to
+    /// name.
     ///
     /// The marker goes in with `create_new`, so of the two directories a
     /// putback can interleave here — this taker's create, the caught lock a
     /// sweep restores over it — exactly one ends up named, whichever won the
     /// path. Making the directory alone proves nothing.
-    fn mark(path: &Path) -> Option<Held> {
+    fn mark(path: &Path) -> Marked {
         // Unique among every taker there could be: two processes differ by
         // pid, two takes within one process by the count.
         static TAKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -261,19 +288,23 @@ impl Held {
         let token = format!("{}-{nth}", std::process::id());
 
         let marker = path.join(OWNER);
-        let mut file = std::fs::OpenOptions::new()
+        let opened = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&marker)
-            .ok()?;
+            .open(&marker);
+        let mut file = match opened {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Marked::Aside,
+            Err(_) => return Marked::Theirs,
+        };
         if file.write_all(token.as_bytes()).is_err() {
             // Half a marker would wedge every later taker until the stale
             // sweep; better to stand aside whole.
             drop(file);
             let _ = std::fs::remove_file(&marker);
-            return None;
+            return Marked::Theirs;
         }
-        Some(Held {
+        Marked::Held(Held {
             path: path.to_path_buf(),
             token,
         })
@@ -306,7 +337,8 @@ impl Drop for Held {
 /// aside first — to a name only this process uses, making whatever was caught
 /// this process's alone — and only then looked at. A catch that really is
 /// abandoned goes away; a live lock caught in the window between somebody's
-/// create and this rename goes straight back where it was.
+/// create and this rename goes straight back where it was, to the taker still
+/// waiting to name it.
 fn sweep(path: &Path, stale: Duration) {
     // Unique among every taker there could be: two processes differ by pid,
     // two sweeps within one process by the count.
@@ -727,6 +759,47 @@ mod tests {
         assert!(
             !b.holds(),
             "and B must find that out before it writes the store"
+        );
+    }
+
+    #[test]
+    fn trust_a_marker_that_cannot_land_says_which_of_the_two_it_met() {
+        // The marker fails to land for two unlike reasons, and a taker that
+        // cannot tell them apart leaves a lock at the vendor's path that
+        // nobody holds: a sweep judging some earlier lock stale catches this
+        // taker's fresh directory instead, and while it is aside the marker
+        // has nowhere to go. Read that as somebody else's path and the taker
+        // walks away from the one directory only it could ever name — and
+        // what the sweep hands back wears a timestamp too fresh for the stale
+        // rule to reach for another ten seconds, so every taker after it is
+        // told the vendor is writing.
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join(".claude.json");
+        let lock = lock_beside(&store);
+        let aside = lock.with_file_name(".claude.json.lock.swept");
+
+        // Where a taker stands with its marker in hand: the directory made,
+        // and a sweep holding it aside to judge it.
+        std::fs::create_dir_all(&lock).unwrap();
+        std::fs::rename(&lock, &aside).unwrap();
+        assert!(
+            matches!(Held::mark(&lock), Marked::Aside),
+            "nothing at the path is a sweep holding a directory, not a lock \
+             somebody else took"
+        );
+
+        // Handed back, and still this taker's to name.
+        std::fs::rename(&aside, &lock).unwrap();
+        let held = Held::mark(&lock);
+        assert!(
+            matches!(held, Marked::Held(_)),
+            "a directory nobody has named is there to be named"
+        );
+
+        // And while that marker is in it, the directory is its taker's.
+        assert!(
+            matches!(Held::mark(&lock), Marked::Theirs),
+            "the path is whoever's marker is in it"
         );
     }
 
