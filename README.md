@@ -186,8 +186,9 @@ by the number you were about to count to.
 can show: a patch down from its top, a screen or an answer up from its live
 bottom. A paged card says how far from that edge it stands on its frame —
 `↓ 12 more` — and holds still, new output and all, until you page back to the
-edge, move the cursor, or open it again. The arrows never page: they keep
-walking the list, card in tow.
+edge, press an arrow, or open it again; an agent stopping at a question takes
+the card back regardless, because a question is never left behind history. The
+arrows never page: they keep walking the list, card in tow.
 
 `ctrl+x` forgets nothing on the first press, and the first press is the same
 press on every row. An agent that is still running — sitting idle at its

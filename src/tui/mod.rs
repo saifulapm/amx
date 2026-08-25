@@ -746,16 +746,21 @@ impl Screen {
     ///
     /// A card paged away from its natural edge is being read, and retaking it
     /// would move the text under somebody's eyes — so it holds still until it
-    /// is paged back or the cursor moves off its agent. Only a card that is
-    /// asking is never held: the record moves under it while the vendor
-    /// redraws, and freshness is what keeps the question and its tab paired.
+    /// is paged back or the cursor moves off its agent. A question is never
+    /// behind the hold: an agent that has stopped to ask takes the card back,
+    /// because surfacing that is what the view is for — and a card already
+    /// asking is never held either, since the record moves under it while the
+    /// vendor redraws, and freshness is what keeps the question and its tab
+    /// paired.
     fn follow_the_cursor(&mut self) {
         match self.look {
             Look::Away => self.card = None,
             Look::Screen => {
                 let held = self.scroll.away.get() > 0
                     && match (&self.card, self.list.selected()) {
-                        (Some(card), Some(view)) => !card.asks() && card.id == view.id(),
+                        (Some(card), Some(view)) => {
+                            !card.asks() && view.phase() != Phase::Waiting && card.id == view.id()
+                        }
                         _ => false,
                     };
                 if !held {
@@ -1536,7 +1541,12 @@ impl Screen {
 
     /// The cursor has moved. A diff belongs to the agent it was taken of, so
     /// it does not follow the cursor onto the next one.
+    ///
+    /// The page goes with the press wherever the cursor lands, the end of the
+    /// list included: the arrows retake the card, exactly as they did before
+    /// there was a page to keep.
     fn moved(&mut self) {
+        self.scroll.away.set(0);
         if self.look == Look::Changes {
             self.look = Look::Screen;
         }
@@ -2335,6 +2345,65 @@ mod tests {
             Some("the answer"),
             "taken again at the edge"
         );
+    }
+
+    #[test]
+    fn card_held_still_lets_a_question_through() {
+        let mut screen = watching(vec![reading(
+            "ask-a1b",
+            Phase::Working,
+            State {
+                state: Phase::Working,
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        )]);
+        screen.look = Look::Screen;
+        screen.follow_the_cursor();
+        screen.card.as_mut().expect("a card").body = "old capture".to_string();
+        screen.scroll.away.set(3);
+
+        // The agent stops on a question while somebody is reading history:
+        // the question is what the view exists to surface, so it takes the
+        // card back from the hold.
+        screen.list.show(vec![stopped_on_a_question("ask-a1b")]);
+        screen.follow_the_cursor();
+        assert!(
+            screen.card.as_ref().is_some_and(Card::asks),
+            "the question card arrived"
+        );
+        assert_eq!(screen.scroll.away.get(), 0);
+    }
+
+    #[test]
+    fn card_holding_a_patch_yields_to_an_arrow_wherever_it_lands() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        // One agent: the cursor has nowhere to go, and the press still swaps
+        // a demoted patch for the agent's own card the way it always did.
+        let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+        screen.look = Look::Changes;
+        screen.card = Some(Card {
+            id: "done-a1b".to_string(),
+            phase: Phase::Done,
+            age: 29,
+            question: None,
+            options: Vec::new(),
+            kind: None,
+            body: "+ line".to_string(),
+            changes: true,
+        });
+        screen.scroll.away.set(5);
+
+        screen
+            .act(KeyEvent::from(KeyCode::Down), root.path(), &config, None)
+            .unwrap();
+        assert!(
+            screen.card.as_ref().is_some_and(|card| !card.changes),
+            "the patch went with the press"
+        );
+        assert_eq!(screen.scroll.away.get(), 0);
     }
 
     #[test]
