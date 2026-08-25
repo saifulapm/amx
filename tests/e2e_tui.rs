@@ -2322,29 +2322,29 @@ fn acts_ctrl_x_on_a_heading_forgets_the_finished_and_keeps_the_work() {
     });
 
     // Up from the row the view opens on is the heading the group is under.
+    // One press arms every finished row under it, in the rows themselves.
     press(&amx, &view, "Up");
     press(&amx, &view, "C-x");
-    amx.until("the question", || {
-        screen(&amx, &view)
-            .contains("forget 2 finished")
-            .then_some(())
-    });
-    assert_eq!(agents(&amx).len(), 2, "and it is only a question");
-
-    press(&amx, &view, "y");
-    let said = amx.until("the sweep", || {
+    let armed = amx.until("the armed rows", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("forgot 1").then_some(drawn)
+        drawn.contains("ctrl+x again forgets").then_some(drawn)
     });
-    assert_eq!(
-        agents(&amx),
-        ["keeps-work-a1b"],
-        "the one holding work nobody else has a copy of is still here"
-    );
-    assert!(tree.exists(), "and so is its tree");
     assert!(
-        said.contains("kept 1"),
-        "and the sweep says it kept it:\n{said}"
+        !armed.contains("forget 2 finished"),
+        "the rows say it and the footer asks nothing:\n{armed}"
+    );
+    assert_eq!(agents(&amx).len(), 2, "and arming forgets nothing");
+
+    // Two presses whatever the clock did to the first window: if it is still
+    // open the first of these forgets, and if it lapsed the first re-arms and
+    // the second forgets.
+    twice(&amx, &view, "C-x");
+    amx.until("the sweep", || {
+        (agents(&amx) == ["keeps-work-a1b"]).then_some(())
+    });
+    assert!(
+        tree.exists(),
+        "the tree holding work nobody else has a copy of is still here"
     );
 }
 

@@ -571,7 +571,8 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment, visible: u
 }
 
 /// What the clock has made of the list at the moment it is drawn: which frame
-/// of the working pulse the rows are on, and which of them a press has armed.
+/// of the working pulse the rows are on, and which of them a press has armed —
+/// one row, or every finished row under the heading the press was on.
 ///
 /// Neither is a fact about an agent, and neither is worth writing down: they
 /// are what the view is doing while somebody watches it, so they are handed to
@@ -579,7 +580,7 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment, visible: u
 #[derive(Clone, Copy)]
 struct Moment<'a> {
     beat: usize,
-    armed: Option<&'a str>,
+    armed: &'a [String],
 }
 
 /// One line of the list, whatever kind of line it is. `section` says this is
@@ -707,7 +708,7 @@ fn row(
         + AGE
         + 1;
     let room = width.saturating_sub(spent);
-    let armed = moment.armed == Some(view.id());
+    let armed = moment.armed.iter().any(|id| id == view.id());
     let said = match armed {
         true => fit(AGAIN, room),
         false => fit(first_line(view.line().unwrap_or("")), room),
@@ -2691,7 +2692,8 @@ mod tests {
         assert!(painted(&screen, size)[2].contains("wrote the parser"));
 
         screen.arm = Some(Arm {
-            id: "fix-login-a1b".to_string(),
+            ids: vec!["fix-login-a1b".to_string()],
+            heading: None,
             at: Instant::now(),
         });
         let drawn = painted(&screen, size);

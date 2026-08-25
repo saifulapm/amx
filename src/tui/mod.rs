@@ -157,12 +157,10 @@ enum Mode {
 
 /// What the view is waiting to be told.
 ///
-/// One key answers either of them and every other key does not, which is the
-/// way round a question has to be when a yes is the expensive answer: one of
-/// these forgets a group of records and the other starts a program.
+/// One key answers it and every other key does not, which is the way round a
+/// question has to be when a yes is the expensive answer: this one starts a
+/// program.
 enum Asked {
-    /// A group somebody has asked to have cleared.
-    Sweep(Sweep),
     /// A task barely long enough to be one, and the line it was typed on.
     /// `follow` is whether the key that asked was the one that goes with the
     /// agent, which the answer has to carry for it.
@@ -177,26 +175,11 @@ impl Asked {
     /// The question itself, in the words the answer is given in.
     fn question(&self) -> String {
         match self {
-            Asked::Sweep(sweep) => format!(
-                "forget {} finished under {}? y forgets them · anything else keeps them",
-                sweep.ids.len(),
-                sweep.under
-            ),
             Asked::Slight { task, .. } => {
                 format!("start an agent on \"{task}\"? y starts it · anything else keeps the line")
             }
         }
     }
-}
-
-/// A group somebody has asked to have cleared, waiting on the answer.
-///
-/// The agents are held by id and settled when the question is asked, not when
-/// it is answered: the wall is read again every second, and forgetting more
-/// than the question counted is the one thing a confirmation is for.
-struct Sweep {
-    under: String,
-    ids: Vec<String>,
 }
 
 /// What the card is showing.
@@ -394,13 +377,18 @@ fn next_in(cycle: &[&str], now: &str) -> Option<String> {
     .map(|value| value.to_string())
 }
 
-/// A finished row a press has armed, and the moment it was armed.
+/// What a press has armed and a second one would forget: one finished row, or
+/// every finished row under a heading, and the moment it was armed.
 ///
 /// Held by id rather than by where the cursor was: the wall is read again
 /// every second and the rows move under it, and a window that belonged to a
 /// place on the screen would arm whatever had come to rest there.
 struct Arm {
-    id: String,
+    /// The rows the second press forgets.
+    ids: Vec<String>,
+    /// The heading the first press was on, where it was on one: that is where
+    /// the press that forgets them all has to land again.
+    heading: Option<rows::Under>,
     at: Instant,
 }
 
@@ -1002,7 +990,7 @@ impl Screen {
             // it, which is the one place a person is looking at a group rather
             // than at an agent.
             KeyCode::Char('x') if ctrl => match self.list.heading() {
-                Some(under) => self.ask_to_sweep(under),
+                Some(under) => self.sweep_or_arm(root, under),
                 None => self.end_or_arm(root),
             },
             // The same agents, gathered the other way.
@@ -1316,17 +1304,17 @@ impl Screen {
         Ok(Doing::Carry)
     }
 
-    /// The row a press has armed, while its window is still open.
+    /// The rows a press has armed, while its window is still open.
     ///
     /// Worked out from the clock every time it is asked for rather than
     /// cleared when it falls due: what closes the window is time passing, and
     /// there is nothing running in this view to do the clearing at the moment
     /// it happens.
-    fn armed(&self) -> Option<&str> {
+    fn armed(&self) -> &[String] {
         self.arm
             .as_ref()
             .filter(|arm| arm.at.elapsed() < ARMED)
-            .map(|arm| arm.id.as_str())
+            .map_or(&[], |arm| arm.ids.as_slice())
     }
 
     /// ctrl+x on an agent's row: stop it, or arm it and then forget it.
@@ -1347,14 +1335,15 @@ impl Screen {
         let Some(view) = self.list.selected() else {
             return;
         };
-        let armed = self.armed() == Some(view.id());
+        let armed = self.armed().iter().any(|id| id == view.id());
         if view.phase().is_terminal() && !armed {
             let id = view.id().to_string();
             // The row is the whole of what the view has to say about this, so
             // whatever it was saying before makes way for it.
             self.notice = None;
             self.arm = Some(Arm {
-                id,
+                ids: vec![id],
+                heading: None,
                 at: Instant::now(),
             });
             return;
@@ -1365,13 +1354,40 @@ impl Screen {
         self.acted();
     }
 
-    /// Ask about clearing the finished agents under a heading.
+    /// ctrl+x on a heading: arm the finished agents under it, or forget them.
+    ///
+    /// The same two presses the key reads on a row, over a group. The first
+    /// arms every finished row under the heading and each of them says so
+    /// where its summary was — the rows are what the second press would take
+    /// away, so the rows are where the warning is, and the footer asks
+    /// nothing. The press inside the window, on the same heading, forgets
+    /// them all; a window left to lapse disarms with nothing removed.
     ///
     /// Only the finished ones, wherever the heading is: an agent that is still
     /// running is not something a key that clears history may reach, and a
-    /// group with nothing finished under it is told so rather than asked a
-    /// question whose yes would do nothing.
-    fn ask_to_sweep(&mut self, under: rows::Under) {
+    /// group with nothing finished under it is told so rather than armed to no
+    /// end.
+    fn sweep_or_arm(&mut self, root: &Path, under: rows::Under) {
+        let again = self
+            .arm
+            .as_ref()
+            .filter(|arm| arm.at.elapsed() < ARMED)
+            .is_some_and(|arm| arm.heading == Some(under));
+        if again {
+            let arm = self.arm.take().expect("the arm that was just read");
+            // What the first press armed, as the list has it now: an agent
+            // whose record has gone in the meantime is not one this can
+            // forget.
+            let views: Vec<&View> = arm
+                .ids
+                .iter()
+                .filter_map(|id| self.list.agent_by_id(id))
+                .collect();
+            self.notice = said(act::forget_all(root, &views));
+            self.acted();
+            return;
+        }
+
         let ids: Vec<String> = self
             .list
             .members(under)
@@ -1379,15 +1395,22 @@ impl Screen {
             .filter(|view| view.phase().is_terminal())
             .map(|view| view.id().to_string())
             .collect();
-        let under = self.list.title(under);
-
         if ids.is_empty() {
             self.notice = Some(Notice::Advice(format!(
-                "nothing under {under} has finished"
+                "nothing under {} has finished",
+                self.list.title(under)
             )));
             return;
         }
-        self.mode = Mode::Confirming(Asked::Sweep(Sweep { under, ids }));
+
+        // The rows are the whole of what the view has to say about this, so
+        // whatever it was saying before makes way for them.
+        self.notice = None;
+        self.arm = Some(Arm {
+            ids,
+            heading: Some(under),
+            at: Instant::now(),
+        });
     }
 
     /// The key a question of the view's own is waiting for.
@@ -1396,7 +1419,7 @@ impl Screen {
     /// question has to be when it is asked about something that cannot be taken
     /// back. A chord is not an answer either: it is somebody reaching for
     /// something else a beat after this opened, and what is on the other end of
-    /// it is a group of records or a program.
+    /// it is a program.
     fn answered(
         &mut self,
         key: KeyEvent,
@@ -1417,33 +1440,6 @@ impl Screen {
         let yes = matches!(key.code, KeyCode::Char('y' | 'Y'));
 
         match asked {
-            Asked::Sweep(sweep) => {
-                if !yes {
-                    // Silence after a keystroke that could have deleted things
-                    // is worse than the question was: say that nothing
-                    // happened.
-                    self.notice = Some(Notice::Advice(format!(
-                        "nothing was forgotten under {}",
-                        sweep.under
-                    )));
-                    return Ok(Doing::Carry);
-                }
-
-                // What the question counted, as the list has it now. An agent
-                // whose record has gone in the meantime is not an agent this
-                // can forget.
-                let swept = {
-                    let views: Vec<&View> = sweep
-                        .ids
-                        .iter()
-                        .filter_map(|id| self.list.agent_by_id(id))
-                        .collect();
-                    act::forget_all(root, &views)
-                };
-                self.notice = said(swept);
-                self.acted();
-                Ok(Doing::Carry)
-            }
             // The line comes back exactly as it was typed, because that is
             // what somebody who did not mean to press enter wants: a keystroke
             // in the middle of a task should not cost them the task.
@@ -2376,36 +2372,37 @@ mod tests {
     }
 
     #[test]
-    fn acts_ctrl_x_on_a_heading_asks_before_it_forgets_the_group() {
+    fn acts_ctrl_x_on_a_heading_arms_the_finished_under_it_and_the_press_after_forgets_them() {
         let root = TempDir::new().unwrap();
         finished(root.path(), "first-a1b", "wrote the parser", 60);
         finished(root.path(), "second-b2c", "wrote the tests", 120);
         let left = || crate::store::list(root.path()).unwrap().len();
 
-        // Up from the row the view opens on is the heading over it.
-        let (_, asked) = pressing(root.path(), vec![KeyEvent::from(KeyCode::Up), ctrl('x')]);
-        assert!(asked.contains("forget 2 finished"), "{asked}");
-        assert_eq!(left(), 2, "and the question is all that has happened");
+        // Up from the row the view opens on is the heading over it. The first
+        // press arms every finished row under it, each saying so where its
+        // summary was, and the footer asks nothing.
+        let (_, armed) = pressing(root.path(), vec![KeyEvent::from(KeyCode::Up), ctrl('x')]);
+        assert_eq!(armed.matches("ctrl+x again forgets").count(), 2, "{armed}");
+        assert!(!armed.contains("forget 2 finished"), "{armed}");
+        assert_eq!(left(), 2, "and arming is all that has happened");
 
-        // Any key that is not the one it asked for keeps them.
+        // A key that is not the second press forgets nothing.
         let (_, kept) = pressing(
             root.path(),
             vec![
                 KeyEvent::from(KeyCode::Up),
                 ctrl('x'),
-                KeyEvent::from(KeyCode::Char('n')),
+                KeyEvent::from(KeyCode::Down),
             ],
         );
-        assert!(kept.contains("nothing was forgotten"), "{kept}");
         assert_eq!(left(), 2);
+        assert!(!kept.contains("forgot"), "{kept}");
 
+        // The second press on the heading, inside the window, forgets them
+        // all.
         let (_, swept) = pressing(
             root.path(),
-            vec![
-                KeyEvent::from(KeyCode::Up),
-                ctrl('x'),
-                KeyEvent::from(KeyCode::Char('y')),
-            ],
+            vec![KeyEvent::from(KeyCode::Up), ctrl('x'), ctrl('x')],
         );
         assert!(swept.contains("forgot 2"), "{swept}");
         assert_eq!(left(), 0);
