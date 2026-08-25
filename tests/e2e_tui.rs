@@ -127,6 +127,40 @@ fn sgr_at(line: &str, word: &str) -> Vec<u16> {
     on
 }
 
+/// What the default theme paints a role in, out of the file that states it.
+///
+/// The escapes below are what tmux wrote for a colour, and a colour typed out
+/// here as well would part company with the palette the day somebody edited
+/// one. `assets/themes/default.toml` is held to the struct default by a test
+/// of its own, so reading it here reaches both.
+fn default_theme(role: &str) -> (u8, u8, u8) {
+    let said = include_str!("../assets/themes/default.toml")
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{role} = ")))
+        .unwrap_or_else(|| panic!("the default theme names {role}"))
+        .trim()
+        .trim_matches('"');
+    let hex = said
+        .strip_prefix('#')
+        .unwrap_or_else(|| panic!("{role} is a hex colour: {said}"));
+    let byte = |at: usize| {
+        u8::from_str_radix(&hex[at..at + 2], 16).unwrap_or_else(|_| panic!("a hex colour: {said}"))
+    };
+    (byte(0), byte(2), byte(4))
+}
+
+/// A role of the default theme as the escape tmux writes for text in it.
+fn foreground(role: &str) -> String {
+    let (r, g, b) = default_theme(role);
+    format!("38;2;{r};{g};{b}")
+}
+
+/// And as the escape for a line drawn on it.
+fn background(role: &str) -> String {
+    let (r, g, b) = default_theme(role);
+    format!("48;2;{r};{g};{b}")
+}
+
 /// Move a record's directory, which is what decides its project.
 fn running_in(amx: &Harness, id: &str, dir: &std::path::Path) {
     let path = amx.agent_dir(id).join("meta.json");
@@ -1007,7 +1041,7 @@ fn rows_read_as_one_muted_tone_with_the_state_kept_on_the_icon() {
         );
     }
     assert!(
-        muted.contains("38;2;78;186;101"),
+        muted.contains(&foreground("done")),
         "the icon alone carries the state's colour:\n{muted:?}"
     );
 
@@ -1027,7 +1061,39 @@ fn rows_read_as_one_muted_tone_with_the_state_kept_on_the_icon() {
 }
 
 /// The background the cursor's bar is made of, as tmux writes the escape.
-const BAR: &str = "48;2;55;55;55";
+fn bar() -> String {
+    background("cursor")
+}
+
+#[test]
+fn the_view_paints_in_the_theme_the_config_names() {
+    let amx = Harness::new();
+    amx.config("theme = \"terminal\"\n");
+    finished(&amx, "fix-login-a1b", "done", 60);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+    });
+
+    // The terminal theme names its colours and measures none, so the row is
+    // painted out of this terminal's own palette — by index, which is how
+    // tmux writes a colour that was named — rather than in a value amx
+    // measured.
+    let row = coloured_line(&amx, &view, "fix-login-a1b");
+    assert!(
+        row.contains("38;5;"),
+        "nothing on the row is painted in a colour the palette names:\n{row:?}"
+    );
+
+    // Which means the two the default theme would have put on this row — the
+    // green that says it went the way it was meant to, and the bar under the
+    // cursor — are not on it.
+    assert!(
+        !row.contains(&foreground("done")) && !row.contains(&bar()),
+        "the default theme is what is being painted:\n{row:?}"
+    );
+}
 
 #[test]
 fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
@@ -1059,11 +1125,11 @@ fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
         coloured(&amx, &view)
             .lines()
             .find(|line| line.contains("port-importer-b2c") && line.contains("did what"))
-            .filter(|line| line.contains(BAR))
+            .filter(|line| line.contains(&bar()))
             .map(|_| ())
     });
     assert!(
-        !coloured_line(&amx, &view, "fix-login-a1b").contains(BAR),
+        !coloured_line(&amx, &view, "fix-login-a1b").contains(&bar()),
         "one cursor, and the click is where it is"
     );
 
@@ -1131,11 +1197,11 @@ fn hovering_a_row_tints_its_name_and_moves_no_cursor() {
         .then_some(())
     });
     assert!(
-        coloured_line(&amx, &view, "fix-login-a1b").contains(BAR),
+        coloured_line(&amx, &view, "fix-login-a1b").contains(&bar()),
         "the bar stayed where the keyboard's cursor is"
     );
     assert!(
-        !coloured_line(&amx, &view, "port-importer-b2c").contains(BAR),
+        !coloured_line(&amx, &view, "port-importer-b2c").contains(&bar()),
         "a hover is a tint, not a selection"
     );
 }
@@ -1168,13 +1234,13 @@ fn the_wheel_walks_the_list_and_pages_the_card_under_the_pointer() {
     mouse(&amx, &view, 65, 5, over_rows, true);
     amx.until("the bar to walk down", || {
         coloured_line(&amx, &view, "short-a1b")
-            .contains(BAR)
+            .contains(&bar())
             .then_some(())
     });
     mouse(&amx, &view, 64, 5, over_rows, true);
     amx.until("and back up", || {
         coloured_line(&amx, &view, "tall-b2c")
-            .contains(BAR)
+            .contains(&bar())
             .then_some(())
     });
 
@@ -1221,26 +1287,26 @@ fn the_cursor_is_a_bar_over_rows_and_headings_alike() {
     });
 
     // The bar is a background colour, so it is in the escapes rather than in
-    // the text: 55,55,55, which is the vendor's own for a selected line.
-    const BAR: &str = "48;2;55;55;55";
+    // the text: the theme's cursor colour, which is the vendor's own for a
+    // selected line.
     amx.until("the bar under the cursor", || {
         coloured_line(&amx, &view, "ask-a1b")
-            .contains(BAR)
+            .contains(&bar())
             .then_some(())
     });
     assert!(
-        !coloured_line(&amx, &view, "needs input").contains(BAR),
+        !coloured_line(&amx, &view, "needs input").contains(&bar()),
         "and not under the heading the cursor is not on"
     );
 
     press(&amx, &view, "Up");
     amx.until("the bar to move up onto the heading", || {
         coloured_line(&amx, &view, "needs input")
-            .contains(BAR)
+            .contains(&bar())
             .then_some(())
     });
     assert!(
-        !coloured_line(&amx, &view, "ask-a1b").contains(BAR),
+        !coloured_line(&amx, &view, "ask-a1b").contains(&bar()),
         "one line at a time, whatever kind of line it is"
     );
 }
@@ -2518,7 +2584,7 @@ fn ctrl_x_arms_a_finished_row_and_says_so_where_its_summary_was() {
         "in place of the summary rather than beside it:\n{armed}"
     );
     assert!(
-        armed.contains("38;2;255;193;7"),
+        armed.contains(&foreground("waiting")),
         "in the colour of a thing waiting on a person:\n{armed}"
     );
     assert_eq!(
