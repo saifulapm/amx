@@ -807,8 +807,20 @@ impl Screen {
     /// tab's capture, and held to the reread cadence the pair stands mixed
     /// on the screen for a second. Taken again every pass, the card settles
     /// the moment the pane does.
+    ///
+    /// Only the card the record has the question for, which is the card this
+    /// is about: its body is the question block, so retaking it costs a
+    /// struct built out of a reading already in hand. The other waiting
+    /// agent — the one amx read no question for — has the pane for a body,
+    /// and taking that is a `capture-pane` fork. Nothing on that card moves
+    /// faster than the reading does, so it keeps the reading's cadence like
+    /// every other capture on the screen.
     fn freshen(&mut self) {
-        if self.card.as_ref().is_some_and(Card::asks) {
+        let asked = self
+            .card
+            .as_ref()
+            .is_some_and(|card| card.asks() && card.question.is_some());
+        if asked {
             self.follow_the_cursor();
         }
     }
@@ -2864,6 +2876,49 @@ mod tests {
         assert_eq!(
             screen.card.as_ref().map(|card| card.body.says()),
             Some("+ a line".to_string())
+        );
+    }
+
+    #[test]
+    fn card_of_a_waiting_agent_with_no_question_keeps_the_readings_cadence() {
+        // The one waiting agent whose card is a capture: amx never read a
+        // question for it, so the pane is the only place the question is
+        // written. Every other capture on this screen is taken at the
+        // reading's cadence and this one was taken on every pass as well —
+        // a tmux fork per tick, per keystroke and per mouse move, for as long
+        // as somebody left the card open.
+        let mut screen = watching(vec![reading(
+            "hush-a1b",
+            Phase::Waiting,
+            State {
+                state: Phase::Waiting,
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        )]);
+        screen.look = Look::Screen;
+        screen.follow_the_cursor();
+        screen.card.as_mut().expect("a card").body = Body::screen("what the pane said");
+
+        let walked = paint::walks();
+        for _ in 0..4 {
+            screen.freshen();
+        }
+        assert_eq!(paint::walks(), walked, "no card was built between readings");
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.body.says()),
+            Some("what the pane said".to_string()),
+            "the card the reading took is the card still on the screen"
+        );
+
+        // The reading takes it again, which is the cadence the rest of the
+        // wall is read at.
+        screen.follow_the_cursor();
+        assert_eq!(
+            paint::walks(),
+            walked + 1,
+            "and the reading itself takes it again"
         );
     }
 
