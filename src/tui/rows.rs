@@ -278,6 +278,8 @@ pub struct List {
     order: BTreeMap<Group, Vec<String>>,
     axis: Axis,
     filters: Filters,
+    /// How many agents each state has, worked out where the lines are.
+    counts: Vec<(Group, usize)>,
     /// The projects the headings name, in the order they are drawn.
     projects: Vec<PathBuf>,
     /// Which project each agent belongs to, worked out once per agent: the
@@ -318,6 +320,7 @@ impl Default for List {
             order: BTreeMap::new(),
             axis: Axis::default(),
             filters: Filters::default(),
+            counts: Vec::new(),
             projects: Vec::new(),
             roots: HashMap::new(),
             probe: holds_a_repository,
@@ -687,19 +690,13 @@ impl List {
 
     /// How many agents are in each state that has any, whichever way they are
     /// gathered: what there is does not depend on how it was laid out.
-    pub fn counts(&self) -> Vec<(Group, usize)> {
-        Group::ALL
-            .into_iter()
-            .filter_map(|group| {
-                let count = self
-                    .views
-                    .iter()
-                    .filter(|view| self.keeps(view))
-                    .filter(|view| Group::of(view.phase()) == group)
-                    .count();
-                (count > 0).then_some((group, count))
-            })
-            .collect()
+    ///
+    /// Read back rather than worked out. The counters along the header and the
+    /// name the terminal is given both ask on every frame, and a frame is
+    /// drawn many times over a reading that was taken once, so the walk goes
+    /// where the lines are laid out and each look after it is a look at that.
+    pub fn counts(&self) -> &[(Group, usize)] {
+        &self.counts
     }
 
     /// Whether there is nothing on the screen — which is not the same as
@@ -776,6 +773,7 @@ impl List {
         self.built = self.room.get();
         self.remember_the_roots();
         let order = self.ordered();
+        self.counts = self.counted(&order);
         match self.axis {
             Axis::State => {
                 self.projects.clear();
@@ -841,6 +839,27 @@ impl List {
                 })
         });
         order
+    }
+
+    /// How many agents each state has, off the order the lines are laid out
+    /// from.
+    ///
+    /// The same agents the lines are made of, so a count and the rows under a
+    /// heading cannot disagree, and what a narrowing hid is out of both for
+    /// the one reason. That order is every agent the narrowing left whichever
+    /// way they are about to be gathered, which is what makes the count the
+    /// same on either axis.
+    fn counted(&self, order: &[usize]) -> Vec<(Group, usize)> {
+        Group::ALL
+            .into_iter()
+            .filter_map(|group| {
+                let count = order
+                    .iter()
+                    .filter(|&&n| Group::of(self.views[n].phase()) == group)
+                    .count();
+                (count > 0).then_some((group, count))
+            })
+            .collect()
     }
 
     /// One heading per state that has anybody under it.
@@ -1415,6 +1434,51 @@ mod tests {
                 (Group::Idle, 1),
                 (Group::Completed, 1)
             ]
+        );
+    }
+
+    #[test]
+    fn view_counts_the_fleet_once_for_however_many_frames_read_it() {
+        // Two things on a frame ask what the fleet is — the counters along the
+        // header and the name the terminal is given — and a frame is drawn
+        // many times over a reading that was taken once. So the count is
+        // worked out where the lines are, and every look after that reads it.
+        let mut list = listed(vec![
+            view("ask-a1b", Phase::Waiting, 10),
+            view("busy-b2c", Phase::Working, 20),
+            view("busy-c3d", Phase::Working, 30),
+            view("done-d4e", Phase::Done, 40),
+        ]);
+        assert_eq!(
+            list.counts(),
+            [
+                (Group::NeedsInput, 1),
+                (Group::Working, 2),
+                (Group::Completed, 1)
+            ]
+        );
+        assert!(
+            std::ptr::eq(list.counts(), list.counts()),
+            "the second look is the first answer rather than a second walk"
+        );
+
+        // And the answer is the reading's own: what a narrowing left, and what
+        // the next reading brought.
+        list.narrow(vec![Narrow::State(Some("working".to_string()))]);
+        assert_eq!(list.counts(), [(Group::Working, 2)]);
+        list.narrow(vec![Narrow::State(None)]);
+        list.show(vec![view("ask-a1b", Phase::Waiting, 10)]);
+        assert_eq!(list.counts(), [(Group::NeedsInput, 1)]);
+
+        // Whichever way they are gathered: what there is does not depend on
+        // how it was laid out.
+        let gathered = over_the_disk(vec![
+            at(view("ask-a1b", Phase::Waiting, 10), "/src/api"),
+            at(view("busy-b2c", Phase::Working, 20), "/src/web"),
+        ]);
+        assert_eq!(
+            gathered.counts(),
+            [(Group::NeedsInput, 1), (Group::Working, 1)]
         );
     }
 

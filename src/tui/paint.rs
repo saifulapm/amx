@@ -676,7 +676,7 @@ const SEPARATOR: &str = " · ";
 /// by, and the gate the next agent will meet.
 fn counters(list: &List, max: usize) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
-    for (group, count) in list.counts() {
+    for &(group, count) in list.counts() {
         if !spans.is_empty() {
             spans.push(Span::styled(SEPARATOR, dim()));
         }
@@ -718,9 +718,9 @@ fn counters(list: &List, max: usize) -> Vec<Span<'static>> {
 pub fn title(list: &List) -> String {
     let waiting = list
         .counts()
-        .into_iter()
+        .iter()
         .find(|(group, _)| *group == Group::NeedsInput)
-        .map(|(_, count)| count);
+        .map(|&(_, count)| count);
     match waiting {
         Some(count) => format!("amx{SEPARATOR}{count} waiting"),
         None => "amx".to_string(),
