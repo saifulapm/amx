@@ -219,12 +219,14 @@ stopping is what moves a group to completed: the rows carry the arming, the
 cursor is kept with them while the window is open, and the heading standing
 over them is where the second press lands.
 
-The list takes the mouse: click selects, a click on a heading opens and shuts
-it, a click on the `… N more` fold unfolds it, the wheel scrolls — and pages an
-open card when the pointer is over it — and resting the pointer on a row tints
-its name. Hold shift for the terminal's own text selection, which is how every
-mouse-capture program behaves under tmux or ghostty. The mouse is handed back
-with the screen whenever the view lends the terminal out, and when it closes.
+The list takes the mouse: a click on an agent's row is `enter` on it — the
+cursor lands and the agent's session comes in front of you — a click on a
+heading opens and shuts it, a click on the `… N more` fold unfolds it, the
+wheel scrolls — and pages an open card when the pointer is over it — and
+resting the pointer on a row tints its name. Hold shift for the terminal's own
+text selection, which is how every mouse-capture program behaves under tmux or
+ghostty. The mouse is handed back with the screen whenever the view lends the
+terminal out, and when it closes.
 
 While the view is open your terminal is called `amx · 2 waiting`, or `amx` when
 nothing is waiting on you, so a window behind something else still answers the

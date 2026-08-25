@@ -619,26 +619,32 @@ where
             called = title;
         }
 
-        match keys.next(TICK) {
-            Typed::Nothing => {}
+        // A mouse press can do everything a key can — a click on a row is
+        // enter on it — so both are read into the same doing.
+        let doing = match keys.next(TICK) {
+            Typed::Nothing => Doing::Carry,
             Typed::Gone => return Ok(exit::OK),
-            Typed::Mouse(mouse) => screen.moused(mouse),
-            Typed::Paste(text) => screen.pasted(&text),
-            Typed::Key(key) => match screen.act(key, root, config, here.as_ref())? {
-                Doing::Carry => {}
-                Doing::Close => return Ok(exit::OK),
-                Doing::Lend { id, on, session } => {
-                    screen.notice = lend(terminal, &id, &on, &session)?;
-                    // Whoever had the terminal had the title with it, so the
-                    // view says what it is called again rather than trusting a
-                    // name it did not put there.
-                    called.clear();
-                }
-                Doing::Edit => {
-                    edit_the_line(terminal, &mut screen)?;
-                    called.clear();
-                }
-            },
+            Typed::Mouse(mouse) => screen.moused(mouse, root, config, here.as_ref())?,
+            Typed::Paste(text) => {
+                screen.pasted(&text);
+                Doing::Carry
+            }
+            Typed::Key(key) => screen.act(key, root, config, here.as_ref())?,
+        };
+        match doing {
+            Doing::Carry => {}
+            Doing::Close => return Ok(exit::OK),
+            Doing::Lend { id, on, session } => {
+                screen.notice = lend(terminal, &id, &on, &session)?;
+                // Whoever had the terminal had the title with it, so the
+                // view says what it is called again rather than trusting a
+                // name it did not put there.
+                called.clear();
+            }
+            Doing::Edit => {
+                edit_the_line(terminal, &mut screen)?;
+                called.clear();
+            }
         }
     }
 }
@@ -1041,19 +1047,8 @@ impl Screen {
                     self.follow_the_cursor();
                 } else if self.list.on_fold() {
                     self.list.unfold();
-                } else if let Some(view) = self.list.selected() {
-                    let id = view.id().to_string();
-                    let reached = reach(root, config, here, view)?;
-                    // An agent that came back is in a pane this reading knows
-                    // nothing about.
-                    self.acted();
-                    match reached {
-                        Reach::There => {}
-                        Reach::Say(notice) => self.notice = Some(notice),
-                        Reach::Lend(on, session) => {
-                            return Ok(Doing::Lend { id, on, session });
-                        }
-                    }
+                } else {
+                    return self.bring_forward(root, config, here);
                 }
             }
             // The agents by where they are on the wall, which is the number a
@@ -1337,6 +1332,30 @@ impl Screen {
                     session,
                 });
             }
+        }
+        Ok(Doing::Carry)
+    }
+
+    /// Bring the agent under the cursor's window forward, which is what enter
+    /// does on a row — and a click, which is enter by another hand.
+    fn bring_forward(
+        &mut self,
+        root: &Path,
+        config: &Config,
+        here: Option<&Here>,
+    ) -> Result<Doing> {
+        let Some(view) = self.list.selected() else {
+            return Ok(Doing::Carry);
+        };
+        let id = view.id().to_string();
+        let reached = reach(root, config, here, view)?;
+        // An agent that came back is in a pane this reading knows nothing
+        // about.
+        self.acted();
+        match reached {
+            Reach::There => {}
+            Reach::Say(notice) => self.notice = Some(notice),
+            Reach::Lend(on, session) => return Ok(Doing::Lend { id, on, session }),
         }
         Ok(Doing::Carry)
     }
@@ -1671,13 +1690,21 @@ impl Screen {
         });
     }
 
-    /// What the mouse does: the list takes it. A click is the cursor, the
-    /// wheel is the walk — or a page, when the pointer is over an open card —
-    /// and the pointer resting on a row tints that row's name without moving
-    /// the cursor. Nothing else is clickable, and the clicks and the wheel
-    /// are the list's the way its letter keys are: a line being typed and a
-    /// question of the view's own keep the keys they have.
-    fn moused(&mut self, mouse: MouseEvent) {
+    /// What the mouse does: the list takes it. A click on a row is enter on
+    /// it — the cursor lands and the agent's window comes forward — a click
+    /// on a heading or the fold keeps its toggle, the wheel is the walk — or
+    /// a page, when the pointer is over an open card — and the pointer
+    /// resting on a row tints that row's name without moving the cursor.
+    /// Nothing else is clickable, and the clicks and the wheel are the
+    /// list's the way its letter keys are: a line being typed and a question
+    /// of the view's own keep the keys they have.
+    fn moused(
+        &mut self,
+        mouse: MouseEvent,
+        root: &Path,
+        config: &Config,
+        here: Option<&Here>,
+    ) -> Result<Doing> {
         match mouse.kind {
             MouseEventKind::Moved => {
                 self.hover = self
@@ -1686,15 +1713,18 @@ impl Screen {
             }
             MouseEventKind::Down(MouseButton::Left) if matches!(self.mode, Mode::List) => {
                 let Some(at) = self.line_under(mouse.column, mouse.row) else {
-                    return;
+                    return Ok(Doing::Carry);
                 };
                 // A click is a decision the way a key is, so whatever the
                 // view had to say was about the moment before it.
                 self.notice = None;
                 match self.list.items().get(at) {
+                    // A row's click is enter, not merely the cursor: somebody
+                    // pointing at an agent is asking to open it.
                     Some(rows::Item::Agent(_)) => {
                         if self.list.land(at) {
                             self.moved();
+                            return self.bring_forward(root, config, here);
                         }
                     }
                     Some(rows::Item::Heading(..)) => {
@@ -1726,6 +1756,7 @@ impl Screen {
             }
             _ => {}
         }
+        Ok(Doing::Carry)
     }
 
     /// The line of the list under this point, bounded to the lines there are:
@@ -4265,6 +4296,8 @@ mod tests {
 
     #[test]
     fn mouse_click_selects_the_row_and_toggles_the_heading_under_the_pointer() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
         let mut screen = watching(vec![
             finished_saying("done-a1b", "the first answer"),
             finished_saying("done-b2c", "the second answer"),
@@ -4273,24 +4306,48 @@ mod tests {
         assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
 
         // The second agent's row, which is two under the heading on row 3.
-        screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 5));
+        // The cursor lands before the click goes on to reach for the window,
+        // and nothing here has a record to carry back — the reaching itself
+        // is the e2e test's to prove.
+        let _ = screen.moused(
+            mouse(MouseEventKind::Down(MouseButton::Left), 5, 5),
+            root.path(),
+            &config,
+            None,
+        );
         assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
 
         // A click on the heading shuts the group, and another opens it.
         a_frame(&mut screen);
-        screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
+        screen
+            .moused(
+                mouse(MouseEventKind::Down(MouseButton::Left), 5, 3),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
         assert_eq!(
             screen.list.items().len(),
             1,
             "the rows are behind the count"
         );
         a_frame(&mut screen);
-        screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
+        screen
+            .moused(
+                mouse(MouseEventKind::Down(MouseButton::Left), 5, 3),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
         assert_eq!(screen.list.items().len(), 3);
     }
 
     #[test]
     fn mouse_click_on_the_fold_unfolds_it_and_elsewhere_does_nothing() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
         // Nine finished on a band of eight rows: a heading, the six the
         // screen has room for, and the fold on the last of them.
         let mut screen = watching(
@@ -4306,26 +4363,74 @@ mod tests {
         );
 
         // The fold is the row under the six drawn agents.
-        screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 10));
+        screen
+            .moused(
+                mouse(MouseEventKind::Down(MouseButton::Left), 5, 10),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
         assert_eq!(screen.list.items().len(), 10, "the fold gave its rows back");
 
         // A click past the end of the list lands on nothing and moves
         // nothing.
         let before = screen.list.selected().unwrap().id().to_string();
         a_frame(&mut screen);
-        screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 11));
+        screen
+            .moused(
+                mouse(MouseEventKind::Down(MouseButton::Left), 5, 11),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
         assert_eq!(screen.list.selected().unwrap().id(), before);
     }
 
     #[test]
+    fn mouse_click_on_a_row_reaches_for_the_agents_window_like_enter() {
+        let root = TempDir::new().unwrap();
+        finished(root.path(), "first-a1b", "wrote the parser", 60);
+
+        // On a 50x10 harness screen the heading is row 2 and the one agent
+        // row 3. The click lands the cursor and then goes to bring the
+        // window forward the way enter does; this agent has no session to
+        // carry back, and the refusal naming that is the proof the click
+        // went that far.
+        let script = vec![
+            Typed::Mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3)),
+            Typed::Key(KeyEvent::from(KeyCode::Char('q'))),
+        ];
+        let (code, drawn) = driving(root.path(), script);
+        assert_eq!(code, exit::OK);
+        assert!(
+            drawn.contains("no session was ever recorded"),
+            "the click read the row as enter does:\n{drawn}"
+        );
+    }
+
+    #[test]
     fn mouse_hover_tints_a_name_and_moves_no_cursor() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
         let mut screen = watching(vec![
             finished_saying("done-a1b", "the first answer"),
             finished_saying("done-b2c", "the second answer"),
         ]);
         a_frame(&mut screen);
+        let resting = |screen: &mut Screen, column, row| {
+            screen
+                .moused(
+                    mouse(MouseEventKind::Moved, column, row),
+                    root.path(),
+                    &config,
+                    None,
+                )
+                .unwrap();
+        };
 
-        screen.moused(mouse(MouseEventKind::Moved, 5, 5));
+        resting(&mut screen, 5, 5);
         assert_eq!(screen.hover, Some(2), "the second agent's line is hovered");
         assert_eq!(
             screen.list.selected().unwrap().id(),
@@ -4335,9 +4440,9 @@ mod tests {
 
         // A heading is not an agent, and off the rows there is nothing to
         // tint.
-        screen.moused(mouse(MouseEventKind::Moved, 5, 3));
+        resting(&mut screen, 5, 3);
         assert_eq!(screen.hover, None);
-        screen.moused(mouse(MouseEventKind::Moved, 5, 0));
+        resting(&mut screen, 5, 0);
         assert_eq!(screen.hover, None);
     }
 
@@ -4353,11 +4458,16 @@ mod tests {
         // Twenty rows, so the card the space below opens still leaves both
         // rows on the screen in front of it.
         a_frame_of(&mut screen, (60, 20));
+        let wheel = |screen: &mut Screen, kind, column, row| {
+            screen
+                .moused(mouse(kind, column, row), root.path(), &config, None)
+                .unwrap();
+        };
 
         // No card up: the wheel is the walk.
-        screen.moused(mouse(MouseEventKind::ScrollDown, 5, 5));
+        wheel(&mut screen, MouseEventKind::ScrollDown, 5, 5);
         assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
-        screen.moused(mouse(MouseEventKind::ScrollUp, 5, 5));
+        wheel(&mut screen, MouseEventKind::ScrollUp, 5, 5);
         assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
 
         // A card over the bottom of the band: the wheel pages it where the
@@ -4371,16 +4481,16 @@ mod tests {
             )
             .unwrap();
         a_frame_of(&mut screen, (60, 20));
-        screen.moused(mouse(MouseEventKind::ScrollDown, 5, 9));
+        wheel(&mut screen, MouseEventKind::ScrollDown, 5, 9);
         assert!(
             screen.scroll.away.get() > 0,
             "wheel-down over the card read on into the answer"
         );
-        screen.moused(mouse(MouseEventKind::ScrollUp, 5, 9));
+        wheel(&mut screen, MouseEventKind::ScrollUp, 5, 9);
         assert_eq!(screen.scroll.away.get(), 0, "and wheel-up came back");
 
         a_frame_of(&mut screen, (60, 20));
-        screen.moused(mouse(MouseEventKind::ScrollDown, 5, 4));
+        wheel(&mut screen, MouseEventKind::ScrollDown, 5, 4);
         assert_eq!(
             screen.list.selected().unwrap().id(),
             "done-b2c",
@@ -4390,6 +4500,8 @@ mod tests {
 
     #[test]
     fn mouse_clicks_are_the_lists_alone_while_a_line_is_being_typed() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
         let mut screen = watching(vec![
             finished_saying("done-a1b", "the first answer"),
             finished_saying("done-b2c", "the second answer"),
@@ -4397,8 +4509,14 @@ mod tests {
         screen.mode = Mode::Typing(Composer::new(Asking::Task));
         a_frame(&mut screen);
 
-        screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 5));
-        screen.moused(mouse(MouseEventKind::ScrollDown, 5, 5));
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::ScrollDown,
+        ] {
+            screen
+                .moused(mouse(kind, 5, 5), root.path(), &config, None)
+                .unwrap();
+        }
         assert_eq!(
             screen.list.selected().unwrap().id(),
             "done-a1b",

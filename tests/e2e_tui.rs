@@ -1046,7 +1046,9 @@ fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
         "the view asked the terminal for the mouse"
     );
 
-    // A click on the older agent's row moves the bar to it.
+    // A click on the older agent's row moves the bar to it. Its id is about
+    // to be on the footer too, so the row is the line that also carries its
+    // summary.
     click(
         &amx,
         &view,
@@ -1054,14 +1056,25 @@ fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
         screen_row_of(&amx, &view, "port-importer-b2c"),
     );
     amx.until("the bar under the clicked row", || {
-        coloured_line(&amx, &view, "port-importer-b2c")
-            .contains(BAR)
-            .then_some(())
+        coloured(&amx, &view)
+            .lines()
+            .find(|line| line.contains("port-importer-b2c") && line.contains("did what"))
+            .filter(|line| line.contains(BAR))
+            .map(|_| ())
     });
     assert!(
         !coloured_line(&amx, &view, "fix-login-a1b").contains(BAR),
         "one cursor, and the click is where it is"
     );
+
+    // And the click went on to bring the window forward, the way enter
+    // does: this agent has no session to carry back, and the refusal
+    // naming that is how far it got.
+    amx.until("the refusal", || {
+        screen(&amx, &view)
+            .contains("no session was ever recorded")
+            .then_some(())
+    });
 
     // A click on the heading shuts the group, and another opens it.
     let heading = screen(&amx, &view)
