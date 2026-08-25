@@ -4314,7 +4314,7 @@ mod tests {
             "and the row carries the state the heading used to say:\n{screen}"
         );
         assert!(
-            drawn[1].contains("1 done"),
+            drawn[0].contains("1 done"),
             "what there is does not change with the way it is laid out:\n{screen}"
         );
     }

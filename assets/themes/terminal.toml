@@ -12,7 +12,8 @@ done = "green"
 failed = "red"
 # It was ended by hand, and nothing more is coming.
 stopped = "gray"
-# What the next agent will be started with.
+# What the next agent will be allowed to do without asking, said under the line
+# that would start it.
 accent = "cyan"
 # The line the cursor is on, as a background: the palette's own off-black, which
 # is the one shade a scheme picks to sit a little above its background.

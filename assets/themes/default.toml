@@ -1,7 +1,14 @@
 # The palette amx paints with when nothing says otherwise.
 #
-# Four of the six are claude's own, measured off the 2.1.237 binary: a view
+# Five of the six are claude's own, measured off the 2.1.237 binary: a view
 # sitting beside claude's should not be a different shade of the same idea.
+# `accent` is the sixth, and it says where it came from below.
+#
+# Six colours is the whole of it, and most of the screen wears none of them:
+# what a row is, where the cursor is and what a group holds are said in words,
+# in weight and in the dim the terminal already has. A colour here is spent on
+# one thing -- how it went, or that it wants a person -- so that the two or
+# three of them on a wall of forty rows are the two or three worth looking at.
 #
 # A value is a colour named the way a terminal names one ("cyan"), a 256-colour
 # index ("134"), or a hex ("#4eba65"). Copy this file to
@@ -15,10 +22,14 @@ done = "#4eba65"
 failed = "#ff6b80"
 # It was ended by hand, and nothing more is coming.
 stopped = "#999999"
-# What the next agent will be started with. The terminal's own cyan rather than
-# a value out of the binary: what colour claude paints the prospective half of
-# its own header is not something amx has measured, and an RGB nobody measured
-# would read as one that was.
+# What the next agent will be allowed to do without asking, said under the line
+# that would start it. The one thing about an agent that does not exist yet
+# worth a colour, because it is the one a person is about to press enter past:
+# the dials above the list say what they are in the word `next:` instead.
+#
+# The terminal's own cyan rather than a value out of the binary: what colour
+# claude paints its own permission row is not something amx has measured, and
+# an RGB nobody measured would read as one that was.
 accent = "cyan"
 # The line the cursor is on. A background rather than a foreground: it says
 # where the cursor is without taking a colour away from what the line was
