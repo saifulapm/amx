@@ -371,6 +371,29 @@ fn wants_the_question(state: &State) -> bool {
     state.state == Phase::Waiting && state.question.as_deref().is_none_or(placeholder)
 }
 
+/// Whether concluding about this agent means looking at its pane.
+///
+/// [`read`] asks for the screen rather than being handed one, so that a
+/// reading which needs no screen pays for none. A wall is the other half of
+/// that: the screens it does need are worth taking in one call rather than
+/// one at a time (see [`Server::captures`]), and a call made before any of the
+/// records has been read is a call that cannot know which panes to name. So
+/// the same three questions [`read`] asks — is this over, is the pane there,
+/// are the hooks fresh enough — are asked here, off the record alone.
+///
+/// The two have to agree, and a test says so rather than a comment: a reading
+/// wanting a screen nobody asked for concludes `unknown` off a capture that
+/// was never taken.
+fn wants_the_screen(state: &State, alive: bool, now: u64) -> bool {
+    if state.state.is_terminal() || !alive {
+        return false;
+    }
+    if now.saturating_sub(heard(state)) <= FRESH {
+        return wants_the_question(state);
+    }
+    true
+}
+
 /// When anything was last heard from the agent, as the record has it.
 ///
 /// Whichever of the two stamps is later: a record written before its first
@@ -935,19 +958,30 @@ pub fn view(root: &Path, id: &str, rules: &Ruleset, now: u64) -> Result<View> {
     Ok(seen(meta, state, reading))
 }
 
+/// One agent's record, and whether its pane is still there: everything a
+/// reading of a wall has in hand before it asks for a screen.
+struct Pending {
+    agent: Agent,
+    meta: Meta,
+    state: State,
+    alive: bool,
+}
+
 /// Read every agent, oldest first.
 ///
-/// One pane list per server rather than one per agent: a wall of ten agents is
-/// one tmux call, not ten.
+/// Two passes over the records with one round of tmux between them, because
+/// what tmux is asked is worked out from the records and the answer comes back
+/// for all of them at once: one pane list per server, and one call for every
+/// screen the reading needs. A wall of ten agents is two tmux calls, not
+/// twenty.
 pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
-    let mut views = Vec::new();
+    let mut pending: Vec<Pending> = Vec::new();
     let mut panes: Vec<(crate::tmux::Socket, Vec<crate::tmux::PaneId>)> = Vec::new();
 
     for id in crate::store::list(root)? {
         let agent = Agent::open(root, &id)?;
         let Ok(meta) = agent.meta() else { continue };
-        let mut state = agent.state()?;
-        let server = Server::from_socket(meta.socket.clone());
+        let state = agent.state()?;
 
         let alive = if state.state.is_terminal() {
             true
@@ -955,7 +989,9 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
             let listed = match panes.iter().find(|(socket, _)| socket == &meta.socket) {
                 Some((_, listed)) => listed,
                 None => {
-                    let listed = server.panes().unwrap_or_default();
+                    let listed = Server::from_socket(meta.socket.clone())
+                        .panes()
+                        .unwrap_or_default();
                     panes.push((meta.socket.clone(), listed));
                     &panes.last().expect("just pushed").1
                 }
@@ -963,15 +999,28 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
             listed.contains(&meta.pane)
         };
 
-        let reading = read(
-            &state,
-            meta.created,
+        pending.push(Pending {
+            agent,
+            meta,
+            state,
             alive,
-            || server.capture(&meta.pane).ok(),
-            rules,
-            now,
-            1,
-        );
+        });
+    }
+
+    let mut screens = screens_of(&pending, now);
+    let mut views = Vec::new();
+    for (at, item) in pending.into_iter().enumerate() {
+        let Pending {
+            agent,
+            meta,
+            mut state,
+            alive,
+        } = item;
+        // Taken rather than borrowed: the reading is handed the screen, and
+        // there is one reading it belongs to.
+        let screen = screens[at].take();
+
+        let reading = read(&state, meta.created, alive, || screen, rules, now, 1);
         if let Some(asking) = &reading.asking {
             note(&agent, &mut state, asking);
         }
@@ -986,6 +1035,45 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
 
     views.sort_by_key(|view| (view.meta.created, view.meta.id.clone()));
     Ok(views)
+}
+
+/// The screens this reading needs, taken a server at a time, in the order the
+/// agents were read in.
+///
+/// Which of them is wanted is worked out from the records first — see
+/// [`wants_the_screen`] — so a wall where every record is fresh asks tmux for
+/// nothing at all, and one where none of them is asks once. An agent whose
+/// screen was not wanted, and one whose pane went between the listing and the
+/// call, both come back with nothing: a reading that wanted neither reads no
+/// screen either way.
+fn screens_of(pending: &[Pending], now: u64) -> Vec<Option<String>> {
+    let mut screens: Vec<Option<String>> = vec![None; pending.len()];
+    let mut wanted: Vec<(crate::tmux::Socket, Vec<usize>)> = Vec::new();
+
+    for (at, item) in pending.iter().enumerate() {
+        if !wants_the_screen(&item.state, item.alive, now) {
+            continue;
+        }
+        match wanted
+            .iter_mut()
+            .find(|(socket, _)| socket == &item.meta.socket)
+        {
+            Some((_, asking)) => asking.push(at),
+            None => wanted.push((item.meta.socket.clone(), vec![at])),
+        }
+    }
+
+    for (socket, asking) in wanted {
+        let panes: Vec<crate::tmux::PaneId> = asking
+            .iter()
+            .map(|at| pending[*at].meta.pane.clone())
+            .collect();
+        let taken = Server::from_socket(socket).captures(&panes);
+        for (at, screen) in asking.into_iter().zip(taken) {
+            screens[at] = screen;
+        }
+    }
+    screens
 }
 
 #[cfg(test)]
@@ -1421,6 +1509,158 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         told.summary = Some("Running Bash".to_string());
         let reading = reading(&told, true, Some(A_SHELL), 1_500);
         assert_eq!(seen(meta(), told, reading).line(), Some("Running Bash"));
+    }
+
+    /// Whether a reading of this record went to the pane at all, which is the
+    /// question [`wants_the_screen`] has to answer without going there.
+    fn looked_at_the_pane(state: &State, alive: bool, now: u64) -> bool {
+        let asked = std::cell::Cell::new(false);
+        read(
+            state,
+            0,
+            alive,
+            || {
+                asked.set(true);
+                Some(A_BLOCKING_SCREEN.to_string())
+            },
+            rules::bundled(),
+            now,
+            1,
+        );
+        asked.get()
+    }
+
+    #[test]
+    fn reader_says_which_readings_need_a_pane_before_it_takes_one() {
+        // A wall's screens are asked for in one call, so which of them are
+        // wanted is worked out from the records before the first is taken.
+        // That answer has to be the one the reading itself reaches: a reading
+        // that wanted a screen nobody asked for would conclude `unknown` off a
+        // capture that was never taken, and one that did not would have amx
+        // pay for a screen it reads nothing off.
+        let mut asked = state(Phase::Waiting, 1_000);
+        asked.question = Some("Do you want to proceed?".to_string());
+        let mut placeheld = state(Phase::Waiting, 1_000);
+        placeheld.question = Some(A_PLACEHOLDER.to_string());
+
+        let records = [
+            state(Phase::Starting, 1_000),
+            state(Phase::Working, 1_000),
+            state(Phase::Waiting, 1_000),
+            asked,
+            placeheld,
+            state(Phase::Idle, 1_000),
+            state(Phase::Done, 1_000),
+            state(Phase::Failed, 1_000),
+            state(Phase::Stopped, 1_000),
+        ];
+        for record in records {
+            for alive in [true, false] {
+                // Fresh, on the last second of freshness, and stale.
+                for now in [1_000, 1_000 + FRESH, 1_100] {
+                    assert_eq!(
+                        wants_the_screen(&record, alive, now),
+                        looked_at_the_pane(&record, alive, now),
+                        "{} alive={alive} at {now}",
+                        record.state
+                    );
+                }
+            }
+        }
+    }
+
+    /// A tmux server of this test's own, gone when the test is.
+    struct Own(Server);
+
+    impl Drop for Own {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+        }
+    }
+
+    /// A pane with a screen on it and nothing running but a sleep, on a
+    /// server nothing else is using.
+    fn a_pane_showing(server: &Server, screen: &str) -> crate::tmux::PaneId {
+        let showing = [
+            "sh",
+            "-c",
+            "printf '%s' \"$0\"; while :; do sleep 0.05; done",
+            screen,
+        ];
+        let (_, pane) = server
+            .new_session(&crate::tmux::Spawn {
+                command: &showing,
+                ..crate::tmux::Spawn::default()
+            })
+            .expect("a pane to read");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if server.capture(&pane).is_ok_and(|drawn| drawn.contains('❯')) {
+                return pane;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("the screen never reached the pane");
+    }
+
+    /// An agent's record on disk: how it was started, and what it was last
+    /// heard doing. Written rather than recorded through a writer, because a
+    /// reading is about a record that has gone quiet and a test says when.
+    fn a_record(root: &Path, meta: &Meta, state: &State) {
+        let agent = Agent::create(root, meta).expect("a record");
+        std::fs::write(
+            agent.dir().join("state.json"),
+            serde_json::to_vec(state).expect("a record"),
+        )
+        .expect("a record");
+    }
+
+    #[test]
+    fn reader_gives_every_agent_of_a_wall_the_screen_of_its_own_pane() {
+        let root = TempDir::new().unwrap();
+        let server =
+            Own(Server::named(format!("amx-derive-{}", std::process::id())).with_conf("/dev/null"));
+        let socket = server.0.socket().clone();
+
+        // Two agents on one server, both gone quiet, each with a different
+        // screen on its pane. The screens are taken in one call, and what
+        // says they were handed back to the right readings is that the two
+        // readings differ.
+        let asking = a_pane_showing(&server.0, A_BLOCKING_SCREEN);
+        let idle = a_pane_showing(&server.0, IDLE_SCREEN);
+        for (id, pane, phase) in [
+            ("asks-a1b", &asking, Phase::Working),
+            ("idles-b2c", &idle, Phase::Starting),
+        ] {
+            a_record(
+                root.path(),
+                &Meta {
+                    id: id.to_string(),
+                    socket: socket.clone(),
+                    pane: pane.clone(),
+                    ..meta()
+                },
+                &state(phase, 1_000),
+            );
+        }
+
+        let views = views(root.path(), rules::bundled(), 1_100).expect("a reading");
+        let read = |id: &str| {
+            views
+                .iter()
+                .find(|view| view.id() == id)
+                .unwrap_or_else(|| panic!("{id} was read"))
+        };
+        assert_eq!(read("asks-a1b").phase(), Phase::Waiting);
+        assert_eq!(
+            read("asks-a1b").verdict.rule.as_deref(),
+            Some("permission_prompt")
+        );
+        assert_eq!(read("idles-b2c").phase(), Phase::Idle);
+        assert_eq!(
+            read("idles-b2c").verdict.rule.as_deref(),
+            Some("idle_prompt")
+        );
     }
 
     #[test]
