@@ -2447,6 +2447,162 @@ fn d_shows_what_the_agent_has_changed() {
 }
 
 #[test]
+fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let out = amx
+        .amx_command(&[
+            "new",
+            "--name",
+            "fix-login-a1b",
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            &amx.mock(),
+            "fix the login bug",
+        ])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"))
+        .output()
+        .expect("running amx new");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // A patch far taller than the card: forty added lines against a box of
+    // about ten rows.
+    let tree = PathBuf::from(
+        amx.meta("fix-login-a1b")["worktree"]
+            .as_str()
+            .expect("a worktree"),
+    );
+    let long: String = (0..40).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(tree.join("README.md"), long).expect("the changed file");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+    });
+
+    // The card opens on the top of the patch, with nothing said to be hidden.
+    types(&amx, &view, "d");
+    let top = amx.until("the diff", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("+line 0").then_some(drawn)
+    });
+    assert!(!top.contains("more"), "{top}");
+
+    // A page forward leaves the top, and the card's own frame says how far.
+    press(&amx, &view, "NPage");
+    let paged = amx.until("the paged diff", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("more").then_some(drawn)
+    });
+    assert!(!paged.contains("+line 0"), "the top is behind: {paged}");
+    let saying = paged
+        .lines()
+        .find(|line| line.contains("more"))
+        .expect("the indicator");
+    assert!(
+        saying.contains('↑') && saying.contains('╰'),
+        "on the bottom border, pointing at the top: {paged}"
+    );
+
+    // A page back is the top again, with the indicator gone.
+    press(&amx, &view, "PPage");
+    let back = amx.until("the top again", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("+line 0").then_some(drawn)
+    });
+    assert!(!back.contains("more"), "{back}");
+
+    // Paged away, `d` takes the patch afresh from its top.
+    press(&amx, &view, "NPage");
+    amx.until("the paged diff", || {
+        screen(&amx, &view).contains("more").then_some(())
+    });
+    types(&amx, &view, "d");
+    let taken = amx.until("the fresh patch", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("+line 0").then_some(drawn)
+    });
+    assert!(!taken.contains("more"), "{taken}");
+}
+
+#[test]
+fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
+    let amx = Harness::new();
+    finished(&amx, "short-a1b", "done", 10);
+    amx.record("tall-b2c", "%404");
+    let at = now() - 100;
+    amx.set_state(
+        "tall-b2c",
+        json!({
+            "state": "done",
+            "exit": 0,
+            "since": at,
+            "last_event": at,
+            "result": (0..40).map(|n| format!("said {n}\n")).collect::<String>(),
+        }),
+    );
+
+    let view = amx.in_a_terminal(&[], &[]);
+    card_on(&amx, &view, "short-a1b");
+
+    // Two pages up on a body that fits, then a round trip through the keys
+    // overlay: the overlay coming and going proves both presses were read
+    // before the frame this asserts on.
+    press(&amx, &view, "PPage");
+    press(&amx, &view, "PPage");
+    press(&amx, &view, "?");
+    amx.until("the keys", || {
+        screen(&amx, &view).contains("page the card").then_some(())
+    });
+    press(&amx, &view, "Escape");
+    let unmoved = amx.until("the card, unmoved", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("short-a1b · done") && !drawn.contains("page the card")).then_some(drawn)
+    });
+    assert!(unmoved.contains("did what it was asked"), "{unmoved}");
+    assert!(!unmoved.contains("more"), "nothing is hidden: {unmoved}");
+
+    // The arrows keep walking the list, card in tow.
+    press(&amx, &view, "Down");
+    amx.until("the next card", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("tall-b2c · done") && drawn.contains("said 39")).then_some(())
+    });
+
+    // This body overflows, so the same key now pages it, up from its bottom.
+    press(&amx, &view, "PPage");
+    let paged = amx.until("the paged card", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("more").then_some(drawn)
+    });
+    assert!(
+        !paged.contains("said 39"),
+        "the live edge is below: {paged}"
+    );
+    let saying = paged
+        .lines()
+        .find(|line| line.contains("more"))
+        .expect("the indicator");
+    assert!(
+        saying.contains('↓') && saying.contains('╰'),
+        "on the bottom border, pointing at the bottom: {paged}"
+    );
+
+    // And walking off the agent puts the next card on its own edge.
+    press(&amx, &view, "Up");
+    let followed = amx.until("the first card again", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("short-a1b · done").then_some(drawn)
+    });
+    assert!(!followed.contains("more"), "{followed}");
+}
+
+#[test]
 fn keymap_the_hint_row_says_what_the_line_under_the_cursor_answers_to() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
