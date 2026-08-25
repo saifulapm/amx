@@ -372,6 +372,26 @@ mod tests {
     }
 
     #[test]
+    fn a_vendor_that_declares_screens_declares_ones_that_parse() {
+        // The document is read once, at the first look at a pane, and a
+        // document that will not parse takes the binary with it there. Here
+        // instead, where the vendor is being read anyway.
+        for vendor in known() {
+            let Some(screens) = vendor.screens else {
+                continue;
+            };
+            let screens = crate::rules::Ruleset::parse(screens)
+                .unwrap_or_else(|e| panic!("{}'s screens: {e:#}", vendor.name));
+            assert!(
+                !screens.rules().is_empty(),
+                "{} declares a document with no screen in it, which is the \
+                 same as declaring none",
+                vendor.name
+            );
+        }
+    }
+
+    #[test]
     fn the_sentinel_is_acceptable_on_an_open_dial_and_a_closed_one() {
         for vendor in known() {
             for (which, dial) in vendor.dials() {
