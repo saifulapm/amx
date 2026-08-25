@@ -183,16 +183,23 @@ wall, counting rows from the top and skipping the headings, without walking the
 cursor to them first. It is the fleet you already have in front of you, reached
 by the number you were about to count to.
 
+What the card's body is follows the agent. One that is working shows its live
+screen, chrome cut, tracking output as it lands. One whose turn is over and
+whose record holds the answer — idle at its prompt, done, failed or stopped
+alike — shows that whole answer, top first, however the pane happens to be
+scrolled; only an idle agent with nothing recorded falls back to the screen
+picture. A waiting agent's card is the question block alone.
+
 `pgup` and `pgdn` page inside the card's body when it holds more than its box
-can show: a patch down from its top, a screen or an answer up from its live
-bottom. A paged card says how far from that edge it stands on its frame —
-`↓ 12 more` — and holds still, new output and all, until you page back to the
-edge, press an arrow, or open it again; an agent stopping at a question takes
-the card back regardless, because a question is never left behind history. The
-arrows never page: they keep walking the list, card in tow. `ctrl+b` and
-`ctrl+f` are the same two pages for a keyboard with no page keys on it — pgup
-and pgdn exactly. A lone `ctrl+b` under tmux's default prefix is tmux's own
-business: `ctrl+b ctrl+b` is what reaches the view there.
+can show: a patch or a recorded answer down from its top, a live screen up
+from its bottom. A paged card says how far from that edge it stands on its
+frame — `↓ 12 more` — and holds still, new output and all, until you page back
+to the edge, press an arrow, or open it again; an agent stopping at a question
+takes the card back regardless, because a question is never left behind
+history. The arrows never page: they keep walking the list, card in tow.
+`ctrl+b` and `ctrl+f` are the same two pages for a keyboard with no page keys
+on it — pgup and pgdn exactly. A lone `ctrl+b` under tmux's default prefix is
+tmux's own business: `ctrl+b ctrl+b` is what reaches the view there.
 
 `ctrl+x` forgets nothing on the first press, and the first press is the same
 press on every row. An agent that is still running — sitting idle at its

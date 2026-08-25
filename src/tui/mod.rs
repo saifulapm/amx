@@ -1653,15 +1653,15 @@ impl Screen {
 
     /// A page into the card's body, or back toward its natural edge.
     ///
-    /// Which key leads away follows the card: a patch is read down from its
-    /// top, a screen or an answer up from its live bottom. The keys only add
-    /// and subtract — the paint owns the clamp, so a body that fits never
-    /// leaves its edge and a press past the end lands on the last page.
+    /// Which key leads away follows the card: a patch or a recorded answer is
+    /// read down from its top, a live screen up from its bottom. The keys
+    /// only add and subtract — the paint owns the clamp, so a body that fits
+    /// never leaves its edge and a press past the end lands on the last page.
     fn paged(&mut self, up: bool) {
         let Some(card) = &self.card else { return };
         let page = self.scroll.page.get().max(1);
         let away = self.scroll.away.get();
-        let leaving = match card.changes {
+        let leaving = match card.forward() {
             true => !up,
             false => up,
         };
@@ -1789,7 +1789,17 @@ fn card_of(view: &View) -> Card {
     // has not read still gets one, because the pane is the one place that
     // question is written at all.
     let asks = view.phase() == Phase::Waiting && view.state.question.is_some();
-    let screen = (!asks && !view.phase().is_terminal())
+    // An agent whose turn is over and whose record holds its answer — idle at
+    // its prompt, done, failed or stopped alike — shows that whole answer.
+    // The pane is not consulted: it is a viewport claude scrolls on its own,
+    // and a capture of it is a few chrome-cut lines of wherever that viewport
+    // happens to stand. Only a working agent's card is the pane's picture,
+    // and an idle one with nothing recorded falls back to it.
+    let answered = matches!(
+        rows::Group::of(view.phase()),
+        rows::Group::Idle | rows::Group::Completed
+    ) && view.state.result.is_some();
+    let screen = (!asks && !answered && !view.phase().is_terminal())
         .then(|| server.capture_painted(&view.meta.pane).ok())
         .flatten()
         // Emptiness is a question about the words, and a screen can carry
@@ -1805,13 +1815,15 @@ fn card_of(view: &View) -> Card {
         kind: view.kind(),
         // No falling back to the answer a finished turn left, either: a card
         // that is asking shows nothing older than the question.
-        body: match asks {
-            true => String::new(),
-            false => screen
+        body: match (asks, answered) {
+            (true, _) => String::new(),
+            (_, true) => view.state.result.clone().unwrap_or_default(),
+            _ => screen
                 .or_else(|| view.state.result.clone())
                 .unwrap_or_default(),
         },
         changes: false,
+        answer: answered,
     }
 }
 
@@ -2391,6 +2403,62 @@ mod tests {
     }
 
     #[test]
+    fn card_holds_the_whole_recorded_answer_and_not_the_pane() {
+        // An agent whose turn is over and whose record holds its answer gets
+        // that whole answer as the card's body, read from the top — idle at
+        // its prompt, done, failed or stopped alike. The pane is never
+        // consulted: it is a viewport claude scrolls on its own.
+        let long: String = (0..60).map(|n| format!("line {n}\n")).collect();
+        for phase in [Phase::Idle, Phase::Done, Phase::Failed, Phase::Stopped] {
+            let agent = reading(
+                "said-a1b",
+                phase,
+                State {
+                    state: phase,
+                    result: Some(long.clone()),
+                    since: 1,
+                    last_event: 1,
+                    ..State::default()
+                },
+            );
+            let card = card_of(&agent);
+            assert_eq!(card.body, long, "the whole answer, {phase:?}");
+            assert!(card.answer, "an answer reads forward, {phase:?}");
+        }
+
+        // A working agent's card is still the pane's picture, whatever the
+        // record holds from its last turn.
+        let busy = reading(
+            "busy-b2c",
+            Phase::Working,
+            State {
+                state: Phase::Working,
+                result: Some("an old answer".to_string()),
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        );
+        assert!(!card_of(&busy).answer);
+
+        // And an idle agent with nothing recorded falls back to it too:
+        // there is no pane here to capture, so its card is simply empty.
+        let quiet = reading(
+            "quiet-c3d",
+            Phase::Idle,
+            State {
+                state: Phase::Idle,
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        );
+        let card = card_of(&quiet);
+        assert!(!card.answer);
+        assert_eq!(card.body, "");
+    }
+
+    #[test]
     fn card_pages_under_the_page_keys_and_a_cursor_move_resets_it() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
@@ -2408,22 +2476,22 @@ mod tests {
         assert!(screen.card.is_some(), "the card is open");
         assert_eq!(screen.scroll.away.get(), 0, "on its natural edge");
 
-        // An answer is read up from its bottom: pgup leaves the edge, pgdn
-        // comes back toward it, and never past it.
-        press(&mut screen, KeyCode::PageUp);
+        // A recorded answer is read down from its top: pgdn leaves the edge,
+        // pgup comes back toward it, and never past it.
+        press(&mut screen, KeyCode::PageDown);
         let away = screen.scroll.away.get();
-        assert!(away > 0, "paged away from the bottom");
-        press(&mut screen, KeyCode::PageUp);
+        assert!(away > 0, "paged away from the top");
+        press(&mut screen, KeyCode::PageDown);
         assert!(screen.scroll.away.get() > away, "and further");
-        press(&mut screen, KeyCode::PageDown);
+        press(&mut screen, KeyCode::PageUp);
         assert_eq!(screen.scroll.away.get(), away, "a page back");
-        press(&mut screen, KeyCode::PageDown);
-        press(&mut screen, KeyCode::PageDown);
+        press(&mut screen, KeyCode::PageUp);
+        press(&mut screen, KeyCode::PageUp);
         assert_eq!(screen.scroll.away.get(), 0, "the edge is where it stops");
 
         // The arrows keep their meaning: the cursor walks on with the card
         // following, and the next agent's card stands on its own edge.
-        press(&mut screen, KeyCode::PageUp);
+        press(&mut screen, KeyCode::PageDown);
         press(&mut screen, KeyCode::Down);
         assert_eq!(
             screen.card.as_ref().map(|card| card.id.as_str()),
@@ -2442,19 +2510,19 @@ mod tests {
             screen.act(key, root.path(), &config, None).unwrap();
         };
 
-        // An answer is read up from its bottom: ctrl+b leaves the edge the
-        // way pgup does, and ctrl+f comes back the way pgdn does.
+        // A recorded answer is read down from its top: ctrl+f leaves the edge
+        // the way pgdn does, and ctrl+b comes back the way pgup does.
         press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
-        press(&mut screen, ctrl('b'));
+        press(&mut screen, ctrl('f'));
         assert!(
             screen.scroll.away.get() > 0,
-            "ctrl+b paged away from the bottom"
+            "ctrl+f paged away from the top"
         );
-        press(&mut screen, ctrl('f'));
-        assert_eq!(screen.scroll.away.get(), 0, "and ctrl+f is the page back");
+        press(&mut screen, ctrl('b'));
+        assert_eq!(screen.scroll.away.get(), 0, "and ctrl+b is the page back");
 
-        // A patch is read down from its top, so the same two keys lead the
-        // other way round, exactly as the page keys do.
+        // A patch is read down from its top too, so the same two keys lead
+        // the same way, exactly as the page keys do.
         screen.look = Look::Changes;
         screen.card = Some(Card {
             id: "done-a1b".to_string(),
@@ -2465,6 +2533,7 @@ mod tests {
             kind: None,
             body: "+ line".to_string(),
             changes: true,
+            answer: false,
         });
         press(&mut screen, ctrl('f'));
         assert!(
@@ -2511,6 +2580,7 @@ mod tests {
             kind: None,
             body: "+ line".to_string(),
             changes: true,
+            answer: false,
         });
         let press = |screen: &mut Screen, code| {
             screen
@@ -2537,7 +2607,7 @@ mod tests {
         };
 
         press(&mut screen, KeyCode::Char(' '));
-        press(&mut screen, KeyCode::PageUp);
+        press(&mut screen, KeyCode::PageDown);
         assert!(screen.scroll.away.get() > 0);
 
         press(&mut screen, KeyCode::Esc);
@@ -2618,6 +2688,7 @@ mod tests {
             kind: None,
             body: "+ line".to_string(),
             changes: true,
+            answer: false,
         });
         screen.scroll.away.set(5);
 
@@ -4300,13 +4371,13 @@ mod tests {
             )
             .unwrap();
         a_frame_of(&mut screen, (60, 20));
-        screen.moused(mouse(MouseEventKind::ScrollUp, 5, 9));
+        screen.moused(mouse(MouseEventKind::ScrollDown, 5, 9));
         assert!(
             screen.scroll.away.get() > 0,
-            "wheel-up over the card paged away from its edge"
+            "wheel-down over the card read on into the answer"
         );
-        screen.moused(mouse(MouseEventKind::ScrollDown, 5, 9));
-        assert_eq!(screen.scroll.away.get(), 0, "and wheel-down came back");
+        screen.moused(mouse(MouseEventKind::ScrollUp, 5, 9));
+        assert_eq!(screen.scroll.away.get(), 0, "and wheel-up came back");
 
         a_frame_of(&mut screen, (60, 20));
         screen.moused(mouse(MouseEventKind::ScrollDown, 5, 4));

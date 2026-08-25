@@ -123,6 +123,9 @@ pub struct Card {
     /// Whether the body is that diff, which is read from the top down rather
     /// than from the bottom up.
     pub changes: bool,
+    /// Whether the body is the answer the record holds — a turn's own words,
+    /// whole, rather than a picture of the pane it was said on.
+    pub answer: bool,
 }
 
 impl Card {
@@ -130,6 +133,13 @@ impl Card {
     /// question, and neither is a look at an agent that is getting on with it.
     pub fn asks(&self) -> bool {
         !self.changes && self.phase == Phase::Waiting
+    }
+
+    /// Whether the body reads forward, from its top: a patch does, and so
+    /// does a recorded answer. Only a live screen is read up from its
+    /// bottom, where the newest of it is.
+    pub fn forward(&self) -> bool {
+        self.changes || self.answer
     }
 }
 
@@ -996,7 +1006,7 @@ fn float(
     // longer the newest of the screen or the first of the patch.
     let held = scroll.kept(length(card), room as usize);
     if held > 0 {
-        let edge = match card.changes {
+        let edge = match card.forward() {
             true => '↑',
             false => '↓',
         };
@@ -1090,8 +1100,9 @@ fn requests(prs: &[Pr]) -> Vec<Span<'static>> {
 /// What the card has under everything else, in the paint it was drawn in and
 /// cut to the rows the card has for it.
 ///
-/// A screen is read from the bottom, where the newest of it is; a diff is read
-/// from the top, where the first file it touched is.
+/// A screen is read from the bottom, where the newest of it is; a diff from
+/// the top, where the first file it touched is; and a recorded answer from
+/// its top too, because an answer reads forward.
 ///
 /// A card holding a question has nothing under everything else at all. The
 /// question block — the tab strip, the question, the choices and the rows
@@ -1127,17 +1138,20 @@ fn body(card: &Card, rows: usize, away: usize) -> Vec<Line<'static>> {
     let said: Vec<String> = read.iter().map(|row| words(row)).collect();
     let plain: Vec<&str> = said.iter().map(String::as_str).collect();
 
-    // An agent whose command has ended has no pane left to capture, so what
-    // the card is holding is the answer it left, and an answer is not a screen
-    // with a vendor's chrome on it.
-    let kept = match card.phase.is_terminal() {
+    // A recorded answer is not a screen with a vendor's chrome on it, and
+    // neither is whatever an agent whose command has ended left behind: only
+    // a live capture is cut. An answer reads forward, so it is windowed from
+    // its top the way a patch is; a screen from its bottom, where the newest
+    // of it is.
+    let kept = match card.answer || card.phase.is_terminal() {
         true => plain.len(),
         false => cut(&plain).len(),
     };
-    let shown: Vec<Line<'static>> = read[tail(&plain[..kept], rows, away)]
-        .iter()
-        .map(|row| as_painted(row))
-        .collect();
+    let window = match card.answer {
+        true => head(&plain[..kept], rows, away),
+        false => tail(&plain[..kept], rows, away),
+    };
+    let shown: Vec<Line<'static>> = read[window].iter().map(|row| as_painted(row)).collect();
 
     // Said only where the walk actually cut. An agent that has said nothing
     // yet is a different fact from a pane holding nothing but furniture, and
@@ -1920,6 +1934,18 @@ fn tail(rows: &[&str], wanted: usize, back: usize) -> Range<usize> {
     end.saturating_sub(wanted)..end
 }
 
+/// And which rows of a recorded answer: the first of them, because an answer
+/// is read forward from its top. The trailing blank rows go for the reason
+/// [`tail`] drops them, and a paged card starts that many rows below the top.
+fn head(rows: &[&str], wanted: usize, away: usize) -> Range<usize> {
+    let mut end = rows.len();
+    while end > 0 && rows[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    let start = away.min(end);
+    start..end.min(start.saturating_add(wanted))
+}
+
 /// The width the duration is given, which fits everything up to `365d`.
 const AGE: usize = 4;
 
@@ -2226,6 +2252,7 @@ mod tests {
             kind,
             body: "$ cargo test\nDo you want to proceed?".to_string(),
             changes: false,
+            answer: false,
         }
     }
 
@@ -3634,6 +3661,7 @@ mod tests {
                 kind: None,
                 body: patch,
                 changes: true,
+                answer: false,
             }),
             (60, 14),
         );
@@ -3662,6 +3690,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n"),
             changes: true,
+            answer: false,
         }
     }
 
@@ -3714,33 +3743,78 @@ mod tests {
     }
 
     #[test]
-    fn card_pages_a_result_up_from_its_bottom() {
-        let screen = showing(
-            vec![view("fix-login-a1b", Phase::Done, None, 3)],
-            Some(Card {
-                id: "fix-login-a1b".to_string(),
-                phase: Phase::Done,
-                age: 3,
-                question: None,
-                options: Vec::new(),
-                kind: None,
-                body: (0..40)
-                    .map(|n| format!("said {n}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                changes: false,
-            }),
-        );
-        screen.scroll.away.set(7);
+    fn card_pages_a_recorded_answer_down_from_its_top() {
+        let answered = || {
+            showing(
+                vec![view("fix-login-a1b", Phase::Done, None, 3)],
+                Some(Card {
+                    id: "fix-login-a1b".to_string(),
+                    phase: Phase::Done,
+                    age: 3,
+                    question: None,
+                    options: Vec::new(),
+                    kind: None,
+                    body: (0..40)
+                        .map(|n| format!("said {n}"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    changes: false,
+                    answer: true,
+                }),
+            )
+        };
 
+        // An answer reads forward, so the card opens on its first words.
+        let opened = painted(&answered(), (60, 14)).join("\n");
+        assert!(opened.contains("said 0"), "{opened}");
+        assert!(!opened.contains("said 39"), "{opened}");
+
+        // And paged, it stands that many rows below the top.
+        let screen = answered();
+        screen.scroll.away.set(7);
         let all = painted(&screen, (60, 14)).join("\n");
+        assert!(all.contains("said 7"), "seven rows below the top: {all}");
         assert!(
-            all.contains("said 32"),
-            "seven rows above the bottom: {all}"
+            !all.contains("said 0"),
+            "the first words are behind it: {all}"
         );
-        assert!(!all.contains("said 39"), "{all}");
-        assert!(all.contains("↓ 7 more"), "how far from the bottom: {all}");
+        assert!(all.contains("↑ 7 more"), "how far from the top: {all}");
         assert_eq!(screen.scroll.away.get(), 7);
+    }
+
+    #[test]
+    fn card_gives_a_long_answer_its_whole_allowance() {
+        // Forty rows of answer on a twenty-row screen: the card grows to
+        // everything the height allows rather than the few lines a capture
+        // used to fill, and the rest is there to page onto.
+        let long: String = (0..40).map(|n| format!("said {n}\n")).collect();
+        let card = Card {
+            phase: Phase::Done,
+            question: None,
+            options: Vec::new(),
+            body: long,
+            answer: true,
+            ..asking(&[], None)
+        };
+        let screen = drawn(a_fleet(), Some(card), (60, 20));
+
+        let top = screen
+            .iter()
+            .position(|line| line.starts_with('╭'))
+            .expect("the top of the card");
+        let bottom = screen
+            .iter()
+            .rposition(|line| line.starts_with('╰'))
+            .expect("the foot of the card");
+        assert_eq!(
+            bottom - top,
+            9,
+            "half the screen, the card's cap: {screen:?}"
+        );
+        assert!(
+            screen[top + 1].contains("said 0"),
+            "opened at the answer's first words: {screen:?}"
+        );
     }
 
     #[test]

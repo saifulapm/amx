@@ -1165,26 +1165,34 @@ fn the_wheel_walks_the_list_and_pages_the_card_under_the_pointer() {
             .then_some(())
     });
 
-    // With the card open, the wheel pages it where the pointer is over it.
+    // With the card open, the wheel pages it where the pointer is over it:
+    // the recorded answer opens on its first words and wheel-down reads on.
+    // The row's own summary is the answer's first line too, so the card's
+    // copy is told from it by counting.
     let carded = card_on(&amx, &view, "tall-b2c");
-    assert!(carded.contains("said 39"), "{carded}");
+    assert_eq!(
+        carded.matches("said 0").count(),
+        2,
+        "the top of the answer, over the row saying the same:\n{carded}"
+    );
     let inside = carded
         .lines()
-        .position(|line| line.contains("said 39"))
+        .position(|line| line.contains("said 2"))
         .expect("a row of the card's body") as u16
         + 1;
-    mouse(&amx, &view, 64, 5, inside, true);
+    mouse(&amx, &view, 65, 5, inside, true);
     let paged = amx.until("the paged card", || {
         let drawn = screen(&amx, &view);
         drawn.contains("more").then_some(drawn)
     });
-    assert!(
-        !paged.contains("said 39"),
-        "the live edge is below:\n{paged}"
+    assert_eq!(
+        paged.matches("said 0").count(),
+        1,
+        "the top is behind, and only the row still says it:\n{paged}"
     );
-    mouse(&amx, &view, 65, 5, inside, true);
+    mouse(&amx, &view, 64, 5, inside, true);
     amx.until("the edge again", || {
-        screen(&amx, &view).contains("said 39").then_some(())
+        (screen(&amx, &view).matches("said 0").count() == 2).then_some(())
     });
 }
 
@@ -2922,30 +2930,33 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
     assert!(unmoved.contains("did what it was asked"), "{unmoved}");
     assert!(!unmoved.contains("more"), "nothing is hidden: {unmoved}");
 
-    // The arrows keep walking the list, card in tow.
+    // The arrows keep walking the list, card in tow: the next agent's
+    // recorded answer opens on its first words, over the row whose summary
+    // is that same first line.
     press(&amx, &view, "Down");
     amx.until("the next card", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("tall-b2c · done") && drawn.contains("said 39")).then_some(())
+        (drawn.contains("tall-b2c · done") && drawn.matches("said 0").count() == 2).then_some(())
     });
 
-    // This body overflows, so the same key now pages it, up from its bottom.
-    press(&amx, &view, "PPage");
+    // This body overflows, so the page key now pages it, down from its top.
+    press(&amx, &view, "NPage");
     let paged = amx.until("the paged card", || {
         let drawn = screen(&amx, &view);
         drawn.contains("more").then_some(drawn)
     });
-    assert!(
-        !paged.contains("said 39"),
-        "the live edge is below: {paged}"
+    assert_eq!(
+        paged.matches("said 0").count(),
+        1,
+        "the top is behind, and only the row still says it: {paged}"
     );
     let saying = paged
         .lines()
         .find(|line| line.contains("more"))
         .expect("the indicator");
     assert!(
-        saying.contains('↓') && saying.contains('╰'),
-        "on the bottom border, pointing at the bottom: {paged}"
+        saying.contains('↑') && saying.contains('╰'),
+        "on the bottom border, pointing at the top: {paged}"
     );
 
     // And walking off the agent puts the next card on its own edge.
@@ -2975,27 +2986,33 @@ fn ctrl_f_and_ctrl_b_page_the_card_like_the_page_keys() {
 
     let view = amx.in_a_terminal(&[], &[]);
     let carded = card_on(&amx, &view, "tall-b2c");
-    assert!(carded.contains("said 39"), "{carded}");
+    assert_eq!(
+        carded.matches("said 0").count(),
+        2,
+        "the top of the answer, over the row saying the same:\n{carded}"
+    );
 
-    // ctrl+b is pgup: away from the answer's live bottom, with the how-far
-    // indicator up. A lone ctrl+b never reaches a view inside a default
-    // tmux — the prefix eats it — but injected keys go to the pane, which is
-    // exactly what ctrl+b ctrl+b delivers there.
-    press(&amx, &view, "C-b");
+    // ctrl+f is pgdn: on into the recorded answer, with the how-far
+    // indicator up.
+    press(&amx, &view, "C-f");
     let paged = amx.until("the paged card", || {
         let drawn = screen(&amx, &view);
         drawn.contains("more").then_some(drawn)
     });
-    assert!(
-        !paged.contains("said 39"),
-        "the live edge is below:\n{paged}"
+    assert_eq!(
+        paged.matches("said 0").count(),
+        1,
+        "the top is behind, and only the row still says it:\n{paged}"
     );
 
-    // And ctrl+f is pgdn: the page back to the edge.
-    press(&amx, &view, "C-f");
+    // And ctrl+b is pgup: the page back to the edge. A lone ctrl+b never
+    // reaches a view inside a default tmux — the prefix eats it — but
+    // injected keys go to the pane, which is exactly what ctrl+b ctrl+b
+    // delivers there.
+    press(&amx, &view, "C-b");
     let back = amx.until("the edge again", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("said 39").then_some(drawn)
+        (drawn.matches("said 0").count() == 2).then_some(drawn)
     });
     assert!(!back.contains("more"), "{back}");
 }

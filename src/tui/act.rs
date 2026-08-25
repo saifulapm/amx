@@ -769,6 +769,7 @@ pub fn changes(root: &Path, view: &View) -> Result<Card> {
             false => patch,
         },
         changes: true,
+        answer: false,
     })
 }
 
