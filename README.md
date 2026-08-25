@@ -583,7 +583,7 @@ the notice is handed over and never waited for.
 
 ## Configuration
 
-`~/.config/amx/config.toml`, nine keys and no more:
+`~/.config/amx/config.toml`, ten keys and no more:
 
 ```toml
 agent = "claude"        # the command a new agent runs
@@ -591,6 +591,7 @@ max_agents = 5          # how many live agents before `new` refuses
 worktrees = true        # give each agent its own worktree in a repository
 notifications = true    # desktop notification when one needs you or finishes
 trust = false           # answer claude's folder-trust screen for trees amx cuts
+theme = "default"       # which palette the view paints in
 
 # The dials. A key left out is a flag amx does not pass, which leaves the
 # choice to the vendor.
