@@ -607,6 +607,9 @@ where
             // record has moved past.
             false => screen.freshen(),
         }
+        // The last frame said how many rows the screen has; a screen that
+        // changed size gets its lines laid out again before the next one.
+        screen.list.refit();
         screen.step();
         terminal.draw(|frame| paint::draw(frame, &screen))?;
 
@@ -4170,12 +4173,22 @@ mod tests {
         }
     }
 
-    /// Draw the screen once, so the map the mouse reads is a frame's.
+    /// Draw the screen, so the map the mouse reads is a frame's: one frame
+    /// to teach the list its room, a refit, and the frame the map remembers
+    /// — the same settling the loop does across two passes.
     ///
-    /// Twelve rows: two of header, one of space, and the list from row three
-    /// — a heading on it and the agents under that.
-    fn a_frame(screen: &Screen) {
-        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    /// Twelve rows unless a test wants its own: two of header, one of space,
+    /// and the list from row three — a heading on it and the agents under
+    /// that.
+    fn a_frame(screen: &mut Screen) {
+        a_frame_of(screen, (60, 12));
+    }
+
+    /// The same, at a size a test picks.
+    fn a_frame_of(screen: &mut Screen, size: (u16, u16)) {
+        let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
+        terminal.draw(|frame| paint::draw(frame, screen)).unwrap();
+        screen.list.refit();
         terminal.draw(|frame| paint::draw(frame, screen)).unwrap();
     }
 
@@ -4185,7 +4198,7 @@ mod tests {
             finished_saying("done-a1b", "the first answer"),
             finished_saying("done-b2c", "the second answer"),
         ]);
-        a_frame(&screen);
+        a_frame(&mut screen);
         assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
 
         // The second agent's row, which is two under the heading on row 3.
@@ -4193,40 +4206,42 @@ mod tests {
         assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
 
         // A click on the heading shuts the group, and another opens it.
-        a_frame(&screen);
+        a_frame(&mut screen);
         screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
         assert_eq!(
             screen.list.items().len(),
             1,
             "the rows are behind the count"
         );
-        a_frame(&screen);
+        a_frame(&mut screen);
         screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
         assert_eq!(screen.list.items().len(), 3);
     }
 
     #[test]
     fn mouse_click_on_the_fold_unfolds_it_and_elsewhere_does_nothing() {
+        // Nine finished on a band of eight rows: a heading, the six the
+        // screen has room for, and the fold on the last of them.
         let mut screen = watching(
-            (0..5)
+            (0..9)
                 .map(|n| finished_saying(&format!("done-{n}"), "an answer"))
                 .collect(),
         );
-        a_frame(&screen);
+        a_frame(&mut screen);
         assert_eq!(
             screen.list.items().len(),
-            5,
-            "a heading, three rows and the fold"
+            8,
+            "a heading, six rows and the fold"
         );
 
-        // The fold is the row under the three drawn agents.
-        screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 7));
-        assert_eq!(screen.list.items().len(), 6, "the fold gave its rows back");
+        // The fold is the row under the six drawn agents.
+        screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 10));
+        assert_eq!(screen.list.items().len(), 10, "the fold gave its rows back");
 
         // A click past the end of the list lands on nothing and moves
         // nothing.
         let before = screen.list.selected().unwrap().id().to_string();
-        a_frame(&screen);
+        a_frame(&mut screen);
         screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 11));
         assert_eq!(screen.list.selected().unwrap().id(), before);
     }
@@ -4237,7 +4252,7 @@ mod tests {
             finished_saying("done-a1b", "the first answer"),
             finished_saying("done-b2c", "the second answer"),
         ]);
-        a_frame(&screen);
+        a_frame(&mut screen);
 
         screen.moused(mouse(MouseEventKind::Moved, 5, 5));
         assert_eq!(screen.hover, Some(2), "the second agent's line is hovered");
@@ -4264,7 +4279,9 @@ mod tests {
             finished_saying("done-a1b", &long),
             finished_saying("done-b2c", "the second answer"),
         ]);
-        a_frame(&screen);
+        // Twenty rows, so the card the space below opens still leaves both
+        // rows on the screen in front of it.
+        a_frame_of(&mut screen, (60, 20));
 
         // No card up: the wheel is the walk.
         screen.moused(mouse(MouseEventKind::ScrollDown, 5, 5));
@@ -4282,7 +4299,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        a_frame(&screen);
+        a_frame_of(&mut screen, (60, 20));
         screen.moused(mouse(MouseEventKind::ScrollUp, 5, 9));
         assert!(
             screen.scroll.away.get() > 0,
@@ -4291,7 +4308,7 @@ mod tests {
         screen.moused(mouse(MouseEventKind::ScrollDown, 5, 9));
         assert_eq!(screen.scroll.away.get(), 0, "and wheel-down came back");
 
-        a_frame(&screen);
+        a_frame_of(&mut screen, (60, 20));
         screen.moused(mouse(MouseEventKind::ScrollDown, 5, 4));
         assert_eq!(
             screen.list.selected().unwrap().id(),
@@ -4307,7 +4324,7 @@ mod tests {
             finished_saying("done-b2c", "the second answer"),
         ]);
         screen.mode = Mode::Typing(Composer::new(Asking::Task));
-        a_frame(&screen);
+        a_frame(&mut screen);
 
         screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 5));
         screen.moused(mouse(MouseEventKind::ScrollDown, 5, 5));

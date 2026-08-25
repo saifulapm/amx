@@ -270,6 +270,10 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     };
     let visible = middle.height - floating;
     let card_over = (floating > 0).then(|| over(middle, floating));
+    // How many rows the list has in front of the card, told back to it the
+    // way the map and the scroll are: the fold in the completed group is cut
+    // to this, by the next rebuild rather than under the frame being drawn.
+    screen.list.fit(visible as usize);
     // What this frame put where, for the mouse to read back.
     screen.map.keep(
         (!helping).then_some(middle),
@@ -2309,6 +2313,17 @@ mod tests {
         painted(&showing(views, card), size)
     }
 
+    /// The same, once the list has learned the screen's size: the first
+    /// frame writes the room back the way the loop's draw does, the refit
+    /// lays the rows out for it, and the second frame is the one a person
+    /// reads.
+    fn settled(views: Vec<View>, size: (u16, u16)) -> Vec<String> {
+        let mut screen = showing(views, None);
+        let _ = painted(&screen, size);
+        screen.list.refit();
+        painted(&screen, size)
+    }
+
     /// The two agents a card is opened over, so there is a list to still be
     /// drawn behind it.
     fn a_fleet() -> Vec<View> {
@@ -3388,14 +3403,29 @@ mod tests {
 
     #[test]
     fn view_shows_the_fold_and_what_it_is_holding_back() {
-        let views = (0..5)
-            .map(|n| view(&format!("done-{n}"), Phase::Done, Some("did it"), 60))
-            .collect();
-        let screen = drawn(views, None, (40, 10));
+        // A working agent and five finished. On a tall screen every row is
+        // drawn and there is no fold at all; on a short one the finished
+        // group takes the rows the live group left, and the fold stands on
+        // the band's last row saying exactly what did not fit.
+        let fleet = || {
+            let mut views = vec![view("busy-b2c", Phase::Working, Some("Running Bash"), 3)];
+            views.extend(
+                (0..5).map(|n| view(&format!("done-{n}"), Phase::Done, Some("did it"), 60)),
+            );
+            views
+        };
 
-        assert_eq!(screen[2], "completed");
-        assert_eq!(screen.iter().filter(|l| l.contains("done-")).count(), 3);
-        assert!(screen[6].contains("… 2 more"), "{:?}", screen[6]);
+        let tall = settled(fleet(), (40, 24));
+        assert_eq!(tall.iter().filter(|l| l.contains("done-")).count(), 5);
+        assert!(!tall.iter().any(|l| l.contains("more")), "{tall:?}");
+
+        let short = settled(fleet(), (40, 10));
+        assert_eq!(short[5], "completed");
+        assert_eq!(short.iter().filter(|l| l.contains("done-")).count(), 2);
+        assert!(
+            short[8].contains("… 3 more"),
+            "the fold stands on the last row the band has: {short:?}"
+        );
     }
 
     #[test]
@@ -3504,6 +3534,8 @@ mod tests {
         // An agent whose command has ended has no window to bring forward and
         // nothing left to stop.
         let mut screen = showing(all_done(), None);
+        screen.list.fit(5);
+        screen.list.refit();
         let row = hint_row(&screen, wide);
         assert!(row.starts_with("space card · ctrl+x forget"), "{row:?}");
         assert!(!row.contains("attach"), "{row:?}");

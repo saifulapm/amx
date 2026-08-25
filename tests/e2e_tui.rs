@@ -932,7 +932,7 @@ fn a_blank_line_stands_the_list_off_from_the_header() {
 }
 
 #[test]
-fn completed_agents_fold_into_a_count_until_they_are_opened() {
+fn completed_agents_fold_into_a_count_when_the_screen_runs_out_of_rows() {
     let amx = Harness::new();
     for (n, id) in ["one-a1b", "two-b2c", "three-c3d", "four-d4e", "five-e5f"]
         .iter()
@@ -941,7 +941,19 @@ fn completed_agents_fold_into_a_count_until_they_are_opened() {
         finished(&amx, id, "done", n as u64 * 60);
     }
 
+    // A full-size terminal has a row for every one of them, so nothing
+    // folds however many have finished.
     let view = amx.in_a_terminal(&[], &[]);
+    let whole = amx.until("every row", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("one-a1b") && drawn.contains("five-e5f")).then_some(drawn)
+    });
+    assert!(!whole.contains("more"), "nothing is held back:\n{whole}");
+
+    // Shrunk to seven rows the list has five, and the fold takes exactly
+    // what stopped fitting: the two oldest, behind the count on the last
+    // row.
+    amx.tmux(&["resize-window", "-t", &view, "-x", "80", "-y", "7"]);
     let folded = amx.until("the fold", || {
         let drawn = screen(&amx, &view);
         (drawn.contains("one-a1b") && drawn.contains("2 more")).then_some(drawn)
@@ -951,9 +963,19 @@ fn completed_agents_fold_into_a_count_until_they_are_opened() {
         "the oldest are behind the count:\n{folded}"
     );
 
-    // Down onto the fold — three agents are shown, so it is the fourth row —
-    // and open it.
-    amx.tmux(&["send-keys", "-t", &view, "Down", "Down", "Down", "Enter"]);
+    // Down onto the fold — three agents are shown, so it is the fourth row
+    // — and open it, then one more row down to walk history onto the
+    // screen.
+    amx.tmux(&[
+        "send-keys",
+        "-t",
+        &view,
+        "Down",
+        "Down",
+        "Down",
+        "Enter",
+        "Down",
+    ]);
     amx.until("the rest of them", || {
         screen(&amx, &view).contains("five-e5f").then_some(())
     });
