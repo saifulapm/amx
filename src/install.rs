@@ -1,8 +1,9 @@
 //! Wiring amx into the vendor's hooks, and taking it back out.
 //!
-//! Everything amx knows about a running agent arrives through claude's own
-//! hooks, which means one line in `~/.claude/settings.json` per event. That
-//! file belongs to the person, not to amx, so three rules hold:
+//! Everything amx knows about a running agent arrives through the vendor's own
+//! hooks, which means one line in the vendor's settings file per event. Which
+//! file, and which events, is the vendor's entry to say. That file belongs to
+//! the person, not to amx, so three rules hold:
 //!
 //! * **Nothing is touched without a backup.** The pre-merge bytes are copied
 //!   to a timestamped file beside the settings before a single byte changes.
@@ -21,21 +22,32 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-/// The events amx listens to. The mapping each one drives lives with the hook
-/// command; here they are only names to wire.
-pub const EVENTS: [&str; 7] = [
-    "SessionStart",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PermissionRequest",
-    "PermissionDenied",
-    "Notification",
-    "Stop",
-];
+use crate::vendor::claude;
 
-/// Events that take a tool matcher, and the matcher amx asks for.
-const MATCHED: [&str; 3] = ["PreToolUse", "PermissionRequest", "PermissionDenied"];
-const MATCHER: &str = "*";
+/// The events amx listens to, under the vendor's own names for them.
+///
+/// The names, the matcher and the settings file are all claude's, and they are
+/// all in claude's entry: this file writes what the table says and knows none
+/// of the words itself. The mapping each event drives lives with the hook
+/// command.
+///
+/// Flat, because a caller that only wants to say which of them are wired has
+/// no use for the rest of the entry.
+pub const EVENTS: [&str; WIRED] = named();
+
+/// How many amx wires, which is a question about the vendor's table.
+const WIRED: usize = claude::HOOKS.events.len();
+
+/// The vendor's name for every moment amx listens for, in wiring order.
+const fn named() -> [&'static str; WIRED] {
+    let mut names = [""; WIRED];
+    let mut at = 0;
+    while at < WIRED {
+        names[at] = claude::HOOKS.events[at].event;
+        at += 1;
+    }
+    names
+}
 
 /// What was done to the file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +73,7 @@ pub fn hook_command(amx: &Path) -> String {
 
 /// Where the vendor keeps its settings, given a home directory.
 pub fn settings_path(home: &Path) -> PathBuf {
-    home.join(".claude/settings.json")
+    home.join(claude::HOOKS.settings)
 }
 
 /// The same, from the environment.
@@ -105,14 +117,14 @@ pub fn installed_events(settings: &Value, command: &str) -> Vec<String> {
 pub fn merge(settings: &mut Value, command: &str) -> bool {
     let mut changed = remove_hooks(settings, &|found| is_amx_hook(found) && found != command);
 
-    for event in EVENTS {
-        let groups = event_groups(settings, event);
+    for wiring in claude::HOOKS.events {
+        let groups = event_groups(settings, wiring.event);
         if groups.iter().any(|group| runs(group, command)) {
             continue;
         }
         let mut group = json!({ "hooks": [{ "type": "command", "command": command }] });
-        if MATCHED.contains(&event) {
-            group["matcher"] = json!(MATCHER);
+        if wiring.matched {
+            group["matcher"] = json!(claude::HOOKS.matcher);
         }
         groups.push(group);
         changed = true;
@@ -454,34 +466,45 @@ mod tests {
 
     #[test]
     fn install_asks_before_it_writes_anything() {
-        let path = Path::new("/home/dev/.claude/settings.json");
-        assert_eq!(settings_path(Path::new("/home/dev")), path);
+        // The file is the vendor's, under the person's home, and the sentence
+        // names it in full because that is the thing being agreed to.
+        let table = claude::VENDOR.hooks.expect("claude reports through hooks");
+        let settings = Path::new("/home/dev").join(table.settings);
+        assert_eq!(settings_path(Path::new("/home/dev")), settings);
 
-        let asked = consent_line(path, true);
-        assert!(asked.contains("settings.json"), "{asked}");
+        let asked = consent_line(&settings, true);
+        assert!(asked.contains(&settings.display().to_string()), "{asked}");
         assert!(
             asked.contains("copy"),
             "a person is told about the backup: {asked}"
         );
-        assert!(!consent_line(path, false).contains("copy"));
+        assert!(!consent_line(&settings, false).contains("copy"));
     }
 
     #[test]
     fn install_writes_the_shape_the_vendor_reads() {
+        // Every event the vendor's entry names, each with a matcher exactly
+        // where that entry asks for one. Nothing here knows what any of them
+        // is called: an event this file spelled for itself is one that would
+        // go on being wired after the vendor renamed it.
+        let table = claude::VENDOR.hooks.expect("claude reports through hooks");
         let mut settings = json!({});
         assert!(merge(&mut settings, AMX));
 
-        for event in EVENTS {
-            assert_eq!(hooks(&settings, event), [AMX], "{event}");
+        for wiring in table.events {
+            assert_eq!(hooks(&settings, wiring.event), [AMX], "{}", wiring.event);
+            let group = settings["hooks"][wiring.event][0].clone();
+            assert_eq!(group["hooks"][0]["type"], "command", "{}", wiring.event);
+            if wiring.matched {
+                assert_eq!(group["matcher"], table.matcher, "{}", wiring.event);
+            } else {
+                assert!(group.get("matcher").is_none(), "{}", wiring.event);
+            }
         }
-        for matched in ["PreToolUse", "PermissionRequest", "PermissionDenied"] {
-            let group = settings["hooks"][matched][0].clone();
-            assert_eq!(group["matcher"], MATCHER, "{matched} takes a matcher");
-            assert_eq!(group["hooks"][0]["type"], "command");
-        }
-        assert!(
-            settings["hooks"]["Stop"][0].get("matcher").is_none(),
-            "and the others do not"
+        assert_eq!(
+            settings["hooks"].as_object().map(serde_json::Map::len),
+            Some(table.events.len()),
+            "and amx wires nothing the table does not name"
         );
     }
 

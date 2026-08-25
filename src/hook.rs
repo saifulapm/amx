@@ -28,21 +28,11 @@ use crate::config::Config;
 use crate::exit;
 use crate::notify::{self, Notice};
 use crate::store::{Agent, Ask, Choice, Kind, Meta, Phase, Source, State};
+use crate::vendor::{Moment, claude};
 
 /// How the hook learns which agent it belongs to. `_boot` puts it in the
 /// pane's environment, so every process the vendor starts inherits it.
 pub const ID_ENV: &str = "AMX_ID";
-
-/// The one tool call that is not work: it draws a menu and waits on it.
-///
-/// Named here because three of the events below are about it, and two of them
-/// are the vendor asking itself for permission to use it. Measured against
-/// claude 2.1.240 on 2026-08-25, in manual mode and again in auto, on a
-/// checkbox question and a plain one: `PreToolUse` draws the menu,
-/// `PermissionRequest` lands 10 to 30 ms later naming this same tool, and the
-/// `permission_prompt` notification six seconds after that. Three events, one
-/// screen, and the screen is a menu the whole time.
-const THE_QUESTION_TOOL: &str = "AskUserQuestion";
 
 /// Record one hook payload. Answers with the process's exit code, which is
 /// always `OK`.
@@ -216,76 +206,107 @@ fn record_exit(agent: &Agent, code: i32, config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// The event a payload is about.
+/// The event a payload is about, in the vendor's own word for it. What the
+/// event log keeps, because a record of what arrived is a record of what the
+/// vendor said.
 fn kind(payload: &Value) -> Option<&str> {
     payload["hook_event_name"].as_str()
 }
 
+/// The moment a payload is about, when it is one amx listens for. The vendor's
+/// entry is the only thing that knows which name is which moment.
+fn moment(payload: &Value) -> Option<Moment> {
+    claude::HOOKS.moment(kind(payload)?)
+}
+
+/// Whether a payload is about the one tool call that is not work: it draws a
+/// menu and waits on it.
+///
+/// Asked of three moments below, and two of them are the vendor asking itself
+/// for permission to use it. Measured against claude 2.1.240 on 2026-08-25, in
+/// manual mode and again in auto, on a checkbox question and a plain one: the
+/// call draws the menu, the permission event lands 10 to 30 ms later naming
+/// this same tool, and the notification six seconds after that. Three events,
+/// one screen, and the screen is a menu the whole time.
+fn menu(payload: &Value) -> bool {
+    payload["tool_name"] == claude::HOOKS.question_tool
+}
+
+/// Whether the vendor typed a notification as `what`.
+fn typed(payload: &Value, what: &str) -> bool {
+    payload["notification_type"] == what
+}
+
 /// What one payload means for the record.
 ///
-/// The mapping, in full:
+/// Every moment below is one the vendor's entry names; what any of them is
+/// called there is no business of this file's. The mapping, in full:
 ///
-/// * `SessionStart` records the vendor's session id and the transcript it
-///   writes, and moves nothing. Only this event may set the session id —
-///   every payload carries one, and a subagent's is not the agent's.
-/// * `UserPromptSubmit` and `PreToolUse` mean the agent is working, and the
-///   tool call says what it is doing. The one tool that is not work is
-///   `AskUserQuestion`: it draws a menu and waits, and its payload carries
-///   every question the menu will ask, whole.
-/// * `PermissionRequest` is the permission box the instant it goes up, tool
-///   and all — unless the tool it names is the one that draws the menu, in
-///   which case there is no box and the menu is what it is about;
-///   `PermissionDenied` is the only thing that says it closed with the tool
-///   refused, after which the turn is working again.
-/// * `Notification` means it has stopped on a question, and carries its words.
-///   The choices under it are on the pane, which this command does not read;
-///   a reader fills them in later. Its `notification_type` is the vendor's own
-///   word for what the notice is about: it is the only thing here that names a
-///   permission prompt for what it is, and the only thing that tells the
-///   nudge about an idle session apart from a question, which it is not.
-/// * `Stop` ends the turn, and its payload is the freshest place the answer
-///   ever exists — the transcript is written asynchronously and lags it.
+/// * A session [`Started`](Moment::Started) records the vendor's session id
+///   and the transcript it writes, and moves nothing. Only this moment may set
+///   the session id — every payload carries one, and a subagent's is not the
+///   agent's.
+/// * [`Prompted`](Moment::Prompted) and [`Calling`](Moment::Calling) mean the
+///   agent is working, and the tool call says what it is doing. The one tool
+///   that is not work is the one that draws a [`menu`]: it waits, and its
+///   payload carries every question the menu will ask, whole.
+/// * [`Asked`](Moment::Asked) is the permission box the instant it goes up,
+///   tool and all — unless the tool it names is the one that draws the menu,
+///   in which case there is no box and the menu is what it is about;
+///   [`Refused`](Moment::Refused) is the only thing that says it closed with
+///   the tool refused, after which the turn is working again.
+/// * [`Notified`](Moment::Notified) means it has stopped on a question, and
+///   carries its words. The choices under it are on the pane, which this
+///   command does not read; a reader fills them in later. The type the vendor
+///   puts on it is its own word for what the notice is about: it is the only
+///   thing here that names a permission prompt for what it is, and the only
+///   thing that tells the nudge about an idle session apart from a question,
+///   which it is not.
+/// * [`Ended`](Moment::Ended) ends the turn, and its payload is the freshest
+///   place the answer ever exists — the transcript is written asynchronously
+///   and lags it.
 /// * Anything carrying an `agent_id` is a subagent's, and a subagent's work is
 ///   not the agent's state.
 /// * A record that has already ended stays ended. A late hook is a hook about
 ///   a turn that is over.
+/// * An event the vendor never told amx about moves nothing at all.
 ///
 /// What comes back is the one notice a stop is worth, and one for every stop.
 /// Somebody is told when a screen goes up that nothing has told them about,
 /// with the question if the event that put it there carried one, and anything
-/// repeating a screen already up is folded in silently. Three of the events
-/// above end in waiting and one `AskUserQuestion` fires all three — the tool
-/// call that draws the menu, the permission box over that same tool, and the
+/// repeating a screen already up is folded in silently. Three of the moments
+/// above end in waiting and one [`menu`] fires all three — the tool call that
+/// draws the menu, the permission box over that same tool, and the
 /// notification that repeats the box. They are three different sentences, so
 /// nothing but the record's own phase tells one stop from three.
 ///
 /// The phase alone would then fold two stops into one. Nothing amx installs
 /// fires when a box is approved or a menu answered — the vendor says so with
-/// `PostToolUse`, which is not one of amx's events — so the record still reads
-/// waiting when the next screen goes up, and the person is told about a box
-/// they have answered and not about the menu in front of them. A menu says for
-/// itself that it is a stop of its own.
+/// an event amx does not wire, and its entry says why — so the record still
+/// reads waiting when the next screen goes up, and the person is told about a
+/// box they have answered and not about the menu in front of them. A menu says
+/// for itself that it is a stop of its own.
 ///
 /// The same three decide what the agent is being asked, and there the order
 /// they arrive in is the wrong way round: the one that knows is first and the
 /// two that know least come after. So they do not overwrite it. A permission
-/// event about [`THE_QUESTION_TOOL`] is the vendor asking itself for leave to
-/// draw a menu, and a notification arriving while a call is still outstanding
-/// is about that menu, because a modal choice and a permission box are
-/// mutually exclusive states of the one program — the second could only be up
-/// if a `PreToolUse` for its own tool had already retired the call. Both say
-/// the agent has stopped and neither says what for, so both leave the question
-/// where the call put it. This is 02BQ6442: with a menu on the pane the card
-/// offered a permission box's grammar, because the box the vendor asked itself
-/// about arrived last and won.
+/// event about the tool that draws a [`menu`] is the vendor asking itself for
+/// leave to draw one, and a notification arriving while a call is still
+/// outstanding is about that menu, because a modal choice and a permission box
+/// are mutually exclusive states of the one program — the second could only be
+/// up if a [`Calling`](Moment::Calling) for its own tool had already retired
+/// the call. Both say the agent has stopped and neither says what for, so both
+/// leave the question where the call put it. This is 02BQ6442: with a menu on
+/// the pane the card offered a permission box's grammar, because the box the
+/// vendor asked itself about arrived last and won.
 pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Notice> {
     if !payload["agent_id"].is_null() || state.state.is_terminal() {
         return None;
     }
     let was_waiting = state.state == Phase::Waiting;
 
-    let screen = match kind(payload)? {
-        "SessionStart" => {
+    let screen = match moment(payload)? {
+        Moment::Started => {
             if let Some(session) = payload["session_id"].as_str() {
                 meta.session = Some(session.to_string());
             }
@@ -295,7 +316,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             Screen::Clear
         }
 
-        "UserPromptSubmit" => {
+        Moment::Prompted => {
             state.state = Phase::Working;
             state.summary = None;
             state.asks(None);
@@ -307,7 +328,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             Screen::Clear
         }
 
-        "PreToolUse" if payload["tool_name"] == THE_QUESTION_TOOL => {
+        Moment::Calling if menu(payload) => {
             state.state = Phase::Waiting;
             // Not running anything: the menu is what it is doing.
             state.summary = None;
@@ -319,7 +340,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             Screen::Fresh
         }
 
-        "PreToolUse" => {
+        Moment::Calling => {
             state.state = Phase::Working;
             if let Some(tool) = payload["tool_name"].as_str() {
                 state.summary = Some(format!("Running {tool}"));
@@ -342,7 +363,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         // because it is the only other place the questions are ever sent. So a
         // record with a call on it keeps the one it has, and a record with none
         // takes this.
-        "PermissionRequest" if payload["tool_name"] == THE_QUESTION_TOOL => {
+        Moment::Asked if menu(payload) => {
             state.state = Phase::Waiting;
             state.summary = None;
             if state.pending().is_none() {
@@ -362,26 +383,26 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         // Fired as the permission box goes up — six seconds before the
         // notification that repeats it, which was the whole of what said so
         // before this event was wired. The payload carries the tool and not
-        // the vendor's sentence, so the sentence is written here the way the
-        // vendor will write it, and a box with no tool named waits for a
-        // reader to quote the pane.
-        "PermissionRequest" => {
+        // the vendor's sentence, so the vendor is asked for the sentence it
+        // will write, and a box with no tool named waits for a reader to quote
+        // the pane.
+        Moment::Asked => {
             state.state = Phase::Waiting;
             state.summary = None;
             state.asks(
                 payload["tool_name"]
                     .as_str()
-                    .map(|tool| format!("Claude needs your permission to use {}", rendered(tool))),
+                    .map(claude::permission_sentence),
             );
             state.kind = Some(Kind::Permission);
             Screen::Waiting
         }
 
-        // The one hook that says the box closed without the tool running: no
-        // PostToolUse follows a tool that never ran. The turn goes on with
-        // the refusal in it, and the next tool call will say what the agent
-        // is doing now.
-        "PermissionDenied" => {
+        // The one hook that says the box closed without the tool running:
+        // nothing announces a tool that finished when it never ran. The turn
+        // goes on with the refusal in it, and the next tool call will say what
+        // the agent is doing now.
+        Moment::Refused => {
             state.state = Phase::Working;
             state.summary = None;
             state.asks(None);
@@ -395,7 +416,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         // session rather than about anything to answer, so they are not the
         // question, and whatever amx thought was outstanding is not on that
         // screen either.
-        "Notification" if payload["notification_type"] == "idle_prompt" => {
+        Moment::Notified if typed(payload, claude::HOOKS.idle_notice) => {
             state.state = Phase::Idle;
             state.summary = None;
             state.asks(None);
@@ -407,15 +428,15 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         // measured at 2.1.240 on 2026-08-25, the whole of its message is
         // "Claude needs your permission". A permission box cannot be up over
         // the menu — they are two states of the one program, and a box would
-        // have had a `PreToolUse` of its own tool in front of it, which retires
-        // the call. So the agent has stopped, and what it stopped on is what
-        // the call already says.
-        "Notification" if state.pending().is_some() => {
+        // have had a call of its own tool in front of it, which retires the
+        // call. So the agent has stopped, and what it stopped on is what the
+        // call already says.
+        Moment::Notified if state.pending().is_some() => {
             state.state = Phase::Waiting;
             Screen::Waiting
         }
 
-        "Notification" => {
+        Moment::Notified => {
             // An untyped notification about a turn that already ended with an
             // answer can only be an older vendor's idle nudge wearing no
             // name: a vendor notifies about an idle session when nothing is
@@ -430,13 +451,13 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             }
             state.state = Phase::Waiting;
             state.asks(payload["message"].as_str().map(str::to_string));
-            if payload["notification_type"] == "permission_prompt" {
+            if typed(payload, claude::HOOKS.permission_notice) {
                 state.kind = Some(Kind::Permission);
             }
             Screen::Waiting
         }
 
-        "Stop" => {
+        Moment::Ended => {
             state.state = Phase::Idle;
             state.summary = None;
             state.asks(None);
@@ -446,8 +467,6 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             }
             Screen::Clear
         }
-
-        _ => Screen::Clear,
     };
 
     // One stop, one interruption. An agent that was already waiting when a box
@@ -472,43 +491,14 @@ enum Screen {
     /// phase to say.
     Waiting,
     /// Something to answer that was not there a moment ago. A menu is this
-    /// wherever it lands: `PreToolUse` fires before the vendor has asked
-    /// anybody whether the call may run at all, so the call it names has not
+    /// wherever it lands: a tool call fires before the vendor has asked
+    /// anybody whether it may run at all, so the call it names has not
     /// been on the pane before, and whatever the record was waiting on is
     /// behind it — answered, approved, or gone with the tool that ran.
     Fresh,
 }
 
-/// A tool's name the way the vendor writes it into the permission sentence,
-/// measured at 2.1.237: the last `__` segment — an MCP tool arrives as
-/// `mcp__<server>__<tool>` — with underscores as spaces and a letter raised
-/// wherever a word starts, which is after anything that is not a letter or a
-/// digit (the vendor's `\b\w`), not only after an underscore. That carries a
-/// kebab-case name past its dashes, leaves a built-in like `Bash` as it
-/// stands, and keeps a digit's word one word. The sentence written at
-/// `PermissionRequest` has to be the one the notification will repeat: it is
-/// what every reader quotes for the six seconds until the echo lands, and the
-/// echo writes the vendor's own words over it.
-fn rendered(tool: &str) -> String {
-    let mut boundary = true;
-    tool.rsplit("__")
-        .next()
-        .unwrap_or(tool)
-        .chars()
-        .map(|letter| {
-            let letter = if letter == '_' { ' ' } else { letter };
-            let raised = if boundary {
-                letter.to_ascii_uppercase()
-            } else {
-                letter
-            };
-            boundary = !letter.is_ascii_alphanumeric();
-            raised
-        })
-        .collect()
-}
-
-/// Every question an `AskUserQuestion` call is about to put on the pane.
+/// Every question a [`menu`] call is about to put on the pane.
 ///
 /// The tool takes up to four and draws them as tabs on one screen, asking them
 /// one at a time, so the first is the one showing and the rest are a keystroke
@@ -626,12 +616,77 @@ mod tests {
         }
     }
 
+    /// The vendor's name for a moment, which is what a payload arrives under.
+    fn named(moment: Moment) -> &'static str {
+        claude::HOOKS
+            .events
+            .iter()
+            .find(|wiring| wiring.moment == moment)
+            .expect("the vendor names every moment")
+            .event
+    }
+
     /// Fold a payload into a fresh record and answer with what came of it.
     fn fold(payload: Value) -> (State, Meta, Option<Notice>) {
         let mut state = State::default();
         let mut meta = meta();
         let notice = apply(&payload, &mut state, &mut meta);
         (state, meta, notice)
+    }
+
+    #[test]
+    fn hook_a_payload_is_read_by_the_moment_the_vendor_named_it() {
+        // The names in a payload are the vendor's own, and they are in the
+        // vendor's entry. A name this file spelled for itself would go on being
+        // read after the vendor renamed it, and nothing would say so: the
+        // record would simply stop moving.
+        for wiring in claude::HOOKS.events {
+            assert_eq!(
+                moment(&json!({ "hook_event_name": wiring.event })),
+                Some(wiring.moment),
+                "{}",
+                wiring.event
+            );
+        }
+        assert_eq!(moment(&json!({ "hook_event_name": "PostToolUse" })), None);
+        assert_eq!(moment(&json!({})), None);
+    }
+
+    #[test]
+    fn hook_the_menu_is_the_tool_the_vendor_says_draws_one() {
+        // Which tool that is, is the vendor's word and nowhere else. Every
+        // other tool is work, and the difference is a card that says the agent
+        // is waiting against one that says it is running something.
+        let (state, _, _) = fold(json!({
+            "hook_event_name": named(Moment::Calling),
+            "tool_name": claude::HOOKS.question_tool,
+            "tool_input": { "questions": [{ "question": "Which fixture?", "options": [] }] }
+        }));
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(state.kind, Some(Kind::Question));
+        assert_eq!(state.summary, None, "a menu is not a tool running");
+    }
+
+    #[test]
+    fn hook_a_notification_means_what_the_vendor_typed_it() {
+        // Two of the vendor's own words, and the whole difference between a
+        // turn that is over and a question somebody has to answer. Neither is
+        // spelled here.
+        let (idle, _, _) = fold(json!({
+            "hook_event_name": named(Moment::Notified),
+            "message": "Claude is waiting for your input",
+            "notification_type": claude::HOOKS.idle_notice
+        }));
+        assert_eq!(idle.state, Phase::Idle);
+        assert_eq!(idle.question, None, "nothing is open on the session");
+
+        let (box_, _, _) = fold(json!({
+            "hook_event_name": named(Moment::Notified),
+            "message": "Claude needs your permission to use Bash",
+            "notification_type": claude::HOOKS.permission_notice
+        }));
+        assert_eq!(box_.state, Phase::Waiting);
+        assert_eq!(box_.kind, Some(Kind::Permission));
     }
 
     #[test]
@@ -1385,24 +1440,6 @@ mod tests {
             &mut meta,
         );
         assert_eq!(again, None, "one box, one interruption");
-    }
-
-    #[test]
-    fn hook_a_tools_name_is_raised_at_every_word_boundary() {
-        // The vendor raises a letter wherever a word starts — after anything
-        // that is not a letter or a digit — not only after an underscore.
-        // Raised the underscore way, a kebab-case name reads
-        // 'Resolve-library-id' against the pane's 'Resolve-Library-Id', and
-        // the record hands whoever is answering a sentence nothing drew.
-        assert_eq!(
-            rendered("mcp__context7__resolve-library-id"),
-            "Resolve-Library-Id"
-        );
-        assert_eq!(rendered("mcp__playwright__browser_click"), "Browser Click");
-        assert_eq!(rendered("mcp__acme__fs.read_file"), "Fs.Read File");
-        // A digit neither opens a word nor ends one: nothing raises after it.
-        assert_eq!(rendered("mcp__totp__get2fa-codes"), "Get2fa-Codes");
-        assert_eq!(rendered("Bash"), "Bash");
     }
 
     #[test]

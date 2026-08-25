@@ -41,4 +41,8 @@ pub const SECOND: Vendor = Vendor {
     // hooks, no transcript, no way to branch and no trust screen: the shape of
     // a vendor amx has to refuse things for.
     capabilities: &[Capability::Resume, Capability::Adopt],
+    // Nothing to wire and nothing to read: this vendor tells amx nothing about
+    // what it is doing, which is the shape install has to leave alone and the
+    // reason the capability above is asked before either is touched.
+    hooks: None,
 };

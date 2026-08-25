@@ -5,7 +5,7 @@
 //! choose, and a renamed mode or a dropped alias turns a dial into a spawn
 //! that fails.
 
-use super::{Capability, DEFAULT, DialSpec, Vendor};
+use super::{Capability, DEFAULT, DialSpec, Hooks, Moment, TOOL, Vendor, Wiring};
 
 /// claude's entry in the table.
 pub const VENDOR: Vendor = Vendor {
@@ -77,11 +77,139 @@ pub const VENDOR: Vendor = Vendor {
         Capability::Adopt,
         Capability::Trust,
     ],
+    hooks: Some(HOOKS),
 };
+
+/// How claude reports what it is doing, and where amx asks it to.
+///
+/// Seven events out of the vendor's own list, one line each in the settings
+/// file. `PostToolUse` is deliberately not among them: nothing amx keeps needs
+/// to know that a tool finished, and every tool call would cost a process.
+///
+/// Measured at 2.1.240 on 2026-08-25. Re-measure at every vendor bump the same
+/// way as the dials above: a renamed event is hooks that never fire, and a
+/// renamed notification type is a nudge amx reads as a question.
+pub const HOOKS: Hooks = Hooks {
+    settings: ".claude/settings.json",
+    events: &[
+        Wiring {
+            moment: Moment::Started,
+            event: "SessionStart",
+            matched: false,
+        },
+        Wiring {
+            moment: Moment::Prompted,
+            event: "UserPromptSubmit",
+            matched: false,
+        },
+        Wiring {
+            moment: Moment::Calling,
+            event: "PreToolUse",
+            matched: true,
+        },
+        Wiring {
+            moment: Moment::Asked,
+            event: "PermissionRequest",
+            matched: true,
+        },
+        Wiring {
+            moment: Moment::Refused,
+            event: "PermissionDenied",
+            matched: true,
+        },
+        Wiring {
+            moment: Moment::Notified,
+            event: "Notification",
+            matched: false,
+        },
+        Wiring {
+            moment: Moment::Ended,
+            event: "Stop",
+            matched: false,
+        },
+    ],
+    // The three events above that take one, and amx wants all of them: what a
+    // tool call means for the record is decided by reading the payload, not by
+    // asking the vendor to send only some.
+    matcher: "*",
+    question_tool: "AskUserQuestion",
+    idle_notice: "idle_prompt",
+    permission_notice: "permission_prompt",
+    permission_sentence: "Claude needs your permission to use {tool}",
+};
+
+/// The sentence claude puts on a permission box about `tool`.
+///
+/// The one place a tool name becomes the vendor's own words. What is written
+/// when the box goes up has to be what the notification six seconds later will
+/// repeat: it is the sentence every reader quotes until that echo lands, and
+/// the echo writes the vendor's own words over it.
+pub fn permission_sentence(tool: &str) -> String {
+    HOOKS.permission_sentence.replace(TOOL, &rendered(tool))
+}
+
+/// A tool's name the way claude writes it into that sentence, measured at
+/// 2.1.237: the last `__` segment — an MCP tool arrives as
+/// `mcp__<server>__<tool>` — with underscores as spaces and a letter raised
+/// wherever a word starts, which is after anything that is not a letter or a
+/// digit (the vendor's `\b\w`), not only after an underscore. That carries a
+/// kebab-case name past its dashes, leaves a built-in like `Bash` as it
+/// stands, and keeps a digit's word one word.
+fn rendered(tool: &str) -> String {
+    let mut boundary = true;
+    tool.rsplit("__")
+        .next()
+        .unwrap_or(tool)
+        .chars()
+        .map(|letter| {
+            let letter = if letter == '_' { ' ' } else { letter };
+            let raised = if boundary {
+                letter.to_ascii_uppercase()
+            } else {
+                letter
+            };
+            boundary = !letter.is_ascii_alphanumeric();
+            raised
+        })
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_words_a_permission_box_the_way_the_pane_does() {
+        // The sentence written when the box goes up is what every reader
+        // quotes for the six seconds until the vendor's own notification
+        // repeats it. One worded any other way is a sentence nothing drew,
+        // handed to whoever has to answer the box.
+        assert_eq!(
+            permission_sentence("Bash"),
+            "Claude needs your permission to use Bash"
+        );
+        assert_eq!(
+            permission_sentence("mcp__playwright__browser_click"),
+            "Claude needs your permission to use Browser Click"
+        );
+    }
+
+    #[test]
+    fn claude_raises_a_tools_name_at_every_word_boundary() {
+        // The vendor raises a letter wherever a word starts — after anything
+        // that is not a letter or a digit — not only after an underscore.
+        // Raised the underscore way, a kebab-case name reads
+        // 'Resolve-library-id' against the pane's 'Resolve-Library-Id'.
+        assert_eq!(
+            rendered("mcp__context7__resolve-library-id"),
+            "Resolve-Library-Id"
+        );
+        assert_eq!(rendered("mcp__playwright__browser_click"), "Browser Click");
+        assert_eq!(rendered("mcp__acme__fs.read_file"), "Fs.Read File");
+        // A digit neither opens a word nor ends one: nothing raises after it.
+        assert_eq!(rendered("mcp__totp__get2fa-codes"), "Get2fa-Codes");
+        assert_eq!(rendered("Bash"), "Bash");
+    }
 
     #[test]
     fn claude_declares_a_model_a_permission_and_an_effort_dial() {
@@ -161,6 +289,58 @@ mod tests {
                 "{preference} is the person's, not the session's"
             );
         }
+    }
+
+    #[test]
+    fn claude_names_every_event_amx_wires_into_its_settings() {
+        // Measured against claude 2.1.240's own hook list on 2026-08-25, and
+        // the whole of what amx asks to be told. Re-measure at every vendor
+        // bump: a renamed event is a hook that never fires again, and nothing
+        // says so — the record simply stops moving.
+        let hooks = VENDOR.hooks.expect("claude reports through hooks");
+        assert_eq!(hooks.settings, ".claude/settings.json");
+
+        let wired: Vec<(Moment, &str, bool)> = hooks
+            .events
+            .iter()
+            .map(|wiring| (wiring.moment, wiring.event, wiring.matched))
+            .collect();
+        assert_eq!(
+            wired,
+            [
+                (Moment::Started, "SessionStart", false),
+                (Moment::Prompted, "UserPromptSubmit", false),
+                (Moment::Calling, "PreToolUse", true),
+                (Moment::Asked, "PermissionRequest", true),
+                (Moment::Refused, "PermissionDenied", true),
+                (Moment::Notified, "Notification", false),
+                (Moment::Ended, "Stop", false),
+            ]
+        );
+        assert_eq!(hooks.matcher, "*", "every tool, on the three that ask");
+
+        // PostToolUse is the vendor's word for a tool that finished, and it is
+        // left out on purpose: nothing amx keeps needs it, and it would cost a
+        // process on every tool call. What that costs instead is written down
+        // in `hook` — the record still reads waiting when a box is approved.
+        assert_eq!(hooks.moment("PostToolUse"), None);
+    }
+
+    #[test]
+    fn claude_names_the_tool_that_asks_and_the_notices_it_sends() {
+        // Three words the vendor writes into payloads, and amx has no other
+        // way to tell one screen from another. Measured at 2.1.240 on
+        // 2026-08-25: AskUserQuestion draws a menu rather than doing work, and
+        // a notification carries idle_prompt when nothing is open on the
+        // session or permission_prompt when a box is.
+        let hooks = VENDOR.hooks.expect("claude reports through hooks");
+        assert_eq!(hooks.question_tool, "AskUserQuestion");
+        assert_eq!(hooks.idle_notice, "idle_prompt");
+        assert_eq!(hooks.permission_notice, "permission_prompt");
+        assert_ne!(
+            hooks.idle_notice, hooks.permission_notice,
+            "a nudge about a session nobody is using is not a question"
+        );
     }
 
     #[test]

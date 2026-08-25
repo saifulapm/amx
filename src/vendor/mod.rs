@@ -34,6 +34,94 @@ pub struct DialSpec {
     pub flag: &'static str,
 }
 
+/// One moment in a turn that amx listens for.
+///
+/// What a vendor calls each of these is the vendor's own word and lives in the
+/// table beside it. What one means for an agent's record is `hook`'s business
+/// and lives there, which is why nothing here says what any of them does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Moment {
+    /// A session begins, and says which session it is.
+    Started,
+    /// A prompt has been sent, and a turn is under way.
+    Prompted,
+    /// A tool is about to run.
+    Calling,
+    /// Leave to run one is being asked for.
+    Asked,
+    /// Leave was refused, and the tool never ran.
+    Refused,
+    /// The vendor is telling somebody something about this session.
+    Notified,
+    /// The turn is over.
+    Ended,
+}
+
+impl Moment {
+    /// Every moment amx listens for. A vendor that reports at all names all of
+    /// them: what amx does with an event it was never told about is nothing.
+    pub const ALL: [Moment; 7] = [
+        Moment::Started,
+        Moment::Prompted,
+        Moment::Calling,
+        Moment::Asked,
+        Moment::Refused,
+        Moment::Notified,
+        Moment::Ended,
+    ];
+}
+
+/// One moment, under the name its vendor gives it, and how the entry that
+/// listens for it is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Wiring {
+    pub moment: Moment,
+    /// The vendor's own name for it, which is what amx writes into the
+    /// settings and what arrives in a payload.
+    pub event: &'static str,
+    /// Whether this vendor's entry for it takes a tool matcher.
+    pub matched: bool,
+}
+
+/// What amx needs in order to wire itself into a vendor's hooks and read back
+/// what they say: where the wiring goes, what the vendor calls each moment,
+/// and the words the vendor's own screens are worded with.
+///
+/// A vendor that reports nothing has none of this, and that is what
+/// [`Capability::Hooks`] is the question about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hooks {
+    /// The settings file amx writes its entries into, under the person's home
+    /// directory.
+    pub settings: &'static str,
+    /// Every moment amx listens for, in the order the entries are wired.
+    pub events: &'static [Wiring],
+    /// What this vendor's matcher for every tool is spelled.
+    pub matcher: &'static str,
+    /// The one tool call that is not work: it draws a menu and waits on it.
+    pub question_tool: &'static str,
+    /// The vendor's word for a notice about a session nobody is using.
+    pub idle_notice: &'static str,
+    /// And for the one that repeats a permission box.
+    pub permission_notice: &'static str,
+    /// The sentence this vendor writes on a permission box, with [`TOOL`]
+    /// where the tool it is about goes.
+    pub permission_sentence: &'static str,
+}
+
+impl Hooks {
+    /// The moment `event` is, when it is one amx listens for.
+    pub fn moment(&self, event: &str) -> Option<Moment> {
+        self.events
+            .iter()
+            .find(|wiring| wiring.event == event)
+            .map(|wiring| wiring.moment)
+    }
+}
+
+/// Where the tool a vendor sentence is about goes, in the sentence.
+pub const TOOL: &str = "{tool}";
+
 /// One vendor, and everything amx has been taught about it.
 ///
 /// A `None` dial means this vendor has no such dial at all, which is a
@@ -63,6 +151,11 @@ pub struct Vendor {
     /// has to say so and stop, rather than spawn a command the vendor will
     /// refuse and leave the person reading the pane to work out why.
     pub capabilities: &'static [Capability],
+    /// How this vendor reports what it is doing, and where amx asks it to.
+    /// `None` from a vendor that reports nothing, which is the same thing
+    /// [`Capability::Hooks`] says and the reason both are here: the capability
+    /// is what a verb asks, and this is what `install` and `hook` read.
+    pub hooks: Option<Hooks>,
 }
 
 /// Something amx can do only where the vendor takes part.
@@ -301,6 +394,101 @@ mod tests {
         );
         for cannot in [Capability::Hooks, Capability::Transcript, Capability::Trust] {
             assert!(!SECOND.can(cannot), "{cannot:?}");
+        }
+    }
+
+    #[test]
+    fn a_vendor_reports_through_hooks_or_amx_has_none_to_wire() {
+        // The capability is the question a verb asks before it refuses; the
+        // entry is what install writes and what hook reads. A vendor that
+        // answered the two differently would either promise a report amx has
+        // no wiring for, or hold wiring nothing is allowed to use.
+        for vendor in known() {
+            assert_eq!(
+                vendor.can(Capability::Hooks),
+                vendor.hooks.is_some(),
+                "{}",
+                vendor.name
+            );
+        }
+        assert!(
+            SECOND.hooks.is_none(),
+            "the vendor amx cannot be told anything by is the shape install \
+             has to leave alone"
+        );
+    }
+
+    #[test]
+    fn a_vendor_that_reports_names_every_moment_once_and_no_two_alike() {
+        // amx listens for a fixed set of moments and the vendor supplies the
+        // names. A moment left out is a turn amx would never see move, and a
+        // name given twice is two events folded into one.
+        for vendor in known() {
+            let Some(hooks) = vendor.hooks else { continue };
+            for moment in Moment::ALL {
+                let named = hooks
+                    .events
+                    .iter()
+                    .filter(|wiring| wiring.moment == moment)
+                    .count();
+                assert_eq!(named, 1, "{} names {moment:?} {named} times", vendor.name);
+            }
+
+            let mut events: Vec<&str> = hooks.events.iter().map(|w| w.event).collect();
+            let wired = events.len();
+            events.sort_unstable();
+            events.dedup();
+            assert_eq!(events.len(), wired, "{} wires one event twice", vendor.name);
+        }
+    }
+
+    #[test]
+    fn the_name_a_vendor_gives_a_moment_is_what_finds_it_again() {
+        // Reading a payload is this lookup and nothing else, so an event the
+        // table does not name is an event amx has no business acting on.
+        for vendor in known() {
+            let Some(hooks) = vendor.hooks else { continue };
+            for wiring in hooks.events {
+                assert_eq!(
+                    hooks.moment(wiring.event),
+                    Some(wiring.moment),
+                    "{}'s {}",
+                    vendor.name,
+                    wiring.event
+                );
+            }
+            assert_eq!(hooks.moment("nothing wired this"), None, "{}", vendor.name);
+            assert_eq!(hooks.moment(""), None, "{}", vendor.name);
+        }
+    }
+
+    #[test]
+    fn a_vendor_keeps_its_settings_somewhere_under_the_persons_home() {
+        // amx joins this onto a home directory. An absolute path would throw
+        // the home away and write wherever the table said instead.
+        for vendor in known() {
+            let Some(hooks) = vendor.hooks else { continue };
+            assert!(!hooks.settings.is_empty(), "{}", vendor.name);
+            assert!(
+                !std::path::Path::new(hooks.settings).is_absolute(),
+                "{} keeps its settings outside anybody's home",
+                vendor.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_vendor_sentence_about_a_tool_says_where_the_tool_goes() {
+        // The sentence is the vendor's own words and amx has one thing to put
+        // in it. One with nowhere to put it would be quoted at whoever is
+        // answering with the tool it is about left out.
+        for vendor in known() {
+            let Some(hooks) = vendor.hooks else { continue };
+            assert!(
+                hooks.permission_sentence.contains(TOOL),
+                "{} writes a sentence with no room for the tool",
+                vendor.name
+            );
         }
     }
 
