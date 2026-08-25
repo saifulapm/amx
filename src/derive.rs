@@ -1076,6 +1076,55 @@ fn screens_of(pending: &[Pending], now: u64) -> Vec<Option<String>> {
     screens
 }
 
+/// Every agent as the records alone have them, oldest first, with nothing
+/// asked of tmux.
+///
+/// What a surface draws before it has waited for anything. A reading costs a
+/// pane list per server and a capture for every agent that has gone quiet, and
+/// somebody who has just opened the view is looking at an empty terminal for
+/// as long as that takes. The records are on disk and are the vendor's own
+/// account of what each agent was last doing, which is enough to draw a wall
+/// with.
+///
+/// Every conclusion here is the record's, so an agent whose pane has gone
+/// still reads as whatever it was doing when it went, and a question the
+/// record cannot name stays unnamed. The reading is what corrects that, and
+/// nothing about this is a substitute for one: it is the frame before it.
+pub fn recorded(root: &Path, now: u64) -> Result<Vec<View>> {
+    let mut views = Vec::new();
+    for id in crate::store::list(root)? {
+        let agent = Agent::open(root, &id)?;
+        let Ok(meta) = agent.meta() else { continue };
+        let state = agent.state()?;
+        let verdict = from_the_record(&state, meta.created, now);
+        views.push(View::new(meta, state, verdict));
+    }
+
+    views.sort_by_key(|view| (view.meta.created, view.meta.id.clone()));
+    Ok(views)
+}
+
+/// What the record on its own says about one agent.
+///
+/// The phase it holds, which is where every phase comes from until a screen
+/// disagrees with it, and the same clock beside it that a reading would put
+/// there. The evidence is the record's for a run that has ended and the hooks'
+/// for one that has not, which is what [`read`] calls those two: this says no
+/// more about where it came from than a reading would.
+fn from_the_record(state: &State, created: u64, now: u64) -> Verdict {
+    let phase = state.state;
+    Verdict {
+        phase,
+        evidence: match phase.is_terminal() {
+            true => Evidence::Record,
+            false => Evidence::Hooks,
+        },
+        rule: None,
+        age: clock(phase, state, created, now),
+        worked: worked(phase, state, created, now),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1661,6 +1710,63 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             read("idles-b2c").verdict.rule.as_deref(),
             Some("idle_prompt")
         );
+    }
+
+    #[test]
+    fn reader_answers_from_the_records_before_it_has_asked_tmux_anything() {
+        let root = TempDir::new().unwrap();
+        let socket = crate::tmux::Socket::Name("amx-not-a-server".to_string());
+        a_record(
+            root.path(),
+            &Meta {
+                socket,
+                created: 1_000,
+                ..meta()
+            },
+            &state(Phase::Working, 1_000),
+        );
+
+        // Nothing is listening on that socket, so anything that asked tmux
+        // about this agent finds no pane and calls it stopped. What the
+        // records say is that it is working, and that is the whole of what a
+        // surface has before it has waited for anything.
+        let recorded = recorded(root.path(), 1_100).expect("the records");
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].phase(), Phase::Working);
+        assert_eq!(recorded[0].verdict.evidence, Evidence::Hooks);
+        assert_eq!(recorded[0].verdict.age, 100, "with the record's own clock");
+
+        let read = views(root.path(), rules::bundled(), 1_100).expect("a reading");
+        assert_eq!(
+            read[0].phase(),
+            Phase::Stopped,
+            "which is what looking at the pane costs"
+        );
+        assert_eq!(read[0].verdict.evidence, Evidence::Gone);
+    }
+
+    #[test]
+    fn reader_reads_a_record_that_has_ended_the_same_way_with_or_without_a_look() {
+        // The record ended it, and a reader that has looked at nothing says
+        // so in the same words as one that has: this is not a guess either
+        // reader is making.
+        let root = TempDir::new().unwrap();
+        let mut done = state(Phase::Done, 1_000);
+        done.ended = 1_000;
+        done.exit = Some(0);
+        a_record(
+            root.path(),
+            &Meta {
+                created: 900,
+                ..meta()
+            },
+            &done,
+        );
+
+        let recorded = recorded(root.path(), 1_100).expect("the records");
+        assert_eq!(recorded[0].phase(), Phase::Done);
+        assert_eq!(recorded[0].verdict.evidence, Evidence::Record);
+        assert_eq!(recorded[0].verdict.age, 100, "and how long it worked");
     }
 
     #[test]

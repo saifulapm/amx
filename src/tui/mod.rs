@@ -603,8 +603,13 @@ where
     // movements, and is waiting for its own pass to be acted on.
     let mut held: Option<Typed> = None;
 
+    // Whether the frame about to be drawn is the one the view opens on, which
+    // is drawn from the records and nothing else — see [`Screen::recall`].
+    let mut opening = true;
+
     loop {
         match screen.read.is_none_or(|at| at.elapsed() >= REFRESH) {
+            true if opening => screen.recall(root, scope)?,
             true => screen.reread(root, scope)?,
             // The reread has just taken the card; between rereads a question
             // card is taken again anyway, so it never holds a question the
@@ -627,6 +632,12 @@ where
         // enter on it — so both are read into the same doing.
         let arrived = match held.take() {
             Some(typed) => typed,
+            // The opening frame is the records' own account and the reading
+            // that checks it against the panes is the next thing this loop
+            // does. Nothing is waited for in between: a wall that stood as the
+            // records left it until somebody pressed a key would be a wall
+            // saying an agent is working a second after its pane went.
+            None if std::mem::take(&mut opening) => Typed::Nothing,
             None => keys.next(TICK),
         };
         let doing = match arrived {
@@ -778,6 +789,24 @@ where
 }
 
 impl Screen {
+    /// Show what the records say, with nothing asked of tmux.
+    ///
+    /// The frame the view opens on. A reading costs a pane list per server and
+    /// a capture for every agent that has gone quiet, and until it comes back
+    /// there is nothing to draw: somebody who typed `amx` is looking at the
+    /// terminal they typed it in. The records are on disk, they are the
+    /// vendor's own account of what each agent was last doing, and a wall of
+    /// them is on the screen in the time it takes to read a file each.
+    ///
+    /// What they cannot say is what has happened since — a pane that went, a
+    /// turn that ended, the question behind one the record could not name.
+    /// That is the reading's, and the reading is the next thing the view does:
+    /// this leaves the clock unset, so the pass straight after takes one.
+    fn recall(&mut self, root: &Path, scope: &Scope) -> Result<()> {
+        self.list.show(scope.narrow(derive::recorded(root, now())?));
+        Ok(())
+    }
+
     /// Read the agents again, the ones the view was opened about.
     fn reread(&mut self, root: &Path, scope: &Scope) -> Result<()> {
         self.list
@@ -2204,6 +2233,91 @@ mod tests {
         )
         .unwrap();
         terminal.get_frame().count()
+    }
+
+    /// And the same again, answering with what the view called the terminal.
+    /// A title is said when it stops being true, so the list of them is the
+    /// frames that changed what there was to say.
+    fn titles(root: &Path, script: Vec<Typed>) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
+        let mut said = Said::default();
+        watch(
+            root,
+            &Config::default(),
+            &Scope::default(),
+            &mut terminal,
+            &mut Script(script.into_iter()),
+            None,
+            None,
+            &mut said,
+        )
+        .unwrap();
+        said.0
+    }
+
+    /// An agent the record says stopped on a question `ago` seconds back, on a
+    /// socket nothing is listening on: whatever asks tmux about this one finds
+    /// no pane at all.
+    fn waiting(root: &Path, id: &str, ago: u64) {
+        let at = now() - ago;
+        let agent = Agent::create(
+            root,
+            &Meta {
+                id: id.to_string(),
+                task: "fix the login bug".to_string(),
+                dir: PathBuf::from("/srv/app"),
+                worktree: None,
+                branch: None,
+                base: None,
+                socket: Socket::Name("amx-not-a-server".to_string()),
+                pane: PaneId::new("%404").unwrap(),
+                bg: false,
+                session: None,
+                transcript: None,
+                created: at,
+            },
+        )
+        .unwrap();
+        let state = State {
+            state: Phase::Waiting,
+            question: Some("Do you want to proceed?".to_string()),
+            options: vec!["Yes".to_string(), "No".to_string()],
+            kind: Some(Kind::Permission),
+            since: at,
+            last_event: at,
+            ..State::default()
+        };
+        std::fs::write(
+            agent.dir().join("state.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn view_draws_the_records_before_it_asks_tmux_about_a_pane() {
+        let root = TempDir::new().unwrap();
+        waiting(root.path(), "asks-a1b", 30);
+
+        // The frame a view opens on is the records', which say an agent is
+        // waiting on somebody. The reading behind it is the one that asks
+        // tmux, finds no pane and calls the agent stopped — so the two frames
+        // call the terminal two different things, in the order they were
+        // drawn, and the first of them was drawn before any of that was
+        // asked.
+        let said = titles(
+            root.path(),
+            vec![Typed::Key(KeyEvent::from(KeyCode::Char('q')))],
+        );
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(
+            said[0].contains("1 waiting"),
+            "the records alone, on the opening frame: {said:?}"
+        );
+        assert_eq!(
+            said[1], "amx",
+            "and the reading straight after it, which waited for no keystroke"
+        );
     }
 
     #[test]
