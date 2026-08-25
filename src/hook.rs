@@ -294,7 +294,8 @@ fn typed(payload: &Value, what: &str) -> bool {
 /// leave to draw one, and a notification arriving while a call is still outstanding
 /// is about that menu, because a modal choice and a permission box are
 /// mutually exclusive states of the one program — the second could only be up
-/// if a `PreToolUse` for its own tool had already retired the call. Both say
+/// if a [`Calling`](Moment::Calling) for its own tool had already retired the
+/// call. Both say
 /// the agent has stopped and neither says what for, so both leave the question
 /// where the call put it. This is 02BQ6442: with a menu on the pane the card
 /// offered a permission box's grammar, because the box the vendor asked itself
@@ -428,7 +429,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         // measured at 2.1.240 on 2026-08-25, the whole of its message is
         // "Claude needs your permission". A permission box cannot be up over
         // the menu — they are two states of the one program, and a box would
-        // have had a `PreToolUse` of its own tool in front of it, which retires
+        // have had a call of its own tool in front of it, which retires
         // the call. So the agent has stopped, and what it stopped on is what
         // the call already says.
         Moment::Notified if state.pending().is_some() => {
@@ -491,8 +492,8 @@ enum Screen {
     /// phase to say.
     Waiting,
     /// Something to answer that was not there a moment ago. A menu is this
-    /// wherever it lands: `PreToolUse` fires before the vendor has asked
-    /// anybody whether the call may run at all, so the call it names has not
+    /// wherever it lands: a tool call fires before the vendor has asked
+    /// anybody whether it may run at all, so the call it names has not
     /// been on the pane before, and whatever the record was waiting on is
     /// behind it — answered, approved, or gone with the tool that ran.
     Fresh,
