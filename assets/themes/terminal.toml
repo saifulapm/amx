@@ -1,0 +1,19 @@
+# The palette for a terminal that already has one.
+#
+# Names alone, and not one measured value: every colour here is whatever the
+# person's own theme says it is, so amx follows the terminal from light to dark
+# and through every scheme swap without being told about any of it.
+
+# Something is waiting on a person.
+waiting = "yellow"
+# It went the way it was meant to.
+done = "green"
+# It was attempted and it failed.
+failed = "red"
+# It was ended by hand, and nothing more is coming.
+stopped = "gray"
+# What the next agent will be started with.
+accent = "cyan"
+# The line the cursor is on, as a background: the palette's own off-black, which
+# is the one shade a scheme picks to sit a little above its background.
+cursor = "darkgray"

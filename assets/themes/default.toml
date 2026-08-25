@@ -1,0 +1,26 @@
+# The palette amx paints with when nothing says otherwise.
+#
+# Four of the six are claude's own, measured off the 2.1.237 binary: a view
+# sitting beside claude's should not be a different shade of the same idea.
+#
+# A value is a colour named the way a terminal names one ("cyan"), a 256-colour
+# index ("134"), or a hex ("#4eba65"). Copy this file to
+# ~/.config/amx/themes/<name>.toml and point `theme` in config.toml at <name>.
+
+# Something is waiting on a person.
+waiting = "#ffc107"
+# It went the way it was meant to.
+done = "#4eba65"
+# It was attempted and it failed.
+failed = "#ff6b80"
+# It was ended by hand, and nothing more is coming.
+stopped = "#999999"
+# What the next agent will be started with. The terminal's own cyan rather than
+# a value out of the binary: what colour claude paints the prospective half of
+# its own header is not something amx has measured, and an RGB nobody measured
+# would read as one that was.
+accent = "cyan"
+# The line the cursor is on. A background rather than a foreground: it says
+# where the cursor is without taking a colour away from what the line was
+# already saying.
+cursor = "#373737"
