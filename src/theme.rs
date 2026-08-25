@@ -13,15 +13,13 @@
 
 use anyhow::{Context, Result, anyhow};
 use ratatui::style::Color;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 /// Every role a theme file may name. Anything else is warned about and ignored.
 pub const ROLES: [&str; 6] = ["waiting", "done", "failed", "stopped", "accent", "cursor"];
 
-/// The themes that ship inside the binary, in the order `theme` may name them.
-pub const NAMES: [&str; 2] = ["default", "terminal"];
-
-/// Their text, by the same names.
+/// The themes that ship inside the binary, by the name `theme` may call them.
 const SHIPPED: [(&str, &str); 2] = [
     ("default", include_str!("../assets/themes/default.toml")),
     ("terminal", include_str!("../assets/themes/terminal.toml")),
@@ -75,12 +73,134 @@ impl Theme {
     }
 }
 
+/// What a theme file is called on disk.
+const EXTENSION: &str = ".toml";
+
 /// The text of a theme that ships with amx.
 pub fn shipped(name: &str) -> Option<&'static str> {
     SHIPPED
         .iter()
         .find(|(shipped, _)| *shipped == name)
         .map(|(_, text)| *text)
+}
+
+/// Where a theme name pointed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// A palette in the binary. Nothing on disk, so nothing to watch.
+    Shipped(&'static str),
+    /// A file, which is a file somebody may edit while the view is open.
+    File(PathBuf),
+}
+
+impl Source {
+    /// The file this came out of, when it came out of one.
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            Source::Shipped(_) => None,
+            Source::File(path) => Some(path),
+        }
+    }
+}
+
+/// What `named` names, given the directory amx keeps themes in.
+///
+/// Three answers, in the order they are tried. A name amx ships is amx's own
+/// word and is answered out of the binary. A name with a path separator in it
+/// is a path, taken exactly as written, which is how a theme kept beside a
+/// project or shared between machines is reached. Anything else is a file of
+/// that name in the themes directory, with the extension added if it was left
+/// off, because `mine` and `mine.toml` are the same wish.
+pub fn source_in(themes: &Path, named: &str) -> Source {
+    if let Some((name, _)) = SHIPPED.iter().find(|(name, _)| *name == named) {
+        return Source::Shipped(name);
+    }
+    if named.contains('/') {
+        return Source::File(PathBuf::from(named));
+    }
+    match named.ends_with(EXTENSION) {
+        true => Source::File(themes.join(named)),
+        false => Source::File(themes.join(format!("{named}{EXTENSION}"))),
+    }
+}
+
+/// What `named` names, in the themes directory this machine keeps.
+pub fn source(named: &str) -> Result<Source> {
+    Ok(source_in(&themes_dir()?, named))
+}
+
+/// The theme `named`, with warnings for the caller to print.
+pub fn load(named: &str) -> (Theme, Vec<String>) {
+    match themes_dir() {
+        Ok(themes) => load_in(&themes, named),
+        Err(e) => (
+            Theme::default(),
+            vec![format!("using the default theme: {e}")],
+        ),
+    }
+}
+
+/// `~/.config/amx/themes`, beside the config file that names the theme.
+fn themes_dir() -> Result<PathBuf> {
+    let config = crate::paths::config_file()?;
+    let dir = config
+        .parent()
+        .context("no directory to keep themes in")?
+        .join("themes");
+    Ok(dir)
+}
+
+/// The load itself, with the themes directory as a parameter.
+///
+/// Whatever goes wrong, a theme comes back: the view is the thing amx is for,
+/// and a view in the wrong colours beats no view at all. What went wrong is
+/// said instead, naming the file, since a person who asked for a theme and got
+/// the default one is owed the reason.
+fn load_in(themes: &Path, named: &str) -> (Theme, Vec<String>) {
+    let path = match source_in(themes, named) {
+        // A file of a shipped name is a file amx will never read. Silence
+        // there is a person editing a copy of default.toml and watching
+        // nothing happen.
+        Source::Shipped(name) => {
+            let text = shipped(name).expect("a shipped theme is part of the binary");
+            let (theme, _) = parse(text).expect("a shipped theme is proved by its own test");
+            let shadow = themes.join(format!("{name}{EXTENSION}"));
+            let warnings = match shadow.exists() {
+                true => vec![format!(
+                    "{}: not read, `{name}` is a theme amx ships; give yours another name",
+                    shadow.display()
+                )],
+                false => Vec::new(),
+            };
+            return (theme, warnings);
+        }
+        Source::File(path) => path,
+    };
+
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) => {
+            let said = format!("no theme `{named}`: {} ({e})", path.display());
+            return (Theme::default(), vec![said]);
+        }
+    };
+
+    match parse(&text) {
+        Ok((theme, warnings)) => (
+            theme,
+            warnings
+                .into_iter()
+                .map(|w| format!("{}: {w}", path.display()))
+                .collect(),
+        ),
+        Err(e) => (
+            Theme::default(),
+            vec![format!(
+                "ignoring {}, painting the default theme: {e:#}",
+                path.display()
+            )],
+        ),
+    }
 }
 
 /// Parse theme text, returning the theme and any warnings about it.
@@ -129,6 +249,7 @@ fn colour(said: &str) -> Result<Color> {
 mod tests {
     use super::*;
     use ratatui::style::Color;
+    use tempfile::TempDir;
 
     #[test]
     fn the_defaults_are_the_colours_the_view_paints_today() {
@@ -206,8 +327,7 @@ mod tests {
 
     #[test]
     fn every_shipped_theme_parses_and_names_every_role() {
-        for name in NAMES {
-            let text = shipped(name).unwrap();
+        for (name, text) in SHIPPED {
             let (_, w) = parse(text).unwrap_or_else(|e| panic!("{name}: {e:#}"));
             assert!(w.is_empty(), "{name}: {w:?}");
             for role in ROLES {
@@ -256,9 +376,143 @@ mod tests {
     fn a_name_nothing_ships_is_not_a_theme_amx_has() {
         assert!(shipped("solarized").is_none());
         assert_eq!(
-            NAMES.len(),
+            SHIPPED.len(),
             2,
-            "a theme this file does not name is untested"
+            "a theme this file does not name is one nothing here proves"
         );
+    }
+
+    #[test]
+    fn a_name_amx_ships_comes_out_of_the_binary() {
+        let dir = TempDir::new().unwrap();
+        for (name, _) in SHIPPED {
+            assert_eq!(source_in(dir.path(), name), Source::Shipped(name));
+        }
+        let (t, w) = load_in(dir.path(), "default");
+        assert_eq!(t, Theme::default());
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn a_bare_name_is_a_file_in_the_themes_directory() {
+        let themes = Path::new("/cfg/amx/themes");
+        assert_eq!(
+            source_in(themes, "solarized"),
+            Source::File(themes.join("solarized.toml"))
+        );
+        assert_eq!(
+            source_in(themes, "solarized.toml"),
+            Source::File(themes.join("solarized.toml")),
+            "and writing the extension out is not a second one"
+        );
+    }
+
+    #[test]
+    fn a_name_with_a_path_in_it_is_that_path_as_written() {
+        let themes = Path::new("/cfg/amx/themes");
+        for said in ["/etc/amx/dark.toml", "./dark.toml", "shared/dark.toml"] {
+            assert_eq!(source_in(themes, said), Source::File(PathBuf::from(said)));
+        }
+    }
+
+    #[test]
+    fn only_a_theme_on_disk_has_a_path_to_watch() {
+        // What t13 stats to notice an edit. There is nothing to watch about a
+        // palette that is part of the binary.
+        assert_eq!(Source::Shipped("default").path(), None);
+        let path = Path::new("/cfg/amx/themes/mine.toml");
+        assert_eq!(Source::File(path.to_path_buf()).path(), Some(path));
+    }
+
+    #[test]
+    fn a_theme_on_disk_is_read_and_its_warnings_name_the_file() {
+        let dir = TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "mine",
+            "accent = \"magenta\"\nbanner = \"blue\"\n",
+        );
+
+        let (t, w) = load_in(dir.path(), "mine");
+        assert_eq!(t.accent, Color::Magenta);
+        assert_eq!(
+            t.waiting,
+            Theme::default().waiting,
+            "the rest is the default"
+        );
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("mine.toml"), "{w:?}");
+        assert!(w[0].contains("banner"), "{w:?}");
+    }
+
+    #[test]
+    fn a_broken_theme_falls_back_whole_and_names_the_file() {
+        let dir = TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "mine",
+            "accent = \"magenta\"\ndone = \"chartreuse\"\n",
+        );
+
+        let (t, w) = load_in(dir.path(), "mine");
+        assert_eq!(t, Theme::default(), "including the value that did read");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("mine.toml"), "{w:?}");
+        assert!(w[0].contains("chartreuse"), "{w:?}");
+    }
+
+    #[test]
+    fn a_theme_that_is_not_there_says_so_rather_than_painting_on_quietly() {
+        // Unlike config.toml, which nobody has to write: a theme by name is
+        // something a person asked for, so getting the default instead is news.
+        let dir = TempDir::new().unwrap();
+        let (t, w) = load_in(dir.path(), "solarized");
+        assert_eq!(t, Theme::default());
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("solarized"), "{w:?}");
+    }
+
+    #[test]
+    fn a_file_shadowing_a_name_amx_ships_is_said_out_loud() {
+        // The alternative is a person editing a copy of default.toml and
+        // watching nothing happen.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "default", "accent = \"magenta\"\n");
+
+        let (t, w) = load_in(dir.path(), "default");
+        assert_eq!(t, Theme::default(), "the shipped one still wins");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("default.toml"), "{w:?}");
+    }
+
+    #[test]
+    fn the_wrappers_look_for_a_theme_beside_the_config_file() {
+        // Reads the ambient environment and never touches it: whichever home
+        // it finds, a name amx ships is answered out of the binary and a name
+        // it does not is a file in the themes directory next to config.toml.
+        let Ok(shipped) = source("default") else {
+            return;
+        };
+        assert_eq!(shipped, Source::Shipped("default"));
+
+        let Ok(mine) = source("solarized") else {
+            return;
+        };
+        let path = mine.path().expect("a name amx does not ship is a file");
+        assert!(
+            path.ends_with("amx/themes/solarized.toml"),
+            "{}",
+            path.display()
+        );
+
+        // Whatever this machine has in its themes directory, a shipped name
+        // paints the palette out of the binary.
+        assert_eq!(load("default").0, Theme::default());
+    }
+
+    /// A theme file in a themes directory that may not exist yet.
+    fn write(themes: &Path, name: &str, text: &str) {
+        std::fs::create_dir_all(themes).unwrap();
+        std::fs::write(themes.join(format!("{name}.toml")), text).unwrap();
     }
 }
