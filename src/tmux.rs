@@ -390,23 +390,17 @@ impl Server {
         while from < panes.len() {
             let marker = marker();
             let (ended_well, printed) = self.printed(&borrow(&batch(&panes[from..], &marker)));
-            let cut = cut_at(&printed, &marker);
-            if cut.is_empty() {
+            let Some(answered) = answered(&printed, &marker, ended_well, panes.len() - from) else {
                 break;
-            }
-            // The last marker of a sequence that failed is the pane it failed
-            // on: the marker went out and the capture under it never did.
-            let answered = match ended_well {
-                true => cut.len(),
-                false => cut.len() - 1,
             };
-            for (at, screen) in cut.iter().take(answered).enumerate() {
+            for (at, screen) in answered.iter().enumerate() {
                 screens[from + at] = Some(sanitize(screen.trim_end()));
             }
             if ended_well {
                 break;
             }
-            from += answered + 1;
+            // Past the pane the sequence stopped at, which has answered.
+            from += answered.len() + 1;
         }
         screens
     }
@@ -571,12 +565,19 @@ fn marker() -> String {
     )
 }
 
-/// The screens in a batch's output, one per marker, in the order they were
-/// asked for.
+/// The screens one invocation answered for, in the order the panes were asked
+/// about: all of them where the sequence ran to the end, and the ones before
+/// the failure where it did not.
 ///
-/// Anything printed before the first marker is nobody's screen: it is the
-/// server talking about itself.
-fn cut_at(printed: &str, marker: &str) -> Vec<String> {
+/// The output is cut at the markers, and anything printed before the first of
+/// them is nobody's screen — that is the server talking about itself. Not one
+/// marker coming back is that same server saying nothing at all, which is what
+/// `None` is for: it is about the server rather than about any of these panes.
+///
+/// Nothing is answered for past the panes that were asked about. A pane
+/// showing this call's own marker would cut its own screen into two sections,
+/// and a wall going up is not worth a panic over a coincidence.
+fn answered(printed: &str, marker: &str, ended_well: bool, asked: usize) -> Option<Vec<String>> {
     let mut screens: Vec<String> = Vec::new();
     for line in printed.lines() {
         if line == marker {
@@ -586,7 +587,16 @@ fn cut_at(printed: &str, marker: &str) -> Vec<String> {
             screen.push('\n');
         }
     }
-    screens
+    if screens.is_empty() {
+        return None;
+    }
+    // The last marker of a sequence that failed is the pane it failed on: the
+    // marker went out and the capture under it never did.
+    if !ended_well {
+        screens.pop();
+    }
+    screens.truncate(asked);
+    Some(screens)
 }
 
 /// The id tmux listed beside `name`, in a listing of `<id> <name>` lines.
@@ -1051,6 +1061,33 @@ mod tests {
         assert_eq!(screens[2], None);
         assert!(screens[3].as_deref().unwrap().contains("SECOND"));
         assert_eq!(screens[4], None);
+    }
+
+    #[test]
+    fn tmux_a_batch_is_cut_at_its_own_markers_and_no_further() {
+        let screens = |printed, ended_well, asked| answered(printed, "M", ended_well, asked);
+        let said = |lines: &[&str]| Some(lines.iter().map(|line| line.to_string()).collect());
+
+        assert_eq!(
+            screens("M\nfirst\nM\nsecond\n", true, 2),
+            said(&["first\n", "second\n"])
+        );
+        // The sequence stopped at the third pane, which answered nothing. The
+        // two before it did, and are worth keeping.
+        assert_eq!(
+            screens("M\nfirst\nM\nsecond\nM\n", false, 3),
+            said(&["first\n", "second\n"])
+        );
+        // Not one marker: the server said nothing, and that is about the
+        // server rather than about any of these panes.
+        assert_eq!(screens("", false, 3), None);
+        assert_eq!(screens("no server running\n", false, 3), None);
+        // A pane showing the marker itself cuts its own screen in two. Nobody
+        // is answered for who was not asked about.
+        assert_eq!(
+            screens("M\nfirst\nM\nsecond\nM\nand the rest of second\n", true, 2),
+            said(&["first\n", "second\n"])
+        );
     }
 
     #[test]
