@@ -599,6 +599,10 @@ where
     // it stops being true and not on every frame that did not change it.
     let mut called = String::new();
 
+    // What was taken off the queue to find the end of a run of pointer
+    // movements, and is waiting for its own pass to be acted on.
+    let mut held: Option<Typed> = None;
+
     loop {
         match screen.read.is_none_or(|at| at.elapsed() >= REFRESH) {
             true => screen.reread(root, scope)?,
@@ -621,10 +625,20 @@ where
 
         // A mouse press can do everything a key can — a click on a row is
         // enter on it — so both are read into the same doing.
-        let doing = match keys.next(TICK) {
+        let arrived = match held.take() {
+            Some(typed) => typed,
+            None => keys.next(TICK),
+        };
+        let doing = match arrived {
             Typed::Nothing => Doing::Carry,
             Typed::Gone => return Ok(exit::OK),
-            Typed::Mouse(mouse) => screen.moused(mouse, root, config, here.as_ref())?,
+            Typed::Mouse(mouse) => {
+                // A run of movements is one thing that happened, and this
+                // frame is the one it is drawn on.
+                let (rest, ended) = at_rest(keys, mouse);
+                held = ended;
+                screen.moused(rest, root, config, here.as_ref())?
+            }
             Typed::Paste(text) => {
                 screen.pasted(&text);
                 Doing::Carry
@@ -645,6 +659,34 @@ where
                 edit_the_line(terminal, &mut screen)?;
                 called.clear();
             }
+        }
+    }
+}
+
+/// Where a run of pointer movements came to rest, and whatever ended the run.
+///
+/// A terminal reports the pointer a cell at a time, so a hand crossing the
+/// screen queues dozens of movements before the view has drawn one frame.
+/// They all say the same kind of thing and only the last of them is true: what
+/// the pointer is over now. So the queue is read to the end of the run and the
+/// frame after it is drawn once, for where the hand stopped.
+///
+/// What ended the run comes back with it rather than being acted on here. A
+/// key or a click behind a hundred movements is the next thing somebody meant
+/// to do, and a view that read it off the queue and dropped it would be losing
+/// keystrokes to a mouse.
+fn at_rest(keys: &mut impl Keys, moved: MouseEvent) -> (MouseEvent, Option<Typed>) {
+    let mut rest = moved;
+    if rest.kind != MouseEventKind::Moved {
+        return (rest, None);
+    }
+    loop {
+        // Nothing is waited for: what is queued at this moment is the run,
+        // and an empty queue is the pointer at rest.
+        match keys.next(Duration::ZERO) {
+            Typed::Mouse(next) if next.kind == MouseEventKind::Moved => rest = next,
+            Typed::Nothing => return (rest, None),
+            ended => return (rest, Some(ended)),
         }
     }
 }
@@ -2143,6 +2185,25 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         (code, screen)
+    }
+
+    /// The same again, answering with how many frames the view drew rather
+    /// than what the last of them said: what a storm of events costs is the
+    /// drawing it asks for.
+    fn frames(root: &Path, script: Vec<Typed>) -> usize {
+        let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
+        watch(
+            root,
+            &Config::default(),
+            &Scope::default(),
+            &mut terminal,
+            &mut Script(script.into_iter()),
+            None,
+            None,
+            &mut Said::default(),
+        )
+        .unwrap();
+        terminal.get_frame().count()
     }
 
     #[test]
@@ -4534,6 +4595,65 @@ mod tests {
         assert_eq!(screen.hover, None);
         resting(&mut screen, 5, 0);
         assert_eq!(screen.hover, None);
+    }
+
+    #[test]
+    fn mouse_moves_that_queued_up_cost_one_frame_between_them() {
+        let root = TempDir::new().unwrap();
+        finished(root.path(), "first-a1b", "wrote the parser", 60);
+
+        // A hand crossing the wall sends a movement per cell it crosses, and
+        // they arrive faster than the view draws. What the pointer is over is
+        // where it came to rest, so a run of them is worth one frame: a frame
+        // each is the whole list redrawn six times to move one tint six rows.
+        let mut storm: Vec<Typed> = (3..9)
+            .map(|row| Typed::Mouse(mouse(MouseEventKind::Moved, 5, row)))
+            .collect();
+        storm.push(Typed::Key(KeyEvent::from(KeyCode::Char('q'))));
+
+        let quiet = frames(
+            root.path(),
+            vec![Typed::Key(KeyEvent::from(KeyCode::Char('q')))],
+        );
+        assert_eq!(
+            frames(root.path(), storm),
+            quiet + 1,
+            "six movements cost the one frame the pointer's resting place is drawn on"
+        );
+    }
+
+    #[test]
+    fn mouse_moves_collapse_to_where_the_pointer_came_to_rest() {
+        // The run is read to its end and what ended it is handed back: a key
+        // behind a hundred movements is still the next thing somebody meant
+        // to do, and a view that swallowed it would be losing keystrokes to a
+        // mouse.
+        let mut keys = Script(
+            vec![
+                Typed::Mouse(mouse(MouseEventKind::Moved, 5, 6)),
+                Typed::Mouse(mouse(MouseEventKind::Moved, 5, 7)),
+                Typed::Key(KeyEvent::from(KeyCode::Char('q'))),
+            ]
+            .into_iter(),
+        );
+
+        let (rest, ended) = at_rest(&mut keys, mouse(MouseEventKind::Moved, 5, 5));
+        assert_eq!((rest.column, rest.row), (5, 7), "the last of the run");
+        assert!(
+            matches!(ended, Some(Typed::Key(key)) if key.code == KeyCode::Char('q')),
+            "and the key that ended it is kept for the next pass"
+        );
+
+        // A click is not a movement, so nothing is read past it: it is acted
+        // on where it arrived.
+        let mut alone = Script(vec![Typed::Key(KeyEvent::from(KeyCode::Char('n')))].into_iter());
+        let click = mouse(MouseEventKind::Down(MouseButton::Left), 5, 5);
+        let (pressed, ended) = at_rest(&mut alone, click);
+        assert_eq!(pressed.kind, MouseEventKind::Down(MouseButton::Left));
+        assert!(
+            ended.is_none(),
+            "and nothing behind it was taken off the queue"
+        );
     }
 
     #[test]
