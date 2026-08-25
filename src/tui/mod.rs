@@ -603,11 +603,13 @@ where
     // movements, and is waiting for its own pass to be acted on.
     let mut held: Option<Typed> = None;
 
-    // Whether the frame about to be drawn is the one the view opens on, which
-    // is drawn from the records and nothing else — see [`Screen::recall`].
-    let mut opening = true;
+    // Whether the reading behind the frame about to be drawn is still to be
+    // taken: the view opens on the records and nothing else, and the pass
+    // after that is the one that asks tmux.
+    let mut records_only = true;
 
     loop {
+        let opening = std::mem::take(&mut records_only);
         match screen.read.is_none_or(|at| at.elapsed() >= REFRESH) {
             true if opening => screen.recall(root, scope)?,
             true => screen.reread(root, scope)?,
@@ -637,7 +639,7 @@ where
             // does. Nothing is waited for in between: a wall that stood as the
             // records left it until somebody pressed a key would be a wall
             // saying an agent is working a second after its pane went.
-            None if std::mem::take(&mut opening) => Typed::Nothing,
+            None if opening => Typed::Nothing,
             None => keys.next(TICK),
         };
         let doing = match arrived {
