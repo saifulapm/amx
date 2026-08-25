@@ -172,6 +172,39 @@ fn twice(amx: &Harness, view: &str, key: &str) {
     amx.tmux(&["send-keys", "-t", view, key, key]);
 }
 
+/// A mouse event injected at the view as the raw SGR bytes a terminal sends
+/// once a program has asked for the mouse: button 0 is the left button, 64
+/// and 65 the wheel, 35 motion with nothing held. Column and row are counted
+/// from one, which is the terminal's own way, and `press` is the trailing
+/// letter — `M` down, `m` up.
+fn mouse(amx: &Harness, view: &str, code: u16, column: u16, row: u16, press: bool) {
+    let end = if press { 'M' } else { 'm' };
+    amx.tmux(&[
+        "send-keys",
+        "-t",
+        view,
+        "-l",
+        &format!("\u{1b}[<{code};{column};{row}{end}"),
+    ]);
+}
+
+/// A left click where a person clicks: press and release on one spot.
+fn click(amx: &Harness, view: &str, column: u16, row: u16) {
+    mouse(amx, view, 0, column, row, true);
+    mouse(amx, view, 0, column, row, false);
+}
+
+/// The 1-based screen row an agent's row is drawn on, for a pointer to land
+/// on.
+fn screen_row_of(amx: &Harness, view: &str, id: &str) -> u16 {
+    let drawn = screen(amx, view);
+    let at = drawn
+        .lines()
+        .position(|line| line.contains(id))
+        .unwrap_or_else(|| panic!("no row for {id} in:\n{drawn}"));
+    at as u16 + 1
+}
+
 /// Paste text at the view the way a terminal delivers a paste: in one
 /// bracketed piece, with every newline in it left alone.
 fn pastes(amx: &Harness, view: &str, text: &str) {
@@ -969,6 +1002,168 @@ fn rows_read_as_one_muted_tone_with_the_state_kept_on_the_icon() {
             "{word} is dim on the selected row:\n{selected:?}"
         );
     }
+}
+
+/// The background the cursor's bar is made of, as tmux writes the escape.
+const BAR: &str = "48;2;55;55;55";
+
+#[test]
+fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
+    let amx = Harness::new();
+    finished(&amx, "fix-login-a1b", "done", 60);
+    finished(&amx, "port-importer-b2c", "done", 120);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("fix-login-a1b") && drawn.contains("port-importer-b2c")).then_some(())
+    });
+    assert_eq!(
+        pane_field(&amx, &view, "#{mouse_any_flag}"),
+        "1",
+        "the view asked the terminal for the mouse"
+    );
+
+    // A click on the older agent's row moves the bar to it.
+    click(
+        &amx,
+        &view,
+        5,
+        screen_row_of(&amx, &view, "port-importer-b2c"),
+    );
+    amx.until("the bar under the clicked row", || {
+        coloured_line(&amx, &view, "port-importer-b2c")
+            .contains(BAR)
+            .then_some(())
+    });
+    assert!(
+        !coloured_line(&amx, &view, "fix-login-a1b").contains(BAR),
+        "one cursor, and the click is where it is"
+    );
+
+    // A click on the heading shuts the group, and another opens it.
+    let heading = screen(&amx, &view)
+        .lines()
+        .position(|line| line.trim_end() == "completed")
+        .expect("the heading") as u16
+        + 1;
+    click(&amx, &view, 5, heading);
+    amx.until("the group shut", || {
+        screen(&amx, &view).contains("completed 2").then_some(())
+    });
+    click(&amx, &view, 5, heading);
+    amx.until("the group open again", || {
+        screen(&amx, &view)
+            .contains("port-importer-b2c")
+            .then_some(())
+    });
+
+    // The mouse goes back with the screen when the view closes.
+    amx.tmux(&["set-option", "-w", "-t", &view, "remain-on-exit", "on"]);
+    press(&amx, &view, "q");
+    amx.until("the view to close", || {
+        let dead = amx.tmux(&["display-message", "-p", "-t", &view, "#{pane_dead}"]);
+        (dead == "1").then_some(())
+    });
+    assert_eq!(
+        pane_field(&amx, &view, "#{mouse_any_flag}"),
+        "0",
+        "the capture was released on the way out"
+    );
+}
+
+#[test]
+fn hovering_a_row_tints_its_name_and_moves_no_cursor() {
+    let amx = Harness::new();
+    finished(&amx, "fix-login-a1b", "done", 60);
+    finished(&amx, "port-importer-b2c", "done", 120);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("fix-login-a1b") && drawn.contains("port-importer-b2c")).then_some(())
+    });
+
+    // The pointer comes to rest on the row the cursor is not on.
+    let row = screen_row_of(&amx, &view, "port-importer-b2c");
+    mouse(&amx, &view, 35, 5, row, true);
+    amx.until("the name to take the tint", || {
+        sgr_at(
+            &coloured_line(&amx, &view, "port-importer-b2c"),
+            "port-importer-b2c",
+        )
+        .contains(&1)
+        .then_some(())
+    });
+    assert!(
+        coloured_line(&amx, &view, "fix-login-a1b").contains(BAR),
+        "the bar stayed where the keyboard's cursor is"
+    );
+    assert!(
+        !coloured_line(&amx, &view, "port-importer-b2c").contains(BAR),
+        "a hover is a tint, not a selection"
+    );
+}
+
+#[test]
+fn the_wheel_walks_the_list_and_pages_the_card_under_the_pointer() {
+    let amx = Harness::new();
+    amx.record("tall-b2c", "%404");
+    let at = now() - 100;
+    amx.set_state(
+        "tall-b2c",
+        json!({
+            "state": "done",
+            "exit": 0,
+            "since": at,
+            "last_event": at,
+            "result": (0..40).map(|n| format!("said {n}\n")).collect::<String>(),
+        }),
+    );
+    finished(&amx, "short-a1b", "done", 200);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("tall-b2c") && drawn.contains("short-a1b")).then_some(())
+    });
+
+    // Wheel-down over the list walks the selection down, and wheel-up back.
+    let over_rows = screen_row_of(&amx, &view, "short-a1b");
+    mouse(&amx, &view, 65, 5, over_rows, true);
+    amx.until("the bar to walk down", || {
+        coloured_line(&amx, &view, "short-a1b")
+            .contains(BAR)
+            .then_some(())
+    });
+    mouse(&amx, &view, 64, 5, over_rows, true);
+    amx.until("and back up", || {
+        coloured_line(&amx, &view, "tall-b2c")
+            .contains(BAR)
+            .then_some(())
+    });
+
+    // With the card open, the wheel pages it where the pointer is over it.
+    let carded = card_on(&amx, &view, "tall-b2c");
+    assert!(carded.contains("said 39"), "{carded}");
+    let inside = carded
+        .lines()
+        .position(|line| line.contains("said 39"))
+        .expect("a row of the card's body") as u16
+        + 1;
+    mouse(&amx, &view, 64, 5, inside, true);
+    let paged = amx.until("the paged card", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("more").then_some(drawn)
+    });
+    assert!(
+        !paged.contains("said 39"),
+        "the live edge is below:\n{paged}"
+    );
+    mouse(&amx, &view, 65, 5, inside, true);
+    amx.until("the edge again", || {
+        screen(&amx, &view).contains("said 39").then_some(())
+    });
 }
 
 #[test]

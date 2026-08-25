@@ -20,7 +20,7 @@
 //! the fleet.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
@@ -160,6 +160,53 @@ impl Scroll {
     }
 }
 
+/// Where the last frame put things, written back by a draw that is otherwise
+/// a pure reading of the view, because the mouse arrives in the screen's own
+/// coordinates: the band the rows were drawn in, which item its first row
+/// held, and where the card floats. Cells, for the reason [`Scroll`]'s are.
+#[derive(Default)]
+pub struct Map {
+    /// The band the list was drawn in, and nothing while the keys overlay
+    /// has it: a screen of keys has no rows under the pointer.
+    list: Cell<Option<Rect>>,
+    /// The item index of the band's first drawn row.
+    offset: Cell<usize>,
+    /// The card's floating box, where one is up.
+    card: Cell<Option<Rect>>,
+}
+
+impl Map {
+    fn keep(&self, list: Option<Rect>, offset: usize, card: Option<Rect>) {
+        self.list.set(list);
+        self.offset.set(offset);
+        self.card.set(card);
+    }
+
+    /// The line of the list under this point, as an index into the items.
+    ///
+    /// The card is in front of the rows it covers, so a point on it names no
+    /// line. What comes back can run past the end of the items — the band is
+    /// taller than the list — and the caller holds the bound, because only it
+    /// has the items.
+    pub(super) fn line_under(&self, column: u16, row: u16) -> Option<usize> {
+        if self.over_the_card(column, row) {
+            return None;
+        }
+        let band = self.list.get()?;
+        if !band.contains(Position { x: column, y: row }) {
+            return None;
+        }
+        Some(self.offset.get() + (row - band.y) as usize)
+    }
+
+    /// Whether this point is on the floating card.
+    pub(super) fn over_the_card(&self, column: u16, row: u16) -> bool {
+        self.card
+            .get()
+            .is_some_and(|card| card.contains(Position { x: column, y: row }))
+    }
+}
+
 /// Draw everything.
 pub fn draw(frame: &mut Frame, screen: &Screen) {
     let area = frame.area();
@@ -221,6 +268,14 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         ),
         _ => 0,
     };
+    let visible = middle.height - floating;
+    let card_over = (floating > 0).then(|| over(middle, floating));
+    // What this frame put where, for the mouse to read back.
+    screen.map.keep(
+        (!helping).then_some(middle),
+        first_drawn(&screen.list, visible),
+        card_over,
+    );
     match &screen.mode {
         Mode::Keys => help(frame, middle),
         // What the card is covering is still drawn under it, and the rows the
@@ -232,11 +287,12 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
             Moment {
                 beat: screen.beat,
                 armed: screen.armed(),
+                hover: screen.hover,
             },
-            middle.height - floating,
+            visible,
         ),
     }
-    if floating > 0
+    if let Some(floated) = card_over
         && let Some(card) = &screen.card
     {
         float(
@@ -246,7 +302,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
             prs,
             screen.answering(),
             &screen.scroll,
-            over(middle, floating),
+            floated,
         );
     }
     if let Some(composer) = banded {
@@ -569,11 +625,7 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment, visible: u
     }
 
     let height = area.height as usize;
-    // Enough of the top scrolled away to keep the cursor on the screen, and in
-    // front of the card rather than behind it.
-    let offset = list
-        .cursor()
-        .saturating_sub((visible.max(1) as usize).saturating_sub(1));
+    let offset = first_drawn(list, visible);
     let columns = columns(list);
     let section = list.section();
 
@@ -587,8 +639,11 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment, visible: u
             line(
                 list,
                 *item,
-                at == list.cursor(),
-                section == Some(at),
+                At {
+                    selected: at == list.cursor(),
+                    hovered: moment.hover == Some(at),
+                    section: section == Some(at),
+                },
                 columns,
                 area.width as usize,
                 moment,
@@ -596,6 +651,15 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment, visible: u
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// The first item a band this tall draws: enough of the top scrolled away to
+/// keep the cursor on the screen, and in front of the card rather than behind
+/// it. Shared with the map the mouse reads, so a click lands on the row the
+/// frame actually drew there.
+fn first_drawn(list: &List, visible: u16) -> usize {
+    list.cursor()
+        .saturating_sub((visible.max(1) as usize).saturating_sub(1))
 }
 
 /// What the clock has made of the list at the moment it is drawn: which frame
@@ -609,29 +673,39 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment, visible: u
 struct Moment<'a> {
     beat: usize,
     armed: &'a [String],
+    /// The line the pointer is resting on, if it is resting on an agent's.
+    hover: Option<usize>,
 }
 
-/// One line of the list, whatever kind of line it is. `section` says this is
-/// the heading of the group holding the cursor, wherever in the group the
-/// cursor stands.
+/// How the cursor and the pointer stand to one line: on it, over it, or in
+/// its section.
+#[derive(Clone, Copy, Default)]
+struct At {
+    selected: bool,
+    hovered: bool,
+    /// Whether this is the heading of the group holding the cursor, wherever
+    /// in the group the cursor stands.
+    section: bool,
+}
+
+/// One line of the list, whatever kind of line it is.
 fn line(
     list: &List,
     item: Item,
-    selected: bool,
-    section: bool,
+    at: At,
     columns: Columns,
     width: usize,
     moment: Moment,
 ) -> Line<'static> {
     let line = match item {
-        Item::Heading(under, tally) => heading(list.title(under), tally, selected || section),
+        Item::Heading(under, tally) => heading(list.title(under), tally, at.selected || at.section),
         Item::Fold(hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
         Item::Agent(_) => match list.agent(item) {
             Some(view) => row(
                 view,
                 list.requests(view),
                 list.holding(view),
-                selected,
+                at,
                 columns,
                 width,
                 moment,
@@ -640,7 +714,7 @@ fn line(
         },
         Item::Blank => Line::raw(""),
     };
-    match selected {
+    match at.selected {
         true => barred(line, width),
         false => line,
     }
@@ -711,11 +785,14 @@ fn row(
     view: &View,
     prs: &[Pr],
     held: bool,
-    selected: bool,
+    at: At,
     columns: Columns,
     width: usize,
     moment: Moment,
 ) -> Line<'static> {
+    let At {
+        selected, hovered, ..
+    } = at;
     let Columns { names, status, pr } = columns;
     let phase = view.phase();
     // The reading's own number and the reading's own units: a row and a table
@@ -757,9 +834,12 @@ fn row(
         read,
         top,
         Span::styled(format!("{} ", icon(phase, moment.beat)), colour(phase)),
+        // The pointer resting on a row gives its name the selection
+        // treatment without the bar or the cursor, which is the whole of
+        // what a hover is.
         Span::styled(
             format!("{}  ", padded(&name, names)),
-            match selected {
+            match selected || hovered {
                 true => Style::new().add_modifier(Modifier::BOLD),
                 false => dim(),
             },
@@ -4226,6 +4306,39 @@ mod tests {
         // The state is carried by the icon's colour alone.
         let (glyph, painted, _) = mark(&screen, size, muted);
         assert_eq!((glyph.as_str(), painted), ("●", role::SUCCESS));
+    }
+
+    #[test]
+    fn rows_hovered_name_wears_the_selection_treatment_and_nothing_else_does() {
+        let size = (60, 10);
+        let mut screen = showing(
+            vec![
+                view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
+                view(
+                    "port-importer-b2c",
+                    Phase::Done,
+                    Some("wrote the tests"),
+                    300,
+                ),
+            ],
+            None,
+        );
+        // The pointer resting on the second agent's line, which is the third
+        // item under the heading.
+        screen.hover = Some(2);
+
+        let hovered = word_modifier(&screen, size, 4, "port-importer-b2c");
+        assert!(hovered.contains(Modifier::BOLD), "{hovered:?}");
+        assert!(!hovered.contains(Modifier::DIM), "{hovered:?}");
+        assert!(
+            word_modifier(&screen, size, 4, "wrote the tests").contains(Modifier::DIM),
+            "the tint is the name's alone: the rest of the row stays muted"
+        );
+        assert_eq!(
+            behind(&screen, size, 4),
+            vec![Color::Reset; 60],
+            "and a hover is not the bar"
+        );
     }
 
     #[test]

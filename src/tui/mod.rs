@@ -31,8 +31,8 @@ mod rows;
 
 use anyhow::{Context, Result};
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::style::Print;
@@ -74,6 +74,8 @@ enum Typed {
     /// Nobody typed anything in the time given.
     Nothing,
     Key(KeyEvent),
+    /// The mouse, which the view holds for as long as it holds the screen.
+    Mouse(MouseEvent),
     /// Text that arrived in one piece rather than a key at a time, which is a
     /// paste.
     Paste(String),
@@ -118,6 +120,7 @@ impl Keys for Keyboard {
             Err(_) => Typed::Gone,
             Ok(true) => match event::read() {
                 Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => Typed::Key(key),
+                Ok(Event::Mouse(mouse)) => Typed::Mouse(mouse),
                 Ok(Event::Paste(text)) => Typed::Paste(text),
                 Ok(_) => Typed::Nothing,
                 Err(_) => Typed::Gone,
@@ -410,6 +413,12 @@ struct Screen {
     /// body was given.
     scroll: paint::Scroll,
     notice: Option<Notice>,
+    /// Where the last frame put things, which is what a mouse position is
+    /// read against.
+    map: paint::Map,
+    /// The line of the list the pointer is resting on, when it is resting on
+    /// an agent's.
+    hover: Option<usize>,
     /// The finished row a press has armed, where one is armed.
     arm: Option<Arm>,
     /// When the agents were last read.
@@ -435,6 +444,9 @@ pub fn run(root: &Path, config: &Config, scope: &Scope) -> Result<i32> {
     // A terminal that declines is one amx cannot tell a paste from typing on,
     // which is what the composer did before it asked at all.
     let bracketed = execute!(std::io::stdout(), EnableBracketedPaste).is_ok();
+    // And the mouse, for as long as the view holds the screen: the list
+    // takes it, and shift is the terminal's own selection the whole time.
+    let moused = execute!(std::io::stdout(), EnableMouseCapture).is_ok();
 
     // The title the terminal came with, kept while the view has its own to
     // say, and put back below. A view that renamed somebody's window and left
@@ -454,6 +466,9 @@ pub fn run(root: &Path, config: &Config, scope: &Scope) -> Result<i32> {
     );
 
     // Whatever happened, the screen goes back the way it was found.
+    if moused {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    }
     if bracketed {
         let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     }
@@ -604,6 +619,7 @@ where
         match keys.next(TICK) {
             Typed::Nothing => {}
             Typed::Gone => return Ok(exit::OK),
+            Typed::Mouse(mouse) => screen.moused(mouse),
             Typed::Paste(text) => screen.pasted(&text),
             Typed::Key(key) => match screen.act(key, root, config, here.as_ref())? {
                 Doing::Carry => {}
@@ -694,6 +710,9 @@ where
     B: Backend,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
+    // The mouse goes back with the screen: whatever borrows the terminal
+    // decides for itself whether it wants one.
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::try_restore().context("giving the terminal up")?;
 
@@ -702,6 +721,7 @@ where
     enable_raw_mode().context("taking the terminal back")?;
     execute!(std::io::stdout(), EnterAlternateScreen).context("taking the terminal back")?;
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
     terminal.clear()?;
     Ok(outcome)
 }
@@ -1597,6 +1617,71 @@ impl Screen {
             true => away.saturating_add(page),
             false => away.saturating_sub(page),
         });
+    }
+
+    /// What the mouse does: the list takes it. A click is the cursor, the
+    /// wheel is the walk — or a page, when the pointer is over an open card —
+    /// and the pointer resting on a row tints that row's name without moving
+    /// the cursor. Nothing else is clickable, and the clicks and the wheel
+    /// are the list's the way its letter keys are: a line being typed and a
+    /// question of the view's own keep the keys they have.
+    fn moused(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::Moved => {
+                self.hover = self
+                    .line_under(mouse.column, mouse.row)
+                    .filter(|at| matches!(self.list.items().get(*at), Some(rows::Item::Agent(_))));
+            }
+            MouseEventKind::Down(MouseButton::Left) if matches!(self.mode, Mode::List) => {
+                let Some(at) = self.line_under(mouse.column, mouse.row) else {
+                    return;
+                };
+                // A click is a decision the way a key is, so whatever the
+                // view had to say was about the moment before it.
+                self.notice = None;
+                match self.list.items().get(at) {
+                    Some(rows::Item::Agent(_)) => {
+                        if self.list.land(at) {
+                            self.moved();
+                        }
+                    }
+                    Some(rows::Item::Heading(..)) => {
+                        if self.list.land(at) {
+                            self.list.shut_or_open();
+                            self.follow_the_cursor();
+                        }
+                    }
+                    // The fold gives its rows back where it stands, and the
+                    // cursor stays where it was: opening history is not
+                    // choosing an agent from it.
+                    Some(rows::Item::Fold(_)) => self.list.unfold(),
+                    _ => {}
+                }
+            }
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+                if matches!(self.mode, Mode::List) =>
+            {
+                let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
+                if self.card.is_some() && self.map.over_the_card(mouse.column, mouse.row) {
+                    self.paged(up);
+                } else {
+                    match up {
+                        true => self.list.up(),
+                        false => self.list.down(),
+                    }
+                    self.moved();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The line of the list under this point, bounded to the lines there are:
+    /// the band the map remembers is routinely taller than the list in it.
+    fn line_under(&self, column: u16, row: u16) -> Option<usize> {
+        self.map
+            .line_under(column, row)
+            .filter(|at| *at < self.list.items().len())
     }
 
     /// Something was done to an agent, so what the list says about it is a
@@ -3956,6 +4041,164 @@ mod tests {
         assert!(
             crate::store::list(root.path()).unwrap().is_empty(),
             "and nothing was started"
+        );
+    }
+
+    /// A mouse event, as crossterm hands one to the view.
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// Draw the screen once, so the map the mouse reads is a frame's.
+    ///
+    /// Twelve rows: two of header, one of space, and the list from row three
+    /// — a heading on it and the agents under that.
+    fn a_frame(screen: &Screen) {
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        terminal.draw(|frame| paint::draw(frame, screen)).unwrap();
+    }
+
+    #[test]
+    fn mouse_click_selects_the_row_and_toggles_the_heading_under_the_pointer() {
+        let mut screen = watching(vec![
+            finished_saying("done-a1b", "the first answer"),
+            finished_saying("done-b2c", "the second answer"),
+        ]);
+        a_frame(&screen);
+        assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
+
+        // The second agent's row, which is two under the heading on row 3.
+        screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 5));
+        assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
+
+        // A click on the heading shuts the group, and another opens it.
+        a_frame(&screen);
+        screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
+        assert_eq!(
+            screen.list.items().len(),
+            1,
+            "the rows are behind the count"
+        );
+        a_frame(&screen);
+        screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
+        assert_eq!(screen.list.items().len(), 3);
+    }
+
+    #[test]
+    fn mouse_click_on_the_fold_unfolds_it_and_elsewhere_does_nothing() {
+        let mut screen = watching(
+            (0..5)
+                .map(|n| finished_saying(&format!("done-{n}"), "an answer"))
+                .collect(),
+        );
+        a_frame(&screen);
+        assert_eq!(
+            screen.list.items().len(),
+            5,
+            "a heading, three rows and the fold"
+        );
+
+        // The fold is the row under the three drawn agents.
+        screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 7));
+        assert_eq!(screen.list.items().len(), 6, "the fold gave its rows back");
+
+        // A click past the end of the list lands on nothing and moves
+        // nothing.
+        let before = screen.list.selected().unwrap().id().to_string();
+        a_frame(&screen);
+        screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 11));
+        assert_eq!(screen.list.selected().unwrap().id(), before);
+    }
+
+    #[test]
+    fn mouse_hover_tints_a_name_and_moves_no_cursor() {
+        let mut screen = watching(vec![
+            finished_saying("done-a1b", "the first answer"),
+            finished_saying("done-b2c", "the second answer"),
+        ]);
+        a_frame(&screen);
+
+        screen.moused(mouse(MouseEventKind::Moved, 5, 5));
+        assert_eq!(screen.hover, Some(2), "the second agent's line is hovered");
+        assert_eq!(
+            screen.list.selected().unwrap().id(),
+            "done-a1b",
+            "and the keyboard's cursor did not move"
+        );
+
+        // A heading is not an agent, and off the rows there is nothing to
+        // tint.
+        screen.moused(mouse(MouseEventKind::Moved, 5, 3));
+        assert_eq!(screen.hover, None);
+        screen.moused(mouse(MouseEventKind::Moved, 5, 0));
+        assert_eq!(screen.hover, None);
+    }
+
+    #[test]
+    fn mouse_wheel_walks_the_list_and_pages_the_card_under_the_pointer() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let long: String = (0..40).map(|n| format!("said {n}\n")).collect();
+        let mut screen = watching(vec![
+            finished_saying("done-a1b", &long),
+            finished_saying("done-b2c", "the second answer"),
+        ]);
+        a_frame(&screen);
+
+        // No card up: the wheel is the walk.
+        screen.moused(mouse(MouseEventKind::ScrollDown, 5, 5));
+        assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
+        screen.moused(mouse(MouseEventKind::ScrollUp, 5, 5));
+        assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
+
+        // A card over the bottom of the band: the wheel pages it where the
+        // pointer is over it, and walks the list where it is not.
+        screen
+            .act(
+                KeyEvent::from(KeyCode::Char(' ')),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        a_frame(&screen);
+        screen.moused(mouse(MouseEventKind::ScrollUp, 5, 9));
+        assert!(
+            screen.scroll.away.get() > 0,
+            "wheel-up over the card paged away from its edge"
+        );
+        screen.moused(mouse(MouseEventKind::ScrollDown, 5, 9));
+        assert_eq!(screen.scroll.away.get(), 0, "and wheel-down came back");
+
+        a_frame(&screen);
+        screen.moused(mouse(MouseEventKind::ScrollDown, 5, 4));
+        assert_eq!(
+            screen.list.selected().unwrap().id(),
+            "done-b2c",
+            "over the list the wheel is still the walk, card in tow"
+        );
+    }
+
+    #[test]
+    fn mouse_clicks_are_the_lists_alone_while_a_line_is_being_typed() {
+        let mut screen = watching(vec![
+            finished_saying("done-a1b", "the first answer"),
+            finished_saying("done-b2c", "the second answer"),
+        ]);
+        screen.mode = Mode::Typing(Composer::new(Asking::Task));
+        a_frame(&screen);
+
+        screen.moused(mouse(MouseEventKind::Down(MouseButton::Left), 5, 5));
+        screen.moused(mouse(MouseEventKind::ScrollDown, 5, 5));
+        assert_eq!(
+            screen.list.selected().unwrap().id(),
+            "done-a1b",
+            "a line being typed keeps the keys, and the mouse with them"
         );
     }
 

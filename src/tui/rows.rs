@@ -691,6 +691,19 @@ impl List {
         self.step(-1);
     }
 
+    /// Put the cursor on this line, for a pointer that named one: any line
+    /// but the blank, which is spacing rather than a stop. Answers whether
+    /// the cursor landed.
+    pub fn land(&mut self, at: usize) -> bool {
+        match self.items.get(at) {
+            Some(Item::Blank) | None => false,
+            Some(_) => {
+                self.cursor = at;
+                true
+            }
+        }
+    }
+
     /// Move to the next line, staying put at the ends. Every line is a stop,
     /// headings included — a group is a thing somebody does something to —
     /// except the blank over a heading, which the cursor walks straight over.
