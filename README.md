@@ -23,8 +23,9 @@ idle     tidy-the-imports-d4e      2m  the imports are sorted
 ## Requirements
 
 - tmux 3.2 or newer. Earlier versions cannot address panes by id.
-- A coding agent CLI. amx runs `claude` unless told otherwise, and expects it
-  to speak the same hook events.
+- A coding agent CLI. amx runs `claude` unless told otherwise; what it knows
+  about a vendor is an entry in a table, and a command without one still gets
+  a pane and a row — see [Vendors](#vendors).
 - git, for the worktrees `new` cuts. Only needed if you use them.
 - `gh` or `glab`, to put a pull request number on a row. Only that, and only
   for agents with a branch of their own.
@@ -573,6 +574,28 @@ that line — `Forging… (22s · ↓ 1.3k tokens)` — is what the row shows th
 doing, in place of the tool call the record last wrote down. It is read and not
 recorded: it is true for a second, and the next reading takes it again.
 
+## Vendors
+
+What amx knows about claude is an entry in a table, not the shape of the
+program. The entry says which dials the vendor declares and what flags they
+become, which environment variables name its sessions, which hooks to wire
+and what its screens look like — and what amx may ask of it: hooks, a
+transcript, resume, fork, adopt, trust. A verb asks before it acts, so
+`amx fork` on a vendor that cannot branch a session is a refusal naming the
+gap, not a spawn that fails somewhere in a pane.
+
+`agent = "opencode"` in the config, or `--agent opencode` on one spawn, runs
+that command for every new agent. A command the table has no entry for gets
+the floor: a real pane, a row that reads what the screen says, and no
+pretending beyond that — the same footing every `--exec` command stands on.
+
+Adding a vendor is adding an entry: the dials out of its `--help`, the
+moments its hooks report, the anchors its screens are measured by. Every law
+an entry must keep is a test over the whole table, and a test-only second
+vendor answers most questions the other way from claude, so nothing in amx
+can quietly assume the first entry is the only shape. `docs/vendors.md` is
+the walk through it.
+
 ## Notifications
 
 Two moments are worth interrupting somebody for: an agent that has stopped on a
@@ -621,6 +644,41 @@ queue rather than a week of model calls at once, and a caller running `ls` in a
 loop does not start the command again on every pass. A verb that prints and
 exits while the command is still thinking takes the ask with it, and the next
 reader along makes it again. Left out, nothing is run and nothing is spent.
+
+## Themes
+
+The view spends colour on six things, and a theme is those six answers:
+`waiting`, `done`, `failed`, `stopped`, `accent`, `cursor`. Everything else
+on the screen is said in words, in weight and in the dim your terminal
+already has, so a theme is a file a minute writes:
+
+```toml
+# ~/.config/amx/themes/mine.toml
+waiting = "#ffc107"   # something is waiting on a person
+done    = "#4eba65"   # it went the way it was meant to
+failed  = "#ff6b80"   # it was attempted and it failed
+stopped = "#999999"   # it was ended by hand
+accent  = "cyan"      # what the next agent will be started with
+cursor  = "#373737"   # the line the cursor is on, as a background
+```
+
+`theme = "mine"` in the config names it. A value is a colour the way a
+terminal says one: a name (`cyan`), a 256-colour index (`134`), or a hex
+(`#4eba65`). A role left out keeps the default's answer, and a file that
+cannot be read or understood degrades to the default palette whole, with a
+warning, under the same law as the config — a view painted wrong is a view,
+and no view at all is not.
+
+Two themes ship in the binary. `default` is measured off claude's own
+palette, so the wall and the panes beside it read as one thing. `terminal`
+names no colour of its own: every value is one of your terminal's named
+colours, so the view follows whatever your terminal wears, light or dark.
+
+The file is live. The view stats it once a second, beside the reading it is
+already taking, and an edit repaints the open view on the next pass — no
+restart. A name with a `/` in it is read as a path, which is how a theme
+kept beside a project or shared between machines is reached. The rest —
+what is deliberately not themed, and why — is in `docs/themes.md`.
 
 ## What is on disk
 
