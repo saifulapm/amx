@@ -27,6 +27,7 @@ mod store;
 mod tmux;
 mod trust;
 mod tui;
+#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod vendor;
 mod verbs;
 mod worktree;

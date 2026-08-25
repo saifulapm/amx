@@ -5,7 +5,7 @@
 //! choose, and a renamed mode or a dropped alias turns a dial into a spawn
 //! that fails.
 
-use super::{DEFAULT, DialSpec, Vendor};
+use super::{Capability, DEFAULT, DialSpec, Vendor};
 
 /// claude's entry in the table.
 pub const VENDOR: Vendor = Vendor {
@@ -64,6 +64,18 @@ pub const VENDOR: Vendor = Vendor {
         "CLAUDE_CODE_ENTRYPOINT",
         "CLAUDE_CODE_EXECPATH",
         "CLAUDE_EFFORT",
+    ],
+    // All of them, because amx was written against this vendor: the hooks it
+    // reports through, the transcript it keeps, `--resume` and
+    // `--fork-session`, the session id it hands what it starts, and the
+    // folder-trust screen amx answers for a tree it cut itself.
+    capabilities: &[
+        Capability::Hooks,
+        Capability::Transcript,
+        Capability::Resume,
+        Capability::Fork,
+        Capability::Adopt,
+        Capability::Trust,
     ],
 };
 
@@ -148,6 +160,23 @@ mod tests {
                 !VENDOR.not_inherited.contains(&preference),
                 "{preference} is the person's, not the session's"
             );
+        }
+    }
+
+    #[test]
+    fn claude_can_do_everything_amx_knows_how_to_ask_a_vendor_for() {
+        // The vendor amx was written against, so every capability in the list
+        // is one it was written against too. A second vendor is where the
+        // absences start, and where a verb's refusal has to say something.
+        for what in [
+            Capability::Hooks,
+            Capability::Transcript,
+            Capability::Resume,
+            Capability::Fork,
+            Capability::Adopt,
+            Capability::Trust,
+        ] {
+            assert!(VENDOR.can(what), "{what:?}");
         }
     }
 

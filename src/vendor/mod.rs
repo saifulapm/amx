@@ -59,6 +59,35 @@ pub struct Vendor {
     /// The vendor's alone: the variables that belong to any pane, whoever is
     /// running in it, are the caller's business and not listed here.
     pub not_inherited: &'static [&'static str],
+    /// What amx may ask this vendor to do. Anything left out is a verb that
+    /// has to say so and stop, rather than spawn a command the vendor will
+    /// refuse and leave the person reading the pane to work out why.
+    pub capabilities: &'static [Capability],
+}
+
+/// Something amx can do only where the vendor takes part.
+///
+/// A vendor amx has no entry for can do none of these, which is the floor
+/// every unregistered command stands on: a pane to watch, and nothing amx
+/// pretends to know about what is in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Capability {
+    /// Reports what it is doing to a command amx installs, so an agent's
+    /// record is kept from what it said rather than guessed from its screen.
+    Hooks,
+    /// Keeps the conversation in a file amx can read back afterwards.
+    Transcript,
+    /// Can be told to carry on the session it opened, rather than start a
+    /// second one that knows nothing.
+    Resume,
+    /// Can branch a session it opened, leaving the original where it was.
+    Fork,
+    /// Can be taken over after somebody else started it, which needs it to
+    /// name the session in the environment of what it starts.
+    Adopt,
+    /// Asks whether a folder is trusted, in a screen amx knows how to answer
+    /// for a tree it cut itself.
+    Trust,
 }
 
 /// The value every dial rests at: the vendor's own configured behaviour,
@@ -75,6 +104,11 @@ pub const DEFAULT: &str = "default";
 static TABLE: [Vendor; 1] = [claude::VENDOR];
 
 impl Vendor {
+    /// Whether amx may ask this vendor for `what`.
+    pub fn can(&self, what: Capability) -> bool {
+        self.capabilities.contains(&what)
+    }
+
     /// This vendor's three dials in declaration order, each with the word the
     /// rest of amx calls it by.
     ///
@@ -247,6 +281,43 @@ mod tests {
                 "{} declares a dial whose flag is not one",
                 vendor.name
             );
+        }
+    }
+
+    #[test]
+    fn a_vendor_does_only_what_it_says_it_can_do() {
+        // A capability is the question a verb asks before it refuses, and the
+        // second vendor answers most of them the other way from claude, which
+        // is the whole reason a verb asks rather than knows.
+        let claude = find("claude").unwrap();
+        assert!(claude.can(Capability::Fork));
+        assert!(claude.can(Capability::Trust));
+
+        assert!(SECOND.can(Capability::Resume), "it can carry a session on");
+        assert!(
+            !SECOND.can(Capability::Fork),
+            "but it cannot branch one, and a verb that tried would be asking \
+             for a flag this vendor does not have"
+        );
+        for cannot in [Capability::Hooks, Capability::Transcript, Capability::Trust] {
+            assert!(!SECOND.can(cannot), "{cannot:?}");
+        }
+    }
+
+    #[test]
+    fn a_vendor_that_can_be_adopted_names_the_session_that_makes_it_possible() {
+        // Taking over an agent amx did not start is finding, in the
+        // environment of something that agent started, which conversation it
+        // belongs to. A vendor claiming the one without naming the other
+        // promises a verb something it cannot do.
+        for vendor in known() {
+            if vendor.can(Capability::Adopt) {
+                assert!(
+                    vendor.session_env.is_some(),
+                    "{} claims it can be adopted and names no session",
+                    vendor.name
+                );
+            }
         }
     }
 

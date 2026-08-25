@@ -11,7 +11,7 @@
 //! later field arrives on the descriptor, the way to keep it honest is to
 //! answer it differently here.
 
-use super::{DEFAULT, DialSpec, Vendor};
+use super::{Capability, DEFAULT, DialSpec, Vendor};
 
 /// The fixture. Read the module docs before changing a value: each of these
 /// disagrees with claude on purpose.
@@ -36,4 +36,9 @@ pub const SECOND: Vendor = Vendor {
     // reading it is reading the descriptor.
     session_env: Some("SECOND_SESSION"),
     not_inherited: &["SECOND_SESSION", "SECOND_PARENT"],
+    // Two of the six, so that half the questions a verb asks come back the
+    // other way. It carries a session on and can be taken over, and it has no
+    // hooks, no transcript, no way to branch and no trust screen: the shape of
+    // a vendor amx has to refuse things for.
+    capabilities: &[Capability::Resume, Capability::Adopt],
 };
