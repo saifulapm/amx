@@ -1,4 +1,4 @@
-//! `~/.config/amx/config.toml` — nine keys and nothing else.
+//! `~/.config/amx/config.toml` — ten keys and nothing else.
 //!
 //! Config is a convenience, never a gate: a file that cannot be read or
 //! parsed degrades to the defaults with a warning on stderr, because losing
@@ -10,7 +10,7 @@ use serde::Deserialize;
 use std::path::Path;
 
 /// Every key the file may carry. Anything else is warned about and ignored.
-pub const KNOWN_KEYS: [&str; 9] = [
+pub const KNOWN_KEYS: [&str; 10] = [
     "agent",
     "max_agents",
     "worktrees",
@@ -20,6 +20,7 @@ pub const KNOWN_KEYS: [&str; 9] = [
     "permission",
     "effort",
     "summary_command",
+    "theme",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -50,6 +51,11 @@ pub struct Config {
     /// run and nothing spent, and a row that says what the agent said rather
     /// than what somebody would have written about it.
     pub summary_command: Option<String>,
+    /// Which palette the view paints in: a theme amx ships, a file in
+    /// `~/.config/amx/themes`, or a path to one. A name rather than an
+    /// `Option`, because there is a palette amx paints in when nobody has
+    /// chosen and it has a name of its own.
+    pub theme: String,
 }
 
 impl Default for Config {
@@ -64,6 +70,7 @@ impl Default for Config {
             permission: None,
             effort: None,
             summary_command: None,
+            theme: "default".to_string(),
         }
     }
 }
@@ -205,6 +212,16 @@ mod tests {
         assert_eq!(c.effort, None);
         // Nothing is run at the end of a turn until somebody says what to run.
         assert_eq!(c.summary_command, None);
+        // A theme, unlike a dial, has a value that means the default one, so
+        // there is a name here rather than an absence.
+        assert_eq!(c.theme, "default");
+    }
+
+    #[test]
+    fn the_theme_the_defaults_name_is_one_amx_ships() {
+        // The one config value that has to mean something to another module.
+        // A default naming a theme nobody has would warn on every start.
+        assert!(crate::theme::shipped(&Config::default().theme).is_some());
     }
 
     #[test]
@@ -257,6 +274,11 @@ mod tests {
             Some("claude -p 'in eight words'")
         );
         assert!(w.is_empty(), "{w:?}");
+
+        let (c, w) = parse("theme = \"terminal\"").unwrap();
+        assert_eq!(c.theme, "terminal");
+        assert_eq!(c.agent, Config::default().agent);
+        assert!(w.is_empty(), "{w:?}");
     }
 
     #[test]
@@ -272,6 +294,7 @@ mod tests {
                 permission = "plan"
                 effort = "xhigh"
                 summary_command = "summarise"
+                theme = "terminal"
             "#,
         )
         .unwrap();
@@ -284,10 +307,11 @@ mod tests {
         assert_eq!(c.permission.as_deref(), Some("plan"));
         assert_eq!(c.effort.as_deref(), Some("xhigh"));
         assert_eq!(c.summary_command.as_deref(), Some("summarise"));
+        assert_eq!(c.theme, "terminal");
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(
             KNOWN_KEYS.len(),
-            9,
+            10,
             "a key this file does not name is a key nothing here proves"
         );
     }
@@ -363,6 +387,7 @@ mod tests {
     fn a_key_of_the_wrong_type_is_an_error_not_a_guess() {
         assert!(parse("max_agents = \"five\"").is_err());
         assert!(parse("worktrees = \"yes\"").is_err());
+        assert!(parse("theme = 3").is_err());
     }
 
     #[test]
