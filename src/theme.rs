@@ -15,6 +15,7 @@ use anyhow::{Context, Result, anyhow};
 use ratatui::style::Color;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::SystemTime;
 
 /// Every role a theme file may name. Anything else is warned about and ignored.
 pub const ROLES: [&str; 6] = ["waiting", "done", "failed", "stopped", "accent", "cursor"];
@@ -137,6 +138,96 @@ pub fn load(named: &str) -> (Theme, Vec<String>) {
             Theme::default(),
             vec![format!("using the default theme: {e}")],
         ),
+    }
+}
+
+/// A theme name, and what to stat to notice the file under it being edited.
+///
+/// A stat rather than a watcher on the directory: the view already goes round
+/// on a clock, so this is one call a second on a path it has in hand, with no
+/// thread to join, no descriptor to hold open and nothing to unwind when the
+/// screen is handed back. What it costs is that an edit is seen on the next
+/// pass rather than the instant it lands, which is the cadence everything else
+/// on that screen moves at.
+#[derive(Debug, Default, Clone)]
+pub struct Watch {
+    /// The name to read again, which is the name the config gave.
+    named: String,
+    /// Where a name is read against, kept so the reread reaches the file the
+    /// first read did.
+    themes: PathBuf,
+    /// The file to stat. Nothing to watch about a palette in the binary.
+    file: Option<PathBuf>,
+    /// How that file looked when the theme was last read, or `None` for a name
+    /// with no file under it yet — which is a state, and a file appearing
+    /// under it is a change like any other.
+    seen: Option<Stamp>,
+}
+
+/// What one stat says about a theme file.
+///
+/// When it was written and how long it is, together: a filesystem whose
+/// timestamps move in whole seconds would let a second edit inside the same
+/// tick past unnoticed, and most edits to a palette change its length as well.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+impl Stamp {
+    /// What is at that path now, where there is anything there at all.
+    fn of(path: &Path) -> Option<Stamp> {
+        let about = std::fs::metadata(path).ok()?;
+        Some(Stamp {
+            modified: about.modified().ok(),
+            len: about.len(),
+        })
+    }
+}
+
+impl Watch {
+    /// Watch `named`, wherever this machine keeps its themes.
+    ///
+    /// Stamped before the caller reads the theme, never after: a file edited
+    /// between the read and the stat would leave the view holding the old
+    /// palette under a stamp saying nothing had moved, and the edit would be
+    /// lost until the next one. Stamped first, that same edit costs one reread
+    /// of text already in hand.
+    pub fn of(named: &str) -> Watch {
+        // Nowhere to keep themes is nowhere to watch. The read that follows
+        // this is the one that says so.
+        match themes_dir() {
+            Ok(themes) => Watch::of_in(&themes, named),
+            Err(_) => Watch::default(),
+        }
+    }
+
+    /// The same, with the themes directory as a parameter.
+    pub fn of_in(themes: &Path, named: &str) -> Watch {
+        let file = source_in(themes, named).path().map(Path::to_path_buf);
+        let seen = file.as_deref().and_then(Stamp::of);
+        Watch {
+            named: named.to_string(),
+            themes: themes.to_path_buf(),
+            file,
+            seen,
+        }
+    }
+
+    /// The theme again, when the file has changed since it was last read.
+    ///
+    /// `None` on nearly every call, which is what the caller acts on: a view
+    /// that rebuilt its palette every second would be doing the work of an
+    /// edit nobody made.
+    pub fn reread(&mut self) -> Option<(Theme, Vec<String>)> {
+        let file = self.file.as_deref()?;
+        let now = Stamp::of(file);
+        if now == self.seen {
+            return None;
+        }
+        self.seen = now;
+        Some(load_in(&self.themes, &self.named))
     }
 }
 
@@ -422,6 +513,62 @@ mod tests {
         assert_eq!(Source::Shipped("default").path(), None);
         let path = Path::new("/cfg/amx/themes/mine.toml");
         assert_eq!(Source::File(path.to_path_buf()).path(), Some(path));
+    }
+
+    #[test]
+    fn a_theme_edited_while_it_is_being_watched_is_read_again() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "mine", "accent = \"magenta\"\n");
+
+        let mut watch = Watch::of_in(dir.path(), "mine");
+        assert!(
+            watch.reread().is_none(),
+            "a file nobody has touched is a file to leave alone"
+        );
+
+        write(dir.path(), "mine", "accent = \"blue\"\n");
+        let (t, w) = watch.reread().expect("the edit");
+        assert_eq!(t.accent, Color::Blue);
+        assert!(w.is_empty(), "{w:?}");
+        assert!(watch.reread().is_none(), "and once, not every pass after");
+    }
+
+    #[test]
+    fn a_theme_written_after_the_watch_began_is_read_when_it_appears() {
+        // Somebody who named a palette, saw the default and went to write the
+        // file gets the palette they named without reopening the view.
+        let dir = TempDir::new().unwrap();
+        let mut watch = Watch::of_in(dir.path(), "mine");
+        assert!(watch.reread().is_none());
+
+        write(dir.path(), "mine", "accent = \"magenta\"\n");
+        let (t, w) = watch.reread().expect("the file appearing");
+        assert_eq!(t.accent, Color::Magenta);
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn a_theme_edited_into_nonsense_falls_back_and_says_which_file() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "mine", "accent = \"magenta\"\n");
+        let mut watch = Watch::of_in(dir.path(), "mine");
+
+        write(dir.path(), "mine", "accent = \"chartreuse\"\n");
+        let (t, w) = watch.reread().expect("the edit");
+        assert_eq!(t, Theme::default());
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("mine.toml"), "{w:?}");
+    }
+
+    #[test]
+    fn a_palette_in_the_binary_has_nothing_to_watch() {
+        // Including the file of that name amx will never read: the view said
+        // so when it opened, and saying it again on every edit would be amx
+        // arguing with somebody about their own directory.
+        let dir = TempDir::new().unwrap();
+        let mut watch = Watch::of_in(dir.path(), "default");
+        write(dir.path(), "default", "accent = \"magenta\"\n");
+        assert!(watch.reread().is_none());
     }
 
     #[test]

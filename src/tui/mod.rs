@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 use crate::config::Config;
 use crate::derive::{self, View};
 use crate::store::{Phase, now};
-use crate::theme::Theme;
+use crate::theme::{Theme, Watch};
 use crate::tmux::{PaneId, Server, SessionId};
 use crate::verbs::ls::Scope;
 use crate::verbs::resume::Comeback;
@@ -409,6 +409,9 @@ struct Screen {
     /// The colours it is all painted in, which the paint asks by role and
     /// never decides for itself.
     theme: Theme,
+    /// What reading the theme last had to say for itself, so a file that has
+    /// been put right takes its own complaint off the screen with it.
+    complained: Option<String>,
     mode: Mode,
     look: Look,
     card: Option<Card<Body>>,
@@ -491,8 +494,9 @@ pub fn run(root: &Path, config: &Config, scope: &Scope) -> Result<i32> {
     outcome
 }
 
-/// What the view opens painted in: the palette the config named, and whatever
-/// reading it had to say for itself.
+/// What the view opens painted in: the palette the config named, whatever
+/// reading it had to say for itself, and the file to watch for somebody
+/// editing it.
 ///
 /// Read where the view is opened rather than inside the loop, because a theme
 /// lives beside the config file rather than under the root the view was
@@ -503,13 +507,23 @@ struct Painting {
     theme: Theme,
     /// What was wrong with the file, for the view to say once.
     warnings: Vec<String>,
+    /// What the loop stats to notice the file being edited under it.
+    watching: Watch,
 }
 
 impl Painting {
     /// The theme of that name, wherever this machine keeps its themes.
     fn of(named: &str) -> Painting {
+        // Stamped before the read rather than after it, so that an edit
+        // landing between the two is one reread rather than a palette the
+        // view holds until the next edit. `Watch` says why.
+        let watching = Watch::of(named);
         let (theme, warnings) = crate::theme::load(named);
-        Painting { theme, warnings }
+        Painting {
+            theme,
+            warnings,
+            watching,
+        }
     }
 }
 
@@ -616,13 +630,9 @@ where
         remembering: remembering.map(Path::to_path_buf),
         ..Screen::default()
     };
-    // What was wrong with the theme, said where the view says everything else.
-    // Somebody who named a palette and got the built-in one is owed the
-    // reason; the alternative is a screen that is quietly not the one they
-    // asked for.
-    if !painting.warnings.is_empty() {
-        screen.notice = Some(Notice::Advice(painting.warnings.join(" · ")));
-    }
+    screen.say_of_the_theme(&painting.warnings);
+    // And the file behind it, for the loop to notice somebody editing.
+    let mut watching = painting.watching;
     // The list opens the way it was left, before anything is drawn on it: a
     // view that gathered itself one way and then jumped to the other would be
     // saying the arrangement is something it does rather than something
@@ -646,13 +656,24 @@ where
 
     loop {
         let opening = std::mem::take(&mut records_only);
-        match screen.read.is_none_or(|at| at.elapsed() >= REFRESH) {
+        let refreshing = screen.read.is_none_or(|at| at.elapsed() >= REFRESH);
+        match refreshing {
             true if opening => screen.recall(root, scope)?,
             true => screen.reread(root, scope)?,
             // The reread has just taken the card; between rereads a question
             // card is taken again anyway, so it never holds a question the
             // record has moved past.
             false => screen.freshen(),
+        }
+        // A palette is a file, and a person choosing one edits it with the
+        // view open beside them. So it is read again on the wall's own
+        // cadence: the colours on the screen are the ones the file says now,
+        // and nothing has to be closed and reopened to see them. Only where
+        // the reading clock came round — a stat every 120ms would be the view
+        // asking the filesystem about a file that changes once a fortnight.
+        if refreshing && let Some((theme, warnings)) = watching.reread() {
+            screen.theme = theme;
+            screen.say_of_the_theme(&warnings);
         }
         // The last frame said how many rows the screen has; a screen that
         // changed size gets its lines laid out again before the next one.
@@ -843,6 +864,26 @@ impl Screen {
     fn recall(&mut self, root: &Path, scope: &Scope) -> Result<()> {
         self.list.show(scope.narrow(derive::recorded(root, now())?));
         Ok(())
+    }
+
+    /// Say what reading the theme had to say for itself, where the view says
+    /// everything else.
+    ///
+    /// Somebody who named a palette and got the built-in one is owed the
+    /// reason; the alternative is a screen that is quietly not the one they
+    /// asked for. A file that was wrong and has been put right takes its own
+    /// complaint down with it — but only its own, because a notice somebody's
+    /// keypress put there is not the theme's to clear.
+    fn say_of_the_theme(&mut self, warnings: &[String]) {
+        let said = (!warnings.is_empty()).then(|| warnings.join(" · "));
+        let showing = matches!(
+            &self.notice,
+            Some(Notice::Advice(shown)) if Some(shown) == self.complained.as_ref()
+        );
+        if said.is_some() || showing {
+            self.notice = said.clone().map(Notice::Advice);
+        }
+        self.complained = said;
     }
 
     /// Read the agents again, the ones the view was opened about.
@@ -2119,6 +2160,8 @@ mod tests {
     use crate::store::{Agent, Kind, Meta, Phase, State};
     use crate::tmux::Socket;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::Color;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -2242,6 +2285,27 @@ mod tests {
         remembering: Option<&Path>,
         painting: Painting,
     ) -> (i32, String) {
+        let (code, buffer) = buffered(root, scope, script, remembering, painting);
+        let screen = (0..10)
+            .map(|row| {
+                (0..50)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        (code, screen)
+    }
+
+    /// The last frame as it was drawn, for a test about what the view painted
+    /// in rather than about the words it wrote.
+    fn buffered(
+        root: &Path,
+        scope: &Scope,
+        script: Vec<Typed>,
+        remembering: Option<&Path>,
+        painting: Painting,
+    ) -> (i32, Buffer) {
         let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
         let code = watch(
             root,
@@ -2255,16 +2319,7 @@ mod tests {
             painting,
         )
         .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let screen = (0..10)
-            .map(|row| {
-                (0..50)
-                    .map(|column| buffer[(column, row)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        (code, screen)
+        (code, terminal.backend().buffer().clone())
     }
 
     /// The same again, answering with how many frames the view drew rather
@@ -2386,14 +2441,88 @@ mod tests {
             vec![Typed::Key(KeyEvent::from(KeyCode::Char('q')))],
             None,
             Painting {
-                theme: Theme::default(),
                 warnings: vec!["no theme `solarized`".to_string()],
+                ..Painting::default()
             },
         );
         assert!(
             screen.contains("no theme `solarized`"),
             "the reason is nowhere on the screen:\n{screen}"
         );
+    }
+
+    #[test]
+    fn a_theme_written_under_the_open_view_is_what_the_next_frame_is_painted_in() {
+        let root = TempDir::new().unwrap();
+        finished(root.path(), "fix-login-a1b", "did what it was asked", 60);
+        let themes = TempDir::new().unwrap();
+
+        // The view opens on a name with no file under it and the built-in
+        // palette, which is where somebody goes and writes the file. Nothing
+        // is closed and nothing is pressed.
+        let watching = Watch::of_in(themes.path(), "mine");
+        std::fs::write(themes.path().join("mine.toml"), "done = \"#ff00ff\"\n").unwrap();
+
+        let (_, buffer) = buffered(
+            root.path(),
+            &Scope::default(),
+            vec![Typed::Key(KeyEvent::from(KeyCode::Char('q')))],
+            None,
+            Painting {
+                watching,
+                ..Painting::default()
+            },
+        );
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .any(|cell| cell.fg == Color::Rgb(255, 0, 255)),
+            "nothing was painted in the colour the file says"
+        );
+    }
+
+    #[test]
+    fn a_theme_put_right_takes_its_own_complaint_off_the_screen() {
+        let root = TempDir::new().unwrap();
+        let themes = TempDir::new().unwrap();
+        let watching = Watch::of_in(themes.path(), "mine");
+        std::fs::write(themes.path().join("mine.toml"), "done = \"#ff00ff\"\n").unwrap();
+
+        // Opened on a file that would not read, so the view is saying why.
+        // The file it names is the one that has just been written, and the
+        // reason went with it.
+        let (_, screen) = drawn_painted(
+            root.path(),
+            &Scope::default(),
+            vec![Typed::Key(KeyEvent::from(KeyCode::Char('q')))],
+            None,
+            Painting {
+                watching,
+                warnings: vec!["ignoring mine.toml, painting the default".to_string()],
+                ..Painting::default()
+            },
+        );
+        assert!(
+            !screen.contains("ignoring mine.toml"),
+            "the complaint outlived the file that earned it:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn a_theme_says_nothing_over_a_notice_somebody_else_put_there() {
+        let mut screen = Screen::default();
+        screen.say_of_the_theme(&["ignoring mine.toml".to_string()]);
+        screen.notice = Some(Notice::Failed("could not stop fix-login-a1b".to_string()));
+
+        // The file was put right, but what is on the footer now is not the
+        // theme's to take down.
+        screen.say_of_the_theme(&[]);
+        let said = match &screen.notice {
+            Some(Notice::Failed(said) | Notice::Advice(said)) => said.as_str(),
+            None => "nothing at all",
+        };
+        assert_eq!(said, "could not stop fix-login-a1b");
     }
 
     #[test]

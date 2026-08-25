@@ -140,25 +140,42 @@ fn default_theme(role: &str) -> (u8, u8, u8) {
         .unwrap_or_else(|| panic!("the default theme names {role}"))
         .trim()
         .trim_matches('"');
+    rgb(said)
+}
+
+/// A colour as a theme file spells it, in the three bytes tmux writes.
+fn rgb(said: &str) -> (u8, u8, u8) {
     let hex = said
         .strip_prefix('#')
-        .unwrap_or_else(|| panic!("{role} is a hex colour: {said}"));
+        .unwrap_or_else(|| panic!("a hex colour: {said}"));
     let byte = |at: usize| {
         u8::from_str_radix(&hex[at..at + 2], 16).unwrap_or_else(|_| panic!("a hex colour: {said}"))
     };
     (byte(0), byte(2), byte(4))
 }
 
+/// A colour as the escape tmux writes for text painted in it.
+fn text_in((r, g, b): (u8, u8, u8)) -> String {
+    format!("38;2;{r};{g};{b}")
+}
+
 /// A role of the default theme as the escape tmux writes for text in it.
 fn foreground(role: &str) -> String {
-    let (r, g, b) = default_theme(role);
-    format!("38;2;{r};{g};{b}")
+    text_in(default_theme(role))
 }
 
 /// And as the escape for a line drawn on it.
 fn background(role: &str) -> String {
     let (r, g, b) = default_theme(role);
     format!("48;2;{r};{g};{b}")
+}
+
+/// Write a theme where the config file's `theme` name reaches it, which is the
+/// directory beside the config a person keeps their own in.
+fn theme(amx: &Harness, name: &str, text: &str) {
+    let dir = amx.home().join(".config/amx/themes");
+    std::fs::create_dir_all(&dir).expect("the themes directory");
+    std::fs::write(dir.join(format!("{name}.toml")), text).expect("writing the theme");
 }
 
 /// Move a record's directory, which is what decides its project.
@@ -1092,6 +1109,35 @@ fn the_view_paints_in_the_theme_the_config_names() {
     assert!(
         !row.contains(&foreground("done")) && !row.contains(&bar()),
         "the default theme is what is being painted:\n{row:?}"
+    );
+}
+
+#[test]
+fn editing_the_theme_recolours_the_view_that_is_open_on_it() {
+    let amx = Harness::new();
+    amx.config("theme = \"mine\"\n");
+    theme(&amx, "mine", "done = \"#ff00ff\"\n");
+    finished(&amx, "fix-login-a1b", "done", 60);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let before = text_in(rgb("#ff00ff"));
+    amx.until("the row in the colour the theme says", || {
+        coloured(&amx, &view).contains(&before).then_some(())
+    });
+
+    // What a person picking a palette does: edit the file and look at the
+    // screen. Nothing is restarted, nothing is pressed, and the view is the
+    // thing that has to notice.
+    theme(&amx, "mine", "done = \"#00ffff\"\n");
+
+    let after = text_in(rgb("#00ffff"));
+    let drawn = amx.until("the row in the colour the file now says", || {
+        let drawn = coloured(&amx, &view);
+        drawn.contains(&after).then_some(drawn)
+    });
+    assert!(
+        !drawn.contains(&before),
+        "the colour that was edited away is still on the screen:\n{drawn:?}"
     );
 }
 
