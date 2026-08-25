@@ -957,9 +957,13 @@ impl Screen {
                 self.moved();
             }
             // The cursor keys walk the list even while a card is open; paging
-            // inside the card's body is these two.
+            // inside the card's body is these two — and the two chords under
+            // them, which are the same pages for a keyboard that has no page
+            // keys to press.
             KeyCode::PageUp if plain => self.paged(true),
             KeyCode::PageDown if plain => self.paged(false),
+            KeyCode::Char('b') if ctrl => self.paged(true),
+            KeyCode::Char('f') if ctrl => self.paged(false),
             KeyCode::Char(' ') if plain => match self.look {
                 Look::Away => self.look_closer(root),
                 _ => self.look_away(),
@@ -2290,6 +2294,68 @@ mod tests {
             "the card followed the cursor"
         );
         assert_eq!(screen.scroll.away.get(), 0, "and stands where it opens");
+    }
+
+    #[test]
+    fn card_pages_under_ctrl_f_and_ctrl_b_exactly_as_the_page_keys() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        // An answer is read up from its bottom: ctrl+b leaves the edge the
+        // way pgup does, and ctrl+f comes back the way pgdn does.
+        press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
+        press(&mut screen, ctrl('b'));
+        assert!(
+            screen.scroll.away.get() > 0,
+            "ctrl+b paged away from the bottom"
+        );
+        press(&mut screen, ctrl('f'));
+        assert_eq!(screen.scroll.away.get(), 0, "and ctrl+f is the page back");
+
+        // A patch is read down from its top, so the same two keys lead the
+        // other way round, exactly as the page keys do.
+        screen.look = Look::Changes;
+        screen.card = Some(Card {
+            id: "done-a1b".to_string(),
+            phase: Phase::Done,
+            age: 29,
+            question: None,
+            options: Vec::new(),
+            kind: None,
+            body: "+ line".to_string(),
+            changes: true,
+        });
+        press(&mut screen, ctrl('f'));
+        assert!(
+            screen.scroll.away.get() > 0,
+            "ctrl+f paged down into the patch"
+        );
+        press(&mut screen, ctrl('b'));
+        assert_eq!(screen.scroll.away.get(), 0, "and back to the top");
+    }
+
+    #[test]
+    fn card_answer_line_leaves_ctrl_f_and_ctrl_b_unread_like_the_page_keys() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![stopped_on_a_question("ask-a1b")]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
+        assert!(screen.answering().is_some(), "the line is up");
+
+        // A chord is somebody reaching past the line, not a character in it,
+        // and a question card has nothing under it to page.
+        press(&mut screen, ctrl('f'));
+        press(&mut screen, ctrl('b'));
+        assert_eq!(screen.scroll.away.get(), 0);
+        assert_eq!(screen.answering().expect("still typing").text, "");
     }
 
     #[test]

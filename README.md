@@ -155,7 +155,8 @@ question has been standing is on the card, in its title.
 | `alt+n` | start the line and go to the agent it started |
 | `r` | reply: a message, or an answer on the card |
 | `d` | what it has changed |
-| `pgup` `pgdn` | page the card, when it holds more |
+| `pgup` `ctrl+b` | page the card, when it holds more |
+| `pgdn` `ctrl+f` | and the other way |
 | `ctrl+x` | stop it, twice to forget it, and twice on a heading to clear the group |
 | `ctrl+r` | call it something else |
 | `ctrl+g` | write the line in `$EDITOR` |
@@ -188,7 +189,10 @@ bottom. A paged card says how far from that edge it stands on its frame —
 `↓ 12 more` — and holds still, new output and all, until you page back to the
 edge, press an arrow, or open it again; an agent stopping at a question takes
 the card back regardless, because a question is never left behind history. The
-arrows never page: they keep walking the list, card in tow.
+arrows never page: they keep walking the list, card in tow. `ctrl+b` and
+`ctrl+f` are the same two pages for a keyboard with no page keys on it — pgup
+and pgdn exactly. A lone `ctrl+b` under tmux's default prefix is tmux's own
+business: `ctrl+b ctrl+b` is what reaches the view there.
 
 `ctrl+x` forgets nothing on the first press, and the first press is the same
 press on every row. An agent that is still running — sitting idle at its

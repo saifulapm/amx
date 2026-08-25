@@ -2658,6 +2658,49 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
 }
 
 #[test]
+fn ctrl_f_and_ctrl_b_page_the_card_like_the_page_keys() {
+    let amx = Harness::new();
+    amx.record("tall-b2c", "%404");
+    let at = now() - 100;
+    amx.set_state(
+        "tall-b2c",
+        json!({
+            "state": "done",
+            "exit": 0,
+            "since": at,
+            "last_event": at,
+            "result": (0..40).map(|n| format!("said {n}\n")).collect::<String>(),
+        }),
+    );
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let carded = card_on(&amx, &view, "tall-b2c");
+    assert!(carded.contains("said 39"), "{carded}");
+
+    // ctrl+b is pgup: away from the answer's live bottom, with the how-far
+    // indicator up. A lone ctrl+b never reaches a view inside a default
+    // tmux — the prefix eats it — but injected keys go to the pane, which is
+    // exactly what ctrl+b ctrl+b delivers there.
+    press(&amx, &view, "C-b");
+    let paged = amx.until("the paged card", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("more").then_some(drawn)
+    });
+    assert!(
+        !paged.contains("said 39"),
+        "the live edge is below:\n{paged}"
+    );
+
+    // And ctrl+f is pgdn: the page back to the edge.
+    press(&amx, &view, "C-f");
+    let back = amx.until("the edge again", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("said 39").then_some(drawn)
+    });
+    assert!(!back.contains("more"), "{back}");
+}
+
+#[test]
 fn keymap_the_hint_row_says_what_the_line_under_the_cursor_answers_to() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
