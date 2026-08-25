@@ -366,9 +366,9 @@ mod tests {
 
     #[test]
     fn nothing_else_in_amx_has_measured_these_differently() {
-        // spawn and adopt each keep a copy of the measurement above, and two
-        // copies of a measurement is one too many. This is what holds them
-        // together while there are two of them.
+        // adopt keeps a copy of the measurement above, and two copies of a
+        // measurement is one too many. This is what holds them together while
+        // there are two of them.
         let ships = |source: &str| {
             source
                 .split("#[cfg(test)]")
@@ -376,14 +376,6 @@ mod tests {
                 .unwrap_or(source)
                 .to_string()
         };
-
-        let spawn = ships(include_str!("../spawn.rs"));
-        for name in VENDOR.not_inherited {
-            assert!(
-                spawn.contains(&format!("\"{name}\"")),
-                "spawn lets {name} travel to a pane it starts"
-            );
-        }
 
         let adopt = ships(include_str!("../verbs/adopt.rs"));
         let session = VENDOR.session_env.expect("claude names its session");

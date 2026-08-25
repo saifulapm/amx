@@ -55,30 +55,12 @@ const SOCKET_ENV: &str = "AMX_TMUX_SOCKET";
 
 /// The variables that belong to the pane a command was typed in, not to the
 /// pane it starts: tmux's own two, and the shell's idea of where it is.
-const NOT_INHERITED: [&str; 11] = [
-    "TMUX",
-    "TMUX_PANE",
-    "PWD",
-    "OLDPWD",
-    // The rest name the claude session `new` was typed inside, when it was
-    // typed inside one — an agent driving amx, or amx's own skill. A vendor
-    // handed its spawner's markers believes it is a child of that session:
-    // measured at 2.1.240 on 2026-08-25, it came up with `Transcript saving
-    // is off — inherited CLAUDE_CODE_CHILD_SESSION marker`, and an agent
-    // with no transcript is one `result` cannot quote and `resume` and
-    // `fork` cannot continue. Preferences (`CLAUDE_CODE_NO_FLICKER`, the
-    // `DISABLE_*` switches) are about the person and ride along; these name
-    // the session, and the agent is not in it. `CLAUDE_EFFORT` goes with
-    // them because it is the spawner's dial, and a dial nobody turned on
-    // this agent is a flag amx does not pass.
-    "CLAUDECODE",
-    "CLAUDE_PID",
-    "CLAUDE_CODE_SESSION_ID",
-    "CLAUDE_CODE_CHILD_SESSION",
-    "CLAUDE_CODE_ENTRYPOINT",
-    "CLAUDE_CODE_EXECPATH",
-    "CLAUDE_EFFORT",
-];
+///
+/// The vendors' own are not here. Each of them names the variables that mark
+/// the session a command was typed inside, and [`env_snapshot`] asks the table
+/// for those: they are the vendor's words to spell, and a second copy of them
+/// here would be the one that goes stale the day a vendor renames something.
+const NOT_INHERITED: [&str; 4] = ["TMUX", "TMUX_PANE", "PWD", "OLDPWD"];
 
 /// How long `_boot` waits for the record whose pane it is.
 const RECORD_PATIENCE: Duration = Duration::from_secs(10);
@@ -95,10 +77,27 @@ pub struct Handoff {
 }
 
 /// The environment an agent inherits, given the one `new` was run with.
+///
+/// Two kinds are left out: the variables that describe the pane the command
+/// was typed in, and the markers of whichever vendor's session it was typed
+/// inside. A vendor handed its spawner's markers believes it is a child of
+/// that session, and an agent that believes that keeps no transcript.
 pub fn env_snapshot(vars: impl IntoIterator<Item = (String, String)>) -> BTreeMap<String, String> {
     vars.into_iter()
-        .filter(|(name, _)| !NOT_INHERITED.contains(&name.as_str()))
+        .filter(|(name, _)| !NOT_INHERITED.contains(&name.as_str()) && !marks_a_session(name))
         .collect()
+}
+
+/// Whether `name` is a variable some vendor marks the session a command was
+/// typed inside with.
+///
+/// Every vendor amx knows, rather than the one about to be started: the
+/// markers to leave behind are the ones around whoever typed the command, and
+/// nothing here is told what they were sitting in.
+fn marks_a_session(name: &str) -> bool {
+    registry::entries()
+        .iter()
+        .any(|vendor| vendor.not_inherited.contains(&name))
 }
 
 /// Where a spawn's three dials are pointed, each of them a value the vendor
@@ -387,6 +386,44 @@ mod tests {
                 !snapshot.contains_key(gone),
                 "{gone} describes where the command was typed, not where the agent runs"
             );
+        }
+    }
+
+    #[test]
+    fn spawn_leaves_behind_the_session_markers_of_every_vendor_amx_knows() {
+        // Whichever vendor's session the command was typed inside, the pane it
+        // starts is not in that session. The names are the vendors' own words,
+        // so the table is walked rather than a list here being trusted to
+        // still match it.
+        let typed_inside: Vec<(String, String)> = registry::entries()
+            .iter()
+            .flat_map(|vendor| vendor.not_inherited)
+            .map(|name| (name.to_string(), "the spawner's".to_string()))
+            .collect();
+        assert!(!typed_inside.is_empty(), "a table with a vendor in it");
+
+        let snapshot = env_snapshot(typed_inside);
+        assert!(snapshot.is_empty(), "{snapshot:?}");
+    }
+
+    #[test]
+    fn spawn_spells_no_vendors_variable_of_its_own() {
+        // Half of what a pane does not inherit is the vendors' and half is the
+        // pane's, and only the pane's half is spelled here. A second copy of a
+        // vendor's measurement is the one that goes stale on the day the
+        // vendor renames something.
+        let ships = include_str!("spawn.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_default();
+        for vendor in registry::entries() {
+            for name in vendor.not_inherited {
+                assert!(
+                    !ships.contains(name),
+                    "spawn keeps its own copy of {}'s {name}",
+                    vendor.name
+                );
+            }
         }
     }
 
