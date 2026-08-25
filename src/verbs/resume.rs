@@ -26,6 +26,7 @@ use crate::config::Config;
 use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, Phase, State};
 use crate::tmux::Server;
+use crate::vendor::{Capability, Vendor};
 use crate::{complain, derive, exit, paths, rules, store, warn, worktree};
 
 /// What amx records when it brings an agent back.
@@ -387,17 +388,48 @@ fn to_continue(meta: &Meta) -> Result<&str, String> {
 /// is not.
 ///
 /// Every agent amx started has what it was started with written down beside
-/// its record. An adopted claude has none: somebody ran it themselves, in a
+/// its record. An adopted agent has none: somebody ran it themselves, in a
 /// pane amx never opened, so there is a session here and no command to carry
 /// it. That is a different thing missing to a missing session, and whoever
 /// reached for this agent is told which.
+///
+/// A third thing can be missing, and it is the vendor's: a command amx can
+/// read, and a vendor that will not be told to carry a session on.
 fn to_start(dir: &Path, id: &str) -> Result<(), String> {
-    if dir.join(spawn::HANDOFF).exists() {
-        return Ok(());
+    if !dir.join(spawn::HANDOFF).exists() {
+        return Err(format!(
+            "{id} was started by hand rather than by amx, so there is no command to start again"
+        ));
     }
-    Err(format!(
-        "{id} was started by hand rather than by amx, so there is no command to start again"
-    ))
+    // A handoff that will not read is not this question's to answer: the
+    // respawn reads it again in a moment and says what was wrong with it.
+    let recorded = spawn::read_handoff(dir).ok();
+    match cannot_continue(recorded.as_ref().and_then(spawn::vendor_of), id) {
+        Some(refusal) => Err(refusal),
+        None => Ok(()),
+    }
+}
+
+/// Why this vendor cannot be told to carry a session on, when it cannot.
+///
+/// `--resume` is claude's flag, and a vendor without one of its own would meet
+/// it as an argument it does not know: the pane dies on its first line while
+/// the record says the agent came back. What amx would have started instead is
+/// a fresh agent on the same task, which is `amx new` and is the person's to
+/// ask for.
+///
+/// A command amx has no entry for is not refused. amx has measured nothing
+/// about it, and nothing measured is no reason to take away what somebody's
+/// own wrapper command does today.
+fn cannot_continue(vendor: Option<&Vendor>, id: &str) -> Option<String> {
+    let vendor = vendor?;
+    (!vendor.can(Capability::Resume)).then(|| {
+        format!(
+            "{id} runs {}, which cannot be told to carry a session on, so \
+             there is nothing to pick up. start a fresh agent with `amx new`",
+            vendor.name
+        )
+    })
 }
 
 /// Whether a recorded session id is one.
@@ -417,6 +449,8 @@ fn is_session_id(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vendor::second::SECOND;
+    use tempfile::TempDir;
 
     fn handoff(command: &[&str], task: &str) -> Handoff {
         Handoff {
@@ -424,6 +458,51 @@ mod tests {
             command: command.iter().map(|word| word.to_string()).collect(),
             env: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn resume_refuses_a_vendor_that_cannot_carry_a_session_on() {
+        // The second vendor can be told to carry a session on, so the one that
+        // cannot is built here: what a verb asks is a capability, not a name,
+        // and the table is free to answer either way.
+        let cannot = Vendor {
+            capabilities: &[Capability::Adopt],
+            ..SECOND
+        };
+        let said = cannot_continue(Some(&cannot), "fix-login-a1b").expect("it cannot resume");
+        assert!(said.contains("fix-login-a1b"), "{said}");
+        assert!(said.contains(cannot.name), "{said}");
+        assert!(said.contains("carry a session on"), "{said}");
+        assert!(said.contains("amx new"), "{said}");
+
+        assert_eq!(cannot_continue(Some(&SECOND), "fix-login-a1b"), None);
+        assert_eq!(
+            cannot_continue(crate::registry::entry("claude"), "fix-login-a1b"),
+            None,
+            "the vendor amx was written against can"
+        );
+        assert_eq!(
+            cannot_continue(None, "fix-login-a1b"),
+            None,
+            "and a command amx has no entry for is not amx's to refuse: \
+             nothing measured is not a measurement"
+        );
+    }
+
+    #[test]
+    fn resume_says_which_half_is_missing_before_it_starts_anything() {
+        // Two things can be missing and they are told apart: the command amx
+        // would start again, and the vendor's way of carrying a session on.
+        let dir = TempDir::new().unwrap();
+        let said = to_start(dir.path(), "fix-login-a1b").expect_err("no handoff at all");
+        assert!(said.contains("started by hand"), "{said}");
+
+        spawn::write_handoff(dir.path(), &handoff(&["claude", "go"], "go")).unwrap();
+        assert_eq!(to_start(dir.path(), "fix-login-a1b"), Ok(()));
+
+        // A command amx has no entry for is started again as it always was.
+        spawn::write_handoff(dir.path(), &handoff(&["mock-claude", "go"], "go")).unwrap();
+        assert_eq!(to_start(dir.path(), "fix-login-a1b"), Ok(()));
     }
 
     #[test]

@@ -35,6 +35,7 @@ use std::time::{Duration, Instant};
 use crate::registry;
 use crate::store::{Agent, Meta};
 use crate::tmux::{PaneId, Server, Spawn};
+use crate::vendor::Vendor;
 
 /// What the pane is handed at birth.
 pub const HANDOFF: &str = "handoff.json";
@@ -200,6 +201,18 @@ pub fn scratch(agent_dir: &Path) -> Result<PathBuf> {
         .with_context(|| format!("creating {}", dir.display()))?;
     crate::paths::keep_to_the_owner(&dir, crate::paths::DIR_MODE)?;
     Ok(dir)
+}
+
+/// The vendor an agent was started with: the entry for the program its
+/// recorded command names.
+///
+/// `None` twice over, and the two mean different things to whoever asks. A
+/// command amx has no entry for — a wrapper somebody wrote, a vendor nobody
+/// has taught amx about — is one amx has measured nothing about, which is not
+/// the same as one measured and found wanting. An agent amx never started has
+/// no recorded command at all, and its caller has no handoff to pass here.
+pub fn vendor_of(handoff: &Handoff) -> Option<&'static Vendor> {
+    registry::entry(handoff.command.first()?)
 }
 
 pub fn read_handoff(dir: &Path) -> Result<Handoff> {
@@ -567,6 +580,30 @@ mod tests {
             "fix the login bug",
         );
         assert_eq!(command, ["mock-claude", "fix the login bug"]);
+    }
+
+    #[test]
+    fn spawn_an_agents_vendor_is_the_one_its_recorded_command_names() {
+        let started = |command: &[&str]| Handoff {
+            task: "fix the login bug".to_string(),
+            command: command.iter().map(|word| word.to_string()).collect(),
+            env: BTreeMap::new(),
+        };
+
+        assert_eq!(
+            vendor_of(&started(&[
+                "claude",
+                "--model",
+                "opus",
+                "fix the login bug"
+            ]))
+            .map(|vendor| vendor.name),
+            Some("claude")
+        );
+        // The command amx has no entry for is the one every end to end test
+        // spawns, and it is not a vendor amx has measured anything about.
+        assert!(vendor_of(&started(&["mock-claude", "fix the login bug"])).is_none());
+        assert!(vendor_of(&started(&[])).is_none(), "nothing was recorded");
     }
 
     #[test]
