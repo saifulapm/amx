@@ -65,37 +65,73 @@ const ANSWERS: &str = "enter answers it · esc closes it";
 /// the one they pressed. A test presses everything a terminal can send and
 /// holds what acted against this table, so a binding that is not here is a
 /// binding the screen would have to grow a row for.
+///
+/// In the order [`GROUPS`] stands them in, which is the order they are drawn:
+/// one table, cut into runs, so a key is in exactly one place and the test
+/// that walks every key walks every group with it.
 pub(super) const HELP: [(&str, &str); 29] = [
+    // walk
     ("↑ ↓", "walk the agents"),
+    ("alt+1..9", "reach one by where it is on the wall"),
+    ("esc", "put the card away · leave a line alone"),
+    ("?", "these keys"),
+    ("q ctrl+c", "close the view"),
+    // look
     ("space", "the card: what one is asking, and the answer"),
     ("enter →", "bring its window forward · shut a group"),
-    ("esc", "put the card away · leave a line alone"),
-    ("n", "start an agent"),
-    ("alt+n", "start the line and go to the agent"),
-    ("r", "reply: a message, or an answer on the card"),
     ("d", "what it has changed"),
     ("pgup ctrl+b", "page the card, when it holds more"),
     ("pgdn ctrl+f", "and the other way"),
-    ("ctrl+x", "stop it · again forgets · a heading, the group"),
-    ("ctrl+r", "call it something else"),
+    // start
+    ("n", "start an agent"),
+    ("alt+n", "start the line and go to the agent"),
+    ("r", "reply: a message, or an answer on the card"),
+    ("alt+enter", "a newline in the line, without sending it"),
     ("ctrl+g", "write the line in $EDITOR"),
-    ("alt+1..9", "reach one by where it is on the wall"),
+    // arrange
     ("ctrl+s", "gather them by state or by project"),
     ("ctrl+t", "hold it at the top of its group"),
     ("shift+↑", "move it up its group"),
     ("shift+↓", "move it down its group"),
-    ("alt+enter", "a newline in the line, without sending it"),
+    ("ctrl+r", "call it something else"),
+    ("ctrl+x", "stop it · again forgets · a heading, the group"),
+    ("s: a:", "narrow by state or name, on the task line"),
+    // dials
     ("alt+v", "which vendor the next agent runs"),
     ("alt+m", "which model the next agent is given"),
     ("alt+w", "whether it gets a worktree of its own"),
     ("shift+tab", "what it may do without asking"),
-    ("s: a:", "narrow by state or name, on the task line"),
     ("m: p: w:", "model, permission and worktree, for one spawn"),
     ("d:", "where one spawn runs, on the task line"),
     ("agent:", "which vendor runs it, for one spawn"),
-    ("?", "these keys"),
-    ("q ctrl+c", "close the view"),
 ];
+
+/// What the keys are for, and how many of [`HELP`] each of those answers for.
+///
+/// A flat list of twenty-nine is a list somebody reads all of to find one, so
+/// the table is cut into what a person is trying to do: get about the wall,
+/// read one agent, put work in, arrange what is already there, and set what
+/// the next agent runs. Five short lists are five places to not look.
+///
+/// Runs rather than tables of their own, so nothing here can hold a key twice
+/// or drop one between two headings.
+const GROUPS: [(&str, usize); 5] = [
+    ("walk", 5),
+    ("look", 5),
+    ("start", 5),
+    ("arrange", 7),
+    ("dials", 7),
+];
+
+/// Every key stands under exactly one heading.
+const _: () = {
+    let (mut under, mut at) = (0, 0);
+    while at < GROUPS.len() {
+        under += GROUPS[at].1;
+        at += 1;
+    }
+    assert!(under == HELP.len());
+};
 
 /// What the view has to say for itself, and how loudly.
 ///
@@ -1593,7 +1629,23 @@ fn answer_row(
 /// it, and the key is the half somebody came here for.
 const BAND: usize = 12;
 
-/// Every key and what it does, in bands read down and then across.
+/// How many bands the groups stand in wherever the width will take that many.
+///
+/// Two, because five short lists side by side is a wall of keys again and one
+/// column of thirty-eight rows is the flat list the headings were put in to
+/// break up. Two columns is what a page of keys looks like.
+const COLUMNS: usize = 2;
+
+/// One row of the overlay: a heading, a key with what it does, or the blank
+/// that stands one group off from the next.
+enum Told {
+    Heading(String),
+    Key(String, String),
+    Air,
+}
+
+/// Every key and what it does, under the heading that says what it is for, in
+/// bands read down and then across.
 ///
 /// The height decides how many bands there are and the width decides how much
 /// of each description survives, because what this screen is for is being
@@ -1601,33 +1653,35 @@ const BAND: usize = 12;
 /// where a description cut short still leaves its key where it can be read.
 ///
 /// Down before across for the reason a list is a column. Somebody looking for
-/// one key runs their eye down a band and on to the next; a table filled the
-/// other way would put the second key beside the first and the rest of them
-/// anywhere at all.
+/// one key reads the heading, runs their eye down the keys under it and on to
+/// the next; a table filled the other way would put the second key beside the
+/// first and the rest of them anywhere at all.
 fn help(frame: &mut Frame, area: Rect) {
     let bands = bands(area);
     let share = (area.width as usize / bands.len().max(1)).max(1);
-    let deep = bands.first().map_or(0, Vec::len);
+    let deep = bands.iter().map(Vec::len).max().unwrap_or(0);
 
     let lines: Vec<Line> = (0..deep.min(area.height as usize))
         .map(|at| {
             let mut spans = Vec::new();
             let mut column = 0;
             for (n, band) in bands.iter().enumerate() {
-                // A band that has run out of keys leaves the ones beside it
-                // where they were: the columns are what the eye follows down.
-                let Some((key, does)) = band.get(at) else {
-                    continue;
+                // A band that has run out of keys, or is standing one group
+                // off from the next, leaves the ones beside it where they
+                // were: the columns are what the eye follows down.
+                let told = match band.get(at) {
+                    Some(Told::Heading(name)) => vec![Span::styled(name.clone(), dim())],
+                    Some(Told::Key(key, does)) => vec![
+                        Span::styled(key.clone(), Style::new().add_modifier(Modifier::BOLD)),
+                        Span::styled(does.clone(), dim()),
+                    ],
+                    Some(Told::Air) | None => continue,
                 };
                 if n * share > column {
                     spans.push(Span::raw(" ".repeat(n * share - column)));
                 }
-                column = n * share + key.chars().count() + does.chars().count();
-                spans.push(Span::styled(
-                    key.clone(),
-                    Style::new().add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::styled(does.clone(), dim()));
+                column = n * share + said(&told);
+                spans.extend(told);
             }
             Line::from(spans)
         })
@@ -1635,25 +1689,35 @@ fn help(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// The keys as the bands they are drawn in: as few bands as the height needs
-/// and the width will take, each key padded to line up under the one above it,
-/// and each description cut to what its own band was given.
-fn bands(area: Rect) -> Vec<Vec<(String, String)>> {
+/// The keys as the bands they are drawn in: the groups dealt into as few bands
+/// as the height needs and the width will take, each key padded to line up
+/// under the one above it, and each description cut to what its own band was
+/// given.
+fn bands(area: Rect) -> Vec<Vec<Told>> {
     let width = area.width as usize;
-    let count = HELP
-        .len()
-        .div_ceil((area.height as usize).max(1))
-        .clamp(1, (width / BAND).max(1));
-    let deep = HELP.len().div_ceil(count);
+    let height = (area.height as usize).max(1);
+    // A heading and the keys under it, which is what a group costs a band.
+    let depths: Vec<usize> = GROUPS.iter().map(|(_, under)| under + 1).collect();
+    // Two bands wherever there is width for two, and another whenever the
+    // groups will not stand in the rows the band has. A group is what the eye
+    // follows down, so it is never cut in half to make the columns even.
+    let most = (width / BAND).max(1);
+    let mut count = COLUMNS.min(most);
+    while count < most && deepest(&depths, count) > height {
+        count += 1;
+    }
     let share = (width / count).max(1);
 
-    let bands: Vec<&[(&str, &str)]> = HELP.chunks(deep).collect();
+    let bands = dealt(&depths, count);
     bands
         .iter()
         .enumerate()
-        .map(|(n, keys)| {
-            let column = keys
+        .map(|(n, groups)| {
+            // The key column is worked out over the whole band, so every key
+            // in it lines up under the one above.
+            let column = groups
                 .iter()
+                .flat_map(|group| under(*group))
                 .map(|(key, _)| key.chars().count())
                 .max()
                 .unwrap_or(0)
@@ -1664,11 +1728,78 @@ fn bands(area: Rect) -> Vec<Vec<(String, String)>> {
                 true => width.saturating_sub(n * share + column),
                 false => share.saturating_sub(column + 1),
             };
-            keys.iter()
-                .map(|(key, does)| (format!("{key:<column$}"), fit(does, room)))
-                .collect()
+            let mut told = Vec::new();
+            for group in groups {
+                if !told.is_empty() {
+                    told.push(Told::Air);
+                }
+                told.push(Told::Heading(fit(GROUPS[*group].0, column + room)));
+                told.extend(
+                    under(*group)
+                        .map(|(key, does)| Told::Key(format!("{key:<column$}"), fit(does, room))),
+                );
+            }
+            told
         })
         .collect()
+}
+
+/// The keys one group stands over, which is its run of [`HELP`].
+fn under(group: usize) -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    let from: usize = GROUPS[..group].iter().map(|(_, under)| under).sum();
+    HELP[from..from + GROUPS[group].1].iter()
+}
+
+/// The shallowest a band can be when these groups are dealt into `count` of
+/// them, which is what says whether that many bands will fit the screen.
+fn deepest(depths: &[usize], count: usize) -> usize {
+    let most = depths.iter().sum::<usize>() + depths.len().saturating_sub(1);
+    let least = depths.iter().copied().max().unwrap_or(0);
+    (least..=most)
+        .find(|deep| taken(depths, *deep) <= count)
+        .unwrap_or(most)
+}
+
+/// How many bands the groups take when none of them may be deeper than this.
+fn taken(depths: &[usize], deep: usize) -> usize {
+    let (mut bands, mut used) = (1, 0);
+    for &depth in depths {
+        let wanted = match used {
+            0 => depth,
+            used => used + 1 + depth,
+        };
+        match wanted <= deep || used == 0 {
+            true => used = wanted,
+            false => {
+                bands += 1;
+                used = depth;
+            }
+        }
+    }
+    bands
+}
+
+/// Which groups each band holds, in order: as level as groups this size deal,
+/// and never a group in two bands.
+fn dealt(depths: &[usize], count: usize) -> Vec<Vec<usize>> {
+    let deep = deepest(depths, count);
+    let mut bands: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut used = 0;
+    for (group, &depth) in depths.iter().enumerate() {
+        let wanted = match used {
+            0 => depth,
+            used => used + 1 + depth,
+        };
+        match wanted <= deep || used == 0 {
+            true => used = wanted,
+            false => {
+                bands.push(Vec::new());
+                used = depth;
+            }
+        }
+        bands.last_mut().expect("a band to deal into").push(group);
+    }
+    bands
 }
 
 /// How tall the composer may grow before it stops and scrolls instead: ten
@@ -4226,10 +4357,11 @@ mod tests {
         let mut screen = showing(Vec::new(), None);
         screen.mode = Mode::Keys;
 
-        // Tall enough for every key in one band, so each of them has the row
-        // to itself and every description is whole.
-        let tall = HELP.len() as u16 + header_rows(24) + space_rows(24) + 1;
-        let painted = painted(&screen, (60, tall)).join("\n");
+        // Tall and wide enough for every key and every heading over them,
+        // so each of them has the row to itself and every description is
+        // whole.
+        let tall = (HELP.len() + GROUPS.len()) as u16 + header_rows(24) + space_rows(24) + 1;
+        let painted = painted(&screen, (140, tall)).join("\n");
         for (key, does) in HELP {
             assert!(painted.contains(key), "{key} is missing:\n{painted}");
             assert!(painted.contains(does), "{does} is missing:\n{painted}");
@@ -4244,25 +4376,78 @@ mod tests {
     }
 
     #[test]
-    fn keymap_the_keys_lay_out_down_one_band_and_on_to_the_next() {
+    fn keymap_stands_the_keys_under_headings_that_say_what_they_are_for() {
+        // A screen with room for the groups in two columns, which is the
+        // shape they are laid out in wherever the width will take it.
+        let painted = overlay((140, 38));
+
+        // Down before across: the second key is under the first rather than
+        // beside it, and the second column starts where the first one's share
+        // of the width ends.
+        assert!(painted[3].starts_with("walk"), "{:?}", painted[3]);
+        assert!(painted[4].starts_with(HELP[0].0), "{:?}", painted[4]);
+        assert_eq!(
+            column_of(&painted[3], "arrange"),
+            70,
+            "and the next column stands beside the first: {:?}",
+            painted[3]
+        );
+
+        // A heading over every run of keys, a blank row between two groups,
+        // and the groups themselves whole rather than split down the fold.
+        assert!(
+            painted[9].chars().take(70).all(char::is_whitespace),
+            "one group stands off from the next: {:?}",
+            painted[9]
+        );
+        assert!(painted[10].starts_with("look"), "{:?}", painted[10]);
+        assert!(painted[17].starts_with("start"), "{:?}", painted[17]);
+        assert_eq!(column_of(&painted[12], "dials"), 70, "{:?}", painted[12]);
+
+        let all = painted.join("\n");
+        for (key, does) in HELP {
+            assert!(key.len() < 12, "{key} is wider than a band's key column");
+            assert!(all.contains(key), "{key} is missing:\n{all}");
+            assert!(all.contains(does), "{does} is missing:\n{all}");
+        }
+    }
+
+    #[test]
+    fn keymap_headings_are_the_quietest_thing_on_the_screen_of_keys() {
+        let mut screen = showing(Vec::new(), None);
+        screen.mode = Mode::Keys;
+        let buffer = cells(&screen, (140, 38));
+
+        let heading = buffer[(0, 3)].clone();
+        assert!(
+            heading.modifier.contains(Modifier::DIM),
+            "a heading stands over the keys and is not one of them: {:?}",
+            heading.modifier
+        );
+        let key = buffer[(0, 4)].clone();
+        assert!(
+            key.modifier.contains(Modifier::BOLD),
+            "the key itself is what somebody came here to find: {:?}",
+            key.modifier
+        );
+    }
+
+    #[test]
+    fn keymap_takes_another_column_when_the_rows_will_not_hold_a_group() {
         // Two rows of header, one of space and one of keys leave eleven for
-        // the overlay, which is fewer than there are keys: they only all fit
-        // if the band that would have run off the bottom stands beside the
-        // first instead.
+        // the overlay, which is fewer rows than two columns of groups need:
+        // rather than cut a group in half or run one off the bottom, the
+        // groups deal into as many columns as the height asks for.
         let painted = overlay((140, 15));
         let all = painted.join("\n");
         for (key, _) in HELP {
-            assert!(key.len() < 12, "{key} is wider than a band's key column");
             assert!(all.contains(key), "{key} is missing:\n{all}");
         }
-
-        // Down before across: the second key is under the first rather than
-        // beside it, which is the way a column is read.
-        assert!(painted[3].starts_with(HELP[0].0), "{:?}", painted[3]);
-        assert!(painted[4].starts_with(HELP[1].0), "{:?}", painted[4]);
-        assert!(
-            painted[3].chars().count() > 70,
-            "and the next band stands beside the first: {:?}",
+        assert!(painted[3].starts_with("walk"), "{:?}", painted[3]);
+        assert_eq!(
+            column_of(&painted[3], "dials"),
+            4 * (140 / GROUPS.len() as u16),
+            "a column each, in the order the table has them: {:?}",
             painted[3]
         );
     }
