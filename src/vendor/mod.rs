@@ -46,6 +46,19 @@ pub struct Vendor {
     pub model: Option<DialSpec>,
     pub permission: Option<DialSpec>,
     pub effort: Option<DialSpec>,
+    /// Where this vendor tells a process it starts which conversation that
+    /// process belongs to. `None` from a vendor that says nothing, and then
+    /// there is no way for the events of an agent amx did not start to find
+    /// their way home.
+    pub session_env: Option<&'static str>,
+    /// The vendor's own variables that name the session a command was typed
+    /// inside, and so the ones a pane amx starts must not inherit. A vendor
+    /// handed these believes it is a child of the session that spawned it,
+    /// and it is not.
+    ///
+    /// The vendor's alone: the variables that belong to any pane, whoever is
+    /// running in it, are the caller's business and not listed here.
+    pub not_inherited: &'static [&'static str],
 }
 
 /// The value every dial rests at: the vendor's own configured behaviour,
@@ -232,6 +245,46 @@ mod tests {
             assert!(
                 flags.iter().all(|flag| flag.starts_with('-')),
                 "{} declares a dial whose flag is not one",
+                vendor.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_vendor_keeps_the_variables_that_name_its_own_session_to_itself() {
+        // The list is the vendor's own words and nothing here knows one of
+        // them. What a new pane must not inherit is whatever this vendor calls
+        // the session a spawn was typed inside; the tmux and shell variables
+        // that go with any pane are not the vendor's business.
+        for vendor in known() {
+            for name in vendor.not_inherited {
+                assert_eq!(
+                    *name,
+                    name.to_uppercase(),
+                    "{} names a variable that is not one",
+                    vendor.name
+                );
+            }
+            assert!(
+                !vendor.not_inherited.contains(&"TMUX"),
+                "{} claims a variable that belongs to the pane, not to it",
+                vendor.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_vendor_that_names_a_session_never_lets_that_name_travel() {
+        // The variable saying which conversation a process belongs to is the
+        // first one a new pane must not inherit: an agent that kept its
+        // spawner's session id would file its events under somebody else.
+        for vendor in known() {
+            let Some(session) = vendor.session_env else {
+                continue;
+            };
+            assert!(
+                vendor.not_inherited.contains(&session),
+                "{} hands {session} to the agents it spawns",
                 vendor.name
             );
         }

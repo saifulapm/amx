@@ -32,4 +32,8 @@ pub const SECOND: Vendor = Vendor {
         open: true,
         flag: "--care",
     }),
+    // A session variable spelled nothing like the other one, so that a test
+    // reading it is reading the descriptor.
+    session_env: Some("SECOND_SESSION"),
+    not_inherited: &["SECOND_SESSION", "SECOND_PARENT"],
 };
