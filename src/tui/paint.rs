@@ -105,7 +105,13 @@ pub enum Notice {
 }
 
 /// A closer look at one agent, as the card floated over the list.
-pub struct Card {
+///
+/// A card carries its body in one of two states, which is what `B` says. A
+/// card is *built* from text — a pane capture, a recorded answer, a patch —
+/// and it is *drawn* from [`Body`], that text already walked out of its
+/// escapes. Everything the paint takes is the second: the walk happens once,
+/// where the card is made, and no frame pays for it again.
+pub struct Card<B = String> {
     pub id: String,
     pub phase: Phase,
     /// How long since anything was heard from it, so the card says how old the
@@ -120,7 +126,7 @@ pub struct Card {
     pub kind: Option<Kind>,
     /// The screen it is sitting on, the answer it left behind, or what it has
     /// changed.
-    pub body: String,
+    pub body: B,
     /// Whether the body is that diff, which is read from the top down rather
     /// than from the bottom up.
     pub changes: bool,
@@ -129,7 +135,7 @@ pub struct Card {
     pub answer: bool,
 }
 
-impl Card {
+impl<B> Card<B> {
     /// Whether this card is one somebody can answer. A patch is not a
     /// question, and neither is a look at an agent that is getting on with it.
     pub fn asks(&self) -> bool {
@@ -141,6 +147,145 @@ impl Card {
     /// bottom, where the newest of it is.
     pub fn forward(&self) -> bool {
         self.changes || self.answer
+    }
+}
+
+impl Card<String> {
+    /// The same card with its body read, which is the form the paint draws.
+    ///
+    /// For a card built out of text somebody already holds, which is what a
+    /// patch is. A card built from a record or a pane walks the words where it
+    /// takes them, and never makes the copy this one is handed.
+    pub fn read(self) -> Card<Body> {
+        Card {
+            // A patch is amx's own reading of a repository, not a pane; a
+            // recorded answer and a finished agent's last words are whole,
+            // with no vendor furniture under them; and what is left is a
+            // picture of a pane somebody is still working in.
+            body: match (self.changes, self.answer || self.phase.is_terminal()) {
+                (true, _) => Body::patch(&self.body),
+                (_, true) => Body::said(&self.body),
+                _ => Body::screen(&self.body),
+            },
+            id: self.id,
+            phase: self.phase,
+            age: self.age,
+            question: self.question,
+            options: self.options,
+            kind: self.kind,
+            changes: self.changes,
+            answer: self.answer,
+        }
+    }
+}
+
+/// A card's body, walked out of its escapes once — when the card was built.
+///
+/// The rows are ready to draw: neutralised, in the paint the vendor drew them
+/// in, with amx's own text dimmed. A frame windows them and nothing else, so
+/// an open card costs a redraw the same whether it is holding four rows of
+/// answer or four thousand of patch.
+pub struct Body {
+    /// Every row of it, in order.
+    rows: Vec<Line<'static>>,
+    /// How many of them the card reads from its natural edge: the vendor's
+    /// own furniture is off the end of a live capture, and the blank rows a
+    /// pane is padded out with are off the end of everything.
+    kept: usize,
+    /// Whether the cut took furniture off. A pane holding nothing but the
+    /// vendor's own chrome is a different fact from an agent that has said
+    /// nothing yet, and the card says the first out loud.
+    chrome: bool,
+}
+
+impl Body {
+    /// Nothing under everything else, which is what a card holding a question
+    /// has.
+    pub(super) fn none() -> Body {
+        Body {
+            rows: Vec::new(),
+            kept: 0,
+            chrome: false,
+        }
+    }
+
+    /// A patch: amx's own reading of a repository rather than a pane, so there
+    /// is no paint on it to keep and no furniture under it to cut.
+    pub(super) fn patch(text: &str) -> Body {
+        let rows: Vec<Line<'static>> = text
+            .lines()
+            .map(|text| Line::styled(inert(text), dim()))
+            .collect();
+        Body {
+            kept: rows.len(),
+            rows,
+            chrome: false,
+        }
+    }
+
+    /// A live pane, in the paint the vendor drew it in, with the vendor's own
+    /// furniture cut off the bottom.
+    pub(super) fn screen(text: &str) -> Body {
+        Body::walk(text, true)
+    }
+
+    /// What an agent said: a recorded answer, or whatever an agent whose
+    /// command has ended left behind. Nothing is cut off it — there is no
+    /// pane under it to hold furniture.
+    pub(super) fn said(text: &str) -> Body {
+        Body::walk(text, false)
+    }
+
+    /// The walk itself. `live` is whether the text came off a pane the vendor
+    /// is still drawing on, which is the only body the furniture cut is taken
+    /// off.
+    fn walk(text: &str, live: bool) -> Body {
+        #[cfg(test)]
+        WALKS.with(|walks| walks.set(walks.get() + 1));
+        // The escapes are walked into styling here and nowhere else, so
+        // nothing downstream of this line is holding a control sequence.
+        let read = ansi::painted(text);
+        let said: Vec<String> = read.iter().map(|row| words(row)).collect();
+        let plain: Vec<&str> = said.iter().map(String::as_str).collect();
+        // What the vendor drew on, with its own furniture off the bottom.
+        let drawn = match live {
+            true => cut(&plain).len(),
+            false => plain.len(),
+        };
+        // The blank rows a pane is padded out with go the same way, so what
+        // is left ends on the last row anybody wrote on: the edge both ends
+        // of the body are measured from.
+        let mut kept = drawn;
+        while kept > 0 && plain[kept - 1].trim().is_empty() {
+            kept -= 1;
+        }
+        Body {
+            rows: read.iter().map(|row| as_painted(row)).collect(),
+            kept,
+            chrome: drawn < plain.len(),
+        }
+    }
+
+    /// How many rows it has to give a card, which is what the last page is
+    /// measured against. The one row the card says it found nothing but
+    /// furniture on counts: it is a row, and a card of one row does not page.
+    fn length(&self) -> usize {
+        self.kept.max(usize::from(self.chrome))
+    }
+
+    /// What the body says, for the tests that ask a card what it is holding.
+    #[cfg(test)]
+    pub(super) fn says(&self) -> String {
+        self.rows
+            .iter()
+            .map(|row| {
+                row.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -353,7 +498,7 @@ fn card_height(total: u16, band: u16, wanted: u16) -> u16 {
 /// the agent is asking, the choices under that, the row the vendor adds under
 /// them, the line the answer goes on, and the screen it is all happening on.
 fn card_rows(
-    card: &Card,
+    card: &Card<Body>,
     showing: Option<Showing>,
     prs: &[Pr],
     answering: bool,
@@ -365,9 +510,9 @@ fn card_rows(
         .as_deref()
         .map_or(0, |question| wrapped(question, inner).min(ASKED_TALL));
     let listed = choices(&card.options, inner as usize, boxed(showing)).len();
-    // Counted no further than the card could ever grow, because the body can
-    // be a patch of thousands of lines and this runs on every frame.
-    let shown = body(card, CARD_TALL as usize, 0).len();
+    // Counted no further than the card could ever grow: the body can be a
+    // patch of thousands of rows, and this runs on every frame.
+    let shown = length(card).min(CARD_TALL as usize);
 
     let rows = 2
         + usize::from(!requests(prs).is_empty())
@@ -940,7 +1085,7 @@ const ASKED_TALL: u16 = 3;
 /// closes.
 fn float(
     frame: &mut Frame,
-    card: &Card,
+    card: &Card<Body>,
     showing: Option<Showing>,
     prs: &[Pr],
     answering: Option<&Composer>,
@@ -1065,11 +1210,12 @@ fn float(
 }
 
 /// How many rows the body could give a card, which is what the last page is
-/// measured against.
-fn length(card: &Card) -> usize {
-    match card.changes {
-        true => card.body.lines().count(),
-        false => body(card, usize::MAX, 0).len(),
+/// measured against. Asked of the body itself rather than of a window of it,
+/// so measuring a patch of thousands of rows does not build them.
+fn length(card: &Card<Body>) -> usize {
+    match card.asks() && card.question.is_some() {
+        true => 0,
+        false => card.body.length(),
     }
 }
 
@@ -1113,55 +1259,50 @@ fn requests(prs: &[Pr]) -> Vec<Span<'static>> {
 /// whose question amx has not read keeps its capture, because the pane is
 /// the one place that question is written at all.
 ///
-/// claude's own furniture comes off the screen *before* the rows are counted.
-/// After would be worse than not at all: the card would spend its window on
-/// the vendor's composer and then have nothing left for the work.
-fn body(card: &Card, rows: usize, away: usize) -> Vec<Line<'static>> {
-    if card.changes {
-        // A patch is amx's own reading of a repository rather than a pane, so
-        // there is no paint on it to keep. Its natural edge is the top, and a
-        // paged card starts that many rows below it.
-        return card
-            .body
-            .lines()
-            .skip(away)
-            .take(rows)
-            .map(|text| Line::styled(inert(text), dim()))
-            .collect();
-    }
+/// claude's own furniture came off the screen before it was ever counted, in
+/// [`Body::screen`]. After would be worse than not at all: the card would
+/// spend its window on the vendor's composer and then have nothing left for
+/// the work.
+fn body(card: &Card<Body>, rows: usize, away: usize) -> Vec<Line<'static>> {
     if card.asks() && card.question.is_some() {
         return Vec::new();
     }
 
-    // The escapes are walked into styling here and nowhere else, so nothing
-    // downstream of this line is holding a control sequence.
-    let read = ansi::painted(&card.body);
-    let said: Vec<String> = read.iter().map(|row| words(row)).collect();
-    let plain: Vec<&str> = said.iter().map(String::as_str).collect();
-
-    // A recorded answer is not a screen with a vendor's chrome on it, and
-    // neither is whatever an agent whose command has ended left behind: only
-    // a live capture is cut. An answer reads forward, so it is windowed from
-    // its top the way a patch is; a screen from its bottom, where the newest
-    // of it is.
-    let kept = match card.answer || card.phase.is_terminal() {
-        true => plain.len(),
-        false => cut(&plain).len(),
+    // A patch and a recorded answer both read forward, so both are windowed
+    // from their top; a screen from its bottom, where the newest of it is.
+    let window = match card.forward() {
+        true => head(card.body.kept, rows, away),
+        false => tail(card.body.kept, rows, away),
     };
-    let window = match card.answer {
-        true => head(&plain[..kept], rows, away),
-        false => tail(&plain[..kept], rows, away),
-    };
-    let shown: Vec<Line<'static>> = read[window].iter().map(|row| as_painted(row)).collect();
+    let shown = card.body.rows[window].to_vec();
 
     // Said only where the walk actually cut. An agent that has said nothing
     // yet is a different fact from a pane holding nothing but furniture, and
     // a card that answered both with the same sentence would be lying about
     // one of them.
-    match shown.is_empty() && kept < plain.len() {
+    match shown.is_empty() && card.body.chrome {
         true => vec![Line::styled(ALL_CHROME, dim())],
         false => shown,
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many bodies this thread has walked out of ANSI, which is the whole
+    /// cost of a card: a pane capture is a few thousand bytes of escape
+    /// sequences, and walking them is the one piece of work a card does that
+    /// grows with what the agent wrote. Counted so a test can say where the
+    /// walk happens and not only what it produces.
+    ///
+    /// Per thread, because the tests run side by side in one process and a
+    /// count they shared would be a count none of them could assert on.
+    static WALKS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// How many walks this thread has paid for so far.
+#[cfg(test)]
+pub(super) fn walks() -> usize {
+    WALKS.with(Cell::get)
 }
 
 /// What a captured row says, which is what the cut reads it for. The runs of
@@ -1282,7 +1423,7 @@ const BOX: &str = "[ ]";
 /// somebody about to answer needs to know is there. A permission box and the
 /// trust screen have neither, and choices amx has not read yet have nothing
 /// for this to stand under.
-fn added(card: &Card, showing: Option<Showing>) -> Option<&'static str> {
+fn added(card: &Card<Body>, showing: Option<Showing>) -> Option<&'static str> {
     if card.options.is_empty() || card.kind != Some(Kind::Question) {
         return None;
     }
@@ -1351,7 +1492,7 @@ const ANSWER: &str = "❯ ";
 /// themselves, and it is said from the same place the refusal is written.
 fn answer_row(
     frame: &mut Frame,
-    card: &Card,
+    card: &Card<Body>,
     showing: Option<Showing>,
     composer: &Composer,
     area: Rect,
@@ -1762,31 +1903,22 @@ fn wrapped(text: &str, width: u16) -> u16 {
     rows.clamp(1, u16::MAX as usize) as u16
 }
 
-/// Which rows of a screen the card shows: the last of them, with the blank
-/// ones at the bottom dropped. A pane is as tall as its window and its content
-/// rarely is, and a cut can expose more of them.
+/// Which rows of a screen the card shows: the last of the `end` rows the body
+/// kept, which is where the newest of a pane is.
 ///
-/// A window rather than the rows themselves, because the words a row says and
-/// the paint it says them in are two readings of one screen and both are
-/// wanted here.
-fn tail(rows: &[&str], wanted: usize, back: usize) -> Range<usize> {
-    let mut end = rows.len();
-    while end > 0 && rows[end - 1].trim().is_empty() {
-        end -= 1;
-    }
+/// A window rather than the rows themselves, because a body carries the words
+/// its rows say and the paint they say them in, and a reading that cut one
+/// without the other would have them disagree.
+fn tail(end: usize, wanted: usize, back: usize) -> Range<usize> {
     // A paged card stands that many rows above the bottom it is read from.
     let end = end.saturating_sub(back);
     end.saturating_sub(wanted)..end
 }
 
-/// And which rows of a recorded answer: the first of them, because an answer
-/// is read forward from its top. The trailing blank rows go for the reason
-/// [`tail`] drops them, and a paged card starts that many rows below the top.
-fn head(rows: &[&str], wanted: usize, away: usize) -> Range<usize> {
-    let mut end = rows.len();
-    while end > 0 && rows[end - 1].trim().is_empty() {
-        end -= 1;
-    }
+/// And which rows of a patch or a recorded answer: the first of them, because
+/// both read forward from their top. A paged card starts that many rows below
+/// it.
+fn head(end: usize, wanted: usize, away: usize) -> Range<usize> {
     let start = away.min(end);
     start..end.min(start.saturating_add(wanted))
 }
@@ -2077,11 +2209,12 @@ mod tests {
         Phase::Unknown,
     ];
 
-    /// The view, with a reading in it.
+    /// The view, with a reading in it. The card is read as it is planted,
+    /// the way the view itself builds one.
     fn showing(views: Vec<View>, card: Option<Card>) -> Screen {
         let mut screen = Screen::default();
         screen.list.show(views);
-        screen.card = card;
+        screen.card = card.map(Card::read);
         screen
     }
 
@@ -2140,7 +2273,7 @@ mod tests {
         let mut screen = Screen::default();
         screen.list.asking(a_forge);
         screen.list.show(views);
-        screen.card = card;
+        screen.card = card.map(Card::read);
         screen
     }
 
@@ -3396,7 +3529,7 @@ mod tests {
 
         // A card is put away by the key that opened it.
         let mut screen = showing(a_fleet(), None);
-        screen.card = Some(asking(&[], None));
+        screen.card = Some(asking(&[], None).read());
         assert!(
             hint_row(&screen, wide).starts_with("space closes it · enter attach"),
             "{:?}",
@@ -3676,6 +3809,38 @@ mod tests {
         );
     }
 
+    /// A capture with the vendor's paint on it, which is what costs something
+    /// to read: the escapes are what the walk is for.
+    const PAINTED: &str = "\u{1b}[1mwrote the parser\u{1b}[0m\n\u{1b}[32m+ done\u{1b}[0m";
+
+    #[test]
+    fn card_walks_its_body_when_it_is_built_and_never_again_on_a_frame() {
+        let mut card = asking(&[], None);
+        card.phase = Phase::Working;
+        card.question = None;
+        card.body = PAINTED.to_string();
+
+        let walked = walks();
+        let screen = showing(a_fleet(), Some(card));
+        assert_eq!(
+            walks(),
+            walked + 1,
+            "the body is walked out of its escapes where the card is built"
+        );
+
+        // A view redraws on every key, every tick and every mouse move. None
+        // of them is a reason to read the same capture again.
+        for _ in 0..3 {
+            let drawn = painted(&screen, (60, 14)).join("\n");
+            assert!(drawn.contains("wrote the parser"), "{drawn}");
+        }
+        assert_eq!(
+            walks(),
+            walked + 1,
+            "and every frame after it draws from that walk"
+        );
+    }
+
     /// A screen with room for the composer to reach its cap and a list above
     /// it: ten rows is a third of thirty.
     const TALL: (u16, u16) = (60, 30);
@@ -3930,7 +4095,7 @@ mod tests {
         // so the closer look gives way rather than the rows it was opened
         // from.
         let mut screen = launching(vec![view("ask-a1b", Phase::Waiting, None, 30)]);
-        screen.card = Some(asking(&["the sqlite one"], Some(Kind::Question)));
+        screen.card = Some(asking(&["the sqlite one"], Some(Kind::Question)).read());
         screen.mode = Mode::Typing(Composer::new(Asking::Task));
 
         let painted = painted(&screen, (60, 10));
@@ -4013,8 +4178,15 @@ mod tests {
     #[test]
     fn view_reads_the_bottom_of_a_screen_and_drops_what_is_blank() {
         let shown = |text: &'static str, wanted: usize, back: usize| {
+            // The blank rows at the bottom are dropped where the body is
+            // built, so what `tail` is handed is already the last row anybody
+            // wrote on.
             let rows: Vec<&str> = text.lines().collect();
-            rows[tail(&rows, wanted, back)].to_vec()
+            let mut kept = rows.len();
+            while kept > 0 && rows[kept - 1].trim().is_empty() {
+                kept -= 1;
+            }
+            rows[tail(kept, wanted, back)].to_vec()
         };
         assert_eq!(shown("a\nb\nc\n\n\n", 2, 0), ["b", "c"]);
         assert_eq!(shown("a\nb", 5, 0), ["a", "b"]);
@@ -4149,27 +4321,31 @@ mod tests {
 
     #[test]
     fn view_tail_keeps_the_capture_the_card_has_no_question_to_draw() {
+        let asked = |question: Option<&str>| {
+            let mut card = asking(&[], Some(Kind::Question));
+            card.body = format!("{SAID}\n\nWhich features should be enabled?\n");
+            card.question = question.map(str::to_string);
+            card
+        };
+
         // The one asking card that still shows its pane: amx missed the call
         // that drew the menu, so the pane is the only place the question is
         // written at all.
-        let mut card = asking(&[], Some(Kind::Question));
-        card.body = format!("{SAID}\n\nWhich features should be enabled?\n");
-        card.question = None;
+        let kept = said(asked(None), 24);
         assert!(
-            said(&card, 24).contains(&"Which features should be enabled?".to_string()),
-            "{:?}",
-            said(&card, 24)
+            kept.contains(&"Which features should be enabled?".to_string()),
+            "{kept:?}"
         );
 
         // And with the question on it, the card is the question block alone:
         // the pane under it is the same box behind an echo of the prompt.
-        card.question = Some("Which features should be enabled?".to_string());
-        assert!(said(&card, 24).is_empty(), "{:?}", said(&card, 24));
+        let block = said(asked(Some("Which features should be enabled?")), 24);
+        assert!(block.is_empty(), "{block:?}");
     }
 
     /// What a card's body says, with the paint it says it in set aside.
-    fn said(card: &Card, rows: usize) -> Vec<String> {
-        body(card, rows, 0)
+    fn said(card: Card, rows: usize) -> Vec<String> {
+        body(&card.read(), rows, 0)
             .iter()
             .map(|line| {
                 line.spans
@@ -4447,15 +4623,17 @@ mod tests {
 
     #[test]
     fn view_tail_says_so_when_a_capture_is_nothing_but_chrome() {
-        let mut card = asking(&[], None);
-        card.phase = Phase::Working;
-        card.body = CHROME.join("\n");
-        assert_eq!(said(&card, 8), [ALL_CHROME]);
+        let captured = |text: String| {
+            let mut card = asking(&[], None);
+            card.phase = Phase::Working;
+            card.body = text;
+            card
+        };
+        assert_eq!(said(captured(CHROME.join("\n")), 8), [ALL_CHROME]);
 
         // Which is not what an agent with nothing to say gets: no capture was
         // cut there, and "the pane held only furniture" is a different fact.
-        card.body = String::new();
-        assert!(said(&card, 8).is_empty());
+        assert!(said(captured(String::new()), 8).is_empty());
     }
 
     #[test]
@@ -4470,7 +4648,7 @@ mod tests {
         // Two borders and the one row left under them, not the six rows the
         // capture has: a card that measured before it cut would spend its
         // height on the vendor's furniture.
-        assert_eq!(card_rows(&card, None, &[], false, 60), 3);
+        assert_eq!(card_rows(&card.read(), None, &[], false, 60), 3);
     }
 
     #[test]

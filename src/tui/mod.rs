@@ -51,7 +51,7 @@ use crate::verbs::ls::Scope;
 use crate::verbs::resume::Comeback;
 use crate::{exit, registry, rules, spawn, verbs};
 use act::{Asking, Composer, Edited, Renamed, Replied, Started};
-use paint::{Card, Notice};
+use paint::{Body, Card, Notice};
 use rows::{Arrangement, List};
 
 /// How often the agents are read again.
@@ -407,7 +407,7 @@ struct Screen {
     profile: Profile,
     mode: Mode,
     look: Look,
-    card: Option<Card>,
+    card: Option<Card<Body>>,
     /// How far the card's body has been paged from its natural edge, and how
     /// far one page is. The paint owns the clamp: only it knows the rows the
     /// body was given.
@@ -1104,7 +1104,7 @@ impl Screen {
                 if let Some(view) = self.list.selected() {
                     match act::changes(root, view) {
                         Ok(card) => {
-                            self.card = Some(card);
+                            self.card = Some(card.read());
                             self.look = Look::Changes;
                             // A patch just taken is read from its top.
                             self.scroll.away.set(0);
@@ -1810,10 +1810,14 @@ fn said(outcome: Result<String>) -> Option<Notice> {
 /// the answer it left.
 /// The screen is captured with its paint kept, because the card shows the
 /// pane as the vendor drew it: bold where claude went bold, coloured where it
-/// coloured. What is on this string is escape sequences, and the one thing
-/// allowed to read it is the walk in [`crate::ansi`], which consumes every one
-/// of them.
-fn card_of(view: &View) -> Card {
+/// coloured. What comes back is escape sequences, and the one thing allowed to
+/// read them is the walk in [`crate::ansi`], which consumes every one.
+///
+/// That walk happens here, where the card is made, and the card carries what
+/// it gave back. So the record's own words are read where they lie rather than
+/// copied first: a card is taken again on every pass a question is up for, and
+/// a copy nothing would draw is work for nobody.
+fn card_of(view: &View) -> Card<Body> {
     let server = Server::from_socket(view.meta.socket.clone());
     // A card holding a question is the question block and nothing else, so
     // there is no capture to take for it. The waiting agent whose question amx
@@ -1847,11 +1851,20 @@ fn card_of(view: &View) -> Card {
         // No falling back to the answer a finished turn left, either: a card
         // that is asking shows nothing older than the question.
         body: match (asks, answered) {
-            (true, _) => String::new(),
-            (_, true) => view.state.result.clone().unwrap_or_default(),
-            _ => screen
-                .or_else(|| view.state.result.clone())
-                .unwrap_or_default(),
+            (true, _) => Body::none(),
+            (_, true) => Body::said(view.state.result.as_deref().unwrap_or_default()),
+            _ => {
+                let said = screen
+                    .as_deref()
+                    .or(view.state.result.as_deref())
+                    .unwrap_or_default();
+                // An agent whose command has ended has no pane left to hold
+                // the vendor's furniture, so nothing is cut off what it left.
+                match view.phase().is_terminal() {
+                    true => Body::said(said),
+                    false => Body::screen(said),
+                }
+            }
         },
         changes: false,
         answer: answered,
@@ -2453,7 +2466,7 @@ mod tests {
                 },
             );
             let card = card_of(&agent);
-            assert_eq!(card.body, long, "the whole answer, {phase:?}");
+            assert_eq!(card.body.says(), long, "the whole answer, {phase:?}");
             assert!(card.answer, "an answer reads forward, {phase:?}");
         }
 
@@ -2486,7 +2499,29 @@ mod tests {
         );
         let card = card_of(&quiet);
         assert!(!card.answer);
-        assert_eq!(card.body, "");
+        assert_eq!(card.body.says(), "");
+    }
+
+    #[test]
+    fn card_reads_the_recorded_answer_rather_than_taking_a_copy_of_it() {
+        // The card is built with the record's own words read: one walk, and
+        // no copy of an answer that would only have been walked later. A card
+        // is taken again on every pass a question is up for, so the copy is
+        // not a one-off.
+        let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+        screen.look = Look::Screen;
+
+        let walked = paint::walks();
+        screen.follow_the_cursor();
+        assert_eq!(
+            paint::walks(),
+            walked + 1,
+            "walked where the card was built, and once"
+        );
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.body.says()),
+            Some("the answer".to_string())
+        );
     }
 
     #[test]
@@ -2562,7 +2597,7 @@ mod tests {
             question: None,
             options: Vec::new(),
             kind: None,
-            body: "+ line".to_string(),
+            body: Body::patch("+ line"),
             changes: true,
             answer: false,
         });
@@ -2609,7 +2644,7 @@ mod tests {
             question: None,
             options: Vec::new(),
             kind: None,
-            body: "+ line".to_string(),
+            body: Body::patch("+ line"),
             changes: true,
             answer: false,
         });
@@ -2651,15 +2686,15 @@ mod tests {
         let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
         screen.look = Look::Screen;
         screen.follow_the_cursor();
-        screen.card.as_mut().expect("a card").body = "what she was reading".to_string();
+        screen.card.as_mut().expect("a card").body = Body::screen("what she was reading");
 
         // Paged away, the card holds still between rereads: recapturing under
         // somebody's eyes would move the text they are on.
         screen.scroll.away.set(3);
         screen.follow_the_cursor();
         assert_eq!(
-            screen.card.as_ref().map(|card| card.body.as_str()),
-            Some("what she was reading"),
+            screen.card.as_ref().map(|card| card.body.says()),
+            Some("what she was reading".to_string()),
             "held while paged away"
         );
 
@@ -2667,8 +2702,8 @@ mod tests {
         screen.scroll.away.set(0);
         screen.follow_the_cursor();
         assert_eq!(
-            screen.card.as_ref().map(|card| card.body.as_str()),
-            Some("the answer"),
+            screen.card.as_ref().map(|card| card.body.says()),
+            Some("the answer".to_string()),
             "taken again at the edge"
         );
     }
@@ -2687,7 +2722,7 @@ mod tests {
         )]);
         screen.look = Look::Screen;
         screen.follow_the_cursor();
-        screen.card.as_mut().expect("a card").body = "old capture".to_string();
+        screen.card.as_mut().expect("a card").body = Body::screen("old capture");
         screen.scroll.away.set(3);
 
         // The agent stops on a question while somebody is reading history:
@@ -2717,7 +2752,7 @@ mod tests {
             question: None,
             options: Vec::new(),
             kind: None,
-            body: "+ line".to_string(),
+            body: Body::patch("+ line"),
             changes: true,
             answer: false,
         });
@@ -2824,11 +2859,11 @@ mod tests {
         // somebody asking again.
         screen.look = Look::Changes;
         screen.card.as_mut().expect("the card is open").changes = true;
-        screen.card.as_mut().expect("the card is open").body = "+ a line".to_string();
+        screen.card.as_mut().expect("the card is open").body = Body::patch("+ a line");
         screen.freshen();
         assert_eq!(
-            screen.card.as_ref().map(|card| card.body.as_str()),
-            Some("+ a line")
+            screen.card.as_ref().map(|card| card.body.says()),
+            Some("+ a line".to_string())
         );
     }
 
