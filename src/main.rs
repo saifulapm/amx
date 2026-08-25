@@ -27,6 +27,7 @@ mod store;
 mod tmux;
 mod trust;
 mod tui;
+mod vendor;
 mod verbs;
 mod worktree;
 
