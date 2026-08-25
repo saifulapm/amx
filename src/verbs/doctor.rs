@@ -8,6 +8,12 @@
 //! that only says "no" leaves somebody guessing at a machine they thought was
 //! fine.
 //!
+//! What two of them are worth depends on the vendor, and the table is what
+//! says: one that reports nothing has no wiring to be missing, and one with no
+//! folder-trust screen has no question amx could offer to answer. A check that
+//! asked for a repair nobody can make would send somebody looking for a fault
+//! in their own machine.
+//!
 //! `--fix` does the one repair amx can make safely: wiring the hooks, after
 //! asking.
 
@@ -19,7 +25,8 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::derive::View;
 use crate::store::Phase;
-use crate::{derive, exit, install, rules, store, tmux};
+use crate::vendor::{Capability, Vendor};
+use crate::{derive, exit, install, registry, rules, store, tmux};
 
 /// One thing amx looked at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,10 +105,16 @@ pub enum Setup {
 }
 
 impl Setup {
-    fn says(self) -> &'static str {
-        match self {
-            Setup::Trust => "claude's folder-trust question",
-            Setup::Unread => "an opening screen amx has no rule for",
+    /// What is in the way, worded for the line that names the agent it stopped.
+    ///
+    /// Whose question it is comes off the table rather than out of a string
+    /// here, because the screen is the vendor's. Where no vendor in the table
+    /// draws one, the question is still described and simply not named.
+    fn says(self, trusting: Option<&Vendor>) -> String {
+        match (self, trusting) {
+            (Setup::Trust, Some(vendor)) => format!("{}'s folder-trust question", vendor.name),
+            (Setup::Trust, None) => "a folder-trust question".to_string(),
+            (Setup::Unread, _) => "an opening screen amx has no rule for".to_string(),
         }
     }
 }
@@ -112,10 +125,18 @@ pub fn report(found: &Findings) -> Vec<Check> {
         tmux_check(found),
         vendor_check(found),
         config_check(found),
-        hooks_check(found),
+        wiring_check(found, registry::entry(&found.vendor)),
         state_check(found),
-        setup_check(found),
+        setup_check(found, trusting()),
     ]
+}
+
+/// The vendor amx would answer a folder-trust screen for, when the table has
+/// one.
+fn trusting() -> Option<&'static Vendor> {
+    registry::entries()
+        .iter()
+        .find(|vendor| vendor.can(Capability::Trust))
 }
 
 fn tmux_check(found: &Findings) -> Check {
@@ -164,7 +185,24 @@ fn config_check(found: &Findings) -> Check {
     )
 }
 
-fn hooks_check(found: &Findings) -> Check {
+/// Whether amx's hooks are where this vendor's reports would come from.
+///
+/// A vendor that reports nothing is not a machine with something missing from
+/// it: there are no entries to write, nothing for `--fix` to do, and what amx
+/// has instead is the pane. A command amx has no entry for is measured neither
+/// way and is judged as claude is — a wrapper somebody wrote around it reports
+/// through the same settings file.
+fn wiring_check(found: &Findings, vendor: Option<&Vendor>) -> Check {
+    if let Some(vendor) = vendor.filter(|vendor| !vendor.can(Capability::Hooks)) {
+        return Check::ok(
+            "hooks",
+            format!(
+                "{} reports nothing amx can wire, so its pane is what amx reads",
+                vendor.name
+            ),
+        );
+    }
+
     if let Some(why) = &found.settings_error {
         // amx does not write settings it cannot read, so there is nothing
         // `--fix` can do here that would not risk the person's own file.
@@ -211,7 +249,7 @@ fn state_check(found: &Findings) -> Check {
     }
 }
 
-fn setup_check(found: &Findings) -> Check {
+fn setup_check(found: &Findings, trusting: Option<&Vendor>) -> Check {
     let Some(first) = found.parked.first() else {
         return Check::ok("setup", "no agent is stopped at the vendor's own setup");
     };
@@ -219,22 +257,24 @@ fn setup_check(found: &Findings) -> Check {
     let each: Vec<String> = found
         .parked
         .iter()
-        .map(|agent| format!("{} at {}", agent.id, agent.screen.says()))
+        .map(|agent| format!("{} at {}", agent.id, agent.screen.says(trusting)))
         .collect();
     let what = match each.as_slice() {
         [one] => one.clone(),
         many => format!("{} agents are stopped: {}", many.len(), many.join(", ")),
     };
 
-    let remedy = match first.screen {
+    let remedy = match (first.screen, trusting) {
         // The one screen amx can take off the person's hands, once they have
-        // said so: the config key is the consent the write stands behind.
-        Setup::Trust => format!(
+        // said so: the config key is the consent the write stands behind. Only
+        // offered for a vendor whose screen amx knows how to answer, because
+        // the key does nothing for any other.
+        (Setup::Trust, Some(_)) => format!(
             "answer it yourself: amx attach {}, or set trust = true in the \
              config and amx answers it for the trees it cuts",
             first.id
         ),
-        Setup::Unread => format!("answer it yourself: amx attach {}", first.id),
+        _ => format!("answer it yourself: amx attach {}", first.id),
     };
     Check::wrong("setup", what, remedy)
 }
@@ -466,8 +506,14 @@ fn runnable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vendor::second::SECOND;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
+
+    /// The vendor amx would answer a folder-trust screen for.
+    fn a_trusting_vendor() -> &'static Vendor {
+        trusting().expect("a vendor with a trust screen amx has measured")
+    }
 
     const COMMAND: &str = "/home/dev/.cargo/bin/amx _hook";
 
@@ -614,6 +660,34 @@ mod tests {
             hooks.found
         );
         assert!(hooks.remedy.as_deref().unwrap().contains("--fix"));
+    }
+
+    #[test]
+    fn doctor_says_a_vendor_that_reports_nothing_leaves_the_pane_to_read() {
+        // Hooks are a vendor's own doing, and one that has none is not a
+        // machine with something missing from it: there is nothing to wire and
+        // nothing to fix, and what amx has instead is the pane.
+        let mut found = healthy();
+        found.vendor = SECOND.name.to_string();
+        found.wired = Vec::new();
+
+        let hooks = wiring_check(&found, Some(&SECOND));
+        assert!(
+            hooks.is_ok(),
+            "nothing here is anybody's to repair: {hooks:?}"
+        );
+        assert!(hooks.found.contains(SECOND.name), "{}", hooks.found);
+        assert!(hooks.found.contains("pane"), "{}", hooks.found);
+
+        // The vendor amx was written against still answers for its wiring, and
+        // so does a command amx has no entry for: nothing measured is not a
+        // measurement, and a wrapper around claude reports through the same
+        // settings file.
+        for measured in [crate::registry::entry("claude"), None] {
+            let hooks = wiring_check(&found, measured);
+            assert!(!hooks.is_ok(), "{hooks:?}");
+            assert!(hooks.remedy.as_deref().unwrap().contains("--fix"));
+        }
     }
 
     #[test]
@@ -828,6 +902,11 @@ mod tests {
         let setup = check(&found, "setup");
         assert!(setup.found.contains("fix-auth-2k3"), "{}", setup.found);
         assert!(setup.found.contains("trust"), "{}", setup.found);
+        assert!(
+            setup.found.contains(a_trusting_vendor().name),
+            "whose screen it is comes off the table: {}",
+            setup.found
+        );
         let remedy = setup.remedy.as_deref().unwrap();
         assert!(remedy.contains("amx attach fix-auth-2k3"), "{remedy}");
         assert!(
@@ -835,6 +914,14 @@ mod tests {
             "the key that makes it never happen again is named: {remedy}"
         );
         assert_eq!(said(&found, false).0, exit::FAILURE);
+
+        // The offer to answer it is only amx's to make for a vendor whose
+        // screen amx knows: told there is none, it leaves the question to
+        // whoever is at the keyboard.
+        let setup = setup_check(&found, None);
+        let remedy = setup.remedy.as_deref().unwrap();
+        assert!(remedy.contains("amx attach fix-auth-2k3"), "{remedy}");
+        assert!(!remedy.contains("trust = true"), "{remedy}");
     }
 
     #[test]
