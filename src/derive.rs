@@ -334,23 +334,22 @@ fn forget_the_placeholder(state: &mut State) {
 ///   ✽ Nesting… (15s · still thinking with xhigh effort)
 ///   · Infusing… (2m 2s · ↓ 6.9k tokens)
 ///
-/// The row is found by what the spinner rule anchors on
-/// (`assets/screen-rules.toml`): the ellipsis before the parenthesis and the
-/// elapsed seconds before the `·`, both on the one row, because a row carrying
-/// half of it is not the line the rule was measured against. The lowest such
+/// The row is found by the fragments the vendor's own document says its
+/// spinner always carries, all of them on the one row, because a row carrying
+/// half of it is not the line those were measured against. The lowest such
 /// row, and only inside the floor the rules themselves read, so an agent's own
 /// output further up the transcript is not mistaken for the vendor's chrome.
 ///
 /// Read but not recorded. A line that says an agent has been at something for
 /// 22 seconds is true for a second, and a record carrying it would have every
 /// later reader repeat it as news.
-fn doing(capture: &str) -> Option<String> {
+fn doing(screens: &Ruleset, capture: &str) -> Option<String> {
     let rows: Vec<&str> = capture.lines().collect();
     let floor = rows.len().saturating_sub(crate::rules::FLOOR_LINES);
     let line = rows[floor..]
         .iter()
         .rev()
-        .find(|row| row.contains("… (") && row.contains("s · "))?;
+        .find(|row| screens.furniture().spinning(row))?;
     Some(unglyphed(line))
 }
 
@@ -560,7 +559,7 @@ pub fn read(
             // vendor's spinner line on it, and that line is fresher than
             // anything the record can say about the same turn.
             doing: (rule.state == Phase::Working)
-                .then(|| doing(&screen))
+                .then(|| doing(rules, &screen))
                 .flatten(),
         },
         // A rule claims the screen but may not end a turn that is on the
@@ -1386,6 +1385,29 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
                 "{glyph}"
             );
         }
+    }
+
+    #[test]
+    fn reader_finds_the_spinning_line_by_the_vendors_own_fragments() {
+        // Two punctuation fragments are what claude's line always carries, and
+        // they are claude's: another vendor spins a line of its own, on which
+        // they never appear. Both are read off the document that says so.
+        let second = second_vendors_screens();
+        let its_own = " thinking for 12s about the file you named\n = compose =\n";
+        assert_eq!(
+            doing(&second, its_own).as_deref(),
+            Some("thinking for 12s about the file you named")
+        );
+        assert_eq!(
+            doing(rules::bundled(), its_own),
+            None,
+            "claude spins nothing that reads like that"
+        );
+        assert_eq!(
+            doing(&second, A_WORKING_SCREEN),
+            None,
+            "and its fragments are on no screen claude draws"
+        );
     }
 
     #[test]

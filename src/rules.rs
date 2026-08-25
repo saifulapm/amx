@@ -22,6 +22,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::sync::OnceLock;
 
+use crate::furniture::Furniture;
 use crate::registry;
 use crate::store::{Phase, Question};
 
@@ -40,9 +41,11 @@ pub const FLOOR_LINES: usize = 24;
 pub const SETTLED_LOOKS: usize = 30;
 
 /// Everything amx knows how to read on one vendor's screens: the rules, in
-/// the order they are asked.
+/// the order they are asked, and the chrome underneath them.
 #[derive(Debug, Deserialize)]
 pub struct Ruleset {
+    #[serde(default)]
+    furniture: Furniture,
     #[serde(default, rename = "rule")]
     rules: Vec<Rule>,
 }
@@ -180,6 +183,13 @@ impl Ruleset {
 
     pub fn rules(&self) -> &[Rule] {
         &self.rules
+    }
+
+    /// The chrome this vendor draws under every pane it has the room for, as
+    /// the anchors that find it. The rules read a screen; this is what a
+    /// surface printing one cuts off it — see [`crate::furniture`].
+    pub fn furniture(&self) -> &Furniture {
+        &self.furniture
     }
 
     /// Ask the screen what it is.
