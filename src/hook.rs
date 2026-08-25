@@ -291,15 +291,14 @@ fn typed(payload: &Value, what: &str) -> bool {
 /// they arrive in is the wrong way round: the one that knows is first and the
 /// two that know least come after. So they do not overwrite it. A permission
 /// event about the tool that draws a [`menu`] is the vendor asking itself for
-/// leave to draw one, and a notification arriving while a call is still outstanding
-/// is about that menu, because a modal choice and a permission box are
-/// mutually exclusive states of the one program — the second could only be up
-/// if a [`Calling`](Moment::Calling) for its own tool had already retired the
-/// call. Both say
-/// the agent has stopped and neither says what for, so both leave the question
-/// where the call put it. This is 02BQ6442: with a menu on the pane the card
-/// offered a permission box's grammar, because the box the vendor asked itself
-/// about arrived last and won.
+/// leave to draw one, and a notification arriving while a call is still
+/// outstanding is about that menu, because a modal choice and a permission box
+/// are mutually exclusive states of the one program — the second could only be
+/// up if a [`Calling`](Moment::Calling) for its own tool had already retired
+/// the call. Both say the agent has stopped and neither says what for, so both
+/// leave the question where the call put it. This is 02BQ6442: with a menu on
+/// the pane the card offered a permission box's grammar, because the box the
+/// vendor asked itself about arrived last and won.
 pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Notice> {
     if !payload["agent_id"].is_null() || state.state.is_terminal() {
         return None;
@@ -399,10 +398,10 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             Screen::Waiting
         }
 
-        // The one hook that says the box closed without the tool running: no
-        // PostToolUse follows a tool that never ran. The turn goes on with
-        // the refusal in it, and the next tool call will say what the agent
-        // is doing now.
+        // The one hook that says the box closed without the tool running:
+        // nothing announces a tool that finished when it never ran. The turn
+        // goes on with the refusal in it, and the next tool call will say what
+        // the agent is doing now.
         Moment::Refused => {
             state.state = Phase::Working;
             state.summary = None;
@@ -429,9 +428,9 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         // measured at 2.1.240 on 2026-08-25, the whole of its message is
         // "Claude needs your permission". A permission box cannot be up over
         // the menu — they are two states of the one program, and a box would
-        // have had a call of its own tool in front of it, which retires
-        // the call. So the agent has stopped, and what it stopped on is what
-        // the call already says.
+        // have had a call of its own tool in front of it, which retires the
+        // call. So the agent has stopped, and what it stopped on is what the
+        // call already says.
         Moment::Notified if state.pending().is_some() => {
             state.state = Phase::Waiting;
             Screen::Waiting

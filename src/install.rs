@@ -467,19 +467,18 @@ mod tests {
     #[test]
     fn install_asks_before_it_writes_anything() {
         // The file is the vendor's, under the person's home, and the sentence
-        // names it because that is the thing being agreed to.
+        // names it in full because that is the thing being agreed to.
         let table = claude::VENDOR.hooks.expect("claude reports through hooks");
-        let path = Path::new("/home/dev").join(table.settings);
-        assert_eq!(settings_path(Path::new("/home/dev")), path);
-        let path = path.as_path();
+        let settings = Path::new("/home/dev").join(table.settings);
+        assert_eq!(settings_path(Path::new("/home/dev")), settings);
 
-        let asked = consent_line(path, true);
-        assert!(asked.contains("settings.json"), "{asked}");
+        let asked = consent_line(&settings, true);
+        assert!(asked.contains(&settings.display().to_string()), "{asked}");
         assert!(
             asked.contains("copy"),
             "a person is told about the backup: {asked}"
         );
-        assert!(!consent_line(path, false).contains("copy"));
+        assert!(!consent_line(&settings, false).contains("copy"));
     }
 
     #[test]
