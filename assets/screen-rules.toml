@@ -70,6 +70,12 @@ vendor = "claude"
 # be in the same box rather than merely on the same screen: 16 rows is the
 # widest one measured, the trust screen at 54 columns, where eleven rows of
 # wrapped guidance sit between the word and the marker.
+#
+# `asks` is where the question itself is, once the rule has claimed the screen.
+# Under this one's question sit a sentence about what claude will be able to do
+# and a link to the security guide, and neither of those is being asked, so the
+# question is the sentence the rule's own anchor is on and not the one above
+# the choices.
 [[rule]]
 name = "folder_trust"
 state = "waiting"
@@ -77,6 +83,7 @@ all = ["trust"]
 any = ["❯ 1.", "enter to confirm"]
 within = 16
 not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
+asks = { sentence = "trust" }
 
 # claude's permission box, measured live against v2.1.226 on 2026-08-12 at 220
 # columns. It takes forcing: a machine whose claude runs in auto mode approves
@@ -154,6 +161,10 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 # hold at the three widths re-checked — intact at 46 columns, `(shift+tab to`
 # at 40, gone by 30. Bypass-permissions and don't-ask were not re-driven this
 # round; nothing about this vendor bump touched the footer's wording.
+#
+# `asks` again: what sits above this screen's question is what the request is
+# about — the tool, its arguments, the rule that stopped it — and that is not
+# what is being asked, so the question is the row the anchor is on.
 [[rule]]
 name = "permission_prompt"
 state = "waiting"
@@ -161,6 +172,7 @@ all = ["do you want to"]
 any = ["❯ 1.", "esc to cancel"]
 within = 16
 not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
+asks = { sentence = "do you want to" }
 
 # The third blocking prompt: the menu claude's AskUserQuestion tool draws.
 # Measured against v2.1.229 on 2026-08-15 in five modes at eight widths from 24

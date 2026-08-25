@@ -74,6 +74,10 @@ pub struct Rule {
     /// a running turn.
     #[serde(default)]
     pub quiescent: bool,
+    /// Where this screen keeps the question it is asking, for the screens that
+    /// do not keep it where a screen usually does.
+    #[serde(default)]
+    pub asks: Asks,
 }
 
 /// What the screen had to say.
@@ -258,7 +262,7 @@ impl Rule {
 
         let screen = Screen::new(capture);
         let choices = screen.first_option();
-        let (from, to) = match self.asks() {
+        let (from, to) = match &self.asks {
             Asks::Sentence(anchor) => screen.sentence_at(screen.row_above(choices, anchor)?),
             Asks::AboveOptions => screen.sentence_above(choices?)?,
         };
@@ -268,29 +272,6 @@ impl Rule {
             options: screen.options_below(to),
             text,
         })
-    }
-
-    /// Where this screen keeps the question it is asking.
-    ///
-    /// By name, because the blocking screens do not all keep it in the same
-    /// place and no one reading finds it on every one of them. Both of these
-    /// were chosen against the captures in this file's tests, at each of the
-    /// widths those were measured at.
-    fn asks(&self) -> Asks {
-        match self.name.as_str() {
-            // The question is the row the rule's own anchor is on. What is
-            // above it is what the request is about — the tool, its arguments,
-            // the rule that stopped it — and that is not what is being asked.
-            "permission_prompt" => Asks::Sentence("do you want to"),
-            // The same, and for the same reason: under this screen's question
-            // sit a sentence about what claude will be able to do and a link
-            // to the security guide, and neither is the question.
-            "folder_trust" => Asks::Sentence("trust"),
-            // Every other blocking screen puts the question straight above the
-            // choices with a blank row between, which is also where a screen
-            // amx has not met yet is likeliest to put it.
-            _ => Asks::AboveOptions,
-        }
     }
 
     /// Whether this rule may speak, given what amx already believes.
@@ -312,13 +293,24 @@ impl Rule {
 }
 
 /// Where on a claimed screen its question is written.
-enum Asks {
+///
+/// The blocking screens do not all keep it in the same place and no one
+/// reading finds it on every one of them, so each rule says which of these its
+/// own screen wants. `asks = { sentence = "do you want to" }` in the document,
+/// or nothing at all for the usual place.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Asks {
+    /// The sentence that ends just above the first choice, which is where a
+    /// screen amx has not met yet is likeliest to keep it — so it is what a
+    /// rule saying nothing gets.
+    #[default]
+    AboveOptions,
     /// The sentence the lowest row carrying this string belongs to, wrap and
     /// all. For the screens that draw something under their question that is
-    /// not part of it.
-    Sentence(&'static str),
-    /// The sentence that ends just above the first choice.
-    AboveOptions,
+    /// not part of it: the tool a request is about, a sentence about what the
+    /// vendor will be able to do, a link to a guide.
+    Sentence(String),
 }
 
 /// The part of a capture a rule is allowed to look at: the bottom rows, twice
@@ -856,6 +848,17 @@ cancel
   ⏵⏵ auto mode on (shift+tab to      ·
 ";
 
+    /// The second vendor stopped on a question, drawn the way its own
+    /// document describes: its anchor on the row the question opens with, and
+    /// choices numbered with no cursor glyph in front of them.
+    const A_SECOND_VENDOR_ASKING: &str = "\
+ pick one and I will carry on
+ about the file you named
+ 1. keep it
+ 2. drop it
+ answer with a number
+";
+
     /// Nothing this ruleset knows: an ordinary shell, which is what a pane
     /// shows when the vendor has exited.
     const A_SHELL: &str = "\
@@ -953,15 +956,28 @@ $
     #[test]
     fn rules_every_anchor_is_folded_the_way_the_screen_is() {
         // Matching folds the capture's case; an anchor with a capital in it
-        // could never match, and would fail silently.
-        for rule in bundled().rules() {
-            for needle in rule.all.iter().chain(&rule.any).chain(&rule.not_below) {
-                assert_eq!(
-                    needle,
-                    &needle.to_lowercase(),
-                    "{}: {needle:?} must be written folded",
-                    rule.name
-                );
+        // could never match, and would fail silently. True of every document,
+        // because it is the matching that folds and not the vendor.
+        for (vendor, screens) in documents() {
+            for rule in screens.rules() {
+                let asks = match &rule.asks {
+                    Asks::Sentence(anchor) => Some(anchor),
+                    Asks::AboveOptions => None,
+                };
+                for needle in rule
+                    .all
+                    .iter()
+                    .chain(&rule.any)
+                    .chain(&rule.not_below)
+                    .chain(asks)
+                {
+                    assert_eq!(
+                        needle,
+                        &needle.to_lowercase(),
+                        "{vendor}'s {}: {needle:?} must be written folded",
+                        rule.name
+                    );
+                }
             }
         }
     }
@@ -1030,6 +1046,54 @@ $
         };
         rule.question(screen)
             .expect("a screen that blocks says what it is blocking on")
+    }
+
+    #[test]
+    fn rules_where_a_screen_keeps_its_question_is_the_documents_to_say() {
+        // Two of claude's blocking screens draw something under their question
+        // that is not part of it, so on those the question is the sentence the
+        // rule's own anchor is on rather than the one above the choices. Which
+        // of the two a screen wants is a fact about that screen: written in
+        // Rust it would be one vendor's rule names deciding what is read off
+        // another's pane.
+        let asks = |name: &str| {
+            let rule = bundled().rules().iter().find(|rule| rule.name == name);
+            rule.map(|rule| rule.asks.clone())
+        };
+        assert_eq!(
+            asks("permission_prompt"),
+            Some(Asks::Sentence("do you want to".to_string()))
+        );
+        assert_eq!(
+            asks("folder_trust"),
+            Some(Asks::Sentence("trust".to_string()))
+        );
+        assert_eq!(
+            asks("ask_menu"),
+            Some(Asks::AboveOptions),
+            "a screen that says nothing keeps it above the choices"
+        );
+    }
+
+    #[test]
+    fn rules_a_second_vendors_question_is_read_where_its_own_document_says() {
+        // The same machinery over a document that shares no string with
+        // claude's: an anchor of its own, choices with no cursor glyph in
+        // front of them, and a sentence the vendor wrapped across two rows.
+        let screens = Ruleset::parse(SECOND.screens.unwrap()).unwrap();
+        let Claim::Ruled(rule) = screens.claim(A_SECOND_VENDOR_ASKING, Phase::Working, 1) else {
+            panic!("the second vendor's own rule claims its own screen");
+        };
+        assert_eq!(rule.name, "choice");
+
+        let asked = rule
+            .question(A_SECOND_VENDOR_ASKING)
+            .expect("a screen that blocks says what it is blocking on");
+        assert_eq!(
+            asked.text,
+            "pick one and I will carry on about the file you named"
+        );
+        assert_eq!(asked.options, ["keep it", "drop it"]);
     }
 
     #[test]
