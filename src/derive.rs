@@ -90,6 +90,11 @@ pub struct Verdict {
     /// an agent stopped on a question says how long it has waited, and anything
     /// still going says how long since it was last heard from.
     pub age: u64,
+    /// The seconds this agent has worked, live — see [`worked`]. It ticks
+    /// while the agent works, stands still while it waits or sits idle, and
+    /// stops for good at the end. The rows and the table print this one; the
+    /// age above keeps its three questions for the card and for `--json`.
+    pub worked: u64,
 }
 
 /// An agent as a reader sees it: the record, and what amx makes of it.
@@ -440,10 +445,29 @@ fn heard(state: &State) -> u64 {
 /// which is what says whether the rest of the row is worth believing, and it
 /// is what the column has always said.
 fn clock(phase: Phase, state: &State, created: u64, now: u64) -> u64 {
-    let heard = heard(state);
+    if phase.is_terminal() {
+        return worked(phase, state, created, now);
+    }
+    if phase == Phase::Waiting && state.state == Phase::Waiting && state.since > 0 {
+        return now.saturating_sub(state.since);
+    }
+    now.saturating_sub(heard(state))
+}
+
+/// The seconds of work a row puts beside an agent.
+///
+/// The spans the record has added up, and the one still open while the record
+/// says the agent is working — so the number ticks while the agent works and
+/// stands still while it waits or sits idle. An idle agent's clock climbing
+/// was timing the silence, not the agent.
+///
+/// At the end it is [`clock`]'s own frozen answer, fallback included: a run
+/// that worked four minutes worked four minutes, and a record with no spans on
+/// it says how long the run was alive instead.
+fn worked(phase: Phase, state: &State, created: u64, now: u64) -> u64 {
     if phase.is_terminal() {
         let ended = match state.ended {
-            0 => heard,
+            0 => heard(state),
             at => at,
         };
         return match state.worked_by(ended) {
@@ -451,10 +475,7 @@ fn clock(phase: Phase, state: &State, created: u64, now: u64) -> u64 {
             worked => worked,
         };
     }
-    if phase == Phase::Waiting && state.state == Phase::Waiting && state.since > 0 {
-        return now.saturating_sub(state.since);
-    }
-    now.saturating_sub(heard)
+    state.worked_by(now)
 }
 
 /// The reading's number in words, in the shortest form that says it.
@@ -503,6 +524,7 @@ pub fn read(
             evidence,
             rule: rule.map(str::to_string),
             age: clock(phase, state, created, now),
+            worked: worked(phase, state, created, now),
         },
         asking: None,
         doing: None,
@@ -544,6 +566,7 @@ pub fn read(
                 evidence: Evidence::Screen,
                 rule: Some(rule.name.clone()),
                 age: clock(rule.state, state, created, now),
+                worked: worked(rule.state, state, created, now),
             },
             asking: rule.question(&screen),
             // A screen a rule read as a turn running is a screen with the
@@ -1087,6 +1110,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             evidence,
             rule: rule.map(str::to_string),
             age: 30,
+            worked: 30,
         }
     }
 
@@ -1507,6 +1531,47 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(view.json()["age"], 10);
         assert_eq!(view.json()["worked"], 10, "and the spans it was added from");
         assert_eq!(view.json()["ended"], 4_610, "and when it ended, whole");
+    }
+
+    #[test]
+    fn reader_ticks_the_work_column_only_while_the_agent_works() {
+        // Working: the spans already added up and the open one, moving with
+        // the clock.
+        let mut working = state(Phase::Working, 1_000);
+        working.worked = 120;
+        assert_eq!(
+            reading(&working, true, None, 1_000 + FRESH).verdict.worked,
+            120 + FRESH
+        );
+
+        // Waiting: frozen where the work stopped — an hour at a question
+        // nobody answered is nobody's work. The wait is still the age, which
+        // is what the card reads it off.
+        let mut waiting = state(Phase::Waiting, 2_000);
+        waiting.worked = 120;
+        let read = reading(&waiting, true, None, 2_000 + FRESH).verdict;
+        assert_eq!(read.worked, 120);
+        assert_eq!(read.age, FRESH, "and the wait stays on the age");
+
+        // Idle: frozen too, until the next turn opens a span.
+        let mut idle = state(Phase::Idle, 2_000);
+        idle.worked = 120;
+        assert_eq!(
+            reading(&idle, true, None, 2_000 + FRESH).verdict.worked,
+            120
+        );
+
+        // Ended: what it worked, for good, with the whole run standing in
+        // where no spans were ever added up — the same answers the age gives.
+        let mut done = state(Phase::Done, 4_610);
+        done.ended = 4_610;
+        done.worked = 10;
+        assert_eq!(started(1_000, &done, true, None, 90_000).verdict.worked, 10);
+        done.worked = 0;
+        assert_eq!(
+            started(1_000, &done, true, None, 90_000).verdict.worked,
+            3_610
+        );
     }
 
     #[test]

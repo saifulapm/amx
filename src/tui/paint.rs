@@ -663,8 +663,7 @@ fn heading(title: String, tally: Tally, marked: bool) -> Line<'static> {
 }
 
 /// An agent's row: what state it is in, what it is called, what its work is
-/// waiting on out in the world, what it is up to, and how long since anybody
-/// heard from it.
+/// waiting on out in the world, what it is up to, and how long it has worked.
 ///
 /// The state is on the row twice where it is on it at all — as the mark, and
 /// as the word beside the name. The mark is worth reading at a glance across a
@@ -689,8 +688,9 @@ fn row(
     let phase = view.phase();
     // The reading's own number and the reading's own units: a row and a table
     // that worked the words out for themselves would agree until one of them
-    // was edited.
-    let age = derive::in_words(view.verdict.age);
+    // was edited. The worked seconds, not the age — an idle agent's clock
+    // climbing was timing the silence, and the wait stays on the card.
+    let worked = derive::in_words(view.verdict.worked);
     // The one word on a row a person typed rather than amx minting it, so it
     // is neutralised here as well as where it was written down.
     let name = fit(&inert(rows::called(view)), names);
@@ -749,7 +749,7 @@ fn row(
         false => dim(),
     };
     spans.push(Span::styled(format!("{} ", padded(&said, room)), summary));
-    spans.push(Span::styled(format!("{age:>AGE$}"), dim()));
+    spans.push(Span::styled(format!("{worked:>AGE$}"), dim()));
     Line::from(spans)
 }
 
@@ -1855,7 +1855,7 @@ fn tail(rows: &[&str], wanted: usize) -> Range<usize> {
     end.saturating_sub(wanted)..end
 }
 
-/// The width the age is given, which fits everything up to `365d`.
+/// The width the duration is given, which fits everything up to `365d`.
 const AGE: usize = 4;
 
 /// One line of it, so a paragraph of an answer cannot take over a row.
@@ -2121,6 +2121,10 @@ mod tests {
                 evidence: Evidence::Hooks,
                 rule: None,
                 age,
+                // The rows print the worked seconds; most of these tests only
+                // care that a number is where the column is, so the helper
+                // hands both clocks the same one.
+                worked: age,
             },
         }
     }
@@ -4355,6 +4359,20 @@ mod tests {
                 "{age} seconds is drawn as {row:?}"
             );
         }
+    }
+
+    #[test]
+    fn view_rows_carry_the_worked_seconds_and_not_the_age() {
+        // An idle agent's age climbs with every quiet second; what it worked
+        // does not, and the column is about the work. The wait and the age
+        // stay the card's.
+        let mut idle = view("rests-a1b", Phase::Idle, Some("done for now"), 500);
+        idle.verdict.worked = 60;
+        let row = drawn(vec![idle], None, WALL)
+            .into_iter()
+            .find(|line| line.contains("rests-a1b"))
+            .expect("the agent's row");
+        assert!(row.ends_with("1m"), "{row:?}");
     }
 
     #[test]

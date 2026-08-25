@@ -153,6 +153,7 @@ mod tests {
                 evidence,
                 rule: rule.map(str::to_string),
                 age,
+                worked: age,
             },
         }
     }

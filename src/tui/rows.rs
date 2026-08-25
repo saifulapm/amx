@@ -1160,6 +1160,7 @@ mod tests {
                 evidence: Evidence::Hooks,
                 rule: None,
                 age: 1,
+                worked: 1,
             },
         }
     }

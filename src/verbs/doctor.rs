@@ -511,6 +511,7 @@ mod tests {
                 evidence: derive::Evidence::Screen,
                 rule: rule.map(str::to_string),
                 age: 40,
+                worked: 40,
             },
         }
     }

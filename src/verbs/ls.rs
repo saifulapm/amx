@@ -143,7 +143,7 @@ fn table(views: &[View], out: &mut impl Write) -> Result<()> {
             "{:<8} {:<widest$}  {:>5}  {}",
             view.phase().as_str(),
             view.id(),
-            age(view),
+            worked(view),
             doing(view),
         )?;
     }
@@ -173,15 +173,15 @@ fn inert(text: &str) -> String {
     crate::tmux::sanitize(first_line(text)).trim().to_string()
 }
 
-/// The reading's own number, in the shortest form that says it: how long a
-/// finished run worked, how long a waiting agent has waited, and how long since
-/// anything was heard from one still going.
+/// The reading's own number, in the shortest form that says it: the seconds
+/// this agent has worked, ticking while it works, standing still while it
+/// waits or sits idle, and frozen for good at the end.
 ///
 /// Both the number and the units are the reading's, and this table only asks
 /// for them. The view asks the same reading the same way, so a person who has
 /// both open is never told two things about one agent.
-fn age(view: &View) -> String {
-    derive::in_words(view.verdict.age)
+fn worked(view: &View) -> String {
+    derive::in_words(view.verdict.worked)
 }
 
 /// One line of it, so a paragraph of an answer cannot take over the table.
@@ -227,6 +227,7 @@ mod tests {
                 evidence: Evidence::Hooks,
                 rule: None,
                 age,
+                worked: age,
             },
         }
     }
@@ -280,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn reader_the_last_column_ticks_while_an_agent_runs_and_freezes_when_it_ends() {
+    fn reader_the_last_column_ticks_while_an_agent_works_and_freezes_when_it_stops() {
         let mut record = State {
             state: Phase::Working,
             since: 1_000,
@@ -289,22 +290,35 @@ mod tests {
             ..State::default()
         };
 
-        // Still going: how long since anything was heard, moving with the
-        // clock, which is what says whether the rest of the row is worth
-        // believing.
+        // Working: the spans of work added up so far, the open one included,
+        // moving with the clock.
         for (now, said) in [(1_004, "4s"), (1_008, "8s")] {
             let text = printed(&[reading("fix-login-a1b", record.clone(), 1_000, now)]);
             assert!(text.contains(said), "{text}");
         }
 
-        // It worked ten seconds and stood at a question for the hour before
-        // that. Read an hour later and a day later, it is the run it was both
-        // times, and the hour it spent waiting is nobody's ten seconds.
+        // Stopped on a question: the column freezes where the work stopped,
+        // and an agent standing at a question is not clocking up anything.
+        record.state = Phase::Waiting;
+        record.since = 1_010;
+        record.last_event = 1_010;
+        record.worked = 10;
+        record.question = Some("Which fixture should the port keep?".to_string());
+        let text = printed(&[reading(
+            "fix-login-a1b",
+            record.clone(),
+            1_000,
+            1_010 + derive::FRESH,
+        )]);
+        assert!(text.contains("10s"), "{text}");
+
+        // Ended: what it worked, for good. Read an hour later and a day
+        // later, it is the run it was both times.
         record.state = Phase::Done;
         record.since = 4_610;
         record.last_event = 4_610;
         record.ended = 4_610;
-        record.worked = 10;
+        record.question = None;
         record.result = Some("the tests pass now".to_string());
 
         let hour = printed(&[reading("fix-login-a1b", record.clone(), 1_000, 8_210)]);
@@ -320,9 +334,9 @@ mod tests {
         // own. It is what the view reads and how the view says it, so the two
         // surfaces cannot disagree.
         let read = reading("fix-login-a1b", record, 1_000, 90_000);
-        assert_eq!(read.verdict.age, 10);
-        assert_eq!(age(&read), derive::in_words(read.verdict.age));
-        assert!(hour.contains(&age(&read)), "{hour}");
+        assert_eq!(read.verdict.worked, 10);
+        assert_eq!(worked(&read), derive::in_words(read.verdict.worked));
+        assert!(hour.contains(&worked(&read)), "{hour}");
     }
 
     /// An agent of a directory, with the worktree amx cut for it if it has
@@ -435,13 +449,13 @@ mod tests {
     }
 
     #[test]
-    fn reader_ages_read_as_a_person_would_say_them() {
-        let aged = |seconds| age(&view("x-a1b", Phase::Idle, seconds, None));
-        assert_eq!(aged(0), "0s");
-        assert_eq!(aged(59), "59s");
-        assert_eq!(aged(60), "1m");
-        assert_eq!(aged(3_599), "59m");
-        assert_eq!(aged(3_600), "1h");
-        assert_eq!(aged(86_400), "1d");
+    fn reader_durations_read_as_a_person_would_say_them() {
+        let said = |seconds| worked(&view("x-a1b", Phase::Idle, seconds, None));
+        assert_eq!(said(0), "0s");
+        assert_eq!(said(59), "59s");
+        assert_eq!(said(60), "1m");
+        assert_eq!(said(3_599), "59m");
+        assert_eq!(said(3_600), "1h");
+        assert_eq!(said(86_400), "1d");
     }
 }

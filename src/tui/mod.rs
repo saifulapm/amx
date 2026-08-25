@@ -2056,6 +2056,7 @@ mod tests {
                 evidence: Evidence::Hooks,
                 rule: None,
                 age: 29,
+                worked: 29,
             },
         )
     }

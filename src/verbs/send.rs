@@ -298,6 +298,7 @@ mod tests {
                 evidence: Evidence::Hooks,
                 rule: None,
                 age: 3,
+                worked: 3,
             },
         }
     }
