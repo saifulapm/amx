@@ -176,13 +176,13 @@ pub enum Command {
         task: Option<String>,
     },
 
-    /// Put the claude already running in this pane on the wall.
+    /// Put the agent already running in this pane on the wall.
     ///
     /// For the agent you started yourself, in your own tmux, and then wanted
     /// beside the ones amx started: it gets a record, an id and a row, and
     /// every verb that reads or answers an agent works on it from then on.
     ///
-    /// It is typed *inside* the claude being adopted, which is what tells amx
+    /// It is typed *inside* the agent being adopted, which is what tells amx
     /// which pane and which conversation are meant — ask the agent to run it,
     /// or run it yourself in its shell mode. Nothing is started, nothing is
     /// sent, and the agent goes on with whatever it was doing.

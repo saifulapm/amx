@@ -1,18 +1,24 @@
-//! `amx adopt` — a claude that was already there.
+//! `amx adopt` — an agent that was already there.
 //!
 //! Every other agent amx has is one it started. This one was running before
-//! amx was asked about it: somebody's own claude, in their own tmux, in a pane
+//! amx was asked about it: somebody's own agent, in their own tmux, in a pane
 //! amx did not open. Adopting writes the record that was missing and changes
 //! nothing else. No pane is started, nothing is sent, and the agent goes on
 //! with whatever it was in the middle of.
 //!
-//! It is typed inside the claude being adopted, and that is what makes it
+//! It is typed inside the agent being adopted, and that is what makes it
 //! answerable rather than a guess. The pane is `$TMUX_PANE`, which tmux puts
 //! in the environment of everything running in it, and the conversation is
-//! `$CLAUDE_CODE_SESSION_ID`, which the vendor puts in the environment of
-//! every command it starts. Both describe the claude that ran the command and
-//! no other, so amx never has to work out which of the claudes on a machine
-//! was meant.
+//! whichever variable the vendor names its session in, which it puts in the
+//! environment of every command it starts. Both describe the agent that ran
+//! the command and no other, so amx never has to work out which of the agents
+//! on a machine was meant.
+//!
+//! Which vendor that is comes from the environment too, and not from the
+//! config: what is in this pane is what somebody started themselves, which
+//! need not be what `amx new` would spawn. So the table is read for the
+//! vendors that can be taken over, and the one whose variable is here is the
+//! one that is here.
 //!
 //! The session is the half that keeps working afterwards. amx cannot put its
 //! own id into a pane it did not start, so the events this agent fires carry
@@ -23,7 +29,7 @@
 //! What amx did not do for this agent it does not claim: no worktree, no
 //! branch, no commit to measure a diff from, and no command it was launched
 //! with. `stop` takes its pane and nothing else, and there is nothing for
-//! `resume` or `fork` to start again — that claude was started by hand and can
+//! `resume` or `fork` to start again — that agent was started by hand and can
 //! be again.
 
 use anyhow::{Context, Result, bail};
@@ -35,21 +41,14 @@ use crate::cli::AdoptArgs;
 use crate::rules::{Claim, Ruleset};
 use crate::store::{Agent, Event, Meta, Phase, State, now};
 use crate::tmux::{PaneId, Server, Socket};
-use crate::{exit, ids, paths, rules, spawn};
+use crate::vendor::{Capability, Vendor};
+use crate::{exit, ids, paths, registry, rules, spawn};
 
-/// What amx records when it takes over a claude it did not start.
+/// What amx records when it takes over an agent it did not start.
 const ADOPTED: &str = "adopt";
 
 /// Where tmux says which pane a process is running in.
 const PANE_ENV: &str = "TMUX_PANE";
-
-/// Where claude says which conversation a command it started belongs to.
-///
-/// Measured against claude 2.1.240 on 2026-08-24: every process the vendor
-/// starts — a tool call, a hook — is handed `CLAUDE_CODE_SESSION_ID`, holding
-/// the same session id its hook payloads carry. Re-measure it at every vendor
-/// bump: it is the whole of how an adopted agent's events find their way home.
-const SESSION_ENV: &str = "CLAUDE_CODE_SESSION_ID";
 
 /// Run the verb against the machine.
 pub fn from_env(args: &AdoptArgs) -> Result<i32> {
@@ -85,8 +84,8 @@ pub fn run(
     //
     // A pane amx started says so in its own environment, and that is the
     // cheapest answer there is. An id with no record behind it is not one: the
-    // agent it named has been forgotten, and what is in the pane now is a
-    // claude like any other.
+    // agent it named has been forgotten, and what is in the pane now is an
+    // agent like any other.
     if let Some(id) = env.get(crate::hook::ID_ENV)
         && Agent::open(root, id).is_ok()
     {
@@ -94,7 +93,7 @@ pub fn run(
     }
 
     let pane = this_pane(env)?;
-    let session = this_session(env)?;
+    let (vendor, session) = this_session(env)?;
     if !server.pane_alive(&pane) {
         bail!("{pane} is not a pane on the tmux server this is running on");
     }
@@ -105,7 +104,7 @@ pub fn run(
     let dir = pane_dir(server, &pane, here);
     let task = match &args.task {
         Some(task) => task.clone(),
-        None => label(&dir),
+        None => label(&dir, vendor),
     };
     let id = match &args.name {
         Some(name) => {
@@ -153,7 +152,14 @@ pub fn run(
     let writer = agent.writer()?;
     writer.append(&Event::new(
         ADOPTED,
-        serde_json::json!({ "pane": pane.as_str(), "session": session }),
+        // The vendor goes with them: it is the one thing amx learns here that
+        // the record has nowhere to keep, and what was in that pane is the
+        // question somebody asks a week later.
+        serde_json::json!({
+            "pane": pane.as_str(),
+            "session": session,
+            "vendor": vendor.name,
+        }),
     ))?;
     writer.update_state(|state| seed(state, rules, &screen))?;
     drop(writer);
@@ -196,16 +202,81 @@ fn this_pane(env: &BTreeMap<String, String>) -> Result<PaneId> {
     PaneId::new(pane.clone()).with_context(|| format!("${PANE_ENV} holds {pane:?}"))
 }
 
-/// The conversation this command was typed in.
-fn this_session(env: &BTreeMap<String, String>) -> Result<String> {
-    let Some(session) = env.get(SESSION_ENV).filter(|id| !id.is_empty()) else {
+/// The vendor this command was typed inside, and the conversation it names.
+fn this_session(env: &BTreeMap<String, String>) -> Result<(&'static Vendor, String)> {
+    session_in(registry::entries(), env)
+}
+
+/// The same, against a table named rather than the one amx ships.
+///
+/// A vendor puts the session a command belongs to in that command's
+/// environment, under a name of its own, so the environment says both which
+/// vendor is in this pane and which conversation is in it. The first vendor
+/// whose variable is here is the answer, and two of them cannot be: a pane
+/// runs one agent.
+fn session_in<'v>(
+    vendors: &'v [Vendor],
+    env: &BTreeMap<String, String>,
+) -> Result<(&'v Vendor, String)> {
+    for vendor in vendors {
+        let Some(named) = vendor.session_env else {
+            continue;
+        };
+        let Some(session) = env.get(named).filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        // A vendor that names a session amx cannot take over: the record would
+        // be written, and nothing would ever reach it, because being taken
+        // over is the whole of what the id in that variable is for here.
+        if !vendor.can(Capability::Adopt) {
+            bail!(
+                "${named} says this is a {} session, and a {} cannot be taken \
+                 over: amx would have a record here and no way to hear from it",
+                vendor.name,
+                vendor.name
+            );
+        }
+        return Ok((vendor, session.clone()));
+    }
+
+    let names: Vec<&str> = adoptable(vendors).map(|vendor| vendor.name).collect();
+    if names.is_empty() {
         bail!(
-            "no ${SESSION_ENV} here, so no claude started this command. \
-             `amx adopt` is run inside the claude it adopts, and that session \
-             id is how its events are recognised afterwards"
+            "amx has an entry for no vendor it can take over, so there is \
+             nothing here for `amx adopt` to write a record about"
         );
-    };
-    Ok(session.clone())
+    }
+    let looked_for: Vec<String> = adoptable(vendors)
+        .filter_map(|vendor| vendor.session_env)
+        .map(|named| format!("${named}"))
+        .collect();
+    bail!(
+        "no {} here, so no {} started this command. `amx adopt` is run inside \
+         the agent it adopts, and that session id is how its events are \
+         recognised afterwards",
+        either(&looked_for),
+        either(&names)
+    )
+}
+
+/// The vendors amx can be asked to take one of over.
+fn adoptable(vendors: &[Vendor]) -> impl Iterator<Item = &Vendor> {
+    vendors
+        .iter()
+        .filter(|vendor| vendor.can(Capability::Adopt))
+}
+
+/// A list of things to name in a sentence, however many of them there turn out
+/// to be: `a`, or `a or b`, or `a, b or c`.
+fn either(each: &[impl AsRef<str>]) -> String {
+    let each: Vec<&str> = each.iter().map(AsRef::as_ref).collect();
+    match each.split_last() {
+        Some((last, [])) => (*last).to_string(),
+        Some((last, before)) => format!("{} or {last}", before.join(", ")),
+        // A table with nothing adoptable in it is refused before this is
+        // reached: a sentence naming none of them would have a hole in it.
+        None => "nothing".to_string(),
+    }
 }
 
 /// Why amx will not adopt: it has an agent for this pane, or for this
@@ -255,14 +326,15 @@ fn pane_dir(server: &Server, pane: &PaneId, here: &Path) -> PathBuf {
 
 /// What the row says an adopted agent is for, when nobody has said.
 ///
-/// The task is the one thing about a claude amx did not start that amx cannot
+/// The task is the one thing about an agent amx did not start that amx cannot
 /// know: it was given at a prompt hours ago, in a conversation amx has never
 /// read. The directory is what is true and worth reading on a row, and the
-/// word in front of it says why this row is not like the others.
-fn label(dir: &Path) -> String {
+/// word in front of it says why this row is not like the others. A directory
+/// with no name to it leaves the vendor, which is the other true thing.
+fn label(dir: &Path, vendor: &Vendor) -> String {
     match dir.file_name().and_then(|name| name.to_str()) {
         Some(name) => format!("adopted {name}"),
-        None => "adopted claude".to_string(),
+        None => format!("adopted {}", vendor.name),
     }
 }
 
@@ -270,8 +342,26 @@ fn label(dir: &Path) -> String {
 mod tests {
     use super::*;
     use crate::tmux::Spawn;
+    use crate::vendor::second::SECOND;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
+
+    /// The vendor these tests take over, read out of the table rather than
+    /// named: which vendor amx can be asked to adopt, and what it calls its
+    /// session, are the table's to say.
+    fn a_vendor() -> &'static Vendor {
+        registry::entries()
+            .iter()
+            .find(|vendor| vendor.can(Capability::Adopt))
+            .expect("a vendor amx can take over")
+    }
+
+    /// What that vendor names its session in.
+    fn session_env() -> &'static str {
+        a_vendor()
+            .session_env
+            .expect("a vendor that can be adopted names its session")
+    }
 
     /// A socket name of this test's own.
     fn tag() -> String {
@@ -325,7 +415,7 @@ mod tests {
         fn env(&self, session: &str) -> BTreeMap<String, String> {
             BTreeMap::from([
                 (PANE_ENV.to_string(), self.pane.to_string()),
-                (SESSION_ENV.to_string(), session.to_string()),
+                (session_env().to_string(), session.to_string()),
             ])
         }
     }
@@ -431,8 +521,8 @@ mod tests {
         let agent = Agent::open(root.path(), printed.trim()).unwrap();
         assert_eq!(
             agent.meta().unwrap().task,
-            label(&agent.meta().unwrap().dir),
-            "the task is the one thing about a claude amx did not start that \
+            label(&agent.meta().unwrap().dir, a_vendor()),
+            "the task is the one thing about an agent amx did not start that \
              amx cannot know"
         );
         assert_eq!(
@@ -484,12 +574,63 @@ mod tests {
     }
 
     #[test]
+    fn adopt_spells_no_vendors_variable_of_its_own() {
+        // Which variable names a session is the vendor's word, and a copy of
+        // it here is the one that goes stale the day the vendor renames it.
+        let ships = include_str!("adopt.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_default();
+        for vendor in registry::entries() {
+            if let Some(session) = vendor.session_env {
+                assert!(
+                    !ships.contains(session),
+                    "adopt keeps its own copy of {}'s {session}",
+                    vendor.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn adopt_takes_the_session_from_whichever_vendor_named_it() {
+        // The vendor being taken over is the one that started this command,
+        // not the one the config would spawn, so the table is read rather than
+        // a name being asked after. Every vendor that can be taken over names
+        // the variable that makes it possible.
+        for vendor in registry::entries() {
+            if !vendor.can(Capability::Adopt) {
+                continue;
+            }
+            let named = vendor.session_env.expect("a vendor that can be adopted");
+            let env = BTreeMap::from([(named.to_string(), "abc-123".to_string())]);
+            let (found, session) = session_in(registry::entries(), &env).expect("the session");
+            assert_eq!(found.name, vendor.name);
+            assert_eq!(session, "abc-123");
+        }
+
+        // A vendor that names a session amx cannot take over is refused, in
+        // words saying which of the two is missing.
+        let cannot = Vendor {
+            capabilities: &[Capability::Resume],
+            ..SECOND
+        };
+        let env = BTreeMap::from([(
+            cannot.session_env.unwrap().to_string(),
+            "abc-123".to_string(),
+        )]);
+        let said = format!("{:#}", session_in(&[cannot], &env).unwrap_err());
+        assert!(said.contains(SECOND.name), "{said}");
+        assert!(said.contains("cannot be taken over"), "{said}");
+    }
+
+    #[test]
     fn adopt_needs_the_pane_and_the_conversation_it_is_typed_in() {
         let root = TempDir::new().unwrap();
         let pane = APane::showing(&A_PERMISSION_BOX);
 
         // Not in tmux at all, and in tmux with no claude around it.
-        let outside = BTreeMap::from([(SESSION_ENV.to_string(), "abc-123".to_string())]);
+        let outside = BTreeMap::from([(session_env().to_string(), "abc-123".to_string())]);
         let said = format!(
             "{:#}",
             adopt(root.path(), &pane, &outside, &AdoptArgs::default()).unwrap_err()
@@ -509,7 +650,11 @@ mod tests {
             "{:#}",
             adopt(root.path(), &pane, &shell, &AdoptArgs::default()).unwrap_err()
         );
-        assert!(said.contains(SESSION_ENV), "{said}");
+        assert!(said.contains(session_env()), "{said}");
+        assert!(
+            said.contains(a_vendor().name),
+            "the refusal names the vendor amx looked for: {said}"
+        );
 
         // A pane that is not on this server, and one that is not a pane.
         let mut elsewhere = pane.env("abc-123");
@@ -604,11 +749,14 @@ mod tests {
 
     #[test]
     fn adopt_the_row_is_named_after_the_directory_the_pane_is_in() {
-        assert_eq!(label(Path::new("/srv/app")), "adopted app");
-        assert_eq!(label(Path::new("/")), "adopted claude");
+        assert_eq!(label(Path::new("/srv/app"), a_vendor()), "adopted app");
         assert_eq!(
-            ids::stem_from_task(&label(Path::new("/srv/app"))),
+            ids::stem_from_task(&label(Path::new("/srv/app"), a_vendor())),
             "adopted-app"
         );
+
+        // A directory with no name to it leaves the vendor to say what the row
+        // is, and that is the vendor's own word.
+        assert_eq!(label(Path::new("/"), &SECOND), "adopted second");
     }
 }
