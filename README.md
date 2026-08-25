@@ -210,9 +210,7 @@ than starting anything: `s:waiting`, `a:import`, or `a:#12`. `m:`, `p:`, `w:`,
 `m:opus w:off port the importer`. `d:` is where that one runs:
 `d:/srv/app port it`, `d:~/code/importer port it`, or a name read against the
 directory you opened the view in, the way a shell prompt standing there would
-read it. A `!` in front runs the rest as a shell command instead of giving it
-to an agent — `!cargo test --all` is the row `amx new --exec` starts, and the
-line says `run` rather than `task` while one is being typed.
+read it.
 
 `alt+n` enters that line and takes you with it: the agent is started and your
 terminal lands in its session, by the same two roads `enter` on a row takes.

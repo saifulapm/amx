@@ -1694,7 +1694,7 @@ fn placeholder(composer: &Composer) -> Option<&'static str> {
     }
     Some(
         "m:model · p:permission · w:on|off · d:directory · agent:command \
-         · s:state · a:name · ! shell",
+         · s:state · a:name",
     )
 }
 
@@ -3570,7 +3570,6 @@ mod tests {
             "agent:command",
             "s:state",
             "a:name",
-            "! shell",
         ] {
             assert!(hint.contains(named), "{named} is not taught: {hint}");
         }

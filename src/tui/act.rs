@@ -58,12 +58,11 @@ impl Composer {
     /// What the line calls itself, so nobody types a task at an agent.
     ///
     /// A task line renames itself the moment what is typed into it would
-    /// narrow the list or run a command instead: the one thing a person needs
-    /// to know before pressing enter is what enter is about to do.
+    /// narrow the list instead: the one thing a person needs to know before
+    /// pressing enter is what enter is about to do.
     pub fn prompt(&self) -> String {
         match &self.asking {
             Asking::Task if self.narrows() => "narrow".to_string(),
-            Asking::Task if commanded(&self.text).is_some() => "run".to_string(),
             Asking::Task => "task".to_string(),
             Asking::Reply { id, question: true } => format!("answer {id} · y n 1-9 enter esc"),
             Asking::Reply { id, .. } => format!("message to {id}"),
@@ -108,20 +107,6 @@ pub fn narrowing(line: &str) -> Option<Vec<Narrow>> {
             })
             .collect(),
     )
-}
-
-/// What a line is led with to run it as a shell command rather than give it to
-/// an agent.
-const RUN: char = '!';
-
-/// The command a line asks for, when it opens with `!`.
-///
-/// Leading only, under the law the rest of the line reads by: a `!` anywhere
-/// else is a character in a task, and "fix the login bug!" is one somebody
-/// means. Everything behind it is the command, dial words included, because a
-/// command is a shell's to read and not amx's.
-pub fn commanded(line: &str) -> Option<&str> {
-    Some(line.trim_start().strip_prefix(RUN)?.trim_start())
 }
 
 /// The tokens a task line may be led with, and what each of them turns.
@@ -355,10 +340,9 @@ const ENOUGH: usize = 4;
 ///
 /// The task rather than the whole line: `m:opus fix` is three characters of
 /// instruction behind seven of dials, and the instruction is what the agent is
-/// given. A command and a narrowing are neither of them a task, so neither is
-/// ever asked about.
+/// given. A narrowing is not a task, so it is never asked about.
 pub fn slight(config: &Config, line: &str) -> Option<String> {
-    if commanded(line).is_some() || narrowing(line).is_some() {
+    if narrowing(line).is_some() {
         return None;
     }
     let (_, task) = turned(config, line).ok()?;
@@ -368,13 +352,8 @@ pub fn slight(config: &Config, line: &str) -> Option<String> {
     (!task.is_empty() && task.chars().count() < ENOUGH).then_some(task)
 }
 
-/// Start an agent on what was typed, where the view is — or run what was
-/// typed, when the line opens with `!`.
+/// Start an agent on what was typed, where the view is.
 pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
-    if let Some(command) = commanded(line) {
-        return run(root, config, command);
-    }
-
     let (turned, task) = match turned(config, line) {
         Ok(read) => read,
         Err(refusal) => return Ok(Started::No(refusal)),
@@ -442,29 +421,6 @@ fn aimed(said: &str, here: &Path) -> Result<PathBuf, String> {
         return Err(format!("d:{said}: nothing is at {}", path.display()));
     }
     Ok(path)
-}
-
-/// Run a shell command where the view is, as a row of its own.
-///
-/// The same spawn `amx new --exec` makes, so the row ends done or failed by
-/// what the command exited with, and the dials the line could have turned are
-/// not read: there is no vendor here to turn them on.
-fn run(root: &Path, config: &Config, command: &str) -> Result<Started> {
-    if command.trim().is_empty() {
-        return Ok(Started::No("! takes a command to run".to_string()));
-    }
-
-    let dir = std::env::current_dir().context("no working directory")?;
-    let args = NewArgs {
-        task: command.to_string(),
-        name: None,
-        dir: None,
-        no_worktree: false,
-        exec: true,
-        agent: None,
-        vendor_args: Vec::new(),
-    };
-    spawned(root, &dir, config, &args, "running")
 }
 
 /// Hand the spawn to the verb, and say what came of it in the one line the
@@ -1156,8 +1112,12 @@ mod tests {
         for line in ["port it", "fix the login bug", "", "   "] {
             assert_eq!(slight(line), None, "{line:?} stands on its own");
         }
-        assert_eq!(slight("!ls"), None, "a short command is a command");
-        assert_eq!(slight("s:"), None, "and a narrowing starts nothing anyway");
+        assert_eq!(
+            slight("!ls"),
+            Some("!ls".to_string()),
+            "a bang is a character in a task, so a short one is asked about"
+        );
+        assert_eq!(slight("s:"), None, "a narrowing starts nothing anyway");
     }
 
     #[test]
@@ -1204,41 +1164,16 @@ mod tests {
     }
 
     #[test]
-    fn exec_a_line_that_opens_with_a_bang_is_a_command_to_run() {
-        assert_eq!(commanded("!cargo test --all"), Some("cargo test --all"));
-        assert_eq!(
-            commanded("  !  cargo test"),
-            Some("cargo test"),
-            "however it was spaced"
-        );
-        assert_eq!(
-            commanded("!m:opus echo hi"),
-            Some("m:opus echo hi"),
-            "and everything after the bang is the command, dial words and all"
-        );
-
-        for line in ["cargo test", "fix the login bug!", "", "   "] {
-            assert_eq!(commanded(line), None, "{line:?} is a task");
-        }
-    }
-
-    #[test]
-    fn exec_the_line_says_it_will_run_rather_than_start_an_agent() {
+    fn composer_a_leading_bang_is_a_character_in_a_task() {
+        // Shell rows are `amx new --exec`'s; the line dispatches none, so a
+        // task may open with a bang the way it may end with one.
         let mut composer = Composer::new(Asking::Task);
         composer.text = "!cargo test".to_string();
-        assert_eq!(composer.prompt(), "run");
+        assert_eq!(composer.prompt(), "task");
 
-        composer.text = "cargo test".to_string();
-        assert_eq!(composer.prompt(), "task", "and a task still is one");
-    }
-
-    #[test]
-    fn exec_a_bang_with_nothing_behind_it_is_refused_before_anything_is_made() {
-        let root = TempDir::new().unwrap();
-        let Started::No(why) = start(root.path(), &Config::default(), "!   ").unwrap() else {
-            panic!("a command with nothing in it started something");
-        };
-        assert!(why.contains('!'), "{why}");
+        let (dials, task) = turned(&as_claude(), "!cargo test").unwrap();
+        assert_eq!(dials, Turned::default());
+        assert_eq!(task, "!cargo test");
     }
 
     #[test]
