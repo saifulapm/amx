@@ -947,6 +947,14 @@ $
         for agent in ["claude", "claude --add-dir ..", "my-claude", ""] {
             assert_eq!(named(of(agent)), named(bundled()), "{agent:?}");
         }
+
+        // And what a command with no entry falls back to is the vendor amx
+        // would run if nobody had configured one, which is the first in the
+        // table. Two ways of saying the default, and they have to agree.
+        assert_eq!(
+            registry::program(&crate::config::Config::default().agent),
+            registry::entries().first().map_or("", |vendor| vendor.name)
+        );
     }
 
     #[test]
