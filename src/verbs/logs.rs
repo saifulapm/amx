@@ -66,7 +66,7 @@ pub fn run(
     // vendor, and neither is a reason to hold a reading back.
     let started = spawn::read_handoff(agent.dir()).ok();
     let vendor = started.as_ref().and_then(spawn::vendor_of);
-    let said = keeps_a_conversation(vendor)
+    let told = keeps_a_conversation(vendor)
         .then(|| meta.transcript.as_deref().and_then(conversation))
         .flatten();
 
@@ -74,7 +74,7 @@ pub fn run(
     // for the record: the phase says what amx was last told, and this verb is
     // asking what has been going on over there right now.
     match server.pane_alive(&meta.pane) {
-        true => match said {
+        true => match told {
             Some(said) => {
                 let tail = last_lines(&said, lines as usize);
                 send::line(&send::rendered(&tail, to_terminal), out)?;
@@ -582,9 +582,9 @@ mod tests {
 
     #[test]
     fn logs_of_an_agent_that_left_nothing_behind_name_the_gap() {
-        // Three ways there is nothing to print, and the reading says which.
-        // A vendor that keeps no conversation is the one somebody would
-        // otherwise go looking for the transcript of.
+        // One agent with nothing left of it, read three ways. Only the vendor
+        // that keeps no conversation has anything to answer for: it is the
+        // account somebody would otherwise go looking for by hand.
         let said = nothing_left("fix-login-a1b", Some(&SECOND));
         assert!(said.contains("fix-login-a1b"), "{said}");
         assert!(said.contains(SECOND.name), "{said}");
