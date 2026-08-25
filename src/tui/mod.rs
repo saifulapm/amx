@@ -732,8 +732,48 @@ impl Screen {
         self.list
             .show(scope.narrow(derive::views(root, rules::bundled(), now())?));
         self.read = Some(Instant::now());
+        self.keep_the_sweep();
         self.follow_the_cursor();
         Ok(())
+    }
+
+    /// Keep the cursor with a swept group whose heading dissolved under it.
+    ///
+    /// Stopping is what a sweep's first press does to a live group, and
+    /// stopping is what moves it to completed by this very reading: the
+    /// heading that was pressed can be gone before the second press, leaving
+    /// the cursor's index to whichever heading drifted into it — a different,
+    /// live group, one keystroke from being stopped by the press meant to
+    /// finish the sweep. So while a sweep's window is open and the cursor
+    /// stands on a heading over none of its rows, it is moved to the heading
+    /// standing over them: the second press lands on what the first one was
+    /// about. A cursor anywhere else is left alone — a row reads its own
+    /// presses, and only a heading is a keystroke from sweeping.
+    fn keep_the_sweep(&mut self) {
+        let Some(arm) = self
+            .arm
+            .as_ref()
+            .filter(|arm| arm.swept && arm.at.elapsed() < ARMED)
+        else {
+            return;
+        };
+        let covers = |under: rows::Under| {
+            self.list
+                .members(under)
+                .iter()
+                .any(|view| arm.ids.iter().any(|id| id == view.id()))
+        };
+        match self.list.heading() {
+            Some(under) if !covers(under) => {}
+            _ => return,
+        }
+        let landing = self.list.items().iter().position(|item| match item {
+            rows::Item::Heading(under, _) => covers(*under),
+            _ => false,
+        });
+        if let Some(at) = landing {
+            self.list.land(at);
+        }
     }
 
     /// Move the working pulse on, if a frame has gone by.
@@ -1503,7 +1543,8 @@ impl Screen {
             return;
         }
 
-        let (mut ids, mut stopped, mut trouble) = (Vec::new(), false, None);
+        let (mut ids, mut stopped) = (Vec::new(), false);
+        let mut trouble: Vec<String> = Vec::new();
         for view in self.list.members(under) {
             if view.phase().is_terminal() {
                 ids.push(view.id().to_string());
@@ -1514,7 +1555,7 @@ impl Screen {
                     ids.push(view.id().to_string());
                     stopped = true;
                 }
-                Err(e) => trouble = Some(format!("{}: {e:#}", view.id())),
+                Err(e) => trouble.push(format!("{}: {e:#}", view.id())),
             }
         }
         if stopped {
@@ -1523,8 +1564,16 @@ impl Screen {
 
         // The rows are the whole of what the view has to say about this, so
         // whatever it was saying before makes way for them — unless a stop
-        // failed, which is louder than anything the rows are wearing.
-        self.notice = trouble.map(Notice::Failed);
+        // failed, which is louder than anything the rows are wearing. One
+        // line for however many failed, the way `forget_all` counts its own.
+        self.notice = match trouble.len() {
+            0 => None,
+            1 => Some(Notice::Failed(trouble.remove(0))),
+            more => Some(Notice::Failed(format!(
+                "{more} would not stop: {}",
+                trouble[0]
+            ))),
+        };
         if ids.is_empty() {
             return;
         }
@@ -3220,6 +3269,73 @@ mod tests {
 
         screen.act(ctrl('x'), root.path(), &config, None).unwrap();
         assert!(crate::store::list(root.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn acts_ctrl_x_sweep_follows_its_rows_when_another_heading_drifts_into_the_cursor() {
+        // Found in review: sweeping the top heading dissolves it, and the
+        // live group below drifts up into the cursor's index. A second press
+        // there must finish the sweep, never stop the group that drifted in.
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        idle(root.path(), "ask-a1b");
+        idle(root.path(), "busy-b2c");
+        idle(root.path(), "busy-c3d");
+        let working = |id: &str| {
+            reading(
+                id,
+                Phase::Working,
+                State {
+                    state: Phase::Working,
+                    since: 1,
+                    last_event: 1,
+                    ..State::default()
+                },
+            )
+        };
+        let mut screen = watching(vec![
+            stopped_on_a_question("ask-a1b"),
+            working("busy-b2c"),
+            working("busy-c3d"),
+        ]);
+        screen.list.up();
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert_eq!(screen.armed(), ["ask-a1b".to_string()]);
+
+        // The reading catches up: the swept agent has stopped, its heading is
+        // gone, and the working heading now sits where the cursor's index is.
+        screen.list.show(vec![
+            reading(
+                "ask-a1b",
+                Phase::Stopped,
+                State {
+                    state: Phase::Stopped,
+                    since: 1,
+                    last_event: 1,
+                    ..State::default()
+                },
+            ),
+            working("busy-b2c"),
+            working("busy-c3d"),
+        ]);
+        screen.keep_the_sweep();
+
+        // The second press forgets what the first one armed, and the group
+        // that drifted into the cursor was never the sweep's business.
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert!(
+            !crate::store::list(root.path())
+                .unwrap()
+                .contains(&"ask-a1b".to_string()),
+            "the sweep finished on what it armed"
+        );
+        for id in ["busy-b2c", "busy-c3d"] {
+            assert_eq!(
+                Agent::open(root.path(), id).unwrap().state().unwrap().state,
+                Phase::Idle,
+                "{id} was not stopped by a press that was about another group"
+            );
+        }
     }
 
     #[test]

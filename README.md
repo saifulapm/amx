@@ -208,8 +208,9 @@ under it that is still running and arms every row in place — each row wears
 the warning itself — and the second press on a heading over the armed rows,
 inside the window, forgets them all, each under the same worktree safety a
 single row gets. That heading is not always the one that was pressed, because
-stopping is what moves a group to completed: the rows carry the arming, and
-the heading now standing over them is where the second press finds it.
+stopping is what moves a group to completed: the rows carry the arming, the
+cursor is kept with them while the window is open, and the heading standing
+over them is where the second press lands.
 
 The list takes the mouse: click selects, a click on a heading opens and shuts
 it, a click on the `… N more` fold unfolds it, the wheel scrolls — and pages an
