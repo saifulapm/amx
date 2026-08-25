@@ -747,6 +747,22 @@ impl Screen {
             // until they ask again.
             Look::Changes => {}
         }
+
+        // The line to answer on comes with a question card for as long as a
+        // question is pending, not just with the press that opened it: an
+        // answer that advanced the call to its next tab spent the line it was
+        // typed on, and the tab now showing is as much a question in front of
+        // somebody as the one before it was. Only where the keys are the
+        // list's — a line already being typed is somebody's, whatever it is
+        // for.
+        if let Some(card) = self.card.as_ref().filter(|card| card.asks())
+            && matches!(self.mode, Mode::List)
+        {
+            self.mode = Mode::Typing(Composer::new(Asking::Reply {
+                id: card.id.clone(),
+                question: true,
+            }));
+        }
     }
 
     /// The line being typed on the card, when that is where it is going.
@@ -787,7 +803,9 @@ impl Screen {
     /// The line comes with the card because that is what the card is for: an
     /// agent that has stopped is the reason somebody came to the screen, and
     /// making them press a second key to say so would be a screen that knows
-    /// what they want and waits to be asked.
+    /// what they want and waits to be asked. Opening it here is the same law
+    /// [`Screen::follow_the_cursor`] holds continuously, so this only takes
+    /// the look.
     fn look_closer(&mut self, root: &Path) {
         // A card is a look at one agent, and a heading or the fold is not one:
         // the key does nothing there rather than leaving the view looking at
@@ -797,12 +815,6 @@ impl Screen {
         };
         self.look = Look::Screen;
         self.follow_the_cursor();
-        if let Some(card) = self.card.as_ref().filter(|card| card.asks()) {
-            self.mode = Mode::Typing(Composer::new(Asking::Reply {
-                id: card.id.clone(),
-                question: true,
-            }));
-        }
 
         // Opening the card is the whole of what the mark means, so the record
         // learns it here. A record that will not take the look costs a mark
@@ -2197,6 +2209,76 @@ mod tests {
         assert_eq!(
             screen.card.as_ref().map(|card| card.body.as_str()),
             Some("+ a line")
+        );
+    }
+
+    #[test]
+    fn card_keeps_an_answer_line_up_for_as_long_as_a_question_is_pending() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![stopped_on_a_question("ask-a1b")]);
+        let press = |screen: &mut Screen, code| {
+            screen
+                .act(KeyEvent::from(code), root.path(), &config, None)
+                .unwrap();
+        };
+
+        // The card opens with the line to answer on, and entering the answer
+        // consumes it: the record has no agent behind it here, so the reply
+        // fails, which leaves the mode where a submitted answer leaves it.
+        press(&mut screen, KeyCode::Char(' '));
+        press(&mut screen, KeyCode::Char('1'));
+        press(&mut screen, KeyCode::Enter);
+        assert!(screen.answering().is_none(), "the line was spent");
+
+        // The call advances to its next tab while the card is still open, and
+        // the pass between rereads takes the card again: the line to answer
+        // the new question comes back on its own, with nothing typed at it.
+        screen.list.show(vec![reading(
+            "ask-a1b",
+            Phase::Waiting,
+            State {
+                state: Phase::Waiting,
+                question: Some("And which docker tag?".to_string()),
+                options: vec!["latest".to_string(), "pinned".to_string()],
+                kind: Some(Kind::Question),
+                since: 1,
+                last_event: 2,
+                ..State::default()
+            },
+        )]);
+        screen.freshen();
+        assert_eq!(
+            screen
+                .card
+                .as_ref()
+                .and_then(|card| card.question.as_deref()),
+            Some("And which docker tag?")
+        );
+        assert!(
+            screen.answering().is_some_and(|line| line.text.is_empty()),
+            "the answer line is there whenever a question is pending, empty"
+        );
+
+        // And when the last answer resolves the call, nothing reopens: a card
+        // that is not asking has nothing to type at.
+        press(&mut screen, KeyCode::Char('2'));
+        press(&mut screen, KeyCode::Enter);
+        screen.list.show(vec![reading(
+            "ask-a1b",
+            Phase::Working,
+            State {
+                state: Phase::Working,
+                since: 1,
+                last_event: 3,
+                ..State::default()
+            },
+        )]);
+        screen.freshen();
+        assert!(screen.answering().is_none());
+        assert!(
+            matches!(screen.mode, Mode::List),
+            "and the keys are the list's again"
         );
     }
 

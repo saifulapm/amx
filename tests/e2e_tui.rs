@@ -1905,6 +1905,11 @@ fn card_answers_the_tab_it_is_showing_and_leaves_the_one_behind_it_standing() {
         moved.contains("1. [ ] Canary"),
         "with the choices that tab offers, in the shape it offers them:\n{moved}"
     );
+    assert!(
+        moved.contains('❯'),
+        "and the line to answer it on came back by itself, the card never \
+         having been closed:\n{moved}"
+    );
     assert_eq!(
         amx.state("pick-a1b")["state"],
         "waiting",
