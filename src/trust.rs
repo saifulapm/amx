@@ -11,6 +11,11 @@
 //! write, and it answers for that tree and nothing else: never the repository
 //! around it, and never a directory somebody merely pointed amx at.
 //!
+//! Whether the agent being launched asks the question at all is the table's to
+//! say, and it is asked before any of this: a vendor with no folder-trust
+//! screen would get an entry written in somebody's file for a screen that is
+//! never drawn.
+//!
 //! Everything here was measured on claude 2.1.237, and is the vendor's own
 //! file, so re-measure it at every vendor bump:
 //!
@@ -46,9 +51,16 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::vendor::{Capability, Vendor};
 use crate::{install, registry, worktree};
 
-/// The one vendor whose trust amx knows how to answer.
+/// The vendor everything below was measured off: its file, its two keys, and
+/// the lock it takes while it writes.
+///
+/// Which vendors have a folder-trust screen at all is the table's to say, and
+/// [`answers_for`] asks it. This name is the other half of the question — the
+/// one vendor whose store amx has watched being written — and a law in the
+/// tests keeps the two from drifting apart.
 const VENDOR: &str = "claude";
 
 /// How long amx waits for the vendor's lock before leaving the file alone,
@@ -69,9 +81,18 @@ const ACCEPTED: &str = "hasTrustDialogAccepted";
 /// The variable that moves the whole file somewhere else.
 const CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
 
-/// Whether the agent about to be launched is the one amx can answer for.
+/// Whether the agent about to be launched is one amx can answer for.
 pub fn is_vendor(agent: &str) -> bool {
-    registry::program(agent) == VENDOR
+    registry::entry(agent).is_some_and(answers_for)
+}
+
+/// Whether this vendor's folder-trust screen is one amx knows how to answer.
+///
+/// The table says whether a vendor asks the question at all, and a vendor that
+/// does not is one amx would be answering nothing for: an entry in somebody's
+/// file, written for a screen that is never drawn.
+fn answers_for(vendor: &Vendor) -> bool {
+    vendor.can(Capability::Trust)
 }
 
 /// Where the store is for an agent that will run with `env`.
@@ -157,7 +178,7 @@ fn seed_within(
 
     let Some(held) = Held::take(store, patience, STALE)? else {
         bail!(
-            "{} is being written by claude, so amx left it alone",
+            "{} is being written by {VENDOR}, so amx left it alone",
             store.display()
         );
     };
@@ -178,7 +199,7 @@ fn seed_within(
     // store rewritten on a lock no longer held loses that holder's changes.
     if !held.holds() {
         bail!(
-            "{} is being written by claude, so amx left it alone",
+            "{} is being written by {VENDOR}, so amx left it alone",
             store.display()
         );
     }
@@ -462,6 +483,7 @@ fn staged(part: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vendor::second::SECOND;
     use tempfile::TempDir;
 
     /// A repository with a tree of amx's own in it, neither of them a real
@@ -504,6 +526,34 @@ mod tests {
         assert!(is_vendor("claude --verbose"));
         assert!(!is_vendor("mock-claude"));
         assert!(!is_vendor("codex"));
+    }
+
+    #[test]
+    fn trust_answers_for_a_vendor_that_says_it_has_a_screen_and_no_other() {
+        // Whether there is a screen to answer is the table's to say, not a
+        // name's. A vendor that has none is one amx would be writing an entry
+        // for a question nobody asked it.
+        let measured = registry::entry(VENDOR).expect("the vendor amx measured");
+        assert!(answers_for(measured));
+        assert!(!answers_for(&Vendor {
+            capabilities: &[Capability::Hooks],
+            ..*measured
+        }));
+        assert!(!answers_for(&SECOND));
+    }
+
+    #[test]
+    fn trust_is_answered_for_the_one_vendor_whose_store_amx_has_measured() {
+        // The file and the keys in this module are one vendor's own, watched
+        // being written. A second vendor with a folder-trust screen wants its
+        // own measurement before amx writes anything for it, and this is what
+        // says so on the day one arrives in the table.
+        let with_a_screen: Vec<&str> = registry::entries()
+            .iter()
+            .filter(|vendor| vendor.can(Capability::Trust))
+            .map(|vendor| vendor.name)
+            .collect();
+        assert_eq!(with_a_screen, [VENDOR]);
     }
 
     #[test]
