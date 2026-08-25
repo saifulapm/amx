@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, now};
+use crate::vendor::{Capability, Vendor};
 use crate::{Severity, exit, ids, paths, said};
 
 /// What amx records when it copies a conversation.
@@ -84,8 +85,9 @@ pub fn run(
     let meta = origin.meta()?;
 
     // Everything that would stop the fork is asked before anything is made:
-    // the session there is to copy, the directory to copy it in, and the words
-    // the copy will be launched with.
+    // the session there is to copy, the directory to copy it in, the words the
+    // copy will be launched with, and whether the vendor those words name can
+    // be asked for a copy at all.
     let session = copied_session(&meta)?;
     if !meta.dir.is_dir() {
         bail!(
@@ -96,6 +98,9 @@ pub fn run(
     }
     let recorded = spawn::read_handoff(origin.dir())
         .with_context(|| format!("reading what {} was started with", meta.id))?;
+    if let Some(refusal) = cannot_branch(spawn::vendor_of(&recorded), &meta.id) {
+        bail!(refusal);
+    }
 
     // The cap counts agents that are still going, and a fork is another one.
     let live = spawn::live(root)?;
@@ -270,6 +275,30 @@ fn names_a_session(word: &str) -> Option<bool> {
     })
 }
 
+/// Why this vendor cannot be asked for a copy of a conversation, when it
+/// cannot.
+///
+/// The two flags below are claude's, and a vendor with no equivalent would
+/// meet them as arguments it does not know: a pane that dies on its first line
+/// with the reason scrolling past, after an id and a directory have been spent
+/// on it. Saying it here is the same answer, before anything is made and in
+/// words that name what is missing.
+///
+/// A command amx has no entry for is not refused. amx has measured nothing
+/// about it, and nothing measured is no reason to take away what somebody's
+/// own wrapper command does today.
+fn cannot_branch(vendor: Option<&Vendor>, id: &str) -> Option<String> {
+    let vendor = vendor?;
+    (!vendor.can(Capability::Fork)).then(|| {
+        format!(
+            "{id} runs {}, which cannot branch a conversation, so there is no \
+             copy to ask it for. carry this one on with `amx resume {id}`, or \
+             start a fresh agent with `amx new`",
+            vendor.name
+        )
+    })
+}
+
 /// The session a copy is made from: the one the agent recorded, checked at the
 /// moment it is about to become a word on a command line.
 ///
@@ -342,6 +371,7 @@ fn make_dir(dir: &Path) -> Result<bool> {
 mod tests {
     use super::*;
     use crate::tmux::{PaneId, Socket};
+    use crate::vendor::second::SECOND;
     use tempfile::TempDir;
 
     fn handoff(command: &[&str], task: &str) -> Handoff {
@@ -481,6 +511,29 @@ mod tests {
         assert_eq!(
             copying(&started, "def-456", None),
             ["claude", "--verbose", "--resume=def-456", "--fork-session"]
+        );
+    }
+
+    #[test]
+    fn fork_refuses_a_vendor_that_cannot_branch_a_conversation() {
+        // The refusal names the vendor, the agent and what is missing, because
+        // what is missing is not something trying again would fix.
+        let said = cannot_branch(Some(&SECOND), "fix-login-a1b").expect("it cannot fork");
+        assert!(said.contains("fix-login-a1b"), "{said}");
+        assert!(said.contains(SECOND.name), "{said}");
+        assert!(said.contains("cannot branch a conversation"), "{said}");
+        assert!(said.contains("amx resume fix-login-a1b"), "{said}");
+
+        assert_eq!(
+            cannot_branch(crate::registry::entry("claude"), "fix-login-a1b"),
+            None,
+            "the vendor amx was written against can"
+        );
+        assert_eq!(
+            cannot_branch(None, "fix-login-a1b"),
+            None,
+            "and a command amx has no entry for is not amx's to refuse: \
+             nothing measured is not a measurement"
         );
     }
 
