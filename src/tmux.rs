@@ -363,6 +363,71 @@ impl Server {
         Ok(sanitize(&raw))
     }
 
+    /// What is on each of these panes' screens now, sanitized, in the order
+    /// they were asked about.
+    ///
+    /// One invocation for the lot of them. A capture is a fork, an exec and a
+    /// round trip to the server — a millisecond and a half of it — and a
+    /// reading of a wall takes one per agent it cannot account for from the
+    /// record: twenty agents is twenty of them, in a row, on the thread
+    /// somebody is waiting at. tmux takes a sequence of commands in one
+    /// invocation, so the wall costs the one.
+    ///
+    /// The screens are told apart by a marker printed in front of each, and
+    /// the marker is this call's own — see [`marker`] — because what is on a
+    /// pane is somebody else's text and a word it happened to be showing
+    /// would cut the batch in the wrong place.
+    ///
+    /// A pane that has gone since the list was taken answers with `None`. It
+    /// ends the invocation where it stands, because a sequence runs until one
+    /// command fails and stops there, so the panes behind it are asked again
+    /// without it rather than going with it. A server that answers nothing at
+    /// all is not asked again: that is about the server, and the panes on it
+    /// have nothing to say either way.
+    pub fn captures(&self, panes: &[PaneId]) -> Vec<Option<String>> {
+        let mut screens: Vec<Option<String>> = vec![None; panes.len()];
+        let mut from = 0;
+        while from < panes.len() {
+            let marker = marker();
+            let (ended_well, printed) = self.printed(&borrow(&batch(&panes[from..], &marker)));
+            let cut = cut_at(&printed, &marker);
+            if cut.is_empty() {
+                break;
+            }
+            // The last marker of a sequence that failed is the pane it failed
+            // on: the marker went out and the capture under it never did.
+            let answered = match ended_well {
+                true => cut.len(),
+                false => cut.len() - 1,
+            };
+            for (at, screen) in cut.iter().take(answered).enumerate() {
+                screens[from + at] = Some(sanitize(screen.trim_end()));
+            }
+            if ended_well {
+                break;
+            }
+            from += answered + 1;
+        }
+        screens
+    }
+
+    /// Run one tmux command line and answer with whether it ended well and
+    /// what it printed.
+    ///
+    /// The one call that wants a failure's output rather than a sentence about
+    /// it: a sequence stops at the first command that fails, and everything
+    /// the commands before it printed is on stdout and is what the caller came
+    /// for.
+    fn printed(&self, args: &[&str]) -> (bool, String) {
+        match self.command().args(args).output() {
+            Ok(out) => (
+                out.status.success(),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+            ),
+            Err(_) => (false, String::new()),
+        }
+    }
+
     /// The same screen with the paint the pane was drawn in kept.
     ///
     /// The one capture that is not sanitized here, because the escapes are
@@ -469,6 +534,59 @@ fn push_spawn(args: &mut Vec<String>, spawn: &Spawn<'_>) {
 
 fn borrow(args: &[String]) -> Vec<&str> {
     args.iter().map(String::as_str).collect()
+}
+
+/// The one command line that captures every one of these panes: a marker and
+/// a capture apiece, with the semicolons tmux reads a sequence by.
+///
+/// The marker goes in front of its capture rather than after it, so that a
+/// capture that never happened is a marker with nothing under it rather than
+/// a gap with nothing to name it.
+fn batch(panes: &[PaneId], marker: &str) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    for pane in panes {
+        if !args.is_empty() {
+            args.push(";".to_string());
+        }
+        args.extend(["display-message", "-p", marker, ";"].map(str::to_string));
+        args.extend(["capture-pane", "-p", "-J", "-t", pane.as_str()].map(str::to_string));
+    }
+    args
+}
+
+/// A line to tell one pane's screen from the next one's in a batch.
+///
+/// Made here rather than written down, because a marker is only a marker
+/// while no pane is showing it: whatever is on a screen is somebody else's
+/// text, and an agent that had printed the word amx cuts at would have its
+/// screen cut in two. The process and a count that never repeats in it are
+/// enough — nothing outside this call ever sees one, so no pane can be
+/// showing it.
+fn marker() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "amx-capture-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+/// The screens in a batch's output, one per marker, in the order they were
+/// asked for.
+///
+/// Anything printed before the first marker is nobody's screen: it is the
+/// server talking about itself.
+fn cut_at(printed: &str, marker: &str) -> Vec<String> {
+    let mut screens: Vec<String> = Vec::new();
+    for line in printed.lines() {
+        if line == marker {
+            screens.push(String::new());
+        } else if let Some(screen) = screens.last_mut() {
+            screen.push_str(line);
+            screen.push('\n');
+        }
+    }
+    screens
 }
 
 /// The id tmux listed beside `name`, in a listing of `<id> <name>` lines.
@@ -870,6 +988,81 @@ mod tests {
         let screen = server.capture(&pane).unwrap();
         assert!(screen.contains("RED"), "{screen:?}");
         assert!(!screen.contains('\u{1b}'), "a capture carries no escapes");
+    }
+
+    /// A pane with one word printed on it and nothing else happening.
+    fn a_pane_saying(server: &Server, word: &str) -> PaneId {
+        let script = format!("printf '{word}\\n'; while :; do sleep 0.05; done");
+        let (_, pane) = server
+            .new_session(&Spawn {
+                command: &["sh", "-c", &script],
+                ..Spawn::default()
+            })
+            .unwrap();
+        until(&format!("{word} to reach the screen"), || {
+            server.capture(&pane).is_ok_and(|s| s.contains(word))
+        });
+        pane
+    }
+
+    #[test]
+    fn tmux_reads_a_wall_of_screens_in_one_call() {
+        let server = TestServer::new();
+        let panes = ["FIRST", "SECOND", "THIRD"]
+            .map(|word| a_pane_saying(&server, word))
+            .to_vec();
+
+        let screens = server.captures(&panes);
+        assert_eq!(screens.len(), panes.len());
+        for (at, word) in ["FIRST", "SECOND", "THIRD"].iter().enumerate() {
+            let screen = screens[at].as_deref().expect("every pane answered");
+            assert!(screen.contains(word), "{at}: {screen:?}");
+            // Each pane's own screen and nobody else's: the batch is cut at
+            // markers, and a cut in the wrong place is one pane wearing the
+            // next one's words.
+            for other in ["FIRST", "SECOND", "THIRD"].iter().filter(|w| *w != word) {
+                assert!(!screen.contains(other), "{at}: {screen:?}");
+            }
+        }
+
+        // The same screen a single capture gives, sieve and all: a batch that
+        // read differently would have every rule matched against something
+        // else than what `capture` was measured on.
+        assert_eq!(
+            screens[1].as_deref(),
+            Some(server.capture(&panes[1]).unwrap().as_str())
+        );
+        assert!(server.captures(&[]).is_empty());
+    }
+
+    #[test]
+    fn tmux_a_pane_that_went_costs_its_own_screen_and_no_others() {
+        // tmux runs a sequence of commands until one of them fails and stops
+        // there, so a pane that went between the listing and the capture would
+        // otherwise take every pane behind it in the batch with it.
+        let server = TestServer::new();
+        let first = a_pane_saying(&server, "FIRST");
+        let second = a_pane_saying(&server, "SECOND");
+        let gone = PaneId::new("%404").unwrap();
+
+        let screens = server.captures(&[gone.clone(), first, gone.clone(), second, gone]);
+        assert_eq!(screens[0], None);
+        assert!(screens[1].as_deref().unwrap().contains("FIRST"));
+        assert_eq!(screens[2], None);
+        assert!(screens[3].as_deref().unwrap().contains("SECOND"));
+        assert_eq!(screens[4], None);
+    }
+
+    #[test]
+    fn tmux_a_server_that_is_not_there_answers_for_none_of_its_panes() {
+        // Nothing is listening, so not one marker comes back. That is about
+        // the server rather than about any of these panes, and asking again
+        // pane by pane would be a fork each for the same silence.
+        let server = TestServer::new();
+        let panes: Vec<PaneId> = (1..=3)
+            .map(|n| PaneId::new(format!("%{n}")).unwrap())
+            .collect();
+        assert_eq!(server.captures(&panes), vec![None, None, None]);
     }
 
     #[test]
