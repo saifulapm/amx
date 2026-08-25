@@ -15,14 +15,19 @@
 //!
 //! Two kinds of thing are on the screen at once and they are drawn apart:
 //! what is happening — the rows, the counters — and what the *next* agent will
-//! be started with, which has not happened at all. Everything of the second
-//! kind wears one treatment of its own, so nobody reads a dial as a fact about
-//! the fleet.
+//! be started with, which has not happened at all. Each has a row of its own
+//! above the list and the second one says so in a word, so nobody reads a dial
+//! as a fact about the fleet. The one thing of the second kind that is not on
+//! that row — what the next agent may do without asking, said under the line
+//! that would start it — is the one that wears a treatment instead, because it
+//! is beside a line somebody is about to press enter on.
 //!
 //! No colour is decided here. A thing is painted for what it means — waiting,
 //! done, failed — and which colour that is comes off the [`Theme`] the screen
 //! carries, so a person's palette reaches every one of these without any of
-//! them knowing there is such a thing as a palette.
+//! them knowing there is such a thing as a palette. Most of the screen is
+//! painted in none of it: a wall where everything is coloured is a wall where
+//! the colour says nothing.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -2296,13 +2301,15 @@ fn dim() -> Style {
     Style::new().add_modifier(Modifier::DIM)
 }
 
-/// The one treatment everything prospective wears — the profile, the dials,
-/// the permission the next agent will run under — so the eye tells what the
-/// next spawn will use from what is running now without reading either.
+/// What the next agent may do without asking, under the line that would start
+/// it: the one prospective thing on the screen worth a colour, because it is
+/// the one somebody is about to press enter past. The dials above the list say
+/// which half of the screen they are about in the word at the front of them
+/// and are as quiet as the rest of the chrome.
 ///
-/// Weight as well as colour: the counters beside it are already coloured by
-/// what they mean, and a terminal with the colour turned off still has to be
-/// able to tell a dial from a count.
+/// Weight as well as colour, for the terminal that has the colour turned off:
+/// the row has to read as amx's own answer for a spawn rather than as another
+/// line of the composer it is under.
 fn prospective(theme: Theme) -> Style {
     Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
 }
