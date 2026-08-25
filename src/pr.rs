@@ -293,28 +293,49 @@ fn pipeline_of(status: &str) -> Option<Checks> {
     }
 }
 
-/// The pull requests on this agent's branch, as the last look wrote them down.
+/// The pull requests on this agent's branch, as the last look wrote them down,
+/// with a fresh look set going where what is written down has aged.
+pub fn of(meta: &Meta) -> Vec<Pr> {
+    let Some((dir, at, branch)) = about(meta) else {
+        return Vec::new();
+    };
+    read(&dir, &at, branch, crate::store::now())
+}
+
+/// The same, for a reader that will not be here when a fresh answer arrives.
 ///
-/// Nothing to read for an agent amx did not cut a branch for: what a row would
+/// A verb that prints once and exits is one of those. The thread a look starts
+/// is never joined, and the process is gone before a forge has answered: the
+/// subprocess is paid for, killed part way through, and what it was going to
+/// write is dropped — sometimes with the file it writes through left behind.
+/// So this reads what the last look wrote and starts nothing. It is handed no
+/// tree to ask in, which is the whole of the difference.
+///
+/// The view is the reader that does wait, and it is the one that keeps what is
+/// written down worth reading.
+pub fn written(meta: &Meta) -> Vec<Pr> {
+    let Some((dir, _, branch)) = about(meta) else {
+        return Vec::new();
+    };
+    kept(&dir, branch)
+}
+
+/// Where a look about an agent goes: the record it is written down beside, the
+/// tree a forge would be asked from, and the branch it is about.
+///
+/// There is nowhere for an agent amx did not cut a branch for: what a row would
 /// be labelling then is whatever the person's own checkout happens to be on,
 /// which is not this agent's work. A record that is not on the disk and a tree
-/// that has been removed are the same answer, because both leave nowhere to
-/// run the question in.
-pub fn of(meta: &Meta) -> Vec<Pr> {
-    let Some(branch) = meta.branch.as_deref() else {
-        return Vec::new();
-    };
-    let Ok(dir) = crate::paths::agent_dir(&meta.id) else {
-        return Vec::new();
-    };
+/// that has been removed are the same answer, because both leave nowhere to run
+/// the question in.
+fn about(meta: &Meta) -> Option<(PathBuf, PathBuf, &str)> {
+    let branch = meta.branch.as_deref()?;
+    let dir = crate::paths::agent_dir(&meta.id).ok()?;
     let at = match &meta.worktree {
         Some(tree) if tree.is_dir() => tree.clone(),
         _ => meta.dir.clone(),
     };
-    if !dir.is_dir() || !at.is_dir() {
-        return Vec::new();
-    }
-    read(&dir, &at, branch, crate::store::now())
+    (dir.is_dir() && at.is_dir()).then_some((dir, at, branch))
 }
 
 /// The same, with the record's directory and the repository named.
@@ -327,6 +348,17 @@ pub fn read(dir: &Path, at: &Path, branch: &str, now: u64) -> Vec<Pr> {
     if !still_good(held.as_ref(), branch, now) {
         ask_again(dir.to_path_buf(), at.to_path_buf(), branch.to_string());
     }
+    theirs(held, branch)
+}
+
+/// What the last look wrote about this branch, however long ago it was written.
+pub fn kept(dir: &Path, branch: &str) -> Vec<Pr> {
+    theirs(held(dir), branch)
+}
+
+/// The requests in a look, where the look is about the branch being asked
+/// after. One from before a rename answers a question nobody is asking now.
+fn theirs(held: Option<Recorded>, branch: &str) -> Vec<Pr> {
     held.filter(|held| held.branch == branch)
         .map(|held| held.prs)
         .unwrap_or_default()
@@ -695,6 +727,32 @@ mod tests {
         assert!(
             !dir.path().join(format!("{CACHE}.new")).exists(),
             "and the file it was written through is not left lying about"
+        );
+    }
+
+    #[test]
+    fn a_look_nobody_will_be_here_for_reads_the_file_and_asks_nothing() {
+        let dir = TempDir::new().unwrap();
+        let prs = vec![Pr {
+            number: 12,
+            standing: Standing::Failing,
+        }];
+        write(dir.path(), "amx/fix-login-a1b", prs.clone(), 1_000).unwrap();
+
+        // Old enough that a look would set a fresh one going. A verb that
+        // prints this and exits has nowhere to put the answer, so it takes
+        // what is written down and leaves the forge alone: there is no tree
+        // to ask in here at all.
+        assert!(!still_good(
+            held(dir.path()).as_ref(),
+            "amx/fix-login-a1b",
+            9_000
+        ));
+        assert_eq!(kept(dir.path(), "amx/fix-login-a1b"), prs);
+        assert_eq!(
+            kept(dir.path(), "amx/port-importer-b2c"),
+            Vec::new(),
+            "and an answer about another branch is not this branch's answer"
         );
     }
 

@@ -10,45 +10,44 @@
 //! This is the one thing a reader writes, and it happens on `ls` because that
 //! is the command a person runs often and expects nothing of.
 
-use anyhow::Result;
-use std::path::Path;
-
-use crate::store::{Agent, Phase};
+use crate::derive::Record;
+use crate::store::{Phase, State};
 
 /// How long a finished agent's record is kept.
 pub const KEEP: u64 = 7 * 24 * 60 * 60;
 
-/// Remove the records that have outlived their use, and answer with what was
-/// removed.
-pub fn sweep(root: &Path, now: u64) -> Result<Vec<String>> {
-    let mut swept = Vec::new();
-    for id in crate::store::list(root)? {
-        let Ok(agent) = Agent::open(root, &id) else {
-            continue;
-        };
-        let Ok(state) = agent.state() else { continue };
-
-        if !matches!(state.state, Phase::Done | Phase::Failed) {
-            continue;
-        }
-        if now.saturating_sub(state.last_event.max(state.since)) <= KEEP {
-            continue;
-        }
-        // A record that will not go is not worth failing a listing over.
-        if agent.remove().is_ok() {
-            swept.push(id);
+/// Remove the records that have outlived their use, and answer with the ones
+/// that are left.
+///
+/// Over a reading somebody has already taken. Whether a record is worth keeping
+/// is the phase on it and when it was last heard from, which the listing has
+/// read the document for anyway — so the sweep opens nothing and parses
+/// nothing, and one `ls` is one reading of each record rather than two.
+pub fn sweep(records: Vec<Record>, now: u64) -> Vec<Record> {
+    let mut kept = Vec::new();
+    for record in records {
+        // A record that will not go is not worth failing a listing over, and
+        // it is still on the disk to be listed.
+        if !past_keeping(&record.state, now) || record.agent.remove().is_err() {
+            kept.push(record);
         }
     }
-    swept.sort();
-    Ok(swept)
+    kept
+}
+
+/// Whether a record has outlived its use: a command that ended, long enough ago
+/// that whatever it answered has been read or abandoned.
+fn past_keeping(state: &State, now: u64) -> bool {
+    matches!(state.state, Phase::Done | Phase::Failed)
+        && now.saturating_sub(state.last_event.max(state.since)) > KEEP
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{Meta, State};
+    use crate::store::{Agent, Meta};
     use crate::tmux::{PaneId, Socket};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use tempfile::TempDir;
 
     const NOW: u64 = 1_800_000_000;
@@ -72,8 +71,12 @@ mod tests {
             },
         )
         .unwrap();
-        // Straight onto disk: the writer stamps `last_event` with now, and
-        // these records are meant to be old.
+        wrote(&agent, phase, last_event);
+    }
+
+    /// Straight onto disk: the writer stamps `last_event` with now, and these
+    /// records are meant to be old.
+    fn wrote(agent: &Agent, phase: Phase, last_event: u64) {
         let state = State {
             state: phase,
             last_event,
@@ -87,17 +90,37 @@ mod tests {
         .unwrap();
     }
 
+    /// The records a listing has in hand by the time it sweeps.
+    fn read(root: &Path) -> Vec<Record> {
+        crate::derive::records(root).expect("the records")
+    }
+
+    fn ids(records: &[Record]) -> Vec<String> {
+        let mut ids: Vec<String> = records
+            .iter()
+            .map(|record| record.meta.id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    fn left(root: &Path) -> Vec<String> {
+        let mut ids = crate::store::list(root).unwrap();
+        ids.sort();
+        ids
+    }
+
     #[test]
     fn reader_forgets_an_agent_that_ended_a_week_ago() {
         let root = TempDir::new().unwrap();
         record(root.path(), "old-done-a1b", Phase::Done, NOW - KEEP - 1);
         record(root.path(), "old-failed-c3d", Phase::Failed, NOW - KEEP - 1);
+        record(root.path(), "just-done-e5f", Phase::Done, NOW - 60);
 
-        assert_eq!(
-            sweep(root.path(), NOW).unwrap(),
-            ["old-done-a1b", "old-failed-c3d"]
-        );
-        assert!(crate::store::list(root.path()).unwrap().is_empty());
+        // What comes back is what the listing goes on to answer with, and the
+        // records are gone from the disk with it.
+        assert_eq!(ids(&sweep(read(root.path()), NOW)), ["just-done-e5f"]);
+        assert_eq!(left(root.path()), ["just-done-e5f"]);
     }
 
     #[test]
@@ -111,7 +134,25 @@ mod tests {
         record(root.path(), "working-e5f", Phase::Working, NOW - KEEP - 1);
         record(root.path(), "waiting-g7h", Phase::Waiting, NOW - KEEP - 1);
 
-        assert!(sweep(root.path(), NOW).unwrap().is_empty());
-        assert_eq!(crate::store::list(root.path()).unwrap().len(), 4);
+        assert_eq!(sweep(read(root.path()), NOW).len(), 4);
+        assert_eq!(left(root.path()).len(), 4);
+    }
+
+    #[test]
+    fn reader_sweeps_the_records_it_was_handed_and_reads_none_of_its_own() {
+        // The state document each record was read from says the opposite of
+        // what is on the disk now. A sweep that opened the file again would
+        // answer the other way round on both of them.
+        let root = TempDir::new().unwrap();
+        record(root.path(), "old-done-a1b", Phase::Done, NOW - KEEP - 1);
+        record(root.path(), "just-done-c3d", Phase::Done, NOW - 60);
+        let records = read(root.path());
+
+        let agent = |id| Agent::open(root.path(), id).unwrap();
+        wrote(&agent("old-done-a1b"), Phase::Working, NOW);
+        wrote(&agent("just-done-c3d"), Phase::Done, NOW - KEEP - 1);
+
+        assert_eq!(ids(&sweep(records, NOW)), ["just-done-c3d"]);
+        assert_eq!(left(root.path()), ["just-done-c3d"]);
     }
 }

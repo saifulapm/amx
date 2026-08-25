@@ -185,11 +185,14 @@ impl View {
     /// removed: callers branch on these.
     ///
     /// The pull requests come from the same reading the row is labelled from,
-    /// which is what the last look wrote down beside the record. A verb that
-    /// prints once and exits does not wait for a forge, so a caller that has
-    /// never had the view open reads an empty list until something has asked.
+    /// which is what the last look wrote down beside the record — read here and
+    /// no more than read. A verb that prints once and exits does not wait for a
+    /// forge, and one that will not wait has no business starting a look
+    /// nobody will be here to collect: see [`crate::pr::written`]. A caller
+    /// that has never had the view open reads an empty list until something
+    /// that waits has asked.
     pub fn json(&self) -> serde_json::Value {
-        self.json_beside(&crate::pr::of(&self.meta))
+        self.json_beside(&crate::pr::written(&self.meta))
     }
 
     /// The same, over requests already read.
@@ -958,32 +961,60 @@ pub fn view(root: &Path, id: &str, rules: &Ruleset, now: u64) -> Result<View> {
     Ok(seen(meta, state, reading))
 }
 
+/// One agent's record, read off the disk.
+///
+/// A listing does two things with the same records: it forgets the ones that
+/// have outlived their use, and it concludes about the ones that are left. Both
+/// are answered out of the state document, so the document is parsed once and
+/// handed on rather than opened again by whoever asks next.
+pub struct Record {
+    pub agent: Agent,
+    pub meta: Meta,
+    pub state: State,
+}
+
+/// Every agent's record on the machine, in whatever order the directory is in.
+///
+/// A record amx cannot read the meta of is skipped: how an agent was started is
+/// how every surface names it, and there is nothing to say about one nothing
+/// can be said about.
+pub fn records(root: &Path) -> Result<Vec<Record>> {
+    let mut records = Vec::new();
+    for id in crate::store::list(root)? {
+        let agent = Agent::open(root, &id)?;
+        let Ok(meta) = agent.meta() else { continue };
+        let state = agent.state()?;
+        records.push(Record { agent, meta, state });
+    }
+    Ok(records)
+}
+
 /// One agent's record, and whether its pane is still there: everything a
 /// reading of a wall has in hand before it asks for a screen.
 struct Pending {
-    agent: Agent,
-    meta: Meta,
-    state: State,
+    record: Record,
     alive: bool,
 }
 
 /// Read every agent, oldest first.
+pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
+    Ok(views_of(root, records(root)?, rules, now))
+}
+
+/// The same, over records that have already been read.
 ///
 /// Two passes over the records with one round of tmux between them, because
 /// what tmux is asked is worked out from the records and the answer comes back
 /// for all of them at once: one pane list per server, and one call for every
 /// screen the reading needs. A wall of ten agents is two tmux calls, not
 /// twenty.
-pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
+pub fn views_of(root: &Path, records: Vec<Record>, rules: &Ruleset, now: u64) -> Vec<View> {
     let mut pending: Vec<Pending> = Vec::new();
     let mut panes: Vec<(crate::tmux::Socket, Vec<crate::tmux::PaneId>)> = Vec::new();
 
-    for id in crate::store::list(root)? {
-        let agent = Agent::open(root, &id)?;
-        let Ok(meta) = agent.meta() else { continue };
-        let state = agent.state()?;
-
-        let alive = if state.state.is_terminal() {
+    for record in records {
+        let meta = &record.meta;
+        let alive = if record.state.state.is_terminal() {
             true
         } else {
             let listed = match panes.iter().find(|(socket, _)| socket == &meta.socket) {
@@ -999,21 +1030,19 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
             listed.contains(&meta.pane)
         };
 
-        pending.push(Pending {
-            agent,
-            meta,
-            state,
-            alive,
-        });
+        pending.push(Pending { record, alive });
     }
 
     let mut screens = screens_of(&pending, now);
     let mut views = Vec::new();
     for (at, item) in pending.into_iter().enumerate() {
         let Pending {
-            agent,
-            meta,
-            mut state,
+            record:
+                Record {
+                    agent,
+                    meta,
+                    mut state,
+                },
             alive,
         } = item;
         // Taken rather than borrowed: the reading is handed the screen, and
@@ -1034,7 +1063,7 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
     }
 
     views.sort_by_key(|view| (view.meta.created, view.meta.id.clone()));
-    Ok(views)
+    views
 }
 
 /// The screens this reading needs, taken a server at a time, in the order the
@@ -1051,22 +1080,22 @@ fn screens_of(pending: &[Pending], now: u64) -> Vec<Option<String>> {
     let mut wanted: Vec<(crate::tmux::Socket, Vec<usize>)> = Vec::new();
 
     for (at, item) in pending.iter().enumerate() {
-        if !wants_the_screen(&item.state, item.alive, now) {
+        if !wants_the_screen(&item.record.state, item.alive, now) {
             continue;
         }
         match wanted
             .iter_mut()
-            .find(|(socket, _)| socket == &item.meta.socket)
+            .find(|(socket, _)| socket == &item.record.meta.socket)
         {
             Some((_, asking)) => asking.push(at),
-            None => wanted.push((item.meta.socket.clone(), vec![at])),
+            None => wanted.push((item.record.meta.socket.clone(), vec![at])),
         }
     }
 
     for (socket, asking) in wanted {
         let panes: Vec<crate::tmux::PaneId> = asking
             .iter()
-            .map(|at| pending[*at].meta.pane.clone())
+            .map(|at| pending[*at].record.meta.pane.clone())
             .collect();
         let taken = Server::from_socket(socket).captures(&panes);
         for (at, screen) in asking.into_iter().zip(taken) {
@@ -1091,14 +1120,13 @@ fn screens_of(pending: &[Pending], now: u64) -> Vec<Option<String>> {
 /// record cannot name stays unnamed. The reading is what corrects that, and
 /// nothing about this is a substitute for one: it is the frame before it.
 pub fn recorded(root: &Path, now: u64) -> Result<Vec<View>> {
-    let mut views = Vec::new();
-    for id in crate::store::list(root)? {
-        let agent = Agent::open(root, &id)?;
-        let Ok(meta) = agent.meta() else { continue };
-        let state = agent.state()?;
-        let verdict = from_the_record(&state, meta.created, now);
-        views.push(View::new(meta, state, verdict));
-    }
+    let mut views: Vec<View> = records(root)?
+        .into_iter()
+        .map(|record| {
+            let verdict = from_the_record(&record.state, record.meta.created, now);
+            View::new(record.meta, record.state, verdict)
+        })
+        .collect();
 
     views.sort_by_key(|view| (view.meta.created, view.meta.id.clone()));
     Ok(views)
