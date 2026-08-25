@@ -141,8 +141,6 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     let space = space_rows(area.height);
     let permission = permission(screen);
     let allowing = u16::from(permission.is_some());
-    let prefixes = prefixes(screen);
-    let teaching = u16::from(prefixes.is_some());
 
     // The line being typed, where it is not the one the card is holding: an
     // answer is typed on the card itself, so it is not a band as well.
@@ -150,18 +148,17 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     // Every band that is not the list: the header, the space under it, the
     // keys, the rows under the composer, and the line itself counted at the
     // one row it never goes below.
-    let chrome = head + space + 1 + allowing + teaching;
+    let chrome = head + space + 1 + allowing;
     let composing = match banded {
         Some(composer) => composer_height(composer, area, chrome),
         None => 0,
     };
 
-    let [top, _, middle, line, taught, allowed, keys] = Layout::vertical([
+    let [top, _, middle, line, allowed, keys] = Layout::vertical([
         Constraint::Length(head),
         Constraint::Length(space),
         Constraint::Min(1),
         Constraint::Length(composing),
-        Constraint::Length(teaching),
         Constraint::Length(allowing),
         Constraint::Length(1),
     ])
@@ -226,10 +223,6 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     }
     if let Some(composer) = banded {
         composing_line(frame, composer, line);
-    }
-    if let Some(taught_words) = prefixes {
-        let row = Line::styled(fit(taught_words, taught.width as usize), dim());
-        frame.render_widget(Paragraph::new(row), taught);
     }
     if let Some(row) = permission {
         frame.render_widget(Paragraph::new(row), allowed);
@@ -1635,7 +1628,16 @@ fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect) {
                 0 => Span::styled(prompt.clone(), Style::new().fg(role::WARNING)),
                 _ => Span::raw(indent.clone()),
             };
-            Line::from(vec![head, Span::raw(text.clone())])
+            let mut spans = vec![head, Span::raw(text.clone())];
+            // An empty line holds its prefixes as ghost text, cut where the
+            // screen ends; the cursor set below sits over the front of it.
+            if at == 0
+                && let Some(hint) = placeholder(composer)
+            {
+                let room = width.saturating_sub(prompt.chars().count());
+                spans.push(Span::styled(fit(hint, room), dim()));
+            }
+            Line::from(spans)
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
@@ -1677,18 +1679,16 @@ fn permission(screen: &Screen) -> Option<Line<'static>> {
     ))
 }
 
-/// The words the task line reads at its front, said while there is nothing on
-/// it.
+/// The words the task line reads at its front, said on the line itself while
+/// there is nothing on it.
 ///
 /// The prefixes are amx's own grammar and nothing else on the screen teaches
 /// them: a dial turned by `m:` looks exactly like a task that happens to open
-/// with one. So the empty line says them, dimly, and the first character typed
-/// takes the row away — whoever is typing has stopped reading it. A reply and
-/// a rename read no prefixes, so their lines teach none.
-fn prefixes(screen: &Screen) -> Option<&'static str> {
-    let Mode::Typing(composer) = &screen.mode else {
-        return None;
-    };
+/// with one. So the empty line holds them the way a form field holds its
+/// ghost text — dim, after the prompt, and gone at the first character typed,
+/// because whoever is typing has stopped reading it. A reply and a rename
+/// read no prefixes, so their lines teach none.
+fn placeholder(composer: &Composer) -> Option<&'static str> {
     if !matches!(composer.asking, Asking::Task) || !composer.text.is_empty() {
         return None;
     }
@@ -3557,6 +3557,11 @@ mod tests {
             .iter()
             .find(|row| row.contains("m:model"))
             .expect("the empty line teaches its prefixes");
+        assert!(
+            hint.starts_with("task ▸ m:model"),
+            "the hint is a placeholder on the line itself, not a row of its \
+             own: {hint}"
+        );
         for named in [
             "m:model",
             "p:permission",
@@ -3569,16 +3574,26 @@ mod tests {
         ] {
             assert!(hint.contains(named), "{named} is not taught: {hint}");
         }
+        assert_eq!(
+            empty.iter().filter(|row| row.contains("m:model")).count(),
+            1,
+            "and only there: the band under the composer is gone"
+        );
 
         let narrow = painted(&typing(""), TALL);
         let clipped = narrow
             .iter()
             .find(|row| row.contains("m:model"))
             .expect("a narrow screen still teaches what fits");
+        assert!(clipped.starts_with("task ▸ m:model"), "{clipped}");
         assert!(clipped.trim_end().ends_with('…'), "{clipped}");
 
-        // The first character typed takes the row away: whoever is typing has
-        // stopped reading it.
+        // The next keystroke lands where the prompt ends, over the
+        // placeholder, the way a browser draws a field's ghost text.
+        assert_eq!(caret(&typing(""), TALL), (7, 27));
+
+        // The first character typed takes the placeholder away: whoever is
+        // typing has stopped reading it.
         let typed = painted(&typing("p"), TALL);
         assert!(
             !typed.iter().any(|row| row.contains("m:model")),
@@ -3586,7 +3601,7 @@ mod tests {
         );
 
         // A reply goes to an agent already running, where a dial means
-        // nothing, so the row would be teaching keys the line does not read.
+        // nothing, so the line would be teaching keys it does not read.
         let mut replying = showing(Vec::new(), None);
         replying.mode = Mode::Typing(Composer::new(Asking::Reply {
             id: "fix-a1b".to_string(),
@@ -3705,10 +3720,9 @@ mod tests {
         screen.mode = Mode::Typing(Composer::new(Asking::Task));
 
         let drawn = painted(&screen, (60, 8));
-        assert_eq!(drawn[4], "task ▸");
         assert!(
-            drawn[5].starts_with("m:model"),
-            "the empty line teaches its prefixes above the dial: {:?}",
+            drawn[5].starts_with("task ▸ m:model"),
+            "the empty line carries its placeholder above the dial: {:?}",
             drawn[5]
         );
         assert_eq!(
