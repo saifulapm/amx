@@ -89,6 +89,44 @@ fn coloured_line(amx: &Harness, view: &str, text: &str) -> String {
         .to_string()
 }
 
+/// The SGR attributes in force where `word` starts on this captured line:
+/// every escape before it walked, resets honoured, and the colour
+/// introducers' arguments consumed — the `2` of `38;2;r;g;b` is a
+/// colourspace, never the dim attribute.
+fn sgr_at(line: &str, word: &str) -> Vec<u16> {
+    let at = line
+        .find(word)
+        .unwrap_or_else(|| panic!("{word:?} is not on {line:?}"));
+    let mut on: Vec<u16> = Vec::new();
+    let mut rest = &line[..at];
+    while let Some(start) = rest.find("\u{1b}[") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('m') else { break };
+        let params: Vec<u16> = after[..end]
+            .split(';')
+            .map(|param| param.parse().unwrap_or(0))
+            .collect();
+        let mut n = 0;
+        while n < params.len() {
+            match params[n] {
+                0 => on.clear(),
+                22 => on.retain(|param| *param != 1 && *param != 2),
+                38 | 48 => {
+                    n += match params.get(n + 1) {
+                        Some(2) => 4,
+                        Some(5) => 2,
+                        _ => 0,
+                    };
+                }
+                param => on.push(param),
+            }
+            n += 1;
+        }
+        rest = &after[end + 1..];
+    }
+    on
+}
+
 /// Move a record's directory, which is what decides its project.
 fn running_in(amx: &Harness, id: &str, dir: &std::path::Path) {
     let path = amx.agent_dir(id).join("meta.json");
@@ -886,6 +924,51 @@ fn completed_agents_fold_into_a_count_until_they_are_opened() {
     amx.until("the rest of them", || {
         screen(&amx, &view).contains("five-e5f").then_some(())
     });
+}
+
+#[test]
+fn rows_read_as_one_muted_tone_with_the_state_kept_on_the_icon() {
+    let amx = Harness::new();
+    finished(&amx, "fix-login-a1b", "done", 60);
+    finished(&amx, "port-importer-b2c", "done", 120);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("fix-login-a1b") && drawn.contains("port-importer-b2c")).then_some(())
+    });
+
+    // The cursor opens on the newest ending, so the older row is the muted
+    // one: its name and its summary wear the same dim, nothing bold.
+    let muted = coloured_line(&amx, &view, "port-importer-b2c");
+    for word in ["port-importer-b2c", "did what it was asked"] {
+        assert!(
+            sgr_at(&muted, word).contains(&2),
+            "{word} is not dim on the unselected row:\n{muted:?}"
+        );
+        assert!(
+            !sgr_at(&muted, word).contains(&1),
+            "{word} is bold on the unselected row:\n{muted:?}"
+        );
+    }
+    assert!(
+        muted.contains("38;2;78;186;101"),
+        "the icon alone carries the state's colour:\n{muted:?}"
+    );
+
+    // And the selected row is the one that stands out: full strength, the
+    // name in bold, over the bar.
+    let selected = coloured_line(&amx, &view, "fix-login-a1b");
+    assert!(
+        sgr_at(&selected, "fix-login-a1b").contains(&1),
+        "{selected:?}"
+    );
+    for word in ["fix-login-a1b", "did what it was asked"] {
+        assert!(
+            !sgr_at(&selected, word).contains(&2),
+            "{word} is dim on the selected row:\n{selected:?}"
+        );
+    }
 }
 
 #[test]

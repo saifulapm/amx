@@ -693,10 +693,14 @@ fn heading(title: String, tally: Tally, marked: bool) -> Line<'static> {
 /// An agent's row: what state it is in, what it is called, what its work is
 /// waiting on out in the world, what it is up to, and how long it has worked.
 ///
-/// The state is on the row twice where it is on it at all — as the mark, and
-/// as the word beside the name. The mark is worth reading at a glance across a
-/// whole screen and the word is worth reading on one row, and under a project
-/// heading nothing else says which state a row is in.
+/// The words of a row the cursor is not on wear one muted tone — the name,
+/// the summary and the age all the same dim — with the state carried by the
+/// icon's colour alone, the way claude's own agent view has it. The selected
+/// row is the one that stands out: the bar underneath it, and its text at
+/// full strength. The exceptions earn their colour: the pull request's number
+/// answers how the work went, the armed warning is a thing waiting on a
+/// person, and under a project heading the state word keeps the phase colour
+/// because it replaces the icon's job there.
 ///
 /// A row a press has armed says that instead of what the agent said, in the
 /// colour of a thing waiting on a person. The summary is the one part of a row
@@ -742,6 +746,12 @@ fn row(
         false => fit(first_line(view.line().unwrap_or("")), room),
     };
 
+    // The one tone the row's words wear, which is what makes the selected
+    // row the one that stands out.
+    let toned = match selected {
+        true => Style::new(),
+        false => dim(),
+    };
     let [read, top] = marks(view, held);
     let mut spans = vec![
         read,
@@ -749,10 +759,9 @@ fn row(
         Span::styled(format!("{} ", icon(phase, moment.beat)), colour(phase)),
         Span::styled(
             format!("{}  ", padded(&name, names)),
-            if selected {
-                Style::new().add_modifier(Modifier::BOLD)
-            } else {
-                Style::new()
+            match selected {
+                true => Style::new().add_modifier(Modifier::BOLD),
+                false => dim(),
             },
         ),
     ];
@@ -774,10 +783,10 @@ fn row(
     }
     let summary = match armed {
         true => Style::new().fg(role::WARNING),
-        false => dim(),
+        false => toned,
     };
     spans.push(Span::styled(format!("{} ", padded(&said, room)), summary));
-    spans.push(Span::styled(format!("{worked:>AGE$}"), dim()));
+    spans.push(Span::styled(format!("{worked:>AGE$}"), toned));
     Line::from(spans)
 }
 
@@ -4162,6 +4171,81 @@ mod tests {
             .find(word)
             .unwrap_or_else(|| panic!("{word:?} is not on {line:?}"));
         buffer[(line[..at].chars().count() as u16, row)].fg
+    }
+
+    /// And the weight it was painted at, for the tests about the muted rows.
+    fn word_modifier(screen: &Screen, size: (u16, u16), row: u16, word: &str) -> Modifier {
+        let buffer = cells(screen, size);
+        let line: String = (0..size.0)
+            .map(|column| buffer[(column, row)].symbol())
+            .collect();
+        let at = line
+            .find(word)
+            .unwrap_or_else(|| panic!("{word:?} is not on {line:?}"));
+        buffer[(line[..at].chars().count() as u16, row)].modifier
+    }
+
+    #[test]
+    fn rows_wear_one_muted_tone_and_the_selected_row_stands_out() {
+        let size = (60, 10);
+        let screen = showing(
+            vec![
+                view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
+                view(
+                    "port-importer-b2c",
+                    Phase::Done,
+                    Some("wrote the tests"),
+                    300,
+                ),
+            ],
+            None,
+        );
+
+        // The cursor opens on the first agent, whose row is the one that
+        // stands out: its text at full strength, the name in bold.
+        let selected = 3;
+        assert!(word_modifier(&screen, size, selected, "fix-login-a1b").contains(Modifier::BOLD));
+        for word in ["fix-login-a1b", "wrote the parser", "1m"] {
+            assert!(
+                !word_modifier(&screen, size, selected, word).contains(Modifier::DIM),
+                "{word} is dim on the selected row"
+            );
+        }
+
+        // The row the cursor is not on reads as one muted tone: name, summary
+        // and age all in the same dim, nothing bold.
+        let muted = 4;
+        for word in ["port-importer-b2c", "wrote the tests", "5m"] {
+            assert!(
+                word_modifier(&screen, size, muted, word).contains(Modifier::DIM),
+                "{word} is not dim on the unselected row"
+            );
+            assert!(!word_modifier(&screen, size, muted, word).contains(Modifier::BOLD));
+        }
+
+        // The state is carried by the icon's colour alone.
+        let (glyph, painted, _) = mark(&screen, size, muted);
+        assert_eq!((glyph.as_str(), painted), ("●", role::SUCCESS));
+    }
+
+    #[test]
+    fn rows_on_the_project_axis_keep_the_phase_colour_on_the_state_word() {
+        // The state word replaces the icon's job under a project heading, so
+        // it keeps the phase colour while the words beside it stay muted.
+        let size = (60, 10);
+        let screen = by_project(vec![
+            at(
+                view("busy-c3d", Phase::Working, Some("Running Bash"), 3),
+                "/src/api",
+            ),
+            at(
+                view("fix-login-a1b", Phase::Done, Some("fixed it"), 60),
+                "/src/api",
+            ),
+        ]);
+
+        assert_eq!(word_colour(&screen, size, 4, "done"), role::SUCCESS);
+        assert!(word_modifier(&screen, size, 4, "fixed it").contains(Modifier::DIM));
     }
 
     #[test]
