@@ -1337,15 +1337,16 @@ impl Screen {
             .map_or(&[], |arm| arm.ids.as_slice())
     }
 
-    /// ctrl+x on an agent's row: stop it, or arm it and then forget it.
+    /// ctrl+x on an agent's row: one rule, whatever the row is doing. The
+    /// first press stops a live agent — idle included — and arms the row,
+    /// live or finished; the press inside the window is the one that forgets;
+    /// a window left to lapse disarms with nothing removed.
     ///
     /// Stopping is what the key has always done to a running agent, and it
     /// costs nothing that is not on a branch: the pane goes and the record
     /// stays. Forgetting is the other kind of thing — the record goes, and the
-    /// tree it was cut goes with it — so it is not what any single keystroke
-    /// does. The first press on a finished row arms it and the row says so, in
-    /// the place somebody is already reading; the press inside that window is
-    /// the one that forgets.
+    /// tree it was cut goes with it — so it is never what a single keystroke
+    /// does, whatever state the row was in when the first one landed.
     ///
     /// The row says it rather than the line under the keys, because the row is
     /// what the cursor is on and what the second press would take away. A
@@ -1355,23 +1356,35 @@ impl Screen {
         let Some(view) = self.list.selected() else {
             return;
         };
-        let armed = self.armed().iter().any(|id| id == view.id());
-        if view.phase().is_terminal() && !armed {
-            let id = view.id().to_string();
-            // The row is the whole of what the view has to say about this, so
-            // whatever it was saying before makes way for it.
-            self.notice = None;
-            self.arm = Some(Arm {
-                ids: vec![id],
-                heading: None,
-                at: Instant::now(),
-            });
+        if self.armed().iter().any(|id| id == view.id()) {
+            self.arm = None;
+            self.notice = said(act::forget(root, view));
+            self.acted();
             return;
         }
 
-        self.arm = None;
-        self.notice = said(act::end(root, view));
-        self.acted();
+        let id = view.id().to_string();
+        match view.phase().is_terminal() {
+            // The row is the whole of what the view has to say about this, so
+            // whatever it was saying before makes way for it.
+            true => self.notice = None,
+            false => {
+                let stopped = act::stop(root, view);
+                let held = stopped.is_ok();
+                self.notice = said(stopped);
+                self.acted();
+                // A row the stop could not end is not one a second press may
+                // clear away: the failure is on the screen instead.
+                if !held {
+                    return;
+                }
+            }
+        }
+        self.arm = Some(Arm {
+            ids: vec![id],
+            heading: None,
+            at: Instant::now(),
+        });
     }
 
     /// ctrl+x on a heading: arm the finished agents under it, or forget them.
@@ -2447,6 +2460,85 @@ mod tests {
         let (_, gone) = pressing(root.path(), vec![ctrl('x'), ctrl('x')]);
         assert!(gone.contains("first-a1b forgotten"), "{gone}");
         assert_eq!(left(), 1);
+    }
+
+    /// An agent whose record still reads live, behind a socket nothing is on:
+    /// the phase the wall shows is the reading a test hands it.
+    fn idle(root: &Path, id: &str) {
+        let agent = Agent::create(
+            root,
+            &Meta {
+                id: id.to_string(),
+                task: "fix the login bug".to_string(),
+                dir: PathBuf::from("/srv/app"),
+                worktree: None,
+                branch: None,
+                base: None,
+                socket: Socket::Name("amx-not-a-server".to_string()),
+                pane: PaneId::new("%404").unwrap(),
+                bg: false,
+                session: None,
+                transcript: None,
+                created: now(),
+            },
+        )
+        .unwrap();
+        let state = State {
+            state: Phase::Idle,
+            since: now(),
+            last_event: now(),
+            ..State::default()
+        };
+        std::fs::write(
+            agent.dir().join("state.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn acts_ctrl_x_on_a_live_row_stops_it_and_arms_it_and_the_press_after_forgets_it() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        idle(root.path(), "quiet-a1b");
+        let mut screen = watching(vec![reading(
+            "quiet-a1b",
+            Phase::Idle,
+            State {
+                state: Phase::Idle,
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        )]);
+
+        // The first press is the same press on every row: a live agent is
+        // stopped, and the row is armed in the same move.
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        let agent = Agent::open(root.path(), "quiet-a1b").unwrap();
+        assert_eq!(agent.state().unwrap().state, Phase::Stopped);
+        assert_eq!(
+            screen.armed(),
+            ["quiet-a1b".to_string()],
+            "armed by the press that stopped it, not by a press of its own"
+        );
+        assert_eq!(
+            crate::store::list(root.path()).unwrap().len(),
+            1,
+            "and stopping is not forgetting"
+        );
+
+        // The second press inside the window forgets it, even while the list
+        // still holds the reading from before the stop.
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        let Some(Notice::Advice(said)) = &screen.notice else {
+            panic!("the second press said nothing")
+        };
+        assert!(said.contains("forgotten"), "{said}");
+        assert!(
+            crate::store::list(root.path()).unwrap().is_empty(),
+            "two presses on a live row, not three"
+        );
     }
 
     #[test]

@@ -641,25 +641,16 @@ pub fn looked(root: &Path, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// End the agent under the cursor: one that is running is stopped, and one
-/// that has already ended is forgotten.
+/// Stop the agent under the cursor: the pane goes and the record stays.
 ///
-/// Which of the two it is, is decided here. How many presses it took to get
-/// here is the view's own business, and the answer there is two for a
-/// forgetting: this door opens on the second press of a row the first one
-/// armed, because nothing brings a record and the tree under it back.
-pub fn end(root: &Path, view: &View) -> Result<String> {
-    if view.phase().is_terminal() {
-        return forget(root, view);
-    }
-
-    // The dispositions a person gets asked about at a shell prompt are taken
-    // here as the defaults they already are: the worktree goes, the branch
-    // stays, the record stays. Nothing that could lose work is decided by a
-    // keystroke.
-    // `forget` above is this file's own `--delete`, and it is a second
-    // keystroke rather than part of this one: ending an agent and clearing its
-    // row away are two decisions on the wall as well as at a prompt.
+/// The dispositions a person gets asked about at a shell prompt are taken
+/// here as the defaults they already are: the worktree goes, the branch
+/// stays, the record stays. Nothing that could lose work is decided by a
+/// keystroke.
+/// `forget` below is this file's own `--delete`, and it is a second
+/// keystroke rather than part of this one: ending an agent and clearing its
+/// row away are two decisions on the wall as well as at a prompt.
+pub fn stop(root: &Path, view: &View) -> Result<String> {
     let args = StopArgs {
         id: view.id().to_string(),
         force: true,
@@ -705,7 +696,12 @@ fn forgetting(root: &Path, view: &View) -> Result<Forgotten> {
 }
 
 /// The same, as the line the view puts where its keys are.
-fn forget(root: &Path, view: &View) -> Result<String> {
+///
+/// How many presses it took to get here is the view's own business, and the
+/// answer there is two whatever the row was doing: this door opens on the
+/// second press of a row the first one armed — stopping it if it was live —
+/// because nothing brings a record and the tree under it back.
+pub fn forget(root: &Path, view: &View) -> Result<String> {
     Ok(match forgetting(root, view)? {
         Forgotten::Yes => format!("{} forgotten", view.id()),
         Forgotten::Kept(tree) => format!(

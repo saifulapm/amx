@@ -181,13 +181,15 @@ wall, counting rows from the top and skipping the headings, without walking the
 cursor to them first. It is the fleet you already have in front of you, reached
 by the number you were about to count to.
 
-`ctrl+x` forgets nothing on the first press. On an agent that is still running
-it stops it, which costs you the pane and nothing else. On one whose command
-has ended it arms the row instead: where the row was saying what the agent did
-it says `ctrl+x again forgets` for about two seconds, and the press inside that
-window is the one that takes the record away, and the worktree with it where
-that tree holds nothing no commit has. Leave it alone and the row goes back to
-saying what it was saying, having forgotten nothing. On a heading the same two
+`ctrl+x` forgets nothing on the first press, and the first press is the same
+press on every row. An agent that is still running — sitting idle at its
+prompt included — is stopped, which costs you the pane and nothing else, and
+the row is armed in the same move; one whose command has ended is armed as it
+stands. Where the row was saying what the agent did it says `ctrl+x again
+forgets` for about two seconds, and the press inside that window is the one
+that takes the record away, and the worktree with it where that tree holds
+nothing no commit has. Leave it alone and the row goes back to saying what it
+was saying, having forgotten nothing. On a heading the same two
 presses reach the whole group: the first arms every finished row under it —
 each row wears the warning itself, and running ones are not touched — and the
 second press on the heading, inside the window, forgets them all, each under
