@@ -560,13 +560,9 @@ const CARD_TALL: u16 = 14;
 /// against the box it is written in.
 const PADDING: u16 = 1;
 
-/// Below this the worktree dial says what it is without saying what it will
-/// do: the dial is the thing somebody turns, the path is what it means.
-const NARROW: usize = 90;
-
-/// Below this many rows the header is the launch profile alone. Two rows of
-/// chrome over a screen that short is a third of it, and the list is what the
-/// view is for.
+/// Below this many rows the header is what there is and nothing else. Two rows
+/// of chrome over a screen that short is a third of it, and the list is what
+/// the view is for.
 const SHORT: usize = 10;
 
 /// From this many rows up there is a blank one between the header and the
@@ -596,42 +592,26 @@ fn space_rows(height: u16) -> u16 {
     u16::from((height as usize) >= SPACED)
 }
 
-/// What is above the list: what the next agent will be started with, and what
-/// the fleet is doing now.
+/// What is above the list: what there is, and under it what the next agent
+/// will be started with.
 ///
-/// Two rows where there is room for two. The build's own version and the
-/// worktree dial share the first, and the launch profile and the counters
-/// share the second — one prospective half and one current half on each, which
-/// is that law made visible. The row that goes on a short screen is the first:
-/// which version this is says nothing about the fleet, and the dial is one
+/// Two rows where there is room for two, and one kind of thing on each. The
+/// first is the present tense — amx, the directory the view was opened on, and
+/// the counters — and the second is every dial, in one row that says at its
+/// front what it is about. The row that goes on a short screen is the second:
+/// what the fleet is doing is why somebody opened the view, and a dial is one
 /// keypress from being read in the row under the composer.
 fn header(screen: &Screen, area: Rect) -> Vec<Line<'static>> {
     let width = area.width as usize;
     let theme = screen.theme;
-    let mut lines = Vec::new();
-    if area.height >= 2 {
-        lines.push(spread(
-            vec![Span::styled(
-                format!("amx v{}", env!("CARGO_PKG_VERSION")),
-                dim(),
-            )],
-            vec![Span::styled(
-                worktree_dial(screen.profile.worktree, width),
-                prospective(theme),
-            )],
-            width,
-        ));
-    }
-
-    // The fleet's half is worked out first: it is what there is, and the
-    // profile is what fits beside it.
+    // The fleet's half is worked out first: it is what there is, and the name
+    // and the directory are what fit beside it.
     let counters = counters(&screen.list, screen.profile.max, theme);
     let room = width.saturating_sub(said(&counters) + 1);
-    lines.push(spread(
-        profile(&screen.profile, room, theme),
-        counters,
-        width,
-    ));
+    let mut lines = vec![spread(here(&screen.profile, room), counters, width)];
+    if area.height >= 2 {
+        lines.push(Line::styled(dials(&screen.profile, width), dim()));
+    }
     lines
 }
 
@@ -661,30 +641,88 @@ fn said(spans: &[Span<'static>]) -> usize {
     spans.iter().map(|span| span.content.chars().count()).sum()
 }
 
-/// What the next agent will be started with: the vendor, the model it will be
-/// given, and where it will run.
+/// Whose screen this is and where it was opened, which is where an agent
+/// started from here will run.
 ///
-/// The model is named as it stands, `default` and all — amx does not know
-/// which model claude would pick for itself and will not print a guess at it —
-/// and a vendor whose entry declares no model dial has nothing to put in
-/// parentheses, so none are drawn.
-///
-/// An `agent` is a command, and a command is routinely an absolute path. Left
-/// to the terminal such a row is clipped, which reads as a name that ends
-/// where the screen does; so the directory gives way first, and whatever is
-/// still too long is cut with an ellipsis that says it was cut.
-fn profile(profile: &Profile, room: usize, theme: Theme) -> Vec<Span<'static>> {
-    let agent = match profile.model_dial() {
-        Some(_) => format!("{} ({})", profile.agent, profile.model),
-        None => profile.agent.clone(),
-    };
-    let left = room.saturating_sub(agent.chars().count() + SEPARATOR.len());
+/// The name is never cut and the directory is: `amx` is three columns and the
+/// one word that says what somebody is looking at, and a path cut to a few
+/// characters is not a path.
+fn here(profile: &Profile, room: usize) -> Vec<Span<'static>> {
+    let left = room.saturating_sub(NAME.chars().count() + SEPARATOR.chars().count());
     let said = match !profile.dir.is_empty() && left >= SHORTEST_DIR {
-        true => format!("{agent}{SEPARATOR}{}", fit(&profile.dir, left)),
-        false => fit(&agent, room),
+        true => format!("{NAME}{SEPARATOR}{}", fit(&profile.dir, left)),
+        false => fit(NAME, room),
     };
-    vec![Span::styled(said, prospective(theme))]
+    vec![Span::styled(said, dim())]
 }
+
+/// What the view is called, which is what the top left corner of it says.
+const NAME: &str = "amx";
+
+/// What every dial the next agent will be started with says, in one row.
+///
+/// `next:` at the front is what marks the row as being about an agent that has
+/// not been started — which is the whole of what a treatment of its own used
+/// to carry, said in a word instead of in a colour. So the row is dim like the
+/// rest of the chrome above the list, and the one colour up there is on the
+/// count that wants a person.
+///
+/// A dial its vendor does not declare is not on the row at all, and one
+/// resting where the vendor left it names the dial rather than the value: amx
+/// does not know which model claude would pick for itself, and `default` on
+/// its own would be a word standing where three of them could be.
+///
+/// An `agent` is a command line, and a command is routinely a long one. It
+/// takes the columns the dials beside it leave, because a dial pushed off the
+/// end of the row is a dial nobody can see they have turned — but never fewer
+/// than [`SHORTEST_AGENT`] of them, because which program runs is the first
+/// thing this row is for. What will not fit after that is cut off the end,
+/// where the dial that goes is the one amx decided rather than the vendor.
+fn dials(profile: &Profile, width: usize) -> String {
+    let mut said = Vec::new();
+    if profile.model_dial().is_some() {
+        said.push(dial("model", &profile.model));
+    }
+    if profile.permission_dial().is_some() {
+        said.push(dial("permission", &profile.permission));
+    }
+    said.push(
+        match profile.worktree {
+            true => "worktree",
+            false => "no worktree",
+        }
+        .to_string(),
+    );
+
+    let taken = NEXT.chars().count()
+        + said
+            .iter()
+            .map(|dial| dial.chars().count() + SEPARATOR.chars().count())
+            .sum::<usize>();
+    let room = width.saturating_sub(taken).max(SHORTEST_AGENT);
+    let row = std::iter::once(fit(&profile.agent, room))
+        .chain(said)
+        .collect::<Vec<_>>()
+        .join(SEPARATOR);
+    fit(&format!("{NEXT}{row}"), width)
+}
+
+/// Fewer columns than this for the vendor and the dials give way instead: a
+/// command cut to three characters is not a command, and a row that had put
+/// every dial on the screen by leaving off what runs would be a row about
+/// nothing.
+const SHORTEST_AGENT: usize = 8;
+
+/// What the row calls a dial that is resting where its vendor left it.
+fn dial(named: &str, at: &str) -> String {
+    match at == DEFAULT {
+        true => format!("{named}: {DEFAULT}"),
+        false => at.to_string(),
+    }
+}
+
+/// What the dials row reads at its front.
+const NEXT: &str = "next: ";
 
 /// What stands between two things said on one row.
 const SEPARATOR: &str = " · ";
@@ -741,17 +779,6 @@ pub fn title(list: &List) -> String {
     match waiting {
         Some(count) => format!("amx{SEPARATOR}{count} waiting"),
         None => "amx".to_string(),
-    }
-}
-
-/// The worktree dial, and what it will do — named rather than implied. Under
-/// [`NARROW`] the consequence goes and the dial stays.
-fn worktree_dial(on: bool, width: usize) -> String {
-    match (on, width < NARROW) {
-        (true, true) => "worktree: on".to_string(),
-        (false, true) => "worktree: off".to_string(),
-        (true, false) => "worktree: on → .amx/worktrees/<id>".to_string(),
-        (false, false) => "worktree: off → runs in the launch dir".to_string(),
     }
 }
 
@@ -2717,9 +2744,9 @@ mod tests {
         );
 
         assert!(
-            screen[1].ends_with("1 waiting · 1 working · 2/5 running"),
+            screen[0].ends_with("1 waiting · 1 working · 2/5 running"),
             "{:?}",
-            screen[1]
+            screen[0]
         );
         assert_eq!(screen[2], "needs input");
         assert!(
@@ -3063,7 +3090,7 @@ mod tests {
         // the header the same way, so the list starts where the chrome ends
         // rather than against it.
         let screen = drawn(a_fleet(), None, (60, 12));
-        assert!(screen[1].contains("running"), "the header: {screen:?}");
+        assert!(screen[0].contains("running"), "the header: {screen:?}");
         assert_eq!(screen[2], "", "the space over the list");
         assert_eq!(screen[3], "needs input", "the first heading");
         assert!(screen[4].contains("ask-a1b"), "{screen:?}");
@@ -3165,7 +3192,7 @@ mod tests {
     #[test]
     fn view_says_when_there_is_nothing_to_show() {
         let screen = drawn(Vec::new(), None, (40, 6));
-        assert!(screen[0].starts_with("claude (default)"), "{:?}", screen[0]);
+        assert!(screen[0].starts_with("amx"), "{:?}", screen[0]);
         assert!(screen[0].ends_with("0/5 running"), "{:?}", screen[0]);
         assert_eq!(screen[1], "no agents");
     }
@@ -3188,8 +3215,16 @@ mod tests {
         painted(screen, size)[row].clone()
     }
 
+    /// Which column of a drawn line a word starts at, for the tests that ask
+    /// what the view painted it in. Columns, not bytes: the separator between
+    /// two things said on one row is two bytes wide and one column.
+    fn column_of(line: &str, word: &str) -> u16 {
+        let at = line.find(word).expect("the word is on the line");
+        line[..at].chars().count() as u16
+    }
+
     #[test]
-    fn header_says_the_version_the_profile_the_fleet_and_the_worktree_dial() {
+    fn header_says_where_it_is_and_what_the_fleet_is_over_the_dials() {
         let screen = painted(
             &launching(vec![
                 view("ask-a1b", Phase::Waiting, None, 30),
@@ -3199,27 +3234,85 @@ mod tests {
         );
 
         assert!(
-            screen[0].starts_with(&format!("amx v{}", env!("CARGO_PKG_VERSION"))),
-            "the build's own version, never a literal: {:?}",
+            screen[0].starts_with("amx · ~/code/amx"),
+            "whose screen this is and where it was opened: {:?}",
             screen[0]
         );
         assert!(
-            screen[0].ends_with("worktree: on → .amx/worktrees/<id>"),
-            "the dial says what it will do, not merely that it is on: {:?}",
+            !screen[0].contains(env!("CARGO_PKG_VERSION")),
+            "which version this is says nothing about the fleet: {:?}",
             screen[0]
         );
         assert!(
-            screen[1].starts_with("claude (default) · ~/code/amx"),
-            "{:?}",
-            screen[1]
-        );
-        assert!(
-            screen[1].ends_with("1 waiting · 1 working · 2/5 running"),
+            screen[0].ends_with("1 waiting · 1 working · 2/5 running"),
             "what the fleet is, and the gate the next one meets: {:?}",
-            screen[1]
+            screen[0]
+        );
+        assert_eq!(
+            screen[1], "next: claude · model: default · permission: default · worktree",
+            "and under it every dial the next agent will be started with"
         );
         assert_eq!(screen[2], "", "a blank row stands the list off from it");
         assert_eq!(screen[3], "needs input", "and the list starts under that");
+    }
+
+    #[test]
+    fn header_spends_its_one_colour_on_the_count_that_wants_a_person() {
+        let screen = launching(vec![view("ask-a1b", Phase::Waiting, None, 30)]);
+        let drawn = painted(&screen, WIDE);
+        let buffer = cells(&screen, WIDE);
+
+        let waiting = buffer[(column_of(&drawn[0], "1 waiting"), 0)].clone();
+        assert_eq!(
+            waiting.fg,
+            theme().waiting,
+            "the one thing above the list that wants somebody keeps its colour"
+        );
+        // Everything else up here is chrome, the dials included: the row says
+        // what it is in the word at the front of it, so it does not have to
+        // say it in cyan.
+        for column in [0, 6, 20] {
+            let cell = buffer[(column, 1)].clone();
+            assert_eq!(cell.fg, Color::Reset, "column {column}: {:?}", drawn[1]);
+            assert!(
+                cell.modifier.contains(Modifier::DIM),
+                "column {column}: {:?}",
+                cell.modifier
+            );
+            assert!(
+                !cell.modifier.contains(Modifier::BOLD),
+                "column {column}: {:?}",
+                cell.modifier
+            );
+        }
+    }
+
+    #[test]
+    fn header_names_a_dial_that_rests_where_the_vendor_left_it() {
+        let mut screen = launching(Vec::new());
+        assert_eq!(
+            screen_line(&screen, WIDE, 1),
+            "next: claude · model: default · permission: default · worktree",
+            "the dial's own name, not a guess at what claude would have picked"
+        );
+
+        // Turned, it says what it was turned to and nothing else: the value
+        // is what somebody is reading the row for.
+        screen.profile.model = "opus".to_string();
+        screen.profile.permission = "plan".to_string();
+        screen.profile.worktree = false;
+        assert_eq!(
+            screen_line(&screen, WIDE, 1),
+            "next: claude · opus · plan · no worktree"
+        );
+
+        // An agent the registry never heard of declares no dials, so the row
+        // holds the vendor and the one dial that is amx's own.
+        screen.profile.agent = "mock-claude".to_string();
+        assert_eq!(
+            screen_line(&screen, WIDE, 1),
+            "next: mock-claude · no worktree"
+        );
     }
 
     #[test]
@@ -3229,10 +3322,10 @@ mod tests {
             view("done-b2c", Phase::Done, Some("did it"), 60),
         ]);
         assert!(
-            screen_line(&screen, WIDE, 1).ends_with("1 waiting · 1 done · 1/5 running"),
+            screen_line(&screen, WIDE, 0).ends_with("1 waiting · 1 done · 1/5 running"),
             "the heading over the rows says `needs input`; the counter says \
              the word the list can be narrowed by: {:?}",
-            screen_line(&screen, WIDE, 1)
+            screen_line(&screen, WIDE, 0)
         );
 
         // A narrowing is still read back where it was typed, so a short list
@@ -3241,9 +3334,9 @@ mod tests {
             .list
             .narrow(vec![Narrow::State(Some("waiting".to_string()))]);
         assert!(
-            screen_line(&screen, WIDE, 1).ends_with("1 waiting · 1/5 running · s:waiting"),
+            screen_line(&screen, WIDE, 0).ends_with("1 waiting · 1/5 running · s:waiting"),
             "{:?}",
-            screen_line(&screen, WIDE, 1)
+            screen_line(&screen, WIDE, 0)
         );
     }
 
@@ -3257,74 +3350,68 @@ mod tests {
         ]);
         screen.profile.max = 5;
         assert!(
-            screen_line(&screen, WIDE, 1).ends_with("3/5 running"),
+            screen_line(&screen, WIDE, 0).ends_with("3/5 running"),
             "an agent whose command has ended holds no slot: {:?}",
-            screen_line(&screen, WIDE, 1)
+            screen_line(&screen, WIDE, 0)
         );
     }
 
     #[test]
-    fn header_says_the_model_rather_than_guessing_the_vendors_own() {
-        let mut screen = launching(Vec::new());
-        assert!(
-            screen_line(&screen, WIDE, 1).starts_with("claude (default) · ~/code/amx"),
-            "the word, not a guess at what claude would have picked: {:?}",
-            screen_line(&screen, WIDE, 1)
-        );
-
-        screen.profile.model = "opus".to_string();
-        assert!(
-            screen_line(&screen, WIDE, 1).starts_with("claude (opus) · ~/code/amx"),
-            "{:?}",
-            screen_line(&screen, WIDE, 1)
-        );
-
-        // An agent the registry never heard of declares no model dial, so
-        // there is nothing to put in the parentheses and none are drawn.
-        screen.profile.agent = "mock-claude".to_string();
-        assert!(
-            screen_line(&screen, WIDE, 1).starts_with("mock-claude · ~/code/amx"),
-            "{:?}",
-            screen_line(&screen, WIDE, 1)
-        );
-    }
-
-    #[test]
-    fn header_sheds_the_path_before_the_dial_and_the_dir_before_the_agent() {
+    fn header_sheds_the_dir_before_the_name_and_the_vendor_before_a_dial() {
         // Decided here rather than discovered at the edge of a terminal.
-        let screen = launching(vec![view("busy-a1b", Phase::Working, None, 3)]);
+        let mut screen = launching(vec![view("busy-a1b", Phase::Working, None, 3)]);
 
-        let narrow = painted(&screen, (NARROW as u16 - 1, 12));
+        let cramped = painted(&screen, (36, 12));
         assert!(
-            narrow[0].ends_with("worktree: on"),
-            "the dial is what somebody turns; the path is what it means: {:?}",
-            narrow[0]
-        );
-
-        let cramped = painted(&screen, (40, 12));
-        assert!(
-            cramped[1].starts_with("claude (default)"),
-            "the dir is the losable half of the profile: {:?}",
-            cramped[1]
+            cramped[0].starts_with("amx"),
+            "the name says what the screen is, and it is three columns: {:?}",
+            cramped[0]
         );
         assert!(
-            cramped[1].ends_with("1 working · 1/5 running"),
+            cramped[0].ends_with("1 working · 1/5 running"),
             "what the fleet is stays: {:?}",
-            cramped[1]
+            cramped[0]
         );
         assert!(
-            !cramped[1].contains("code/amx"),
+            !cramped[0].contains("code/amx"),
             "a path cut to nothing is not a path: {:?}",
-            cramped[1]
+            cramped[0]
+        );
+
+        // A vendor is a command line, and a command is routinely a long one.
+        // It gives way to the dials beside it: a dial cut off the end of the
+        // row is a dial nobody can see they have turned.
+        screen.profile.agent = "claude --settings /etc/amx/every-hook.json".to_string();
+        let long = painted(&screen, (80, 12));
+        assert!(long[1].starts_with("next: claude --set"), "{:?}", long[1]);
+        assert!(
+            long[1].contains('…'),
+            "and it says it was cut: {:?}",
+            long[1]
+        );
+        assert!(
+            long[1].ends_with("· permission: default · worktree"),
+            "{:?}",
+            long[1]
+        );
+
+        // Narrower still and there is no room for all of it either way. What
+        // the vendor keeps is a floor: a row that had fitted every dial on
+        // the screen by leaving off what runs would be a row about nothing.
+        let narrow = painted(&screen, (50, 12))[1].clone();
+        assert!(narrow.starts_with("next: claude"), "{narrow:?}");
+        assert!(
+            narrow.ends_with('…'),
+            "and the end of the row is what says it was cut: {narrow:?}"
         );
     }
 
     #[test]
-    fn header_keeps_the_fleet_on_the_row_that_has_no_room_for_the_profile() {
+    fn header_keeps_the_fleet_on_the_row_that_has_no_room_for_the_name() {
         // Every group at once on a narrow terminal: the counters are wider
-        // than the screen on their own, so nothing is left for the profile.
-        // What the fleet is doing is what the row is for, and a row drawn
-        // blank says less than one the terminal cut.
+        // than the screen on their own, so nothing is left beside them. What
+        // the fleet is doing is what the row is for, and a row drawn blank
+        // says less than one the terminal cut.
         let screen = launching(vec![
             view("ask-a1b", Phase::Waiting, None, 30),
             view("busy-b2c", Phase::Working, None, 3),
@@ -3334,9 +3421,9 @@ mod tests {
 
         let cramped = painted(&screen, (40, 12));
         assert!(
-            cramped[1].starts_with("1 waiting · 1 working"),
+            cramped[0].starts_with("1 waiting · 1 working"),
             "{:?}",
-            cramped[1]
+            cramped[0]
         );
     }
 
@@ -3346,15 +3433,19 @@ mod tests {
         let short = painted(&screen, (60, SHORT as u16 - 1));
 
         assert!(
-            short[0].starts_with("claude (default)"),
-            "the line that says what the next agent will be is the one that \
-             stays: {:?}",
+            short[0].starts_with("amx · ~/code/amx"),
+            "the row that says what there is stays; the dials are one \
+             keypress from being read under the composer: {:?}",
             short[0]
         );
         assert!(
             short[0].ends_with("1 working · 1/5 running"),
             "{:?}",
             short[0]
+        );
+        assert!(
+            !short.iter().any(|line| line.starts_with("next:")),
+            "{short:?}"
         );
         assert_eq!(short[1], "working", "and the list starts a row sooner");
     }
