@@ -10,11 +10,19 @@
 //! `unknown` with its age shown is a better answer than a confident wrong one:
 //! naming a screen also clears any question off the row, so a wrong match can
 //! delete a question a person is being asked.
+//!
+//! One document per vendor, and the vendor's own entry in the table is what
+//! points at it. Every string in a document is that vendor's own — the words
+//! in its widgets, the glyphs it draws its chrome with, the sentences it sends
+//! about a dialog it will not describe — so which document is read follows
+//! from the program an agent command runs, and no vendor's screen is spelled
+//! out in Rust here.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::sync::OnceLock;
 
+use crate::registry;
 use crate::store::{Phase, Question};
 
 /// How many rows up from the bottom of the capture a rule may see. The
@@ -31,10 +39,11 @@ pub const FLOOR_LINES: usize = 24;
 /// before the Stop hook arrived; this is three times that.
 pub const SETTLED_LOOKS: usize = 30;
 
-/// The rules, in the order they are asked.
+/// Everything amx knows how to read on one vendor's screens: the rules, in
+/// the order they are asked.
 #[derive(Debug, Deserialize)]
 pub struct Ruleset {
-    #[serde(rename = "rule")]
+    #[serde(default, rename = "rule")]
     rules: Vec<Rule>,
 }
 
@@ -97,13 +106,62 @@ impl Claim<'_> {
     }
 }
 
-/// The ruleset amx ships with.
-pub fn bundled() -> &'static Ruleset {
-    static BUNDLED: OnceLock<Ruleset> = OnceLock::new();
-    BUNDLED.get_or_init(|| {
-        Ruleset::parse(include_str!("../assets/screen-rules.toml"))
-            .expect("the bundled ruleset is part of the binary")
+/// Every registered vendor's screens, parsed once and kept by the name of the
+/// vendor that draws them.
+///
+/// A vendor that declares none is not in here at all, which is the difference
+/// between screens amx has measured and screens it has not.
+fn parsed() -> &'static [(&'static str, Ruleset)] {
+    static PARSED: OnceLock<Vec<(&'static str, Ruleset)>> = OnceLock::new();
+    PARSED.get_or_init(|| {
+        registry::entries()
+            .iter()
+            .filter_map(|vendor| {
+                let screens = Ruleset::parse(vendor.screens?)
+                    .expect("a vendor's screens are part of the binary");
+                Some((vendor.name, screens))
+            })
+            .collect()
     })
+}
+
+/// The screens amx reads on the pane of an agent running `agent`.
+///
+/// The vendor that command runs, and for a command amx has no entry for the
+/// vendor it runs by default. An unregistered command is not another vendor:
+/// it is a command line somebody wrote, routinely a wrapper around the vendor
+/// amx was written against. Every anchor in that vendor's document is its own,
+/// so a pane it was not drawn for is claimed by nothing rather than claimed
+/// wrongly, and a wrapper keeps the reading it has always had.
+///
+/// A vendor whose screens nobody has measured reads nothing whatsoever, which
+/// is the floor an entry stands on before anybody has sat in front of it: a
+/// pane to watch, and no claim about what is in it.
+pub fn of(agent: &str) -> &'static Ruleset {
+    let vendor = registry::entry(agent).or_else(|| registry::entries().first());
+    select(parsed(), vendor.map_or("", |vendor| vendor.name)).unwrap_or_else(unmeasured)
+}
+
+/// The screens amx reads when nothing has said which vendor's pane it is
+/// looking at, which is every reader there is today: a record says which pane
+/// an agent is in, not what is running in it. [`of`] is the door for anything
+/// that does know.
+pub fn bundled() -> &'static Ruleset {
+    of(registry::entries().first().map_or("", |vendor| vendor.name))
+}
+
+/// The screens `vendor` draws, out of the ones amx has parsed.
+fn select<'a>(parsed: &'a [(&'static str, Ruleset)], vendor: &str) -> Option<&'a Ruleset> {
+    parsed
+        .iter()
+        .find(|(name, _)| *name == vendor)
+        .map(|(_, screens)| screens)
+}
+
+/// The screens of a vendor amx has measured none of: no rule, so no claim.
+fn unmeasured() -> &'static Ruleset {
+    static NOTHING: OnceLock<Ruleset> = OnceLock::new();
+    NOTHING.get_or_init(|| Ruleset::parse("").expect("no rules at all is a ruleset"))
 }
 
 impl Ruleset {
@@ -407,6 +465,8 @@ fn wrapped(row: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vendor::claude;
+    use crate::vendor::second::SECOND;
 
     // ── Screens measured off a live claude ───────────────────────────────────
     // Every capture below came off a running vendor, at the version, date and
@@ -806,6 +866,70 @@ $
 
     fn claim<'a>(rules: &'a Ruleset, screen: &str, recorded: Phase) -> Claim<'a> {
         rules.claim(screen, recorded, SETTLED_LOOKS)
+    }
+
+    /// The two documents these tests weigh against each other: the one amx
+    /// ships and the second vendor's, which shares no string with it. A law
+    /// that holds for both is a law about the machinery.
+    fn documents() -> Vec<(&'static str, Ruleset)> {
+        [claude::VENDOR, SECOND]
+            .iter()
+            .map(|vendor| {
+                let screens = vendor.screens.expect("both of these have screens");
+                (vendor.name, Ruleset::parse(screens).expect(vendor.name))
+            })
+            .collect()
+    }
+
+    /// The names of the rules in a document, which is what says which document
+    /// it is.
+    fn named(screens: &Ruleset) -> Vec<&str> {
+        screens
+            .rules()
+            .iter()
+            .map(|rule| rule.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn rules_the_screens_read_are_the_ones_the_vendor_draws() {
+        let documents = documents();
+        assert_eq!(
+            named(select(&documents, "second").expect("the second vendor's screens")),
+            ["choice", "busy", "prompt"]
+        );
+        assert_eq!(
+            select(&documents, "claude").map(named),
+            Some(named(bundled()))
+        );
+        assert!(
+            select(&documents, "nobody").is_none(),
+            "a vendor nobody has measured has no screens to read"
+        );
+    }
+
+    #[test]
+    fn rules_an_agent_command_is_read_as_the_vendor_it_runs() {
+        // `agent` is a command line rather than a program name, and a command
+        // amx has no entry for is a wrapper around one it has: both are read
+        // with the screens of the vendor that ends up drawing them.
+        for agent in ["claude", "claude --add-dir ..", "my-claude", ""] {
+            assert_eq!(named(of(agent)), named(bundled()), "{agent:?}");
+        }
+    }
+
+    #[test]
+    fn rules_a_vendor_nobody_has_measured_claims_nothing() {
+        // The floor an entry stands on before anybody has sat in front of it.
+        // Claiming nothing is what `unknown` is made of, and it is the right
+        // answer about a screen amx has never seen.
+        let none = unmeasured();
+        assert!(none.rules().is_empty());
+        assert_eq!(
+            none.claim(PERMISSION_BOX, Phase::Working, 1),
+            Claim::Unclaimed
+        );
+        assert_eq!(none.asking(PERMISSION_BOX), None);
     }
 
     #[test]

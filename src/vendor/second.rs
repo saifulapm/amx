@@ -41,4 +41,57 @@ pub const SECOND: Vendor = Vendor {
     // hooks, no transcript, no way to branch and no trust screen: the shape of
     // a vendor amx has to refuse things for.
     capabilities: &[Capability::Resume, Capability::Adopt],
+    // Screens of its own, drawn out of nothing claude draws: see [`SCREENS`].
+    screens: Some(SCREENS),
 };
+
+/// The second vendor's screens.
+///
+/// A document rather than a file, because nothing ships it: it exists so that
+/// a reader passing over both documents is reading the machinery and not
+/// claude. Every string in it disagrees with the first document — a different
+/// footer, a different rule glyph, a different spinner, choices with no cursor
+/// glyph in front of them, and a question the vendor writes above its options
+/// instead of on the anchor row.
+///
+/// The pane it describes:
+///
+/// ```text
+///   It did the thing.
+///
+///  = compose =
+///  >
+///  ===========
+///   model: small
+///   mode: careful
+/// ```
+pub const SCREENS: &str = r#"
+placeholders = ["it wants something"]
+
+[furniture]
+mode = ["mode:"]
+spinner = ["thinking for "]
+rule = "="
+statusline = 1
+bottom = 1
+
+[[rule]]
+name = "choice"
+state = "waiting"
+all = ["pick one"]
+any = ["1. "]
+within = 4
+not_below = ["mode:"]
+asks = { sentence = "pick one" }
+
+[[rule]]
+name = "busy"
+state = "working"
+all = ["thinking for "]
+
+[[rule]]
+name = "prompt"
+state = "idle"
+quiescent = true
+any = ["mode:"]
+"#;

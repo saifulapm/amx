@@ -36,6 +36,13 @@
 # So: any string recognising the vendor's UI is measured across its MODES and
 # WIDTHS, with the capture and the date recorded beside it, or it is wrong.
 
+# ── Whose screens these are ──────────────────────────────────────────────────
+# Every string below is this vendor's own and means nothing on anybody else's
+# pane, so the document a reader uses is the one naming the program the agent
+# command runs. amx ships one of these per vendor; a command it ships none for
+# is read with the first, which is the vendor amx was written against.
+vendor = "claude"
+
 # claude asks this before its prompt exists, so nothing else it draws can be
 # underneath — which is why it comes first.
 #

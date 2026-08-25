@@ -77,6 +77,10 @@ pub const VENDOR: Vendor = Vendor {
         Capability::Adopt,
         Capability::Trust,
     ],
+    // The screens amx has measured off this vendor, every anchor in them with
+    // the capture, the version and the date it was read at. The file is the
+    // whole of what amx knows how to see on a claude pane.
+    screens: Some(include_str!("../../assets/screen-rules.toml")),
 };
 
 #[cfg(test)]

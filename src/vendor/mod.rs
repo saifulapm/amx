@@ -63,6 +63,16 @@ pub struct Vendor {
     /// has to say so and stop, rather than spawn a command the vendor will
     /// refuse and leave the person reading the pane to work out why.
     pub capabilities: &'static [Capability],
+    /// What this vendor's screens look like, as the document that says what
+    /// each of them means — its rules, the chrome it draws under them, and the
+    /// sentences it sends about a dialog it will not describe. `crate::rules`
+    /// reads it; the whole of what belongs here is which document is this
+    /// vendor's.
+    ///
+    /// `None` from a vendor nobody has sat in front of yet, and then its pane
+    /// is watched and never named. Screens are measured against a running
+    /// program, and a document written from anywhere else is a transcription.
+    pub screens: Option<&'static str>,
 }
 
 /// Something amx can do only where the vendor takes part.
