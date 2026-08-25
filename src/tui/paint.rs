@@ -70,7 +70,7 @@ pub(super) const HELP: [(&str, &str); 28] = [
     ("pgup pgdn", "page the card, when it holds more"),
     (
         "ctrl+x",
-        "stop it · again to forget it · a heading clears it",
+        "stop it · again forgets it · a heading, the group",
     ),
     ("ctrl+r", "call it something else"),
     ("ctrl+g", "write the line in $EDITOR"),
@@ -1687,7 +1687,7 @@ fn hints(screen: &Screen) -> Vec<&'static str> {
                 true => "enter opens it",
                 false => "enter shuts it",
             },
-            "ctrl+x clears the finished",
+            "ctrl+x clears the group",
         ],
         Some(Item::Fold(_)) => vec!["enter shows them"],
         // The cursor never rests on a blank; the arm is for the compiler.
@@ -2672,7 +2672,7 @@ mod tests {
 
         screen.arm = Some(Arm {
             ids: vec!["fix-login-a1b".to_string()],
-            heading: None,
+            swept: false,
             at: Instant::now(),
         });
         let drawn = painted(&screen, size);
@@ -3389,7 +3389,7 @@ mod tests {
         screen.list.up();
         assert_eq!(
             hint_row(&screen, wide),
-            "enter shuts it · ctrl+x clears the finished · ctrl+s axis · q quit · ? keys"
+            "enter shuts it · ctrl+x clears the group · ctrl+s axis · q quit · ? keys"
         );
 
         // And a group somebody has shut is opened by the key that shut it.

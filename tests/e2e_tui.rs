@@ -2327,6 +2327,61 @@ fn acts_ctrl_x_on_a_heading_forgets_the_finished_and_keeps_the_work() {
 }
 
 #[test]
+fn acts_ctrl_x_on_a_heading_stops_the_live_and_arms_rows_in_every_state() {
+    let amx = Harness::new();
+    // A live agent sitting at its prompt and a finished one, both in the
+    // harness's home: one project heading stands over both states at once.
+    amx.play("fix-login-a1b", "happy-turn");
+    amx.until_state("fix-login-a1b", "idle");
+    finished(&amx, "old-job-d4e", "done", 60);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("fix-login-a1b") && drawn.contains("old-job-d4e")).then_some(())
+    });
+    press(&amx, &view, "C-s");
+    amx.until("the project heading over both", || {
+        screen(&amx, &view)
+            .lines()
+            .any(|line| line.trim_end() == "~")
+            .then_some(())
+    });
+
+    // Up from the row the view opens on is the heading. One press stops the
+    // live agent and arms every row under the heading, whatever its state —
+    // no group is refused any more.
+    press(&amx, &view, "Up");
+    press(&amx, &view, "C-x");
+    amx.until("the live agent to stop", || {
+        (amx.state("fix-login-a1b")["state"] == "stopped").then_some(())
+    });
+    let armed = amx.until("both rows to be armed", || {
+        let drawn = screen(&amx, &view);
+        (drawn.matches("ctrl+x again forgets").count() == 2).then_some(drawn)
+    });
+    assert!(
+        !armed.contains("has finished"),
+        "the refusal went with the rule:\n{armed}"
+    );
+    assert_eq!(agents(&amx).len(), 2, "and arming forgets nothing");
+
+    // Two presses whatever the clock did to the first window: if it is still
+    // open the first of these forgets both, and if it lapsed the first
+    // re-arms — everything under the heading is terminal by now — and the
+    // second forgets.
+    twice(&amx, &view, "C-x");
+    amx.until("the group to be forgotten", || {
+        agents(&amx).is_empty().then_some(())
+    });
+    // The project axis has no welcome line: a list of places with nothing to
+    // arrange says so plainly.
+    amx.until("the empty wall", || {
+        screen(&amx, &view).contains("no agents").then_some(())
+    });
+}
+
+#[test]
 fn acts_space_takes_the_unread_mark_off_the_row_it_opened() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
@@ -2630,7 +2685,7 @@ fn keymap_the_hint_row_says_what_the_line_under_the_cursor_answers_to() {
     // the group rather than about any one agent.
     press(&amx, &view, "Up");
     let heading = hints("enter shuts it");
-    assert!(heading.contains("ctrl+x clears the finished"), "{heading}");
+    assert!(heading.contains("ctrl+x clears the group"), "{heading}");
     assert!(
         !heading.contains("attach"),
         "a heading has no window to bring forward:\n{heading}"

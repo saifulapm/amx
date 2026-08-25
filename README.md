@@ -156,7 +156,7 @@ question has been standing is on the card, in its title.
 | `r` | reply: a message, or an answer on the card |
 | `d` | what it has changed |
 | `pgup` `pgdn` | page the card, when it holds more |
-| `ctrl+x` | stop it, twice to forget it, and twice on a heading to clear the finished |
+| `ctrl+x` | stop it, twice to forget it, and twice on a heading to clear the group |
 | `ctrl+r` | call it something else |
 | `ctrl+g` | write the line in `$EDITOR` |
 | `alt+1..9` | reach the agent at that place on the wall |
@@ -198,11 +198,14 @@ stands. Where the row was saying what the agent did it says `ctrl+x again
 forgets` for about two seconds, and the press inside that window is the one
 that takes the record away, and the worktree with it where that tree holds
 nothing no commit has. Leave it alone and the row goes back to saying what it
-was saying, having forgotten nothing. On a heading the same two
-presses reach the whole group: the first arms every finished row under it —
-each row wears the warning itself, and running ones are not touched — and the
-second press on the heading, inside the window, forgets them all, each under
-the same worktree safety a single row gets.
+was saying, having forgotten nothing. On a heading the same two presses reach
+the whole group, whatever the states beneath: the first stops every agent
+under it that is still running and arms every row in place — each row wears
+the warning itself — and the second press on a heading over the armed rows,
+inside the window, forgets them all, each under the same worktree safety a
+single row gets. That heading is not always the one that was pressed, because
+stopping is what moves a group to completed: the rows carry the arming, and
+the heading now standing over them is where the second press finds it.
 
 While the view is open your terminal is called `amx · 2 waiting`, or `amx` when
 nothing is waiting on you, so a window behind something else still answers the

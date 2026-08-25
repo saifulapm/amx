@@ -377,18 +377,21 @@ fn next_in(cycle: &[&str], now: &str) -> Option<String> {
     .map(|value| value.to_string())
 }
 
-/// What a press has armed and a second one would forget: one finished row, or
-/// every finished row under a heading, and the moment it was armed.
+/// What a press has armed and a second one would forget: one row, or every
+/// row under a heading, and the moment it was armed.
 ///
 /// Held by id rather than by where the cursor was: the wall is read again
 /// every second and the rows move under it, and a window that belonged to a
-/// place on the screen would arm whatever had come to rest there.
+/// place on the screen would arm whatever had come to rest there. Whether the
+/// press was on a heading is kept the same way, and not which heading:
+/// stopping a group moves it to completed by the next reading, so the heading
+/// that was pressed can be gone while its rows are still armed.
 struct Arm {
     /// The rows the second press forgets.
     ids: Vec<String>,
-    /// The heading the first press was on, where it was on one: that is where
-    /// the press that forgets them all has to land again.
-    heading: Option<rows::Under>,
+    /// Whether the first press was on a heading, which is where the press
+    /// that forgets them all has to land again.
+    swept: bool,
     at: Instant,
 }
 
@@ -1425,30 +1428,42 @@ impl Screen {
         }
         self.arm = Some(Arm {
             ids: vec![id],
-            heading: None,
+            swept: false,
             at: Instant::now(),
         });
     }
 
-    /// ctrl+x on a heading: arm the finished agents under it, or forget them.
+    /// ctrl+x on a heading: the rows' two presses, over the whole group.
     ///
-    /// The same two presses the key reads on a row, over a group. The first
-    /// arms every finished row under the heading and each of them says so
-    /// where its summary was — the rows are what the second press would take
-    /// away, so the rows are where the warning is, and the footer asks
-    /// nothing. The press inside the window, on the same heading, forgets
-    /// them all; a window left to lapse disarms with nothing removed.
+    /// The first press is the first press of every row under the heading at
+    /// once, whatever their states: a live agent — idle included — is stopped
+    /// the way its own row would stop it, and every row is armed in place,
+    /// each saying so where its summary was. The rows are what the second
+    /// press would take away, so the rows are where the warning is, and the
+    /// footer asks nothing. The press inside the window forgets them all,
+    /// each under the same worktree safety a single row gets; a window left
+    /// to lapse disarms with nothing removed.
     ///
-    /// Only the finished ones, wherever the heading is: an agent that is still
-    /// running is not something a key that clears history may reach, and a
-    /// group with nothing finished under it is told so rather than armed to no
-    /// end.
+    /// The second press lands on the heading standing over the armed rows
+    /// *now*, which is not always the one that was pressed: stopping a group
+    /// moves it to completed by the next reading, and the heading it left has
+    /// nothing to stand over. The rows are what the press was about, so the
+    /// rows are what it is matched by.
+    ///
+    /// A row whose stop failed is not armed, exactly as it would not be on
+    /// its own: the failure is on the screen instead, and the rest of the
+    /// group is armed around it.
     fn sweep_or_arm(&mut self, root: &Path, under: rows::Under) {
         let again = self
             .arm
             .as_ref()
-            .filter(|arm| arm.at.elapsed() < ARMED)
-            .is_some_and(|arm| arm.heading == Some(under));
+            .filter(|arm| arm.swept && arm.at.elapsed() < ARMED)
+            .is_some_and(|arm| {
+                self.list
+                    .members(under)
+                    .iter()
+                    .any(|view| arm.ids.iter().any(|id| id == view.id()))
+            });
         if again {
             let arm = self.arm.take().expect("the arm that was just read");
             // What the first press armed, as the list has it now: an agent
@@ -1464,27 +1479,34 @@ impl Screen {
             return;
         }
 
-        let ids: Vec<String> = self
-            .list
-            .members(under)
-            .into_iter()
-            .filter(|view| view.phase().is_terminal())
-            .map(|view| view.id().to_string())
-            .collect();
-        if ids.is_empty() {
-            self.notice = Some(Notice::Advice(format!(
-                "nothing under {} has finished",
-                self.list.title(under)
-            )));
-            return;
+        let (mut ids, mut stopped, mut trouble) = (Vec::new(), false, None);
+        for view in self.list.members(under) {
+            if view.phase().is_terminal() {
+                ids.push(view.id().to_string());
+                continue;
+            }
+            match act::stop(root, view) {
+                Ok(_) => {
+                    ids.push(view.id().to_string());
+                    stopped = true;
+                }
+                Err(e) => trouble = Some(format!("{}: {e:#}", view.id())),
+            }
+        }
+        if stopped {
+            self.acted();
         }
 
         // The rows are the whole of what the view has to say about this, so
-        // whatever it was saying before makes way for them.
-        self.notice = None;
+        // whatever it was saying before makes way for them — unless a stop
+        // failed, which is louder than anything the rows are wearing.
+        self.notice = trouble.map(Notice::Failed);
+        if ids.is_empty() {
+            return;
+        }
         self.arm = Some(Arm {
             ids,
-            heading: Some(under),
+            swept: true,
             at: Instant::now(),
         });
     }
@@ -2964,29 +2986,133 @@ mod tests {
     }
 
     #[test]
-    fn acts_ctrl_x_on_a_heading_over_nothing_finished_says_so_and_asks_nothing() {
+    fn acts_ctrl_x_on_a_heading_stops_the_live_and_arms_every_row_under_it() {
         let root = TempDir::new().unwrap();
+        let config = Config::default();
+        idle(root.path(), "quiet-a1b");
         let mut screen = watching(vec![reading(
-            "busy-a1b",
-            Phase::Working,
+            "quiet-a1b",
+            Phase::Idle,
             State {
-                state: Phase::Working,
+                state: Phase::Idle,
+                since: 1,
+                last_event: 1,
                 ..State::default()
             },
         )]);
         screen.list.up();
 
-        screen
-            .act(ctrl('x'), root.path(), &Config::default(), None)
-            .unwrap();
+        // The first press is the rows' first press, over the group: the live
+        // agent is stopped and its row is armed, and nothing is refused.
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        let agent = Agent::open(root.path(), "quiet-a1b").unwrap();
+        assert_eq!(agent.state().unwrap().state, Phase::Stopped);
+        assert_eq!(screen.armed(), ["quiet-a1b".to_string()]);
         assert!(
-            matches!(screen.mode, Mode::List),
-            "a group with nothing finished under it is not a question"
+            screen.notice.is_none(),
+            "the rows carry the warning, and no group is refused any more"
         );
-        let Some(Notice::Advice(said)) = &screen.notice else {
-            panic!("no advice: the key did nothing and said nothing")
-        };
-        assert!(said.contains("working"), "{said}");
+        assert_eq!(
+            crate::store::list(root.path()).unwrap().len(),
+            1,
+            "and the first press forgets nothing"
+        );
+
+        // The second press on the heading forgets it, the same window a row
+        // gets.
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert!(crate::store::list(root.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn acts_ctrl_x_on_a_project_heading_reaches_rows_in_every_state() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        idle(root.path(), "quiet-a1b");
+        finished(root.path(), "done-b2c", "wrote the tests", 60);
+        // The project axis is where one heading stands over live and finished
+        // rows at once.
+        let mut screen = Screen::default();
+        screen.list.turn();
+        screen.list.show(vec![
+            reading(
+                "quiet-a1b",
+                Phase::Idle,
+                State {
+                    state: Phase::Idle,
+                    since: 1,
+                    last_event: 1,
+                    ..State::default()
+                },
+            ),
+            finished_saying("done-b2c", "wrote the tests"),
+        ]);
+        screen.list.up();
+
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        let mut armed: Vec<&str> = screen.armed().iter().map(String::as_str).collect();
+        armed.sort_unstable();
+        assert_eq!(
+            armed,
+            ["done-b2c", "quiet-a1b"],
+            "every row under the heading, whatever its state"
+        );
+        assert_eq!(
+            Agent::open(root.path(), "quiet-a1b")
+                .unwrap()
+                .state()
+                .unwrap()
+                .state,
+            Phase::Stopped,
+            "the live one was stopped by the press that armed it"
+        );
+
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert!(crate::store::list(root.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn acts_ctrl_x_second_press_lands_on_the_heading_now_over_the_armed_rows() {
+        // Stopping is what moves a row to the completed group, so on the
+        // state axis the heading that was pressed dissolves under the cursor
+        // by the next reading. The armed rows are what the press was about,
+        // and the heading now standing over them is where the second press
+        // finds them.
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        idle(root.path(), "quiet-a1b");
+        let mut screen = watching(vec![reading(
+            "quiet-a1b",
+            Phase::Idle,
+            State {
+                state: Phase::Idle,
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        )]);
+        screen.list.up();
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+
+        // The reading catches up with the stop: the idle heading is gone and
+        // the row sits under completed, with the cursor on that heading.
+        screen.list.show(vec![reading(
+            "quiet-a1b",
+            Phase::Stopped,
+            State {
+                state: Phase::Stopped,
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        )]);
+        screen.list.up();
+
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert!(
+            crate::store::list(root.path()).unwrap().is_empty(),
+            "the second press forgets what the first one armed"
+        );
     }
 
     #[test]
