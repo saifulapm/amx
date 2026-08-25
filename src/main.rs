@@ -10,6 +10,7 @@ mod gc;
 // `allow`: the day every item has a caller, the compiler asks for the
 // attribute back.
 mod exit;
+mod furniture;
 mod hook;
 mod ids;
 mod install;

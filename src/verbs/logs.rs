@@ -1,20 +1,27 @@
-//! `amx logs` — the pane, without taking this terminal for it.
+//! `amx logs` — what the agent has been up to, without taking this terminal
+//! for it.
 //!
 //! `attach` hands the terminal over and keeps it until you leave. This is a
-//! look: the last of what the pane has drawn, printed and done with, which is
-//! what somebody wants when the question is what an agent is up to and the
-//! answer is not worth a round trip through tmux.
+//! look, and it reads the best account there is:
 //!
-//! It is a picture and not a transcript. The vendor redraws its screen, so what
-//! is here is what the pane looks like now and as much of what scrolled off it
-//! as tmux still holds, and neither is the agent's own words. `amx result` is
-//! for those. This answers the other question: what is on the screen, and what
-//! led to it.
+//! * **The conversation**, where the vendor keeps one. The record holds the
+//!   transcript's path from the session's own announcement, and its tail is
+//!   the agent's recent history whole — every prompt, answer and tool call —
+//!   where a pane could only ever hold one screen of it. A full-screen vendor
+//!   scrolls nothing into tmux's history, so the pane is a keyhole and the
+//!   transcript is the room.
+//! * **The screen**, when there is no conversation to read: a command row, an
+//!   agent adopted mid-session, a vendor whose hooks never announced a
+//!   transcript. The picture comes with the vendor's own furniture — composer,
+//!   statusline, mode footer — cut off the bottom, the same walk the card
+//!   takes, because none of it is the agent's work.
+//! * **The recorded answer**, once the pane is gone and the record is what is
+//!   left. Whether an agent is still running is not something a caller should
+//!   have to know before it can ask.
 //!
-//! Once the pane is gone there is no screen to read and the record is what is
-//! left, so what the agent answered with is what this prints then. Whether an
-//! agent is still running is not something a caller should have to know before
-//! it can ask.
+//! `amx result` is still the one that hands back a turn's answer alone,
+//! verbatim, and blocks for it. This is the other question: what has been
+//! going on over there?
 
 use anyhow::Result;
 use std::io::Write;
@@ -23,7 +30,7 @@ use std::path::Path;
 use crate::store::Agent;
 use crate::tmux::{PaneId, Server};
 use crate::verbs::send;
-use crate::{complain, exit, paths, tmux, warn};
+use crate::{complain, exit, furniture, paths, tmux, warn};
 
 /// How much of the pane a reading shows when nobody says otherwise. A screenful
 /// and then some: enough to see what led to what is on the screen now, and
@@ -52,11 +59,87 @@ pub fn run(
 
     // Whether there is a screen to read is a question for the pane list and not
     // for the record: the phase says what amx was last told, and this verb is
-    // asking what is on the pane right now.
+    // asking what has been going on over there right now.
     match server.pane_alive(&meta.pane) {
-        true => screen(&server, &meta.pane, id, lines, out),
+        true => match meta.transcript.as_deref().and_then(conversation) {
+            Some(said) => {
+                let tail = last_lines(&said, lines as usize);
+                send::line(&send::rendered(&tail, to_terminal), out)?;
+                Ok(exit::OK)
+            }
+            None => screen(&server, &meta.pane, id, lines, out),
+        },
         false => recorded(&agent, id, to_terminal, out),
     }
+}
+
+/// The agent's recent conversation, read from the transcript the vendor keeps.
+///
+/// One JSON document a line, and three kinds worth a reader's time — shapes
+/// measured from a live claude 2.1.240 transcript on 2026-08-25. A prompt is a
+/// `user` entry whose content is a string, and wears the composer's own `❯` so
+/// the two voices read apart. An `assistant` entry's content is typed blocks:
+/// `text` is the agent's words, verbatim; `tool_use` is a line naming the tool,
+/// because what ran matters and its output would drown the words around it.
+/// Everything else — thinking, attachments, tool results, the vendor's
+/// bookkeeping — is nobody's reading.
+///
+/// `None` when the file cannot be read or renders to nothing: a transcript
+/// with nothing in it to say is no transcript, and the screen is the fallback.
+fn conversation(path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let mut told: Vec<String> = Vec::new();
+    for line in raw.lines() {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match entry["type"].as_str() {
+            Some("user") => {
+                if let Some(text) = entry["message"]["content"].as_str()
+                    && !text.trim().is_empty()
+                {
+                    told.push(format!("❯ {}", text.trim()));
+                }
+            }
+            Some("assistant") => {
+                for block in entry["message"]["content"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                {
+                    match block["type"].as_str() {
+                        Some("text") => {
+                            let text = block["text"].as_str().unwrap_or("").trim();
+                            if !text.is_empty() {
+                                told.push(text.to_string());
+                            }
+                        }
+                        Some("tool_use") => {
+                            if let Some(name) = block["name"].as_str() {
+                                told.push(format!("⚒ {name}"));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (!told.is_empty()).then(|| told.join("\n\n"))
+}
+
+/// The last `lines` lines of a text, trailing blanks dropped first.
+///
+/// The sanitizing that [`tail_of`] folds in does not belong here: what this
+/// cuts goes on to [`send::rendered`], which is the one place that decides
+/// verbatim-down-a-pipe from inert-on-a-terminal.
+fn last_lines(text: &str, lines: usize) -> String {
+    let mut kept: Vec<&str> = text.lines().collect();
+    while kept.last().is_some_and(|line| line.trim().is_empty()) {
+        kept.pop();
+    }
+    kept[kept.len().saturating_sub(lines)..].join("\n")
 }
 
 /// What the pane has been saying.
@@ -67,7 +150,12 @@ fn screen(
     lines: u32,
     out: &mut impl Write,
 ) -> Result<i32> {
-    let tail = tail_of(&capture(server, pane, lines)?, lines as usize);
+    // The vendor's furniture comes off the bottom before the tail is cut:
+    // composer, statusline and mode footer are the vendor's, not the agent's,
+    // and the walk is the same one the card takes.
+    let sanitized = tmux::sanitize(&capture(server, pane, lines)?);
+    let rows: Vec<&str> = sanitized.lines().collect();
+    let tail = tail_of(&furniture::cut(&rows).join("\n"), lines as usize);
     if tail.is_empty() {
         // A live pane with nothing on it is an answer, and an empty stdout on
         // its own reads as amx having failed to look.
@@ -270,6 +358,113 @@ mod tests {
         // A shorter reading is the last of it and not the first of it.
         let (_, said) = printed(root.path(), "fix-login-a1b", 1);
         assert_eq!(said, "line 3\n");
+    }
+
+    #[test]
+    fn logs_prefer_the_conversation_the_vendor_keeps() {
+        // Shapes measured from a live claude 2.1.240 transcript on
+        // 2026-08-25: a user entry's content is a string, an assistant's is
+        // an array of typed blocks, and the rest of the file is bookkeeping.
+        let transcript = TempDir::new().unwrap();
+        let kept = transcript.path().join("session.jsonl");
+        std::fs::write(
+            &kept,
+            concat!(
+                "{\"type\":\"mode\",\"x\":1}\n",
+                "{\"type\":\"user\",\"message\":{\"content\":\"print the numbers\"}}\n",
+                "{\"type\":\"attachment\"}\n",
+                "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"thinking\",\"thinking\":\"hm\"}]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{}}]}}\n",
+                "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\"}]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"1\\n2\\n3\"}]}}\n",
+            ),
+        )
+        .unwrap();
+
+        let server = TestServer::new();
+        let (_, pane) = server
+            .new_session(&Spawn {
+                command: &["sh", "-c", "echo the pane; while :; do sleep 0.05; done"],
+                ..Spawn::default()
+            })
+            .unwrap();
+
+        let root = TempDir::new().unwrap();
+        let agent = record(
+            root.path(),
+            "fix-login-a1b",
+            server.socket().clone(),
+            pane.clone(),
+        );
+        agent
+            .writer()
+            .unwrap()
+            .update_meta(|meta| meta.transcript = Some(kept.clone()))
+            .unwrap();
+
+        let (code, said) = printed(root.path(), "fix-login-a1b", LINES);
+        assert_eq!(code, exit::OK);
+        assert!(said.contains("❯ print the numbers"), "{said:?}");
+        assert!(said.contains("⚒ Bash"), "{said:?}");
+        assert!(said.contains("1\n2\n3"), "{said:?}");
+        assert!(
+            !said.contains("the pane") && !said.contains("thinking"),
+            "the conversation, not a picture of it: {said:?}"
+        );
+
+        // A shorter reading is the tail of the conversation.
+        let (_, said) = printed(root.path(), "fix-login-a1b", 2);
+        assert_eq!(said, "2\n3\n");
+
+        // A transcript that renders to nothing is no transcript: the pane is
+        // what there is to read.
+        std::fs::write(&kept, "{\"type\":\"mode\"}\n").unwrap();
+        until("the pane to say its piece", || {
+            server
+                .capture(&pane)
+                .is_ok_and(|screen| screen.contains("the pane"))
+        });
+        let (_, said) = printed(root.path(), "fix-login-a1b", LINES);
+        assert!(said.contains("the pane"), "{said:?}");
+    }
+
+    #[test]
+    fn logs_cut_the_vendors_furniture_off_the_screen() {
+        // A pane wearing claude's own bottom: composer box, statusline, mode
+        // footer. The rows are the measured shapes furniture::cut walks; what
+        // the agent printed above them is what a reading is for.
+        let server = TestServer::new();
+        let (_, pane) = server
+            .new_session(&Spawn {
+                command: &[
+                    "sh",
+                    "-c",
+                    "printf 'the work itself\\n\\n\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\n\\342\\235\\257 try\\n\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\n  statusline here\\n  \\342\\217\\270 manual mode on\\n'; while :; do sleep 0.05; done",
+                ],
+                ..Spawn::default()
+            })
+            .unwrap();
+
+        let root = TempDir::new().unwrap();
+        record(
+            root.path(),
+            "fix-login-a1b",
+            server.socket().clone(),
+            pane.clone(),
+        );
+        until("the footer to be drawn", || {
+            server
+                .capture(&pane)
+                .is_ok_and(|screen| screen.contains("manual mode"))
+        });
+
+        let (code, said) = printed(root.path(), "fix-login-a1b", LINES);
+        assert_eq!(code, exit::OK);
+        assert!(said.contains("the work itself"), "{said:?}");
+        assert!(
+            !said.contains("manual mode") && !said.contains("statusline here"),
+            "the vendor's furniture is not the agent's work: {said:?}"
+        );
     }
 
     #[test]

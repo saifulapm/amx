@@ -377,14 +377,17 @@ has no row for words instead, so the two flags are never both an answer to the
 same question. A note without a choice is refused as well: submitting from
 inside that field answers with no choice at all.
 
-`logs` is the pane without taking the terminal for it: the last hundred lines it
-has drawn, or however many `--lines` asks for, with nothing in them a terminal
-will act on. It is a picture of a screen rather than a transcript. The vendor
-redraws its own screen as it works, and what has scrolled past is only there
-while tmux's history holds it — what the agent *said* is `amx result`, which
-hands back its own words. Once the pane is gone the record is what is left, and
-`logs` prints the answer amx captured from it, so the same command line says
-something about an agent whether or not it is still running.
+`logs` is what the agent has been up to, without taking the terminal for it:
+the last hundred lines of it, or however many `--lines` asks for. Where the
+vendor keeps a conversation, that is what it reads — every prompt, answer and
+tool call of the recent history, whole, where a pane could only ever hold one
+screen of it. An agent with no conversation to read — a command row, a claude
+adopted mid-session — gets the pane's picture instead, with the vendor's own
+composer, statusline and mode footer cut off the bottom the way the card cuts
+them. Once the pane is gone the record is what is left, and `logs` prints the
+answer amx captured from it, so the same command line says something about an
+agent whether or not it is still running. `amx result` is still the one that
+hands back a turn's answer alone, and blocks for it.
 
 `amx statusline` prints the two numbers a status line has room for, and nothing
 at all when no agent needs saying:
