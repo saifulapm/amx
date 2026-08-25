@@ -24,13 +24,18 @@ pub fn from_env(json: bool, dir: Option<&Path>) -> Result<i32> {
 
 /// The verb, with the state directory and the clock named.
 pub fn run(root: &Path, json: bool, scope: &Scope, now: u64, out: &mut impl Write) -> Result<i32> {
-    // Listing is the moment amx tidies up after itself: it is run often, and
-    // nobody is waiting on its answer the way a caller waits on `result`.
-    let _ = gc::sweep(root, now);
+    // Every record on the machine, read once and handed to both halves of the
+    // listing. Listing is the moment amx tidies up after itself: it is run
+    // often, and nobody is waiting on its answer the way a caller waits on
+    // `result`. The sweep decides from these records what to forget, and what
+    // is left is what the reading concludes about — so a record on its way out
+    // costs no screen and no summary, and nothing parses a state document
+    // twice.
+    let records = gc::sweep(derive::records(root)?, now);
 
     // Narrowed once, before either reader is answered, so the table and the
     // JSON are the same reading of the same agents.
-    let views = scope.narrow(derive::views(root, rules::bundled(), now)?);
+    let views = scope.narrow(derive::views_of(root, records, rules::bundled(), now));
     if json {
         let listed: Vec<_> = views.iter().map(View::json).collect();
         writeln!(out, "{}", serde_json::to_string_pretty(&listed)?)?;
@@ -446,6 +451,44 @@ mod tests {
             ran_in("elsewhere-b2c", "/srv/other", None),
         ];
         assert_eq!(ids(scope.narrow(views)), ["left-a1b"]);
+    }
+
+    /// A record on disk, with the state a test says it has rather than the one
+    /// a writer would stamp with now.
+    fn on_disk(root: &Path, id: &str, phase: Phase, last_event: u64) {
+        let agent = crate::store::Agent::create(root, &meta(id, 1)).expect("a record");
+        let state = State {
+            state: phase,
+            last_event,
+            since: last_event,
+            ..State::default()
+        };
+        std::fs::write(
+            agent.dir().join("state.json"),
+            serde_json::to_string(&state).unwrap(),
+        )
+        .expect("a record");
+    }
+
+    #[test]
+    fn ls_sweeps_and_answers_from_the_one_reading_it_took() {
+        const NOW: u64 = 1_800_000_000;
+        let root = tempfile::TempDir::new().unwrap();
+        on_disk(root.path(), "old-done-a1b", Phase::Done, NOW - gc::KEEP - 1);
+        on_disk(root.path(), "just-done-c3d", Phase::Done, NOW - 60);
+
+        let mut out = Vec::new();
+        assert_eq!(
+            run(root.path(), false, &Scope::default(), NOW, &mut out).unwrap(),
+            exit::OK
+        );
+
+        // The rows are what the sweep left, and the record it forgot is off
+        // the disk: one pass over the records answers both.
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(text.contains("just-done-c3d"), "{text}");
+        assert_eq!(crate::store::list(root.path()).unwrap(), ["just-done-c3d"]);
     }
 
     #[test]
