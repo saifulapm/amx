@@ -185,11 +185,14 @@ impl View {
     /// removed: callers branch on these.
     ///
     /// The pull requests come from the same reading the row is labelled from,
-    /// which is what the last look wrote down beside the record. A verb that
-    /// prints once and exits does not wait for a forge, so a caller that has
-    /// never had the view open reads an empty list until something has asked.
+    /// which is what the last look wrote down beside the record — read here and
+    /// no more than read. A verb that prints once and exits does not wait for a
+    /// forge, and one that will not wait has no business starting a look
+    /// nobody will be here to collect: see [`crate::pr::written`]. A caller
+    /// that has never had the view open reads an empty list until something
+    /// that waits has asked.
     pub fn json(&self) -> serde_json::Value {
-        self.json_beside(&crate::pr::of(&self.meta))
+        self.json_beside(&crate::pr::written(&self.meta))
     }
 
     /// The same, over requests already read.
