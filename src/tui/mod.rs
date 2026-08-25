@@ -46,6 +46,7 @@ use std::time::{Duration, Instant};
 use crate::config::Config;
 use crate::derive::{self, View};
 use crate::store::{Phase, now};
+use crate::theme::Theme;
 use crate::tmux::{PaneId, Server, SessionId};
 use crate::verbs::ls::Scope;
 use crate::verbs::resume::Comeback;
@@ -405,6 +406,9 @@ struct Screen {
     list: List,
     /// What the next agent will be started with.
     profile: Profile,
+    /// The colours it is all painted in, which the paint asks by role and
+    /// never decides for itself.
+    theme: Theme,
     mode: Mode,
     look: Look,
     card: Option<Card<Body>>,
@@ -463,6 +467,7 @@ pub fn run(root: &Path, config: &Config, scope: &Scope) -> Result<i32> {
         Here::read(),
         remembering.as_deref(),
         &mut TitleBar,
+        Painting::of(&config.theme),
     );
 
     // Whatever happened, the screen goes back the way it was found.
@@ -484,6 +489,28 @@ pub fn run(root: &Path, config: &Config, scope: &Scope) -> Result<i32> {
         println!("{offer}");
     }
     outcome
+}
+
+/// What the view opens painted in: the palette the config named, and whatever
+/// reading it had to say for itself.
+///
+/// Read where the view is opened rather than inside the loop, because a theme
+/// lives beside the config file rather than under the root the view was
+/// pointed at: everything the loop reads is somewhere it was handed, so a test
+/// drives it with a palette of its own and never goes looking on the machine.
+#[derive(Default)]
+struct Painting {
+    theme: Theme,
+    /// What was wrong with the file, for the view to say once.
+    warnings: Vec<String>,
+}
+
+impl Painting {
+    /// The theme of that name, wherever this machine keeps its themes.
+    fn of(named: &str) -> Painting {
+        let (theme, warnings) = crate::theme::load(named);
+        Painting { theme, warnings }
+    }
 }
 
 /// What a terminal is asked with to hold on to the title it is wearing, and to
@@ -569,6 +596,7 @@ fn watch<B>(
     here: Option<Here>,
     remembering: Option<&Path>,
     titles: &mut impl Titles,
+    painting: Painting,
 ) -> Result<i32>
 where
     B: Backend,
@@ -584,9 +612,17 @@ where
             std::env::current_dir().ok().as_deref(),
             std::env::home_dir().as_deref(),
         ),
+        theme: painting.theme,
         remembering: remembering.map(Path::to_path_buf),
         ..Screen::default()
     };
+    // What was wrong with the theme, said where the view says everything else.
+    // Somebody who named a palette and got the built-in one is owed the
+    // reason; the alternative is a screen that is quietly not the one they
+    // asked for.
+    if !painting.warnings.is_empty() {
+        screen.notice = Some(Notice::Advice(painting.warnings.join(" · ")));
+    }
     // The list opens the way it was left, before anything is drawn on it: a
     // view that gathered itself one way and then jumped to the other would be
     // saying the arrangement is something it does rather than something
@@ -2194,6 +2230,18 @@ mod tests {
         script: Vec<Typed>,
         remembering: Option<&Path>,
     ) -> (i32, String) {
+        drawn_painted(root, scope, script, remembering, Painting::default())
+    }
+
+    /// And the same for a view opened on a theme that had something to say
+    /// for itself.
+    fn drawn_painted(
+        root: &Path,
+        scope: &Scope,
+        script: Vec<Typed>,
+        remembering: Option<&Path>,
+        painting: Painting,
+    ) -> (i32, String) {
         let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
         let code = watch(
             root,
@@ -2204,6 +2252,7 @@ mod tests {
             None,
             remembering,
             &mut Said::default(),
+            painting,
         )
         .unwrap();
         let buffer = terminal.backend().buffer().clone();
@@ -2232,6 +2281,7 @@ mod tests {
             None,
             None,
             &mut Said::default(),
+            Painting::default(),
         )
         .unwrap();
         terminal.get_frame().count()
@@ -2252,6 +2302,7 @@ mod tests {
             None,
             None,
             &mut said,
+            Painting::default(),
         )
         .unwrap();
         said.0
@@ -2319,6 +2370,29 @@ mod tests {
         assert_eq!(
             said[1], "amx",
             "and the reading straight after it, which waited for no keystroke"
+        );
+    }
+
+    #[test]
+    fn a_theme_that_would_not_read_says_why_where_the_view_says_everything() {
+        let root = TempDir::new().unwrap();
+
+        // The palette falls back to the built-in one on its own, so the view
+        // opens whatever the file did. What it may not do is open in colours
+        // nobody asked for and say nothing about it.
+        let (_, screen) = drawn_painted(
+            root.path(),
+            &Scope::default(),
+            vec![Typed::Key(KeyEvent::from(KeyCode::Char('q')))],
+            None,
+            Painting {
+                theme: Theme::default(),
+                warnings: vec!["no theme `solarized`".to_string()],
+            },
+        );
+        assert!(
+            screen.contains("no theme `solarized`"),
+            "the reason is nowhere on the screen:\n{screen}"
         );
     }
 
@@ -4191,6 +4265,7 @@ mod tests {
             None,
             None,
             &mut said,
+            Painting::default(),
         )
         .unwrap();
 

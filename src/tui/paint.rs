@@ -18,6 +18,11 @@
 //! be started with, which has not happened at all. Everything of the second
 //! kind wears one treatment of its own, so nobody reads a dial as a fact about
 //! the fleet.
+//!
+//! No colour is decided here. A thing is painted for what it means — waiting,
+//! done, failed — and which colour that is comes off the [`Theme`] the screen
+//! carries, so a person's palette reaches every one of these without any of
+//! them knowing there is such a thing as a palette.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -37,6 +42,7 @@ use crate::furniture::cut;
 use crate::pr::{Pr, Standing};
 use crate::registry::DEFAULT;
 use crate::store::{Kind, Phase};
+use crate::theme::Theme;
 use crate::verbs::send::numbered;
 
 /// The key the hint row keeps whatever else it has to shed, because the
@@ -366,6 +372,10 @@ impl Map {
 /// Draw everything.
 pub fn draw(frame: &mut Frame, screen: &Screen) {
     let area = frame.area();
+    // The palette this frame is painted in, handed down to everything that
+    // draws: a colour is a role the theme answers for, and nothing under here
+    // holds one of its own.
+    let theme = screen.theme;
     let helping = matches!(screen.mode, Mode::Keys);
     let head = header_rows(area.height);
     let space = space_rows(area.height);
@@ -450,6 +460,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
                 hover: screen.hover,
             },
             visible,
+            theme,
         ),
     }
     if let Some(floated) = card_over
@@ -463,10 +474,11 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
             screen.answering(),
             &screen.scroll,
             floated,
+            theme,
         );
     }
     if let Some(composer) = banded {
-        composing_line(frame, composer, line);
+        composing_line(frame, composer, line, theme);
     }
     if let Some(row) = permission {
         frame.render_widget(Paragraph::new(row), allowed);
@@ -515,7 +527,7 @@ fn card_rows(
     let shown = length(card).min(CARD_TALL as usize);
 
     let rows = 2
-        + usize::from(!requests(prs).is_empty())
+        + usize::from(!prs.is_empty())
         + asked as usize
         + usize::from(tab(showing).is_some())
         + listed
@@ -595,6 +607,7 @@ fn space_rows(height: u16) -> u16 {
 /// keypress from being read in the row under the composer.
 fn header(screen: &Screen, area: Rect) -> Vec<Line<'static>> {
     let width = area.width as usize;
+    let theme = screen.theme;
     let mut lines = Vec::new();
     if area.height >= 2 {
         lines.push(spread(
@@ -604,7 +617,7 @@ fn header(screen: &Screen, area: Rect) -> Vec<Line<'static>> {
             )],
             vec![Span::styled(
                 worktree_dial(screen.profile.worktree, width),
-                prospective(),
+                prospective(theme),
             )],
             width,
         ));
@@ -612,9 +625,13 @@ fn header(screen: &Screen, area: Rect) -> Vec<Line<'static>> {
 
     // The fleet's half is worked out first: it is what there is, and the
     // profile is what fits beside it.
-    let counters = counters(&screen.list, screen.profile.max);
+    let counters = counters(&screen.list, screen.profile.max, theme);
     let room = width.saturating_sub(said(&counters) + 1);
-    lines.push(spread(profile(&screen.profile, room), counters, width));
+    lines.push(spread(
+        profile(&screen.profile, room, theme),
+        counters,
+        width,
+    ));
     lines
 }
 
@@ -656,7 +673,7 @@ fn said(spans: &[Span<'static>]) -> usize {
 /// to the terminal such a row is clipped, which reads as a name that ends
 /// where the screen does; so the directory gives way first, and whatever is
 /// still too long is cut with an ellipsis that says it was cut.
-fn profile(profile: &Profile, room: usize) -> Vec<Span<'static>> {
+fn profile(profile: &Profile, room: usize, theme: Theme) -> Vec<Span<'static>> {
     let agent = match profile.model_dial() {
         Some(_) => format!("{} ({})", profile.agent, profile.model),
         None => profile.agent.clone(),
@@ -666,7 +683,7 @@ fn profile(profile: &Profile, room: usize) -> Vec<Span<'static>> {
         true => format!("{agent}{SEPARATOR}{}", fit(&profile.dir, left)),
         false => fit(&agent, room),
     };
-    vec![Span::styled(said, prospective())]
+    vec![Span::styled(said, prospective(theme))]
 }
 
 /// What stands between two things said on one row.
@@ -674,7 +691,7 @@ const SEPARATOR: &str = " · ";
 
 /// What the fleet is: a count per group, in the word the list can be narrowed
 /// by, and the gate the next agent will meet.
-fn counters(list: &List, max: usize) -> Vec<Span<'static>> {
+fn counters(list: &List, max: usize, theme: Theme) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     for &(group, count) in list.counts() {
         if !spans.is_empty() {
@@ -682,7 +699,7 @@ fn counters(list: &List, max: usize) -> Vec<Span<'static>> {
         }
         spans.push(Span::styled(
             format!("{count} {}", group.state()),
-            group_colour(group),
+            group_colour(theme, group),
         ));
     }
     if !spans.is_empty() {
@@ -767,7 +784,7 @@ const WELCOME: &str = "nothing running, nothing broken, nobody asking. enjoy it"
 /// the cursor is kept inside. The rest are drawn anyway: a card is in front of
 /// a list, not instead of one, and the rows it covers are the ones somebody
 /// gets back by closing it.
-fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment, visible: u16) {
+fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment, visible: u16, theme: Theme) {
     if list.is_empty() {
         // Nothing to show is one thing while a narrowing is holding every
         // agent back, another while nobody has started one, and the line for
@@ -807,6 +824,7 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment, visible: u
                 columns,
                 area.width as usize,
                 moment,
+                theme,
             )
         })
         .collect();
@@ -856,6 +874,7 @@ fn line(
     columns: Columns,
     width: usize,
     moment: Moment,
+    theme: Theme,
 ) -> Line<'static> {
     let line = match item {
         Item::Heading(under, tally) => heading(list.title(under), tally, at.selected || at.section),
@@ -869,13 +888,14 @@ fn line(
                 columns,
                 width,
                 moment,
+                theme,
             ),
             None => Line::raw(""),
         },
         Item::Blank => Line::raw(""),
     };
     match at.selected {
-        true => barred(line, width),
+        true => barred(line, width, theme),
         false => line,
     }
 }
@@ -888,9 +908,10 @@ fn line(
 /// short label, and what the cursor is on is a line. So both wear the bar, and
 /// the cursor looks like one thing wherever it is.
 ///
-/// The colour is the vendor's own for a selected line, measured from the
-/// 2.1.237 bundle, for the reason the rest of them are.
-fn barred(line: Line<'static>, width: usize) -> Line<'static> {
+/// The colour is the theme's, which by default is the vendor's own for a
+/// selected line, measured from the 2.1.237 bundle for the reason the rest of
+/// them are.
+fn barred(line: Line<'static>, width: usize, theme: Theme) -> Line<'static> {
     let said: usize = line
         .spans
         .iter()
@@ -900,7 +921,7 @@ fn barred(line: Line<'static>, width: usize) -> Line<'static> {
     if said < width {
         line.spans.push(Span::raw(" ".repeat(width - said)));
     }
-    line.style(Style::new().bg(role::SELECTED))
+    line.style(Style::new().bg(theme.cursor))
 }
 
 /// A heading: what it stands for, and what it is answerable for.
@@ -941,6 +962,7 @@ fn heading(title: String, tally: Tally, marked: bool) -> Line<'static> {
 /// amx is free to speak over: the state, the name and the age are what the row
 /// is for, and a warning that took a column of its own would move every row
 /// under it for as long as it was up.
+#[allow(clippy::too_many_arguments)]
 fn row(
     view: &View,
     prs: &[Pr],
@@ -949,6 +971,7 @@ fn row(
     columns: Columns,
     width: usize,
     moment: Moment,
+    theme: Theme,
 ) -> Line<'static> {
     let At {
         selected, hovered, ..
@@ -989,11 +1012,14 @@ fn row(
         true => Style::new(),
         false => dim(),
     };
-    let [read, top] = marks(view, held);
+    let [read, top] = marks(view, held, theme);
     let mut spans = vec![
         read,
         top,
-        Span::styled(format!("{} ", icon(phase, moment.beat)), colour(phase)),
+        Span::styled(
+            format!("{} ", icon(phase, moment.beat)),
+            colour(theme, phase),
+        ),
         // The pointer resting on a row gives its name the selection
         // treatment without the bar or the cursor, which is the whole of
         // what a hover is.
@@ -1008,7 +1034,7 @@ fn row(
     if status > 0 {
         spans.push(Span::styled(
             format!("{:<status$}  ", fit(phase.as_str(), status)),
-            colour(phase),
+            colour(theme, phase),
         ));
     }
     if pr > 0 {
@@ -1016,13 +1042,13 @@ fn row(
         // still live. The rest are on the card, where there is room to list
         // them and to say what each is waiting on.
         let (label, paint) = match prs.first() {
-            Some(first) => (first.label(), request_colour(first.standing)),
+            Some(first) => (first.label(), request_colour(theme, first.standing)),
             None => (String::new(), Style::new()),
         };
         spans.push(Span::styled(format!("{label:<pr$}  "), paint));
     }
     let summary = match armed {
-        true => Style::new().fg(role::WARNING),
+        true => Style::new().fg(theme.waiting),
         false => toned,
     };
     spans.push(Span::styled(format!("{} ", padded(&said, room)), summary));
@@ -1048,10 +1074,10 @@ const AGAIN: &str = "ctrl+x again forgets";
 /// thing waiting on a person, because that is what it is; the second is not
 /// about the agent at all but about how somebody laid the wall out, so it is
 /// drawn in the terminal's own.
-fn marks(view: &View, held: bool) -> [Span<'static>; MARKS] {
+fn marks(view: &View, held: bool, theme: Theme) -> [Span<'static>; MARKS] {
     [
         match rows::unread(view) {
-            true => Span::styled(UNREAD, Style::new().fg(role::WARNING)),
+            true => Span::styled(UNREAD, Style::new().fg(theme.waiting)),
             false => Span::raw(" "),
         },
         match held {
@@ -1083,6 +1109,7 @@ const ASKED_TALL: u16 = 3;
 /// terminal cut down the middle is a picture of nothing. It floats over the
 /// rows rather than pushing them up, so the wall is where it was when the card
 /// closes.
+#[allow(clippy::too_many_arguments)]
 fn float(
     frame: &mut Frame,
     card: &Card<Body>,
@@ -1091,6 +1118,7 @@ fn float(
     answering: Option<&Composer>,
     scroll: &Scroll,
     area: Rect,
+    theme: Theme,
 ) {
     let title = match card.changes {
         true => format!(" {} · what it has changed ", card.id),
@@ -1105,7 +1133,7 @@ fn float(
         .border_type(BorderType::Rounded)
         .border_style(dim())
         .padding(Padding::horizontal(PADDING))
-        .title(Span::styled(title, colour(card.phase)));
+        .title(Span::styled(title, colour(theme, card.phase)));
     let inner = block.inner(area);
 
     // What the card is for comes first and the pane takes what is left. The
@@ -1122,7 +1150,7 @@ fn float(
     // Every request this branch has, above everything the card says about the
     // turn: what happened to the work after the turn ended is the question
     // somebody opening a finished agent's card came with.
-    let open = requests(prs);
+    let open = requests(prs, theme);
     let opened = take(u16::from(!open.is_empty()));
     // The question and the choices are the agent's own words, and the choices
     // are the keys a person is about to press: both go through `inert` before
@@ -1184,7 +1212,7 @@ fn float(
         frame.render_widget(
             Paragraph::new(question)
                 .wrap(Wrap { trim: true })
-                .style(Style::new().fg(role::WARNING)),
+                .style(Style::new().fg(theme.waiting)),
             asking,
         );
     }
@@ -1200,7 +1228,7 @@ fn float(
         frame.render_widget(Paragraph::new(Line::styled(added, dim())), adds);
     }
     if let Some(composer) = answering.filter(|_| typing > 0) {
-        answer_row(frame, card, showing, composer, answer);
+        answer_row(frame, card, showing, composer, answer, theme);
     }
 
     frame.render_widget(
@@ -1230,7 +1258,7 @@ fn length(card: &Card<Body>) -> usize {
 ///
 /// Nothing here comes off a pane, so nothing here is neutralised: the numbers
 /// are amx's own formatting of an integer, and the words are this file's.
-fn requests(prs: &[Pr]) -> Vec<Span<'static>> {
+fn requests(prs: &[Pr], theme: Theme) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for pr in prs {
         if !spans.is_empty() {
@@ -1238,7 +1266,7 @@ fn requests(prs: &[Pr]) -> Vec<Span<'static>> {
         }
         spans.push(Span::styled(
             format!("{} {}", pr.label(), pr.standing.says()),
-            request_colour(pr.standing),
+            request_colour(theme, pr.standing),
         ));
     }
     spans
@@ -1496,6 +1524,7 @@ fn answer_row(
     showing: Option<Showing>,
     composer: &Composer,
     area: Rect,
+    theme: Theme,
 ) {
     let width = area.width as usize;
     let room = width.saturating_sub(ANSWER.chars().count()).max(1);
@@ -1511,7 +1540,7 @@ fn answer_row(
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(ANSWER, Style::new().fg(role::WARNING)),
+            Span::styled(ANSWER, Style::new().fg(theme.waiting)),
             said,
         ])),
         area,
@@ -1676,7 +1705,7 @@ fn composer_height(composer: &Composer, area: Rect, chrome: u16) -> u16 {
 /// where somebody is typing — but the prompt stays on the top row however far
 /// the rest has scrolled. It is what says where enter will send this, and that
 /// is worth a gutter wherever the text has got to.
-fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect) {
+fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect, theme: Theme) {
     let prompt = gutter(composer);
     let width = area.width as usize;
     let rows = composer_lines(&composer.text, composer_room(composer, area.width));
@@ -1689,7 +1718,7 @@ fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect) {
         .enumerate()
         .map(|(at, text)| {
             let head = match at {
-                0 => Span::styled(prompt.clone(), Style::new().fg(role::WARNING)),
+                0 => Span::styled(prompt.clone(), Style::new().fg(theme.waiting)),
                 _ => Span::raw(indent.clone()),
             };
             let mut spans = vec![head, Span::raw(text.clone())];
@@ -1739,7 +1768,7 @@ fn permission(screen: &Screen) -> Option<Line<'static>> {
     };
     Some(Line::styled(
         format!("{said} (shift+tab to cycle)"),
-        prospective(),
+        prospective(screen.theme),
     ))
 }
 
@@ -1836,7 +1865,9 @@ fn fitted(said: &[&str], width: usize) -> String {
 fn footer(screen: &Screen, width: u16) -> Line<'static> {
     if let Some(notice) = &screen.notice {
         return match notice {
-            Notice::Failed(said) => Line::styled(said.clone(), Style::new().fg(role::ERROR)),
+            Notice::Failed(said) => {
+                Line::styled(said.clone(), Style::new().fg(screen.theme.failed))
+            }
             Notice::Advice(said) => Line::styled(said.clone(), dim()),
         };
     }
@@ -1846,7 +1877,7 @@ fn footer(screen: &Screen, width: u16) -> Line<'static> {
     // A question of the view's own is not advice and not a key: it is the one
     // thing on the screen, in the colour of something waiting on a person.
     if let Mode::Confirming(asked) = &screen.mode {
-        return Line::styled(asked.question(), Style::new().fg(role::WARNING));
+        return Line::styled(asked.question(), Style::new().fg(screen.theme.waiting));
     }
     Line::styled(
         match &screen.mode {
@@ -2042,47 +2073,21 @@ fn icon(phase: Phase, beat: usize) -> &'static str {
     }
 }
 
-/// The colours, by what they mean rather than by what they are. Five of them
-/// carry the vendor's own dark theme measured from the 2.1.237 binary: a view
-/// beside claude's should not be a different shade of the same idea.
-mod role {
-    use ratatui::style::Color;
-
-    /// What the next agent will be started with. The terminal's own cyan
-    /// rather than a value out of the binary: what colour claude paints the
-    /// prospective half of its own header is not something amx has measured,
-    /// and an RGB nobody measured would read as one that was.
-    pub const PROSPECTIVE: Color = Color::Cyan;
-
-    /// It went the way it was meant to.
-    pub const SUCCESS: Color = Color::Rgb(78, 186, 101);
-    /// Something is waiting on a person.
-    pub const WARNING: Color = Color::Rgb(255, 193, 7);
-    /// It was attempted and it failed.
-    pub const ERROR: Color = Color::Rgb(255, 107, 128);
-    /// It was ended by hand, and nothing more is coming.
-    pub const INACTIVE: Color = Color::Rgb(153, 153, 153);
-    /// The line the cursor is on. A background rather than a foreground: it
-    /// says where the cursor is without taking a colour away from what the
-    /// line was already saying.
-    pub const SELECTED: Color = Color::Rgb(55, 55, 55);
-}
-
 /// What a state is worth saying in colour.
 ///
 /// Whether anything is running is the mark's job, which leaves the colour to
 /// carry how it went: an agent still at work has nothing to say about that
 /// yet, so it takes the terminal's own colour and earns one by ending.
-fn colour(phase: Phase) -> Style {
+fn colour(theme: Theme, phase: Phase) -> Style {
     match phase {
         // What amx cannot account for wants a person as much as a question
         // does, and the mark is what says which of the two it is.
-        Phase::Waiting | Phase::Unknown => Style::new().fg(role::WARNING),
+        Phase::Waiting | Phase::Unknown => Style::new().fg(theme.waiting),
         Phase::Starting | Phase::Working => Style::new(),
         Phase::Idle => dim(),
-        Phase::Done => Style::new().fg(role::SUCCESS),
-        Phase::Failed => Style::new().fg(role::ERROR),
-        Phase::Stopped => Style::new().fg(role::INACTIVE),
+        Phase::Done => Style::new().fg(theme.done),
+        Phase::Failed => Style::new().fg(theme.failed),
+        Phase::Stopped => Style::new().fg(theme.stopped),
     }
 }
 
@@ -2096,12 +2101,12 @@ fn colour(phase: Phase) -> Style {
 /// request whose checks are still running and one nobody has read yet have the
 /// same answer to that question — nothing yet. Which of the two it is, is what
 /// the card says in words.
-fn request_colour(standing: Standing) -> Style {
+fn request_colour(theme: Theme, standing: Standing) -> Style {
     match standing {
-        Standing::Merged | Standing::Ready => Style::new().fg(role::SUCCESS),
-        Standing::Failing => Style::new().fg(role::ERROR),
-        Standing::Changes => Style::new().fg(role::WARNING),
-        Standing::Closed => Style::new().fg(role::INACTIVE),
+        Standing::Merged | Standing::Ready => Style::new().fg(theme.done),
+        Standing::Failing => Style::new().fg(theme.failed),
+        Standing::Changes => Style::new().fg(theme.waiting),
+        Standing::Closed => Style::new().fg(theme.stopped),
         Standing::Draft => dim(),
         Standing::Running | Standing::Open => Style::new(),
     }
@@ -2120,12 +2125,12 @@ fn heading_style(marked: bool) -> Style {
 
 /// The same roles over a group, so the count at the top and the rows under the
 /// heading say the same thing in the same colour.
-fn group_colour(group: Group) -> Style {
+fn group_colour(theme: Theme, group: Group) -> Style {
     match group {
-        Group::NeedsInput => Style::new().fg(role::WARNING),
+        Group::NeedsInput => Style::new().fg(theme.waiting),
         Group::Working => Style::new(),
         Group::Idle => dim(),
-        Group::Completed => Style::new().fg(role::INACTIVE),
+        Group::Completed => Style::new().fg(theme.stopped),
     }
 }
 
@@ -2140,10 +2145,8 @@ fn dim() -> Style {
 /// Weight as well as colour: the counters beside it are already coloured by
 /// what they mean, and a terminal with the colour turned off still has to be
 /// able to tell a dial from a count.
-fn prospective() -> Style {
-    Style::new()
-        .fg(role::PROSPECTIVE)
-        .add_modifier(Modifier::BOLD)
+fn prospective(theme: Theme) -> Style {
+    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
 }
 
 #[cfg(test)]
@@ -2160,6 +2163,14 @@ mod tests {
     use ratatui::style::Color;
     use std::path::PathBuf;
     use std::time::Instant;
+
+    /// The palette a screen nobody handed a theme is painted in, which is the
+    /// one every screen built here has and the one these colours are read out
+    /// of: what the tests are about is which role a thing is painted in, and
+    /// the values are the theme's business.
+    fn theme() -> Theme {
+        Theme::default()
+    }
 
     fn view(id: &str, phase: Phase, said: Option<&str>, age: u64) -> View {
         View {
@@ -2641,11 +2652,20 @@ mod tests {
         };
         let plain = Modifier::empty();
 
-        assert_eq!(painted(Phase::Waiting), ("?".into(), role::WARNING, plain));
-        assert_eq!(painted(Phase::Unknown), ("~".into(), role::WARNING, plain));
-        assert_eq!(painted(Phase::Done), ("●".into(), role::SUCCESS, plain));
-        assert_eq!(painted(Phase::Failed), ("✗".into(), role::ERROR, plain));
-        assert_eq!(painted(Phase::Stopped), ("⏹".into(), role::INACTIVE, plain));
+        assert_eq!(
+            painted(Phase::Waiting),
+            ("?".into(), theme().waiting, plain)
+        );
+        assert_eq!(
+            painted(Phase::Unknown),
+            ("~".into(), theme().waiting, plain)
+        );
+        assert_eq!(painted(Phase::Done), ("●".into(), theme().done, plain));
+        assert_eq!(painted(Phase::Failed), ("✗".into(), theme().failed, plain));
+        assert_eq!(
+            painted(Phase::Stopped),
+            ("⏹".into(), theme().stopped, plain)
+        );
 
         // An agent still at work has nothing to say about how it went, so it
         // takes the terminal's own colour and the pulse does the talking. An
@@ -2800,7 +2820,7 @@ mod tests {
         );
         assert_eq!(
             word_colour(&screen, size, 2, "ctrl+x again forgets"),
-            role::WARNING,
+            theme().waiting,
             "in the colour of a thing waiting on a person"
         );
         assert!(
@@ -2927,7 +2947,7 @@ mod tests {
             ],
             None,
         );
-        let bar = vec![role::SELECTED; 60];
+        let bar = vec![theme().cursor; 60];
         let plain = vec![Color::Reset; 60];
 
         // The view opens on the first agent, with the heading over it bare.
@@ -3611,7 +3631,7 @@ mod tests {
 
         assert_eq!(
             said(Notice::Failed("could not stop fix-login-a1b".to_string())),
-            (role::ERROR, Modifier::empty())
+            (theme().failed, Modifier::empty())
         );
         assert_eq!(
             said(Notice::Advice(
@@ -4432,7 +4452,7 @@ mod tests {
 
         // The state is carried by the icon's colour alone.
         let (glyph, painted, _) = mark(&screen, size, muted);
-        assert_eq!((glyph.as_str(), painted), ("●", role::SUCCESS));
+        assert_eq!((glyph.as_str(), painted), ("●", theme().done));
     }
 
     #[test]
@@ -4484,7 +4504,7 @@ mod tests {
             ),
         ]);
 
-        assert_eq!(word_colour(&screen, size, 4, "done"), role::SUCCESS);
+        assert_eq!(word_colour(&screen, size, 4, "done"), theme().done);
         assert!(word_modifier(&screen, size, 4, "fixed it").contains(Modifier::DIM));
     }
 
@@ -4513,7 +4533,7 @@ mod tests {
         assert!(lines[asking].contains("#12"), "{:?}", lines[asking]);
         assert_eq!(
             word_colour(&screen, size, asking as u16, "#12"),
-            role::ERROR,
+            theme().failed,
             "a failing check is a thing that was attempted and failed"
         );
 
@@ -4589,7 +4609,7 @@ mod tests {
             lines[..row].iter().any(|line| line.starts_with('╭')),
             "on the card rather than on the row behind it: {lines:?}"
         );
-        assert_eq!(word_colour(&screen, size, row as u16, "#7"), role::SUCCESS);
+        assert_eq!(word_colour(&screen, size, row as u16, "#7"), theme().done);
     }
 
     #[test]
@@ -4605,17 +4625,29 @@ mod tests {
         );
         for standing in EVERY_STANDING {
             assert_eq!(
-                request_colour(standing).bg,
+                request_colour(theme(), standing).bg,
                 None,
                 "{standing:?} is a word on a row, not a bar under one"
             );
         }
-        assert_eq!(request_colour(Standing::Merged).fg, Some(role::SUCCESS));
-        assert_eq!(request_colour(Standing::Failing).fg, Some(role::ERROR));
-        assert_eq!(request_colour(Standing::Changes).fg, Some(role::WARNING));
-        assert_eq!(request_colour(Standing::Closed).fg, Some(role::INACTIVE));
         assert_eq!(
-            request_colour(Standing::Open).fg,
+            request_colour(theme(), Standing::Merged).fg,
+            Some(theme().done)
+        );
+        assert_eq!(
+            request_colour(theme(), Standing::Failing).fg,
+            Some(theme().failed)
+        );
+        assert_eq!(
+            request_colour(theme(), Standing::Changes).fg,
+            Some(theme().waiting)
+        );
+        assert_eq!(
+            request_colour(theme(), Standing::Closed).fg,
+            Some(theme().stopped)
+        );
+        assert_eq!(
+            request_colour(theme(), Standing::Open).fg,
             None,
             "a request nobody has read yet has nothing to say about how it went"
         );
