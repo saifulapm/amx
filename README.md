@@ -155,6 +155,7 @@ question has been standing is on the card, in its title.
 | `alt+n` | start the line and go to the agent it started |
 | `r` | reply: a message, or an answer on the card |
 | `d` | what it has changed |
+| `pgup` `pgdn` | page the card, when it holds more |
 | `ctrl+x` | stop it, twice to forget it, and twice on a heading to clear the finished |
 | `ctrl+r` | call it something else |
 | `ctrl+g` | write the line in `$EDITOR` |
@@ -180,6 +181,13 @@ when you detach.
 wall, counting rows from the top and skipping the headings, without walking the
 cursor to them first. It is the fleet you already have in front of you, reached
 by the number you were about to count to.
+
+`pgup` and `pgdn` page inside the card's body when it holds more than its box
+can show: a patch down from its top, a screen or an answer up from its live
+bottom. A paged card says how far from that edge it stands on its frame —
+`↓ 12 more` — and holds still, new output and all, until you page back to the
+edge, move the cursor, or open it again. The arrows never page: they keep
+walking the list, card in tow.
 
 `ctrl+x` forgets nothing on the first press, and the first press is the same
 press on every row. An agent that is still running — sitting idle at its

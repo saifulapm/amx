@@ -743,10 +743,26 @@ impl Screen {
 
     /// Take the card again, when it is the kind that follows the cursor: what
     /// an agent is doing is what its pane is showing now.
+    ///
+    /// A card paged away from its natural edge is being read, and retaking it
+    /// would move the text under somebody's eyes — so it holds still until it
+    /// is paged back or the cursor moves off its agent. Only a card that is
+    /// asking is never held: the record moves under it while the vendor
+    /// redraws, and freshness is what keeps the question and its tab paired.
     fn follow_the_cursor(&mut self) {
         match self.look {
             Look::Away => self.card = None,
-            Look::Screen => self.card = self.list.selected().map(card_of),
+            Look::Screen => {
+                let held = self.scroll.away.get() > 0
+                    && match (&self.card, self.list.selected()) {
+                        (Some(card), Some(view)) => !card.asks() && card.id == view.id(),
+                        _ => false,
+                    };
+                if !held {
+                    self.scroll.away.set(0);
+                    self.card = self.list.selected().map(card_of);
+                }
+            }
             // A diff was taken when somebody asked for it, and stays as it was
             // until they ask again.
             Look::Changes => {}
@@ -932,6 +948,10 @@ impl Screen {
                 self.list.up();
                 self.moved();
             }
+            // The cursor keys walk the list even while a card is open; paging
+            // inside the card's body is these two.
+            KeyCode::PageUp if plain => self.paged(true),
+            KeyCode::PageDown if plain => self.paged(false),
             KeyCode::Char(' ') if plain => match self.look {
                 Look::Away => self.look_closer(root),
                 _ => self.look_away(),
@@ -1016,6 +1036,8 @@ impl Screen {
                         Ok(card) => {
                             self.card = Some(card);
                             self.look = Look::Changes;
+                            // A patch just taken is read from its top.
+                            self.scroll.away.set(0);
                         }
                         Err(e) => self.notice = Some(Notice::Failed(format!("{e:#}"))),
                     }
@@ -1519,6 +1541,26 @@ impl Screen {
             self.look = Look::Screen;
         }
         self.follow_the_cursor();
+    }
+
+    /// A page into the card's body, or back toward its natural edge.
+    ///
+    /// Which key leads away follows the card: a patch is read down from its
+    /// top, a screen or an answer up from its live bottom. The keys only add
+    /// and subtract — the paint owns the clamp, so a body that fits never
+    /// leaves its edge and a press past the end lands on the last page.
+    fn paged(&mut self, up: bool) {
+        let Some(card) = &self.card else { return };
+        let page = self.scroll.page.get().max(1);
+        let away = self.scroll.away.get();
+        let leaving = match card.changes {
+            true => !up,
+            false => up,
+        };
+        self.scroll.away.set(match leaving {
+            true => away.saturating_add(page),
+            false => away.saturating_sub(page),
+        });
     }
 
     /// Something was done to an agent, so what the list says about it is a
@@ -2157,6 +2199,184 @@ mod tests {
         assert!(screen.card.is_none());
         assert!(screen.answering().is_none());
         assert!(matches!(screen.mode, Mode::List), "back on the agents");
+    }
+
+    /// One that has finished, with the answer it left.
+    fn finished_saying(id: &str, result: &str) -> View {
+        reading(
+            id,
+            Phase::Done,
+            State {
+                state: Phase::Done,
+                exit: Some(0),
+                result: Some(result.to_string()),
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        )
+    }
+
+    #[test]
+    fn card_pages_under_the_page_keys_and_a_cursor_move_resets_it() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            finished_saying("done-a1b", "the first answer"),
+            finished_saying("done-b2c", "the second answer"),
+        ]);
+        let press = |screen: &mut Screen, code| {
+            screen
+                .act(KeyEvent::from(code), root.path(), &config, None)
+                .unwrap();
+        };
+
+        press(&mut screen, KeyCode::Char(' '));
+        assert!(screen.card.is_some(), "the card is open");
+        assert_eq!(screen.scroll.away.get(), 0, "on its natural edge");
+
+        // An answer is read up from its bottom: pgup leaves the edge, pgdn
+        // comes back toward it, and never past it.
+        press(&mut screen, KeyCode::PageUp);
+        let away = screen.scroll.away.get();
+        assert!(away > 0, "paged away from the bottom");
+        press(&mut screen, KeyCode::PageUp);
+        assert!(screen.scroll.away.get() > away, "and further");
+        press(&mut screen, KeyCode::PageDown);
+        assert_eq!(screen.scroll.away.get(), away, "a page back");
+        press(&mut screen, KeyCode::PageDown);
+        press(&mut screen, KeyCode::PageDown);
+        assert_eq!(screen.scroll.away.get(), 0, "the edge is where it stops");
+
+        // The arrows keep their meaning: the cursor walks on with the card
+        // following, and the next agent's card stands on its own edge.
+        press(&mut screen, KeyCode::PageUp);
+        press(&mut screen, KeyCode::Down);
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.id.as_str()),
+            Some("done-b2c"),
+            "the card followed the cursor"
+        );
+        assert_eq!(screen.scroll.away.get(), 0, "and stands where it opens");
+    }
+
+    #[test]
+    fn card_holding_a_patch_pages_the_other_way_round() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![finished_saying("done-a1b", "an answer")]);
+        // A patch in hand, the way `d` leaves one.
+        screen.look = Look::Changes;
+        screen.card = Some(Card {
+            id: "done-a1b".to_string(),
+            phase: Phase::Done,
+            age: 29,
+            question: None,
+            options: Vec::new(),
+            kind: None,
+            body: "+ line".to_string(),
+            changes: true,
+        });
+        let press = |screen: &mut Screen, code| {
+            screen
+                .act(KeyEvent::from(code), root.path(), &config, None)
+                .unwrap();
+        };
+
+        // A patch is read down from its top: pgdn leaves the edge.
+        press(&mut screen, KeyCode::PageDown);
+        assert!(screen.scroll.away.get() > 0, "paged down into the patch");
+        press(&mut screen, KeyCode::PageUp);
+        assert_eq!(screen.scroll.away.get(), 0, "and back to the top");
+    }
+
+    #[test]
+    fn card_taken_again_stands_on_its_natural_edge() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+        let press = |screen: &mut Screen, code| {
+            screen
+                .act(KeyEvent::from(code), root.path(), &config, None)
+                .unwrap();
+        };
+
+        press(&mut screen, KeyCode::Char(' '));
+        press(&mut screen, KeyCode::PageUp);
+        assert!(screen.scroll.away.get() > 0);
+
+        press(&mut screen, KeyCode::Esc);
+        press(&mut screen, KeyCode::Char(' '));
+        assert_eq!(screen.scroll.away.get(), 0, "reopened where it opens");
+    }
+
+    #[test]
+    fn card_paged_away_stops_following_until_paged_back() {
+        let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+        screen.look = Look::Screen;
+        screen.follow_the_cursor();
+        screen.card.as_mut().expect("a card").body = "what she was reading".to_string();
+
+        // Paged away, the card holds still between rereads: recapturing under
+        // somebody's eyes would move the text they are on.
+        screen.scroll.away.set(3);
+        screen.follow_the_cursor();
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.body.as_str()),
+            Some("what she was reading"),
+            "held while paged away"
+        );
+
+        // Back on the edge, it follows again.
+        screen.scroll.away.set(0);
+        screen.follow_the_cursor();
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.body.as_str()),
+            Some("the answer"),
+            "taken again at the edge"
+        );
+    }
+
+    #[test]
+    fn card_asking_is_never_held_still() {
+        let mut screen = watching(vec![stopped_on_a_question("ask-a1b")]);
+        screen.look = Look::Screen;
+        screen.follow_the_cursor();
+        screen.card.as_mut().expect("a card").question = Some("an old question".to_string());
+
+        // Whatever the offset says, a question is always fresh: the record
+        // moves under the card while the vendor redraws, and a held card
+        // would pair the old question with the new tab.
+        screen.scroll.away.set(3);
+        screen.follow_the_cursor();
+        assert_eq!(
+            screen
+                .card
+                .as_ref()
+                .and_then(|card| card.question.as_deref()),
+            Some("Which fixture should the port keep?")
+        );
+    }
+
+    #[test]
+    fn card_answer_line_swallows_the_page_keys() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![stopped_on_a_question("ask-a1b")]);
+        let press = |screen: &mut Screen, code| {
+            screen
+                .act(KeyEvent::from(code), root.path(), &config, None)
+                .unwrap();
+        };
+
+        press(&mut screen, KeyCode::Char(' '));
+        assert!(screen.answering().is_some(), "the line is up");
+
+        // The composer keeps ignoring keys that are not for it, and a question
+        // card is its question block: there is nothing under it to page.
+        press(&mut screen, KeyCode::PageUp);
+        assert_eq!(screen.scroll.away.get(), 0);
+        assert_eq!(screen.answering().expect("still typing").text, "");
     }
 
     #[test]
@@ -2863,6 +3083,8 @@ mod tests {
             KeyCode::Down => "↓".to_string(),
             KeyCode::Left => "←".to_string(),
             KeyCode::Right => "→".to_string(),
+            KeyCode::PageUp => "pgup".to_string(),
+            KeyCode::PageDown => "pgdn".to_string(),
             other => format!("{other:?}").to_lowercase(),
         });
         said
@@ -2914,9 +3136,10 @@ mod tests {
         };
         let dials = &screen.profile;
         format!(
-            "{mode} · {look} · {notice} · {:?} · {:?} · {} {} {} {}",
+            "{mode} · {look} · {notice} · {:?} · {:?} · {} · {} {} {} {}",
             screen.list,
             screen.card.as_ref().map(|card| (&card.id, card.changes)),
+            screen.scroll.away.get(),
             dials.agent,
             dials.model,
             dials.permission,
