@@ -3,8 +3,8 @@
 //! Hooks are precise and win while they flow. When they stop — the vendor was
 //! interrupted with Escape, or nothing has happened for a while — the pane
 //! itself is the only witness left, and this is what amx knows how to see in
-//! it: the rules in `assets/screen-rules.toml`, matched against the bottom of
-//! the capture.
+//! it: the rules in the vendor's own screens document — claude's is
+//! `assets/screen-rules.toml` — matched against the bottom of the capture.
 //!
 //! The ruleset is small on purpose. A screen no rule claims is `unknown`, and
 //! `unknown` with its age shown is a better answer than a confident wrong one:

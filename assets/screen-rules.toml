@@ -2,10 +2,11 @@
 #
 # When the hooks have gone quiet, a reader looks at the bottom of the pane and
 # matches it against these rules. This file is the whole of what amx knows how
-# to see: claude's three blocking prompts, the line it spins while a turn runs,
-# and the furniture it leaves under an idle prompt. It is deliberately small. A
-# screen no rule claims is reported as `unknown` rather than guessed at — a
-# missing rule costs a row that says "I can't tell", a sloppy one costs a lie.
+# to see on a claude pane: its four blocking prompts, the line it spins while a
+# turn runs, the furniture it leaves under an idle prompt, and the sentences it
+# sends about a dialog it will not describe. It is deliberately small. A screen
+# no rule claims is reported as `unknown` rather than guessed at — a missing
+# rule costs a row that says "I can't tell", a sloppy one costs a lie.
 #
 # Rules are ORDERED: the first whose conditions hold decides, so the more
 # specific screens come first. A rule holds when every string in `all` appears

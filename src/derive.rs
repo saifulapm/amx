@@ -160,16 +160,20 @@ impl View {
     /// picture of it, so the screen fills what the hooks left empty and
     /// corrects nothing.
     ///
-    /// The vendor's own menu is the exception, and it earns it twice over.
-    /// `ask_menu` anchors on `Enter to select`, which no other screen this
-    /// vendor draws carries, so a rule that claimed it is not a guess about
-    /// what is on the pane — it is the one screen amx can name with certainty.
-    /// And a rule only gets to speak once the hooks have gone quiet, which is
-    /// to say once the record is old news: an amx written before the vendor was
-    /// found asking itself for permission to draw a menu wrote `permission`
-    /// over every menu it saw, and records outlive the amx that wrote them. A
-    /// kind is what decides what may be sent back, and a permission box's one
-    /// key at a menu is how a caller answers a question nobody chose.
+    /// The vendor's own menu is the exception, and it earns it twice over. It
+    /// is the one screen amx can name with certainty — claude's anchors on
+    /// `Enter to select`, which no other screen it draws carries — so a rule
+    /// claiming it is not a guess about what is on the pane. And a rule only
+    /// gets to speak once the hooks have gone quiet, which is to say once the
+    /// record is old news: an amx written before the vendor was found asking
+    /// itself for permission to draw a menu wrote `permission` over every menu
+    /// it saw, and records outlive the amx that wrote them. A kind is what
+    /// decides what may be sent back, and a permission box's one key at a menu
+    /// is how a caller answers a question nobody chose.
+    ///
+    /// The exception is the kind rather than the screen, which is what lets it
+    /// hold for whichever vendor is being read: the name on the verdict is
+    /// looked up in the document that named it.
     pub fn kind(&self) -> Option<crate::store::Kind> {
         match asked_kind(crate::rules::bundled(), self.verdict.rule.as_deref()) {
             seen @ Some(crate::store::Kind::Question) => seen,
