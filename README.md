@@ -352,14 +352,32 @@ go, so the next view opens on the wall you left.
 
 A line being typed hangs off a rule, and the rule is where the whole mode is
 said. Its near end names which of the five lines this is — a task, a narrowing,
-a message, an answer, a rename — and after it the one thing true of all five:
-while the line is open a letter is a letter and not the key it is bound to, and
-`esc` is the way out. Its far end carries what the next agent may do without
-asking, in reverse video, set into the edge: it is the one dial somebody is
-about to press enter past. The line itself is bold under a block cursor, and
-everything above the rule goes dim for as long as the mode is on — rows,
-headings, counts and dials in the one pass — so the only thing on the screen
-still carrying weight is the thing that has not happened yet.
+a message, an answer, a rename — with the agent it is aimed at beside it where
+it is aimed at one, and after that the one thing true of all five: while the
+line is open a letter is a letter and not the key it is bound to, and `esc` is
+the way out. Its far end carries what the next agent may do without asking, in
+reverse video, set into the edge: it is the one dial somebody is about to press
+enter past.
+
+The line itself begins with a `❯` in the column the rule's own label starts in,
+whichever of the five it is holding, so moving between them does not move the
+words you are reading. It is bold under a block cursor, and everything above
+the rule goes dim for as long as the mode is on — rows, headings, counts and
+dials in the one pass — so the band below the rule is the only thing on the
+screen still carrying weight.
+
+```
+TASK · letters are text until esc ──────────────────────────── vendor default ──
+❯ add a retry to the webhook█
+enter starts it   alt+enter newline   shift+tab permission   esc cancels
+```
+
+The keys at the foot are pairs: the key carrying the weight and what it does
+dim behind it, with wall between one and the next. The weight changing is the
+edge, so there is no character spent being one. They shed from the far end as
+the terminal narrows — the eighty columns above have already dropped
+`ctrl+g $EDITOR` — and the way out of the mode is pinned to the end and never
+goes.
 
 The line a task is typed on reads a few words of its own, at the front of it
 and nowhere else. `s:` and `a:` narrow the list by state and by name rather

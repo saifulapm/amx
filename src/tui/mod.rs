@@ -3471,7 +3471,8 @@ mod tests {
             .unwrap();
         assert!(screen.card.is_none(), "with no card over the list");
         let line = screen.banded().expect("a line of its own");
-        assert_eq!(line.prompt(), "message to fix-login-b2c");
+        assert_eq!(line.label(), "MESSAGE");
+        assert_eq!(line.about().as_deref(), Some("to fix-login-b2c"));
     }
 
     #[test]
@@ -4073,7 +4074,8 @@ mod tests {
 
         screen.act(ctrl('r'), root.path(), &config, None).unwrap();
         let line = screen.banded().expect("a line of its own");
-        assert_eq!(line.prompt(), "rename fix-login-a1b");
+        assert_eq!(line.label(), "RENAME");
+        assert_eq!(line.about().as_deref(), Some("fix-login-a1b"));
         assert_eq!(
             line.text, "auth",
             "seeded with what the row says, because a rename is an edit of it \
@@ -4184,7 +4186,7 @@ mod tests {
             Mode::List => "list".to_string(),
             Mode::Keys => "keys".to_string(),
             Mode::Confirming(asked) => format!("confirming {}", asked.question()),
-            Mode::Typing(composer) => format!("typing {} {}", composer.prompt(), composer.text),
+            Mode::Typing(composer) => format!("typing {} {}", composer.label(), composer.text),
         };
         let look = match screen.look {
             Look::Away => "away",
@@ -4543,9 +4545,9 @@ mod tests {
         );
 
         assert_eq!(code, exit::OK);
-        assert!(screen.contains("task ▸ port the importer"), "{screen}");
+        assert!(screen.contains("❯ port the importer"), "{screen}");
         assert!(
-            screen.contains("       and its tests"),
+            screen.contains("  and its tests"),
             "every line of it is on the line being typed: {screen}"
         );
         assert!(
@@ -4568,8 +4570,8 @@ mod tests {
         script.push(Typed::Paste("the importer\rand its tests".to_string()));
 
         let (_, screen) = driving(root.path(), script);
-        assert!(screen.contains("task ▸ port the importer"), "{screen}");
-        assert!(screen.contains("       and its tests"), "{screen}");
+        assert!(screen.contains("❯ port the importer"), "{screen}");
+        assert!(screen.contains("  and its tests"), "{screen}");
     }
 
     #[test]
@@ -4582,8 +4584,8 @@ mod tests {
 
         let (code, screen) = pressing(root.path(), keys);
         assert_eq!(code, exit::OK);
-        assert!(screen.contains("task ▸ port the importer"), "{screen}");
-        assert!(screen.contains("       and its tests"), "{screen}");
+        assert!(screen.contains("❯ port the importer"), "{screen}");
+        assert!(screen.contains("  and its tests"), "{screen}");
         assert!(
             crate::store::list(root.path()).unwrap().is_empty(),
             "and the enter that makes a newline is the one that starts nothing"
@@ -4600,7 +4602,7 @@ mod tests {
         let (code, screen) = held(root.path(), &keys);
         assert_eq!(code, exit::OK);
         assert!(
-            screen.contains("task ▸ p:nonsense port it"),
+            screen.contains("❯ p:nonsense port it"),
             "a line nothing was made from is a line somebody is still \
              writing: {screen}"
         );
@@ -4699,7 +4701,7 @@ mod tests {
         let doing = screen.act(ctrl('g'), root.path(), &config, None).unwrap();
         assert!(matches!(doing, Doing::Edit));
         let line = screen.banded().expect("a line for the editor to fill");
-        assert_eq!(line.prompt(), "task");
+        assert_eq!(line.label(), "TASK");
         assert!(line.text.is_empty());
 
         // And on a line somebody is already typing, it is that line that goes
@@ -4738,7 +4740,7 @@ mod tests {
         // typed: a task is worth more than the keystroke that interrupted it.
         keys.push(KeyCode::Char('n'));
         let (_, kept) = held(root.path(), &keys);
-        assert!(kept.contains("task ▸ fix"), "{kept}");
+        assert!(kept.contains("❯ fix"), "{kept}");
         assert!(kept.contains("nothing was started"), "{kept}");
         assert!(crate::store::list(root.path()).unwrap().is_empty());
     }

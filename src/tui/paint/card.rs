@@ -912,7 +912,7 @@ mod tests {
     use crate::tmux::{PaneId, Socket};
     use crate::tui::act::Asking;
     use crate::tui::paint::draw;
-    use crate::tui::paint::input::ANSWERS;
+    use crate::tui::paint::input::{ANSWERS, spelled};
     use crate::tui::{Mode, Screen};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1261,7 +1261,8 @@ mod tests {
             answer_row(&empty)
         );
         assert_eq!(
-            empty[13], ANSWERS,
+            empty[13],
+            spelled(&ANSWERS),
             "and the row under the card says what its own keys do"
         );
 
@@ -1328,7 +1329,11 @@ mod tests {
             (60, 6),
         );
         assert!(answer_row(&screen).contains("❯ the sq"), "{screen:?}");
-        assert_eq!(screen[5], ANSWERS, "with the card's own keys under it");
+        assert_eq!(
+            screen[5],
+            spelled(&ANSWERS),
+            "with the card's own keys under it"
+        );
     }
 
     #[test]
@@ -1352,7 +1357,7 @@ mod tests {
         let looking = painted(&showing(a_fleet(), Some(asking(&[], None))), (60, 14));
         assert_eq!(
             looking[13],
-            "space closes it · enter attach · ctrl+x stop · ? keys"
+            "space closes it   enter attach   ctrl+x stop   ? keys"
         );
         assert!(
             !looking.iter().any(|line| line.contains('❯')),
@@ -1444,7 +1449,7 @@ mod tests {
             "the question block is the whole of the card: {all}"
         );
         assert_eq!(
-            screen[11], "space closes it · enter attach · ctrl+x stop · ? keys",
+            screen[11], "space closes it   enter attach   ctrl+x stop   ? keys",
             "the keys stay on the screen under the card, saying what they do \
              while it is up"
         );

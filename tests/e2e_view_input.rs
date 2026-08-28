@@ -391,7 +391,7 @@ fn a_filter_line_narrows_the_axis_instead_of_starting_an_agent() {
     types(&amx, &view, "s:waiting");
     amx.until(
         "the line to say it will narrow rather than start anything",
-        || screen(&amx, &view).contains("narrow ▸").then_some(()),
+        || screen(&amx, &view).contains("NARROW").then_some(()),
     );
     press(&amx, &view, "Enter");
 
@@ -400,7 +400,7 @@ fn a_filter_line_narrows_the_axis_instead_of_starting_an_agent() {
     // there, where they are still on the line somebody typed them on.
     let drawn = amx.until("the narrowed list", || {
         let drawn = screen(&amx, &view);
-        (!drawn.contains("narrow ▸") && drawn.contains("s:waiting")).then_some(drawn)
+        (!drawn.contains("❯") && drawn.contains("s:waiting")).then_some(drawn)
     });
     assert!(drawn.contains("ask-a1b"), "{drawn}");
     assert!(
@@ -536,7 +536,7 @@ fn the_composer_takes_a_paste_as_one_edit_and_grows_to_its_cap() {
         .parse()
         .expect("a pane height");
     let cap = 10.min(height / 3);
-    let top = format!("task ▸ row-{:02}", 22 - cap);
+    let top = format!("❯ row-{:02}", 22 - cap);
     assert!(
         drawn.contains(&top),
         "the composer stops at {cap} rows and scrolls to {top}:\n{drawn}"
@@ -637,7 +637,7 @@ fn header_puts_what_the_next_agent_may_do_over_the_line_that_starts_it() {
         "the mode the dial is resting on, in the vendor's own word for it:\n{drawn}"
     );
     assert!(
-        drawn.contains("task ▸"),
+        drawn.contains("❯"),
         "and the line under it is still there to type into:\n{drawn}"
     );
 }
@@ -678,7 +678,7 @@ fn input_mode_hangs_the_line_off_a_labelled_rule_over_a_wall_gone_dim() {
         "with what the next agent may do without asking at the far end of it:\n{drawn}"
     );
     assert!(
-        drawn.contains("task ▸ port the importer█"),
+        drawn.contains("❯ port the importer█"),
         "under it the line itself, with a block where the next letter lands:\n{drawn}"
     );
 
@@ -836,7 +836,7 @@ fn the_composer_keeps_a_line_the_vendor_would_refuse_and_says_what_it_takes() {
         "and the modes it does take:\n{drawn}"
     );
     assert!(
-        drawn.contains("task ▸ p:nonsense port the importer"),
+        drawn.contains("❯ p:nonsense port the importer"),
         "the line is still there to be fixed:\n{drawn}"
     );
     assert!(agents(&amx).is_empty(), "and nothing was made:\n{drawn}");
@@ -856,7 +856,7 @@ fn a_reply_to_an_agent_between_turns_is_a_message() {
     types(&amx, &view, "r");
     amx.until("the line to be addressed to the agent", || {
         screen(&amx, &view)
-            .contains("message to fix-login-a1b")
+            .contains("MESSAGE · to fix-login-a1b")
             .then_some(())
     });
     types(&amx, &view, "and now the linter");
@@ -885,8 +885,11 @@ fn acts_ctrl_r_calls_the_agent_what_a_person_typed() {
 
     press(&amx, &view, "C-r");
     amx.until("the line to open on what the row is called", || {
-        screen(&amx, &view)
-            .contains("rename fix-login-a1b ▸ fix-login-a1b")
+        // Which agent is on the rule; what it is called already is on the
+        // line, because a rename is an edit of the name rather than a name
+        // typed again from nothing.
+        let drawn = screen(&amx, &view);
+        (drawn.contains("RENAME · fix-login-a1b") && drawn.contains("❯ fix-login-a1b"))
             .then_some(())
     });
 

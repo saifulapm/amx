@@ -941,7 +941,7 @@ mod tests {
         assert!(screen[6].contains("Running Bash"), "{:?}", screen[6]);
         assert!(screen[6].ends_with("3s"), "{:?}", screen[6]);
         assert_eq!(
-            screen[9], "space card · enter attach · ctrl+x stop · ? keys",
+            screen[9], "space card   enter attach   ctrl+x stop   ? keys",
             "and the keys, where they can be read"
         );
     }

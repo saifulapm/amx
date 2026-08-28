@@ -70,11 +70,11 @@ impl Composer {
     /// What the rule over the line calls the mode, in the one word a band's
     /// edge has room for.
     ///
-    /// The prompt says the whole of it — which agent a message is addressed to,
-    /// which one is being renamed — because that is what somebody about to
-    /// press enter has to be sure of. The edge above says only which of the
-    /// five it is, uppercase, the way every heading on the wall is: a label on
-    /// a border is read at a glance or not at all.
+    /// Uppercase, the way every heading on the wall is: a label on a border is
+    /// read at a glance or not at all. A task line renames itself the moment
+    /// what is typed into it would narrow the list instead, because the one
+    /// thing a person needs to know before pressing enter is what enter is
+    /// about to do.
     pub fn label(&self) -> &'static str {
         match &self.asking {
             Asking::Task if self.narrows() => "NARROW",
@@ -85,18 +85,18 @@ impl Composer {
         }
     }
 
-    /// What the line calls itself, so nobody types a task at an agent.
+    /// Which agent the line is aimed at, where it is aimed at one.
     ///
-    /// A task line renames itself the moment what is typed into it would
-    /// narrow the list instead: the one thing a person needs to know before
-    /// pressing enter is what enter is about to do.
-    pub fn prompt(&self) -> String {
+    /// The label alone does not say it, and it is what somebody about to press
+    /// enter has to be sure of: a message goes to one agent and a rename
+    /// renames one. It stands on the rule beside the label rather than in
+    /// front of the line, so every line the band draws begins in the same
+    /// column. A task is aimed at nobody yet and says nothing here.
+    pub fn about(&self) -> Option<String> {
         match &self.asking {
-            Asking::Task if self.narrows() => "narrow".to_string(),
-            Asking::Task => "task".to_string(),
-            Asking::Reply { id, question: true } => format!("answer {id} · y n 1-9 enter esc"),
-            Asking::Reply { id, .. } => format!("message to {id}"),
-            Asking::Name { id } => format!("rename {id}"),
+            Asking::Task => None,
+            Asking::Reply { id, .. } => Some(format!("to {id}")),
+            Asking::Name { id } => Some(id.clone()),
         }
     }
 
@@ -897,36 +897,33 @@ mod tests {
     }
 
     #[test]
-    fn a_line_says_what_it_is_for_before_anybody_types_into_it() {
-        let composer = Composer::new(Asking::Task);
-        assert_eq!(composer.prompt(), "task");
+    fn a_line_says_which_agent_it_is_aimed_at_before_anybody_types_into_it() {
+        // A task is aimed at nobody yet, so the rule over it has only its own
+        // word to say.
+        assert_eq!(Composer::new(Asking::Task).about(), None);
 
         let asking = Composer::new(Asking::Reply {
             id: "ask-a1b".to_string(),
             question: true,
         });
-        assert!(
-            asking.prompt().contains("answer ask-a1b"),
-            "{}",
-            asking.prompt()
-        );
-        assert!(
-            asking.prompt().contains("y n 1-9 enter esc"),
-            "and the only keys it takes: {}",
-            asking.prompt()
-        );
+        assert_eq!(asking.about().as_deref(), Some("to ask-a1b"));
 
         let message = Composer::new(Asking::Reply {
             id: "fix-login-b2c".to_string(),
             question: false,
         });
-        assert_eq!(message.prompt(), "message to fix-login-b2c");
+        assert_eq!(message.about().as_deref(), Some("to fix-login-b2c"));
+
+        let rename = Composer::new(Asking::Name {
+            id: "fix-login-b2c".to_string(),
+        });
+        assert_eq!(rename.about().as_deref(), Some("fix-login-b2c"));
     }
 
     #[test]
     fn a_line_names_itself_in_one_word_on_the_rule_over_it() {
-        // The prompt says which agent; the rule over it has room for which of
-        // the five this is and nothing else, so that is all it says.
+        // Which of the five this is, in one word, with the agent it is aimed
+        // at said beside it rather than in it.
         assert_eq!(Composer::new(Asking::Task).label(), "TASK");
         assert_eq!(
             Composer::new(Asking::Reply {
@@ -1141,10 +1138,10 @@ mod tests {
     fn axis_says_a_line_that_narrows_is_not_a_task() {
         let mut composer = Composer::new(Asking::Task);
         composer.text = "s:waiting".to_string();
-        assert_eq!(composer.prompt(), "narrow");
+        assert_eq!(composer.label(), "NARROW");
 
         composer.text = "s:waiting is what to check".to_string();
-        assert_eq!(composer.prompt(), "task", "and a task still is one");
+        assert_eq!(composer.label(), "TASK", "and a task still is one");
     }
 
     /// A config whose vendor is the one the registry declares dials for.
@@ -1231,7 +1228,7 @@ mod tests {
         // task may open with a bang the way it may end with one.
         let mut composer = Composer::new(Asking::Task);
         composer.text = "!cargo test".to_string();
-        assert_eq!(composer.prompt(), "task");
+        assert_eq!(composer.label(), "TASK");
 
         let (dials, task) = turned(&as_claude(), "!cargo test").unwrap();
         assert_eq!(dials, Turned::default());
