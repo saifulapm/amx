@@ -197,9 +197,9 @@ fn foot(at: usize, pages: usize) -> Line<'static> {
 /// screen too narrow for that.
 ///
 /// Two rather than a column each, because five short lists side by side is a
-/// wall of keys again and one column of thirty-eight rows is the flat list the
-/// headings were put in to break up. Two columns is what a page of keys looks
-/// like.
+/// wall of keys again, and one column of every key there is would be the flat
+/// list the headings were put in to break up. Two columns is what a page of
+/// keys looks like.
 ///
 /// A group is what the eye follows down, so it is never cut in half to make
 /// the columns even.
@@ -374,8 +374,8 @@ mod tests {
     const WIDE_SCREEN: (u16, u16) = (120, 40);
 
     /// The screen most people have: too narrow for two columns and far too
-    /// short for one of thirty-eight rows, which is the shape the paging is
-    /// for. It is what a terminal opens at.
+    /// short for one column of every key there is, which is the shape the
+    /// paging is for. It is what a terminal opens at.
     const SHORT_SCREEN: (u16, u16) = (80, 24);
 
     #[test]
