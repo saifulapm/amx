@@ -17,6 +17,7 @@
 //! still typing.
 
 use anyhow::{Context, Result, bail};
+use std::cell::Cell;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -34,6 +35,16 @@ use crate::{derive, exit, registry, rules, spawn, store, verbs, worktree};
 pub struct Composer {
     pub asking: Asking,
     pub text: String,
+    /// What the next agent may do without asking, for the rule over the line
+    /// to carry at the far end of itself.
+    ///
+    /// It is a fact about the view rather than about the line — which
+    /// permission the dial is resting on, and it moves under the line as
+    /// shift+tab is pressed — and the band that draws the rule is handed the
+    /// line and not the view. So the reading is taken once a frame where the
+    /// view is in hand and left here, which is the errand the paint map's
+    /// cells run in the other direction.
+    pub allowed: Cell<Option<String>>,
 }
 
 /// What entering the line will do.
@@ -52,6 +63,25 @@ impl Composer {
         Composer {
             asking,
             text: String::new(),
+            allowed: Cell::new(None),
+        }
+    }
+
+    /// What the rule over the line calls the mode, in the one word a band's
+    /// edge has room for.
+    ///
+    /// The prompt says the whole of it — which agent a message is addressed to,
+    /// which one is being renamed — because that is what somebody about to
+    /// press enter has to be sure of. The edge above says only which of the
+    /// five it is, uppercase, the way every heading on the wall is: a label on
+    /// a border is read at a glance or not at all.
+    pub fn label(&self) -> &'static str {
+        match &self.asking {
+            Asking::Task if self.narrows() => "NARROW",
+            Asking::Task => "TASK",
+            Asking::Reply { question: true, .. } => "ANSWER",
+            Asking::Reply { .. } => "MESSAGE",
+            Asking::Name { .. } => "RENAME",
         }
     }
 

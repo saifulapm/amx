@@ -1,20 +1,28 @@
 //! The line somebody is typing when they are typing one, and the row of keys
 //! under it.
 //!
-//! Two bands and the slot between them. The composer grows a row at a time as
-//! the line does and stops before it takes the list; under it goes the one
-//! thing the next agent will be started with that is not on the header's dial
-//! row — what it may do without asking, said where somebody is about to press
-//! enter and wearing weight as well as the accent for it; and under that, the
+//! A rule, a composer and the slot under them. The rule is the edge the whole
+//! mode hangs off: it names which of the five lines this is, says the one thing
+//! that is true of all of them — every letter is text until esc — and carries
+//! at its far end the one dial that is not on the header's row, what the next
+//! agent may do without asking, in reverse video where somebody about to press
+//! enter cannot miss it. Under the rule the composer grows a row at a time as
+//! the line does and stops before it takes the list, and under that go the
 //! keys, or whatever the view has to say for itself instead.
+//!
+//! The wall the rule was drawn over goes dim for as long as the mode is on.
+//! Every row, heading, count and dial behind gives up its colour's weight in
+//! one pass, so the line being typed is the only thing on the screen still
+//! carrying any — which is what says the keys have stopped being keys, without
+//! anybody reading a word of it.
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::style::{dim, prospective};
+use super::style::{bold, dim, prospective};
 use super::text::{SEPARATOR, fit};
 use crate::registry::DEFAULT;
 use crate::theme::Theme;
@@ -88,32 +96,109 @@ pub(super) fn composer_lines(text: &str, room: usize) -> Vec<String> {
     rows
 }
 
-/// How many rows the composer takes on this screen: as many as the line needs,
-/// up to the cap, and never so many that the list it was opened from is gone.
+/// The rule's own row, which the band holds whatever the line is holding: an
+/// edge that came and went with the length of what somebody was typing would
+/// not read as an edge.
+const RULE: usize = 1;
+
+/// How many rows the band takes on this screen: the rule, and under it as many
+/// rows as the line needs, up to the cap, and never so many that the list it
+/// was opened from is gone.
 ///
 /// `chrome` is every other band already spoken for — the header, the keys, the
 /// closer look — and one row over that is the list's, which the composer may
 /// not have.
 pub(super) fn composer_height(composer: &Composer, area: Rect, chrome: u16) -> u16 {
-    let room = area.height.saturating_sub(chrome + 1) as usize;
+    let room = (area.height.saturating_sub(chrome + 1) as usize).saturating_sub(RULE);
     let cap = COMPOSER_CAP.min(area.height as usize / 3).min(room).max(1);
-    composer_lines(&composer.text, composer_room(composer, area.width))
+    let rows = composer_lines(&composer.text, composer_room(composer, area.width))
         .len()
-        .clamp(1, cap) as u16
+        .clamp(1, cap);
+    (rows + RULE) as u16
 }
 
-/// The line somebody is typing, with the terminal's own cursor at the end of
-/// it: something being typed into should look like it.
+/// The rule the mode hangs off, and everything said on it.
+///
+/// Its front is what this line is — the mode's own word, in the accent and
+/// carrying weight — and after that the one thing true of every one of the
+/// five: while the mode is on, a letter is a letter and not the key it is
+/// bound to, and esc is the way out. Then the rule itself to the far end,
+/// where what the next agent may do without asking is set in reverse video:
+/// the one dial that is not on the header's row, promoted to the border
+/// somebody about to press enter is looking straight at, costing no row of
+/// its own.
+///
+/// A screen with no room sheds the sentence first and the dial after it. The
+/// label and the edge are what a rule cannot be without: one says which mode
+/// this is and the other is the whole of why the rule is drawn.
+fn rule(composer: &Composer, width: usize, theme: Theme) -> Line<'static> {
+    let label = format!("{} ", composer.label());
+    let dial = composer
+        .allowed
+        .take()
+        .map_or_else(String::new, |said| format!(" {said} "));
+    let taken = |gloss: &str, dial: &str| {
+        label.chars().count()
+            + gloss.chars().count()
+            + match dial.is_empty() {
+                // The tail is what closes the dial into the edge, so it costs
+                // nothing on a rule that is not carrying one.
+                true => 0,
+                false => dial.chars().count() + TAIL.chars().count(),
+            }
+    };
+    let (gloss, dial) = if taken(GLOSS, &dial) < width {
+        (GLOSS, dial)
+    } else if taken("", &dial) < width {
+        ("", dial)
+    } else {
+        ("", String::new())
+    };
+
+    let drawn = prospective(theme);
+    let mut spans = vec![
+        Span::styled(fit(&label, width), drawn),
+        Span::styled(gloss, dim()),
+        Span::styled("─".repeat(width.saturating_sub(taken(gloss, &dial))), dim()),
+    ];
+    if !dial.is_empty() {
+        spans.push(Span::styled(dial, drawn.add_modifier(Modifier::REVERSED)));
+        spans.push(Span::styled(TAIL, dim()));
+    }
+    Line::from(spans)
+}
+
+/// What the rule says after the mode's own word.
+const GLOSS: &str = "· letters are text until esc ";
+
+/// The run of rule that closes it past the dial, so the dial reads as set into
+/// the edge rather than as the end of it.
+const TAIL: &str = "──";
+
+/// The rule and, under it, the line somebody is typing.
+///
+/// The line is drawn bold with a block for the cursor, because it is the one
+/// thing on the screen that has not happened yet and the only thing left
+/// carrying weight — everything behind is dimmed by the same call. The
+/// terminal's own cursor is put where the block is as well: a screen being
+/// typed into should be one a terminal agrees is being typed into.
 ///
 /// Past the cap it is the end of the line that is drawn, because the end is
 /// where somebody is typing — but the prompt stays on the top row however far
 /// the rest has scrolled. It is what says where enter will send this, and that
 /// is worth a gutter wherever the text has got to.
 pub(super) fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect, theme: Theme) {
+    behind(frame, area.y);
+    let [edge, band] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    frame.render_widget(
+        Paragraph::new(rule(composer, area.width as usize, theme)),
+        edge,
+    );
+
     let prompt = gutter(composer);
-    let width = area.width as usize;
-    let rows = composer_lines(&composer.text, composer_room(composer, area.width));
-    let from = rows.len().saturating_sub(area.height as usize);
+    let width = band.width as usize;
+    let rows = composer_lines(&composer.text, composer_room(composer, band.width));
+    let from = rows.len().saturating_sub(band.height as usize);
     let shown = &rows[from..];
 
     let indent = " ".repeat(prompt.chars().count());
@@ -122,58 +207,90 @@ pub(super) fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect,
         .enumerate()
         .map(|(at, text)| {
             let head = match at {
-                0 => Span::styled(prompt.clone(), Style::new().fg(theme.waiting)),
+                0 => Span::styled(prompt.clone(), dim()),
                 _ => Span::raw(indent.clone()),
             };
-            let mut spans = vec![head, Span::raw(text.clone())];
-            // An empty line holds its prefixes as ghost text, cut where the
-            // screen ends; the cursor set below sits over the front of it.
-            if at == 0
-                && let Some(hint) = placeholder(composer)
-            {
-                let room = width.saturating_sub(prompt.chars().count());
-                spans.push(Span::styled(fit(hint, room), dim()));
+            let mut spans = vec![head, Span::styled(text.clone(), bold())];
+            match placeholder(composer).filter(|_| at == 0) {
+                // An empty line holds its prefixes as ghost text, cut where the
+                // screen ends. It has the cell the block would have taken: a
+                // cursor drawn over the first letter of what the line is
+                // teaching would cost the lesson to say nothing the terminal's
+                // own cursor is not already saying there.
+                Some(hint) => {
+                    let room = width.saturating_sub(prompt.chars().count());
+                    spans.push(Span::styled(fit(hint, room), dim()));
+                }
+                None if at == shown.len() - 1 => {
+                    spans.push(Span::styled(CURSOR, Style::new().fg(theme.accent)));
+                }
+                None => {}
             }
             Line::from(spans)
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(Paragraph::new(lines), band);
 
     let at = prompt.chars().count() + shown.last().map_or(0, |row| row.chars().count());
     frame.set_cursor_position((
-        area.x + at.min(width.saturating_sub(1)) as u16,
-        area.y + shown.len().saturating_sub(1) as u16,
+        band.x + at.min(width.saturating_sub(1)) as u16,
+        band.y + shown.len().saturating_sub(1) as u16,
     ));
 }
 
-/// What the next agent will be allowed to do without asking, under the line it
-/// would be started from — where claude's own screens put it, and where
-/// somebody about to press enter is already looking.
+/// The block that stands where the next character will land.
+const CURSOR: &str = "█";
+
+/// Everything above the rule, dimmed for as long as the mode is on.
 ///
-/// The row belongs to a line that will start an agent: not to a reply, which
-/// goes to one already running under whatever it was started with, and not to
-/// a line that narrows the list. At the sentinel it names the layer rather
-/// than a mode, because amx does not know which mode the vendor is configured
-/// for and a guess at it is the same lie the model dial refuses. A vendor
-/// whose entry declares no permission dial has nothing to say here and nothing
-/// to turn, so the row is absent rather than empty.
+/// One pass over what has already been drawn rather than a flag every surface
+/// carries: the rows, the headings, the counts and the dials are each painted
+/// for what they mean, and a mode is not one of the things they mean. What
+/// this takes is the weight and the reverse video — the badge included, which
+/// is the loudest thing up there — and what it leaves is the colours, dimmed,
+/// so the wall is still readable as the wall it was a keystroke ago.
+fn behind(frame: &mut Frame, until: u16) {
+    let wall = Rect {
+        height: until,
+        ..frame.area()
+    };
+    frame.buffer_mut().set_style(
+        wall,
+        dim().remove_modifier(Modifier::BOLD | Modifier::REVERSED),
+    );
+}
+
+/// What the next agent may do without asking, left on the line for the rule
+/// over it to carry.
+///
+/// It belongs to a line that will start an agent: not to a reply, which goes to
+/// one already running under whatever it was started with, and not to a line
+/// that narrows the list. At the sentinel it names the layer rather than a
+/// mode, because amx does not know which mode the vendor is configured for and
+/// a guess at it is the same lie the model dial refuses. A vendor whose entry
+/// declares no permission dial has nothing to say and nothing to turn, so the
+/// rule ends bare.
+///
+/// The reading is taken here and left on the line because this is where the
+/// view is in hand: [`rule`] is handed the line and the theme, which is how
+/// every other band in this file is drawn, and which permission the dial is
+/// resting on is a fact about neither. Nothing comes back for the band under
+/// the composer — the dial had a row of its own there and has the far end of
+/// the rule instead, and the row it gave up goes back to the list.
 pub(super) fn permission(screen: &Screen) -> Option<Line<'static>> {
     let Mode::Typing(composer) = &screen.mode else {
         return None;
     };
-    if !matches!(composer.asking, Asking::Task) || composer.narrows() {
-        return None;
-    }
-    screen.profile.permission_dial()?;
-
-    let said = match screen.profile.permission.as_str() {
-        DEFAULT => "permission: vendor default".to_string(),
-        mode => format!("⏵⏵ {mode}"),
-    };
-    Some(Line::styled(
-        format!("{said} (shift+tab to cycle)"),
-        prospective(screen.theme),
-    ))
+    composer.allowed.set(
+        (matches!(composer.asking, Asking::Task)
+            && !composer.narrows()
+            && screen.profile.permission_dial().is_some())
+        .then(|| match screen.profile.permission.as_str() {
+            DEFAULT => "vendor default".to_string(),
+            mode => mode.to_string(),
+        }),
+    );
+    None
 }
 
 /// The words the task line reads at its front, said on the line itself while
@@ -293,7 +410,16 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
                 "enter narrows it · s: or a: alone clears · esc cancels".to_string()
             }
             Mode::Typing(composer) => match composer.asking {
-                Asking::Task => "enter starts it · alt+enter newline · esc cancels".to_string(),
+                // The dial on the rule above is unlabelled and says nothing
+                // about the key that turns it, so this row does: a setting
+                // nobody can find the key for is a setting nobody can change.
+                // A vendor that declares no dial has none to name.
+                Asking::Task => match screen.profile.permission_dial().is_some() {
+                    true => "enter starts it · alt+enter newline · shift+tab permission \
+                             · esc cancels"
+                        .to_string(),
+                    false => "enter starts it · alt+enter newline · esc cancels".to_string(),
+                },
                 Asking::Reply { .. } => {
                     "enter sends it · alt+enter newline · esc cancels".to_string()
                 }
@@ -468,6 +594,85 @@ mod tests {
             .join("\n")
     }
 
+    /// The rule over the line, wherever the band it heads has ended up.
+    fn edge(screen: &Screen, size: (u16, u16)) -> String {
+        painted(screen, size)
+            .into_iter()
+            .find(|row| row.starts_with("TASK") || row.starts_with("NARROW"))
+            .expect("a rule over the line")
+    }
+
+    #[test]
+    fn input_mode_sheds_the_rule_from_the_far_end_and_keeps_the_word_it_names() {
+        for width in 20..=110 {
+            let drawn = edge(&typing("port it"), (width, 30));
+            assert_eq!(
+                drawn.chars().count(),
+                width as usize,
+                "a rule that stops short of the edge is not a rule: {drawn:?}"
+            );
+        }
+
+        // Room for all of it: which mode this is, the one law of it, and what
+        // the next agent may do without asking.
+        let whole = edge(&typing("port it"), (80, 30));
+        assert!(
+            whole.starts_with("TASK · letters are text until esc "),
+            "{whole:?}"
+        );
+        assert!(whole.ends_with(" vendor default ──"), "{whole:?}");
+
+        // The sentence is what goes first as the room runs out, and the dial
+        // after it; the word the rule is named for never does.
+        let tight = edge(&typing("port it"), (40, 30));
+        assert!(tight.starts_with("TASK ─"), "{tight:?}");
+        assert!(tight.ends_with(" vendor default ──"), "{tight:?}");
+
+        let narrow = edge(&typing("port it"), (20, 30));
+        assert!(narrow.starts_with("TASK ─"), "{narrow:?}");
+        assert!(!narrow.contains("vendor"), "{narrow:?}");
+    }
+
+    #[test]
+    fn input_mode_takes_the_weight_off_the_wall_it_is_drawn_over() {
+        // Everything above the band the line is drawn in, which on a screen
+        // this tall holding one line is every row but the last three.
+        let weighty = |screen: &Screen| {
+            let cells = cells(screen, TALL);
+            (0..27).any(|row| {
+                (0..TALL.0).any(|column| cells[(column, row)].modifier.contains(Modifier::BOLD))
+            })
+        };
+
+        let mut screen = showing(a_fleet(), None);
+        assert!(
+            weighty(&screen),
+            "the wall carries weight while the keys are still keys"
+        );
+
+        let mut composer = Composer::new(Asking::Task);
+        composer.text = "port it".to_string();
+        screen.mode = Mode::Typing(composer);
+        assert!(
+            !weighty(&screen),
+            "and gives up every bit of it the moment a line is being typed"
+        );
+
+        // Dimmed rather than taken away: the wall is still the wall it was a
+        // keystroke ago, and the rows are still on it to be read.
+        let cells = cells(&screen, TALL);
+        assert!(
+            (0..TALL.0).all(|column| cells[(column, 0)].modifier.contains(Modifier::DIM)),
+            "the header behind goes dim to its last cell"
+        );
+        assert!(
+            painted(&screen, TALL)
+                .iter()
+                .any(|row| row.contains("ask-a1b")),
+            "and the agents are still named on it"
+        );
+    }
+
     #[test]
     fn axis_says_a_line_that_narrows_will_narrow_rather_than_start_anything() {
         let mut screen = showing(Vec::new(), None);
@@ -476,7 +681,12 @@ mod tests {
         screen.mode = Mode::Typing(composer);
 
         let painted = painted(&screen, (60, 6));
-        assert_eq!(painted[4], "narrow ▸ s:waiting");
+        assert!(
+            painted[3].starts_with("NARROW ·"),
+            "the rule over it says the same thing its edge does: {:?}",
+            painted[3]
+        );
+        assert_eq!(painted[4], "narrow ▸ s:waiting█");
         assert!(painted[5].contains("enter narrows it"), "{:?}", painted[5]);
         assert!(
             !painted[5].contains("starts it"),
@@ -652,8 +862,11 @@ mod tests {
         assert!(clipped.trim_end().ends_with('…'), "{clipped}");
 
         // The next keystroke lands where the prompt ends, over the
-        // placeholder, the way a browser draws a field's ghost text.
-        assert_eq!(caret(&typing(""), TALL), (7, 27));
+        // placeholder, the way a browser draws a field's ghost text. The block
+        // that stands there on a line with something on it gives way to what
+        // the line is teaching.
+        assert_eq!(caret(&typing(""), TALL), (7, 28));
+        assert!(!clipped.contains('█'), "{clipped}");
 
         // The first character typed takes the placeholder away: whoever is
         // typing has stopped reading it.
@@ -696,23 +909,26 @@ mod tests {
     #[test]
     fn composer_grows_a_row_at_a_time_as_the_line_it_holds_does() {
         let one = painted(&typing("port the importer"), TALL);
-        assert_eq!(one[27], "task ▸ port the importer");
-        assert_eq!(one[26], "", "one line takes one row, at the foot of it all");
+        assert_eq!(one[28], "task ▸ port the importer█");
+        assert_eq!(
+            one[26], "",
+            "one line takes one row, at the foot of it all, with the rule over it"
+        );
 
         let three = painted(
             &typing("port the importer\nand its tests\nand the docs"),
             TALL,
         );
-        assert_eq!(three[25], "task ▸ port the importer");
+        assert_eq!(three[26], "task ▸ port the importer");
         assert_eq!(
-            three[26], "       and its tests",
+            three[27], "       and its tests",
             "a row under the first is indented to it, so a task reads as one \
              thing"
         );
-        assert_eq!(three[27], "       and the docs");
+        assert_eq!(three[28], "       and the docs█");
         assert_eq!(
             caret(&typing("port it\nand test it"), TALL),
-            (18, 27),
+            (18, 28),
             "and the cursor is at the end of the last of them"
         );
     }
@@ -721,8 +937,8 @@ mod tests {
     fn composer_wrapping_past_the_width_grows_it_the_same_way_a_newline_does() {
         // Twice the room a sixty-column screen leaves beside the prompt.
         let painted = painted(&typing(&"x".repeat(106)), TALL);
-        assert_eq!(painted[26], format!("task ▸ {}", "x".repeat(53)));
-        assert_eq!(painted[27], format!("       {}", "x".repeat(53)));
+        assert_eq!(painted[27], format!("task ▸ {}", "x".repeat(53)));
+        assert_eq!(painted[28], format!("       {}", "x".repeat(53)));
     }
 
     #[test]
@@ -731,16 +947,16 @@ mod tests {
         let painted = painted(&screen, TALL);
 
         assert_eq!(
-            painted[18], "task ▸ row-11",
+            painted[19], "task ▸ row-11",
             "the prompt is on the top row however far the rest has scrolled: \
              {painted:?}"
         );
-        assert_eq!(painted[27], "       row-20", "{painted:?}");
+        assert_eq!(painted[28], "       row-20█", "{painted:?}");
         assert!(
             !painted.iter().any(|line| line.contains("row-10")),
             "and what scrolled past is off the screen: {painted:?}"
         );
-        assert_eq!(caret(&screen, TALL), (13, 27));
+        assert_eq!(caret(&screen, TALL), (13, 28));
     }
 
     #[test]
@@ -748,8 +964,8 @@ mod tests {
         // A third of eight rows is two, whatever the line is holding, and the
         // agents are what the view is for.
         let painted = painted(&typing(&twenty_rows()), (60, 8));
-        assert_eq!(painted[4], "task ▸ row-19");
-        assert_eq!(painted[5], "       row-20");
+        assert_eq!(painted[5], "task ▸ row-19");
+        assert_eq!(painted[6], "       row-20█");
         assert_eq!(
             painted[1], WELCOME,
             "the list is still there above it: {painted:?}"
@@ -764,7 +980,7 @@ mod tests {
         screen.mode = Mode::Typing(composer);
 
         let painted = painted(&screen, (60, 6));
-        assert_eq!(painted[3], "task ▸ port the importer");
+        assert_eq!(painted[4], "task ▸ port the importer█");
         assert!(painted[5].contains("enter starts it"), "{:?}", painted[5]);
         assert!(painted[5].contains("alt+enter newline"), "{:?}", painted[5]);
     }
@@ -776,30 +992,40 @@ mod tests {
 
         let drawn = painted(&screen, (60, 8));
         assert!(
-            drawn[5].starts_with("task ▸ m:model"),
-            "the empty line carries its placeholder above the dial: {:?}",
+            drawn[5].starts_with("TASK · letters are text until esc"),
+            "the rule names the mode and the one law of it: {:?}",
             drawn[5]
         );
-        assert_eq!(
-            drawn[6], "permission: vendor default (shift+tab to cycle)",
-            "the layer, not a guess at which mode claude would have picked"
+        assert!(
+            drawn[5].ends_with(" vendor default ──"),
+            "and carries at its far end the layer, not a guess at which mode \
+             claude would have picked: {:?}",
+            drawn[5]
+        );
+        assert!(
+            drawn[6].starts_with("task ▸ m:model"),
+            "the empty line under it carries its placeholder: {:?}",
+            drawn[6]
         );
         assert!(drawn[7].contains("enter starts it"), "{:?}", drawn[7]);
 
         screen.profile.permission = "acceptEdits".to_string();
-        assert_eq!(
-            painted(&screen, (60, 8))[6],
-            "⏵⏵ acceptEdits (shift+tab to cycle)",
-            "and a mode in the vendor's own word for it"
+        assert!(
+            painted(&screen, (60, 8))[5].ends_with(" acceptEdits ──"),
+            "and a mode in the vendor's own word for it: {:?}",
+            painted(&screen, (60, 8))[5]
         );
     }
 
     #[test]
-    fn header_keeps_the_permission_row_to_the_lines_that_start_an_agent() {
-        let row = |screen: &Screen| {
+    fn header_keeps_the_permission_dial_to_the_lines_that_start_an_agent() {
+        // The dial, and the key that turns it: the rule carries the one and
+        // the row under the line names the other, and neither is said about a
+        // line that will not start anything.
+        let turned = |screen: &Screen| {
             painted(screen, (60, 8))
                 .iter()
-                .any(|line| line.contains("shift+tab"))
+                .any(|line| line.contains("default ──") || line.contains("shift+tab"))
         };
 
         // A reply goes to an agent that is already running under whatever it
@@ -809,24 +1035,23 @@ mod tests {
             id: "ask-a1b".to_string(),
             question: true,
         }));
-        assert!(!row(&screen), "a reply is not a spawn");
+        assert!(!turned(&screen), "a reply is not a spawn");
 
         // Nor has it anything to say about a line that narrows the list.
         let mut composer = Composer::new(Asking::Task);
         composer.text = "s:waiting".to_string();
         screen.mode = Mode::Typing(composer);
-        assert!(!row(&screen));
+        assert!(!turned(&screen));
 
         // A vendor amx has no entry for declares no permission dial: there is
-        // nothing to say and nothing to turn, so the row is absent rather than
-        // empty.
+        // nothing to say and nothing to turn, so the rule ends bare.
         screen.mode = Mode::Typing(Composer::new(Asking::Task));
         screen.profile.agent = "mock-claude".to_string();
-        assert!(!row(&screen));
+        assert!(!turned(&screen));
 
         // And nothing is being typed at all, which is most of the time.
         let screen = launching(Vec::new());
-        assert!(!row(&screen));
+        assert!(!turned(&screen));
     }
 
     #[test]

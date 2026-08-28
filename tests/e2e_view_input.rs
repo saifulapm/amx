@@ -601,7 +601,7 @@ fn the_composer_turns_the_dials_for_the_one_spawn_its_tokens_lead() {
 }
 
 #[test]
-fn header_puts_what_the_next_agent_may_do_under_the_line_that_starts_it() {
+fn header_puts_what_the_next_agent_may_do_over_the_line_that_starts_it() {
     let amx = Harness::new();
     amx.config("agent = \"claude\"\n");
 
@@ -613,20 +613,100 @@ fn header_puts_what_the_next_agent_may_do_under_the_line_that_starts_it() {
     });
 
     press(&amx, &view, "n");
-    amx.until("the permission row", || {
-        screen(&amx, &view)
-            .contains("permission: vendor default (shift+tab to cycle)")
-            .then_some(())
+    let drawn = amx.until("the rule over the line", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("vendor default").then_some(drawn)
     });
+    assert!(
+        drawn.contains("shift+tab permission"),
+        "the dial on the rule wears no label, so the keys under the line name \
+         what turns it:\n{drawn}"
+    );
 
     press(&amx, &view, "BTab");
     let drawn = amx.until("the permission dial to turn", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("⏵⏵ acceptEdits").then_some(drawn)
+        drawn.contains("acceptEdits").then_some(drawn)
     });
+    let edge = drawn
+        .lines()
+        .find(|line| line.contains("TASK"))
+        .expect("a rule over the line");
+    assert!(
+        edge.contains(" acceptEdits "),
+        "the mode the dial is resting on, in the vendor's own word for it:\n{drawn}"
+    );
     assert!(
         drawn.contains("task ▸"),
-        "and the line it is under is still there to type into:\n{drawn}"
+        "and the line under it is still there to type into:\n{drawn}"
+    );
+}
+
+#[test]
+fn input_mode_hangs_the_line_off_a_labelled_rule_over_a_wall_gone_dim() {
+    let amx = Harness::new();
+    amx.config("agent = \"claude\"\n");
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the wall", || {
+        screen(&amx, &view).contains("ask-a1b").then_some(())
+    });
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "port the importer");
+    let drawn = amx.until("the rule over the line somebody is typing", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("TASK") && drawn.contains("port the importer")).then_some(drawn)
+    });
+
+    let edge = drawn
+        .lines()
+        .find(|line| line.contains("TASK"))
+        .expect("a rule over the line");
+    assert!(
+        edge.contains("letters are text until esc"),
+        "the one rule of the mode is said on its edge:\n{drawn}"
+    );
+    assert!(
+        edge.contains('─'),
+        "and it is a rule the width of the screen:\n{drawn}"
+    );
+    assert!(
+        edge.trim_end().ends_with("vendor default ──"),
+        "with what the next agent may do without asking at the far end of it:\n{drawn}"
+    );
+    assert!(
+        drawn.contains("task ▸ port the importer█"),
+        "under it the line itself, with a block where the next letter lands:\n{drawn}"
+    );
+
+    // The attributes are read from the top of the capture, because a terminal
+    // writes an escape where the paint changes rather than where a row begins.
+    let painted = coloured(&amx, &view);
+    assert!(
+        sgr_at(&painted, "TASK").contains(&1),
+        "the mode's own word carries the weight on the rule:\n{painted:?}"
+    );
+    assert!(
+        sgr_at(&painted, "vendor default").contains(&7),
+        "and the dial is set in reverse video, the way the badge is:\n{painted:?}"
+    );
+    assert!(
+        sgr_at(&painted, "port the importer").contains(&1),
+        "the line somebody is typing is the one bold thing left:\n{painted:?}"
+    );
+
+    // And the wall it was opened from is still there, saying so quietly.
+    let row = sgr_at(&painted, "ask-a1b");
+    assert!(
+        row.contains(&2) && !row.contains(&1),
+        "every row behind the line goes dim and loses its weight:\n{painted:?}"
+    );
+    assert!(
+        !sgr_at(&painted, "WAITING").contains(&7),
+        "the count that wants somebody gives up its badge with them:\n{painted:?}"
     );
 }
 
