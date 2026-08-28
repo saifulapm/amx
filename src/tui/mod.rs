@@ -2034,7 +2034,6 @@ fn card_of(view: &View) -> Card<Body> {
     Card {
         id: view.id().to_string(),
         phase: view.phase(),
-        age: view.verdict.age,
         question: view.state.question.clone(),
         options: view.state.options.clone(),
         kind: view.kind(),
@@ -3013,7 +3012,6 @@ mod tests {
         screen.card = Some(Card {
             id: "done-a1b".to_string(),
             phase: Phase::Done,
-            age: 29,
             question: None,
             options: Vec::new(),
             kind: None,
@@ -3060,7 +3058,6 @@ mod tests {
         screen.card = Some(Card {
             id: "done-a1b".to_string(),
             phase: Phase::Done,
-            age: 29,
             question: None,
             options: Vec::new(),
             kind: None,
@@ -3168,7 +3165,6 @@ mod tests {
         screen.card = Some(Card {
             id: "done-a1b".to_string(),
             phase: Phase::Done,
-            age: 29,
             question: None,
             options: Vec::new(),
             kind: None,
@@ -4502,10 +4498,10 @@ mod tests {
         );
         assert_eq!(code, exit::OK);
         assert!(screen.contains("  ● second-b2c"), "{screen}");
-        assert!(screen.contains("second-b2c · done"), "{screen}");
         assert!(
-            screen.contains("wrote the tests"),
-            "an agent with no pane left is read from its record: {screen}"
+            screen.contains("╰ wrote the tests"),
+            "an agent with no pane left is read from its record, onto a card \
+             hung under its own row: {screen}"
         );
     }
 

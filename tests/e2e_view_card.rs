@@ -221,9 +221,14 @@ fn a_click_under_the_card_lands_on_the_row_the_card_moved_down() {
     // follows the cursor onto it.
     click(&amx, &view, 5, moved as u16 + 1);
     amx.until("the card to move to the row that was clicked", || {
-        screen(&amx, &view)
-            .contains("│ older-job-b2c")
-            .then_some(())
+        // The card says nothing the row above it already says, so where it
+        // now hangs is what says it moved.
+        let drawn = screen(&amx, &view);
+        let row = drawn
+            .lines()
+            .position(|line| line.contains("older-job-b2c") && !on_the_spine(line))?;
+        let top = drawn.lines().position(on_the_spine)?;
+        (top == row + 1).then_some(())
     });
 }
 
@@ -257,9 +262,10 @@ fn card_hangs_a_spine_off_the_row_with_the_question_alone_on_it() {
         .first()
         .unwrap_or_else(|| panic!("no card in:\n{carded}"));
     assert!(
-        top.starts_with("  │ ask-a1b · waiting"),
-        "which agent, what it is doing and how long since, in the name \
-         column: {top}"
+        top.starts_with("  │ Claude needs your permission"),
+        "the card opens on what the agent is asking, in the name column, and \
+         does not spend a row repeating which agent it is and what it is \
+         doing off the row two cells above: {top}"
     );
     assert!(
         card.last().is_some_and(|line| line.starts_with("  ╰ ")),
@@ -1119,7 +1125,7 @@ fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
         .find(|line| line.contains("more"))
         .expect("the indicator");
     assert!(
-        saying.contains('↑') && saying.starts_with("  │ fix-login-a1b · what it has changed"),
+        saying.contains('↑') && saying.starts_with("  │ what it has changed"),
         "at the far end of the card's own heading, pointing at the top: {paged}"
     );
 
@@ -1176,9 +1182,9 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
     press(&amx, &view, "Escape");
     let unmoved = amx.until("the card, unmoved", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("short-a1b · done") && !drawn.contains("page the card")).then_some(drawn)
+        (drawn.contains("╰ did what it was asked") && !drawn.contains("page the card"))
+            .then_some(drawn)
     });
-    assert!(unmoved.contains("did what it was asked"), "{unmoved}");
     assert!(!unmoved.contains("more"), "nothing is hidden: {unmoved}");
 
     // The arrows keep walking the list, card in tow: the next agent's
@@ -1187,7 +1193,7 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
     press(&amx, &view, "Down");
     amx.until("the next card", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("tall-b2c · done") && drawn.matches("said 0").count() == 2).then_some(())
+        (drawn.matches("said 0").count() == 2).then_some(())
     });
 
     // This body overflows, so the page key now pages it, down from its top.
@@ -1205,16 +1211,20 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
         .lines()
         .find(|line| line.contains("more"))
         .expect("the indicator");
+    let marker = saying
+        .strip_prefix("  │")
+        .unwrap_or_else(|| panic!("the indicator is not on the card: {paged}"));
     assert!(
-        saying.contains('↑') && saying.starts_with("  │ tall-b2c · done"),
-        "at the far end of the card's own heading, pointing at the top: {paged}"
+        marker.trim_start().starts_with('↑'),
+        "at the far end of a heading row that says nothing else, pointing at \
+         the top: {paged}"
     );
 
     // And walking off the agent puts the next card on its own edge.
     press(&amx, &view, "Up");
     let followed = amx.until("the first card again", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("short-a1b · done").then_some(drawn)
+        drawn.contains("╰ did what it was asked").then_some(drawn)
     });
     assert!(!followed.contains("more"), "{followed}");
 }

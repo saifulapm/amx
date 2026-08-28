@@ -790,7 +790,6 @@ pub fn changes(root: &Path, view: &View) -> Result<Card> {
     Ok(Card {
         id: view.id().to_string(),
         phase: view.phase(),
-        age: view.verdict.age,
         question: None,
         options: Vec::new(),
         kind: None,

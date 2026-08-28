@@ -513,7 +513,6 @@ mod tests {
         Card {
             id: "ask-a1b".to_string(),
             phase: Phase::Waiting,
-            age: 29,
             question: Some("Which fixture should the port keep?".to_string()),
             options: options.iter().map(|label| (*label).to_string()).collect(),
             kind,

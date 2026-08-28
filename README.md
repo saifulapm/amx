@@ -150,7 +150,6 @@ AMX                                  1 idle   1 done   2/5 running    1 WAITING
 
  NEEDS INPUT ─────────────────────────────────────────────────────────────     1
   ? port-import-b2c   Which fixture should the port keep?                    29s
-  │ port-import-b2c · waiting 29s
   │ Which fixture should the port keep?
   ╰ 1. the old one   2. the new one   3. both
 
@@ -269,7 +268,9 @@ name starts in. It hangs directly under the row it is a look at and moves the
 rows below it down, so what it belongs to is said by where it stands rather
 than by four borders and the two rows and two columns of wall they would cost.
 It takes half the screen at most, and always leaves a row of the list it was
-opened from.
+opened from. It opens straight onto what it has to show: which agent this is
+and what it is doing are on the row two cells above, and a card that repeated
+them would spend a row of the wall on what you were already looking at.
 
 What the card's body is follows the agent. One that is working shows its live
 screen, chrome cut, tracking output as it lands. One whose turn is over and
@@ -280,15 +281,15 @@ picture. A waiting agent's card is the question block alone.
 
 `pgup` and `pgdn` page inside the card's body when it holds more than the card
 has room for: a patch or a recorded answer down from its top, a live screen up
-from its bottom. A paged card says how far from that edge it stands at the far
-end of its own heading — `↓ 12 more` — and holds still, new output and all,
-until you page back to the edge, press an arrow, or open it again; an agent
-stopping at a question takes the card back regardless, because a question is
-never left behind history. The arrows never page: they keep walking the list,
-card in tow. `ctrl+b` and `ctrl+f` are the same two pages for a keyboard with
-no page keys on it — pgup and pgdn exactly. A lone `ctrl+b` under tmux's
-default prefix is tmux's own business: `ctrl+b ctrl+b` is what reaches the view
-there.
+from its bottom. A paged card takes a row of its own to say how far from that
+edge it stands — `↓ 12 more`, at the far end of it — and holds still, new
+output and all, until you page back to the edge, press an arrow, or open it
+again; an agent stopping at a question takes the card back regardless, because
+a question is never left behind history. The arrows never page: they keep
+walking the list, card in tow. `ctrl+b` and `ctrl+f` are the same two pages for
+a keyboard with no page keys on it — pgup and pgdn exactly. A lone `ctrl+b`
+under tmux's default prefix is tmux's own business: `ctrl+b ctrl+b` is what
+reaches the view there.
 
 `?` puts every key where the list was, in the five groups they are learned in —
 walk, look, start, arrange, dials — each under the heading a group of agents
