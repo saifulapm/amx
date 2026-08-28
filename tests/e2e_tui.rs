@@ -529,28 +529,23 @@ fn bare_amx_draws_the_list_in_the_terminal_it_was_typed_in() {
 fn the_view_gathers_the_agents_under_what_they_need() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
-    amx.play("port-importer-b2c", "works-with-a-spinner");
+    amx.play("port-import-b2c", "works-with-a-spinner");
     amx.play("fix-login-c3d", "happy-turn");
     amx.until_state("ask-a1b", "waiting");
-    amx.until_state("port-importer-b2c", "working");
+    amx.until_state("port-import-b2c", "working");
     amx.until_state("fix-login-c3d", "idle");
     finished(&amx, "old-job-d4e", "done", 60);
 
     let view = amx.in_a_terminal(&[], &[]);
     let drawn = amx.until("every group", || {
         let drawn = screen(&amx, &view);
-        ["needs input", "working", "idle", "completed"]
+        ["NEEDS INPUT", "WORKING", "IDLE", "COMPLETED"]
             .iter()
             .all(|group| drawn.contains(group))
             .then_some(drawn)
     });
 
-    for id in [
-        "ask-a1b",
-        "port-importer-b2c",
-        "fix-login-c3d",
-        "old-job-d4e",
-    ] {
+    for id in ["ask-a1b", "port-import-b2c", "fix-login-c3d", "old-job-d4e"] {
         assert!(drawn.contains(id), "{id} is missing from:\n{drawn}");
     }
     // A row says what the agent is up to: what it is asking, else what it is
@@ -559,9 +554,10 @@ fn the_view_gathers_the_agents_under_what_they_need() {
     assert!(drawn.contains("Running Bash"), "{drawn}");
     assert!(drawn.contains("did what it was asked"), "{drawn}");
 
-    // Twice over, in two vocabularies: the heading says what the group means,
-    // and the band at the top says the word the list can be narrowed by.
-    for group in ["needs input", "completed"] {
+    // Twice over, in two vocabularies and two cases: the heading says what the
+    // group means, and the band at the top says the word the list can be
+    // narrowed by.
+    for group in ["NEEDS INPUT", "COMPLETED"] {
         assert_eq!(
             drawn.matches(group).count(),
             1,
@@ -653,10 +649,10 @@ fn header_dials_turn_from_the_keys_and_leave_the_agents_alone() {
 fn glyphs_say_the_states_apart_and_the_working_one_breathes() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
-    amx.play("port-importer-b2c", "works-with-a-spinner");
+    amx.play("port-import-b2c", "works-with-a-spinner");
     amx.play("fix-login-c3d", "happy-turn");
     amx.until_state("ask-a1b", "waiting");
-    amx.until_state("port-importer-b2c", "working");
+    amx.until_state("port-import-b2c", "working");
     amx.until_state("fix-login-c3d", "idle");
     finished(&amx, "old-job-d4e", "done", 60);
 
@@ -676,7 +672,7 @@ fn glyphs_say_the_states_apart_and_the_working_one_breathes() {
     // set tmux hands its panes rather than the one ghostty asks for.
     let mut frames = std::collections::BTreeSet::new();
     amx.until("the working row to breathe", || {
-        frames.extend(mark(&amx, &view, "port-importer-b2c"));
+        frames.extend(mark(&amx, &view, "port-import-b2c"));
         (frames.len() > 1).then_some(())
     });
     for frame in &frames {
@@ -827,7 +823,7 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the agents", || {
-        screen(&amx, &view).contains("needs input").then_some(())
+        screen(&amx, &view).contains("NEEDS INPUT").then_some(())
     });
 
     press(&amx, &view, "C-s");
@@ -866,14 +862,14 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
     assert!(row("fix-login-b2c").contains("idle"), "{drawn}");
     assert!(row("old-job-c3d").contains("done"), "{drawn}");
     assert!(
-        !drawn.lines().any(|line| line.trim_end() == "needs input"),
+        !drawn.contains("NEEDS INPUT"),
         "and the state headings are gone with the axis:\n{drawn}"
     );
 
     // And back, on the same key.
     press(&amx, &view, "C-s");
     amx.until("what they need again", || {
-        screen(&amx, &view).contains("needs input").then_some(())
+        screen(&amx, &view).contains("NEEDS INPUT").then_some(())
     });
 }
 
@@ -943,7 +939,7 @@ fn a_wall_with_nothing_on_it_says_so_in_one_line_of_amxs_own() {
     // The header's two rows, the line itself, and the keys under it. A wall
     // with nothing on it is not the place for a lecture about the wall.
     assert_eq!(said.len(), 4, "one line and the bands around it:\n{drawn}");
-    for group in ["needs input", "working", "idle", "completed"] {
+    for group in ["NEEDS INPUT", "WORKING", "IDLE", "COMPLETED"] {
         assert!(
             !drawn.contains(group),
             "{group} is a heading over rows, and there are none:\n{drawn}"
@@ -971,14 +967,14 @@ fn a_blank_line_stands_the_list_off_from_the_header() {
     let view = amx.in_a_terminal(&[], &[]);
     let drawn = amx.until("the first heading", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("needs input").then_some(drawn)
+        drawn.contains("NEEDS INPUT").then_some(drawn)
     });
 
     let lines: Vec<&str> = drawn.lines().map(str::trim_end).collect();
     let at = lines
         .iter()
-        .position(|line| *line == "needs input")
-        .unwrap_or_else(|| panic!("no needs input heading in:\n{drawn}"));
+        .position(|line| line.starts_with(" NEEDS INPUT "))
+        .unwrap_or_else(|| panic!("no NEEDS INPUT heading in:\n{drawn}"));
     assert!(
         lines[at - 1].is_empty(),
         "the first heading is stood off from the header the way the next one \
@@ -1041,48 +1037,139 @@ fn completed_agents_fold_into_a_count_when_the_screen_runs_out_of_rows() {
 }
 
 #[test]
-fn rows_read_as_one_muted_tone_with_the_state_kept_on_the_icon() {
+fn a_row_keeps_the_weight_for_what_is_asking_and_dims_what_it_said() {
     let amx = Harness::new();
-    finished(&amx, "fix-login-a1b", "done", 60);
-    finished(&amx, "port-importer-b2c", "done", 120);
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+    finished(&amx, "fix-login-b2c", "done", 60);
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("both rows", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("fix-login-a1b") && drawn.contains("port-importer-b2c")).then_some(())
+        (drawn.contains("ask-a1b") && drawn.contains("fix-login-b2c")).then_some(())
     });
 
-    // The cursor opens on the newest ending, so the older row is the muted
-    // one: its name and its summary wear the same dim, nothing bold.
-    let muted = coloured_line(&amx, &view, "port-importer-b2c");
-    for word in ["port-importer-b2c", "did what it was asked"] {
-        assert!(
-            sgr_at(&muted, word).contains(&2),
-            "{word} is not dim on the unselected row:\n{muted:?}"
-        );
-        assert!(
-            !sgr_at(&muted, word).contains(&1),
-            "{word} is bold on the unselected row:\n{muted:?}"
-        );
-    }
+    // A row that wants nobody: its name at the terminal's own strength, what
+    // it said dim under the name of the next one, and no weight anywhere.
+    let quiet = coloured_line(&amx, &view, "fix-login-b2c");
+    let name = sgr_at(&quiet, "fix-login-b2c");
     assert!(
-        muted.contains(&foreground("done")),
-        "the icon alone carries the state's colour:\n{muted:?}"
+        !name.contains(&1) && !name.contains(&2),
+        "the name is the terminal's own, neither dim nor bold:\n{quiet:?}"
+    );
+    assert!(
+        sgr_at(&quiet, "did what it was asked").contains(&2),
+        "and what it said is the quieter of the two:\n{quiet:?}"
+    );
+    assert!(
+        quiet.contains(&foreground("done")),
+        "the glyph alone carries the state's colour:\n{quiet:?}"
     );
 
-    // And the selected row is the one that stands out: full strength, the
-    // name in bold, over the bar.
-    let selected = coloured_line(&amx, &view, "fix-login-a1b");
+    // A row that is asking is the one that stands out, wherever the cursor
+    // happens to be: the name bold and in the colour of a thing waiting on a
+    // person, and the question at full strength because it is the sentence
+    // somebody came to read.
+    let asking = coloured_line(&amx, &view, "ask-a1b");
     assert!(
-        sgr_at(&selected, "fix-login-a1b").contains(&1),
-        "{selected:?}"
+        sgr_at(&asking, "ask-a1b").contains(&1),
+        "the waiting name is the bold one:\n{asking:?}"
     );
-    for word in ["fix-login-a1b", "did what it was asked"] {
+    assert!(
+        asking.contains(&foreground("waiting")),
+        "and it is painted for what it wants:\n{asking:?}"
+    );
+    assert!(
+        !sgr_at(&asking, "Claude needs your permission").contains(&2),
+        "the question is not dimmed the way a finished row's line is:\n{asking:?}"
+    );
+}
+
+#[test]
+fn a_row_lands_its_name_summary_and_age_in_the_columns_the_grid_fixes() {
+    let amx = Harness::new();
+    finished(&amx, "fix-login-a1b", "done", 60);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+    });
+    let row = row_of(&amx, &view, "fix-login-a1b").expect("a row");
+    let cells: Vec<char> = row.chars().collect();
+    assert_eq!(cells.len(), 80, "a row is drawn to the edge:\n{row:?}");
+
+    // Two cells of gutter for the marks, the state glyph and the space after
+    // it, and then the name column: sixteen cells of it below a hundred.
+    let column = |from: usize, to: usize| cells[from..to].iter().collect::<String>();
+    assert_eq!(column(4, 20), "fix-login-a1b   ", "{row:?}");
+    assert_eq!(column(20, 22), "  ", "two cells stand the columns apart");
+
+    // Then the summary, which takes whatever is left of the screen.
+    assert_eq!(
+        column(22, 74),
+        format!("{:<52}", "did what it was asked"),
+        "{row:?}"
+    );
+
+    // And the age, right-aligned in the last four cells.
+    assert_eq!(column(74, 76), "  ", "{row:?}");
+    let age = column(76, 80);
+    assert!(
+        !age.trim().is_empty() && !age.ends_with(' '),
+        "the age is right-aligned in its own column:\n{row:?}"
+    );
+}
+
+#[test]
+fn a_group_heading_is_uppercase_over_a_rule_that_ends_in_its_count() {
+    let amx = Harness::new();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+    finished(&amx, "one-b2c", "done", 60);
+    finished(&amx, "two-c3d", "done", 120);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let drawn = amx.until("the headings", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("NEEDS INPUT") && drawn.contains("COMPLETED")).then_some(drawn)
+    });
+
+    for (label, members) in [("NEEDS INPUT", 1), ("COMPLETED", 2)] {
+        let line = drawn
+            .lines()
+            .find(|line| line.starts_with(&format!(" {label} ")))
+            .unwrap_or_else(|| panic!("no {label} heading in:\n{drawn}"))
+            .to_string();
+        let cells: Vec<char> = line.chars().collect();
+        assert_eq!(cells.len(), 80, "a heading is drawn to the edge:\n{line:?}");
+        assert_eq!(
+            cells[76..].iter().collect::<String>(),
+            format!("{members:>4}"),
+            "the count is right-aligned in the column the ages are:\n{line:?}"
+        );
+        let rule: String = cells[label.chars().count() + 2..74].iter().collect();
         assert!(
-            !sgr_at(&selected, word).contains(&2),
-            "{word} is dim on the selected row:\n{selected:?}"
+            !rule.is_empty() && rule.chars().all(|cell| cell == '─'),
+            "and a rule runs from the label out to it:\n{line:?}"
         );
     }
+
+    // The label carries the weight and the rule carries none of it, which is
+    // what makes a heading without a second type size.
+    let painted = coloured_line(&amx, &view, "COMPLETED");
+    assert!(
+        sgr_at(&painted, "COMPLETED").contains(&1),
+        "the label is bold:\n{painted:?}"
+    );
+    assert!(
+        sgr_at(&painted, "───").contains(&2),
+        "the rule is dim:\n{painted:?}"
+    );
+    let waiting = coloured_line(&amx, &view, "NEEDS INPUT");
+    assert!(
+        waiting.contains(&foreground("waiting")),
+        "and the group that wants a person is painted for it:\n{waiting:?}"
+    );
 }
 
 #[test]
@@ -1201,12 +1288,12 @@ fn editing_the_theme_recolours_the_view_that_is_open_on_it() {
 fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
-    finished(&amx, "port-importer-b2c", "done", 120);
+    finished(&amx, "port-import-b2c", "done", 120);
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("both rows", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("fix-login-a1b") && drawn.contains("port-importer-b2c")).then_some(())
+        (drawn.contains("fix-login-a1b") && drawn.contains("port-import-b2c")).then_some(())
     });
     assert_eq!(
         pane_field(&amx, &view, "#{mouse_any_flag}"),
@@ -1221,12 +1308,12 @@ fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
         &amx,
         &view,
         5,
-        screen_row_of(&amx, &view, "port-importer-b2c"),
+        screen_row_of(&amx, &view, "port-import-b2c"),
     );
     amx.until("the bar under the clicked row", || {
         coloured(&amx, &view)
             .lines()
-            .find(|line| line.contains("port-importer-b2c") && line.contains("did what"))
+            .find(|line| line.contains("port-import-b2c") && line.contains("did what"))
             .filter(|line| line.contains(&bar()))
             .map(|_| ())
     });
@@ -1247,17 +1334,18 @@ fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
     // A click on the heading shuts the group, and another opens it.
     let heading = screen(&amx, &view)
         .lines()
-        .position(|line| line.trim_end() == "completed")
+        .position(|line| line.starts_with(" COMPLETED "))
         .expect("the heading") as u16
         + 1;
     click(&amx, &view, 5, heading);
     amx.until("the group shut", || {
-        screen(&amx, &view).contains("completed 2").then_some(())
+        let drawn = screen(&amx, &view);
+        (drawn.contains("COMPLETED") && !drawn.contains("port-import-b2c")).then_some(())
     });
     click(&amx, &view, 5, heading);
     amx.until("the group open again", || {
         screen(&amx, &view)
-            .contains("port-importer-b2c")
+            .contains("port-import-b2c")
             .then_some(())
     });
 
@@ -1279,21 +1367,21 @@ fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
 fn hovering_a_row_tints_its_name_and_moves_no_cursor() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
-    finished(&amx, "port-importer-b2c", "done", 120);
+    finished(&amx, "port-import-b2c", "done", 120);
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("both rows", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("fix-login-a1b") && drawn.contains("port-importer-b2c")).then_some(())
+        (drawn.contains("fix-login-a1b") && drawn.contains("port-import-b2c")).then_some(())
     });
 
     // The pointer comes to rest on the row the cursor is not on.
-    let row = screen_row_of(&amx, &view, "port-importer-b2c");
+    let row = screen_row_of(&amx, &view, "port-import-b2c");
     mouse(&amx, &view, 35, 5, row, true);
     amx.until("the name to take the tint", || {
         sgr_at(
-            &coloured_line(&amx, &view, "port-importer-b2c"),
-            "port-importer-b2c",
+            &coloured_line(&amx, &view, "port-import-b2c"),
+            "port-import-b2c",
         )
         .contains(&1)
         .then_some(())
@@ -1303,7 +1391,7 @@ fn hovering_a_row_tints_its_name_and_moves_no_cursor() {
         "the bar stayed where the keyboard's cursor is"
     );
     assert!(
-        !coloured_line(&amx, &view, "port-importer-b2c").contains(&bar()),
+        !coloured_line(&amx, &view, "port-import-b2c").contains(&bar()),
         "a hover is a tint, not a selection"
     );
 }
@@ -1397,13 +1485,13 @@ fn the_cursor_is_a_bar_over_rows_and_headings_alike() {
             .then_some(())
     });
     assert!(
-        !coloured_line(&amx, &view, "needs input").contains(&bar()),
+        !coloured_line(&amx, &view, "NEEDS INPUT").contains(&bar()),
         "and not under the heading the cursor is not on"
     );
 
     press(&amx, &view, "Up");
     amx.until("the bar to move up onto the heading", || {
-        coloured_line(&amx, &view, "needs input")
+        coloured_line(&amx, &view, "NEEDS INPUT")
             .contains(&bar())
             .then_some(())
     });
@@ -1425,8 +1513,19 @@ fn enter_shuts_the_group_its_headings_stand_over_and_opens_it_again() {
         (drawn.contains("one-a1b") && drawn.contains("two-b2c")).then_some(drawn)
     });
     assert!(
-        drawn.contains("completed · 1 failed"),
-        "a heading says how many failed with the rows still under it:\n{drawn}"
+        drawn.contains("COMPLETED · 1 failed"),
+        "a heading says how many failed in front of its rule:\n{drawn}"
+    );
+    let heading = |drawn: &str| {
+        drawn
+            .lines()
+            .find(|line| line.starts_with(" COMPLETED "))
+            .unwrap_or_else(|| panic!("no COMPLETED heading in:\n{drawn}"))
+            .to_string()
+    };
+    assert!(
+        heading(&drawn).ends_with("   2"),
+        "and how many there are, open or shut:\n{drawn}"
     );
 
     // Up off the first agent onto the heading over it, and shut the group.
@@ -1434,17 +1533,17 @@ fn enter_shuts_the_group_its_headings_stand_over_and_opens_it_again() {
     press(&amx, &view, "Enter");
     let shut = amx.until("the group to be put away", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("completed 2 · 1 failed").then_some(drawn)
+        (!drawn.contains("one-a1b")).then_some(drawn)
     });
+    assert!(!shut.contains("two-b2c"), "the rows are away:\n{shut}");
     assert!(
-        !shut.contains("one-a1b") && !shut.contains("two-b2c"),
-        "the rows are behind the count now:\n{shut}"
+        heading(&shut).ends_with("   2") && shut.contains("COMPLETED · 1 failed"),
+        "the count stands for them, unmoved by their going:\n{shut}"
     );
 
     press(&amx, &view, "Enter");
     amx.until("the agents back", || {
-        let drawn = screen(&amx, &view);
-        (drawn.contains("one-a1b") && !drawn.contains("completed 2")).then_some(())
+        screen(&amx, &view).contains("one-a1b").then_some(())
     });
 }
 
@@ -1491,7 +1590,7 @@ fn card_floats_over_the_list_with_the_question_alone() {
         "the header is where it was:\n{carded}"
     );
     assert!(
-        carded.contains("needs input"),
+        carded.contains("NEEDS INPUT"),
         "and so is the group the row is under:\n{carded}"
     );
 
@@ -2788,12 +2887,12 @@ fn acts_ctrl_x_on_a_heading_forgets_the_finished_and_keeps_the_work() {
     );
     amx.until_state("keeps-work-a1b", "done");
     std::fs::write(tree.join("login.rs"), "fn login() {}\n").expect("the work in the tree");
-    finished(&amx, "port-importer-b2c", "done", 120);
+    finished(&amx, "port-import-b2c", "done", 120);
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("both rows", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("keeps-work-a1b") && drawn.contains("port-importer-b2c")).then_some(())
+        (drawn.contains("keeps-work-a1b") && drawn.contains("port-import-b2c")).then_some(())
     });
 
     // Up from the row the view opens on is the heading the group is under.
@@ -2882,11 +2981,11 @@ fn acts_ctrl_x_on_a_heading_stops_the_live_and_arms_rows_in_every_state() {
 fn acts_space_takes_the_unread_mark_off_the_row_it_opened() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
-    finished(&amx, "port-importer-b2c", "done", 120);
+    finished(&amx, "port-import-b2c", "done", 120);
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("both rows to be marked unread", || {
-        (unread(&amx, &view, "fix-login-a1b") && unread(&amx, &view, "port-importer-b2c"))
+        (unread(&amx, &view, "fix-login-a1b") && unread(&amx, &view, "port-import-b2c"))
             .then_some(())
     });
 
@@ -2897,7 +2996,7 @@ fn acts_space_takes_the_unread_mark_off_the_row_it_opened() {
         (!unread(&amx, &view, "fix-login-a1b")).then_some(())
     });
     assert!(
-        unread(&amx, &view, "port-importer-b2c"),
+        unread(&amx, &view, "port-import-b2c"),
         "and the row nobody opened keeps its mark:\n{}",
         screen(&amx, &view)
     );

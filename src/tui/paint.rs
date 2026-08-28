@@ -40,7 +40,8 @@ use std::ops::Range;
 use std::sync::OnceLock;
 
 use super::act::{self, Asking, Composer};
-use super::rows::{self, Axis, Group, Item, List, Showing, Tally};
+use super::grid::{self, Widths};
+use super::rows::{self, Group, Item, List, Showing, Tally, Under};
 use super::{Mode, Profile, Screen};
 use crate::ansi::{self, Colour, Painted};
 use crate::derive::{self, View};
@@ -949,20 +950,6 @@ pub fn title(list: &List) -> String {
     }
 }
 
-/// How wide each column is, worked out over the whole list so that every row
-/// lines up with the ones above it.
-#[derive(Clone, Copy)]
-struct Columns {
-    names: usize,
-    /// The state a row carries, which is a column only where the heading does
-    /// not say it. Zero is no column at all.
-    status: usize,
-    /// The pull request number, which is a column only where somebody in this
-    /// list has one. Zero is no column at all, and that is every list on a
-    /// machine with no forge on it.
-    pr: usize,
-}
-
 /// What a wall nobody has put anything on says for itself.
 ///
 /// One line of amx's own, where four headings with a sentence each used to
@@ -997,8 +984,9 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment, visible: u
 
     let height = area.height as usize;
     let offset = first_drawn(list, visible);
-    let columns = columns(list);
-    let section = list.section();
+    let width = area.width as usize;
+    let widths = grid::widths(width, list.axis());
+    let requests = request_column(list);
 
     let lines: Vec<Line> = list
         .items()
@@ -1013,10 +1001,10 @@ fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment, visible: u
                 At {
                     selected: at == list.cursor(),
                     hovered: moment.hover == Some(at),
-                    section: section == Some(at),
                 },
-                columns,
-                area.width as usize,
+                widths,
+                requests,
+                width,
                 moment,
                 theme,
             )
@@ -1049,29 +1037,33 @@ struct Moment<'a> {
     hover: Option<usize>,
 }
 
-/// How the cursor and the pointer stand to one line: on it, over it, or in
-/// its section.
+/// How the cursor and the pointer stand to one line: on it, or over it.
 #[derive(Clone, Copy, Default)]
 struct At {
     selected: bool,
     hovered: bool,
-    /// Whether this is the heading of the group holding the cursor, wherever
-    /// in the group the cursor stands.
-    section: bool,
 }
 
 /// One line of the list, whatever kind of line it is.
+#[allow(clippy::too_many_arguments)]
 fn line(
     list: &List,
     item: Item,
     at: At,
-    columns: Columns,
+    widths: Widths,
+    requests: usize,
     width: usize,
     moment: Moment,
     theme: Theme,
 ) -> Line<'static> {
     let line = match item {
-        Item::Heading(under, tally) => heading(list.title(under), tally, at.selected || at.section),
+        Item::Heading(under, tally) => match under {
+            Under::Group(group) => heading(group, tally, widths, width, theme),
+            // A path is not a word and does not uppercase, so it is drawn its
+            // own way — which is the dir axis's business, and the dir axis is
+            // redrawn next.
+            Under::Project(_) => path_heading(list.title(under), tally),
+        },
         Item::Fold(hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
         Item::Agent(_) => match list.agent(item) {
             Some(view) => row(
@@ -1079,8 +1071,8 @@ fn line(
                 list.requests(view),
                 list.holding(view),
                 at,
-                columns,
-                width,
+                widths,
+                requests,
                 moment,
                 theme,
             ),
@@ -1120,36 +1112,89 @@ fn barred(line: Line<'static>, width: usize, theme: Theme) -> Line<'static> {
 
 /// A heading: what it stands for, and what it is answerable for.
 ///
-/// A group that is open has its rows on the screen, so counting them there
-/// would be a number beside the thing it counts. Shut, the count is the only
-/// thing standing in for them. The failures are said either way — that is the
-/// one number a heading is worth reading without opening it, because an agent
-/// that failed is the reason somebody came to the screen.
-fn heading(title: String, tally: Tally, marked: bool) -> Line<'static> {
+/// Uppercase and bold, which is what makes a heading out of a label without a
+/// second type size — the only uppercase words on the screen. Then a dim rule
+/// run out to the group's count, right-aligned in the column the ages under it
+/// are right-aligned in, so the right edge of the screen is one line of
+/// numbers rather than two. The count is there open or shut: a person reading
+/// down the margin is asking how many, and a number that came and went with
+/// the rows would make them count instead.
+///
+/// The failures are said in front of the rule, because that is the one thing a
+/// heading is worth reading without opening it — an agent that failed is the
+/// reason somebody came to the screen.
+fn heading(
+    group: Group,
+    tally: Tally,
+    widths: Widths,
+    width: usize,
+    theme: Theme,
+) -> Line<'static> {
+    let label = group.title().to_uppercase();
+    let failures = match tally.failures {
+        0 => String::new(),
+        failures => format!("· {failures} failed "),
+    };
+    // What the rule is left: the space in front of the label, the label, the
+    // space after it, the failures, and the gap and the count at the far end.
+    let spent = 1 + width_of(&label) + 1 + width_of(&failures) + GAP + widths.age;
+    let rule = "─".repeat(width.saturating_sub(spent).max(1));
+    // The group that wants a person carries the one colour up here, on the
+    // label and on the count alike. The group nothing is going to happen to
+    // again takes the colour of a thing that has ended, so the margin says
+    // which of its numbers is still moving.
+    let (label_paint, count_paint) = match group {
+        Group::NeedsInput => {
+            let waiting = Style::new().fg(theme.waiting).add_modifier(Modifier::BOLD);
+            (waiting, waiting)
+        }
+        Group::Completed => (bold(), Style::new().fg(theme.stopped)),
+        _ => (bold(), dim()),
+    };
+    Line::from(vec![
+        Span::styled(format!(" {label} "), label_paint),
+        Span::styled(failures, Style::new().fg(theme.failed)),
+        Span::styled(rule, dim()),
+        Span::raw(" ".repeat(GAP)),
+        Span::styled(
+            grid::padl(&tally.members.to_string(), widths.age),
+            count_paint,
+        ),
+    ])
+}
+
+/// The heading over a project, which is a path rather than a word: it is not
+/// uppercased and it is not ruled here. The dir axis is redrawn next, and this
+/// is what it was until then.
+fn path_heading(title: String, tally: Tally) -> Line<'static> {
     let counted = match (tally.shut, tally.failures) {
         (false, 0) => String::new(),
         (false, failures) => format!(" · {failures} failed"),
         (true, 0) => format!(" {}", tally.members),
         (true, failures) => format!(" {} · {failures} failed", tally.members),
     };
-    let mut spans = vec![Span::styled(title, heading_style(marked))];
-    if !counted.is_empty() {
-        spans.push(Span::styled(counted, dim()));
-    }
-    Line::from(spans)
+    Line::styled(format!("{title}{counted}"), dim())
 }
 
 /// An agent's row: what state it is in, what it is called, what its work is
 /// waiting on out in the world, what it is up to, and how long it has worked.
 ///
-/// The words of a row the cursor is not on wear one muted tone — the name,
-/// the summary and the age all the same dim — with the state carried by the
-/// icon's colour alone, the way claude's own agent view has it. The selected
-/// row is the one that stands out: the bar underneath it, and its text at
-/// full strength. The exceptions earn their colour: the pull request's number
-/// answers how the work went, the armed warning is a thing waiting on a
-/// person, and under a project heading the state word keeps the phase colour
-/// because it replaces the icon's job there.
+/// Four cells before the name — the two marks, the state glyph and the space
+/// after it — then the name, the summary, and the age right-aligned at the
+/// edge, all on the widths the grid fixes for the screen. Fixed rather than
+/// measured off the fleet, so the columns stand where they stood when the last
+/// agent ended and the row a person learned wide is the row they get narrow.
+///
+/// The weight goes where the work is. A row that is asking carries the one
+/// colour and the one bold name on the wall, and its question is at full
+/// strength because that is the sentence somebody opened the view to read.
+/// Every other row is its name in the terminal's own and what it said dim
+/// under it, with the state on the glyph alone. The exceptions earn their
+/// colour: a failed name says so without its glyph being read, the pull
+/// request's number answers how the work went, and under a project heading
+/// the state word keeps the phase colour because it replaces the glyph's job
+/// there. What the cursor is on is said by the bar under it, not by the row
+/// changing its tones.
 ///
 /// A row a press has armed says that instead of what the agent said, in the
 /// colour of a thing waiting on a person. The summary is the one part of a row
@@ -1162,15 +1207,11 @@ fn row(
     prs: &[Pr],
     held: bool,
     at: At,
-    columns: Columns,
-    width: usize,
+    widths: Widths,
+    requests: usize,
     moment: Moment,
     theme: Theme,
 ) -> Line<'static> {
-    let At {
-        selected, hovered, ..
-    } = at;
-    let Columns { names, status, pr } = columns;
     let phase = view.phase();
     // The reading's own number and the reading's own units: a row and a table
     // that worked the words out for themselves would agree until one of them
@@ -1179,59 +1220,54 @@ fn row(
     let worked = derive::in_words(view.verdict.worked);
     // The one word on a row a person typed rather than amx minting it, so it
     // is neutralised here as well as where it was written down.
-    let name = fit(&inert(rows::called(view)), names);
-    // The gutter, the icon and its space, the name and its gap, the status and
-    // pull request columns and the gap after each where there is one, the age
-    // and the space before it.
-    let spent = GUTTER.len()
-        + 2
-        + names
-        + 2
-        + status
-        + 2 * usize::from(status > 0)
-        + pr
-        + 2 * usize::from(pr > 0)
-        + AGE
-        + 1;
-    let room = width.saturating_sub(spent);
+    let name = grid::pad(&inert(rows::called(view)), widths.name);
+    // The pull request is not one of the design's columns, so it is paid for
+    // the way the state word is: out of the summary, which is the column that
+    // gives way. Name, age and count stay where they are whether or not there
+    // is a forge on the machine.
+    let room = widths.summary.saturating_sub(match requests {
+        0 => 0,
+        column => column + GAP,
+    });
     let armed = moment.armed.iter().any(|id| id == view.id());
     let said = match armed {
-        true => fit(AGAIN, room),
-        false => fit(first_line(view.line().unwrap_or("")), room),
+        true => AGAIN.to_string(),
+        false => first_line(view.line().unwrap_or("")).to_string(),
     };
 
-    // The one tone the row's words wear, which is what makes the selected
-    // row the one that stands out.
-    let toned = match selected {
-        true => Style::new(),
-        false => dim(),
-    };
+    let asking = phase == Phase::Waiting;
     let [read, top] = marks(view, held, theme);
     let mut spans = vec![
         read,
         top,
         Span::styled(
             format!("{} ", icon(phase, moment.beat)),
-            colour(theme, phase),
+            match asking {
+                true => colour(theme, phase).add_modifier(Modifier::BOLD),
+                false => colour(theme, phase),
+            },
         ),
-        // The pointer resting on a row gives its name the selection
-        // treatment without the bar or the cursor, which is the whole of
-        // what a hover is.
         Span::styled(
-            format!("{}  ", padded(&name, names)),
-            match selected || hovered {
-                true => Style::new().add_modifier(Modifier::BOLD),
-                false => dim(),
+            format!("{name}{}", " ".repeat(GAP)),
+            // The pointer resting on a row gives its name weight without the
+            // bar or the cursor, which is the whole of what a hover is.
+            match at.hovered {
+                true => name_colour(theme, phase).add_modifier(Modifier::BOLD),
+                false => name_colour(theme, phase),
             },
         ),
     ];
-    if status > 0 {
+    if widths.state > 0 {
         spans.push(Span::styled(
-            format!("{:<status$}  ", fit(phase.as_str(), status)),
+            format!(
+                "{}{}",
+                grid::pad(phase.as_str(), widths.state),
+                " ".repeat(GAP)
+            ),
             colour(theme, phase),
         ));
     }
-    if pr > 0 {
+    if requests > 0 {
         // The one this branch is being read for, which is whatever of them is
         // still live. The rest are on the card, where there is room to list
         // them and to say what each is waiting on.
@@ -1239,15 +1275,37 @@ fn row(
             Some(first) => (first.label(), request_colour(theme, first.standing)),
             None => (String::new(), Style::new()),
         };
-        spans.push(Span::styled(format!("{label:<pr$}  "), paint));
+        spans.push(Span::styled(
+            format!("{}{}", grid::pad(&label, requests), " ".repeat(GAP)),
+            paint,
+        ));
     }
-    let summary = match armed {
-        true => Style::new().fg(theme.waiting),
-        false => toned,
+    let summary = match (armed, asking) {
+        (true, _) => Style::new().fg(theme.waiting),
+        (false, true) => Style::new(),
+        (false, false) => dim(),
     };
-    spans.push(Span::styled(format!("{} ", padded(&said, room)), summary));
-    spans.push(Span::styled(format!("{worked:>AGE$}"), toned));
+    spans.push(Span::styled(
+        format!("{}{}", grid::pad(&said, room), " ".repeat(GAP)),
+        summary,
+    ));
+    spans.push(Span::styled(grid::padl(&worked, widths.age), dim()));
     Line::from(spans)
+}
+
+/// What a row's name is painted in: the colour of a thing waiting on a person,
+/// and the weight to go with it, where that is what the row is; the colour of a
+/// failure where the work ended in one; and the terminal's own everywhere else.
+///
+/// Two states out of eight, because a column of names in eight colours is a
+/// column nobody reads. Those two are the ones a person scanning the wall is
+/// looking for, and the rest have said all they have to say on the glyph.
+fn name_colour(theme: Theme, phase: Phase) -> Style {
+    match phase {
+        Phase::Waiting => Style::new().fg(theme.waiting).add_modifier(Modifier::BOLD),
+        Phase::Failed => Style::new().fg(theme.failed),
+        _ => Style::new(),
+    }
 }
 
 /// What an armed row says where its summary was: the key again, and what it
@@ -1264,14 +1322,22 @@ const AGAIN: &str = "ctrl+x again forgets";
 /// They cost the list no width, and down a wall of rows each lines up into a
 /// column of its own — which is the thing worth reading here: not what this
 /// agent is, but which of them somebody has not caught up with, and which of
-/// them they said to keep in front of them. The first is in the colour of a
-/// thing waiting on a person, because that is what it is; the second is not
+/// them they said to keep in front of them. The first takes the colour of a
+/// thing waiting on a person only on a row that is waiting on one, and is dim
+/// on the rest: at forty rows, a column of amber dots against finished work
+/// would be competing with the one thing that colour is for. The second is not
 /// about the agent at all but about how somebody laid the wall out, so it is
 /// drawn in the terminal's own.
 fn marks(view: &View, held: bool, theme: Theme) -> [Span<'static>; MARKS] {
     [
         match rows::unread(view) {
-            true => Span::styled(UNREAD, Style::new().fg(theme.waiting)),
+            true => Span::styled(
+                UNREAD,
+                match view.phase() {
+                    Phase::Waiting => Style::new().fg(theme.waiting),
+                    _ => dim(),
+                },
+            ),
             false => Span::raw(" "),
         },
         match held {
@@ -2189,31 +2255,18 @@ fn footer(screen: &Screen, width: u16) -> Line<'static> {
     )
 }
 
-/// How wide each column has to be. The names are capped, because one long name
-/// must not push what every agent is doing off the side of the screen.
-fn columns(list: &List) -> Columns {
-    let shown = || list.items().iter().filter_map(|item| list.agent(*item));
-    Columns {
-        names: shown()
-            .map(|view| rows::called(view).chars().count())
-            .max()
-            .unwrap_or(0)
-            .clamp(6, 24),
-        // On the state axis the heading over the row already says the state,
-        // and saying it twice would be a column of noise.
-        status: match list.axis() {
-            Axis::State => 0,
-            Axis::Project => shown()
-                .map(|view| view.phase().as_str().len())
-                .max()
-                .unwrap_or(0),
-        },
-        pr: shown()
-            .filter_map(|view| list.requests(view).first())
-            .map(|pr| pr.label().chars().count())
-            .max()
-            .unwrap_or(0),
-    }
+/// How wide the pull request column has to be, which is the one column of a
+/// row the design does not fix: the widest label anybody on the screen is
+/// wearing, and no column at all where nobody is wearing one — which is every
+/// list on a machine with no forge on it.
+fn request_column(list: &List) -> usize {
+    list.items()
+        .iter()
+        .filter_map(|item| list.agent(*item))
+        .filter_map(|view| list.requests(view).first())
+        .map(|pr| pr.label().chars().count())
+        .max()
+        .unwrap_or(0)
 }
 
 /// How many rows text takes when it is wrapped to a width.
@@ -2243,8 +2296,9 @@ fn head(end: usize, wanted: usize, away: usize) -> Range<usize> {
     start..end.min(start.saturating_add(wanted))
 }
 
-/// The width the duration is given, which fits everything up to `365d`.
-const AGE: usize = 4;
+/// What stands between two columns of the list, whether that is a name and a
+/// summary or a heading's rule and its count.
+const GAP: usize = 2;
 
 /// One line of it, so a paragraph of an answer cannot take over a row.
 fn first_line(text: &str) -> &str {
@@ -2282,14 +2336,6 @@ fn fit(text: &str, width: usize) -> String {
             kept
         }
     }
-}
-
-/// `text` padded with spaces to `width` columns — `format!("{text:<width$}")`
-/// counts characters, and a wide glyph would carry the pad one column too
-/// far.
-fn padded(text: &str, width: usize) -> String {
-    let pad = " ".repeat(width.saturating_sub(width_of(text)));
-    format!("{text}{pad}")
 }
 
 /// What a row is indented by, so an agent reads as sitting under the heading
@@ -2401,19 +2447,12 @@ fn request_colour(theme: Theme, standing: Standing) -> Style {
     }
 }
 
-/// A heading's label: dim and bare, whatever it stands for. The rows under it
-/// carry the state's colour, so the label repeating it would say nothing —
-/// and a label with no weight of its own leaves bold free to mark the section
-/// holding the cursor, wherever in the section the cursor stands.
-fn heading_style(marked: bool) -> Style {
-    match marked {
-        true => Style::new().add_modifier(Modifier::BOLD),
-        false => dim(),
-    }
-}
-
 fn dim() -> Style {
     Style::new().add_modifier(Modifier::DIM)
+}
+
+fn bold() -> Style {
+    Style::new().add_modifier(Modifier::BOLD)
 }
 
 /// What the next agent may do without asking, under the line that would start
@@ -2608,6 +2647,17 @@ mod tests {
         painted(&showing(views, card), size)
     }
 
+    /// What a heading line says in front of the rule that carries it out to
+    /// the edge: the label, and how many failed under it where any did.
+    fn heading_of(line: &str) -> &str {
+        line.split('─').next().unwrap_or_default().trim()
+    }
+
+    /// And the count it ends in, which is the last thing on the line.
+    fn counted(line: &str) -> &str {
+        line.split_whitespace().next_back().unwrap_or_default()
+    }
+
     /// The same, once the list has learned the screen's size: the first
     /// frame writes the room back the way the loop's draw does, the refit
     /// lays the rows out for it, and the second frame is the one a person
@@ -2639,7 +2689,7 @@ mod tests {
             (60, 14),
         );
 
-        assert_eq!(screen[3], "needs input", "{screen:?}");
+        assert_eq!(heading_of(&screen[3]), "NEEDS INPUT", "{screen:?}");
         assert!(
             screen[4].contains("ask-a1b"),
             "the row the card was opened from is still on the screen: {screen:?}"
@@ -2931,9 +2981,11 @@ mod tests {
         };
         let plain = Modifier::empty();
 
+        // The one glyph with weight on it, which is the one the view is
+        // opened to find.
         assert_eq!(
             painted(Phase::Waiting),
-            ("?".into(), theme().waiting, plain)
+            ("?".into(), theme().waiting, Modifier::BOLD)
         );
         assert_eq!(
             painted(Phase::Unknown),
@@ -2964,12 +3016,7 @@ mod tests {
     fn glyphs_draw_a_working_row_a_frame_at_a_time() {
         let at = |beat| {
             let mut screen = showing(
-                vec![view(
-                    "port-importer-b2c",
-                    Phase::Working,
-                    Some("Running"),
-                    3,
-                )],
+                vec![view("port-import-b2c", Phase::Working, Some("Running"), 3)],
                 None,
             );
             screen.beat = beat;
@@ -2977,7 +3024,7 @@ mod tests {
         };
 
         assert!(
-            at(0).starts_with(&format!("  {} port-importer-b2c", pulse(0))),
+            at(0).starts_with(&format!("  {} port-import-b2c", pulse(0))),
             "{:?}",
             at(0)
         );
@@ -3000,7 +3047,7 @@ mod tests {
             "{:?}",
             screen[0]
         );
-        assert_eq!(screen[2], "needs input");
+        assert_eq!(heading_of(&screen[2]), "NEEDS INPUT");
         assert!(
             screen[3].starts_with("• ? ask-a1b"),
             "a question nobody has been to read carries the mark that says so: \
@@ -3009,7 +3056,7 @@ mod tests {
         );
         assert!(screen[3].ends_with("1m"), "{:?}", screen[3]);
         assert_eq!(screen[4], "", "the next group stands off from this one");
-        assert_eq!(screen[5], "working");
+        assert_eq!(heading_of(&screen[5]), "WORKING");
         assert!(
             screen[6].starts_with(&format!("  {} fix-login-b2c", pulse(0))),
             "{:?}",
@@ -3150,7 +3197,7 @@ mod tests {
             &showing(vec![view("busy-a1b", Phase::Working, None, 3)], None),
             (60, 8),
         );
-        assert_eq!(screen[1], "working");
+        assert_eq!(heading_of(&screen[1]), "WORKING");
         assert!(
             !screen[2].contains("working"),
             "twice on one screen is a column of noise: {:?}",
@@ -3261,7 +3308,7 @@ mod tests {
     }
 
     #[test]
-    fn headings_count_their_agents_only_while_they_are_holding_them_back() {
+    fn headings_count_their_agents_whether_or_not_the_rows_are_under_them() {
         let mut screen = showing(
             vec![
                 view("busy-a1b", Phase::Working, None, 3),
@@ -3271,18 +3318,18 @@ mod tests {
         );
 
         assert_eq!(
-            painted(&screen, (60, 8))[1],
-            "working",
-            "expanded, the rows are on the screen and counting them is noise"
+            counted(&painted(&screen, (60, 8))[1]),
+            "2",
+            "the margin of a screen is a line of numbers, open or shut"
         );
 
         screen.list.up();
         screen.list.shut_or_open();
         let painted = painted(&screen, (60, 8));
-        assert_eq!(painted[1], "working 2");
+        assert_eq!(counted(&painted[1]), "2");
         assert!(
             !painted.iter().any(|line| line.contains("busy-a1b")),
-            "and the count is standing in for the rows: {painted:?}"
+            "and shut, the count is all that is standing in for them: {painted:?}"
         );
     }
 
@@ -3297,16 +3344,16 @@ mod tests {
         );
 
         assert_eq!(
-            painted(&screen, (60, 8))[1],
-            "completed · 1 failed",
+            heading_of(&painted(&screen, (60, 8))[1]),
+            "COMPLETED · 1 failed",
             "a screenful of headings says how it went without being opened"
         );
 
         screen.list.up();
         screen.list.shut_or_open();
         assert_eq!(
-            painted(&screen, (60, 8))[1],
-            "completed 2 · 1 failed",
+            heading_of(&painted(&screen, (60, 8))[1]),
+            "COMPLETED · 1 failed",
             "shutting a group hides the detail of a failure, never the fact"
         );
     }
@@ -3344,10 +3391,10 @@ mod tests {
         let screen = drawn(a_fleet(), None, (60, 12));
         assert!(screen[0].contains("running"), "the header: {screen:?}");
         assert_eq!(screen[2], "", "the space over the list");
-        assert_eq!(screen[3], "needs input", "the first heading");
+        assert_eq!(heading_of(&screen[3]), "NEEDS INPUT", "the first heading");
         assert!(screen[4].contains("ask-a1b"), "{screen:?}");
         assert_eq!(screen[5], "", "a blank line stands the next group off");
-        assert_eq!(screen[6], "working");
+        assert_eq!(heading_of(&screen[6]), "WORKING");
         assert!(screen[7].contains("busy-b2c"), "{screen:?}");
     }
 
@@ -3358,86 +3405,48 @@ mod tests {
         // and this one goes the same way.
         let tall = drawn(a_fleet(), None, (60, SPACED as u16));
         assert_eq!(tall[2], "", "{tall:?}");
-        assert_eq!(tall[3], "needs input", "{tall:?}");
+        assert_eq!(heading_of(&tall[3]), "NEEDS INPUT", "{tall:?}");
 
         let short = drawn(a_fleet(), None, (60, SPACED as u16 - 1));
-        assert_eq!(short[2], "needs input", "{short:?}");
+        assert_eq!(heading_of(&short[2]), "NEEDS INPUT", "{short:?}");
         assert!(short[3].contains("ask-a1b"), "{short:?}");
     }
 
     #[test]
-    fn headings_wear_bold_for_the_section_holding_the_cursor() {
-        // The highlight says where the cursor is, not what it is on: the
-        // heading of the group containing the cursor wears bold while the
-        // cursor sits on any of its rows or on the heading itself, and every
-        // other heading stays dim and bare.
-        let mut screen = showing(a_fleet(), None);
-
-        // The view opens on the first agent, under `needs input`.
-        let held = cells(&screen, (60, 10))[(0, 2)].clone();
-        assert!(
-            held.modifier.contains(Modifier::BOLD),
-            "the section the cursor is in is bold from the start: {:?}",
-            held.modifier
-        );
-        let other = cells(&screen, (60, 10))[(0, 5)].clone();
-        assert!(
-            other.modifier.contains(Modifier::DIM) && !other.modifier.contains(Modifier::BOLD),
-            "the section it is not in stays dim: {:?}",
-            other.modifier
-        );
-        assert_eq!(
-            other.fg,
-            Color::Reset,
-            "and bare: the rows under it carry the state's colour"
-        );
-
-        // Two steps down: over the `working` heading, onto its row. The
-        // weight moves with the section, on the heading and under it alike.
-        for _ in 0..2 {
-            screen.list.down();
-            let held = cells(&screen, (60, 10))[(0, 5)].clone();
+    fn headings_carry_the_weight_on_the_label_and_none_of_it_on_the_rule() {
+        // Case and weight are what make a heading here, with no second type
+        // size to make it with, and every heading wears them: where the cursor
+        // is standing is said by the bar under one line, not by the headings
+        // around it putting weight down and picking it up.
+        let screen = showing(a_fleet(), None);
+        let cells = cells(&screen, (60, 10));
+        for row in [2, 5] {
+            let label = cells[(1, row)].clone();
             assert!(
-                held.modifier.contains(Modifier::BOLD),
-                "the section holding the cursor is the bold one: {:?}",
-                held.modifier
-            );
-            let left = cells(&screen, (60, 10))[(0, 2)].clone();
-            assert!(
-                !left.modifier.contains(Modifier::BOLD),
-                "and the one it left lays the weight back down: {:?}",
-                left.modifier
+                label.modifier.contains(Modifier::BOLD),
+                "the heading on row {row} is bold: {:?}",
+                label.modifier
             );
         }
-    }
-
-    #[test]
-    fn a_lone_heading_stays_dim_for_want_of_a_second() {
-        // One heading on the screen is nowhere else to be, so the section
-        // highlight has nothing to say and the heading keeps its dim.
-        let mut screen = showing(
-            vec![
-                view("busy-a1b", Phase::Working, None, 3),
-                view("busy-b2c", Phase::Working, None, 5),
-            ],
-            None,
+        assert_eq!(
+            cells[(1, 2)].fg,
+            theme().waiting,
+            "the group that wants a person is the one carrying colour up here"
+        );
+        assert_eq!(
+            cells[(1, 5)].fg,
+            Color::Reset,
+            "and the rest of them do not"
         );
 
-        let label = cells(&screen, (60, 8))[(0, 1)].clone();
+        // The rule that carries the label out to its count carries none of the
+        // weight, which is what leaves the label the loud thing on the line.
+        let rule = cells[(30, 2)].clone();
+        assert_eq!(rule.symbol(), "─", "the rule runs out to the count");
         assert!(
-            label.modifier.contains(Modifier::DIM) && !label.modifier.contains(Modifier::BOLD),
-            "a lone heading holds the cursor's section and says nothing: {:?}",
-            label.modifier
-        );
-
-        // The cursor arriving on the line itself is another matter: that is
-        // the selected weight, worn with the bar.
-        screen.list.up();
-        let label = cells(&screen, (60, 8))[(0, 1)].clone();
-        assert!(
-            label.modifier.contains(Modifier::BOLD),
+            rule.modifier.contains(Modifier::DIM) && !rule.modifier.contains(Modifier::BOLD),
             "{:?}",
-            label.modifier
+            rule.modifier
         );
     }
 
@@ -3510,7 +3519,11 @@ mod tests {
             "and under it every dial the next agent will be started with"
         );
         assert_eq!(screen[2], "", "a blank row stands the list off from it");
-        assert_eq!(screen[3], "needs input", "and the list starts under that");
+        assert_eq!(
+            heading_of(&screen[3]),
+            "NEEDS INPUT",
+            "and the list starts under that"
+        );
     }
 
     #[test]
@@ -3792,7 +3805,11 @@ mod tests {
             short[0]
         );
         assert!(!short.iter().any(|line| line.starts_with('└')), "{short:?}");
-        assert_eq!(short[1], "working", "and the list starts a row sooner");
+        assert_eq!(
+            heading_of(&short[1]),
+            "WORKING",
+            "and the list starts a row sooner"
+        );
     }
 
     /// A screen with room for the bands above and below the list, the space
@@ -3841,7 +3858,7 @@ mod tests {
             None,
             WALL,
         );
-        assert_eq!(one[3], "completed");
+        assert_eq!(heading_of(&one[3]), "COMPLETED");
         assert!(
             !one.iter().any(|line| line.contains("nobody asking")),
             "one agent and there is something to read off the rows: {one:?}"
@@ -3881,7 +3898,7 @@ mod tests {
         assert!(!tall.iter().any(|l| l.contains("more")), "{tall:?}");
 
         let short = settled(fleet(), (40, 10));
-        assert_eq!(short[5], "completed");
+        assert_eq!(heading_of(&short[5]), "COMPLETED");
         assert_eq!(short.iter().filter(|l| l.contains("done-")).count(), 2);
         assert!(
             short[8].contains("… 3 more"),
@@ -4903,60 +4920,49 @@ mod tests {
     }
 
     #[test]
-    fn rows_wear_one_muted_tone_and_the_selected_row_stands_out() {
+    fn rows_keep_the_name_bright_and_dim_what_the_agent_said() {
         let size = (60, 10);
         let screen = showing(
             vec![
                 view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
-                view(
-                    "port-importer-b2c",
-                    Phase::Done,
-                    Some("wrote the tests"),
-                    300,
-                ),
+                view("port-import-b2c", Phase::Done, Some("wrote the tests"), 300),
             ],
             None,
         );
 
-        // The cursor opens on the first agent, whose row is the one that
-        // stands out: its text at full strength, the name in bold.
-        let selected = 3;
-        assert!(word_modifier(&screen, size, selected, "fix-login-a1b").contains(Modifier::BOLD));
-        for word in ["fix-login-a1b", "wrote the parser", "1m"] {
+        // The cursor opens on the first agent, and the two rows read the same:
+        // the name in the terminal's own, what the agent said and how long it
+        // worked dim beside it. Which line the cursor is on is the bar's to
+        // say, and a row does not change its tones to say it again.
+        for (row, name, said, age) in [
+            (3, "fix-login-a1b", "wrote the parser", "1m"),
+            (4, "port-import-b2c", "wrote the tests", "5m"),
+        ] {
+            let named = word_modifier(&screen, size, row, name);
             assert!(
-                !word_modifier(&screen, size, selected, word).contains(Modifier::DIM),
-                "{word} is dim on the selected row"
+                !named.contains(Modifier::DIM) && !named.contains(Modifier::BOLD),
+                "{name} is neither dimmed nor weighted: {named:?}"
             );
+            for word in [said, age] {
+                assert!(
+                    word_modifier(&screen, size, row, word).contains(Modifier::DIM),
+                    "{word} is the quiet half of the row"
+                );
+            }
         }
 
-        // The row the cursor is not on reads as one muted tone: name, summary
-        // and age all in the same dim, nothing bold.
-        let muted = 4;
-        for word in ["port-importer-b2c", "wrote the tests", "5m"] {
-            assert!(
-                word_modifier(&screen, size, muted, word).contains(Modifier::DIM),
-                "{word} is not dim on the unselected row"
-            );
-            assert!(!word_modifier(&screen, size, muted, word).contains(Modifier::BOLD));
-        }
-
-        // The state is carried by the icon's colour alone.
-        let (glyph, painted, _) = mark(&screen, size, muted);
+        // The state is carried by the glyph's colour alone.
+        let (glyph, painted, _) = mark(&screen, size, 4);
         assert_eq!((glyph.as_str(), painted), ("●", theme().done));
     }
 
     #[test]
-    fn rows_hovered_name_wears_the_selection_treatment_and_nothing_else_does() {
+    fn rows_hovered_name_takes_the_weight_and_nothing_else_does() {
         let size = (60, 10);
         let mut screen = showing(
             vec![
                 view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
-                view(
-                    "port-importer-b2c",
-                    Phase::Done,
-                    Some("wrote the tests"),
-                    300,
-                ),
+                view("port-import-b2c", Phase::Done, Some("wrote the tests"), 300),
             ],
             None,
         );
@@ -4964,12 +4970,12 @@ mod tests {
         // item under the heading.
         screen.hover = Some(2);
 
-        let hovered = word_modifier(&screen, size, 4, "port-importer-b2c");
+        let hovered = word_modifier(&screen, size, 4, "port-import-b2c");
         assert!(hovered.contains(Modifier::BOLD), "{hovered:?}");
         assert!(!hovered.contains(Modifier::DIM), "{hovered:?}");
         assert!(
             word_modifier(&screen, size, 4, "wrote the tests").contains(Modifier::DIM),
-            "the tint is the name's alone: the rest of the row stays muted"
+            "the tint is the name's alone: what the agent said stays quiet"
         );
         assert_eq!(
             behind(&screen, size, 4),
