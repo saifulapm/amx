@@ -25,7 +25,7 @@ use std::cell::Cell;
 use std::ops::Range;
 
 use super::style::{bold, dim};
-use super::text::{fit, said, width_of};
+use super::text::{RULE, fit, said, width_of};
 use crate::tui::grid;
 
 /// Every key, for whoever asked what they are.
@@ -270,7 +270,7 @@ fn heading(group: usize, room: usize) -> Vec<Span<'static>> {
     let spent = 1 + width_of(&label) + 1 + GAP + COUNT;
     vec![
         Span::styled(format!(" {label} "), bold()),
-        Span::styled("─".repeat(room.saturating_sub(spent).max(1)), dim()),
+        Span::styled(RULE.repeat(room.saturating_sub(spent).max(1)), dim()),
         Span::raw(" ".repeat(GAP)),
         Span::styled(grid::padl(&under.to_string(), COUNT), dim()),
     ]
@@ -499,7 +499,7 @@ mod tests {
         // right edge.
         let first = between(&painted, 0, share);
         let heading = first.lines().nth(3).expect("the first heading").to_string();
-        assert!(heading.starts_with(" WALK ─"), "{heading:?}");
+        assert!(heading.starts_with(" WALK ┈"), "{heading:?}");
         assert!(heading.trim_end().ends_with('5'), "{heading:?}");
 
         let second = between(&painted, share, WIDE_SCREEN.0 as usize);
@@ -508,7 +508,7 @@ mod tests {
             .nth(3)
             .expect("the heading beside it")
             .to_string();
-        assert!(beside.starts_with(" ARRANGE ─"), "{beside:?}");
+        assert!(beside.starts_with(" ARRANGE ┈"), "{beside:?}");
         assert!(beside.trim_end().ends_with('7'), "{beside:?}");
 
         // A group stands off from the one under it rather than running into
@@ -518,7 +518,7 @@ mod tests {
             "one group stands off from the next: {:?}",
             painted[9]
         );
-        assert!(painted[10].starts_with(" LOOK ─"), "{:?}", painted[10]);
+        assert!(painted[10].starts_with(" LOOK ┈"), "{:?}", painted[10]);
         assert!(painted[4].starts_with("  "), "{:?}", painted[4]);
     }
 
@@ -542,7 +542,7 @@ mod tests {
         // One column: every heading is against the left edge, and the last
         // group is under the first rather than beside it.
         for (label, _) in GROUPS {
-            let heading = format!(" {} ─", label.to_uppercase());
+            let heading = format!(" {} ┈", label.to_uppercase());
             assert!(
                 painted.iter().any(|line| line.starts_with(&heading)),
                 "{heading:?} is not at the edge:\n{all}"
@@ -579,7 +579,7 @@ mod tests {
             label.modifier
         );
         let rule = buffer[(7, 3)].clone();
-        assert_eq!(rule.symbol(), "─", "the rule runs out to the count");
+        assert_eq!(rule.symbol(), "┈", "the rule runs out to the count");
         assert!(
             rule.modifier.contains(Modifier::DIM),
             "and carries none of the weight: {:?}",

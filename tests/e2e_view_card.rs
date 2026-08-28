@@ -271,7 +271,7 @@ fn card_hangs_a_spine_off_the_row_with_the_question_alone_on_it() {
         card.last().is_some_and(|line| line.starts_with("  ╰ ")),
         "closed on its last row:\n{carded}"
     );
-    for cell in ['╭', '╮', '╯', '─'] {
+    for cell in ['╭', '╮', '╯', '┈'] {
         assert!(
             !card.iter().any(|line| line.contains(cell)),
             "{cell} is a border cell and the card has none:\n{carded}"

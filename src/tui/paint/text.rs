@@ -15,6 +15,22 @@ pub(super) fn said(spans: &[Span<'static>]) -> usize {
 /// What stands between two things said on one row.
 pub(super) const SEPARATOR: &str = " · ";
 
+/// What a rule is drawn out of, wherever amx draws one: over a group, over a
+/// project, over a group of keys, and along the edge a line being typed hangs
+/// off.
+///
+/// The lightest dash box drawing has, rather than the solid `─` this used to
+/// be. Both are dim, and dim is the same weight the summary column wears — but
+/// a terminal draws a box-drawing glyph as ink across the whole cell, so a
+/// solid rule reads brighter than the words beside it at the identical colour.
+/// Half the cells left blank is what finally puts the two at the same weight,
+/// and it is the only lever there is: the colour was already right.
+///
+/// Not the vendor's rule. claude draws its own chrome in `─` and amx reads
+/// those rows to find the bottom of a pane — see [`crate::furniture`] — so the
+/// two staying different characters is worth having.
+pub(super) const RULE: &str = "┈";
+
 /// Text out of an agent's own screen, made safe to hand a terminal. The paint
 /// is gone by the time this runs, so what is left to neutralise is the
 /// characters that were never paint: the controls and the invisible format

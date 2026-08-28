@@ -1063,7 +1063,7 @@ mod tests {
     /// What a heading line says in front of the rule that carries it out to
     /// the edge: the label, and how many failed under it where any did.
     fn heading_of(line: &str) -> &str {
-        line.split('─').next().unwrap_or_default().trim()
+        line.split('┈').next().unwrap_or_default().trim()
     }
 
     /// Where the terminal's own cursor was left, which is where the next
@@ -1144,7 +1144,7 @@ mod tests {
             "closed on its last row: {card:?}"
         );
         assert!(
-            !card.iter().any(|line| line.contains('─')),
+            !card.iter().any(|line| line.contains('┈')),
             "and drawn with no border cells at all: {card:?}"
         );
 

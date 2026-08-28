@@ -875,7 +875,7 @@ fn a_group_heading_is_uppercase_over_a_rule_that_ends_in_its_count() {
         );
         let rule: String = cells[label.chars().count() + 2..74].iter().collect();
         assert!(
-            !rule.is_empty() && rule.chars().all(|cell| cell == '─'),
+            !rule.is_empty() && rule.chars().all(|cell| cell == '┈'),
             "and a rule runs from the label out to it:\n{line:?}"
         );
     }
@@ -888,7 +888,7 @@ fn a_group_heading_is_uppercase_over_a_rule_that_ends_in_its_count() {
         "the label is bold:\n{painted:?}"
     );
     assert!(
-        sgr_at(&painted, "───").contains(&2),
+        sgr_at(&painted, "┈┈┈").contains(&2),
         "the rule is dim:\n{painted:?}"
     );
     let waiting = coloured_line(&amx, &view, "NEEDS INPUT");
@@ -931,7 +931,7 @@ fn a_path_heading_keeps_its_case_and_carries_the_same_rule_and_count() {
     );
     let rule: String = cells[8..74].iter().collect();
     assert!(
-        rule.chars().all(|cell| cell == '─'),
+        rule.chars().all(|cell| cell == '┈'),
         "and a rule runs from the path out to it:\n{line:?}"
     );
     assert!(
@@ -953,7 +953,7 @@ fn a_path_heading_keeps_its_case_and_carries_the_same_rule_and_count() {
         "and the parents in front of it are dim:\n{painted:?}"
     );
     assert!(
-        sgr_at(&painted, "───").contains(&2),
+        sgr_at(&painted, "┈┈┈").contains(&2),
         "the rule is dim, the way it is over a group:\n{painted:?}"
     );
 }
@@ -991,7 +991,7 @@ fn a_path_too_long_for_its_heading_loses_its_middle_and_not_its_end() {
         "the count is in the column it is in over a short path:\n{line:?}"
     );
     assert!(
-        cells.iter().filter(|cell| **cell == '─').count() >= 8,
+        cells.iter().filter(|cell| **cell == '┈').count() >= 8,
         "and enough rule is left to read the line as a heading:\n{line:?}"
     );
 

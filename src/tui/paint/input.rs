@@ -24,7 +24,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::style::{bold, dim, prospective};
-use super::text::{SEPARATOR, fit};
+use super::text::{RULE, SEPARATOR, fit};
 use crate::registry::DEFAULT;
 use crate::theme::Theme;
 use crate::tui::act::{Asking, Composer};
@@ -112,7 +112,7 @@ pub(super) fn composer_lines(text: &str, room: usize) -> Vec<String> {
 /// The rule's own row, which the band holds whatever the line is holding: an
 /// edge that came and went with the length of what somebody was typing would
 /// not read as an edge.
-const RULE: usize = 1;
+const RULE_ROW: usize = 1;
 
 /// How many rows the band takes on this screen: the rule, and under it as many
 /// rows as the line needs, up to the cap, and never so many that the list it
@@ -122,12 +122,12 @@ const RULE: usize = 1;
 /// closer look — and one row over that is the list's, which the composer may
 /// not have.
 pub(super) fn composer_height(composer: &Composer, area: Rect, chrome: u16) -> u16 {
-    let room = (area.height.saturating_sub(chrome + 1) as usize).saturating_sub(RULE);
+    let room = (area.height.saturating_sub(chrome + 1) as usize).saturating_sub(RULE_ROW);
     let cap = COMPOSER_CAP.min(area.height as usize / 3).min(room).max(1);
     let rows = composer_lines(&composer.text, composer_room(area.width))
         .len()
         .clamp(1, cap);
-    (rows + RULE) as u16
+    (rows + RULE_ROW) as u16
 }
 
 /// The rule the mode hangs off, and everything said on it.
@@ -162,7 +162,7 @@ fn rule(composer: &Composer, width: usize, theme: Theme) -> Line<'static> {
                 // The tail is what closes the dial into the edge, so it costs
                 // nothing on a rule that is not carrying one.
                 true => 0,
-                false => dial.chars().count() + TAIL.chars().count(),
+                false => dial.chars().count() + TAIL,
             }
     };
     let (gloss, dial) = if taken(GLOSS, &dial) < width {
@@ -177,11 +177,14 @@ fn rule(composer: &Composer, width: usize, theme: Theme) -> Line<'static> {
     let mut spans = vec![
         Span::styled(fit(&label, width), drawn),
         Span::styled(gloss, dim()),
-        Span::styled("─".repeat(width.saturating_sub(taken(gloss, &dial))), dim()),
+        Span::styled(
+            RULE.repeat(width.saturating_sub(taken(gloss, &dial))),
+            dim(),
+        ),
     ];
     if !dial.is_empty() {
         spans.push(Span::styled(dial, drawn.add_modifier(Modifier::REVERSED)));
-        spans.push(Span::styled(TAIL, dim()));
+        spans.push(Span::styled(RULE.repeat(TAIL), dim()));
     }
     Line::from(spans)
 }
@@ -189,9 +192,9 @@ fn rule(composer: &Composer, width: usize, theme: Theme) -> Line<'static> {
 /// What the rule says after the mode's own word.
 const GLOSS: &str = "· letters are text until esc ";
 
-/// The run of rule that closes it past the dial, so the dial reads as set into
-/// the edge rather than as the end of it.
-const TAIL: &str = "──";
+/// How much rule closes the edge past the dial, so the dial reads as set into
+/// it rather than as the end of it.
+const TAIL: usize = 2;
 
 /// The rule and, under it, the line somebody is typing.
 ///
@@ -688,16 +691,16 @@ mod tests {
             whole.starts_with("TASK · letters are text until esc "),
             "{whole:?}"
         );
-        assert!(whole.ends_with(" vendor default ──"), "{whole:?}");
+        assert!(whole.ends_with(" vendor default ┈┈"), "{whole:?}");
 
         // The sentence is what goes first as the room runs out, and the dial
         // after it; the word the rule is named for never does.
         let tight = edge(&typing("port it"), (40, 30));
-        assert!(tight.starts_with("TASK ─"), "{tight:?}");
-        assert!(tight.ends_with(" vendor default ──"), "{tight:?}");
+        assert!(tight.starts_with("TASK ┈"), "{tight:?}");
+        assert!(tight.ends_with(" vendor default ┈┈"), "{tight:?}");
 
         let narrow = edge(&typing("port it"), (20, 30));
-        assert!(narrow.starts_with("TASK ─"), "{narrow:?}");
+        assert!(narrow.starts_with("TASK ┈"), "{narrow:?}");
         assert!(!narrow.contains("vendor"), "{narrow:?}");
     }
 
@@ -1094,7 +1097,7 @@ mod tests {
             drawn[5]
         );
         assert!(
-            drawn[5].ends_with(" vendor default ──"),
+            drawn[5].ends_with(" vendor default ┈┈"),
             "and carries at its far end the layer, not a guess at which mode \
              claude would have picked: {:?}",
             drawn[5]
@@ -1108,7 +1111,7 @@ mod tests {
 
         screen.profile.permission = "acceptEdits".to_string();
         assert!(
-            painted(&screen, (60, 8))[5].ends_with(" acceptEdits ──"),
+            painted(&screen, (60, 8))[5].ends_with(" acceptEdits ┈┈"),
             "and a mode in the vendor's own word for it: {:?}",
             painted(&screen, (60, 8))[5]
         );
@@ -1122,7 +1125,7 @@ mod tests {
         let turned = |screen: &Screen| {
             painted(screen, (60, 8))
                 .iter()
-                .any(|line| line.contains("default ──") || line.contains("shift+tab"))
+                .any(|line| line.contains("default ┈┈") || line.contains("shift+tab"))
         };
 
         // A reply goes to an agent that is already running under whatever it

@@ -156,7 +156,7 @@ mod tests {
     /// What a heading line says in front of the rule that carries it out to
     /// the edge: the label, and how many failed under it where any did.
     fn heading_of(line: &str) -> &str {
-        line.split('─').next().unwrap_or_default().trim()
+        line.split('┈').next().unwrap_or_default().trim()
     }
 
     /// A screen with room for the bands above and below the list, the space

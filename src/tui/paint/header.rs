@@ -457,7 +457,7 @@ mod tests {
     /// What a heading line says in front of the rule that carries it out to
     /// the edge: the label, and how many failed under it where any did.
     fn heading_of(line: &str) -> &str {
-        line.split('─').next().unwrap_or_default().trim()
+        line.split('┈').next().unwrap_or_default().trim()
     }
 
     /// The two agents a card is opened over, so there is a list to still be

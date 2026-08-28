@@ -148,18 +148,18 @@ typing when you are typing one, and a row of keys at the foot.
 AMX                                  1 idle   1 done   2/5 running    1 WAITING
 └ next  claude   model  default   permission  default   worktree  new
 
- NEEDS INPUT ─────────────────────────────────────────────────────────────     1
+ NEEDS INPUT ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
   ? port-import-b2c   Which fixture should the port keep?                    29s
   │ Which fixture should the port keep?
   ╰ 1. the old one   2. the new one   3. both
 
- IDLE ────────────────────────────────────────────────────────────────────     1
+ IDLE ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
   ○ fix-login-a1b     the login bug is fixed                                  4m
 
- COMPLETED ───────────────────────────────────────────────────────────────     1
+ COMPLETED ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
   ● tidy-imports-d4e  did what it was asked                                   2m
 
-space closes it · enter attach · ctrl+x stop · ctrl+s axis · q quit · ? keys
+space closes it   enter attach   ctrl+x stop   ctrl+s axis   q quit   ? keys
 ```
 
 The first row is what there is: `AMX`, the directory the view was opened on
@@ -178,10 +178,14 @@ stopped on a question come first, then the ones mid-turn, then the ones sitting
 at their prompt, then the ones whose command has ended. A heading is a line like
 the rows under it: the group's name in caps, a dim rule run out to its count,
 and the count right-aligned in the column the ages under it are right-aligned
-in, so the right margin is one line of numbers rather than two. A group holding
-a failure says so in front of the rule, because a failed agent is why somebody
-came to the screen. The cursor stops on a heading, and shutting it puts its
-agents away behind the count that was already there.
+in, so the right margin is one line of numbers rather than two. The rule is
+drawn in `┈`, the lightest dash there is, and every rule on the screen is —
+dim is the weight a summary wears too, but a terminal inks a box-drawing glyph
+across the whole cell, so a solid rule reads brighter than the words beside it
+at the same colour. Half the cells left blank is what puts the two level. A
+group holding a failure says so in front of the rule, because a failed agent is
+why somebody came to the screen. The cursor stops on a heading, and shutting it
+puts its agents away behind the count that was already there.
 
 A row is one line, always, on columns the screen fixes rather than the fleet:
 two marks, the state glyph, the name, what the agent last said, and the seconds
@@ -209,11 +213,11 @@ its name and what the agent said, because the heading over it no longer says
 what state the row is in:
 
 ```
- ~/code/amx ──────────────────────────────────────────────────────────────     2
+ ~/code/amx ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     2
   ? port-import-b2c   waiting   Which fixture should the port keep?          29s
   ● tidy-imports-d4e  done      did what it was asked                         2m
 
- /srv/app ────────────────────────────────────────────────────────────────     1
+ /srv/app ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
   ○ fix-login-a1b     idle      the login bug is fixed                        4m
 ```
 
@@ -367,7 +371,7 @@ dials in the one pass — so the band below the rule is the only thing on the
 screen still carrying weight.
 
 ```
-TASK · letters are text until esc ──────────────────────────── vendor default ──
+TASK · letters are text until esc ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ vendor default ┈┈
 ❯ add a retry to the webhook█
 enter starts it   alt+enter newline   shift+tab permission   esc cancels
 ```

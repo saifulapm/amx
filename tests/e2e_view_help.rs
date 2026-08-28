@@ -183,7 +183,7 @@ fn the_keys_are_on_the_screen_for_the_asking() {
         heading.contains("ARRANGE"),
         "the columns stand side by side:\n{keys}"
     );
-    assert!(heading.contains('─'), "and each is ruled: {heading:?}");
+    assert!(heading.contains('┈'), "and each is ruled: {heading:?}");
     assert!(
         !keys.contains('…'),
         "a screen this wide cuts nothing short:\n{keys}"

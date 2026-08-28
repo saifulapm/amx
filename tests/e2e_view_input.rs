@@ -670,11 +670,11 @@ fn input_mode_hangs_the_line_off_a_labelled_rule_over_a_wall_gone_dim() {
         "the one rule of the mode is said on its edge:\n{drawn}"
     );
     assert!(
-        edge.contains('─'),
+        edge.contains('┈'),
         "and it is a rule the width of the screen:\n{drawn}"
     );
     assert!(
-        edge.trim_end().ends_with("vendor default ──"),
+        edge.trim_end().ends_with("vendor default ┈┈"),
         "with what the next agent may do without asking at the far end of it:\n{drawn}"
     );
     assert!(

@@ -19,7 +19,7 @@ use std::sync::OnceLock;
 
 use super::empty;
 use super::style::{bold, colour, dim, name_colour, request_colour};
-use super::text::{inert, width_of};
+use super::text::{RULE, inert, width_of};
 use crate::derive::{self, View};
 use crate::pr::Pr;
 use crate::store::Phase;
@@ -224,7 +224,7 @@ fn heading(
     // What the rule is left: the space in front of the label, the label, the
     // space after it, the failures, and the gap and the count at the far end.
     let spent = 1 + width_of(&label) + 1 + width_of(&failures) + GAP + widths.age;
-    let rule = "─".repeat(width.saturating_sub(spent).max(1));
+    let rule = RULE.repeat(width.saturating_sub(spent).max(1));
     // The group that wants a person carries the one colour up here, on the
     // label and on the count alike. The group nothing is going to happen to
     // again takes the colour of a thing that has ended, so the margin says
@@ -279,7 +279,7 @@ fn path_heading(
     let cut = path.rfind('/').map(|at| at + 1).unwrap_or(0);
     // The same arithmetic the group heading's rule is left over from.
     let spent = 1 + width_of(&path) + 1 + width_of(&failures) + GAP + widths.age;
-    let rule = "─".repeat(width.saturating_sub(spent).max(1));
+    let rule = RULE.repeat(width.saturating_sub(spent).max(1));
     Line::from(vec![
         Span::styled(format!(" {}", &path[..cut]), dim()),
         Span::styled(path[cut..].to_string(), bold()),
@@ -733,7 +733,7 @@ mod tests {
     /// What a heading line says in front of the rule that carries it out to
     /// the edge: the label, and how many failed under it where any did.
     fn heading_of(line: &str) -> &str {
-        line.split('─').next().unwrap_or_default().trim()
+        line.split('┈').next().unwrap_or_default().trim()
     }
 
     /// And the count it ends in, which is the last thing on the line.
@@ -1247,7 +1247,7 @@ mod tests {
         // The rule that carries the label out to its count carries none of the
         // weight, which is what leaves the label the loud thing on the line.
         let rule = cells[(30, 2)].clone();
-        assert_eq!(rule.symbol(), "─", "the rule runs out to the count");
+        assert_eq!(rule.symbol(), "┈", "the rule runs out to the count");
         assert!(
             rule.modifier.contains(Modifier::DIM) && !rule.modifier.contains(Modifier::BOLD),
             "{:?}",
