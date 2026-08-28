@@ -1346,6 +1346,57 @@ fn the_cursor_is_a_bar_over_rows_and_headings_alike() {
 }
 
 #[test]
+fn the_vim_letters_walk_the_bar_and_go_in_and_out_of_the_card() {
+    // An agent whose turn is over, so its card is a card and not a card with
+    // a line to answer on: every letter is text the moment one of those is
+    // open, which is the whole of why these letters are free to be keys.
+    let amx = Harness::new();
+    finished(&amx, "done-a1b", "done", 60);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("done-a1b").then_some(())
+    });
+    amx.until("the bar under the cursor", || {
+        coloured_line(&amx, &view, "done-a1b")
+            .contains(&bar())
+            .then_some(())
+    });
+
+    // k walks up onto the heading exactly as the arrow does, and j back down.
+    press(&amx, &view, "k");
+    amx.until("the bar to move up onto the heading", || {
+        coloured_line(&amx, &view, "COMPLETED")
+            .contains(&bar())
+            .then_some(())
+    });
+    press(&amx, &view, "j");
+    amx.until("the bar back on the row", || {
+        coloured_line(&amx, &view, "done-a1b")
+            .contains(&bar())
+            .then_some(())
+    });
+
+    // l goes in to the card and h comes back out. The view still has the
+    // terminal either way: an attach would have handed it to tmux, and the
+    // wall would be gone rather than under a spine.
+    let spined = |drawn: &str| drawn.lines().any(on_the_spine);
+    press(&amx, &view, "l");
+    amx.until("the card", || spined(&screen(&amx, &view)).then_some(()));
+    press(&amx, &view, "h");
+    amx.until("the card put away", || {
+        let drawn = screen(&amx, &view);
+        (!spined(&drawn) && drawn.contains("done-a1b")).then_some(())
+    });
+}
+
+/// Whether this line of the view is one of a card's: the spine, in the column
+/// the row it hangs from drew its own state glyph in.
+fn on_the_spine(line: &str) -> bool {
+    line.starts_with("  │") || line.starts_with("  ╰")
+}
+
+#[test]
 fn enter_shuts_the_group_its_headings_stand_over_and_opens_it_again() {
     let amx = Harness::new();
     finished(&amx, "one-a1b", "done", 60);

@@ -229,16 +229,18 @@ the whole table.
 
 | Key | What it does |
 | --- | ------------ |
-| `↑` `↓` | walk the agents |
-| `space` | the card: what one is asking, and the answer |
+| `↑` `↓` `j` `k` | walk the agents |
+| `space` `l` | the card: what one is asking, and the answer |
 | `enter` `→` | put its session in front of you, or shut the group under the cursor |
-| `esc` | put the card away, or leave a line alone |
+| `esc` `h` | put the card away, or leave a line alone |
 | `n` | start an agent |
 | `alt+n` | start the line and go to the agent it started |
 | `r` | reply: a message, or an answer on the card |
 | `d` | what it has changed |
 | `pgup` `ctrl+b` | page the card, when it holds more |
 | `pgdn` `ctrl+f` | and the other way |
+| `ctrl+u` | half a page of it, toward the edge |
+| `ctrl+d` | and half a page away |
 | `ctrl+x` | stop it, twice to forget it, and twice on a heading to clear the group |
 | `ctrl+r` | call it something else |
 | `ctrl+g` | write the line in `$EDITOR` |

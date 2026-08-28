@@ -1185,11 +1185,15 @@ impl Screen {
                 let moved = self.list.move_by(-1);
                 self.keep(moved);
             }
-            KeyCode::Down if plain => {
+            // The letters vim walks with, beside the arrows they stand for.
+            // The view is already modal — every letter is text the moment a
+            // line is open, and the rule over that line says so — so these
+            // cost nothing but the two arms.
+            KeyCode::Down | KeyCode::Char('j') if plain => {
                 self.list.down();
                 self.moved();
             }
-            KeyCode::Up if plain => {
+            KeyCode::Up | KeyCode::Char('k') if plain => {
                 self.list.up();
                 self.moved();
             }
@@ -1201,10 +1205,22 @@ impl Screen {
             KeyCode::PageDown if plain => self.paged(false),
             KeyCode::Char('b') if ctrl => self.paged(true),
             KeyCode::Char('f') if ctrl => self.paged(false),
+            // And half of one, which is the pair a person reading rather than
+            // skimming reaches for: enough of the last screen stays to say
+            // where the new one came from.
+            KeyCode::Char('u') if ctrl => self.paged_by(true, self.half()),
+            KeyCode::Char('d') if ctrl => self.paged_by(false, self.half()),
             KeyCode::Char(' ') if plain => match self.look {
                 Look::Away => self.look_closer(root),
                 _ => self.look_away(),
             },
+            // The same two levels under the letters vim moves between them
+            // with: l goes in to the card, h comes back out. Directional
+            // rather than a toggle, and neither of them is enter — an attach
+            // hands the terminal to tmux and leaves the view altogether, which
+            // is not something a letter this easy to hit should do.
+            KeyCode::Char('l') if plain => self.look_closer(root),
+            KeyCode::Char('h') if plain => self.look_away(),
             KeyCode::Esc if plain => self.look_away(),
             // The same key, read where the cursor is: a heading opens and
             // shuts the group under it, the fold gives back what it is holding,
@@ -1860,15 +1876,26 @@ impl Screen {
         self.follow_the_cursor();
     }
 
-    /// A page into the card's body, or back toward its natural edge.
+    /// A whole page into the card's body, or back toward its natural edge.
+    fn paged(&mut self, up: bool) {
+        self.paged_by(up, self.scroll.page.get().max(1));
+    }
+
+    /// And half of one, which is what the paint gave the body last frame,
+    /// halved. Never nothing: a key that moved no rows would read as a key
+    /// that was not taken.
+    fn half(&self) -> usize {
+        (self.scroll.page.get() / 2).max(1)
+    }
+
+    /// `rows` into the card's body, or back toward its natural edge.
     ///
     /// Which key leads away follows the card: a patch or a recorded answer is
     /// read down from its top, a live screen up from its bottom. The keys
     /// only add and subtract — the paint owns the clamp, so a body that fits
     /// never leaves its edge and a press past the end lands on the last page.
-    fn paged(&mut self, up: bool) {
+    fn paged_by(&mut self, up: bool, page: usize) {
         let Some(card) = &self.card else { return };
-        let page = self.scroll.page.get().max(1);
         let away = self.scroll.away.get();
         let leaving = match card.forward() {
             true => !up,
@@ -2984,6 +3011,122 @@ mod tests {
             "the card followed the cursor"
         );
         assert_eq!(screen.scroll.away.get(), 0, "and stands where it opens");
+    }
+
+    #[test]
+    fn keys_j_and_k_walk_the_list_the_way_the_arrows_do() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            finished_saying("done-a1b", "the answer"),
+            finished_saying("done-b2c", "the other answer"),
+        ]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+        let on = |screen: &Screen| {
+            screen
+                .list
+                .selected()
+                .map(|view| view.id().to_string())
+                .unwrap_or_default()
+        };
+
+        assert_eq!(
+            on(&screen),
+            "done-a1b",
+            "the view opens on the first of them"
+        );
+        press(&mut screen, KeyEvent::from(KeyCode::Char('j')));
+        assert_eq!(on(&screen), "done-b2c", "j walks down");
+        press(&mut screen, KeyEvent::from(KeyCode::Char('k')));
+        assert_eq!(on(&screen), "done-a1b", "and k walks back up");
+
+        // The arrows walk with a card open, and so do these: the card follows
+        // the cursor rather than holding it.
+        press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
+        press(&mut screen, KeyEvent::from(KeyCode::Char('j')));
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.id.as_str()),
+            Some("done-b2c"),
+            "the card followed j the way it follows the arrow"
+        );
+    }
+
+    #[test]
+    fn keys_l_opens_the_card_and_h_closes_it_without_either_attaching() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+
+        // Directional rather than a toggle, and neither of them is enter: an
+        // attach hands the terminal to tmux and leaves the view, which is not
+        // something a letter this easy to hit should do.
+        let doing = screen
+            .act(
+                KeyEvent::from(KeyCode::Char('l')),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        assert!(matches!(doing, Doing::Carry), "l does not attach");
+        assert!(screen.card.is_some(), "l opens the card");
+
+        let doing = screen
+            .act(
+                KeyEvent::from(KeyCode::Char('l')),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        assert!(matches!(doing, Doing::Carry));
+        assert!(screen.card.is_some(), "and pressed again leaves it open");
+
+        let doing = screen
+            .act(
+                KeyEvent::from(KeyCode::Char('h')),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        assert!(matches!(doing, Doing::Carry), "h does not attach either");
+        assert!(screen.card.is_none(), "h closes the card");
+
+        screen
+            .act(
+                KeyEvent::from(KeyCode::Char('h')),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        assert!(screen.card.is_none(), "and pressed again leaves it closed");
+    }
+
+    #[test]
+    fn card_pages_half_a_page_under_ctrl_d_and_ctrl_u() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
+        // What the last frame gave the body, which is what a whole page is.
+        screen.scroll.page.set(10);
+
+        press(&mut screen, ctrl('d'));
+        assert_eq!(screen.scroll.away.get(), 5, "half a page away from the top");
+        press(&mut screen, ctrl('f'));
+        assert_eq!(screen.scroll.away.get(), 15, "and a whole one after it");
+        press(&mut screen, ctrl('u'));
+        assert_eq!(screen.scroll.away.get(), 10, "half a page back");
+        press(&mut screen, ctrl('b'));
+        assert_eq!(screen.scroll.away.get(), 0, "and a whole one home");
     }
 
     #[test]

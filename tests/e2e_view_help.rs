@@ -217,21 +217,32 @@ fn the_keys_a_short_screen_cannot_hold_are_a_page_away() {
     );
 
     // The page turns under a real terminal's key, and the overlay is still up
-    // when it has: paging is not the press that puts the agents back.
-    press(&amx, &view, "PageDown");
-    let second = amx.until("the rest of the keys", || {
+    // when it has: paging is not the press that puts the agents back. How many
+    // turns that takes is the table's business and grows with it, so the foot
+    // is read for the count rather than it being written down here.
+    let pages: usize = first
+        .lines()
+        .find(|line| line.trim_start().starts_with("page 1 of "))
+        .and_then(|line| line.split(" of ").nth(1))
+        .and_then(|said| said.split_whitespace().next())
+        .and_then(|said| said.parse().ok())
+        .unwrap_or_else(|| panic!("the foot says how many pages there are:\n{first}"));
+    for _ in 1..pages {
+        press(&amx, &view, "PageDown");
+    }
+    let last = amx.until("the rest of the keys", || {
         let drawn = screen(&amx, &view);
         drawn
             .contains("which vendor runs it, for one spawn")
             .then_some(drawn)
     });
     assert!(
-        second.contains("page 2 of"),
-        "which page it is on:\n{second}"
+        last.contains(&format!("page {pages} of {pages}")),
+        "which page it is on:\n{last}"
     );
     assert!(
-        second.contains("any key goes back"),
-        "and the overlay still has the screen:\n{second}"
+        last.contains("any key goes back"),
+        "and the overlay still has the screen:\n{last}"
     );
 
     press(&amx, &view, "Escape");

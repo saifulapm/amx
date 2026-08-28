@@ -42,19 +42,21 @@ use crate::tui::grid;
 ///
 /// The table is not public to the rest of the crate, so the test that checks
 /// the README against it reads this file as text.
-pub(in crate::tui) const HELP: [(&str, &str); 29] = [
+pub(in crate::tui) const HELP: [(&str, &str); 31] = [
     // walk
-    ("↑ ↓", "walk the agents"),
+    ("↑ ↓ j k", "walk the agents"),
     ("alt+1..9", "reach one by where it is on the wall"),
-    ("esc", "put the card away · leave a line alone"),
+    ("esc h", "put the card away · leave a line alone"),
     ("?", "these keys"),
     ("q ctrl+c", "close the view"),
     // look
-    ("space", "the card: what one is asking, and the answer"),
+    ("space l", "the card: what one is asking, and the answer"),
     ("enter →", "bring its window forward · shut a group"),
     ("d", "what it has changed"),
     ("pgup ctrl+b", "page the card, when it holds more"),
     ("pgdn ctrl+f", "and the other way"),
+    ("ctrl+u", "half a page of it, toward the edge"),
+    ("ctrl+d", "and half a page away"),
     // start
     ("n", "start an agent"),
     ("alt+n", "start the line and go to the agent"),
@@ -81,7 +83,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 29] = [
 
 /// What the keys are for, and how many of [`HELP`] each of those answers for.
 ///
-/// A flat list of twenty-nine is a list somebody reads all of to find one, so
+/// A flat list of thirty-odd is a list somebody reads all of to find one, so
 /// the table is cut into what a person is trying to do: get about the wall,
 /// read one agent, put work in, arrange what is already there, and set what
 /// the next agent runs. Five short lists are five places to not look.
@@ -90,7 +92,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 29] = [
 /// or drop one between two headings.
 pub(super) const GROUPS: [(&str, usize); 5] = [
     ("walk", 5),
-    ("look", 5),
+    ("look", 7),
     ("start", 5),
     ("arrange", 7),
     ("dials", 7),
@@ -446,17 +448,17 @@ mod tests {
     }
 
     #[test]
-    fn keymap_stands_the_keys_in_two_columns_of_fifteen_and_fourteen() {
+    fn keymap_stands_the_keys_in_two_columns_of_seventeen_and_fourteen() {
         let painted = overlay(WIDE_SCREEN);
         let share = WIDE_SCREEN.0 as usize / 2;
         let left = between(&painted, 0, share);
         let right = between(&painted, share, WIDE_SCREEN.0 as usize);
 
         // Cut where the two columns come out nearest the same number of keys,
-        // which for this table is after `start`: fifteen against fourteen.
+        // which for this table is after `start`: seventeen against fourteen.
         let cut: usize = GROUPS[..3].iter().map(|(_, under)| under).sum();
         assert_eq!(
-            cut, 15,
+            cut, 17,
             "the groups are not the runs this test is written for"
         );
         for (key, does) in &HELP[..cut] {

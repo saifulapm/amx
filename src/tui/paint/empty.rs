@@ -195,7 +195,7 @@ mod tests {
         assert_eq!(screen[3], WELCOME, "{screen:?}");
         assert_eq!(screen[4], "", "{screen:?}");
         assert_eq!(screen[5], "    n   start an agent", "{screen:?}");
-        assert_eq!(screen[6], "    ?   the other 28 keys", "{screen:?}");
+        assert_eq!(screen[6], "    ?   the other 30 keys", "{screen:?}");
         assert!(
             screen[7..screen.len() - 1].iter().all(String::is_empty),
             "and nothing else: {screen:?}"
