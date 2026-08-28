@@ -1,9 +1,9 @@
 # Theming the view
 
 A theme answers six questions and nothing else. This file is the whole of the
-contract: what the six mean, what a value may be, where a name is looked up,
-what happens when a file is wrong, and what is deliberately out of a theme's
-reach. The code it describes is `src/theme.rs` and the two files under
+contract: what the six mean, why six, what a value may be, where a name is
+looked up, what happens when a file is wrong, and what is deliberately out of a
+theme's reach. The code it describes is `src/theme.rs` and the two files under
 `assets/themes/`.
 
 ## The six roles
@@ -17,13 +17,37 @@ colour: a row is painted for having failed, not for being red.
 | `done` | what went as intended: finished rows, merged and ready pull requests |
 | `failed` | what was attempted and failed: failed rows, failing checks, the failure notice |
 | `stopped` | what was ended by hand and is over: stopped rows, closed requests, the completed group's count |
-| `accent` | the agent that does not exist yet: the dials' values in the header, the permission line under the composer |
+| `accent` | the agent that does not exist yet: the dials' values in the header, and the rule a line is typed off — its label, and the permission dial set into its far end |
 | `cursor` | the line the cursor is on — a background, so it says where the cursor is without taking a colour away from what the line was saying |
 
 Most of the screen wears none of them. What a row is, where a group begins and
 what it holds are said in words, in bold and in the dim the terminal already
 renders, which is why a wall of forty rows has two or three colours on it and
 they are the two or three worth looking at.
+
+## Six, where the design names eleven
+
+The screen this palette is for was drawn to a design whose own palette lists
+eleven values. Five of them never became roles, because they are the terminal's
+answer rather than amx's:
+
+- `bg` and `fg` are whatever the terminal is set to. Naming them here would be
+  amx painting over the one part of the screen its reader already chose, and a
+  file that can set the background is a file that can make the view
+  unreadable.
+- `bold` and `dim` are weights rather than shades. Dim is an attribute the
+  terminal renders, so there is no colour to put in a file, and a grey picked
+  for it would take the weight away from every place the view spends weight to
+  mean something, which is why weight is out of a theme's reach altogether —
+  see [what a theme cannot touch](#what-a-theme-cannot-touch-on-purpose).
+- `rule` is what the rule beside a heading is drawn in, and that is the same
+  dim. A value of its own would be one more thing to hold in step with the
+  weight the rest of the chrome already wears, for a line nobody reads as a
+  colour.
+
+What is left is the six above, which are the things on the screen that mean
+something amx knows and the terminal cannot: how it went, whether it wants a
+person, what the next agent will be, and where the cursor is standing.
 
 ## Values
 

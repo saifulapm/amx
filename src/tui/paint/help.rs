@@ -11,11 +11,17 @@
 //! something else rather than as a manual somebody opened. What the two bands
 //! above it say does not change, and the row under it already says how to get
 //! back, so neither is said again here.
+//!
+//! What it does say for itself is the page it is on. A screen too short for
+//! every key gives up none of them: they are paged, and the foot of each page
+//! names the key that turns it, because a key nobody can reach is a key the
+//! screen may as well not list.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use std::cell::Cell;
 use std::ops::Range;
 
 use super::style::{bold, dim};
@@ -128,7 +134,12 @@ const GAP: usize = 2;
 /// one key reads the heading, runs their eye down the keys under it and on to
 /// the next; a table filled the other way would put the second key beside the
 /// first and the rest of them anywhere at all.
-pub(super) fn help(frame: &mut Frame, area: Rect) {
+///
+/// Which page of them is drawn is the view's to hold, because it is where
+/// somebody left off reading rather than a fact about the screen. The clamp is
+/// here: only the paint knows how many pages a screen this shape made of them,
+/// so the key that turns them only adds and subtracts.
+pub(super) fn help(frame: &mut Frame, area: Rect, page: &Cell<usize>) {
     let width = (area.width as usize).max(1);
     let dealt = dealt(width);
     let share = width / dealt.len();
@@ -139,10 +150,42 @@ pub(super) fn help(frame: &mut Frame, area: Rect) {
         .collect();
     let deep = columns.iter().map(Vec::len).max().unwrap_or(0);
 
-    let lines: Vec<Line> = (0..deep.min(area.height as usize))
-        .map(|at| line(&columns, at, share))
+    // The rows the keys themselves have: the screen's, less the one the foot
+    // takes to say there are more of them.
+    let height = area.height as usize;
+    let rows = match deep > height {
+        true => height.saturating_sub(1),
+        false => height,
+    }
+    .max(1);
+    let pages = deep.div_ceil(rows);
+    let at = page.get().min(pages.saturating_sub(1));
+    page.set(at);
+
+    let from = at * rows;
+    let mut lines: Vec<Line> = (from..(from + rows).min(deep))
+        .map(|row| line(&columns, row, share))
         .collect();
+    if pages > 1 {
+        lines.push(foot(at, pages));
+    }
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// The foot of a screen that could not hold them all: which page of them this
+/// is, and the keys that turn it.
+///
+/// A page that did not say there was another would be answering half of what
+/// somebody asked, and the keys are what they came for. Only the ones that do
+/// something are named: there is nothing above the first page and nothing
+/// below the last.
+fn foot(at: usize, pages: usize) -> Line<'static> {
+    let turns = match (at > 0, at + 1 < pages) {
+        (true, true) => "pgup pgdn",
+        (true, false) => "pgup",
+        _ => "pgdn",
+    };
+    Line::styled(format!(" page {} of {pages} · {turns}", at + 1), dim())
 }
 
 /// Which groups each column holds: either side of the cut that leaves the two
@@ -268,6 +311,7 @@ mod tests {
     use crate::tui::paint::header::{header_rows, space_rows};
     use crate::tui::paint::{Card, draw};
     use crate::tui::{Mode, Screen};
+    use crossterm::event::{KeyCode, KeyEvent};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -324,6 +368,82 @@ mod tests {
     /// A screen wide enough for the two columns and tall enough for all of
     /// them, which is the shape the overlay is drawn for.
     const WIDE_SCREEN: (u16, u16) = (120, 40);
+
+    /// The screen most people have: too narrow for two columns and far too
+    /// short for one of thirty-eight rows, which is the shape the paging is
+    /// for. It is what a terminal opens at.
+    const SHORT_SCREEN: (u16, u16) = (80, 24);
+
+    #[test]
+    fn keymap_reaches_every_key_by_paging_a_screen_too_short_to_hold_them() {
+        let mut screen = showing(Vec::new(), None);
+        screen.mode = Mode::Keys;
+
+        // Every page pgdn reaches, in order. The last one is where the screen
+        // stops changing: the paint holds the page at the last one it made, so
+        // a press past the end lands where the press before it did.
+        let mut pages: Vec<String> = Vec::new();
+        for _ in 0..HELP.len() {
+            let drawn = painted(&screen, SHORT_SCREEN).join("\n");
+            if pages.last() == Some(&drawn) {
+                break;
+            }
+            pages.push(drawn);
+            let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::PageDown));
+        }
+        assert!(
+            pages.len() > 1,
+            "a screen this short does not hold them all at once:\n{}",
+            pages.join("\n")
+        );
+        assert!(
+            matches!(screen.mode, Mode::Keys),
+            "and paging is not the key that puts the agents back"
+        );
+
+        // Every key is on one of those pages, and what it does with it.
+        let paged = pages.join("\n");
+        for (key, does) in HELP {
+            assert!(
+                paged.contains(key),
+                "{key} is on none of the pages:\n{paged}"
+            );
+            assert!(
+                paged.contains(does),
+                "{does} is on none of the pages:\n{paged}"
+            );
+        }
+
+        // And the first of them says there are more and which key brings them:
+        // a page nobody knows to turn is a page holding keys nobody finds.
+        assert!(
+            pages[0].contains("page 1 of") && pages[0].contains("pgdn"),
+            "the first page says there is another and how to turn to it:\n{}",
+            pages[0]
+        );
+    }
+
+    #[test]
+    fn keymap_holds_the_last_page_so_the_way_back_is_the_one_press() {
+        let mut screen = showing(Vec::new(), None);
+        screen.mode = Mode::Keys;
+
+        // Somebody leaning on the key, which is what pressing past the end is.
+        // The paint holds the page at the last one it made, so the presses that
+        // went nowhere are not presses to be taken back.
+        for _ in 0..HELP.len() {
+            let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::PageDown));
+            let _ = painted(&screen, SHORT_SCREEN);
+        }
+        let last = painted(&screen, SHORT_SCREEN).join("\n");
+
+        let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::PageUp));
+        assert_ne!(
+            painted(&screen, SHORT_SCREEN).join("\n"),
+            last,
+            "one press off the last page is a page back:\n{last}"
+        );
+    }
 
     #[test]
     fn keymap_stands_the_keys_in_two_columns_of_fifteen_and_fourteen() {

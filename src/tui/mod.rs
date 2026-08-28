@@ -41,6 +41,7 @@ use crossterm::terminal::{EnterAlternateScreen, SetTitle, enable_raw_mode};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -420,6 +421,10 @@ struct Screen {
     /// far one page is. The paint owns the clamp: only it knows the rows the
     /// body was given.
     scroll: paint::Scroll,
+    /// Which page of the keys the overlay is showing. The paint owns the clamp
+    /// here too, for the same reason: only it knows how many pages a screen
+    /// this shape made of them.
+    page: Cell<usize>,
     notice: Option<Notice>,
     /// Where the last frame put things, which is what a mouse position is
     /// read against.
@@ -1221,7 +1226,13 @@ impl Screen {
                 let at = digit.to_digit(10).unwrap_or_default() as usize;
                 return self.reach_the_nth(at, root, config, here);
             }
-            KeyCode::Char('?') if plain => self.mode = Mode::Keys,
+            // Opened at the top, wherever the last person to ask left it: the
+            // question is what the keys are, not where somebody stopped
+            // reading them.
+            KeyCode::Char('?') if plain => {
+                self.page.set(0);
+                self.mode = Mode::Keys;
+            }
             KeyCode::Char('n') if plain => self.mode = Mode::Typing(Composer::new(Asking::Task)),
             // The same line, opened in the editor somebody already has their
             // fingers in. A task worth a paragraph is a task worth writing
@@ -1810,8 +1821,24 @@ impl Screen {
 
     /// A key while the keys themselves are on the screen. Any of them puts the
     /// agents back, because that is what somebody came here for — except the
-    /// one that closes the view, which means that wherever it is pressed.
+    /// one that closes the view, which means that wherever it is pressed, and
+    /// the two that page, because on a screen too short for all of them a
+    /// person who cannot turn the page cannot ask what half the keys are.
+    ///
+    /// They only add and subtract, the way the card's do: the paint owns the
+    /// clamp, so a press past the last page lands on it.
     fn reading_the_keys(&mut self, key: KeyEvent) -> Doing {
+        let plain = chord(key).is_empty();
+        let page = self.page.get();
+        let turned = match key.code {
+            KeyCode::PageDown if plain => Some(page.saturating_add(1)),
+            KeyCode::PageUp if plain => Some(page.saturating_sub(1)),
+            _ => None,
+        };
+        if let Some(page) = turned {
+            self.page.set(page);
+            return Doing::Carry;
+        }
         self.mode = Mode::List;
         match key.code {
             KeyCode::Char('q') => Doing::Close,
@@ -4307,9 +4334,10 @@ mod tests {
         assert_eq!(code, exit::OK);
         let drawn: Vec<&str> = screen.lines().map(str::trim_end).collect();
         // Where the heading starts, not the whole of it: what a heading carries
-        // out to the edge beside the path is the wall's own business.
+        // out to the edge beside the path, and the cell it is inset by, are the
+        // wall's own business.
         assert!(
-            drawn[2].starts_with("/srv/app"),
+            drawn[2].trim_start().starts_with("/srv/app"),
             "the heading is where the agent is, not what it needs:\n{screen}"
         );
         assert!(

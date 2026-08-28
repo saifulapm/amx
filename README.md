@@ -141,17 +141,88 @@ the terminal or printed down the pipe by the same rule. It is the reading
 `amx ls --dir` takes, described under
 [Looking, and answering](#looking-and-answering).
 
+The screen is four things: two rows above the list, the list, the line you are
+typing when you are typing one, and a row of keys at the foot.
+
+```
+AMX                                  1 idle   1 done   2/5 running    1 WAITING
+└ next  claude   model  default   permission  default   worktree  new
+
+ NEEDS INPUT ─────────────────────────────────────────────────────────────     1
+  ? port-import-b2c   Which fixture should the port keep?                    29s
+  │ port-import-b2c · waiting 29s
+  │ Which fixture should the port keep?
+  ╰ 1. the old one   2. the new one   3. both
+
+ IDLE ────────────────────────────────────────────────────────────────────     1
+  ○ fix-login-a1b     the login bug is fixed                                  4m
+
+ COMPLETED ───────────────────────────────────────────────────────────────     1
+  ● tidy-imports-d4e  did what it was asked                                   2m
+
+space closes it · enter attach · ctrl+x stop · ctrl+s axis · q quit · ? keys
+```
+
+The first row is what there is: `AMX`, the directory the view was opened on
+where one was named, a count per group, how many are running against the limit
+that would refuse the next one, and at the far end the number the view is
+opened to read — how many agents are waiting on you, in reverse video, or
+`nothing waiting` in the same place when none are. The second row hangs off it
+on a `└` and holds the dials, which are about the agent that does not exist
+yet, so nothing on it can be read as a fact about the fleet. On a terminal
+under ten rows the second row goes and the first stays. The row at the foot is
+whatever keys the line under the cursor makes true, cut to what the terminal
+holds, with `?` pinned to the end of it.
+
 The list answers one question, so it is gathered under the answer: the agents
 stopped on a question come first, then the ones mid-turn, then the ones sitting
 at their prompt, then the ones whose command has ended. A heading is a line like
-the rows under it, the cursor stops on one, and shutting it puts its agents away
-behind a count. Rows nobody has been to read carry a mark down the gutter.
+the rows under it: the group's name in caps, a dim rule run out to its count,
+and the count right-aligned in the column the ages under it are right-aligned
+in, so the right margin is one line of numbers rather than two. A group holding
+a failure says so in front of the rule, because a failed agent is why somebody
+came to the screen. The cursor stops on a heading, and shutting it puts its
+agents away behind the count that was already there.
+
+A row is one line, always, on columns the screen fixes rather than the fleet:
+two marks, the state glyph, the name, what the agent last said, and the seconds
+at the end. They stand where they stood when the last agent ended, so the row
+you learned wide is the row you get narrow — under 100 columns the name column
+is the one that gives way. The marks cost the row no width and line up into
+columns of their own: the first is on a row nobody has been to read, the second
+on one you are holding at the top of its group. A wall with nothing on it keeps
+everything above the list and offers, where a name would be, the only two keys
+that lead anywhere from there: `n` and `?`.
 
 The seconds at the end of a row are the time the agent has worked: ticking
 while it works, standing still while it waits or sits idle — an agent left at
 a question all afternoon has not worked an afternoon — and stopped for good
 when the run ends. The `amx ls` table prints the same number. How long a
 question has been standing is on the card, in its title.
+
+`ctrl+s` gathers the same agents under the directory each one runs in, and the
+screen changes twice for it. A heading is a path rather than a word, so it is
+not put in caps: the parents stand dim behind a bold last segment, on the same
+rule and the same count a group heading carries, and a path too long for the
+line loses its middle rather than its end — the end is the segment that says
+which worktree of a project this is. And every row grows a state word between
+its name and what the agent said, because the heading over it no longer says
+what state the row is in:
+
+```
+ ~/code/amx ──────────────────────────────────────────────────────────────     2
+  ? port-import-b2c   waiting   Which fixture should the port keep?          29s
+  ● tidy-imports-d4e  done      did what it was asked                         2m
+
+ /srv/app ────────────────────────────────────────────────────────────────     1
+  ○ fix-login-a1b     idle      the login bug is fixed                        4m
+```
+
+Eight cells, which is what `starting` needs and what the shorter words are
+padded out to: a state word cut down would be a lie. The summary column pays
+for all of it, so the name, the seconds and the group's count sit exactly where
+they sat on the other axis — switching the axis moves one boundary rather than
+the whole table.
 
 | Key | What it does |
 | --- | ------------ |
@@ -177,7 +248,7 @@ question has been standing is on the card, in its title.
 | `alt+m` | which model the next agent is given |
 | `alt+w` | whether it gets a worktree of its own |
 | `shift+tab` | what the next agent may do without asking |
-| `?` | every key, over the list |
+| `?` | every key, where the list was |
 | `q` `ctrl+c` | close the view |
 
 Inside tmux, `enter` moves your client to the agent's session and leaves the
@@ -191,6 +262,15 @@ wall, counting rows from the top and skipping the headings, without walking the
 cursor to them first. It is the fleet you already have in front of you, reached
 by the number you were about to count to.
 
+`space` opens the card, and the card is not a box. It is a spine: a column of
+`│` standing in the column the row drew its own state glyph in, closed with a
+`╰` on its last line, and everything it says written from the column the row's
+name starts in. It hangs directly under the row it is a look at and moves the
+rows below it down, so what it belongs to is said by where it stands rather
+than by four borders and the two rows and two columns of wall they would cost.
+It takes half the screen at most, and always leaves a row of the list it was
+opened from.
+
 What the card's body is follows the agent. One that is working shows its live
 screen, chrome cut, tracking output as it lands. One whose turn is over and
 whose record holds the answer — idle at its prompt, done, failed or stopped
@@ -198,16 +278,29 @@ alike — shows that whole answer, top first, however the pane happens to be
 scrolled; only an idle agent with nothing recorded falls back to the screen
 picture. A waiting agent's card is the question block alone.
 
-`pgup` and `pgdn` page inside the card's body when it holds more than its box
-can show: a patch or a recorded answer down from its top, a live screen up
-from its bottom. A paged card says how far from that edge it stands on its
-frame — `↓ 12 more` — and holds still, new output and all, until you page back
-to the edge, press an arrow, or open it again; an agent stopping at a question
-takes the card back regardless, because a question is never left behind
-history. The arrows never page: they keep walking the list, card in tow.
-`ctrl+b` and `ctrl+f` are the same two pages for a keyboard with no page keys
-on it — pgup and pgdn exactly. A lone `ctrl+b` under tmux's default prefix is
-tmux's own business: `ctrl+b ctrl+b` is what reaches the view there.
+`pgup` and `pgdn` page inside the card's body when it holds more than the card
+has room for: a patch or a recorded answer down from its top, a live screen up
+from its bottom. A paged card says how far from that edge it stands at the far
+end of its own heading — `↓ 12 more` — and holds still, new output and all,
+until you page back to the edge, press an arrow, or open it again; an agent
+stopping at a question takes the card back regardless, because a question is
+never left behind history. The arrows never page: they keep walking the list,
+card in tow. `ctrl+b` and `ctrl+f` are the same two pages for a keyboard with
+no page keys on it — pgup and pgdn exactly. A lone `ctrl+b` under tmux's
+default prefix is tmux's own business: `ctrl+b ctrl+b` is what reaches the view
+there.
+
+`?` puts every key where the list was, in the five groups they are learned in —
+walk, look, start, arrange, dials — each under the heading a group of agents
+wears, so the overlay reads as the same screen showing something else rather
+than as a manual somebody opened. From 100 columns the groups stand in two
+ruled columns, cut where the two halves come nearest to holding the same number
+of keys, and nothing is shortened to fit. Narrower than that the second column
+is given up whole rather than squeezed: one column, every key still saying what
+it does in full, paged with `pgup` and `pgdn`, and the foot of each page says
+which page it is and which of those two keys turns it — a key nobody can reach
+is a key the screen may as well not list. Any other key goes back to the list,
+and `q` closes the view.
 
 `ctrl+x` forgets nothing on the first press, and the first press is the same
 press on every row. An agent that is still running — sitting idle at its
@@ -256,6 +349,17 @@ one amx goes on sorting under you. Both of those and whichever way `ctrl+s`
 last gathered the fleet are written to `~/.local/state/amx/view.json` as you
 go, so the next view opens on the wall you left.
 
+A line being typed hangs off a rule, and the rule is where the whole mode is
+said. Its near end names which of the five lines this is — a task, a narrowing,
+a message, an answer, a rename — and after it the one thing true of all five:
+while the line is open a letter is a letter and not the key it is bound to, and
+`esc` is the way out. Its far end carries what the next agent may do without
+asking, in reverse video, set into the edge: it is the one dial somebody is
+about to press enter past. The line itself is bold under a block cursor, and
+everything above the rule goes dim for as long as the mode is on — rows,
+headings, counts and dials in the one pass — so the only thing on the screen
+still carrying weight is the thing that has not happened yet.
+
 The line a task is typed on reads a few words of its own, at the front of it
 and nowhere else. `s:` and `a:` narrow the list by state and by name rather
 than starting anything: `s:waiting`, `a:import`, or `a:#12`. `m:`, `p:`, `w:`,
@@ -289,8 +393,8 @@ one thing the rest of a row cannot say. Where the branch has a pull request,
 the row carries its number:
 
 ```
-  ● fix-the-login-bug-a1b  #12  the login bug is fixed          4m
-  ✻ port-the-importer-k3f  #40  Running Bash                    4s
+  ● fix-login-a1b     #12  the login bug is fixed                             4m
+  ✻ port-import-b2c   #40  Running Bash                                       4s
 ```
 
 The number is coloured by how it is going, in the same colours the rest of the
