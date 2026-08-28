@@ -26,6 +26,7 @@
 //! anything: nothing amx runs stays resident, so there is nobody to push.
 
 mod act;
+mod grid;
 mod paint;
 mod rows;
 
