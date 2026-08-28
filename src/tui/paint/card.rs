@@ -38,7 +38,7 @@ use crate::tui::act::{self, Composer};
 use crate::tui::rows::Showing;
 use crate::verbs::send::numbered;
 
-/// A closer look at one agent, as the card floated over the list.
+/// A closer look at one agent, as the card hung under its row.
 ///
 /// A card carries its body in one of two states, which is what `B` says. A
 /// card is *built* from text — a pane capture, a recorded answer, a patch —
@@ -1044,16 +1044,22 @@ mod tests {
         (at.x, at.y)
     }
 
+    /// Which column of a drawn line a word starts in, counted in cells rather
+    /// than bytes: the marks and the glyph a row wears are not one byte each.
+    fn column_of(line: &str, word: &str) -> usize {
+        let at = line
+            .find(word)
+            .unwrap_or_else(|| panic!("{word:?} is not on {line:?}"));
+        line[..at].chars().count()
+    }
+
     /// The colour a word on a row was painted in.
     fn word_colour(screen: &Screen, size: (u16, u16), row: u16, word: &str) -> Color {
         let buffer = cells(screen, size);
         let line: String = (0..size.0)
             .map(|column| buffer[(column, row)].symbol())
             .collect();
-        let at = line
-            .find(word)
-            .unwrap_or_else(|| panic!("{word:?} is not on {line:?}"));
-        buffer[(line[..at].chars().count() as u16, row)].fg
+        buffer[(column_of(&line, word) as u16, row)].fg
     }
 
     /// The two agents a card is opened over, so there is a list to still be
@@ -1117,6 +1123,43 @@ mod tests {
             screen.len(),
             "and the hint row is the one beneath it: {screen:?}"
         );
+    }
+
+    #[test]
+    fn card_stands_in_the_columns_the_rows_behind_it_stand_in() {
+        let screen = drawn(
+            a_fleet(),
+            Some(asking(
+                &["the sqlite one", "the docker one"],
+                Some(Kind::Question),
+            )),
+            (60, 14),
+        );
+
+        // Read off a row rather than written down here as a number: the card
+        // hangs off the list, so the day the list moves its gutter the card
+        // is standing in a column of its own and this says so.
+        let row = screen
+            .iter()
+            .find(|line| line.contains("busy-b2c"))
+            .expect("a row of the list the card is not over");
+        let named = column_of(row, "busy-b2c");
+        let glyph = named - 2;
+
+        let card = card_lines(&screen);
+        assert_eq!(
+            column_of(card[0], "ask-a1b"),
+            named,
+            "the card says what it is in the column the wall names its rows \
+             in: {screen:?}"
+        );
+        for line in &card {
+            assert!(
+                matches!(line.chars().nth(glyph), Some('│' | '╰')),
+                "and every row of it carries the spine in the column the wall \
+                 draws a row's own state glyph in: {line:?}"
+            );
+        }
     }
 
     #[test]
@@ -1232,7 +1275,7 @@ mod tests {
 
     #[test]
     fn card_keeps_the_row_being_typed_on_when_there_is_room_for_little_else() {
-        // A card with one row inside its borders. What somebody is typing is
+        // A card with one row under its heading. What somebody is typing is
         // what that row is for: the question is on the agent's row behind the
         // card, and the line is nowhere else at all.
         let screen = painted(
