@@ -517,14 +517,15 @@ fn heading(card: &Card<Body>, held: usize, width: usize, theme: Theme) -> Line<'
             derive::in_words(card.age)
         ),
     };
-    let mut spans = vec![Span::styled(title.clone(), colour(theme, card.phase))];
+    let titled = width_of(&title);
+    let mut spans = vec![Span::styled(title, colour(theme, card.phase))];
     if held > 0 {
         let edge = match card.forward() {
             true => '↑',
             false => '↓',
         };
         let more = format!("{edge} {held} more");
-        let said = width_of(&title) + width_of(&more);
+        let said = titled + width_of(&more);
         if said < width {
             spans.push(Span::raw(" ".repeat(width - said)));
         }
