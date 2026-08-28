@@ -624,7 +624,7 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
     let at = |text: &str| {
         drawn
             .lines()
-            .position(|line| line.trim_end() == text)
+            .position(|line| line.starts_with(&format!(" {text} ")))
             .unwrap_or_else(|| panic!("no {text} heading in:\n{drawn}"))
     };
     assert!(
@@ -634,7 +634,7 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
     assert!(
         drawn
             .lines()
-            .filter(|line| line.trim_end() == "~/repo")
+            .filter(|line| line.starts_with(" ~/repo "))
             .count()
             == 1,
         "one heading for the repository, subdirectory and all:\n{drawn}"
@@ -895,6 +895,172 @@ fn a_group_heading_is_uppercase_over_a_rule_that_ends_in_its_count() {
     assert!(
         waiting.contains(&foreground("waiting")),
         "and the group that wants a person is painted for it:\n{waiting:?}"
+    );
+}
+
+#[test]
+fn a_path_heading_keeps_its_case_and_carries_the_same_rule_and_count() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+    running_in(&amx, "ask-a1b", &repo);
+    finished(&amx, "old-job-c3d", "done", 60);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the agents", || {
+        screen(&amx, &view).contains("NEEDS INPUT").then_some(())
+    });
+    press(&amx, &view, "C-s");
+    let drawn = amx.until("the project headings", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("~/repo").then_some(drawn)
+    });
+
+    let line = drawn
+        .lines()
+        .find(|line| line.starts_with(" ~/repo "))
+        .unwrap_or_else(|| panic!("no heading over the repository in:\n{drawn}"))
+        .to_string();
+    let cells: Vec<char> = line.chars().collect();
+    assert_eq!(cells.len(), 80, "a heading is drawn to the edge:\n{line:?}");
+    assert_eq!(
+        cells[76..].iter().collect::<String>(),
+        "   1",
+        "the count is right-aligned in the column the ages are:\n{line:?}"
+    );
+    let rule: String = cells[8..74].iter().collect();
+    assert!(
+        rule.chars().all(|cell| cell == '─'),
+        "and a rule runs from the path out to it:\n{line:?}"
+    );
+    assert!(
+        !drawn.contains("~/REPO"),
+        "a path is not a word, and a word is what uppercases:\n{drawn}"
+    );
+
+    // The weight goes on the segment that says which directory this is, with
+    // the parents it hangs off dim behind it. Found by the segment alone,
+    // because the escape that changes the weight stands between the two.
+    let painted = coloured_line(&amx, &view, "repo");
+    let last = sgr_at(&painted, "repo");
+    assert!(
+        last.contains(&1) && !last.contains(&2),
+        "the last segment is the bold one:\n{painted:?}"
+    );
+    assert!(
+        sgr_at(&painted, "~/").contains(&2),
+        "and the parents in front of it are dim:\n{painted:?}"
+    );
+    assert!(
+        sgr_at(&painted, "───").contains(&2),
+        "the rule is dim, the way it is over a group:\n{painted:?}"
+    );
+}
+
+#[test]
+fn a_path_too_long_for_its_heading_loses_its_middle_and_not_its_end() {
+    let amx = Harness::new();
+    let deep =
+        PathBuf::from("/srv/monorepo/services/ingest/packages/importer-worker/vendor/legacy-shim");
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+    running_in(&amx, "ask-a1b", &deep);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the agent", || {
+        screen(&amx, &view).contains("NEEDS INPUT").then_some(())
+    });
+    press(&amx, &view, "C-s");
+    let line = amx.until("the heading over the deep path", || {
+        screen(&amx, &view)
+            .lines()
+            .find(|line| line.starts_with(" /srv/"))
+            .map(str::to_string)
+    });
+
+    let cells: Vec<char> = line.chars().collect();
+    assert_eq!(
+        cells.len(),
+        80,
+        "a path this long does not push the heading off the edge:\n{line:?}"
+    );
+    assert_eq!(
+        cells[76..].iter().collect::<String>(),
+        "   1",
+        "the count is in the column it is in over a short path:\n{line:?}"
+    );
+    assert!(
+        cells.iter().filter(|cell| **cell == '─').count() >= 8,
+        "and enough rule is left to read the line as a heading:\n{line:?}"
+    );
+
+    let path = line.split_whitespace().next().expect("the path");
+    assert!(
+        path.starts_with("/srv/…/") && path.ends_with("/vendor/legacy-shim"),
+        "what goes is the middle: the end is the segment that says \
+         which worktree of a project this is:\n{line:?}"
+    );
+}
+
+#[test]
+fn a_row_under_a_path_grows_a_state_word_and_moves_no_other_column() {
+    let amx = Harness::new();
+    amx.play("port-import-b2c", "works-with-a-spinner");
+    amx.until_state("port-import-b2c", "working");
+    finished(&amx, "fix-login-a1b", "done", 60);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("fix-login-a1b") && drawn.contains("port-import-b2c")).then_some(())
+    });
+    let before = row_of(&amx, &view, "fix-login-a1b").expect("a row under its state");
+
+    press(&amx, &view, "C-s");
+    let row = amx.until("the state word on the row", || {
+        row_of(&amx, &view, "fix-login-a1b").filter(|row| row.contains("done"))
+    });
+    let cells: Vec<char> = row.chars().collect();
+    let column = |from: usize, to: usize| cells[from..to].iter().collect::<String>();
+    assert_eq!(cells.len(), 80, "a row is drawn to the edge:\n{row:?}");
+    assert_eq!(column(4, 20), "fix-login-a1b   ", "the name has not moved");
+    assert_eq!(column(20, 22), "  ", "two cells stand the columns apart");
+
+    // The heading over the row is a place now, so the row says the state:
+    // eight cells of it, which is what the longest of the words needs.
+    assert_eq!(column(22, 30), "done    ", "{row:?}");
+    assert_eq!(column(30, 32), "  ", "{row:?}");
+
+    // The summary pays for all ten of those cells and nothing else does.
+    assert_eq!(
+        column(32, 74),
+        format!("{:<42}", "did what it was asked"),
+        "{row:?}"
+    );
+    assert_eq!(column(74, 76), "  ", "{row:?}");
+    let was: Vec<char> = before.chars().collect();
+    assert_eq!(
+        column(76, 80),
+        was[76..80].iter().collect::<String>(),
+        "the age is in the cells it was in under a state heading:\n{row:?}\n{before:?}"
+    );
+
+    // The word is quiet while there is nothing to say about how the work went,
+    // and takes the phase's own colour once there is.
+    let working = coloured_line(&amx, &view, "port-import-b2c");
+    assert!(
+        sgr_at(&working, "working").contains(&2),
+        "a row still at it says so under its breath:\n{working:?}"
+    );
+    let done = coloured_line(&amx, &view, "fix-login-a1b");
+    assert!(
+        !sgr_at(&done, "done").contains(&2),
+        "and a row that has ended says how it went:\n{done:?}"
+    );
+    assert!(
+        done.contains(&foreground("done")),
+        "in the colour that says so:\n{done:?}"
     );
 }
 
@@ -1481,7 +1647,7 @@ fn acts_ctrl_x_on_a_heading_stops_the_live_and_arms_rows_in_every_state() {
     amx.until("the project heading over both", || {
         screen(&amx, &view)
             .lines()
-            .any(|line| line.trim_end() == "~")
+            .any(|line| line.starts_with(" ~ "))
             .then_some(())
     });
 

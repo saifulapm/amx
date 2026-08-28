@@ -123,10 +123,7 @@ fn line(
     let line = match item {
         Item::Heading(under, tally) => match under {
             Under::Group(group) => heading(group, tally, widths, width, theme),
-            // A path is not a word and does not uppercase, so it is drawn its
-            // own way — which is the dir axis's business, and the dir axis is
-            // redrawn next.
-            Under::Project(_) => path_heading(list.title(under), tally),
+            Under::Project(_) => path_heading(list.title(under), tally, widths, width, theme),
         },
         Item::Fold(hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
         Item::Agent(_) => match list.agent(item) {
@@ -227,17 +224,46 @@ fn heading(
     ])
 }
 
-/// The heading over a project, which is a path rather than a word: it is not
-/// uppercased and it is not ruled here. The dir axis is redrawn next, and this
-/// is what it was until then.
-fn path_heading(title: String, tally: Tally) -> Line<'static> {
-    let counted = match (tally.shut, tally.failures) {
-        (false, 0) => String::new(),
-        (false, failures) => format!(" · {failures} failed"),
-        (true, 0) => format!(" {}", tally.members),
-        (true, failures) => format!(" {} · {failures} failed", tally.members),
+/// The heading over a project, which is a path rather than a word.
+///
+/// The same rule and the same right-aligned count as the heading over a group,
+/// so the two axes read as one document and the right margin is one line of
+/// numbers on either. What changes is the label: a path is not a word, so it is
+/// not uppercased, and the weight goes on the last segment with the parents it
+/// hangs off dim behind it — which gives a left-heavy string of no fixed length
+/// a bright end to find it by.
+///
+/// A path too long for the heading loses its middle rather than its end, which
+/// is [`grid::elide`]'s business: the end is the segment that says which
+/// worktree of a project this is, and cutting there would leave every one of
+/// them reading the same.
+fn path_heading(
+    title: String,
+    tally: Tally,
+    widths: Widths,
+    width: usize,
+    theme: Theme,
+) -> Line<'static> {
+    let failures = match tally.failures {
+        0 => String::new(),
+        failures => format!("· {failures} failed "),
     };
-    Line::styled(format!("{title}{counted}"), dim())
+    let path = grid::elide(&title, grid::path_room(width, failures.trim_end()));
+    // Everything up to the last separator is where the directory is; what
+    // comes after it is which directory it is.
+    let cut = path.rfind('/').map(|at| at + 1).unwrap_or(0);
+    // The same arithmetic the group heading's rule is left over from.
+    let spent = 1 + width_of(&path) + 1 + width_of(&failures) + GAP + widths.age;
+    let rule = "─".repeat(width.saturating_sub(spent).max(1));
+    Line::from(vec![
+        Span::styled(format!(" {}", &path[..cut]), dim()),
+        Span::styled(path[cut..].to_string(), bold()),
+        Span::raw(" "),
+        Span::styled(failures, Style::new().fg(theme.failed)),
+        Span::styled(rule, dim()),
+        Span::raw(" ".repeat(GAP)),
+        Span::styled(grid::padl(&tally.members.to_string(), widths.age), dim()),
+    ])
 }
 
 /// An agent's row: what state it is in, what it is called, what its work is
@@ -256,9 +282,9 @@ fn path_heading(title: String, tally: Tally) -> Line<'static> {
 /// under it, with the state on the glyph alone. The exceptions earn their
 /// colour: a failed name says so without its glyph being read, the pull
 /// request's number answers how the work went, and under a project heading
-/// the state word keeps the phase colour because it replaces the glyph's job
-/// there. What the cursor is on is said by the bar under it, not by the row
-/// changing its tones.
+/// the state word keeps what the phase has to say because it replaces the
+/// glyph's job there — see [`state_colour`]. What the cursor is on is said by
+/// the bar under it, not by the row changing its tones.
 ///
 /// A row a press has armed says that instead of what the agent said, in the
 /// colour of a thing waiting on a person. The summary is the one part of a row
@@ -328,7 +354,7 @@ fn row(
                 grid::pad(phase.as_str(), widths.state),
                 " ".repeat(GAP)
             ),
-            colour(theme, phase),
+            state_colour(theme, phase),
         ));
     }
     if requests > 0 {
@@ -355,6 +381,20 @@ fn row(
     ));
     spans.push(Span::styled(grid::padl(&worked, widths.age), dim()));
     Line::from(spans)
+}
+
+/// What the state word is painted in under a project heading: the phase's own
+/// colour where the phase has one, and dim where it has not.
+///
+/// The word is the glyph's job moved down a level rather than a second summary.
+/// A row that has ended says how it went in the colour that says so, and a row
+/// still at work has nothing to say about that yet — so it stays out of the way
+/// of the line beside it, which is the part somebody is reading.
+fn state_colour(theme: Theme, phase: Phase) -> Style {
+    match phase {
+        Phase::Starting | Phase::Working => dim(),
+        phase => colour(theme, phase),
+    }
 }
 
 /// What an armed row says where its summary was: the key again, and what it
@@ -981,7 +1021,7 @@ mod tests {
             (60, 10),
         );
 
-        assert_eq!(screen[2], "/src/api");
+        assert!(screen[2].starts_with(" /src/api "), "{:?}", screen[2]);
         assert!(screen[3].contains("ask-a1b"), "{:?}", screen[3]);
         assert!(
             screen[3].contains("waiting"),
@@ -990,7 +1030,7 @@ mod tests {
         );
         assert!(screen[4].contains("done"), "{:?}", screen[4]);
         assert_eq!(screen[5], "", "the next project stands off from this one");
-        assert_eq!(screen[6], "/src/web");
+        assert!(screen[6].starts_with(" /src/web "), "{:?}", screen[6]);
 
         // One column, so the states read down the screen rather than wandering
         // with the length of the name above them. Counted in characters: the
