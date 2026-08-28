@@ -225,3 +225,171 @@ fn dealt(depths: &[usize], count: usize) -> Vec<Vec<usize>> {
     }
     bands
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::derive::View;
+    use crate::tui::paint::header::{header_rows, space_rows};
+    use crate::tui::paint::{Card, draw};
+    use crate::tui::{Mode, Screen};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+
+    /// The view, with a reading in it. The card is read as it is planted,
+    /// the way the view itself builds one.
+    fn showing(views: Vec<View>, card: Option<Card>) -> Screen {
+        let mut screen = Screen::default();
+        screen.list.show(views);
+        screen.card = card.map(Card::read);
+        screen
+    }
+
+    /// What a view of this size draws, cell by cell.
+    fn cells(screen: &Screen, size: (u16, u16)) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
+        terminal.draw(|frame| draw(frame, screen)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// What a view of this size puts on the screen, line by line.
+    fn painted(screen: &Screen, size: (u16, u16)) -> Vec<String> {
+        let buffer = cells(screen, size);
+        (0..size.1)
+            .map(|row| {
+                (0..size.0)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Which column of a drawn line a word starts at, for the tests that ask
+    /// what the view painted it in. Columns, not bytes: the separator between
+    /// two things said on one row is two bytes wide and one column.
+    fn column_of(line: &str, word: &str) -> u16 {
+        let at = line.find(word).expect("the word is on the line");
+        line[..at].chars().count() as u16
+    }
+
+    /// The overlay on a screen this size, and the rows it was drawn on.
+    fn overlay(size: (u16, u16)) -> Vec<String> {
+        let mut screen = showing(Vec::new(), None);
+        screen.mode = Mode::Keys;
+        painted(&screen, size)
+    }
+
+    #[test]
+    fn view_lists_every_key_when_somebody_asks_for_them() {
+        let mut screen = showing(Vec::new(), None);
+        screen.mode = Mode::Keys;
+
+        // Tall and wide enough for every key and every heading over them,
+        // so each of them has the row to itself and every description is
+        // whole.
+        let tall = (HELP.len() + GROUPS.len()) as u16 + header_rows(24) + space_rows(24) + 1;
+        let painted = painted(&screen, (140, tall)).join("\n");
+        for (key, does) in HELP {
+            assert!(painted.contains(key), "{key} is missing:\n{painted}");
+            assert!(painted.contains(does), "{does} is missing:\n{painted}");
+        }
+    }
+
+    #[test]
+    fn keymap_stands_the_keys_under_headings_that_say_what_they_are_for() {
+        // A screen with room for the groups in two columns, which is the
+        // shape they are laid out in wherever the width will take it.
+        let painted = overlay((140, 38));
+
+        // Down before across: the second key is under the first rather than
+        // beside it, and the second column starts where the first one's share
+        // of the width ends.
+        assert!(painted[3].starts_with("walk"), "{:?}", painted[3]);
+        assert!(painted[4].starts_with(HELP[0].0), "{:?}", painted[4]);
+        assert_eq!(
+            column_of(&painted[3], "arrange"),
+            70,
+            "and the next column stands beside the first: {:?}",
+            painted[3]
+        );
+
+        // A heading over every run of keys, a blank row between two groups,
+        // and the groups themselves whole rather than split down the fold.
+        assert!(
+            painted[9].chars().take(70).all(char::is_whitespace),
+            "one group stands off from the next: {:?}",
+            painted[9]
+        );
+        assert!(painted[10].starts_with("look"), "{:?}", painted[10]);
+        assert!(painted[17].starts_with("start"), "{:?}", painted[17]);
+        assert_eq!(column_of(&painted[12], "dials"), 70, "{:?}", painted[12]);
+
+        let all = painted.join("\n");
+        for (key, does) in HELP {
+            assert!(key.len() < 12, "{key} is wider than a band's key column");
+            assert!(all.contains(key), "{key} is missing:\n{all}");
+            assert!(all.contains(does), "{does} is missing:\n{all}");
+        }
+    }
+
+    #[test]
+    fn keymap_headings_are_the_quietest_thing_on_the_screen_of_keys() {
+        let mut screen = showing(Vec::new(), None);
+        screen.mode = Mode::Keys;
+        let buffer = cells(&screen, (140, 38));
+
+        let heading = buffer[(0, 3)].clone();
+        assert!(
+            heading.modifier.contains(Modifier::DIM),
+            "a heading stands over the keys and is not one of them: {:?}",
+            heading.modifier
+        );
+        let key = buffer[(0, 4)].clone();
+        assert!(
+            key.modifier.contains(Modifier::BOLD),
+            "the key itself is what somebody came here to find: {:?}",
+            key.modifier
+        );
+    }
+
+    #[test]
+    fn keymap_takes_another_column_when_the_rows_will_not_hold_a_group() {
+        // Two rows of header, one of space and one of keys leave eleven for
+        // the overlay, which is fewer rows than two columns of groups need:
+        // rather than cut a group in half or run one off the bottom, the
+        // groups deal into as many columns as the height asks for.
+        let painted = overlay((140, 15));
+        let all = painted.join("\n");
+        for (key, _) in HELP {
+            assert!(all.contains(key), "{key} is missing:\n{all}");
+        }
+        assert!(painted[3].starts_with("walk"), "{:?}", painted[3]);
+        assert_eq!(
+            column_of(&painted[3], "dials"),
+            4 * (140 / GROUPS.len() as u16),
+            "a column each, in the order the table has them: {:?}",
+            painted[3]
+        );
+    }
+
+    #[test]
+    fn keymap_the_keys_give_up_what_they_say_before_they_give_up_a_key() {
+        // The same screen with no room for two whole bands. Every key is
+        // still on it, because a key nobody can find is worse than one whose
+        // line was cut short.
+        let painted = overlay((60, 15));
+        let all = painted.join("\n");
+        for (key, _) in HELP {
+            assert!(all.contains(key), "{key} is missing:\n{all}");
+        }
+        for line in &painted {
+            assert!(line.chars().count() <= 60, "{line:?}");
+        }
+        assert!(
+            all.contains('…'),
+            "and what was cut says it was cut:\n{all}"
+        );
+    }
+}

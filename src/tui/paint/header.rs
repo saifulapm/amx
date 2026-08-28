@@ -360,3 +360,476 @@ pub fn title(list: &List) -> String {
         count => format!("amx{SEPARATOR}{count} waiting"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::derive::{Evidence, Verdict, View};
+    use crate::store::{Meta, Phase, State};
+    use crate::tmux::{PaneId, Socket};
+    use crate::tui::paint::{Card, draw};
+    use crate::tui::rows::Narrow;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::Color;
+    use std::path::PathBuf;
+
+    /// The palette a screen nobody handed a theme is painted in, which is the
+    /// one every screen built here has and the one these colours are read out
+    /// of: what the tests are about is which role a thing is painted in, and
+    /// the values are the theme's business.
+    fn theme() -> Theme {
+        Theme::default()
+    }
+
+    fn view(id: &str, phase: Phase, said: Option<&str>, age: u64) -> View {
+        View {
+            meta: Meta {
+                id: id.to_string(),
+                task: "fix the login bug".to_string(),
+                dir: PathBuf::from("/srv/app"),
+                worktree: None,
+                branch: None,
+                base: None,
+                socket: Socket::Name("amx".to_string()),
+                pane: PaneId::new("%1").unwrap(),
+                bg: false,
+                session: None,
+                transcript: None,
+                created: 1,
+            },
+            state: State {
+                state: phase,
+                summary: said.map(str::to_string),
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+            verdict: Verdict {
+                phase,
+                evidence: Evidence::Hooks,
+                rule: None,
+                age,
+                // The rows print the worked seconds; most of these tests only
+                // care that a number is where the column is, so the helper
+                // hands both clocks the same one.
+                worked: age,
+            },
+        }
+    }
+
+    /// The view, with a reading in it. The card is read as it is planted,
+    /// the way the view itself builds one.
+    fn showing(views: Vec<View>, card: Option<Card>) -> Screen {
+        let mut screen = Screen::default();
+        screen.list.show(views);
+        screen.card = card.map(Card::read);
+        screen
+    }
+
+    /// What a view of this size draws, cell by cell.
+    fn cells(screen: &Screen, size: (u16, u16)) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
+        terminal.draw(|frame| draw(frame, screen)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// What a view of this size puts on the screen, line by line.
+    fn painted(screen: &Screen, size: (u16, u16)) -> Vec<String> {
+        let buffer = cells(screen, size);
+        (0..size.1)
+            .map(|row| {
+                (0..size.0)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// What the view puts on a screen of this size, line by line.
+    fn drawn(views: Vec<View>, card: Option<Card>, size: (u16, u16)) -> Vec<String> {
+        painted(&showing(views, card), size)
+    }
+
+    /// What a heading line says in front of the rule that carries it out to
+    /// the edge: the label, and how many failed under it where any did.
+    fn heading_of(line: &str) -> &str {
+        line.split('─').next().unwrap_or_default().trim()
+    }
+
+    /// The two agents a card is opened over, so there is a list to still be
+    /// drawn behind it.
+    fn a_fleet() -> Vec<View> {
+        vec![
+            view("ask-a1b", Phase::Waiting, None, 29),
+            view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
+        ]
+    }
+
+    /// A screen with room for the whole header, at the width the mockup was
+    /// drawn at.
+    const WIDE: (u16, u16) = (100, 12);
+
+    /// The view with a launch profile that says where it is running: the
+    /// directory is read from the disk when a real view opens, and a test says
+    /// what the disk would have answered.
+    fn launching(views: Vec<View>) -> Screen {
+        let mut screen = showing(views, None);
+        screen.profile.dir = "~/code/amx".to_string();
+        screen
+    }
+
+    /// One line of what a view of this size draws.
+    fn screen_line(screen: &Screen, size: (u16, u16), row: usize) -> String {
+        painted(screen, size)[row].clone()
+    }
+
+    /// Which column of a drawn line a word starts at, for the tests that ask
+    /// what the view painted it in. Columns, not bytes: the separator between
+    /// two things said on one row is two bytes wide and one column.
+    fn column_of(line: &str, word: &str) -> u16 {
+        let at = line.find(word).expect("the word is on the line");
+        line[..at].chars().count() as u16
+    }
+
+    #[test]
+    fn the_space_over_the_list_is_the_first_row_a_short_screen_takes_back() {
+        // Air is worth a row where there are rows to spare and not where there
+        // are none: the header has already given its second row up by then,
+        // and this one goes the same way.
+        let tall = drawn(a_fleet(), None, (60, SPACED as u16));
+        assert_eq!(tall[2], "", "{tall:?}");
+        assert_eq!(heading_of(&tall[3]), "NEEDS INPUT", "{tall:?}");
+
+        let short = drawn(a_fleet(), None, (60, SPACED as u16 - 1));
+        assert_eq!(heading_of(&short[2]), "NEEDS INPUT", "{short:?}");
+        assert!(short[3].contains("ask-a1b"), "{short:?}");
+    }
+
+    #[test]
+    fn header_says_where_it_is_and_what_the_fleet_is_over_the_dials() {
+        let screen = painted(
+            &launching(vec![
+                view("ask-a1b", Phase::Waiting, None, 30),
+                view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
+            ]),
+            WIDE,
+        );
+
+        assert!(
+            screen[0].starts_with("AMX  ~/code/amx"),
+            "whose screen this is and where it was opened: {:?}",
+            screen[0]
+        );
+        assert!(
+            !screen[0].contains(env!("CARGO_PKG_VERSION")),
+            "which version this is says nothing about the fleet: {:?}",
+            screen[0]
+        );
+        assert!(
+            screen[0].ends_with("1 working   2/5 running    1 WAITING"),
+            "what the fleet is, the gate the next one meets, and the one count \
+             that wants somebody at the end of the row: {:?}",
+            screen[0]
+        );
+        assert_eq!(
+            screen[1], "└ next  claude   model  default   permission  default   worktree  new",
+            "and under it every dial the next agent will be started with"
+        );
+        assert_eq!(screen[2], "", "a blank row stands the list off from it");
+        assert_eq!(
+            heading_of(&screen[3]),
+            "NEEDS INPUT",
+            "and the list starts under that"
+        );
+    }
+
+    #[test]
+    fn header_spends_its_one_colour_on_the_count_that_wants_a_person() {
+        let screen = launching(vec![
+            view("ask-a1b", Phase::Waiting, None, 30),
+            view("ask-b2c", Phase::Waiting, None, 10),
+            view("busy-c3d", Phase::Working, Some("Running Bash"), 3),
+        ]);
+        let drawn = painted(&screen, WIDE);
+
+        assert!(
+            drawn[0].ends_with(" 2 WAITING"),
+            "the one number the view was opened for, at the end of the row: {:?}",
+            drawn[0]
+        );
+        assert!(
+            drawn[0].contains("1 working   3/5 running"),
+            "the counts beside it say the rest of the fleet, and say the \
+             waiting one nowhere else: {:?}",
+            drawn[0]
+        );
+
+        // A block rather than a phrase: reverse video in the waiting colour,
+        // out to the edge of the row, the space either side of the words
+        // included.
+        let buffer = cells(&screen, WIDE);
+        for column in column_of(&drawn[0], " 2 WAITING")..WIDE.0 {
+            let cell = buffer[(column, 0)].clone();
+            assert_eq!(cell.fg, theme().waiting, "column {column}: {:?}", drawn[0]);
+            assert!(
+                cell.modifier.contains(Modifier::REVERSED | Modifier::BOLD),
+                "column {column}: {:?}",
+                cell.modifier
+            );
+        }
+    }
+
+    #[test]
+    fn header_says_nothing_waiting_in_words_where_nobody_is() {
+        let screen = launching(vec![view(
+            "busy-a1b",
+            Phase::Working,
+            Some("Running Bash"),
+            3,
+        )]);
+        let drawn = painted(&screen, WIDE);
+
+        assert!(
+            drawn[0].ends_with("nothing waiting"),
+            "the answer stands where the answer always stands: {:?}",
+            drawn[0]
+        );
+
+        let buffer = cells(&screen, WIDE);
+        let cell = buffer[(column_of(&drawn[0], "nothing waiting"), 0)].clone();
+        assert_eq!(
+            cell.fg,
+            Color::Reset,
+            "nothing is asking, so nothing shouts"
+        );
+        assert!(cell.modifier.contains(Modifier::DIM), "{:?}", cell.modifier);
+        assert!(
+            !cell.modifier.contains(Modifier::REVERSED),
+            "{:?}",
+            cell.modifier
+        );
+    }
+
+    #[test]
+    fn header_hangs_the_dials_off_the_row_they_are_under() {
+        let screen = launching(Vec::new());
+        let drawn = painted(&screen, WIDE);
+        assert_eq!(
+            drawn[1], "└ next  claude   model  default   permission  default   worktree  new",
+            "one glyph in the first column says the row is subordinate to the \
+             one above it, without a word of explanation"
+        );
+
+        let buffer = cells(&screen, WIDE);
+        for label in ["└", "next", "model", "permission", "worktree"] {
+            let cell = buffer[(column_of(&drawn[1], label), 1)].clone();
+            assert_eq!(cell.fg, Color::Reset, "{label}: {:?}", drawn[1]);
+            assert!(
+                cell.modifier.contains(Modifier::DIM),
+                "{label}: {:?}",
+                cell.modifier
+            );
+        }
+        // The values are what somebody reads the row for, so they are the
+        // thing on it wearing a colour.
+        for value in ["claude", "new"] {
+            let cell = buffer[(column_of(&drawn[1], value), 1)].clone();
+            assert_eq!(cell.fg, theme().accent, "{value}: {:?}", drawn[1]);
+            assert!(
+                !cell.modifier.contains(Modifier::DIM),
+                "{value}: {:?}",
+                cell.modifier
+            );
+        }
+    }
+
+    #[test]
+    fn header_drops_the_dial_labels_before_it_cuts_what_they_are_set_to() {
+        let screen = launching(Vec::new());
+        assert_eq!(
+            screen_line(&screen, (60, 12), 1),
+            "└ next  claude  ·  default  ·  default  ·  new",
+            "the value is the reading; the label is what a person already knows \
+             the order of. Only `next` keeps its own, because it is what says \
+             which half of the screen the row is about"
+        );
+    }
+
+    #[test]
+    fn header_names_a_dial_that_rests_where_the_vendor_left_it() {
+        let mut screen = launching(Vec::new());
+        assert_eq!(
+            screen_line(&screen, WIDE, 1),
+            "└ next  claude   model  default   permission  default   worktree  new",
+            "the vendor's own answer said as a value, not a guess at which \
+             model claude would have picked"
+        );
+
+        // Turned, the value is what it was turned to. The label does not move,
+        // so the row a person has learned to read stays the row they read.
+        screen.profile.model = "opus".to_string();
+        screen.profile.permission = "plan".to_string();
+        screen.profile.worktree = false;
+        assert_eq!(
+            screen_line(&screen, WIDE, 1),
+            "└ next  claude   model  opus   permission  plan   worktree  none"
+        );
+
+        // An agent the registry never heard of declares no dials, so the row
+        // holds the vendor and the one dial that is amx's own.
+        screen.profile.agent = "mock-claude".to_string();
+        assert_eq!(
+            screen_line(&screen, WIDE, 1),
+            "└ next  mock-claude   worktree  none"
+        );
+    }
+
+    #[test]
+    fn header_counts_the_fleet_in_the_words_a_filter_takes() {
+        let mut screen = launching(vec![
+            view("ask-a1b", Phase::Waiting, None, 30),
+            view("done-b2c", Phase::Done, Some("did it"), 60),
+        ]);
+        assert!(
+            screen_line(&screen, WIDE, 0).ends_with("1 done   1/5 running    1 WAITING"),
+            "the heading over the rows says `needs input`; the counter says \
+             the word the list can be narrowed by, and says the waiting one \
+             once, in the badge: {:?}",
+            screen_line(&screen, WIDE, 0)
+        );
+
+        // A narrowing is still read back where it was typed, so a short list
+        // says why it is short.
+        screen
+            .list
+            .narrow(vec![Narrow::State(Some("waiting".to_string()))]);
+        assert!(
+            screen_line(&screen, WIDE, 0).ends_with("1/5 running   s:waiting    1 WAITING"),
+            "{:?}",
+            screen_line(&screen, WIDE, 0)
+        );
+    }
+
+    #[test]
+    fn header_says_the_gate_the_next_agent_meets_before_it_refuses() {
+        let mut screen = launching(vec![
+            view("busy-a1b", Phase::Working, None, 3),
+            view("busy-b2c", Phase::Working, None, 3),
+            view("busy-c3d", Phase::Working, None, 3),
+            view("done-d4e", Phase::Done, Some("did it"), 60),
+        ]);
+        screen.profile.max = 5;
+        assert!(
+            screen_line(&screen, WIDE, 0).contains("3/5 running"),
+            "an agent whose command has ended holds no slot: {:?}",
+            screen_line(&screen, WIDE, 0)
+        );
+    }
+
+    #[test]
+    fn header_sheds_the_dir_before_the_name_and_the_vendor_before_a_dial() {
+        // Decided here rather than discovered at the edge of a terminal.
+        let mut screen = launching(vec![view("busy-a1b", Phase::Working, None, 3)]);
+
+        let cramped = painted(&screen, (28, 12));
+        assert!(
+            cramped[0].starts_with("AMX"),
+            "the name says what the screen is, and it is three columns: {:?}",
+            cramped[0]
+        );
+        assert!(
+            !cramped[0].contains("code/amx"),
+            "a path cut to nothing is not a path: {:?}",
+            cramped[0]
+        );
+
+        // A vendor is a command line, and a command is routinely a long one.
+        // It gives way to the dials beside it: a dial cut off the end of the
+        // row is a dial nobody can see they have turned.
+        screen.profile.agent = "claude --settings /etc/amx/every-hook.json".to_string();
+        let long = painted(&screen, (80, 12));
+        assert!(long[1].starts_with("└ next  claude --set"), "{:?}", long[1]);
+        assert!(
+            long[1].contains('…'),
+            "and it says it was cut: {:?}",
+            long[1]
+        );
+        assert!(
+            long[1].ends_with("permission  default   worktree  new"),
+            "{:?}",
+            long[1]
+        );
+
+        // Narrower still and the labels go first, which buys the vendor ten
+        // columns before a dial gives up a character of its value.
+        assert_eq!(
+            screen_line(&screen, (50, 12), 1),
+            "└ next  claude --…  ·  default  ·  default  ·  new"
+        );
+
+        // Narrower again and there is no room for all of it either way. What
+        // the vendor keeps is a floor: a row that had fitted every dial on
+        // the screen by leaving off what runs would be a row about nothing.
+        let narrow = screen_line(&screen, (36, 12), 1);
+        assert!(narrow.starts_with("└ next  claude …"), "{narrow:?}");
+        assert!(
+            narrow.ends_with('…'),
+            "and the end of the row is what says it was cut: {narrow:?}"
+        );
+    }
+
+    #[test]
+    fn header_sheds_the_counts_before_the_one_that_wants_a_person() {
+        // Every group at once, which is more counting than a narrow terminal
+        // has room for beside the name. What goes is the counting: the badge
+        // is the answer the view was opened to read.
+        let screen = launching(vec![
+            view("ask-a1b", Phase::Waiting, None, 30),
+            view("busy-b2c", Phase::Working, None, 3),
+            view("idle-c3d", Phase::Idle, None, 30),
+            view("done-d4e", Phase::Done, Some("did it"), 60),
+        ]);
+
+        assert!(
+            screen_line(&screen, (60, 12), 0).contains("1 working   1 idle   1 done   3/5 running"),
+            "{:?}",
+            screen_line(&screen, (60, 12), 0)
+        );
+
+        let cramped = screen_line(&screen, (40, 12), 0);
+        assert!(cramped.starts_with("AMX  ~/code/amx"), "{cramped:?}");
+        assert!(cramped.ends_with(" 1 WAITING"), "{cramped:?}");
+        assert!(
+            !cramped.contains("running"),
+            "and the counting is what gave the room up: {cramped:?}"
+        );
+    }
+
+    #[test]
+    fn header_gives_the_row_back_to_the_list_on_a_short_screen() {
+        let screen = launching(vec![view("busy-a1b", Phase::Working, None, 3)]);
+        let short = painted(&screen, (60, SHORT as u16 - 1));
+
+        assert!(
+            short[0].starts_with("AMX  ~/code/amx"),
+            "the row that says what there is stays; the dials are one \
+             keypress from being read under the composer: {:?}",
+            short[0]
+        );
+        assert!(
+            short[0].ends_with("1 working   1/5 running   nothing waiting"),
+            "{:?}",
+            short[0]
+        );
+        assert!(!short.iter().any(|line| line.starts_with('└')), "{short:?}");
+        assert_eq!(
+            heading_of(&short[1]),
+            "WORKING",
+            "and the list starts a row sooner"
+        );
+    }
+}

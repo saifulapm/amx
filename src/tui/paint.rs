@@ -39,9 +39,6 @@ mod style;
 mod text;
 mod wall;
 
-#[cfg(test)]
-mod tests;
-
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::widgets::Paragraph;

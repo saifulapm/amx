@@ -55,3 +55,17 @@ pub(super) fn fit(text: &str, width: usize) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn view_cuts_text_without_losing_the_last_character_to_the_ellipsis() {
+        assert_eq!(fit("short", 10), "short");
+        assert_eq!(fit("exactly", 7), "exactly");
+        assert_eq!(fit("too long by far", 8), "too lon…");
+        assert_eq!(fit("anything", 1), "…");
+        assert_eq!(fit("anything", 0), "");
+    }
+}
