@@ -918,3 +918,59 @@ fn acts_ctrl_r_calls_the_agent_what_a_person_typed() {
         "and the record is filed under the id it always was"
     );
 }
+
+#[test]
+fn find_narrows_the_wall_as_it_is_typed_and_esc_puts_it_back() {
+    let amx = Harness::new();
+    finished(&amx, "port-a1b", "done", 60);
+    finished(&amx, "login-b2c", "done", 120);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both agents", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("port-a1b") && drawn.contains("login-b2c")).then_some(())
+    });
+
+    // The line opens on the row the keys were on, and says what it takes.
+    types(&amx, &view, "/");
+    amx.until("the find line", || {
+        screen(&amx, &view)
+            .contains("/a name, or s:state")
+            .then_some(())
+    });
+
+    // Narrowed on the keystroke, not on an enter afterwards: the wall answers
+    // while the word is still being typed.
+    types(&amx, &view, "port");
+    let narrowed = amx.until("the wall to narrow under it", || {
+        let drawn = screen(&amx, &view);
+        // Both, in one frame: the wall narrows on every keystroke, so a frame
+        // caught part way through the word has already dropped the row that
+        // does not match.
+        (drawn.contains("/port") && !drawn.contains("login-b2c")).then_some(drawn)
+    });
+    assert!(
+        narrowed.contains("port-a1b"),
+        "the one that matches is still there:\n{narrowed}"
+    );
+
+    // Enter closes the line and leaves the narrowing standing.
+    press(&amx, &view, "Enter");
+    let kept = amx.until("the line to go", || {
+        let drawn = screen(&amx, &view);
+        (!drawn.contains("/port")).then_some(drawn)
+    });
+    assert!(
+        !kept.contains("login-b2c"),
+        "the wall stays narrowed:\n{kept}"
+    );
+
+    // And esc on a fresh find clears it, which is the only way there is to
+    // drop a narrowing.
+    types(&amx, &view, "/");
+    press(&amx, &view, "Escape");
+    amx.until("the whole fleet back", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("port-a1b") && drawn.contains("login-b2c")).then_some(())
+    });
+}

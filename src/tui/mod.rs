@@ -1051,9 +1051,17 @@ impl Screen {
     }
 
     /// And every other line, which is the one the band under the card draws.
+    ///
+    /// Bar the find line, which is drawn on the row the keys have. A band
+    /// would cost the list two rows and dim what was left of it, and the list
+    /// is exactly what somebody typing there is watching.
     fn banded(&self) -> Option<&Composer> {
         match &self.mode {
-            Mode::Typing(composer) if !self.on_the_card(composer) => Some(composer),
+            Mode::Typing(composer)
+                if !self.on_the_card(composer) && !matches!(composer.asking, Asking::Find) =>
+            {
+                Some(composer)
+            }
             _ => None,
         }
     }
@@ -1277,6 +1285,14 @@ impl Screen {
                 self.mode = Mode::Keys;
             }
             KeyCode::Char('n') if plain => self.mode = Mode::Typing(Composer::new(Asking::Task)),
+            // The list narrowed by what somebody is looking for, read on every
+            // keystroke rather than on the enter at the end of them. Narrowing
+            // was reachable before this only by opening a task line and
+            // knowing its grammar, which is a thing to be told rather than a
+            // thing to find.
+            KeyCode::Char('/') if plain => {
+                self.mode = Mode::Typing(Composer::new(Asking::Find));
+            }
             // The same line, opened in the editor somebody already has their
             // fingers in. A task worth a paragraph is a task worth writing
             // where writing is what the keys are for.
@@ -1407,6 +1423,14 @@ impl Screen {
                 if self.on_the_card(&composer) {
                     self.look_away();
                 }
+                // A find line has already done its work by the time esc is
+                // pressed, so cancelling it means putting the fleet back.
+                // Which also makes `/` esc the way to drop a narrowing: there
+                // was no key for that at all before.
+                if let Asking::Find = composer.asking {
+                    self.list.narrow(act::finding(""));
+                    self.follow_the_cursor();
+                }
                 return Ok(Doing::Carry);
             }
             // A newline in the line rather than the end of it. The one key
@@ -1417,6 +1441,12 @@ impl Screen {
                 composer.text.push('\n');
             }
             KeyCode::Enter => {
+                // A find line narrowed the list as it was typed, so enter has
+                // nothing left to do but close it and leave the narrowing
+                // standing.
+                if let Asking::Find = composer.asking {
+                    return Ok(Doing::Carry);
+                }
                 // A line of nothing but filter tokens narrows the list, and
                 // starts nothing: the composer is where a person is already
                 // typing, so it is where they say which agents they want to
@@ -1511,6 +1541,15 @@ impl Screen {
                 composer.text.push(typed);
             }
             _ => {}
+        }
+
+        // A find line is answered by the wall rather than sent anywhere, so
+        // whatever the press did to it, the narrowing is taken again here: the
+        // list under the line is what somebody is reading, and it is no use to
+        // them a keystroke behind.
+        if let Asking::Find = composer.asking {
+            self.list.narrow(act::finding(&composer.text));
+            self.follow_the_cursor();
         }
 
         self.mode = Mode::Typing(composer);
@@ -3077,6 +3116,115 @@ mod tests {
             screen.card.as_ref().map(|card| card.id.as_str()),
             Some("done-b2c"),
             "the card followed j the way it follows the arrow"
+        );
+    }
+
+    /// Which agents the list is drawn with, which is what a narrowing changes.
+    #[cfg(test)]
+    fn showing_ids(screen: &Screen) -> Vec<String> {
+        screen
+            .list
+            .items()
+            .iter()
+            .filter_map(|item| screen.list.agent(*item))
+            .map(|view| view.id().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn find_slash_narrows_the_list_as_it_is_typed_and_enter_keeps_it() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            stopped_on_a_question("ask-a1b"),
+            finished_saying("port-b2c", "the answer"),
+        ]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char('/')));
+        assert!(
+            matches!(&screen.mode, Mode::Typing(line) if matches!(line.asking, Asking::Find)),
+            "a line of its own, which is not the task line"
+        );
+        assert!(
+            screen.banded().is_none(),
+            "and no band under the list: the list is what is being read while \
+             it filters, so nothing dims it and nothing takes its rows"
+        );
+        assert_eq!(showing_ids(&screen), ["ask-a1b", "port-b2c"]);
+
+        // Every keystroke, not the enter at the end of them.
+        press(&mut screen, KeyEvent::from(KeyCode::Char('p')));
+        assert_eq!(
+            showing_ids(&screen),
+            ["port-b2c"],
+            "narrowed as it is typed"
+        );
+        press(&mut screen, KeyEvent::from(KeyCode::Char('o')));
+        assert_eq!(showing_ids(&screen), ["port-b2c"]);
+        press(&mut screen, KeyEvent::from(KeyCode::Char('z')));
+        assert!(showing_ids(&screen).is_empty(), "and past the last match");
+        press(&mut screen, KeyEvent::from(KeyCode::Backspace));
+        assert_eq!(showing_ids(&screen), ["port-b2c"], "backspace widens it");
+
+        // Enter is what keeps it: the line goes and the narrowing stays.
+        press(&mut screen, KeyEvent::from(KeyCode::Enter));
+        assert!(matches!(screen.mode, Mode::List), "back on the agents");
+        assert_eq!(showing_ids(&screen), ["port-b2c"], "still narrowed");
+        assert!(screen.list.narrowing().is_some());
+    }
+
+    #[test]
+    fn find_esc_clears_the_narrowing_rather_than_leaving_it_behind() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            stopped_on_a_question("ask-a1b"),
+            finished_saying("port-b2c", "the answer"),
+        ]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        for key in [KeyCode::Char('/'), KeyCode::Char('p'), KeyCode::Esc] {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        assert!(matches!(screen.mode, Mode::List));
+        assert_eq!(
+            showing_ids(&screen),
+            ["ask-a1b", "port-b2c"],
+            "the whole fleet is back"
+        );
+        assert!(
+            screen.list.narrowing().is_none(),
+            "esc clears the narrowing rather than leaving one nobody can see \
+             the line for"
+        );
+    }
+
+    #[test]
+    fn find_reads_the_state_and_name_tokens_the_task_line_reads() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            stopped_on_a_question("ask-a1b"),
+            finished_saying("port-b2c", "the answer"),
+        ]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char('/')));
+        for key in word("s:waiting") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        assert_eq!(
+            showing_ids(&screen),
+            ["ask-a1b"],
+            "a line of nothing but filter tokens narrows the way the task \
+             line's do"
         );
     }
 

@@ -49,7 +49,7 @@ use super::{Mode, Screen};
 use card::{card_height, card_rows, float, under};
 use header::{header, header_rows, space_rows};
 use help::help;
-use input::{composer_height, composing_line, footer, permission};
+use input::{composer_height, composing_line, find_caret, finding, footer, permission};
 use wall::{Moment, agents, first_drawn, hangs_off};
 
 #[cfg(test)]
@@ -236,4 +236,10 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         frame.render_widget(Paragraph::new(row), allowed);
     }
     frame.render_widget(Paragraph::new(footer(screen, keys.width)), keys);
+    // The terminal's own cursor on the find line, which is the one line amx
+    // takes that is not drawn in a band of its own: a row being typed into
+    // should be one the terminal agrees is being typed into.
+    if let Some(line) = finding(screen) {
+        frame.set_cursor_position((keys.x + find_caret(line, keys.width as usize), keys.y));
+    }
 }

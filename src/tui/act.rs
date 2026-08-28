@@ -56,6 +56,10 @@ pub enum Asking {
     Reply { id: String, question: bool },
     /// A name for one of them, which goes nowhere near the agent itself.
     Name { id: String },
+    /// Which agents to keep on the wall. Not a line that is sent: it is read
+    /// on every keystroke, so the list under it is already narrowed by the
+    /// time somebody has finished typing what they were looking for.
+    Find,
 }
 
 impl Composer {
@@ -82,6 +86,9 @@ impl Composer {
             Asking::Reply { question: true, .. } => "ANSWER",
             Asking::Reply { .. } => "MESSAGE",
             Asking::Name { .. } => "RENAME",
+            // Nothing draws a rule over a find line: it is one row at the
+            // foot, so the label has nowhere to be said and nothing to say.
+            Asking::Find => "FIND",
         }
     }
 
@@ -94,7 +101,7 @@ impl Composer {
     /// column. A task is aimed at nobody yet and says nothing here.
     pub fn about(&self) -> Option<String> {
         match &self.asking {
-            Asking::Task => None,
+            Asking::Task | Asking::Find => None,
             Asking::Reply { id, .. } => Some(format!("to {id}")),
             Asking::Name { id } => Some(id.clone()),
         }
@@ -137,6 +144,24 @@ pub fn narrowing(line: &str) -> Option<Vec<Narrow>> {
             })
             .collect(),
     )
+}
+
+/// What a find line narrows the list to, which is anything somebody types.
+///
+/// A line of nothing but `s:` and `a:` tokens is read the way the task line
+/// reads them, so what is already documented keeps working where a person is
+/// most likely to reach for it. Anything else is the name to look for, whole
+/// and untokenised: `/` is a search box before it is a grammar, and somebody
+/// typing `port the` means an agent called that rather than two filters.
+///
+/// An empty line narrows to nothing, which is what puts the fleet back as the
+/// last character is deleted.
+pub fn finding(line: &str) -> Vec<Narrow> {
+    if let Some(narrowing) = narrowing(line) {
+        return narrowing;
+    }
+    let want = line.trim();
+    vec![Narrow::Name((!want.is_empty()).then(|| want.to_string()))]
 }
 
 /// The tokens a task line may be led with, and what each of them turns.

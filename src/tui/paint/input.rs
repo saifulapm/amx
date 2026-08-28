@@ -450,6 +450,58 @@ fn spent(hints: &[Hint]) -> usize {
 /// read on a row that is meant to be glanced at.
 const GAP: &str = "   ";
 
+/// The find line, where the view is holding one.
+pub(super) fn finding(screen: &Screen) -> Option<&Composer> {
+    match &screen.mode {
+        Mode::Typing(composer) if matches!(composer.asking, Asking::Find) => Some(composer),
+        _ => None,
+    }
+}
+
+/// What that line begins with, which is the key that opened it.
+const FIND: &str = "/";
+
+/// What it says while there is nothing on it: what it takes, and what the two
+/// keys out of it do. Dim and after the caret, the way the task line teaches
+/// its own prefixes.
+///
+/// `a:` is left out although it works. Bare text is already the name, so the
+/// one token worth a person's attention here is the other one — and the row
+/// has to fit the narrow terminal as well as the wide.
+const FINDING: &str = "a name, or s:state · enter keeps it · esc clears it";
+
+/// The find line drawn: the key that opened it, what has been typed, and a
+/// block where the next character lands.
+///
+/// No rule over it and no dimming behind it. Every other line amx takes is one
+/// somebody is composing and then sending, so the wall goes quiet under it;
+/// this one is answered by the wall itself, on every keystroke, and dimming
+/// the answer would be the one thing it must not do.
+fn find_row(line: &Composer, width: usize) -> Line<'static> {
+    let mut spans = vec![Span::styled(FIND, dim())];
+    match line.text.is_empty() {
+        true => spans.push(Span::styled(
+            fit(FINDING, width.saturating_sub(FIND.len())),
+            dim(),
+        )),
+        false => {
+            spans.push(Span::styled(
+                fit(&line.text, width.saturating_sub(FIND.len() + 1)),
+                bold(),
+            ));
+            spans.push(Span::raw(CURSOR));
+        }
+    }
+    Line::from(spans)
+}
+
+/// Where the terminal's own cursor goes on that row, counted from its left
+/// edge: after the key that opened the line and whatever has been typed since.
+pub(super) fn find_caret(line: &Composer, width: usize) -> u16 {
+    let at = FIND.len() + line.text.chars().count();
+    at.min(width.saturating_sub(1)) as u16
+}
+
 /// The keys, or whatever the view has to say for itself instead.
 ///
 /// The row under the card is the card's while it is holding a line, because
@@ -472,6 +524,13 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
     }
     if screen.answering().is_some() {
         return row(&ANSWERS);
+    }
+    // A find line is drawn here rather than in a band of its own, because the
+    // list is the thing being read while it narrows: a band would take rows
+    // off it and dim what was left, and both of those are the answer somebody
+    // is watching for.
+    if let Some(line) = finding(screen) {
+        return find_row(line, width as usize);
     }
     // A question of the view's own is not advice and not a key: it is the one
     // thing on the screen, in the colour of something waiting on a person.
@@ -514,6 +573,8 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
                 ("esc", "leaves it alone"),
                 width,
             ),
+            // Drawn above, on the row this one would have taken.
+            Asking::Find => find_row(composer, width),
         },
     }
 }
@@ -642,6 +703,57 @@ mod tests {
     /// The row the keys are drawn on, which is the last one on the screen.
     fn hint_row(screen: &Screen, size: (u16, u16)) -> String {
         painted(screen, size).pop().expect("a row for the keys")
+    }
+
+    /// The view with somebody part way through a find.
+    fn seeking(text: &str) -> Screen {
+        let mut screen = showing(a_fleet(), None);
+        let mut composer = Composer::new(Asking::Find);
+        composer.text = text.to_string();
+        screen.mode = Mode::Typing(composer);
+        screen
+    }
+
+    #[test]
+    fn find_stands_on_the_keys_row_and_leaves_the_wall_its_weight() {
+        // Empty, it says its whole grammar: what it takes and what the two
+        // keys out of it do.
+        let empty = painted(&seeking(""), TALL);
+        assert_eq!(
+            empty[29], "/a name, or s:state · enter keeps it · esc clears it",
+            "whole on the sixty columns a narrow terminal has: ghost text cut \
+             off is a lesson half taught"
+        );
+
+        let typed = painted(&seeking("port"), TALL);
+        assert_eq!(typed[29], "/port█");
+        assert_eq!(
+            caret(&seeking("port"), TALL),
+            (5, 29),
+            "with the terminal's own cursor where the block is"
+        );
+
+        // No rule, and no band: the list is what somebody typing here is
+        // reading, so nothing takes its rows.
+        assert!(
+            !typed.iter().any(|row| row.starts_with("FIND")),
+            "no rule over it: {typed:?}"
+        );
+        assert!(
+            typed.iter().any(|row| row.contains("ask-a1b")),
+            "and the agents are still on the wall: {typed:?}"
+        );
+
+        // Nor its weight. Every other line amx takes dims the wall behind it,
+        // because the wall has stopped answering to the keyboard; this one is
+        // answered by the wall on every keystroke.
+        let cells = cells(&seeking("port"), TALL);
+        assert!(
+            (0..29).any(|row| {
+                (0..TALL.0).any(|column| cells[(column, row)].modifier.contains(Modifier::BOLD))
+            }),
+            "the wall keeps its weight while a find is open"
+        );
     }
 
     #[test]
