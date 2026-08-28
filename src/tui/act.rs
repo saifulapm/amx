@@ -924,6 +924,42 @@ mod tests {
         assert_eq!(message.prompt(), "message to fix-login-b2c");
     }
 
+    #[test]
+    fn a_line_names_itself_in_one_word_on_the_rule_over_it() {
+        // The prompt says which agent; the rule over it has room for which of
+        // the five this is and nothing else, so that is all it says.
+        assert_eq!(Composer::new(Asking::Task).label(), "TASK");
+        assert_eq!(
+            Composer::new(Asking::Reply {
+                id: "ask-a1b".to_string(),
+                question: true,
+            })
+            .label(),
+            "ANSWER"
+        );
+        assert_eq!(
+            Composer::new(Asking::Reply {
+                id: "fix-login-b2c".to_string(),
+                question: false,
+            })
+            .label(),
+            "MESSAGE"
+        );
+        assert_eq!(
+            Composer::new(Asking::Name {
+                id: "fix-login-b2c".to_string(),
+            })
+            .label(),
+            "RENAME"
+        );
+
+        // And a task line renames its edge the moment what is typed on it
+        // would narrow the list instead, the way the prompt does.
+        let mut composer = Composer::new(Asking::Task);
+        composer.text = "s:waiting".to_string();
+        assert_eq!(composer.label(), "NARROW");
+    }
+
     /// One question of a call, as the payload records one: `multi` is whether
     /// it takes more than one choice, and a preview on a choice is what turns
     /// the notes field on.
