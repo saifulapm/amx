@@ -225,15 +225,26 @@ impl Filters {
             .state
             .as_ref()
             .is_none_or(|want| view.phase().as_str() == want);
-        // Every word for the agent that is on the screen somebody is typing
-        // at: the id every other surface uses, the name a person gave it
-        // because the id was not what they call it, and the `#12` its branch
-        // wears — which is routinely the only one of the three a person has in
-        // front of them, because they came to the wall from the pull request.
+        // Every word for the agent that somebody might have in front of them:
+        // the id every other surface uses, the name a person gave it because
+        // the id was not what they call it, the `#12` its branch wears — which
+        // is routinely the only one of those a person has, because they came
+        // to the wall from the pull request — and the task it was started on.
+        //
+        // The task because that is the one string on the record the person
+        // wrote themselves. The id is a word amx made up, and what an agent
+        // last said is the agent's. A search that could not reach the sentence
+        // somebody typed an hour ago is a search that misses the thing they
+        // actually remember.
+        //
+        // Not the summary, though it is the one on the screen. It changes
+        // every time the agent speaks, so a wall narrowed by it would drop
+        // rows while somebody was reading them.
         let name = self.name.as_ref().is_none_or(|want| {
-            view.id().contains(want)
-                || called(view).contains(want)
-                || prs.iter().any(|pr| pr.label().contains(want))
+            holds(view.id(), want)
+                || holds(called(view), want)
+                || holds(&view.meta.task, want)
+                || prs.iter().any(|pr| holds(&pr.label(), want))
         });
         state && name
     }
@@ -1106,6 +1117,16 @@ impl List {
 /// Here rather than on the reading itself, because it is a fact about the row:
 /// the record is filed under the id, every verb takes the id, and the name is
 /// the word this one screen shows instead.
+/// Whether `said` holds `want`, whatever case either was written in.
+///
+/// An id and a generated name are lowercase and always were, so folding costs
+/// them nothing. A task is a sentence somebody wrote, capitals and all, and a
+/// search that missed `Port the importer` because the `p` was typed small is a
+/// search nobody would use twice.
+fn holds(said: &str, want: &str) -> bool {
+    said.to_lowercase().contains(&want.to_lowercase())
+}
+
 pub fn called(view: &View) -> &str {
     view.state.name.as_deref().unwrap_or_else(|| view.id())
 }
@@ -2551,6 +2572,44 @@ mod tests {
             ["idle (1)", "fix-login-a1b"],
             "and a narrowing takes the name off the row as readily as the id"
         );
+    }
+
+    #[test]
+    fn find_looks_in_the_task_an_agent_was_started_on() {
+        let mut porting = view("a1b", Phase::Idle, 10);
+        porting.meta.task = "Port the importer to the new shape".to_string();
+        let mut logging = view("b2c", Phase::Idle, 20);
+        logging.meta.task = "fix the login bug".to_string();
+
+        // What somebody remembers about an agent is what they asked it for.
+        // The id is a word amx made up and the summary is the agent's, so the
+        // task is the one string on the record that the person typed.
+        let mut list = listed(vec![porting, logging]);
+        list.narrow(vec![Narrow::Name(Some("importer".to_string()))]);
+        assert_eq!(lines(&list), ["idle (1)", "a1b"]);
+
+        // Ignoring case, because a task is a sentence somebody wrote and a
+        // search that missed it over a capital is a search nobody trusts.
+        list.narrow(vec![Narrow::Name(Some("PORT".to_string()))]);
+        assert_eq!(lines(&list), ["idle (1)", "a1b"]);
+
+        list.narrow(vec![Narrow::Name(Some("LOGIN".to_string()))]);
+        assert_eq!(lines(&list), ["idle (1)", "b2c"]);
+    }
+
+    #[test]
+    fn find_ignores_case_in_the_id_and_the_name_as_well() {
+        let mut named = view("fix-login-a1b", Phase::Idle, 10);
+        named.state.name = Some("Auth".to_string());
+        let list = |want: &str| {
+            let mut list = listed(vec![named.clone(), view("port-b2c", Phase::Idle, 20)]);
+            list.narrow(vec![Narrow::Name(Some(want.to_string()))]);
+            lines(&list)
+        };
+
+        assert_eq!(list("AUTH"), ["idle (1)", "fix-login-a1b"]);
+        assert_eq!(list("auth"), ["idle (1)", "fix-login-a1b"]);
+        assert_eq!(list("FIX-LOGIN"), ["idle (1)", "fix-login-a1b"]);
     }
 
     #[test]

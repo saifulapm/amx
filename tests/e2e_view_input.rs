@@ -8,7 +8,7 @@
 mod common;
 
 use common::Harness;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Epoch seconds, for the records a test writes as though they had just
@@ -935,7 +935,7 @@ fn find_narrows_the_wall_as_it_is_typed_and_esc_puts_it_back() {
     types(&amx, &view, "/");
     amx.until("the find line", || {
         screen(&amx, &view)
-            .contains("/a name, or s:state")
+            .contains("/a name or task, or s:state")
             .then_some(())
     });
 
@@ -978,5 +978,51 @@ fn find_narrows_the_wall_as_it_is_typed_and_esc_puts_it_back() {
     amx.until("the whole fleet back", || {
         let drawn = screen(&amx, &view);
         (drawn.contains("port-a1b") && drawn.contains("login-b2c")).then_some(())
+    });
+}
+
+#[test]
+fn find_reaches_the_task_an_agent_was_started_on() {
+    let amx = Harness::new();
+    finished(&amx, "one-a1b", "done", 60);
+    finished(&amx, "two-b2c", "done", 120);
+
+    // The record the view reads, with the sentence somebody typed in it. The
+    // ids say nothing about the work, which is the whole point: what a person
+    // remembers an agent by is what they asked it for.
+    for (id, task) in [
+        ("one-a1b", "Port the importer to the new shape"),
+        ("two-b2c", "fix the login bug"),
+    ] {
+        let meta = amx.agent_dir(id).join("meta.json");
+        let mut held: Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta).expect("the record"))
+                .expect("the record is json");
+        held["task"] = json!(task);
+        std::fs::write(&meta, held.to_string()).expect("the record back");
+    }
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both agents", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("one-a1b") && drawn.contains("two-b2c")).then_some(())
+    });
+
+    // Typed in the case it was not written in, because a task is a sentence
+    // and nobody remembers where its capitals were.
+    types(&amx, &view, "/importer");
+    amx.until("the wall to narrow to the task that says it", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("one-a1b") && !drawn.contains("two-b2c")).then_some(())
+    });
+
+    types(&amx, &view, "");
+    for _ in 0.."importer".len() {
+        press(&amx, &view, "BSpace");
+    }
+    types(&amx, &view, "LOGIN");
+    amx.until("the other one, found past its capitals", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("two-b2c") && !drawn.contains("one-a1b")).then_some(())
     });
 }

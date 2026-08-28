@@ -246,7 +246,7 @@ the whole table.
 | `ctrl+r` | call it something else |
 | `ctrl+g` | write the line in `$EDITOR` |
 | `alt+1..9` | reach the agent at that place on the wall |
-| `/` | find: narrow the wall as you type, `esc` clears |
+| `/` | find by name, task or `#12`, as you type; `esc` clears it |
 | `ctrl+s` | gather them by state or by project |
 | `ctrl+t` | hold it at the top of its group |
 | `shift+↑` `shift+↓` | move it up or down its group |

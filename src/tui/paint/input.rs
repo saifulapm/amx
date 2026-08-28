@@ -465,10 +465,12 @@ const FIND: &str = "/";
 /// keys out of it do. Dim and after the caret, the way the task line teaches
 /// its own prefixes.
 ///
-/// Bare text is already the name, so the one token worth a person's attention
-/// here is the other one — and the row has to fit the narrow terminal as well
-/// as the wide.
-const FINDING: &str = "a name, or s:state · enter keeps it · esc clears it";
+/// It says `name or task` rather than listing the four things a search
+/// actually reaches, because the id and the pull request number are words
+/// somebody would type without being told they could. The task is the one
+/// worth naming: it is not on the row, so nobody would guess a search reaches
+/// it. And the row has to fit a narrow terminal whole.
+const FINDING: &str = "a name or task, or s:state · enter keeps · esc clears";
 
 /// The find line drawn: the key that opened it, what has been typed, and a
 /// block where the next character lands.
@@ -720,7 +722,7 @@ mod tests {
         // keys out of it do.
         let empty = painted(&seeking(""), TALL);
         assert_eq!(
-            empty[29], "/a name, or s:state · enter keeps it · esc clears it",
+            empty[29], "/a name or task, or s:state · enter keeps · esc clears",
             "whole on the sixty columns a narrow terminal has: ghost text cut \
              off is a lesson half taught"
         );

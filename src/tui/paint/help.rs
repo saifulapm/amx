@@ -71,7 +71,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 33] = [
     ("shift+↓", "move it down its group"),
     ("ctrl+r", "call it something else"),
     ("ctrl+x", "stop it · again forgets · a heading, the group"),
-    ("/", "find: narrow the wall as you type, esc clears"),
+    ("/", "find by name, task or #12, as you type"),
     ("s:", "narrow by state, on the task line"),
     // dials
     ("alt+v", "which vendor the next agent runs"),

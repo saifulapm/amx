@@ -3136,6 +3136,20 @@ mod tests {
         );
     }
 
+    /// Two agents with nothing in common but being on the wall, for the tests
+    /// about finding one of them.
+    ///
+    /// Distinct tasks on purpose: the fixture gives every view the same one,
+    /// and a search reaches the task, so a pair that shared it would match
+    /// both and prove nothing.
+    fn a_fleet_to_search() -> Vec<View> {
+        let mut asking = stopped_on_a_question("ask-a1b");
+        asking.meta.task = "fix the login bug".to_string();
+        let mut ported = finished_saying("port-b2c", "the answer");
+        ported.meta.task = "port the importer".to_string();
+        vec![asking, ported]
+    }
+
     /// Which agents the list is drawn with, which is what a narrowing changes.
     #[cfg(test)]
     fn showing_ids(screen: &Screen) -> Vec<String> {
@@ -3152,10 +3166,7 @@ mod tests {
     fn find_slash_narrows_the_list_as_it_is_typed_and_enter_keeps_it() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
-        let mut screen = watching(vec![
-            stopped_on_a_question("ask-a1b"),
-            finished_saying("port-b2c", "the answer"),
-        ]);
+        let mut screen = watching(a_fleet_to_search());
         let press = |screen: &mut Screen, key: KeyEvent| {
             screen.act(key, root.path(), &config, None).unwrap();
         };
@@ -3197,10 +3208,7 @@ mod tests {
     fn find_esc_clears_the_narrowing_rather_than_leaving_it_behind() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
-        let mut screen = watching(vec![
-            stopped_on_a_question("ask-a1b"),
-            finished_saying("port-b2c", "the answer"),
-        ]);
+        let mut screen = watching(a_fleet_to_search());
         let press = |screen: &mut Screen, key: KeyEvent| {
             screen.act(key, root.path(), &config, None).unwrap();
         };
@@ -3225,10 +3233,7 @@ mod tests {
     fn find_esc_clears_a_narrowing_that_is_already_standing() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
-        let mut screen = watching(vec![
-            stopped_on_a_question("ask-a1b"),
-            finished_saying("port-b2c", "the answer"),
-        ]);
+        let mut screen = watching(a_fleet_to_search());
         let press = |screen: &mut Screen, key: KeyEvent| {
             screen.act(key, root.path(), &config, None).unwrap();
         };
@@ -3257,10 +3262,7 @@ mod tests {
     fn find_esc_puts_the_card_away_before_it_touches_the_narrowing() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
-        let mut screen = watching(vec![
-            stopped_on_a_question("ask-a1b"),
-            finished_saying("port-b2c", "the answer"),
-        ]);
+        let mut screen = watching(a_fleet_to_search());
         let press = |screen: &mut Screen, key: KeyEvent| {
             screen.act(key, root.path(), &config, None).unwrap();
         };
@@ -3287,10 +3289,7 @@ mod tests {
     fn find_is_the_only_way_to_narrow_by_name_now_that_a_is_not_a_token() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
-        let mut screen = watching(vec![
-            stopped_on_a_question("ask-a1b"),
-            finished_saying("port-b2c", "the answer"),
-        ]);
+        let mut screen = watching(a_fleet_to_search());
         let press = |screen: &mut Screen, key: KeyEvent| {
             screen.act(key, root.path(), &config, None).unwrap();
         };
@@ -3324,10 +3323,7 @@ mod tests {
     fn find_reads_the_state_tokens_the_task_line_reads() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
-        let mut screen = watching(vec![
-            stopped_on_a_question("ask-a1b"),
-            finished_saying("port-b2c", "the answer"),
-        ]);
+        let mut screen = watching(a_fleet_to_search());
         let press = |screen: &mut Screen, key: KeyEvent| {
             screen.act(key, root.path(), &config, None).unwrap();
         };
