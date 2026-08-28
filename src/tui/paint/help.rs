@@ -42,9 +42,10 @@ use crate::tui::grid;
 ///
 /// The table is not public to the rest of the crate, so the test that checks
 /// the README against it reads this file as text.
-pub(in crate::tui) const HELP: [(&str, &str); 31] = [
+pub(in crate::tui) const HELP: [(&str, &str); 32] = [
     // walk
     ("↑ ↓ j k", "walk the agents"),
+    ("gg G", "the top of the list, and the foot"),
     ("alt+1..9", "reach one by where it is on the wall"),
     ("esc h", "put the card away · leave a line alone"),
     ("?", "these keys"),
@@ -91,7 +92,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 31] = [
 /// Runs rather than tables of their own, so nothing here can hold a key twice
 /// or drop one between two headings.
 pub(super) const GROUPS: [(&str, usize); 5] = [
-    ("walk", 5),
+    ("walk", 6),
     ("look", 7),
     ("start", 5),
     ("arrange", 7),
@@ -448,19 +449,26 @@ mod tests {
     }
 
     #[test]
-    fn keymap_stands_the_keys_in_two_columns_of_seventeen_and_fourteen() {
+    fn keymap_stands_the_keys_in_two_columns_cut_where_they_balance() {
         let painted = overlay(WIDE_SCREEN);
         let share = WIDE_SCREEN.0 as usize / 2;
         let left = between(&painted, 0, share);
         let right = between(&painted, share, WIDE_SCREEN.0 as usize);
 
-        // Cut where the two columns come out nearest the same number of keys,
-        // which for this table is after `start`: seventeen against fourteen.
-        let cut: usize = GROUPS[..3].iter().map(|(_, under)| under).sum();
-        assert_eq!(
-            cut, 17,
-            "the groups are not the runs this test is written for"
-        );
+        // Cut where the two columns come out nearest the same number of
+        // keys, which for this table is after `start`. Worked out rather than
+        // written down: the boundary moves every time the table grows, and a
+        // number here would only ever say which day it was written.
+        let boundary =
+            |groups: usize| -> usize { GROUPS[..groups].iter().map(|(_, under)| under).sum() };
+        let cut = boundary(3);
+        let off = |at: usize| (HELP.len() as isize - 2 * at as isize).abs();
+        for groups in 1..GROUPS.len() {
+            assert!(
+                off(cut) <= off(boundary(groups)),
+                "the cut after `start` is not the one that balances them"
+            );
+        }
         for (key, does) in &HELP[..cut] {
             assert!(
                 left.contains(does),
@@ -502,7 +510,11 @@ mod tests {
         let first = between(&painted, 0, share);
         let heading = first.lines().nth(3).expect("the first heading").to_string();
         assert!(heading.starts_with(" WALK ┈"), "{heading:?}");
-        assert!(heading.trim_end().ends_with('5'), "{heading:?}");
+        assert!(
+            heading.trim_end().ends_with(&GROUPS[0].1.to_string()),
+            "and how many stand under it, which is the run's own length: \
+             {heading:?}"
+        );
 
         let second = between(&painted, share, WIDE_SCREEN.0 as usize);
         let beside = second
@@ -511,16 +523,29 @@ mod tests {
             .expect("the heading beside it")
             .to_string();
         assert!(beside.starts_with(" ARRANGE ┈"), "{beside:?}");
-        assert!(beside.trim_end().ends_with('7'), "{beside:?}");
+        assert!(
+            beside.trim_end().ends_with(&GROUPS[3].1.to_string()),
+            "{beside:?}"
+        );
 
         // A group stands off from the one under it rather than running into
-        // it, and the keys are indented under their own heading.
+        // it, and the keys are indented under their own heading. Which row
+        // that is follows the first run's length rather than being counted
+        // off a screen somebody once looked at.
+        let under_walk = 4 + GROUPS[0].1;
         assert!(
-            painted[9].chars().take(share).all(char::is_whitespace),
+            painted[under_walk]
+                .chars()
+                .take(share)
+                .all(char::is_whitespace),
             "one group stands off from the next: {:?}",
-            painted[9]
+            painted[under_walk]
         );
-        assert!(painted[10].starts_with(" LOOK ┈"), "{:?}", painted[10]);
+        assert!(
+            painted[under_walk + 1].starts_with(" LOOK ┈"),
+            "{:?}",
+            painted[under_walk + 1]
+        );
         assert!(painted[4].starts_with("  "), "{:?}", painted[4]);
     }
 

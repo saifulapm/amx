@@ -718,6 +718,27 @@ impl List {
         self.step(-1);
     }
 
+    /// The first line of the list, and the last — the two ends one move away
+    /// rather than a walk.
+    ///
+    /// Reached by standing outside the list and stepping inward, so the same
+    /// walk that keeps the cursor off a blank line keeps it off one here: the
+    /// ends of the list are wherever the step stops, not wherever the items
+    /// happen to end.
+    pub fn top(&mut self) {
+        self.cursor = 0;
+        if matches!(self.items.first(), Some(Item::Blank)) {
+            self.step(1);
+        }
+    }
+
+    pub fn bottom(&mut self) {
+        self.cursor = self.items.len().saturating_sub(1);
+        if matches!(self.items.last(), Some(Item::Blank)) {
+            self.step(-1);
+        }
+    }
+
     /// Put the cursor on this line, for a pointer that named one: any line
     /// but the blank, which is spacing rather than a stop. Answers whether
     /// the cursor landed.
@@ -1657,6 +1678,46 @@ mod tests {
             ["completed (5)", "done-4", "done-3", "done-0", "… 2 more"]
         );
         assert_eq!(list.selected().unwrap().id(), "done-0");
+    }
+
+    #[test]
+    fn view_reaches_the_top_and_the_foot_of_the_list_in_one_move() {
+        let mut list = listed(vec![
+            view("ask-a1b", Phase::Waiting, 10),
+            view("busy-b2c", Phase::Working, 20),
+            view("done-c3d", Phase::Done, 30),
+        ]);
+        // Headings and the blanks between the groups, so neither end of the
+        // walk is a line the cursor may rest on by accident.
+        assert_eq!(
+            lines(&list),
+            [
+                "needs input (1)",
+                "ask-a1b",
+                "",
+                "working (1)",
+                "busy-b2c",
+                "",
+                "completed (1)",
+                "done-c3d",
+            ]
+        );
+
+        list.bottom();
+        assert_eq!(list.selected().unwrap().id(), "done-c3d");
+        list.top();
+        assert_eq!(
+            list.cursor(),
+            0,
+            "the first line there is, which is a heading"
+        );
+
+        // From anywhere, and never onto a blank: the cursor does not rest on
+        // spacing, so neither end of the list may be one.
+        list.down();
+        list.bottom();
+        list.bottom();
+        assert_eq!(list.selected().unwrap().id(), "done-c3d", "and stays there");
     }
 
     #[test]

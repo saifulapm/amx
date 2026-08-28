@@ -53,6 +53,15 @@ const MORE: Hint = ("?", "keys");
 /// would be naming a key that cannot work where it was read.
 pub(super) const ANSWERS: [Hint; 2] = [("enter", "answers it"), ("esc", "closes it")];
 
+/// And what the row says while a `g` is standing there waiting for its second.
+///
+/// Both halves of it, because what somebody wants to know having pressed one
+/// key of two is what the other one would do and how to not do it.
+const WAITING_ON_A_G: [Hint; 2] = [
+    ("g again", "the top of the list"),
+    ("any other key", "carries on"),
+];
+
 /// What the view has to say for itself, and how loudly.
 ///
 /// Two channels in the one slot at the foot of the screen, a severity apart:
@@ -446,6 +455,13 @@ const GAP: &str = "   ";
 /// The row under the card is the card's while it is holding a line, because
 /// what enter does there is not what it does anywhere else in the view.
 pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
+    // A half-pressed `gg` before anything else, because it is the last thing
+    // that happened and the one thing on the screen a keystroke has changed
+    // without moving anything. A key that lands and draws nothing is a key
+    // nobody can tell was read.
+    if screen.going {
+        return row(&WAITING_ON_A_G);
+    }
     if let Some(notice) = &screen.notice {
         return match notice {
             Notice::Failed(said) => {
@@ -626,6 +642,26 @@ mod tests {
     /// The row the keys are drawn on, which is the last one on the screen.
     fn hint_row(screen: &Screen, size: (u16, u16)) -> String {
         painted(screen, size).pop().expect("a row for the keys")
+    }
+
+    #[test]
+    fn keymap_a_g_waiting_for_its_second_says_so_where_the_keys_are() {
+        let mut screen = showing(a_fleet(), None);
+        let wide = (80, 12);
+        assert!(
+            !hint_row(&screen, wide).contains("g again"),
+            "nothing is waiting yet"
+        );
+
+        // The one press that changes nothing on the wall, so the one press
+        // that has nowhere else to say it landed.
+        screen.going = true;
+        let row = hint_row(&screen, wide);
+        assert!(row.starts_with("g again the top of the list"), "{row:?}");
+        assert!(
+            row.contains("any other key carries on"),
+            "and the way out of it: {row:?}"
+        );
     }
 
     /// A fleet with nothing left to finish, so there is a fold to walk onto.

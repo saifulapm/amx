@@ -230,6 +230,7 @@ the whole table.
 | Key | What it does |
 | --- | ------------ |
 | `↑` `↓` `j` `k` | walk the agents |
+| `gg` `G` | the top of the list, and the foot |
 | `space` `l` | the card: what one is asking, and the answer |
 | `enter` `→` | put its session in front of you, or shut the group under the cursor |
 | `esc` `h` | put the card away, or leave a line alone |

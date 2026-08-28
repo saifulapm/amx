@@ -1397,6 +1397,46 @@ fn on_the_spine(line: &str) -> bool {
 }
 
 #[test]
+fn gg_and_g_reach_the_two_ends_of_the_list_and_one_g_waits() {
+    let amx = Harness::new();
+    finished(&amx, "one-a1b", "done", 60);
+    finished(&amx, "two-b2c", "done", 120);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both agents", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("one-a1b") && drawn.contains("two-b2c")).then_some(())
+    });
+
+    // G is one press and lands on the last row there is.
+    press(&amx, &view, "G");
+    amx.until("the bar at the foot", || {
+        coloured_line(&amx, &view, "two-b2c")
+            .contains(&bar())
+            .then_some(())
+    });
+
+    // One g moves nothing and says on the keys row that it is waiting.
+    press(&amx, &view, "g");
+    let waiting = amx.until("the row to say a g is waiting", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("g again").then_some(drawn)
+    });
+    assert!(
+        coloured_line(&amx, &view, "two-b2c").contains(&bar()),
+        "and the cursor has not moved for it:\n{waiting}"
+    );
+
+    // The second one goes to the top, which is the heading over the group.
+    press(&amx, &view, "g");
+    amx.until("the bar at the top", || {
+        let drawn = screen(&amx, &view);
+        (coloured_line(&amx, &view, "COMPLETED").contains(&bar()) && !drawn.contains("g again"))
+            .then_some(())
+    });
+}
+
+#[test]
 fn enter_shuts_the_group_its_headings_stand_over_and_opens_it_again() {
     let amx = Harness::new();
     finished(&amx, "one-a1b", "done", 60);

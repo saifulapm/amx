@@ -439,6 +439,14 @@ struct Screen {
     /// Where what somebody arranges is kept, where there is anywhere to keep
     /// it.
     remembering: Option<PathBuf>,
+    /// Whether a `g` is standing there waiting for the second one that would
+    /// make it a move to the top.
+    ///
+    /// Taken at the head of every press, so the key that is not that second
+    /// `g` clears it by arriving and then does its own job whole. No window on
+    /// it, unlike the arm a `ctrl+x` leaves: that one is timed because the
+    /// press inside it destroys something, and this one only moves a cursor.
+    going: bool,
     /// Which frame of the working pulse the rows are on.
     beat: usize,
     /// When that frame came up.
@@ -1173,6 +1181,10 @@ impl Screen {
         // The one chord an arrow key arrives under, which is the only place
         // shift is a key of its own rather than the character it typed.
         let shift = plain && key.modifiers.contains(KeyModifiers::SHIFT);
+        // Whether the press before this one was the first half of a `gg`.
+        // Taken rather than read, so every arm below is a key that cancelled
+        // it, and only the one that wants it has to say so.
+        let going = std::mem::take(&mut self.going);
         match key.code {
             KeyCode::Char('q') if plain => return Ok(Doing::Close),
             // The cursor with shift held moves the agent it is on instead of
@@ -1197,6 +1209,21 @@ impl Screen {
                 self.list.up();
                 self.moved();
             }
+            // Both ends of the list, one press away. `G` is one key; `gg` is
+            // two, because that is the pair a person's hands already know, and
+            // a single `g` that jumped would fire under every hand reaching
+            // for the second one.
+            KeyCode::Char('G') if plain => {
+                self.list.bottom();
+                self.moved();
+            }
+            KeyCode::Char('g') if plain => match going {
+                true => {
+                    self.list.top();
+                    self.moved();
+                }
+                false => self.going = true,
+            },
             // The cursor keys walk the list even while a card is open; paging
             // inside the card's body is these two — and the two chords under
             // them, which are the same pages for a keyboard that has no page
@@ -3051,6 +3078,73 @@ mod tests {
             Some("done-b2c"),
             "the card followed j the way it follows the arrow"
         );
+    }
+
+    #[test]
+    fn keys_gg_reaches_the_top_of_the_list_and_g_alone_waits_for_it() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            stopped_on_a_question("ask-a1b"),
+            finished_saying("done-b2c", "the answer"),
+        ]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+        let on = |screen: &Screen| screen.list.cursor();
+
+        // G is one press and goes to the foot.
+        press(&mut screen, KeyEvent::from(KeyCode::Char('G')));
+        assert_eq!(
+            screen.list.selected().map(|view| view.id()),
+            Some("done-b2c"),
+            "G lands on the last agent there is"
+        );
+
+        // One g moves nothing and says it is waiting for its second.
+        let foot = on(&screen);
+        press(&mut screen, KeyEvent::from(KeyCode::Char('g')));
+        assert_eq!(on(&screen), foot, "one g moves nothing");
+        assert!(screen.going, "and waits for the g that would finish it");
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char('g')));
+        assert_eq!(on(&screen), 0, "the second g goes to the top");
+        assert!(!screen.going, "with nothing left waiting");
+    }
+
+    #[test]
+    fn keys_a_g_waiting_for_its_second_is_cancelled_by_any_other_key() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            stopped_on_a_question("ask-a1b"),
+            finished_saying("done-b2c", "the answer"),
+        ]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char('G')));
+        press(&mut screen, KeyEvent::from(KeyCode::Char('g')));
+        assert!(screen.going);
+
+        // The key that is not the second g does its own job, whole, and takes
+        // the waiting one with it: a press that half-happened would be worse
+        // than one that did not.
+        press(&mut screen, KeyEvent::from(KeyCode::Char('k')));
+        assert!(!screen.going, "the g is gone");
+        assert!(
+            screen.list.selected().map(|view| view.id()) != Some("done-b2c"),
+            "and k walked, rather than being eaten by the g in front of it"
+        );
+
+        // Which means a g after that one is a fresh first press, not a second.
+        press(&mut screen, KeyEvent::from(KeyCode::Char('g')));
+        assert!(screen.going);
+        let before = screen.list.cursor();
+        press(&mut screen, KeyEvent::from(KeyCode::Char('j')));
+        assert_ne!(screen.list.cursor(), before, "j walked");
+        assert!(!screen.going);
     }
 
     #[test]
