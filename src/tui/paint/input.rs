@@ -338,7 +338,7 @@ fn placeholder(composer: &Composer) -> Option<&'static str> {
     }
     Some(
         "m:model · p:permission · w:on|off · d:directory · agent:command \
-         · s:state · a:name",
+         · s:state",
     )
 }
 
@@ -465,9 +465,9 @@ const FIND: &str = "/";
 /// keys out of it do. Dim and after the caret, the way the task line teaches
 /// its own prefixes.
 ///
-/// `a:` is left out although it works. Bare text is already the name, so the
-/// one token worth a person's attention here is the other one — and the row
-/// has to fit the narrow terminal as well as the wide.
+/// Bare text is already the name, so the one token worth a person's attention
+/// here is the other one — and the row has to fit the narrow terminal as well
+/// as the wide.
 const FINDING: &str = "a name, or s:state · enter keeps it · esc clears it";
 
 /// The find line drawn: the key that opened it, what has been typed, and a
@@ -1091,7 +1091,6 @@ mod tests {
             "d:directory",
             "agent:command",
             "s:state",
-            "a:name",
         ] {
             assert!(hint.contains(named), "{named} is not taught: {hint}");
         }

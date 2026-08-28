@@ -388,8 +388,9 @@ the terminal narrows — the eighty columns above have already dropped
 goes.
 
 The line a task is typed on reads a few words of its own, at the front of it
-and nowhere else. `s:` and `a:` narrow the list by state and by name rather
-than starting anything: `s:waiting`, `a:import`, or `a:#12`. `m:`, `p:`, `w:`,
+and nowhere else. `s:` narrows the list by state rather than starting
+anything: `s:waiting`. Narrowing by name is `/`, which does it as you type and
+needs no prefix at all. `m:`, `p:`, `w:`,
 `d:` and `agent:` turn the dials for the one agent that line starts, as in
 `m:opus w:off port the importer`. `d:` is where that one runs:
 `d:/srv/app port it`, `d:~/code/importer port it`, or a name read against the
@@ -432,7 +433,7 @@ both take your terminal's own colour, because neither has an answer to that
 question yet. The card says which of the two it is in words, and lists every
 request the branch has rather than the one the row had room for.
 
-`a:#12` narrows the list to it. That is the word you have in front of you when
+`/#12` narrows the list to it. That is the word you have in front of you when
 you arrive at the wall from the request rather than from the agent.
 
 Reading it is `gh`, and `glab` where gh has nothing to say. Neither is required

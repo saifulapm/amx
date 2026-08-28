@@ -114,19 +114,20 @@ impl Composer {
     }
 }
 
-/// A line of nothing but `s:` and `a:` tokens narrows the list; anything else
+/// A line of nothing but `s:` tokens narrows the list by state; anything else
 /// is a task, colons and all.
 ///
 /// Nothing but: "s:waiting is what to check" is a sentence somebody may well
 /// want an agent to act on, and a surface that guessed otherwise would be one
 /// nobody could type into.
+///
+/// There was an `a:` beside it that narrowed by name. `/` does that now, on
+/// every keystroke and without a grammar to learn, so the token was a second
+/// way to do one thing — and the worse one, because it needed a line opened
+/// and a prefix remembered before it narrowed anything.
 pub fn narrowing(line: &str) -> Option<Vec<Narrow>> {
     let tokens: Vec<&str> = line.split_whitespace().collect();
-    if tokens.is_empty()
-        || !tokens
-            .iter()
-            .all(|token| token.starts_with("s:") || token.starts_with("a:"))
-    {
+    if tokens.is_empty() || !tokens.iter().all(|token| token.starts_with(STATE)) {
         return None;
     }
 
@@ -134,25 +135,23 @@ pub fn narrowing(line: &str) -> Option<Vec<Narrow>> {
         tokens
             .iter()
             .map(|token| {
-                let (key, want) = token.split_at(2);
                 // A token with nothing after it drops that narrowing.
-                let want = (!want.is_empty()).then(|| want.to_string());
-                match key {
-                    "s:" => Narrow::State(want),
-                    _ => Narrow::Name(want),
-                }
+                let want = &token[STATE.len()..];
+                Narrow::State((!want.is_empty()).then(|| want.to_string()))
             })
             .collect(),
     )
 }
 
+/// The one token that narrows by something other than the name.
+pub const STATE: &str = "s:";
+
 /// What a find line narrows the list to, which is anything somebody types.
 ///
-/// A line of nothing but `s:` and `a:` tokens is read the way the task line
-/// reads them, so what is already documented keeps working where a person is
-/// most likely to reach for it. Anything else is the name to look for, whole
-/// and untokenised: `/` is a search box before it is a grammar, and somebody
-/// typing `port the` means an agent called that rather than two filters.
+/// A line of nothing but `s:` tokens narrows by state, the way the task line's
+/// do. Anything else is the name to look for, whole and untokenised: `/` is a
+/// search box before it is a grammar, and somebody typing `port the` means an
+/// agent called that rather than two filters.
 ///
 /// An empty line narrows to nothing, which is what puts the fleet back as the
 /// last character is deleted.
@@ -1132,12 +1131,18 @@ mod tests {
             Some(vec![Narrow::State(Some("working".to_string()))])
         );
         assert_eq!(
-            narrowing("a:port  s:waiting"),
+            narrowing("s:waiting  s:working"),
             Some(vec![
-                Narrow::Name(Some("port".to_string())),
                 Narrow::State(Some("waiting".to_string())),
+                Narrow::State(Some("working".to_string())),
             ]),
             "as many as were typed, in the order they were typed"
+        );
+        assert_eq!(
+            narrowing("a:port"),
+            None,
+            "`a:` narrowed by name once and does not now: `/` does that, so a \
+             line beginning `a:` is a task with a colon in it"
         );
         assert_eq!(
             narrowing("s:"),

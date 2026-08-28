@@ -957,17 +957,23 @@ fn find_narrows_the_wall_as_it_is_typed_and_esc_puts_it_back() {
     // Enter closes the line and leaves the narrowing standing.
     press(&amx, &view, "Enter");
     let kept = amx.until("the line to go", || {
+        // The keys are back on the row the line had. Not the absence of
+        // `/port`: the header reads the narrowing back in the words it was
+        // typed in, so that string is still on the screen and should be.
         let drawn = screen(&amx, &view);
-        (!drawn.contains("/port")).then_some(drawn)
+        drawn.contains("space card").then_some(drawn)
     });
+    assert!(
+        kept.contains("/port"),
+        "with the header saying what the wall is narrowed to:\n{kept}"
+    );
     assert!(
         !kept.contains("login-b2c"),
         "the wall stays narrowed:\n{kept}"
     );
 
-    // And esc on a fresh find clears it, which is the only way there is to
-    // drop a narrowing.
-    types(&amx, &view, "/");
+    // And esc drops it from the list itself, with no line open: a narrowing
+    // outlives the line it was typed on, so the key that clears it has to.
     press(&amx, &view, "Escape");
     amx.until("the whole fleet back", || {
         let drawn = screen(&amx, &view);

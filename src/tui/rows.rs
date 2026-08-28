@@ -238,11 +238,13 @@ impl Filters {
         state && name
     }
 
-    /// What was typed, read back.
+    /// What was typed, read back — in the words it would be typed in now. The
+    /// name came off a find line, so it reads as one: a header naming a token
+    /// nobody can type any more is a header that cannot be acted on.
     fn label(&self) -> Option<String> {
         let said: Vec<String> = [
             self.state.as_ref().map(|want| format!("s:{want}")),
-            self.name.as_ref().map(|want| format!("a:{want}")),
+            self.name.as_ref().map(|want| format!("/{want}")),
         ]
         .into_iter()
         .flatten()
@@ -1958,7 +1960,11 @@ mod tests {
             ["working (1)", "busy-c3d"],
             "and a line only changes the narrowing it names"
         );
-        assert_eq!(list.narrowing().as_deref(), Some("s:working a:c3d"));
+        assert_eq!(
+            list.narrowing().as_deref(),
+            Some("s:working /c3d"),
+            "the name reads back as the find line it came off"
+        );
 
         list.narrow(vec![Narrow::State(None), Narrow::Name(None)]);
         assert_eq!(lines(&list).len(), 6);

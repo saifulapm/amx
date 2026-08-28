@@ -55,7 +55,7 @@ use crate::verbs::resume::Comeback;
 use crate::{exit, registry, rules, spawn, verbs};
 use act::{Asking, Composer, Edited, Renamed, Replied, Started};
 use paint::{Body, Card, Notice};
-use rows::{Arrangement, List};
+use rows::{Arrangement, List, Narrow};
 
 /// How often the agents are read again.
 const REFRESH: Duration = Duration::from_millis(1000);
@@ -1256,7 +1256,15 @@ impl Screen {
             // is not something a letter this easy to hit should do.
             KeyCode::Char('l') if plain => self.look_closer(root),
             KeyCode::Char('h') if plain => self.look_away(),
-            KeyCode::Esc if plain => self.look_away(),
+            // One layer a press, innermost first: the card is in front of the
+            // list, so it goes before the list changes under it. A narrowing
+            // outlives the line it was typed on, so the key that drops one has
+            // to reach it here as well as there — otherwise a wall somebody
+            // narrowed an hour ago is a wall with no way back.
+            KeyCode::Esc if plain => match (self.card.is_some(), self.list.narrowing()) {
+                (false, Some(_)) => self.widen(),
+                _ => self.look_away(),
+            },
             // The same key, read where the cursor is: a heading opens and
             // shuts the group under it, the fold gives back what it is holding,
             // and a row brings its agent forward.
@@ -1425,11 +1433,8 @@ impl Screen {
                 }
                 // A find line has already done its work by the time esc is
                 // pressed, so cancelling it means putting the fleet back.
-                // Which also makes `/` esc the way to drop a narrowing: there
-                // was no key for that at all before.
                 if let Asking::Find = composer.asking {
-                    self.list.narrow(act::finding(""));
-                    self.follow_the_cursor();
+                    self.widen();
                 }
                 return Ok(Doing::Carry);
             }
@@ -1939,6 +1944,18 @@ impl Screen {
         if self.look == Look::Changes {
             self.look = Look::Screen;
         }
+        self.follow_the_cursor();
+    }
+
+    /// The whole fleet back, whatever it was narrowed by.
+    ///
+    /// Both filters, not the one a find line happened to set: somebody who
+    /// pressed esc to see everything again means everything, and a state
+    /// narrowing left standing under a name one that just went would be a wall
+    /// still short for a reason nothing on the screen still says.
+    fn widen(&mut self) {
+        self.list
+            .narrow(vec![Narrow::State(None), Narrow::Name(None)]);
         self.follow_the_cursor();
     }
 
@@ -3205,7 +3222,106 @@ mod tests {
     }
 
     #[test]
-    fn find_reads_the_state_and_name_tokens_the_task_line_reads() {
+    fn find_esc_clears_a_narrowing_that_is_already_standing() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            stopped_on_a_question("ask-a1b"),
+            finished_saying("port-b2c", "the answer"),
+        ]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        // Found and kept, so the line has gone and the narrowing has not.
+        press(&mut screen, KeyEvent::from(KeyCode::Char('/')));
+        for key in word("port") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        press(&mut screen, KeyEvent::from(KeyCode::Enter));
+        assert_eq!(showing_ids(&screen), ["port-b2c"]);
+
+        // Esc is what drops it, on the list rather than only on the line: a
+        // narrowing outlives the line it was typed on, so the key that clears
+        // it has to as well.
+        press(&mut screen, KeyEvent::from(KeyCode::Esc));
+        assert_eq!(
+            showing_ids(&screen),
+            ["ask-a1b", "port-b2c"],
+            "the whole fleet is back"
+        );
+        assert!(screen.list.narrowing().is_none());
+    }
+
+    #[test]
+    fn find_esc_puts_the_card_away_before_it_touches_the_narrowing() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            stopped_on_a_question("ask-a1b"),
+            finished_saying("port-b2c", "the answer"),
+        ]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char('/')));
+        for key in word("port") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        press(&mut screen, KeyEvent::from(KeyCode::Enter));
+        press(&mut screen, KeyEvent::from(KeyCode::Char('l')));
+        assert!(screen.card.is_some(), "a card over the narrowed wall");
+
+        // One layer a press, innermost first: the card is what is in front of
+        // the list, so it goes before the list itself changes under it.
+        press(&mut screen, KeyEvent::from(KeyCode::Esc));
+        assert!(screen.card.is_none(), "the card went");
+        assert_eq!(showing_ids(&screen), ["port-b2c"], "and the narrowing held");
+
+        press(&mut screen, KeyEvent::from(KeyCode::Esc));
+        assert_eq!(showing_ids(&screen), ["ask-a1b", "port-b2c"]);
+    }
+
+    #[test]
+    fn find_is_the_only_way_to_narrow_by_name_now_that_a_is_not_a_token() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            stopped_on_a_question("ask-a1b"),
+            finished_saying("port-b2c", "the answer"),
+        ]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        // `a:` is a word in a task now, not a filter, so a task line holding
+        // one is a task and the line says so.
+        press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
+        for key in word("a:port") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        assert_eq!(
+            screen.banded().map(|line| line.label()),
+            Some("TASK"),
+            "a line beginning `a:` starts an agent rather than narrowing"
+        );
+        press(&mut screen, KeyEvent::from(KeyCode::Esc));
+
+        // And on a find line it is the name to look for, colon and all,
+        // rather than a token that means something.
+        press(&mut screen, KeyEvent::from(KeyCode::Char('/')));
+        for key in word("a:port") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        assert!(
+            showing_ids(&screen).is_empty(),
+            "nothing is called `a:port`"
+        );
+    }
+
+    #[test]
+    fn find_reads_the_state_tokens_the_task_line_reads() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
         let mut screen = watching(vec![
@@ -4734,23 +4850,53 @@ mod tests {
     }
 
     #[test]
-    fn axis_narrows_the_list_from_the_line_a_task_is_typed_on() {
+    fn axis_narrows_the_list_by_name_from_the_find_line() {
         let root = TempDir::new().unwrap();
         finished(root.path(), "first-a1b", "wrote the parser", 60);
         finished(root.path(), "second-b2c", "wrote the tests", 120);
 
-        let mut keys = vec![KeyCode::Char('n')];
-        keys.extend(word("a:second"));
+        let mut keys = vec![KeyCode::Char('/')];
+        keys.extend(word("second"));
         keys.push(KeyCode::Enter);
         keys.push(KeyCode::Char('q'));
 
         let (code, screen) = held(root.path(), &keys);
         assert_eq!(code, exit::OK);
-        assert!(screen.contains("a:second"), "{screen}");
+        assert!(
+            screen.contains("/second"),
+            "the header reads it back in the words it was typed in:\n{screen}"
+        );
         assert!(screen.contains("second-b2c"), "{screen}");
         assert!(
             !screen.contains("first-a1b"),
             "the one that was named is the one that is left:\n{screen}"
+        );
+        assert!(
+            crate::store::list(root.path()).unwrap().len() == 2,
+            "and a line that narrows starts nothing"
+        );
+    }
+
+    #[test]
+    fn axis_narrows_the_list_by_state_from_the_line_a_task_is_typed_on() {
+        let root = TempDir::new().unwrap();
+        finished(root.path(), "first-a1b", "wrote the parser", 60);
+        finished(root.path(), "second-b2c", "wrote the tests", 120);
+
+        // The one token the task line still reads. Narrowing by name left it
+        // for `/`, which narrows as the word is typed rather than waiting for
+        // an enter.
+        let mut keys = vec![KeyCode::Char('n')];
+        keys.extend(word("s:working"));
+        keys.push(KeyCode::Enter);
+        keys.push(KeyCode::Char('q'));
+
+        let (code, screen) = held(root.path(), &keys);
+        assert_eq!(code, exit::OK);
+        assert!(screen.contains("s:working"), "{screen}");
+        assert!(
+            !screen.contains("first-a1b") && !screen.contains("second-b2c"),
+            "neither of them is working:\n{screen}"
         );
         assert!(
             crate::store::list(root.path()).unwrap().len() == 2,

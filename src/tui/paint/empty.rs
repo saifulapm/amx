@@ -170,7 +170,7 @@ mod tests {
             .list
             .narrow(vec![Narrow::Name(Some("nobody".to_string()))]);
 
-        assert_eq!(painted(&screen, (60, 8))[1], "nothing matches a:nobody");
+        assert_eq!(painted(&screen, (60, 8))[1], "nothing matches /nobody");
     }
 
     #[test]
@@ -267,7 +267,7 @@ mod tests {
             .list
             .narrow(vec![Narrow::Name(Some("nobody".to_string()))]);
         let narrowed = painted(&screen, WALL);
-        assert_eq!(narrowed[3], "nothing matches a:nobody");
+        assert_eq!(narrowed[3], "nothing matches /nobody");
         assert!(
             !narrowed.iter().any(|line| line.contains("start an agent")),
             "somebody who narrowed the wall themselves has agents already: {narrowed:?}"
