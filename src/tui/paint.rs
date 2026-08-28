@@ -199,7 +199,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         card_over,
     );
     match &screen.mode {
-        Mode::Keys => help(frame, middle),
+        Mode::Keys => help(frame, middle, &screen.page),
         // The card stands among the rows rather than over them, so the list is
         // drawn around it and the rows the cursor walks are the ones above.
         _ => agents(

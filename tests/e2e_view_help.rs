@@ -195,6 +195,50 @@ fn the_keys_are_on_the_screen_for_the_asking() {
 }
 
 #[test]
+fn the_keys_a_short_screen_cannot_hold_are_a_page_away() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+    // The screen a terminal opens at, which is half the rows the keys take.
+    resize(&amx, &view, 80, 24);
+
+    types(&amx, &view, "?");
+    let first = amx.until("the keys", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("walk the agents").then_some(drawn)
+    });
+    assert!(
+        first.contains("page 1 of"),
+        "a screen this short says there is another page:\n{first}"
+    );
+    assert!(
+        !first.contains("which vendor runs it, for one spawn"),
+        "and the last of the keys is not on this one:\n{first}"
+    );
+
+    // The page turns under a real terminal's key, and the overlay is still up
+    // when it has: paging is not the press that puts the agents back.
+    press(&amx, &view, "PageDown");
+    let second = amx.until("the rest of the keys", || {
+        let drawn = screen(&amx, &view);
+        drawn
+            .contains("which vendor runs it, for one spawn")
+            .then_some(drawn)
+    });
+    assert!(
+        second.contains("page 2 of"),
+        "which page it is on:\n{second}"
+    );
+    assert!(
+        second.contains("any key goes back"),
+        "and the overlay still has the screen:\n{second}"
+    );
+
+    press(&amx, &view, "Escape");
+    until_empty(&amx, &view);
+}
+
+#[test]
 fn q_closes_the_view_and_gives_the_screen_back() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);
