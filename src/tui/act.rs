@@ -17,6 +17,7 @@
 //! still typing.
 
 use anyhow::{Context, Result, bail};
+use std::cell::Cell;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -34,6 +35,16 @@ use crate::{derive, exit, registry, rules, spawn, store, verbs, worktree};
 pub struct Composer {
     pub asking: Asking,
     pub text: String,
+    /// What the next agent may do without asking, for the rule over the line
+    /// to carry at the far end of itself.
+    ///
+    /// It is a fact about the view rather than about the line — which
+    /// permission the dial is resting on, and it moves under the line as
+    /// shift+tab is pressed — and the band that draws the rule is handed the
+    /// line and not the view. So the reading is taken once a frame where the
+    /// view is in hand and left here, which is the errand the paint map's
+    /// cells run in the other direction.
+    pub allowed: Cell<Option<String>>,
 }
 
 /// What entering the line will do.
@@ -52,6 +63,25 @@ impl Composer {
         Composer {
             asking,
             text: String::new(),
+            allowed: Cell::new(None),
+        }
+    }
+
+    /// What the rule over the line calls the mode, in the one word a band's
+    /// edge has room for.
+    ///
+    /// The prompt says the whole of it — which agent a message is addressed to,
+    /// which one is being renamed — because that is what somebody about to
+    /// press enter has to be sure of. The edge above says only which of the
+    /// five it is, uppercase, the way every heading on the wall is: a label on
+    /// a border is read at a glance or not at all.
+    pub fn label(&self) -> &'static str {
+        match &self.asking {
+            Asking::Task if self.narrows() => "NARROW",
+            Asking::Task => "TASK",
+            Asking::Reply { question: true, .. } => "ANSWER",
+            Asking::Reply { .. } => "MESSAGE",
+            Asking::Name { .. } => "RENAME",
         }
     }
 
@@ -892,6 +922,42 @@ mod tests {
             question: false,
         });
         assert_eq!(message.prompt(), "message to fix-login-b2c");
+    }
+
+    #[test]
+    fn a_line_names_itself_in_one_word_on_the_rule_over_it() {
+        // The prompt says which agent; the rule over it has room for which of
+        // the five this is and nothing else, so that is all it says.
+        assert_eq!(Composer::new(Asking::Task).label(), "TASK");
+        assert_eq!(
+            Composer::new(Asking::Reply {
+                id: "ask-a1b".to_string(),
+                question: true,
+            })
+            .label(),
+            "ANSWER"
+        );
+        assert_eq!(
+            Composer::new(Asking::Reply {
+                id: "fix-login-b2c".to_string(),
+                question: false,
+            })
+            .label(),
+            "MESSAGE"
+        );
+        assert_eq!(
+            Composer::new(Asking::Name {
+                id: "fix-login-b2c".to_string(),
+            })
+            .label(),
+            "RENAME"
+        );
+
+        // And a task line renames its edge the moment what is typed on it
+        // would narrow the list instead, the way the prompt does.
+        let mut composer = Composer::new(Asking::Task);
+        composer.text = "s:waiting".to_string();
+        assert_eq!(composer.label(), "NARROW");
     }
 
     /// One question of a call, as the payload records one: `multi` is whether

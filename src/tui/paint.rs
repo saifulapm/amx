@@ -39,9 +39,6 @@ mod style;
 mod text;
 mod wall;
 
-#[cfg(test)]
-mod tests;
-
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::widgets::Paragraph;
@@ -59,59 +56,11 @@ use wall::{Moment, agents, first_drawn};
 pub(super) use card::walks;
 pub use card::{Body, Card, Scroll};
 pub use header::title;
+/// The table the keys overlay is drawn from, for the test up in the view that
+/// presses everything a terminal can send and holds what acted against it.
+#[cfg(test)]
+pub(super) use help::HELP;
 pub use input::Notice;
-
-/// Every key, for whoever asked what they are.
-///
-/// Every key the view binds, and the words it is bound under: a key column
-/// that names two keys names both, because what a person looks for here is
-/// the one they pressed. A test presses everything a terminal can send and
-/// holds what acted against this table, so a binding that is not here is a
-/// binding the screen would have to grow a row for.
-///
-/// In the order [`help::GROUPS`] stands them in, which is the order they are
-/// drawn: one table, cut into runs, so a key is in exactly one place and the
-/// test that walks every key walks every group with it.
-///
-/// It stands in this file rather than beside the overlay it is drawn on
-/// because the table is not public to the rest of the crate, and the test that
-/// checks the README against it reads this path as text.
-pub(super) const HELP: [(&str, &str); 29] = [
-    // walk
-    ("↑ ↓", "walk the agents"),
-    ("alt+1..9", "reach one by where it is on the wall"),
-    ("esc", "put the card away · leave a line alone"),
-    ("?", "these keys"),
-    ("q ctrl+c", "close the view"),
-    // look
-    ("space", "the card: what one is asking, and the answer"),
-    ("enter →", "bring its window forward · shut a group"),
-    ("d", "what it has changed"),
-    ("pgup ctrl+b", "page the card, when it holds more"),
-    ("pgdn ctrl+f", "and the other way"),
-    // start
-    ("n", "start an agent"),
-    ("alt+n", "start the line and go to the agent"),
-    ("r", "reply: a message, or an answer on the card"),
-    ("alt+enter", "a newline in the line, without sending it"),
-    ("ctrl+g", "write the line in $EDITOR"),
-    // arrange
-    ("ctrl+s", "gather them by state or by project"),
-    ("ctrl+t", "hold it at the top of its group"),
-    ("shift+↑", "move it up its group"),
-    ("shift+↓", "move it down its group"),
-    ("ctrl+r", "call it something else"),
-    ("ctrl+x", "stop it · again forgets · a heading, the group"),
-    ("s: a:", "narrow by state or name, on the task line"),
-    // dials
-    ("alt+v", "which vendor the next agent runs"),
-    ("alt+m", "which model the next agent is given"),
-    ("alt+w", "whether it gets a worktree of its own"),
-    ("shift+tab", "what it may do without asking"),
-    ("m: p: w:", "model, permission and worktree, for one spawn"),
-    ("d:", "where one spawn runs, on the task line"),
-    ("agent:", "which vendor runs it, for one spawn"),
-];
 
 /// Where the last frame put things, written back by a draw that is otherwise
 /// a pure reading of the view, because the mouse arrives in the screen's own

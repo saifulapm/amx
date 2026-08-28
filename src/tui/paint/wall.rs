@@ -497,3 +497,946 @@ fn icon(phase: Phase, beat: usize) -> &'static str {
         phase => resting(phase),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::derive::{Evidence, Verdict};
+    use crate::pr::Standing;
+    use crate::store::{Meta, State};
+    use crate::tmux::{PaneId, Socket};
+    use crate::tui::paint::text::fit;
+    use crate::tui::paint::{Card, draw};
+    use crate::tui::rows::Narrow;
+    use crate::tui::{Arm, Screen};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::Color;
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    /// The palette a screen nobody handed a theme is painted in, which is the
+    /// one every screen built here has and the one these colours are read out
+    /// of: what the tests are about is which role a thing is painted in, and
+    /// the values are the theme's business.
+    fn theme() -> Theme {
+        Theme::default()
+    }
+
+    fn view(id: &str, phase: Phase, said: Option<&str>, age: u64) -> View {
+        View {
+            meta: Meta {
+                id: id.to_string(),
+                task: "fix the login bug".to_string(),
+                dir: PathBuf::from("/srv/app"),
+                worktree: None,
+                branch: None,
+                base: None,
+                socket: Socket::Name("amx".to_string()),
+                pane: PaneId::new("%1").unwrap(),
+                bg: false,
+                session: None,
+                transcript: None,
+                created: 1,
+            },
+            state: State {
+                state: phase,
+                summary: said.map(str::to_string),
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+            verdict: Verdict {
+                phase,
+                evidence: Evidence::Hooks,
+                rule: None,
+                age,
+                // The rows print the worked seconds; most of these tests only
+                // care that a number is where the column is, so the helper
+                // hands both clocks the same one.
+                worked: age,
+            },
+        }
+    }
+
+    /// Every state there is, so a table of marks cannot quietly miss one.
+    const EVERY: [Phase; 8] = [
+        Phase::Starting,
+        Phase::Working,
+        Phase::Waiting,
+        Phase::Idle,
+        Phase::Done,
+        Phase::Failed,
+        Phase::Stopped,
+        Phase::Unknown,
+    ];
+
+    /// The view, with a reading in it. The card is read as it is planted,
+    /// the way the view itself builds one.
+    fn showing(views: Vec<View>, card: Option<Card>) -> Screen {
+        let mut screen = Screen::default();
+        screen.list.show(views);
+        screen.card = card.map(Card::read);
+        screen
+    }
+
+    /// The same reading, running somewhere else.
+    fn at(mut view: View, dir: &str) -> View {
+        view.meta.dir = PathBuf::from(dir);
+        view
+    }
+
+    /// The same reading, on a branch of its own.
+    fn on_a_branch(mut view: View, branch: &str) -> View {
+        view.meta.branch = Some(branch.to_string());
+        view
+    }
+
+    /// A forge holding one failing request for the agent that is asking, and
+    /// two for the one beside it — the second attempt and the first.
+    fn a_forge(meta: &crate::store::Meta) -> Vec<Pr> {
+        match meta.branch.as_deref() {
+            Some("amx/ask-a1b") => vec![Pr {
+                number: 12,
+                standing: Standing::Failing,
+            }],
+            Some("amx/busy-b2c") => vec![
+                Pr {
+                    number: 40,
+                    standing: Standing::Open,
+                },
+                Pr {
+                    number: 7,
+                    standing: Standing::Merged,
+                },
+            ],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The view over that forge.
+    fn over_the_forge(views: Vec<View>, card: Option<Card>) -> Screen {
+        let mut screen = Screen::default();
+        screen.list.asking(a_forge);
+        screen.list.show(views);
+        screen.card = card.map(Card::read);
+        screen
+    }
+
+    /// The view with the agents gathered by where they are running.
+    fn by_project(views: Vec<View>) -> Screen {
+        let mut screen = Screen::default();
+        screen.list.turn();
+        screen.list.show(views);
+        screen
+    }
+
+    /// What a view of this size draws, cell by cell.
+    fn cells(screen: &Screen, size: (u16, u16)) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
+        terminal.draw(|frame| draw(frame, screen)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The mark on a row, and how the view painted it: a mark carries its
+    /// colour, and a test that read the text alone could not see it.
+    fn mark(screen: &Screen, size: (u16, u16), row: u16) -> (String, Color, Modifier) {
+        let cell = cells(screen, size)[(2, row)].clone();
+        (cell.symbol().to_string(), cell.fg, cell.modifier)
+    }
+
+    /// What a view of this size puts on the screen, line by line.
+    fn painted(screen: &Screen, size: (u16, u16)) -> Vec<String> {
+        let buffer = cells(screen, size);
+        (0..size.1)
+            .map(|row| {
+                (0..size.0)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// What the view puts on a screen of this size, line by line.
+    fn drawn(views: Vec<View>, card: Option<Card>, size: (u16, u16)) -> Vec<String> {
+        painted(&showing(views, card), size)
+    }
+
+    /// What a heading line says in front of the rule that carries it out to
+    /// the edge: the label, and how many failed under it where any did.
+    fn heading_of(line: &str) -> &str {
+        line.split('─').next().unwrap_or_default().trim()
+    }
+
+    /// And the count it ends in, which is the last thing on the line.
+    fn counted(line: &str) -> &str {
+        line.split_whitespace().next_back().unwrap_or_default()
+    }
+
+    /// The same, once the list has learned the screen's size: the first
+    /// frame writes the room back the way the loop's draw does, the refit
+    /// lays the rows out for it, and the second frame is the one a person
+    /// reads.
+    fn settled(views: Vec<View>, size: (u16, u16)) -> Vec<String> {
+        let mut screen = showing(views, None);
+        let _ = painted(&screen, size);
+        screen.list.refit();
+        painted(&screen, size)
+    }
+
+    /// The two agents a card is opened over, so there is a list to still be
+    /// drawn behind it.
+    fn a_fleet() -> Vec<View> {
+        vec![
+            view("ask-a1b", Phase::Waiting, None, 29),
+            view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
+        ]
+    }
+
+    /// The background of every cell across one row of the list.
+    fn behind(screen: &Screen, size: (u16, u16), row: u16) -> Vec<Color> {
+        let buffer = cells(screen, size);
+        (0..size.0).map(|at| buffer[(at, row)].bg).collect()
+    }
+
+    /// The colour a word on a row was painted in.
+    fn word_colour(screen: &Screen, size: (u16, u16), row: u16, word: &str) -> Color {
+        let buffer = cells(screen, size);
+        let line: String = (0..size.0)
+            .map(|column| buffer[(column, row)].symbol())
+            .collect();
+        let at = line
+            .find(word)
+            .unwrap_or_else(|| panic!("{word:?} is not on {line:?}"));
+        buffer[(line[..at].chars().count() as u16, row)].fg
+    }
+
+    /// And the weight it was painted at, for the tests about the muted rows.
+    fn word_modifier(screen: &Screen, size: (u16, u16), row: u16, word: &str) -> Modifier {
+        let buffer = cells(screen, size);
+        let line: String = (0..size.0)
+            .map(|column| buffer[(column, row)].symbol())
+            .collect();
+        let at = line
+            .find(word)
+            .unwrap_or_else(|| panic!("{word:?} is not on {line:?}"));
+        buffer[(line[..at].chars().count() as u16, row)].modifier
+    }
+
+    /// A screen with room for the bands above and below the list, the space
+    /// between the header and it, and a group or two under that.
+    const WALL: (u16, u16) = (80, 12);
+
+    #[test]
+    fn glyphs_give_every_state_a_mark_of_its_own() {
+        let marks: Vec<&str> = EVERY.iter().map(|phase| resting(*phase)).collect();
+        assert_eq!(
+            marks
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            EVERY.len(),
+            "eight states, eight marks: {marks:?}"
+        );
+        assert_eq!(resting(Phase::Waiting), "?");
+        assert_eq!(resting(Phase::Starting), "◌");
+        assert_eq!(resting(Phase::Idle), "○");
+        assert_eq!(resting(Phase::Done), "●");
+        assert_eq!(resting(Phase::Failed), "✗");
+        assert_eq!(resting(Phase::Stopped), "⏹");
+        assert_eq!(resting(Phase::Unknown), "~");
+
+        for phase in EVERY.iter().filter(|phase| **phase != Phase::Working) {
+            assert!(
+                !set().contains(&resting(*phase)),
+                "{phase} rests on a mark the pulse passes through"
+            );
+        }
+    }
+
+    #[test]
+    fn glyphs_pulse_a_working_row_through_twelve_frames() {
+        let set = set();
+        let want: Vec<&str> = set.iter().chain(set.iter().rev()).copied().collect();
+        let frames: Vec<&str> = (0..12).map(pulse).collect();
+
+        assert_eq!(frames, want, "the set, and then the set backwards");
+        assert_eq!(pulse(12), pulse(0), "and round again");
+        assert_eq!(
+            resting(Phase::Working),
+            set[LIVE],
+            "and it rests on the vendor's own live glyph"
+        );
+    }
+
+    #[test]
+    fn glyphs_take_the_set_the_terminal_asks_for() {
+        assert_eq!(set_for("xterm-ghostty"), ["·", "✢", "✳", "✶", "✻", "✻"]);
+        assert_eq!(set_for("tmux-256color"), ["·", "✢", "*", "✶", "✻", "✽"]);
+        assert_eq!(
+            set_for(""),
+            set_for("xterm"),
+            "and anything else is the same"
+        );
+    }
+
+    #[test]
+    fn glyphs_leave_the_colour_to_say_how_it_went() {
+        // The mark on the one row a view of one agent draws.
+        let painted = |phase| {
+            let screen = showing(vec![view("agent-a1b", phase, Some("said"), 5)], None);
+            mark(&screen, (60, 8), 2)
+        };
+        let plain = Modifier::empty();
+
+        // The one glyph with weight on it, which is the one the view is
+        // opened to find.
+        assert_eq!(
+            painted(Phase::Waiting),
+            ("?".into(), theme().waiting, Modifier::BOLD)
+        );
+        assert_eq!(
+            painted(Phase::Unknown),
+            ("~".into(), theme().waiting, plain)
+        );
+        assert_eq!(painted(Phase::Done), ("●".into(), theme().done, plain));
+        assert_eq!(painted(Phase::Failed), ("✗".into(), theme().failed, plain));
+        assert_eq!(
+            painted(Phase::Stopped),
+            ("⏹".into(), theme().stopped, plain)
+        );
+
+        // An agent still at work has nothing to say about how it went, so it
+        // takes the terminal's own colour and the pulse does the talking. An
+        // agent that has finished its turn and is sitting there is quiet.
+        assert_eq!(painted(Phase::Starting), ("◌".into(), Color::Reset, plain));
+        assert_eq!(
+            painted(Phase::Working),
+            (pulse(0).into(), Color::Reset, plain)
+        );
+        assert_eq!(
+            painted(Phase::Idle),
+            ("○".into(), Color::Reset, Modifier::DIM)
+        );
+    }
+
+    #[test]
+    fn glyphs_draw_a_working_row_a_frame_at_a_time() {
+        let at = |beat| {
+            let mut screen = showing(
+                vec![view("port-import-b2c", Phase::Working, Some("Running"), 3)],
+                None,
+            );
+            screen.beat = beat;
+            painted(&screen, (60, 8))[2].clone()
+        };
+
+        assert!(
+            at(0).starts_with(&format!("  {} port-import-b2c", pulse(0))),
+            "{:?}",
+            at(0)
+        );
+        assert_ne!(at(0), at(LIVE), "a working row moves");
+    }
+
+    #[test]
+    fn view_draws_a_row_for_every_agent_under_a_heading_for_its_group() {
+        let screen = drawn(
+            vec![
+                view("ask-a1b", Phase::Waiting, None, 90),
+                view("fix-login-b2c", Phase::Working, Some("Running Bash"), 3),
+            ],
+            None,
+            (60, 10),
+        );
+
+        assert!(
+            screen[0].ends_with("1 working   2/5 running    1 WAITING"),
+            "{:?}",
+            screen[0]
+        );
+        assert_eq!(heading_of(&screen[2]), "NEEDS INPUT");
+        assert!(
+            screen[3].starts_with("• ? ask-a1b"),
+            "a question nobody has been to read carries the mark that says so: \
+             {:?}",
+            screen[3]
+        );
+        assert!(screen[3].ends_with("1m"), "{:?}", screen[3]);
+        assert_eq!(screen[4], "", "the next group stands off from this one");
+        assert_eq!(heading_of(&screen[5]), "WORKING");
+        assert!(
+            screen[6].starts_with(&format!("  {} fix-login-b2c", pulse(0))),
+            "{:?}",
+            screen[6]
+        );
+        assert!(screen[6].contains("Running Bash"), "{:?}", screen[6]);
+        assert!(screen[6].ends_with("3s"), "{:?}", screen[6]);
+        assert_eq!(
+            screen[9], "space card · enter attach · ctrl+x stop · ? keys",
+            "and the keys, where they can be read"
+        );
+    }
+
+    #[test]
+    fn view_keeps_a_row_to_one_line_however_much_the_agent_said() {
+        let screen = drawn(
+            vec![view(
+                "fix-login-a1b",
+                Phase::Idle,
+                Some("I fixed it.\n\nHere is what I changed:\n- the parser"),
+                1,
+            )],
+            None,
+            (60, 8),
+        );
+        assert!(screen[2].contains("I fixed it."), "{:?}", screen[2]);
+        assert!(
+            !screen.iter().any(|line| line.contains("the parser")),
+            "{screen:?}"
+        );
+    }
+
+    #[test]
+    fn view_cuts_what_will_not_fit_rather_than_losing_the_age() {
+        let screen = drawn(
+            vec![view(
+                "fix-login-a1b",
+                Phase::Working,
+                Some("Editing a file with a very long name indeed, and then some"),
+                45,
+            )],
+            None,
+            (40, 8),
+        );
+        assert!(screen[2].contains('…'), "{:?}", screen[2]);
+        assert!(screen[2].ends_with("45s"), "{:?}", screen[2]);
+        assert!(screen[2].chars().count() <= 40, "{:?}", screen[2]);
+    }
+
+    #[test]
+    fn view_says_on_an_armed_row_what_the_next_press_would_do_to_it() {
+        let size = (60, 8);
+        let mut screen = showing(
+            vec![
+                view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
+                view(
+                    "port-importer-b2c",
+                    Phase::Done,
+                    Some("wrote the tests"),
+                    90,
+                ),
+            ],
+            None,
+        );
+        assert!(painted(&screen, size)[2].contains("wrote the parser"));
+
+        screen.arm = Some(Arm {
+            ids: vec!["fix-login-a1b".to_string()],
+            swept: false,
+            at: Instant::now(),
+        });
+        let drawn = painted(&screen, size);
+        assert!(
+            drawn[2].contains("ctrl+x again forgets"),
+            "the row says it where it was saying what the agent did: {:?}",
+            drawn[2]
+        );
+        assert!(
+            !drawn[2].contains("wrote the parser"),
+            "in place of the summary rather than beside it: {:?}",
+            drawn[2]
+        );
+        assert!(
+            drawn[2].ends_with("1m"),
+            "and the columns either side of it are where they were: {:?}",
+            drawn[2]
+        );
+        assert_eq!(
+            word_colour(&screen, size, 2, "ctrl+x again forgets"),
+            theme().waiting,
+            "in the colour of a thing waiting on a person"
+        );
+        assert!(
+            drawn[3].contains("wrote the tests"),
+            "and the rows nobody armed say what they always said: {:?}",
+            drawn[3]
+        );
+    }
+
+    #[test]
+    fn axis_heads_the_rows_with_the_project_and_gives_each_one_its_state() {
+        let screen = painted(
+            &by_project(vec![
+                at(view("ask-a1b", Phase::Waiting, None, 30), "/src/api"),
+                at(
+                    view("fix-login-b2c", Phase::Done, Some("fixed it"), 30),
+                    "/src/api",
+                ),
+                at(view("busy-c3d", Phase::Working, None, 3), "/src/web"),
+            ]),
+            (60, 10),
+        );
+
+        assert_eq!(screen[2], "/src/api");
+        assert!(screen[3].contains("ask-a1b"), "{:?}", screen[3]);
+        assert!(
+            screen[3].contains("waiting"),
+            "the heading is a place, so the row says the state: {:?}",
+            screen[3]
+        );
+        assert!(screen[4].contains("done"), "{:?}", screen[4]);
+        assert_eq!(screen[5], "", "the next project stands off from this one");
+        assert_eq!(screen[6], "/src/web");
+
+        // One column, so the states read down the screen rather than wandering
+        // with the length of the name above them. Counted in characters: the
+        // marks are not all one byte, and a column is what a person sees.
+        let column = |line: &str, word: &str| {
+            let at = line.find(word).expect("the state on the row");
+            line[..at].chars().count()
+        };
+        assert_eq!(column(&screen[3], "waiting"), column(&screen[4], "done"));
+    }
+
+    #[test]
+    fn axis_leaves_the_state_off_a_row_the_heading_over_it_already_says() {
+        let screen = painted(
+            &showing(vec![view("busy-a1b", Phase::Working, None, 3)], None),
+            (60, 8),
+        );
+        assert_eq!(heading_of(&screen[1]), "WORKING");
+        assert!(
+            !screen[2].contains("working"),
+            "twice on one screen is a column of noise: {:?}",
+            screen[2]
+        );
+    }
+
+    #[test]
+    fn axis_says_at_the_top_what_the_list_was_narrowed_to() {
+        let mut screen = showing(
+            vec![
+                view("busy-a1b", Phase::Working, None, 3),
+                view("done-b2c", Phase::Done, None, 60),
+            ],
+            None,
+        );
+        screen
+            .list
+            .narrow(vec![Narrow::State(Some("working".to_string()))]);
+
+        let painted = painted(&screen, (60, 8));
+        assert!(
+            painted[0].ends_with("1 working   1/5 running   s:working   nothing waiting"),
+            "{:?}",
+            painted[0]
+        );
+        assert!(painted[2].contains("busy-a1b"), "{:?}", painted[2]);
+        assert!(
+            !painted.iter().any(|line| line.contains("done-b2c")),
+            "a hidden agent is not counted, not drawn and not headed: {painted:?}"
+        );
+    }
+
+    #[test]
+    fn a_cursor_on_a_headings_line_is_marked_the_way_a_cursor_on_a_row_is() {
+        let mut screen = showing(
+            vec![
+                view("busy-a1b", Phase::Working, None, 3),
+                view("busy-b2c", Phase::Working, None, 5),
+            ],
+            None,
+        );
+        let bar = vec![theme().cursor; 60];
+        let plain = vec![Color::Reset; 60];
+
+        // The view opens on the first agent, with the heading over it bare.
+        assert_eq!(behind(&screen, (60, 8), 2), bar, "the row the cursor is on");
+        assert_eq!(behind(&screen, (60, 8), 1), plain, "and not the heading");
+
+        screen.list.up();
+        assert_eq!(
+            behind(&screen, (60, 8), 1),
+            bar,
+            "a heading is a line like any other, so the cursor looks the same \
+             on it: column zero to the last column, over a label that is a \
+             third of that"
+        );
+        assert_eq!(behind(&screen, (60, 8), 2), plain);
+    }
+
+    #[test]
+    fn a_headings_bar_is_the_only_thing_that_says_where_the_cursor_is() {
+        let painted = painted(
+            &showing(
+                vec![view("busy-a1b", Phase::Working, Some("Running"), 3)],
+                None,
+            ),
+            (60, 8),
+        );
+        assert!(
+            painted[2].starts_with(&format!("  {} busy-a1b", pulse(0))),
+            "a row reads the same whether or not the cursor is on it: {:?}",
+            painted[2]
+        );
+    }
+
+    #[test]
+    fn headings_count_their_agents_whether_or_not_the_rows_are_under_them() {
+        let mut screen = showing(
+            vec![
+                view("busy-a1b", Phase::Working, None, 3),
+                view("busy-b2c", Phase::Working, None, 5),
+            ],
+            None,
+        );
+
+        assert_eq!(
+            counted(&painted(&screen, (60, 8))[1]),
+            "2",
+            "the margin of a screen is a line of numbers, open or shut"
+        );
+
+        screen.list.up();
+        screen.list.shut_or_open();
+        let painted = painted(&screen, (60, 8));
+        assert_eq!(counted(&painted[1]), "2");
+        assert!(
+            !painted.iter().any(|line| line.contains("busy-a1b")),
+            "and shut, the count is all that is standing in for them: {painted:?}"
+        );
+    }
+
+    #[test]
+    fn headings_say_how_many_failed_whether_or_not_the_rows_are_under_them() {
+        let mut screen = showing(
+            vec![
+                view("done-a1b", Phase::Done, Some("did it"), 60),
+                view("broke-b2c", Phase::Failed, Some("could not"), 60),
+            ],
+            None,
+        );
+
+        assert_eq!(
+            heading_of(&painted(&screen, (60, 8))[1]),
+            "COMPLETED · 1 failed",
+            "a screenful of headings says how it went without being opened"
+        );
+
+        screen.list.up();
+        screen.list.shut_or_open();
+        assert_eq!(
+            heading_of(&painted(&screen, (60, 8))[1]),
+            "COMPLETED · 1 failed",
+            "shutting a group hides the detail of a failure, never the fact"
+        );
+    }
+
+    #[test]
+    fn headings_stand_off_from_whatever_is_above_them() {
+        // A blank line above every heading, so the groups read as groups
+        // instead of one run of rows — and the first of them is stood off from
+        // the header the same way, so the list starts where the chrome ends
+        // rather than against it.
+        let screen = drawn(a_fleet(), None, (60, 12));
+        assert!(screen[0].contains("running"), "the header: {screen:?}");
+        assert_eq!(screen[2], "", "the space over the list");
+        assert_eq!(heading_of(&screen[3]), "NEEDS INPUT", "the first heading");
+        assert!(screen[4].contains("ask-a1b"), "{screen:?}");
+        assert_eq!(screen[5], "", "a blank line stands the next group off");
+        assert_eq!(heading_of(&screen[6]), "WORKING");
+        assert!(screen[7].contains("busy-b2c"), "{screen:?}");
+    }
+
+    #[test]
+    fn headings_carry_the_weight_on_the_label_and_none_of_it_on_the_rule() {
+        // Case and weight are what make a heading here, with no second type
+        // size to make it with, and every heading wears them: where the cursor
+        // is standing is said by the bar under one line, not by the headings
+        // around it putting weight down and picking it up.
+        let screen = showing(a_fleet(), None);
+        let cells = cells(&screen, (60, 10));
+        for row in [2, 5] {
+            let label = cells[(1, row)].clone();
+            assert!(
+                label.modifier.contains(Modifier::BOLD),
+                "the heading on row {row} is bold: {:?}",
+                label.modifier
+            );
+        }
+        assert_eq!(
+            cells[(1, 2)].fg,
+            theme().waiting,
+            "the group that wants a person is the one carrying colour up here"
+        );
+        assert_eq!(
+            cells[(1, 5)].fg,
+            Color::Reset,
+            "and the rest of them do not"
+        );
+
+        // The rule that carries the label out to its count carries none of the
+        // weight, which is what leaves the label the loud thing on the line.
+        let rule = cells[(30, 2)].clone();
+        assert_eq!(rule.symbol(), "─", "the rule runs out to the count");
+        assert!(
+            rule.modifier.contains(Modifier::DIM) && !rule.modifier.contains(Modifier::BOLD),
+            "{:?}",
+            rule.modifier
+        );
+    }
+
+    #[test]
+    fn view_shows_the_fold_and_what_it_is_holding_back() {
+        // A working agent and five finished. On a tall screen every row is
+        // drawn and there is no fold at all; on a short one the finished
+        // group takes the rows the live group left, and the fold stands on
+        // the band's last row saying exactly what did not fit.
+        let fleet = || {
+            let mut views = vec![view("busy-b2c", Phase::Working, Some("Running Bash"), 3)];
+            views.extend(
+                (0..5).map(|n| view(&format!("done-{n}"), Phase::Done, Some("did it"), 60)),
+            );
+            views
+        };
+
+        let tall = settled(fleet(), (40, 24));
+        assert_eq!(tall.iter().filter(|l| l.contains("done-")).count(), 5);
+        assert!(!tall.iter().any(|l| l.contains("more")), "{tall:?}");
+
+        let short = settled(fleet(), (40, 10));
+        assert_eq!(heading_of(&short[5]), "COMPLETED");
+        assert_eq!(short.iter().filter(|l| l.contains("done-")).count(), 2);
+        assert!(
+            short[8].contains("… 3 more"),
+            "the fold stands on the last row the band has: {short:?}"
+        );
+    }
+
+    #[test]
+    fn rows_keep_the_name_bright_and_dim_what_the_agent_said() {
+        let size = (60, 10);
+        let screen = showing(
+            vec![
+                view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
+                view("port-import-b2c", Phase::Done, Some("wrote the tests"), 300),
+            ],
+            None,
+        );
+
+        // The cursor opens on the first agent, and the two rows read the same:
+        // the name in the terminal's own, what the agent said and how long it
+        // worked dim beside it. Which line the cursor is on is the bar's to
+        // say, and a row does not change its tones to say it again.
+        for (row, name, said, age) in [
+            (3, "fix-login-a1b", "wrote the parser", "1m"),
+            (4, "port-import-b2c", "wrote the tests", "5m"),
+        ] {
+            let named = word_modifier(&screen, size, row, name);
+            assert!(
+                !named.contains(Modifier::DIM) && !named.contains(Modifier::BOLD),
+                "{name} is neither dimmed nor weighted: {named:?}"
+            );
+            for word in [said, age] {
+                assert!(
+                    word_modifier(&screen, size, row, word).contains(Modifier::DIM),
+                    "{word} is the quiet half of the row"
+                );
+            }
+        }
+
+        // The state is carried by the glyph's colour alone.
+        let (glyph, painted, _) = mark(&screen, size, 4);
+        assert_eq!((glyph.as_str(), painted), ("●", theme().done));
+    }
+
+    #[test]
+    fn rows_hovered_name_takes_the_weight_and_nothing_else_does() {
+        let size = (60, 10);
+        let mut screen = showing(
+            vec![
+                view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
+                view("port-import-b2c", Phase::Done, Some("wrote the tests"), 300),
+            ],
+            None,
+        );
+        // The pointer resting on the second agent's line, which is the third
+        // item under the heading.
+        screen.hover = Some(2);
+
+        let hovered = word_modifier(&screen, size, 4, "port-import-b2c");
+        assert!(hovered.contains(Modifier::BOLD), "{hovered:?}");
+        assert!(!hovered.contains(Modifier::DIM), "{hovered:?}");
+        assert!(
+            word_modifier(&screen, size, 4, "wrote the tests").contains(Modifier::DIM),
+            "the tint is the name's alone: what the agent said stays quiet"
+        );
+        assert_eq!(
+            behind(&screen, size, 4),
+            vec![Color::Reset; 60],
+            "and a hover is not the bar"
+        );
+    }
+
+    #[test]
+    fn rows_on_the_project_axis_keep_the_phase_colour_on_the_state_word() {
+        // The state word replaces the icon's job under a project heading, so
+        // it keeps the phase colour while the words beside it stay muted.
+        let size = (60, 10);
+        let screen = by_project(vec![
+            at(
+                view("busy-c3d", Phase::Working, Some("Running Bash"), 3),
+                "/src/api",
+            ),
+            at(
+                view("fix-login-a1b", Phase::Done, Some("fixed it"), 60),
+                "/src/api",
+            ),
+        ]);
+
+        assert_eq!(word_colour(&screen, size, 4, "done"), theme().done);
+        assert!(word_modifier(&screen, size, 4, "fixed it").contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn pr_the_row_says_what_the_branchs_request_is_doing() {
+        let screen = over_the_forge(
+            vec![
+                on_a_branch(view("ask-a1b", Phase::Waiting, None, 30), "amx/ask-a1b"),
+                on_a_branch(
+                    view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
+                    "amx/busy-b2c",
+                ),
+            ],
+            None,
+        );
+        let size = (60, 10);
+        let lines = painted(&screen, size);
+        let row = |word: &str| {
+            lines
+                .iter()
+                .position(|line| line.contains(word))
+                .unwrap_or_else(|| panic!("no row says {word:?}: {lines:?}"))
+        };
+
+        let asking = row("ask-a1b");
+        assert!(lines[asking].contains("#12"), "{:?}", lines[asking]);
+        assert_eq!(
+            word_colour(&screen, size, asking as u16, "#12"),
+            theme().failed,
+            "a failing check is a thing that was attempted and failed"
+        );
+
+        // One column, so the numbers read down the screen rather than
+        // wandering with the length of the name beside them.
+        let busy = row("busy-b2c");
+        let column = |line: &str, word: &str| {
+            let at = line.find(word).expect("the number on the row");
+            line[..at].chars().count()
+        };
+        assert_eq!(
+            column(&lines[asking], "#12"),
+            column(&lines[busy], "#40"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[busy].contains("Running Bash"),
+            "and what the agent is doing is still on it: {:?}",
+            lines[busy]
+        );
+        assert!(
+            !lines[busy].contains("#7"),
+            "the row is read for the attempt that is still going, and the \
+             one before it is on the card: {:?}",
+            lines[busy]
+        );
+    }
+
+    #[test]
+    fn pr_costs_the_list_nothing_where_no_branch_has_one() {
+        // Which is every list on a machine with no forge on it, and the whole
+        // of what such a machine loses.
+        let fleet = || {
+            vec![
+                view("ask-a1b", Phase::Waiting, None, 30),
+                view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
+            ]
+        };
+        assert_eq!(
+            painted(&over_the_forge(fleet(), None), (60, 10)),
+            painted(&showing(fleet(), None), (60, 10)),
+            "a fleet with no requests draws the rows amx always drew"
+        );
+    }
+
+    #[test]
+    fn view_ages_are_the_readings_own_number_in_the_readings_own_words() {
+        // Both the number and the units come from the reading, and the row
+        // only asks for them. A row that worked the words out for itself would
+        // agree with the table until the next hand touched one of the two, and
+        // the person with both open is who finds out.
+        for age in [0, 59, 60, 3_599, 3_600, 86_400] {
+            let row = drawn(
+                vec![view("busy-a1b", Phase::Working, None, age)],
+                None,
+                WALL,
+            )
+            .into_iter()
+            .find(|line| line.contains("busy-a1b"))
+            .expect("the agent's row");
+            assert!(
+                row.ends_with(&derive::in_words(age)),
+                "{age} seconds is drawn as {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn view_rows_carry_the_worked_seconds_and_not_the_age() {
+        // An idle agent's age climbs with every quiet second; what it worked
+        // does not, and the column is about the work. The wait and the age
+        // stay the card's.
+        let mut idle = view("rests-a1b", Phase::Idle, Some("done for now"), 500);
+        idle.verdict.worked = 60;
+        let row = drawn(vec![idle], None, WALL)
+            .into_iter()
+            .find(|line| line.contains("rests-a1b"))
+            .expect("the agent's row");
+        assert!(row.ends_with("1m"), "{row:?}");
+    }
+
+    #[test]
+    fn view_a_wide_glyph_in_the_summary_does_not_push_the_age_off_the_edge() {
+        // Measured on the wall 2026-08-25: `Hello! 👋` — one char, two
+        // columns — shifted everything after it right by one, and the row's
+        // age lost its unit to the terminal's edge, reading `5` where every
+        // other row read `5m`. A row is measured in columns, not characters.
+        let row = drawn(
+            vec![view(
+                "waves-a1b",
+                Phase::Done,
+                Some("Hello! 👋 done and dusted"),
+                345,
+            )],
+            None,
+            WALL,
+        )
+        .into_iter()
+        .find(|line| line.contains("waves-a1b"))
+        .expect("the agent's row");
+        assert!(
+            row.trim_end().ends_with("5m"),
+            "the unit survives the emoji: {row:?}"
+        );
+
+        // And the clip itself counts columns: four emoji are eight columns,
+        // whole at eight and one emoji plus the ellipsis at four.
+        assert_eq!(fit("👋👋👋👋", 8), "👋👋👋👋");
+        assert_eq!(fit("👋👋👋👋", 4), "👋…");
+        assert_eq!(fit("ab👋cd", 5), "ab👋…");
+    }
+}

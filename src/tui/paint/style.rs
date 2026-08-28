@@ -84,3 +84,68 @@ pub(super) fn bold() -> Style {
 pub(super) fn prospective(theme: Theme) -> Style {
     Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The palette these colours are read out of: what the tests are about is
+    /// which role a thing is painted in, and the values are the theme's
+    /// business.
+    fn theme() -> Theme {
+        Theme::default()
+    }
+
+    /// Every standing there is, so a table over them cannot quietly miss one.
+    const EVERY_STANDING: [Standing; 8] = [
+        Standing::Merged,
+        Standing::Closed,
+        Standing::Draft,
+        Standing::Failing,
+        Standing::Changes,
+        Standing::Running,
+        Standing::Ready,
+        Standing::Open,
+    ];
+
+    #[test]
+    fn pr_every_standing_has_a_word_and_a_colour() {
+        // Eight standings and eight words, so a card never says one thing for
+        // two of them. The colours are five and are meant to be shared: they
+        // answer how it is going, and two standings can have the same answer.
+        let said: Vec<&str> = EVERY_STANDING.into_iter().map(Standing::says).collect();
+        assert_eq!(
+            said.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            EVERY_STANDING.len(),
+            "{said:?}"
+        );
+        for standing in EVERY_STANDING {
+            assert_eq!(
+                request_colour(theme(), standing).bg,
+                None,
+                "{standing:?} is a word on a row, not a bar under one"
+            );
+        }
+        assert_eq!(
+            request_colour(theme(), Standing::Merged).fg,
+            Some(theme().done)
+        );
+        assert_eq!(
+            request_colour(theme(), Standing::Failing).fg,
+            Some(theme().failed)
+        );
+        assert_eq!(
+            request_colour(theme(), Standing::Changes).fg,
+            Some(theme().waiting)
+        );
+        assert_eq!(
+            request_colour(theme(), Standing::Closed).fg,
+            Some(theme().stopped)
+        );
+        assert_eq!(
+            request_colour(theme(), Standing::Open).fg,
+            None,
+            "a request nobody has read yet has nothing to say about how it went"
+        );
+    }
+}
