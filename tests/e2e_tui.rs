@@ -560,18 +560,22 @@ fn the_view_gathers_the_agents_under_what_they_need() {
     assert!(drawn.contains("did what it was asked"), "{drawn}");
 
     // Twice over, in two vocabularies: the heading says what the group means,
-    // and the counter at the top says the word the list can be narrowed by.
-    for (group, counted) in [("needs input", "waiting"), ("completed", "done")] {
+    // and the band at the top says the word the list can be narrowed by.
+    for group in ["needs input", "completed"] {
         assert_eq!(
             drawn.matches(group).count(),
             1,
             "{group} stands over its rows and nowhere else:\n{drawn}"
         );
-        assert!(
-            drawn.contains(&format!("1 {counted}")),
-            "and the header counts it as {counted}:\n{drawn}"
-        );
     }
+    assert!(
+        drawn.contains("1 WAITING"),
+        "the one group that wants a person is counted in the badge:\n{drawn}"
+    );
+    assert!(
+        drawn.contains("1 done"),
+        "and the rest are counted beside it:\n{drawn}"
+    );
 }
 
 #[test]
@@ -584,11 +588,11 @@ fn header_says_what_the_next_agent_will_be_started_with() {
     let view = amx.in_a_terminal(&[], &[]);
     let drawn = amx.until("the header", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("next:").then_some(drawn)
+        drawn.contains("└ next").then_some(drawn)
     });
 
     assert!(
-        drawn.contains("amx · ~"),
+        drawn.contains("AMX  ~"),
         "whose screen this is and where it was opened:\n{drawn}"
     );
     assert!(
@@ -596,11 +600,12 @@ fn header_says_what_the_next_agent_will_be_started_with() {
         "and not which build it is, which says nothing about the fleet:\n{drawn}"
     );
     assert!(
-        drawn.contains("1 waiting · 1/3 running"),
-        "what the fleet is, and the gate the next one meets:\n{drawn}"
+        drawn.contains("1/3 running    1 WAITING"),
+        "the gate the next one meets, and the count that wants a person set \
+         apart from it:\n{drawn}"
     );
     assert!(
-        drawn.contains("next: claude · model: default · permission: default · worktree"),
+        drawn.contains("└ next  claude   model  default   permission  default   worktree  new"),
         "and under it the vendor, the dials it will be given, and whether it \
          is cut a tree of its own:\n{drawn}"
     );
@@ -616,21 +621,21 @@ fn header_dials_turn_from_the_keys_and_leave_the_agents_alone() {
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the header", || {
         screen(&amx, &view)
-            .contains("next: claude · model: default")
+            .contains("└ next  claude   model  default")
             .then_some(())
     });
 
     press(&amx, &view, "M-m");
     amx.until("the model dial to turn", || {
         screen(&amx, &view)
-            .contains("next: claude · fable")
+            .contains("└ next  claude   model  fable")
             .then_some(())
     });
 
     press(&amx, &view, "M-w");
     let drawn = amx.until("the worktree dial to turn", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("· no worktree").then_some(drawn)
+        drawn.contains("worktree  none").then_some(drawn)
     });
 
     assert!(
@@ -980,7 +985,7 @@ fn a_blank_line_stands_the_list_off_from_the_header() {
          is stood off from it:\n{drawn}"
     );
     assert!(
-        lines[at - 2].starts_with("next:") && lines[at - 3].contains("running"),
+        lines[at - 2].starts_with("└ next") && lines[at - 3].contains("running"),
         "and what the space is under is the header, both rows of it:\n{drawn}"
     );
 }
@@ -1089,7 +1094,7 @@ fn header_reads_as_chrome_with_its_one_colour_on_what_wants_a_person() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the header", || {
-        screen(&amx, &view).contains("next:").then_some(())
+        screen(&amx, &view).contains("└ next").then_some(())
     });
 
     let drawn = coloured(&amx, &view);
@@ -1099,26 +1104,32 @@ fn header_reads_as_chrome_with_its_one_colour_on_what_wants_a_person() {
         "the count that wants somebody is painted for it:\n{:?}",
         lines[0]
     );
+    let badge = sgr_at(lines[0], " 1 WAITING");
     assert!(
-        sgr_at(lines[0], "amx ").contains(&2),
+        badge.contains(&7) && badge.contains(&1),
+        "and set in reverse video, which nothing else on the screen is: \
+         {badge:?} in {:?}",
+        lines[0]
+    );
+    assert!(
+        sgr_at(lines[0], "AMX").contains(&1),
+        "the tool's name is the other thing up here carrying weight:\n{:?}",
+        lines[0]
+    );
+    assert!(
+        sgr_at(lines[0], "~").contains(&2),
         "and where the view is is chrome:\n{:?}",
         lines[0]
     );
 
-    // The dials row carries no colour introducer at all: what it is about is
-    // said in the word at the front of it, which is why it can be as quiet as
-    // everything else up here. The attributes are read across both rows,
-    // because a terminal writes an escape where the paint changes rather than
-    // where a line begins.
+    // The dials row names its dials as quietly as the rest of the chrome up
+    // here: what carries the colour on it is the value each one is set to. The
+    // attributes are read across both rows, because a terminal writes an
+    // escape where the paint changes rather than where a line begins.
     let header = lines[..2].concat();
     assert!(
-        !lines[1].contains("38;"),
-        "nothing on the dials row is worth a colour:\n{:?}",
-        lines[1]
-    );
-    assert!(
-        sgr_at(&header, "next:").contains(&2) && !sgr_at(&header, "next:").contains(&1),
-        "and it is dim, without the weight it used to wear:\n{header:?}"
+        sgr_at(&header, "next").contains(&2) && !sgr_at(&header, "next").contains(&1),
+        "the label is dim, and carries no weight of its own:\n{header:?}"
     );
 }
 
@@ -1476,7 +1487,7 @@ fn card_floats_over_the_list_with_the_question_alone() {
             .lines()
             .next()
             .unwrap_or_default()
-            .starts_with("amx ·"),
+            .starts_with("AMX  "),
         "the header is where it was:\n{carded}"
     );
     assert!(
@@ -1826,7 +1837,7 @@ fn header_puts_what_the_next_agent_may_do_under_the_line_that_starts_it() {
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the header", || {
         screen(&amx, &view)
-            .contains("next: claude · model: default")
+            .contains("└ next  claude   model  default")
             .then_some(())
     });
 
@@ -1856,7 +1867,7 @@ fn header_dials_are_the_argv_the_next_agent_is_started_with() {
     press(&amx, &view, "M-m");
     amx.until("the model dial to turn", || {
         screen(&amx, &view)
-            .contains("next: claude · fable")
+            .contains("└ next  claude   model  fable")
             .then_some(())
     });
 
@@ -1887,7 +1898,7 @@ fn header_dials_are_the_argv_the_next_agent_is_started_with() {
     );
     amx.until("the header to be as it was", || {
         screen(&amx, &view)
-            .contains("next: claude · fable")
+            .contains("└ next  claude   model  fable")
             .then_some(())
     });
 }
@@ -1904,10 +1915,10 @@ fn header_vendor_dial_runs_the_next_agent_under_the_vendor_it_names() {
     );
     let drawn = amx.until("the header", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("· no worktree").then_some(drawn)
+        drawn.contains("worktree  none").then_some(drawn)
     });
     assert!(
-        !drawn.contains("model:"),
+        !drawn.contains("model"),
         "an unregistered command declares no model dial, so there is no dial \
          on the row to name:\n{drawn}"
     );
@@ -1915,7 +1926,7 @@ fn header_vendor_dial_runs_the_next_agent_under_the_vendor_it_names() {
     press(&amx, &view, "M-v");
     amx.until("the vendor dial to turn", || {
         screen(&amx, &view)
-            .contains("next: claude · model: default")
+            .contains("└ next  claude   model  default")
             .then_some(())
     });
 
@@ -1941,7 +1952,7 @@ fn header_worktree_dial_gives_the_next_agent_a_tree_the_file_would_not() {
 
     press(&amx, &view, "M-w");
     amx.until("the worktree dial to turn", || {
-        screen(&amx, &view).contains("· worktree").then_some(())
+        screen(&amx, &view).contains("worktree  new").then_some(())
     });
 
     types(&amx, &view, "n");

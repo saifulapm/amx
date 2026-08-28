@@ -16,11 +16,12 @@
 //! Two kinds of thing are on the screen at once and they are drawn apart:
 //! what is happening — the rows, the counters — and what the *next* agent will
 //! be started with, which has not happened at all. Each has a row of its own
-//! above the list and the second one says so in a word, so nobody reads a dial
-//! as a fact about the fleet. The one thing of the second kind that is not on
-//! that row — what the next agent may do without asking, said under the line
-//! that would start it — is the one that wears a treatment instead, because it
-//! is beside a line somebody is about to press enter on.
+//! above the list, and the second hangs off the first on a branch glyph and
+//! carries the accent on every value, so nobody reads a dial as a fact about
+//! the fleet. The one thing of the second kind that is not on that row — what
+//! the next agent may do without asking, said under the line that would start
+//! it — is the one that wears weight as well, because it is beside a line
+//! somebody is about to press enter on.
 //!
 //! No colour is decided here. A thing is painted for what it means — waiting,
 //! done, failed — and which colour that is comes off the [`Theme`] the screen
@@ -637,24 +638,88 @@ fn space_rows(height: u16) -> u16 {
 /// will be started with.
 ///
 /// Two rows where there is room for two, and one kind of thing on each. The
-/// first is the present tense — amx, the directory the view was opened on, and
-/// the counters — and the second is every dial, in one row that says at its
-/// front what it is about. The row that goes on a short screen is the second:
-/// what the fleet is doing is why somebody opened the view, and a dial is one
-/// keypress from being read in the row under the composer.
+/// first is the present tense — the tool's name, the directory the view was
+/// opened on, what the fleet is doing, and the count that wants a person set in
+/// reverse video at the far end of it. The second hangs off it on a branch
+/// glyph and holds every dial.
+///
+/// The row that goes on a short screen is the second: the count that wants
+/// somebody is why anybody opened the view, and a dial is one keypress from
+/// being read in the row under the composer.
 fn header(screen: &Screen, area: Rect) -> Vec<Line<'static>> {
     let width = area.width as usize;
-    let theme = screen.theme;
     // The fleet's half is worked out first: it is what there is, and the name
     // and the directory are what fit beside it.
-    let counters = counters(&screen.list, screen.profile.max, theme);
-    let room = width.saturating_sub(said(&counters) + 1);
-    let mut lines = vec![spread(here(&screen.profile, room), counters, width)];
+    let fleet = fleet(screen, width);
+    let room = width.saturating_sub(said(&fleet) + 1);
+    let mut lines = vec![spread(here(&screen.profile, room), fleet, width)];
     if area.height >= 2 {
-        lines.push(Line::styled(dials(&screen.profile, width), dim()));
+        lines.push(Line::from(dials(&screen.profile, width, screen.theme)));
     }
     lines
 }
+
+/// The right of band 1: what the fleet is doing, why the list is short where it
+/// is short, and the count that wants a person.
+///
+/// The badge and the narrowing are about the screen in front of somebody — the
+/// one number they opened it for, and the words that say why what is under it
+/// is holding less than it has. The counts are readings about a fleet. So the
+/// counts are what goes where the row will not hold all three and the name as
+/// well: a narrow terminal that answered every question but the one it was
+/// opened for would be answering nobody.
+fn fleet(screen: &Screen, width: usize) -> Vec<Span<'static>> {
+    // What the list was narrowed to, in the words it was narrowed with, so
+    // somebody who has forgotten why it is short can read why.
+    let mut kept = match screen.list.narrowing() {
+        Some(narrowing) => vec![Span::styled(format!("{narrowing}{APART}"), dim())],
+        None => Vec::new(),
+    };
+    kept.extend(badge(&screen.list, screen.theme));
+
+    let counts = counters(&screen.list, screen.profile.max);
+    let together = said(&counts) + APART.chars().count() + said(&kept) + NAME.chars().count() + 1;
+    match together <= width {
+        true => [counts, vec![Span::raw(APART)], kept].concat(),
+        false => kept,
+    }
+}
+
+/// How many agents are waiting on somebody.
+fn waiting(list: &List) -> usize {
+    list.counts()
+        .iter()
+        .find(|(group, _)| *group == Group::NeedsInput)
+        .map_or(0, |&(_, count)| count)
+}
+
+/// The one number the view is opened to read, in the one treatment nothing
+/// else on the screen wears.
+///
+/// Reverse video in the waiting colour, with a space either side of the words
+/// so it reads as a block rather than as a phrase somebody has coloured in.
+/// Everything else above the list is a fact about a fleet; this is a fact
+/// about the person reading it, and it is the whole of what the one-second
+/// test rests on.
+///
+/// At zero it is the words `nothing waiting`, dim, in the same place: the
+/// question is asked every time the screen is looked at, and an answer that
+/// vanished when it was `no` would leave somebody reading the row to find out
+/// whether it had been drawn yet.
+fn badge(list: &List, theme: Theme) -> Vec<Span<'static>> {
+    match waiting(list) {
+        0 => vec![Span::styled(NOBODY, dim())],
+        count => vec![Span::styled(
+            format!(" {count} WAITING "),
+            Style::new()
+                .fg(theme.waiting)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )],
+    }
+}
+
+/// What stands where the badge stands when nothing is waiting.
+const NOBODY: &str = "nothing waiting";
 
 /// Two blocks on one row, the left where it starts and the right against the
 /// far edge, with at least one column between them.
@@ -685,67 +750,114 @@ fn said(spans: &[Span<'static>]) -> usize {
 /// Whose screen this is and where it was opened, which is where an agent
 /// started from here will run.
 ///
-/// The name is never cut and the directory is: `amx` is three columns and the
+/// The name is never cut and the directory is: `AMX` is three columns and the
 /// one word that says what somebody is looking at, and a path cut to a few
 /// characters is not a path.
+///
+/// The name carries weight and the directory does not, which is the whole of
+/// the hierarchy in the corner: one is what the screen is and the other is a
+/// fact about this run of it.
 fn here(profile: &Profile, room: usize) -> Vec<Span<'static>> {
-    let left = room.saturating_sub(NAME.chars().count() + SEPARATOR.chars().count());
-    let said = match !profile.dir.is_empty() && left >= SHORTEST_DIR {
-        true => format!("{NAME}{SEPARATOR}{}", fit(&profile.dir, left)),
-        false => fit(NAME, room),
-    };
-    vec![Span::styled(said, dim())]
+    let name = Span::styled(fit(NAME, room), Style::new().add_modifier(Modifier::BOLD));
+    let left = room.saturating_sub(NAME.chars().count() + BESIDE.chars().count());
+    match !profile.dir.is_empty() && left >= SHORTEST_DIR {
+        true => vec![
+            name,
+            Span::styled(format!("{BESIDE}{}", fit(&profile.dir, left)), dim()),
+        ],
+        false => vec![name],
+    }
 }
 
 /// What the view is called, which is what the top left corner of it says.
-const NAME: &str = "amx";
+const NAME: &str = "AMX";
+
+/// What stands between the name and the directory under it.
+const BESIDE: &str = "  ";
+
+/// What stands between two things said on one band above the list.
+///
+/// Three columns rather than a glyph: the counts are a list of readings with
+/// nothing between them to say, and air separates them without adding a fourth
+/// kind of mark to a screen that already carries three.
+const APART: &str = "   ";
 
 /// What every dial the next agent will be started with says, in one row.
 ///
-/// `next:` at the front is what marks the row as being about an agent that has
-/// not been started — which is the whole of what a treatment of its own used
-/// to carry, said in a word instead of in a colour. So the row is dim like the
-/// rest of the chrome above the list, and the one colour up there is on the
-/// count that wants a person.
+/// The row hangs off the one above it on a [`BRANCH`] in the first column,
+/// which is what marks it as being about an agent that has not been started:
+/// a glyph a person reads as subordinate without a word of explanation, where
+/// a label at the front used to say it. The labels are dim and the values
+/// carry the accent, because the value is the reading and the label is the
+/// question a person already knows the order of.
 ///
-/// A dial its vendor does not declare is not on the row at all, and one
-/// resting where the vendor left it names the dial rather than the value: amx
-/// does not know which model claude would pick for itself, and `default` on
-/// its own would be a word standing where three of them could be.
+/// A dial its vendor does not declare is not on the row at all. One resting
+/// where the vendor left it reads `default`, which is the vendor's own answer
+/// said as a value rather than as a hole in the row.
 ///
-/// An `agent` is a command line, and a command is routinely a long one. It
-/// takes the columns the dials beside it leave, because a dial pushed off the
-/// end of the row is a dial nobody can see they have turned — but never fewer
-/// than [`SHORTEST_AGENT`] of them, because which program runs is the first
-/// thing this row is for. What will not fit after that is cut off the end,
-/// where the dial that goes is the one amx decided rather than the vendor.
-fn dials(profile: &Profile, width: usize) -> String {
-    let mut said = Vec::new();
+/// Where every label will not fit they all go but `next`, and the pairs are
+/// separated by a mark instead: the order of four dials is learned once, and
+/// the values are what change. An `agent` is a command line, and a command is
+/// routinely a long one — it takes the columns the dials beside it leave, but
+/// never fewer than [`SHORTEST_AGENT`] of them, because which program runs is
+/// the first thing this row is for.
+fn dials(profile: &Profile, width: usize, theme: Theme) -> Vec<Span<'static>> {
+    let mut pairs: Vec<(&'static str, String)> = Vec::new();
     if profile.model_dial().is_some() {
-        said.push(dial("model", &profile.model));
+        pairs.push(("model", profile.model.clone()));
     }
     if profile.permission_dial().is_some() {
-        said.push(dial("permission", &profile.permission));
+        pairs.push(("permission", profile.permission.clone()));
     }
-    said.push(
+    pairs.push((
+        "worktree",
         match profile.worktree {
-            true => "worktree",
-            false => "no worktree",
+            true => TREE,
+            false => NO_TREE,
         }
         .to_string(),
-    );
+    ));
 
-    let taken = NEXT.chars().count()
-        + said
-            .iter()
-            .map(|dial| dial.chars().count() + SEPARATOR.chars().count())
-            .sum::<usize>();
-    let room = width.saturating_sub(taken).max(SHORTEST_AGENT);
-    let row = std::iter::once(fit(&profile.agent, room))
-        .chain(said)
-        .collect::<Vec<_>>()
-        .join(SEPARATOR);
-    fit(&format!("{NEXT}{row}"), width)
+    // What the row costs before the vendor's own value is written into it,
+    // with the labels and without them.
+    let chrome = |labelled: bool| {
+        BRANCH.chars().count()
+            + NEXT.chars().count()
+            + BESIDE.chars().count()
+            + pairs
+                .iter()
+                .map(|(label, at)| {
+                    at.chars().count()
+                        + match labelled {
+                            true => {
+                                APART.chars().count()
+                                    + label.chars().count()
+                                    + BESIDE.chars().count()
+                            }
+                            false => MARKED.chars().count(),
+                        }
+                })
+                .sum::<usize>()
+    };
+    let labelled = chrome(true) + SHORTEST_AGENT <= width;
+    let room = width.saturating_sub(chrome(labelled)).max(SHORTEST_AGENT);
+
+    let turned = Style::new().fg(theme.accent);
+    let mut spans = vec![
+        Span::styled(format!("{BRANCH}{NEXT}{BESIDE}"), dim()),
+        Span::styled(fit(&profile.agent, room), turned),
+    ];
+    for (label, at) in pairs {
+        spans.push(Span::styled(
+            match labelled {
+                true => format!("{APART}{label}{BESIDE}"),
+                false => MARKED.to_string(),
+            },
+            dim(),
+        ));
+        spans.push(Span::styled(at, turned));
+    }
+    clipped(spans, width)
 }
 
 /// Fewer columns than this for the vendor and the dials give way instead: a
@@ -754,48 +866,67 @@ fn dials(profile: &Profile, width: usize) -> String {
 /// nothing.
 const SHORTEST_AGENT: usize = 8;
 
-/// What the row calls a dial that is resting where its vendor left it.
-fn dial(named: &str, at: &str) -> String {
-    match at == DEFAULT {
-        true => format!("{named}: {DEFAULT}"),
-        false => at.to_string(),
-    }
-}
+/// What hangs the dials off the row above them.
+const BRANCH: &str = "└ ";
 
-/// What the dials row reads at its front.
-const NEXT: &str = "next: ";
+/// What the first dial is called, which is the one label the row never sheds.
+const NEXT: &str = "next";
+
+/// What the worktree dial reads at either end of its travel.
+const TREE: &str = "new";
+const NO_TREE: &str = "none";
+
+/// What stands between two dials on a row with no room to name them.
+const MARKED: &str = "  ·  ";
 
 /// What stands between two things said on one row.
 const SEPARATOR: &str = " · ";
 
+/// A row of spans cut to the columns there are.
+///
+/// The last span standing is the one that carries the cut, so the end of the
+/// row says it was cut the way the end of any other cut thing on the screen
+/// does.
+fn clipped(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    if said(&spans) <= width {
+        return spans;
+    }
+    let mut left = width;
+    let mut kept = Vec::new();
+    for span in spans {
+        if left == 0 {
+            break;
+        }
+        let taken = span.content.chars().count();
+        if taken <= left {
+            left -= taken;
+            kept.push(span);
+            continue;
+        }
+        kept.push(Span::styled(fit(&span.content, left), span.style));
+        left = 0;
+    }
+    kept
+}
+
 /// What the fleet is: a count per group, in the word the list can be narrowed
 /// by, and the gate the next agent will meet.
-fn counters(list: &List, max: usize, theme: Theme) -> Vec<Span<'static>> {
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    for &(group, count) in list.counts() {
-        if !spans.is_empty() {
-            spans.push(Span::styled(SEPARATOR, dim()));
-        }
-        spans.push(Span::styled(
-            format!("{count} {}", group.state()),
-            group_colour(theme, group),
-        ));
-    }
-    if !spans.is_empty() {
-        spans.push(Span::styled(SEPARATOR, dim()));
-    }
-    // The limit that refuses a spawn, said before it refuses one.
-    spans.push(Span::styled(
-        format!("{}/{max} running", list.live()),
-        dim(),
-    ));
+///
+/// Every group but the one the badge beside it is already counting, and no
+/// colour on any of them: a count is a reading about a fleet, and a row where
+/// four readings are coloured is a row where the one that wants a person is
+/// not.
+fn counters(list: &List, max: usize) -> Vec<Span<'static>> {
+    let mut said: Vec<String> = list
+        .counts()
+        .iter()
+        .filter(|(group, _)| *group != Group::NeedsInput)
+        .map(|&(group, count)| format!("{count} {}", group.state()))
+        .collect();
 
-    // What the list was narrowed to, in the words it was narrowed with, so
-    // somebody who has forgotten why it is short can read why.
-    if let Some(narrowing) = list.narrowing() {
-        spans.push(Span::styled(format!("{SEPARATOR}{narrowing}"), dim()));
-    }
-    spans
+    // The limit that refuses a spawn, said before it refuses one.
+    said.push(format!("{}/{max} running", list.live()));
+    vec![Span::styled(said.join(APART), dim())]
 }
 
 /// What the terminal the view is drawn on is called: the program, and how many
@@ -812,14 +943,9 @@ fn counters(list: &List, max: usize, theme: Theme) -> Vec<Span<'static>> {
 /// answering a wider one would be answering a question nobody on this screen
 /// asked.
 pub fn title(list: &List) -> String {
-    let waiting = list
-        .counts()
-        .iter()
-        .find(|(group, _)| *group == Group::NeedsInput)
-        .map(|&(_, count)| count);
-    match waiting {
-        Some(count) => format!("amx{SEPARATOR}{count} waiting"),
-        None => "amx".to_string(),
+    match waiting(list) {
+        0 => "amx".to_string(),
+        count => format!("amx{SEPARATOR}{count} waiting"),
     }
 }
 
@@ -2286,30 +2412,18 @@ fn heading_style(marked: bool) -> Style {
     }
 }
 
-/// The same roles over a group, so the count at the top and the rows under the
-/// heading say the same thing in the same colour.
-fn group_colour(theme: Theme, group: Group) -> Style {
-    match group {
-        Group::NeedsInput => Style::new().fg(theme.waiting),
-        Group::Working => Style::new(),
-        Group::Idle => dim(),
-        Group::Completed => Style::new().fg(theme.stopped),
-    }
-}
-
 fn dim() -> Style {
     Style::new().add_modifier(Modifier::DIM)
 }
 
 /// What the next agent may do without asking, under the line that would start
-/// it: the one prospective thing on the screen worth a colour, because it is
-/// the one somebody is about to press enter past. The dials above the list say
-/// which half of the screen they are about in the word at the front of them
-/// and are as quiet as the rest of the chrome.
+/// it: the same accent every dial above the list wears, because it is one of
+/// them, promoted to where somebody is about to press enter past it.
 ///
-/// Weight as well as colour, for the terminal that has the colour turned off:
-/// the row has to read as amx's own answer for a spawn rather than as another
-/// line of the composer it is under.
+/// Weight as well as colour, which is what sets it apart from the dials it came
+/// from and holds it apart on a terminal with the colour turned off: the row
+/// has to read as amx's own answer for a spawn rather than as another line of
+/// the composer it is under.
 fn prospective(theme: Theme) -> Style {
     Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
 }
@@ -2882,7 +2996,7 @@ mod tests {
         );
 
         assert!(
-            screen[0].ends_with("1 waiting · 1 working · 2/5 running"),
+            screen[0].ends_with("1 working   2/5 running    1 WAITING"),
             "{:?}",
             screen[0]
         );
@@ -3059,7 +3173,7 @@ mod tests {
 
         let painted = painted(&screen, (60, 8));
         assert!(
-            painted[0].ends_with("1 working · 1/5 running · s:working"),
+            painted[0].ends_with("1 working   1/5 running   s:working   nothing waiting"),
             "{:?}",
             painted[0]
         );
@@ -3330,8 +3444,12 @@ mod tests {
     #[test]
     fn view_says_when_there_is_nothing_to_show() {
         let screen = drawn(Vec::new(), None, (40, 6));
-        assert!(screen[0].starts_with("amx"), "{:?}", screen[0]);
-        assert!(screen[0].ends_with("0/5 running"), "{:?}", screen[0]);
+        assert!(screen[0].starts_with("AMX"), "{:?}", screen[0]);
+        assert!(
+            screen[0].ends_with("0/5 running   nothing waiting"),
+            "{:?}",
+            screen[0]
+        );
         assert_eq!(screen[1], "no agents");
     }
 
@@ -3372,7 +3490,7 @@ mod tests {
         );
 
         assert!(
-            screen[0].starts_with("amx · ~/code/amx"),
+            screen[0].starts_with("AMX  ~/code/amx"),
             "whose screen this is and where it was opened: {:?}",
             screen[0]
         );
@@ -3382,12 +3500,13 @@ mod tests {
             screen[0]
         );
         assert!(
-            screen[0].ends_with("1 waiting · 1 working · 2/5 running"),
-            "what the fleet is, and the gate the next one meets: {:?}",
+            screen[0].ends_with("1 working   2/5 running    1 WAITING"),
+            "what the fleet is, the gate the next one meets, and the one count \
+             that wants somebody at the end of the row: {:?}",
             screen[0]
         );
         assert_eq!(
-            screen[1], "next: claude · model: default · permission: default · worktree",
+            screen[1], "└ next  claude   model  default   permission  default   worktree  new",
             "and under it every dial the next agent will be started with"
         );
         assert_eq!(screen[2], "", "a blank row stands the list off from it");
@@ -3396,29 +3515,34 @@ mod tests {
 
     #[test]
     fn header_spends_its_one_colour_on_the_count_that_wants_a_person() {
-        let screen = launching(vec![view("ask-a1b", Phase::Waiting, None, 30)]);
+        let screen = launching(vec![
+            view("ask-a1b", Phase::Waiting, None, 30),
+            view("ask-b2c", Phase::Waiting, None, 10),
+            view("busy-c3d", Phase::Working, Some("Running Bash"), 3),
+        ]);
         let drawn = painted(&screen, WIDE);
-        let buffer = cells(&screen, WIDE);
 
-        let waiting = buffer[(column_of(&drawn[0], "1 waiting"), 0)].clone();
-        assert_eq!(
-            waiting.fg,
-            theme().waiting,
-            "the one thing above the list that wants somebody keeps its colour"
+        assert!(
+            drawn[0].ends_with(" 2 WAITING"),
+            "the one number the view was opened for, at the end of the row: {:?}",
+            drawn[0]
         );
-        // Everything else up here is chrome, the dials included: the row says
-        // what it is in the word at the front of it, so it does not have to
-        // say it in cyan.
-        for column in [0, 6, 20] {
-            let cell = buffer[(column, 1)].clone();
-            assert_eq!(cell.fg, Color::Reset, "column {column}: {:?}", drawn[1]);
+        assert!(
+            drawn[0].contains("1 working   3/5 running"),
+            "the counts beside it say the rest of the fleet, and say the \
+             waiting one nowhere else: {:?}",
+            drawn[0]
+        );
+
+        // A block rather than a phrase: reverse video in the waiting colour,
+        // out to the edge of the row, the space either side of the words
+        // included.
+        let buffer = cells(&screen, WIDE);
+        for column in column_of(&drawn[0], " 2 WAITING")..WIDE.0 {
+            let cell = buffer[(column, 0)].clone();
+            assert_eq!(cell.fg, theme().waiting, "column {column}: {:?}", drawn[0]);
             assert!(
-                cell.modifier.contains(Modifier::DIM),
-                "column {column}: {:?}",
-                cell.modifier
-            );
-            assert!(
-                !cell.modifier.contains(Modifier::BOLD),
+                cell.modifier.contains(Modifier::REVERSED | Modifier::BOLD),
                 "column {column}: {:?}",
                 cell.modifier
             );
@@ -3426,22 +3550,99 @@ mod tests {
     }
 
     #[test]
+    fn header_says_nothing_waiting_in_words_where_nobody_is() {
+        let screen = launching(vec![view(
+            "busy-a1b",
+            Phase::Working,
+            Some("Running Bash"),
+            3,
+        )]);
+        let drawn = painted(&screen, WIDE);
+
+        assert!(
+            drawn[0].ends_with("nothing waiting"),
+            "the answer stands where the answer always stands: {:?}",
+            drawn[0]
+        );
+
+        let buffer = cells(&screen, WIDE);
+        let cell = buffer[(column_of(&drawn[0], "nothing waiting"), 0)].clone();
+        assert_eq!(
+            cell.fg,
+            Color::Reset,
+            "nothing is asking, so nothing shouts"
+        );
+        assert!(cell.modifier.contains(Modifier::DIM), "{:?}", cell.modifier);
+        assert!(
+            !cell.modifier.contains(Modifier::REVERSED),
+            "{:?}",
+            cell.modifier
+        );
+    }
+
+    #[test]
+    fn header_hangs_the_dials_off_the_row_they_are_under() {
+        let screen = launching(Vec::new());
+        let drawn = painted(&screen, WIDE);
+        assert_eq!(
+            drawn[1], "└ next  claude   model  default   permission  default   worktree  new",
+            "one glyph in the first column says the row is subordinate to the \
+             one above it, without a word of explanation"
+        );
+
+        let buffer = cells(&screen, WIDE);
+        for label in ["└", "next", "model", "permission", "worktree"] {
+            let cell = buffer[(column_of(&drawn[1], label), 1)].clone();
+            assert_eq!(cell.fg, Color::Reset, "{label}: {:?}", drawn[1]);
+            assert!(
+                cell.modifier.contains(Modifier::DIM),
+                "{label}: {:?}",
+                cell.modifier
+            );
+        }
+        // The values are what somebody reads the row for, so they are the
+        // thing on it wearing a colour.
+        for value in ["claude", "new"] {
+            let cell = buffer[(column_of(&drawn[1], value), 1)].clone();
+            assert_eq!(cell.fg, theme().accent, "{value}: {:?}", drawn[1]);
+            assert!(
+                !cell.modifier.contains(Modifier::DIM),
+                "{value}: {:?}",
+                cell.modifier
+            );
+        }
+    }
+
+    #[test]
+    fn header_drops_the_dial_labels_before_it_cuts_what_they_are_set_to() {
+        let screen = launching(Vec::new());
+        assert_eq!(
+            screen_line(&screen, (60, 12), 1),
+            "└ next  claude  ·  default  ·  default  ·  new",
+            "the value is the reading; the label is what a person already knows \
+             the order of. Only `next` keeps its own, because it is what says \
+             which half of the screen the row is about"
+        );
+    }
+
+    #[test]
     fn header_names_a_dial_that_rests_where_the_vendor_left_it() {
         let mut screen = launching(Vec::new());
         assert_eq!(
             screen_line(&screen, WIDE, 1),
-            "next: claude · model: default · permission: default · worktree",
-            "the dial's own name, not a guess at what claude would have picked"
+            "└ next  claude   model  default   permission  default   worktree  new",
+            "the vendor's own answer said as a value, not a guess at which \
+             model claude would have picked"
         );
 
-        // Turned, it says what it was turned to and nothing else: the value
-        // is what somebody is reading the row for.
+        // Turned, the value is what it was turned to. The label does not move,
+        // so the row a person has learned to read stays the row they read.
         screen.profile.model = "opus".to_string();
         screen.profile.permission = "plan".to_string();
         screen.profile.worktree = false;
         assert_eq!(
             screen_line(&screen, WIDE, 1),
-            "next: claude · opus · plan · no worktree"
+            "└ next  claude   model  opus   permission  plan   worktree  none"
         );
 
         // An agent the registry never heard of declares no dials, so the row
@@ -3449,7 +3650,7 @@ mod tests {
         screen.profile.agent = "mock-claude".to_string();
         assert_eq!(
             screen_line(&screen, WIDE, 1),
-            "next: mock-claude · no worktree"
+            "└ next  mock-claude   worktree  none"
         );
     }
 
@@ -3460,9 +3661,10 @@ mod tests {
             view("done-b2c", Phase::Done, Some("did it"), 60),
         ]);
         assert!(
-            screen_line(&screen, WIDE, 0).ends_with("1 waiting · 1 done · 1/5 running"),
+            screen_line(&screen, WIDE, 0).ends_with("1 done   1/5 running    1 WAITING"),
             "the heading over the rows says `needs input`; the counter says \
-             the word the list can be narrowed by: {:?}",
+             the word the list can be narrowed by, and says the waiting one \
+             once, in the badge: {:?}",
             screen_line(&screen, WIDE, 0)
         );
 
@@ -3472,7 +3674,7 @@ mod tests {
             .list
             .narrow(vec![Narrow::State(Some("waiting".to_string()))]);
         assert!(
-            screen_line(&screen, WIDE, 0).ends_with("1 waiting · 1/5 running · s:waiting"),
+            screen_line(&screen, WIDE, 0).ends_with("1/5 running   s:waiting    1 WAITING"),
             "{:?}",
             screen_line(&screen, WIDE, 0)
         );
@@ -3488,7 +3690,7 @@ mod tests {
         ]);
         screen.profile.max = 5;
         assert!(
-            screen_line(&screen, WIDE, 0).ends_with("3/5 running"),
+            screen_line(&screen, WIDE, 0).contains("3/5 running"),
             "an agent whose command has ended holds no slot: {:?}",
             screen_line(&screen, WIDE, 0)
         );
@@ -3499,15 +3701,10 @@ mod tests {
         // Decided here rather than discovered at the edge of a terminal.
         let mut screen = launching(vec![view("busy-a1b", Phase::Working, None, 3)]);
 
-        let cramped = painted(&screen, (36, 12));
+        let cramped = painted(&screen, (28, 12));
         assert!(
-            cramped[0].starts_with("amx"),
+            cramped[0].starts_with("AMX"),
             "the name says what the screen is, and it is three columns: {:?}",
-            cramped[0]
-        );
-        assert!(
-            cramped[0].ends_with("1 working · 1/5 running"),
-            "what the fleet is stays: {:?}",
             cramped[0]
         );
         assert!(
@@ -3521,23 +3718,30 @@ mod tests {
         // row is a dial nobody can see they have turned.
         screen.profile.agent = "claude --settings /etc/amx/every-hook.json".to_string();
         let long = painted(&screen, (80, 12));
-        assert!(long[1].starts_with("next: claude --set"), "{:?}", long[1]);
+        assert!(long[1].starts_with("└ next  claude --set"), "{:?}", long[1]);
         assert!(
             long[1].contains('…'),
             "and it says it was cut: {:?}",
             long[1]
         );
         assert!(
-            long[1].ends_with("· permission: default · worktree"),
+            long[1].ends_with("permission  default   worktree  new"),
             "{:?}",
             long[1]
         );
 
-        // Narrower still and there is no room for all of it either way. What
+        // Narrower still and the labels go first, which buys the vendor ten
+        // columns before a dial gives up a character of its value.
+        assert_eq!(
+            screen_line(&screen, (50, 12), 1),
+            "└ next  claude --…  ·  default  ·  default  ·  new"
+        );
+
+        // Narrower again and there is no room for all of it either way. What
         // the vendor keeps is a floor: a row that had fitted every dial on
         // the screen by leaving off what runs would be a row about nothing.
-        let narrow = painted(&screen, (50, 12))[1].clone();
-        assert!(narrow.starts_with("next: claude"), "{narrow:?}");
+        let narrow = screen_line(&screen, (36, 12), 1);
+        assert!(narrow.starts_with("└ next  claude …"), "{narrow:?}");
         assert!(
             narrow.ends_with('…'),
             "and the end of the row is what says it was cut: {narrow:?}"
@@ -3545,11 +3749,10 @@ mod tests {
     }
 
     #[test]
-    fn header_keeps_the_fleet_on_the_row_that_has_no_room_for_the_name() {
-        // Every group at once on a narrow terminal: the counters are wider
-        // than the screen on their own, so nothing is left beside them. What
-        // the fleet is doing is what the row is for, and a row drawn blank
-        // says less than one the terminal cut.
+    fn header_sheds_the_counts_before_the_one_that_wants_a_person() {
+        // Every group at once, which is more counting than a narrow terminal
+        // has room for beside the name. What goes is the counting: the badge
+        // is the answer the view was opened to read.
         let screen = launching(vec![
             view("ask-a1b", Phase::Waiting, None, 30),
             view("busy-b2c", Phase::Working, None, 3),
@@ -3557,11 +3760,18 @@ mod tests {
             view("done-d4e", Phase::Done, Some("did it"), 60),
         ]);
 
-        let cramped = painted(&screen, (40, 12));
         assert!(
-            cramped[0].starts_with("1 waiting · 1 working"),
+            screen_line(&screen, (60, 12), 0).contains("1 working   1 idle   1 done   3/5 running"),
             "{:?}",
-            cramped[0]
+            screen_line(&screen, (60, 12), 0)
+        );
+
+        let cramped = screen_line(&screen, (40, 12), 0);
+        assert!(cramped.starts_with("AMX  ~/code/amx"), "{cramped:?}");
+        assert!(cramped.ends_with(" 1 WAITING"), "{cramped:?}");
+        assert!(
+            !cramped.contains("running"),
+            "and the counting is what gave the room up: {cramped:?}"
         );
     }
 
@@ -3571,20 +3781,17 @@ mod tests {
         let short = painted(&screen, (60, SHORT as u16 - 1));
 
         assert!(
-            short[0].starts_with("amx · ~/code/amx"),
+            short[0].starts_with("AMX  ~/code/amx"),
             "the row that says what there is stays; the dials are one \
              keypress from being read under the composer: {:?}",
             short[0]
         );
         assert!(
-            short[0].ends_with("1 working · 1/5 running"),
+            short[0].ends_with("1 working   1/5 running   nothing waiting"),
             "{:?}",
             short[0]
         );
-        assert!(
-            !short.iter().any(|line| line.starts_with("next:")),
-            "{short:?}"
-        );
+        assert!(!short.iter().any(|line| line.starts_with('└')), "{short:?}");
         assert_eq!(short[1], "working", "and the list starts a row sooner");
     }
 
