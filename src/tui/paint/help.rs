@@ -1,9 +1,9 @@
 //! The screen of keys, for whoever asked what they are.
 //!
 //! Not a band: it stands where the list stands, because a person who has asked
-//! what the keys are is not reading the wall. The table itself is up in
-//! [`super::HELP`]; what is here is how it is stood in columns on a terminal of
-//! any shape, and what it gives up first when there is not room for all of it.
+//! what the keys are is not reading the wall. The table of every key is here,
+//! and beside it how that table is stood in columns on a terminal of any shape,
+//! and what it gives up first when there is not room for all of it.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -11,9 +11,59 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::HELP;
 use super::style::dim;
 use super::text::{fit, said};
+
+/// Every key, for whoever asked what they are.
+///
+/// Every key the view binds, and the words it is bound under: a key column
+/// that names two keys names both, because what a person looks for here is
+/// the one they pressed. A test presses everything a terminal can send and
+/// holds what acted against this table, so a binding that is not here is a
+/// binding the screen would have to grow a row for.
+///
+/// In the order [`GROUPS`] stands them in, which is the order they are drawn:
+/// one table, cut into runs, so a key is in exactly one place and the test that
+/// walks every key walks every group with it.
+///
+/// The table is not public to the rest of the crate, so the test that checks
+/// the README against it reads this file as text.
+pub(in crate::tui) const HELP: [(&str, &str); 29] = [
+    // walk
+    ("↑ ↓", "walk the agents"),
+    ("alt+1..9", "reach one by where it is on the wall"),
+    ("esc", "put the card away · leave a line alone"),
+    ("?", "these keys"),
+    ("q ctrl+c", "close the view"),
+    // look
+    ("space", "the card: what one is asking, and the answer"),
+    ("enter →", "bring its window forward · shut a group"),
+    ("d", "what it has changed"),
+    ("pgup ctrl+b", "page the card, when it holds more"),
+    ("pgdn ctrl+f", "and the other way"),
+    // start
+    ("n", "start an agent"),
+    ("alt+n", "start the line and go to the agent"),
+    ("r", "reply: a message, or an answer on the card"),
+    ("alt+enter", "a newline in the line, without sending it"),
+    ("ctrl+g", "write the line in $EDITOR"),
+    // arrange
+    ("ctrl+s", "gather them by state or by project"),
+    ("ctrl+t", "hold it at the top of its group"),
+    ("shift+↑", "move it up its group"),
+    ("shift+↓", "move it down its group"),
+    ("ctrl+r", "call it something else"),
+    ("ctrl+x", "stop it · again forgets · a heading, the group"),
+    ("s: a:", "narrow by state or name, on the task line"),
+    // dials
+    ("alt+v", "which vendor the next agent runs"),
+    ("alt+m", "which model the next agent is given"),
+    ("alt+w", "whether it gets a worktree of its own"),
+    ("shift+tab", "what it may do without asking"),
+    ("m: p: w:", "model, permission and worktree, for one spawn"),
+    ("d:", "where one spawn runs, on the task line"),
+    ("agent:", "which vendor runs it, for one spawn"),
+];
 
 /// What the keys are for, and how many of [`HELP`] each of those answers for.
 ///
@@ -225,6 +275,7 @@ fn dealt(depths: &[usize], count: usize) -> Vec<Vec<usize>> {
     }
     bands
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

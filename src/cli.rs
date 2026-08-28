@@ -905,7 +905,7 @@ mod tests {
     /// table declares: a table this cannot read comes back the wrong length and
     /// says so, rather than quietly agreeing with whatever the README claims.
     fn keys_the_view_binds() -> Vec<&'static str> {
-        let source = include_str!("tui/paint.rs");
+        let source = include_str!("tui/paint/help.rs");
         let (_, table) = source
             .split_once("const HELP: [(&str, &str); ")
             .expect("the table the overlay is drawn from");
