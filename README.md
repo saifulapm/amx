@@ -42,6 +42,13 @@ tmux, the agent command, the config file, the hooks, a state directory amx can
 keep records in, and no agent already stopped at a screen the vendor puts in
 front of the work. Every check that fails says what to do about it.
 
+Where a tmux server is already running, it checks a seventh: that the directory
+that server is standing in still exists. A server keeps the directory it was
+started in for as long as it lives, and once that directory is deleted every
+pane it starts lands somewhere that is not there and dies immediately — which
+from the outside looks like agents failing in under a second having said
+nothing. Restarting the server is the fix, and the check prints the command.
+
 `--fix` does the one repair amx can make safely: wiring amx's seven hooks into
 `~/.claude/settings.json`, beside whatever is already there, after asking once
 and backing the file up. `amx uninstall` puts the backed-up bytes back and

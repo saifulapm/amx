@@ -14,6 +14,14 @@
 //! asked for a repair nobody can make would send somebody looking for a fault
 //! in their own machine.
 //!
+//! A seventh is asked only where there is something to ask it of. When a tmux
+//! server is already running, and the machine can say where a process is
+//! standing, doctor checks that the directory that server is standing in still
+//! exists. A server holds the directory it was started in for as long as it
+//! lives, and once that goes, every pane it forks starts somewhere that is not
+//! there and dies at once. No server yet is not a fault, and neither is a
+//! platform amx cannot ask, so both go unsaid rather than answered green.
+//!
 //! `--fix` does the one repair amx can make safely: wiring the hooks, after
 //! asking.
 
