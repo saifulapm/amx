@@ -4307,9 +4307,10 @@ mod tests {
         assert_eq!(code, exit::OK);
         let drawn: Vec<&str> = screen.lines().map(str::trim_end).collect();
         // Where the heading starts, not the whole of it: what a heading carries
-        // out to the edge beside the path is the wall's own business.
+        // out to the edge beside the path, and the cell it is inset by, are the
+        // wall's own business.
         assert!(
-            drawn[2].starts_with("/srv/app"),
+            drawn[2].trim_start().starts_with("/srv/app"),
             "the heading is where the agent is, not what it needs:\n{screen}"
         );
         assert!(
