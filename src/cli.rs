@@ -216,6 +216,10 @@ pub enum Command {
     /// command, the config, amx's hooks in the vendor's settings, a state
     /// directory to keep records in, and no agent already stopped at a screen
     /// the vendor puts in front of the work.
+    ///
+    /// Where a tmux server is already running, a seventh: that the directory
+    /// the server itself is standing in still exists. One that outlived its
+    /// own working directory kills every pane it starts.
     Doctor {
         /// Install what is missing.
         #[arg(long)]
@@ -1046,6 +1050,10 @@ mod tests {
             state_root: PathBuf::new(),
             state_error: None,
             parked: Vec::new(),
+            // The counted checks are the ones every machine is asked. The
+            // server check is asked only where there is a server to ask about,
+            // so it is deliberately absent here.
+            server: None,
         });
         let counted = ["no", "one", "two", "three", "four", "five", "six", "seven"]
             .get(checks.len())
