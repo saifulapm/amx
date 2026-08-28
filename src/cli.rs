@@ -1046,6 +1046,10 @@ mod tests {
             state_root: PathBuf::new(),
             state_error: None,
             parked: Vec::new(),
+            // The counted checks are the ones every machine is asked. The
+            // server check is asked only where there is a server to ask about,
+            // so it is deliberately absent here.
+            server: None,
         });
         let counted = ["no", "one", "two", "three", "four", "five", "six", "seven"]
             .get(checks.len())

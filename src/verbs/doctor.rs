@@ -84,6 +84,19 @@ pub struct Findings {
     pub state_error: Option<String>,
     /// The agents that never got past the vendor's own setup.
     pub parked: Vec<Parked>,
+    /// The tmux server amx would put an agent on, when one is already running
+    /// and this machine can say where it is standing.
+    pub server: Option<StandingServer>,
+}
+
+/// The server amx would use, and where its own process is standing.
+///
+/// The socket comes along because the remedy is a command line, and a restart
+/// aimed at the wrong server is worse than no advice at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StandingServer {
+    pub socket: tmux::Socket,
+    pub cwd: tmux::ServerCwd,
 }
 
 /// An agent stopped at a screen the vendor puts in front of the work, and
@@ -120,15 +133,21 @@ impl Setup {
 }
 
 /// Judge what was found.
+///
+/// Six of these are asked on every machine. The seventh is asked only where
+/// there is something to ask it of: a tmux server already running, on a
+/// platform that can say where a process is standing.
 pub fn report(found: &Findings) -> Vec<Check> {
-    vec![
+    let mut checks = vec![
         tmux_check(found),
         vendor_check(found),
         config_check(found),
         wiring_check(found, registry::entry(&found.vendor)),
         state_check(found),
-        setup_check(found, trusting()),
-    ]
+    ];
+    checks.extend(server_check(found));
+    checks.push(setup_check(found, trusting()));
+    checks
 }
 
 /// The vendor amx would answer a folder-trust screen for, when the table has
@@ -236,6 +255,44 @@ fn wiring_check(found: &Findings, vendor: Option<&Vendor>) -> Check {
         format!("{} not wired in {settings}", missing.join(", "))
     };
     Check::wrong("hooks", what, "run `amx doctor --fix`")
+}
+
+/// Whether the server amx would use is still standing somewhere that exists.
+///
+/// A tmux server keeps the directory it was started in for as long as it
+/// lives. Delete that directory and the server carries on holding it: every
+/// pane forked afterwards starts in a place that is not there, and the vendor
+/// exits before it draws a frame. From the outside that looks like an agent
+/// that failed in under a second having said nothing, which is a long way from
+/// the cause.
+///
+/// `None` where there is nothing to ask — no server yet, or no way to look —
+/// because a check nobody could act on is the kind that sends a person hunting
+/// a fault in their own machine.
+fn server_check(found: &Findings) -> Option<Check> {
+    let standing = found.server.as_ref()?;
+    let (pid, where_) = (standing.cwd.pid, standing.cwd.path.display());
+    Some(if standing.cwd.stale {
+        Check::wrong(
+            "server",
+            format!("tmux server {pid}'s directory is gone: {where_}"),
+            format!(
+                "every pane it starts inherits that and dies at once; \
+                 restart it: tmux {} kill-server",
+                address(&standing.socket)
+            ),
+        )
+    } else {
+        Check::ok("server", format!("tmux server {pid} in {where_}"))
+    })
+}
+
+/// How a tmux command line names this socket.
+fn address(socket: &tmux::Socket) -> String {
+    match socket {
+        tmux::Socket::Name(name) => format!("-L {name}"),
+        tmux::Socket::Path(path) => format!("-S {}", path.display()),
+    }
 }
 
 fn state_check(found: &Findings) -> Check {
@@ -380,6 +437,19 @@ pub fn gather(config: &Config) -> Result<Findings> {
             &derive::views(&state_root, rules::bundled(), store::now()).unwrap_or_default(),
         ),
         state_root,
+        server: standing_server(),
+    })
+}
+
+/// The server amx would start an agent on, when one is already running.
+///
+/// The same resolution a spawn does, so doctor judges the server that would
+/// actually be used rather than whichever one is easiest to find.
+fn standing_server() -> Option<StandingServer> {
+    let server = crate::spawn::server().ok()?;
+    Some(StandingServer {
+        socket: server.socket().clone(),
+        cwd: server.cwd()?,
     })
 }
 
@@ -531,6 +601,7 @@ mod tests {
             state_root: PathBuf::from("/home/dev/.local/state/amx/agents"),
             state_error: None,
             parked: Vec::new(),
+            server: None,
         }
     }
 
@@ -598,6 +669,90 @@ mod tests {
         let (code, printed) = said(&healthy(), false);
         assert_eq!(code, exit::OK);
         assert!(printed.contains("tmux"), "{printed}");
+    }
+
+    /// A server standing in `path`, deleted or not.
+    fn standing(path: &str, stale: bool) -> StandingServer {
+        StandingServer {
+            socket: crate::tmux::Socket::Name("default".to_string()),
+            cwd: crate::tmux::ServerCwd {
+                pid: 27267,
+                path: PathBuf::from(path),
+                stale,
+            },
+        }
+    }
+
+    #[test]
+    fn doctor_says_nothing_about_a_server_it_cannot_see() {
+        // No server running, or a platform with no way to look: either way
+        // there is nothing here to report and nothing to repair.
+        let found = healthy();
+        assert!(found.server.is_none());
+        assert!(
+            !report(&found).iter().any(|check| check.name == "server"),
+            "no line at all, rather than a green one nobody measured"
+        );
+        assert_eq!(said(&found, false).0, exit::OK);
+    }
+
+    #[test]
+    fn doctor_passes_a_server_standing_somewhere_that_is_still_there() {
+        let mut found = healthy();
+        found.server = Some(standing("/home/dev/src/app", false));
+
+        let server = check(&found, "server");
+        assert!(server.is_ok(), "{server:?}");
+        assert!(
+            server.found.contains("/home/dev/src/app"),
+            "{}",
+            server.found
+        );
+        assert_eq!(said(&found, false).0, exit::OK);
+    }
+
+    #[test]
+    fn doctor_names_a_server_whose_directory_was_deleted() {
+        // The failure this check exists for: doctor was green while every
+        // agent died in under a second, because nothing asked this.
+        let mut found = healthy();
+        found.server = Some(standing("/tmp/no-git-test", true));
+
+        let server = check(&found, "server");
+        assert!(
+            server.found.contains("27267"),
+            "which server: {}",
+            server.found
+        );
+        assert!(
+            server.found.contains("/tmp/no-git-test"),
+            "and where it is stuck: {}",
+            server.found
+        );
+
+        let remedy = server.remedy.as_deref().unwrap();
+        assert!(
+            remedy.contains("tmux -L default kill-server"),
+            "a command that works on this server, not a general one: {remedy}"
+        );
+        assert_eq!(said(&found, false).0, exit::FAILURE);
+    }
+
+    #[test]
+    fn the_restart_names_the_socket_the_server_is_actually_on() {
+        // A remedy that said `-L default` for a server reached by path would
+        // send somebody to restart the wrong one.
+        let mut found = healthy();
+        found.server = Some(StandingServer {
+            socket: crate::tmux::Socket::Path(PathBuf::from("/run/user/1000/tmux/sock")),
+            ..standing("/tmp/gone", true)
+        });
+
+        let remedy = check(&found, "server").remedy.unwrap();
+        assert!(
+            remedy.contains("tmux -S /run/user/1000/tmux/sock kill-server"),
+            "{remedy}"
+        );
     }
 
     #[test]
