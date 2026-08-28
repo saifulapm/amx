@@ -113,8 +113,19 @@ const CHROME: [&str; 5] = [
     "  ⏵⏵ accept edits on (shift+tab to cycle)",
 ];
 
+/// Whether this line of the view is one of the card's: the spine, in the
+/// column the row it hangs from drew its own state glyph in.
+fn on_the_spine(line: &str) -> bool {
+    line.starts_with("  │") || line.starts_with("  ╰")
+}
+
+/// The card as it stands on the screen, top to bottom.
+fn card_lines(drawn: &str) -> Vec<&str> {
+    drawn.lines().filter(|line| on_the_spine(line)).collect()
+}
+
 #[test]
-fn card_floats_over_the_list_with_the_question_alone() {
+fn card_hangs_a_spine_off_the_row_with_the_question_alone_on_it() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
     amx.until_state("ask-a1b", "waiting");
@@ -136,17 +147,27 @@ fn card_floats_over_the_list_with_the_question_alone() {
         "the question block is the whole of the card:\n{carded}"
     );
 
-    // A box, with the list it was opened from still drawn above it.
-    let top = carded
-        .lines()
-        .find(|line| line.trim_start().starts_with('╭'))
+    // Not a box. A spine in column 2, under the glyph the row said its state
+    // with, and everything the card says from the name column beside it.
+    let card = card_lines(&carded);
+    let top = card
+        .first()
         .unwrap_or_else(|| panic!("no card in:\n{carded}"));
-    assert!(top.contains("ask-a1b · waiting"), "{top}");
-    assert!(top.trim_end().ends_with('╮'), "{top}");
     assert!(
-        carded.lines().any(|line| line.trim_end().ends_with('╯')),
-        "{carded}"
+        top.starts_with("  │ ask-a1b · waiting"),
+        "which agent, what it is doing and how long since, in the name \
+         column: {top}"
     );
+    assert!(
+        card.last().is_some_and(|line| line.starts_with("  ╰ ")),
+        "closed on its last row:\n{carded}"
+    );
+    for cell in ['╭', '╮', '╯', '─'] {
+        assert!(
+            !card.iter().any(|line| line.contains(cell)),
+            "{cell} is a border cell and the card has none:\n{carded}"
+        );
+    }
     assert!(
         carded
             .lines()
@@ -163,10 +184,7 @@ fn card_floats_over_the_list_with_the_question_alone() {
     // Esc puts it away and leaves the wall as it was.
     press(&amx, &view, "Escape");
     amx.until("the card to go", || {
-        (!screen(&amx, &view)
-            .lines()
-            .any(|line| line.trim_start().starts_with('╭')))
-        .then_some(())
+        (!screen(&amx, &view).lines().any(on_the_spine)).then_some(())
     });
 }
 
@@ -499,10 +517,7 @@ fn card_on(amx: &Harness, view: &str, id: &str) -> String {
     press(amx, view, "Space");
     amx.until("the card", || {
         let drawn = screen(amx, view);
-        drawn
-            .lines()
-            .any(|line| line.trim_start().starts_with('╭'))
-            .then_some(drawn)
+        drawn.lines().any(on_the_spine).then_some(drawn)
     })
 }
 
@@ -1001,8 +1016,8 @@ fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
         .find(|line| line.contains("more"))
         .expect("the indicator");
     assert!(
-        saying.contains('↑') && saying.contains('╰'),
-        "on the bottom border, pointing at the top: {paged}"
+        saying.contains('↑') && saying.starts_with("  │ fix-login-a1b · what it has changed"),
+        "at the far end of the card's own heading, pointing at the top: {paged}"
     );
 
     // A page back is the top again, with the indicator gone.
@@ -1088,8 +1103,8 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
         .find(|line| line.contains("more"))
         .expect("the indicator");
     assert!(
-        saying.contains('↑') && saying.contains('╰'),
-        "on the bottom border, pointing at the top: {paged}"
+        saying.contains('↑') && saying.starts_with("  │ tall-b2c · done"),
+        "at the far end of the card's own heading, pointing at the top: {paged}"
     );
 
     // And walking off the agent puts the next card on its own edge.

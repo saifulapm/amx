@@ -1,8 +1,11 @@
-//! A closer look at one agent, as the card floated over the list.
+//! A closer look at one agent, as the card hung under its row.
 //!
-//! Not a band. It is floated over the bottom of the list, because it is about
-//! one row of a list that is still there behind it — and because what a person
-//! does with it is answer the question on it and go back to the wall.
+//! Not a band, and not a box. It is a spine: one column of `│` standing where
+//! the row drew its own state glyph, closed with `╰`, and everything it says
+//! written from the name column beside it. What the card belongs to is said by
+//! where it stands, which costs no cells to say and cannot be mistaken for
+//! another row's — a box says the same thing in four borders and takes two
+//! rows and two columns of the wall to say it.
 //!
 //! How tall it is and where it stands are worked out here as well, because
 //! both are answers about the list underneath: never so much of the screen
@@ -18,13 +21,13 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 use std::cell::Cell;
 use std::ops::Range;
 
 use super::input::composer_lines;
 use super::style::{colour, dim, request_colour};
-use super::text::{SEPARATOR, fit, inert};
+use super::text::{SEPARATOR, fit, inert, width_of};
 use crate::ansi::{self, Colour, Painted};
 use crate::derive;
 use crate::furniture::cut;
@@ -251,10 +254,10 @@ impl Scroll {
 /// half, and never so much that the list it was opened from is gone.
 ///
 /// What it has to show comes into it because a card is over a wall somebody is
-/// reading: an agent whose answer is one line does not need seven rows of box
-/// to say it in, and every row the card does not take is a row of the list
-/// still on the screen. Below the room for its two borders and a row between
-/// them there is no card at all.
+/// reading: an agent whose answer is one line does not need seven rows to say
+/// it in, and every row the card does not take is a row of the list still on
+/// the screen. Below the room for its heading and one row under it there is no
+/// card at all.
 pub(super) fn card_height(total: u16, band: u16, wanted: u16) -> u16 {
     let room = (total / 2)
         .clamp(CARD_SHORT, CARD_TALL)
@@ -266,9 +269,9 @@ pub(super) fn card_height(total: u16, band: u16, wanted: u16) -> u16 {
     }
 }
 
-/// How many rows the card would take to say everything it has: its two
-/// borders, what its branch has open, which question of the call this is, what
-/// the agent is asking, the choices under that, the row the vendor adds under
+/// How many rows the card would take to say everything it has: its heading,
+/// what its branch has open, which question of the call this is, what the
+/// agent is asking, the choices under that, the row the vendor adds under
 /// them, the line the answer goes on, and the screen it is all happening on.
 pub(super) fn card_rows(
     card: &Card<Body>,
@@ -277,7 +280,7 @@ pub(super) fn card_rows(
     answering: bool,
     width: u16,
 ) -> u16 {
-    let inner = width.saturating_sub(2 + 2 * PADDING);
+    let inner = width.saturating_sub(NAME);
     let asked = card
         .question
         .as_deref()
@@ -287,7 +290,7 @@ pub(super) fn card_rows(
     // patch of thousands of rows, and this runs on every frame.
     let shown = length(card).min(CARD_TALL as usize);
 
-    let rows = 2
+    let rows = 1
         + usize::from(!prs.is_empty())
         + asked as usize
         + usize::from(tab(showing).is_some())
@@ -311,29 +314,39 @@ pub(super) fn over(band: Rect, height: u16) -> Rect {
     }
 }
 
-/// The two borders of the card and one row between them.
-const CARD_SHORT: u16 = 3;
+/// The card's own heading and one row under it, which is the least a card is.
+const CARD_SHORT: u16 = 2;
 
 /// And the most of a screen it will take, however tall the terminal is.
 const CARD_TALL: u16 = 14;
 
-/// The column of air inside each border, so what the card says is not written
-/// against the box it is written in.
-const PADDING: u16 = 1;
+/// The column the spine stands in, which is the column the row it hangs from
+/// drew its state glyph in.
+const GLYPH: u16 = 2;
+
+/// And the column everything the card says starts in, which is the column that
+/// row's name starts in: the same four cells, so the card reads as a thing
+/// said under one row rather than as a table of its own.
+const NAME: u16 = 4;
+
+/// The spine, and the corner that closes it on the card's last row.
+const SPINE: &str = "│";
+const FOOT: &str = "╰";
 
 /// How many rows of a wrapped question the card gives before it stops: the
 /// words of it a person needs to decide, with the pane underneath for the rest.
 const ASKED_TALL: u16 = 3;
 
-/// The card: what its branch has open, which question of the call this is,
-/// what one agent is asking, the choices it offers, the row the vendor adds
-/// under them, the line the answer is typed on, and the screen it is all
-/// happening on — or, when that is what was asked for, what it has changed.
+/// The card: its own heading, what its branch has open, which question of the
+/// call this is, what one agent is asking, the choices it offers, the row the
+/// vendor adds under them, the line the answer is typed on, and the screen it
+/// is all happening on — or, when that is what was asked for, what it has
+/// changed.
 ///
 /// Full width, because the bottom of it is a picture of a terminal and a
-/// terminal cut down the middle is a picture of nothing. It floats over the
-/// rows rather than pushing them up, so the wall is where it was when the card
-/// closes.
+/// terminal cut down the middle is a picture of nothing. Every row of it
+/// carries the spine, so there is no row of the card a reader has to work out
+/// the owner of.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn float(
     frame: &mut Frame,
@@ -345,21 +358,15 @@ pub(super) fn float(
     area: Rect,
     theme: Theme,
 ) {
-    let title = match card.changes {
-        true => format!(" {} · what it has changed ", card.id),
-        false => format!(
-            " {} · {} {} ",
-            card.id,
-            card.phase.as_str(),
-            derive::in_words(card.age)
-        ),
-    };
-    let mut block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(dim())
-        .padding(Padding::horizontal(PADDING))
-        .title(Span::styled(title, colour(theme, card.phase)));
-    let inner = block.inner(area);
+    // Everything the card says stands in the name column, under its own
+    // heading, and the spine stands in the column between.
+    let said = Rect {
+        x: area.x + NAME,
+        width: area.width.saturating_sub(NAME),
+        ..area
+    }
+    .intersection(area);
+    let [titled, inner] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(said);
 
     // What the card is for comes first and the pane takes what is left. The
     // row being typed on comes before even the question: the question is on
@@ -401,20 +408,25 @@ pub(super) fn float(
 
     // What is left is the body's window, which is what a page key moves by
     // and what the offset is clamped against. A card paged away from its
-    // natural edge says so on its frame, because what it is showing is no
+    // natural edge says so on its heading, because what it is showing is no
     // longer the newest of the screen or the first of the patch.
     let held = scroll.kept(length(card), room as usize);
-    if held > 0 {
-        let edge = match card.forward() {
-            true => '↑',
-            false => '↓',
-        };
-        block = block
-            .title_bottom(Line::styled(format!(" {edge} {held} more "), dim()).right_aligned());
-    }
+
     // Whatever the list drew here, the card is in front of it.
     frame.render_widget(Clear, area);
-    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(spine(card.phase, area.height, theme)),
+        Rect {
+            x: area.x + GLYPH,
+            width: 1,
+            ..area
+        }
+        .intersection(area),
+    );
+    frame.render_widget(
+        Paragraph::new(heading(card, held, said.width as usize, theme)),
+        titled,
+    );
 
     let [requesting, tabbing, asking, listing, adds, answer, screen] = Layout::vertical([
         Constraint::Length(opened),
@@ -460,6 +472,65 @@ pub(super) fn float(
         Paragraph::new(body(card, screen.height as usize, held)),
         screen,
     );
+}
+
+/// The spine: a column of `│` under the row's own state glyph, closed with
+/// `╰` on the card's last row.
+///
+/// In the colour that glyph is painted in, because it is hanging off it. That
+/// is the whole of what a card wears to say which row it belongs to: it is
+/// under the row, in the row's own column, in the row's own colour, and none
+/// of those cost it a cell of the wall.
+fn spine(phase: Phase, height: u16, theme: Theme) -> Vec<Line<'static>> {
+    (1..=height)
+        .map(|row| {
+            Line::styled(
+                match row == height {
+                    true => FOOT,
+                    false => SPINE,
+                },
+                colour(theme, phase),
+            )
+        })
+        .collect()
+}
+
+/// The card's own heading: which agent this is a look at, what it is doing and
+/// how long it has been doing it — or that it is a reading of what the agent
+/// changed, which is the other thing a card can be.
+///
+/// The wait is here rather than on the row because the row says the seconds
+/// worked, and how old the question is, is what somebody opening the card came
+/// to find out.
+///
+/// How far the body stands from its natural edge goes at the far end of the
+/// same row, dim: it is a fact about what the card is showing rather than
+/// about the agent, and the heading is the one row of a card that is never
+/// the agent's own words.
+fn heading(card: &Card<Body>, held: usize, width: usize, theme: Theme) -> Line<'static> {
+    let title = match card.changes {
+        true => format!("{}{SEPARATOR}what it has changed", card.id),
+        false => format!(
+            "{}{SEPARATOR}{} {}",
+            card.id,
+            card.phase.as_str(),
+            derive::in_words(card.age)
+        ),
+    };
+    let mut spans = vec![Span::styled(title.clone(), colour(theme, card.phase))];
+    if held > 0 {
+        let edge = match card.forward() {
+            true => '↑',
+            false => '↓',
+        };
+        let more = format!("{edge} {held} more");
+        let said = width_of(&title) + width_of(&more);
+        if said < width {
+            spans.push(Span::raw(" ".repeat(width - said)));
+        }
+        spans.push(Span::styled(more, dim()));
+    }
+    Line::from(spans)
 }
 
 /// How many rows the body could give a card, which is what the last page is
@@ -947,6 +1018,16 @@ mod tests {
         painted(&showing(views, card), size)
     }
 
+    /// The card as it stands on the screen, top to bottom: every row carrying
+    /// the spine, which is every row a card has.
+    fn card_lines(screen: &[String]) -> Vec<&str> {
+        screen
+            .iter()
+            .filter(|line| line.starts_with("  │") || line.starts_with("  ╰"))
+            .map(String::as_str)
+            .collect()
+    }
+
     /// What a heading line says in front of the rule that carries it out to
     /// the edge: the label, and how many failed under it where any did.
     fn heading_of(line: &str) -> &str {
@@ -984,7 +1065,7 @@ mod tests {
     }
 
     #[test]
-    fn card_floats_a_bordered_box_over_the_still_drawn_list() {
+    fn card_hangs_a_spine_off_the_row_it_was_opened_from() {
         let screen = drawn(
             a_fleet(),
             Some(asking(
@@ -1000,31 +1081,36 @@ mod tests {
             "the row the card was opened from is still on the screen: {screen:?}"
         );
 
-        let top = screen
-            .iter()
-            .position(|line| line.starts_with('╭'))
-            .expect("the top of the card");
+        let card = card_lines(&screen);
+        let [top, asked, ..] = card.as_slice() else {
+            panic!("no card in: {screen:?}")
+        };
         assert!(
-            screen[top].contains("ask-a1b · waiting 29s"),
-            "which agent, what it is doing, and how long since: {:?}",
-            screen[top]
+            top.starts_with("  │ ask-a1b · waiting 29s"),
+            "which agent, what it is doing and how long since, in the column \
+             the row writes its own name in: {top:?}"
         );
-        assert!(screen[top].ends_with('╮'), "{:?}", screen[top]);
         assert!(
-            screen[top + 1].contains("Which fixture should the port keep?"),
-            "{:?}",
-            screen[top + 1]
+            asked.starts_with("  │ Which fixture should the port keep?"),
+            "{asked:?}"
         );
         assert!(
             !screen.iter().any(|line| line.contains("Do you want to")),
             "and the pane it is asking on is not echoed under it: {screen:?}"
         );
+        assert!(
+            card.last().is_some_and(|line| line.starts_with("  ╰ ")),
+            "closed on its last row: {card:?}"
+        );
+        assert!(
+            !card.iter().any(|line| line.contains('─')),
+            "and drawn with no border cells at all: {card:?}"
+        );
 
         let bottom = screen
             .iter()
-            .rposition(|line| line.starts_with('╰'))
+            .rposition(|line| line.starts_with("  ╰"))
             .expect("the foot of the card");
-        assert!(screen[bottom].ends_with('╯'), "{:?}", screen[bottom]);
         assert_eq!(
             bottom + 2,
             screen.len(),
@@ -1103,7 +1189,7 @@ mod tests {
         );
         assert_eq!(
             caret(&answering(question(), "the docker one"), (60, 14)),
-            (18, 11),
+            (20, 12),
             "with the terminal's own cursor at the end of what was typed, on \
              a card that is the question block's own size"
         );
@@ -1121,24 +1207,21 @@ mod tests {
             ..asking(&[], None)
         };
         let screen = drawn(a_fleet(), Some(brief), (60, 20));
-        let top = screen
-            .iter()
-            .position(|line| line.starts_with('╭'))
-            .expect("the top of the card");
-        let bottom = screen
-            .iter()
-            .rposition(|line| line.starts_with('╰'))
-            .expect("the foot of the card");
-
+        let card = card_lines(&screen);
         assert_eq!(
-            bottom - top,
+            card.len(),
             2,
-            "two borders and the one line it has: {screen:?}"
+            "its heading and the one line it has: {screen:?}"
         );
         assert!(
-            screen[top + 1].contains("did what it was asked"),
+            card[1].starts_with("  ╰ did what it was asked"),
             "{screen:?}"
         );
+
+        let top = screen
+            .iter()
+            .position(|line| line.starts_with("  │"))
+            .expect("the top of the card");
         assert_eq!(
             screen[top - 1],
             "",
@@ -1282,16 +1365,8 @@ mod tests {
             "and the list is still there above it: {all}"
         );
 
-        let top = screen
-            .iter()
-            .position(|line| line.starts_with('╭'))
-            .expect("the top of the card");
-        let bottom = screen
-            .iter()
-            .rposition(|line| line.starts_with('╰'))
-            .expect("the foot of the card");
         assert_eq!(
-            bottom - top,
+            card_lines(&screen).len(),
             2,
             "and the card is the question's own size, with no window kept \
              for a pane it will not draw: {screen:?}"
@@ -1452,21 +1527,14 @@ mod tests {
         };
         let screen = drawn(a_fleet(), Some(card), (60, 20));
 
-        let top = screen
-            .iter()
-            .position(|line| line.starts_with('╭'))
-            .expect("the top of the card");
-        let bottom = screen
-            .iter()
-            .rposition(|line| line.starts_with('╰'))
-            .expect("the foot of the card");
+        let card = card_lines(&screen);
         assert_eq!(
-            bottom - top,
-            9,
+            card.len(),
+            10,
             "half the screen, the card's cap: {screen:?}"
         );
         assert!(
-            screen[top + 1].contains("said 0"),
+            card[1].contains("said 0"),
             "opened at the answer's first words: {screen:?}"
         );
     }
@@ -1725,7 +1793,7 @@ mod tests {
             lines[row]
         );
         assert!(
-            lines[..row].iter().any(|line| line.starts_with('╭')),
+            lines[..row].iter().any(|line| line.starts_with("  │")),
             "on the card rather than on the row behind it: {lines:?}"
         );
         assert_eq!(word_colour(&screen, size, row as u16, "#7"), theme().done);
@@ -1755,9 +1823,9 @@ mod tests {
         screen.extend_from_slice(&CHROME);
         card.body = screen.join("\n");
 
-        // Two borders and the one row left under them, not the six rows the
+        // Its heading and the one row left under it, not the six rows the
         // capture has: a card that measured before it cut would spend its
         // height on the vendor's furniture.
-        assert_eq!(card_rows(&card.read(), None, &[], false, 60), 3);
+        assert_eq!(card_rows(&card.read(), None, &[], false, 60), 2);
     }
 }
