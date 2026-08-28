@@ -427,6 +427,25 @@ impl Default for Harness {
     }
 }
 
+/// The card, opened on the agent the view is holding the cursor over.
+///
+/// Waited for by the mark that closes it, which is the one mark the card draws
+/// whatever shape it is drawn in: a box has it in the corner and a spine has it
+/// at the foot of the rule. What a test that opens a card is about is what is
+/// on the card, and waiting on the frame around it would pin every one of them
+/// to a drawing that is not theirs.
+pub fn card_on(amx: &Harness, view: &str, id: &str) -> String {
+    amx.until("the row", || amx.capture(view).contains(id).then_some(()));
+    amx.tmux(&["send-keys", "-t", view, "Space"]);
+    amx.until("the card", || {
+        let drawn = amx.capture(view);
+        drawn
+            .lines()
+            .any(|line| line.trim_start().starts_with('╰'))
+            .then_some(drawn)
+    })
+}
+
 /// Where the vendor's stand-in and its scenarios live.
 pub fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mock_claude")
