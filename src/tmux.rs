@@ -55,6 +55,23 @@ pub struct Server {
     conf: Option<PathBuf>,
 }
 
+/// Where a tmux server's own process is standing.
+///
+/// A server holds the working directory it was started in for as long as it
+/// lives, and a directory can be deleted out from under it. Every pane it
+/// forks afterwards inherits a place that is not there, and the command in
+/// that pane dies before it draws anything — which is what makes this worth
+/// asking about rather than an idle curiosity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerCwd {
+    pub pid: i32,
+    /// The directory it is standing in, named the way the kernel names it and
+    /// without the marker below.
+    pub path: PathBuf,
+    /// Whether that directory has been deleted.
+    pub stale: bool,
+}
+
 macro_rules! tmux_id {
     ($name:ident, $sigil:literal, $what:literal) => {
         #[doc = concat!("A tmux ", $what, " id, `", $sigil, "` and all.")]
@@ -200,6 +217,22 @@ impl Server {
     /// Whether a server is listening on this socket at all.
     pub fn is_alive(&self) -> bool {
         self.run(&["list-sessions", "-F", "#{session_id}"]).is_ok()
+    }
+
+    /// Where this server is standing, when that can be known.
+    ///
+    /// `None` three ways, none of them a fault to report: no server is
+    /// listening on the socket, this is not a platform where one process can
+    /// read another's working directory, or `/proc` would not answer. Only a
+    /// server amx can see standing somewhere is worth judging.
+    ///
+    /// `list-sessions` is what asks, because it fails on a socket with no
+    /// server rather than starting one.
+    pub fn cwd(&self) -> Option<ServerCwd> {
+        let printed = self.run(&["list-sessions", "-F", "#{pid}"]).ok()?;
+        let pid: i32 = printed.lines().next()?.trim().parse().ok()?;
+        let (path, stale) = standing(pid)?;
+        Some(ServerCwd { pid, path, stale })
     }
 
     /// End the server and everything on it. A server that is already gone is
@@ -638,6 +671,39 @@ fn is_no_server(err: &anyhow::Error) -> bool {
         || said.contains("server exited")
 }
 
+/// Where process `pid` is standing, and whether that place still exists.
+///
+/// Linux only. `/proc/<pid>/cwd` is the one place a process's working
+/// directory is readable from outside it, and there is no equivalent elsewhere
+/// that does not cost a dependency. Off Linux amx says nothing rather than
+/// guessing.
+#[cfg(target_os = "linux")]
+fn standing(pid: i32) -> Option<(PathBuf, bool)> {
+    let link = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
+    // The kernel marks a deleted directory by suffixing the link it answers
+    // with. Stat cannot confirm it — /proc/<pid>/cwd still resolves, because
+    // the process holds the unlinked inode open — so the marker is the only
+    // signal there is. A directory genuinely named `x (deleted)` wears the
+    // same suffix, and is told apart by still being there.
+    match unlinked(&link) {
+        Some(path) if !link.exists() => Some((path, true)),
+        _ => Some((link, false)),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn standing(_pid: i32) -> Option<(PathBuf, bool)> {
+    None
+}
+
+/// A cwd link with the kernel's `(deleted)` marker taken off, when it wore
+/// one.
+fn unlinked(link: &Path) -> Option<PathBuf> {
+    Some(PathBuf::from(
+        link.as_os_str().to_str()?.strip_suffix(" (deleted)")?,
+    ))
+}
+
 /// The installed tmux's version, as major and minor.
 pub fn version() -> Result<(u32, u32)> {
     let out = Command::new("tmux")
@@ -759,6 +825,77 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         panic!("timed out waiting for {what}");
+    }
+
+    /// Start a server on this socket from a client standing in `cwd`.
+    ///
+    /// A server takes its working directory from whichever client started it,
+    /// not from the `-c` a session was asked for: measured, and the whole
+    /// reason this is not `new_session`.
+    fn serve_from(server: &Server, cwd: &Path) {
+        let out = server
+            .command()
+            .args(["new-session", "-d"])
+            .args(IDLE)
+            .current_dir(cwd)
+            .output()
+            .expect("starting a server");
+        assert!(out.status.success(), "{out:?}");
+    }
+
+    #[test]
+    fn a_cwd_link_the_kernel_marked_deleted_reads_as_the_path_without_it() {
+        assert_eq!(
+            unlinked(Path::new("/tmp/gone (deleted)")),
+            Some(PathBuf::from("/tmp/gone"))
+        );
+        assert_eq!(unlinked(Path::new("/srv/app")), None);
+        // The marker is a suffix, not a word that appears anywhere.
+        assert_eq!(unlinked(Path::new("/tmp/(deleted)/app")), None);
+    }
+
+    #[test]
+    fn a_server_says_where_it_is_standing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // The kernel answers with the path it resolved, so compare against
+        // that rather than the tempdir's name: /tmp is a symlink on some
+        // machines.
+        let want = dir.path().canonicalize().unwrap();
+        let server = TestServer::new();
+        serve_from(&server, dir.path());
+
+        let standing = server.cwd().expect("a running server stands somewhere");
+        assert!(standing.pid > 0, "{standing:?}");
+        assert_eq!(standing.path, want);
+        assert!(
+            !standing.stale,
+            "the directory is still there: {standing:?}"
+        );
+    }
+
+    #[test]
+    fn a_server_whose_directory_was_deleted_says_so() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let want = dir.path().canonicalize().unwrap();
+        let server = TestServer::new();
+        serve_from(&server, dir.path());
+
+        // What poisons a server: the directory it is standing in goes, and it
+        // carries on holding a place that is not there any more.
+        std::fs::remove_dir_all(dir.path()).unwrap();
+
+        let standing = server.cwd().expect("it is still running");
+        assert!(standing.stale, "{standing:?}");
+        assert_eq!(
+            standing.path, want,
+            "the name it is still holding, without the kernel's marker"
+        );
+    }
+
+    #[test]
+    fn a_socket_with_no_server_is_standing_nowhere() {
+        let server = TestServer::new();
+        assert_eq!(server.cwd(), None, "nothing is listening on it");
     }
 
     #[test]
