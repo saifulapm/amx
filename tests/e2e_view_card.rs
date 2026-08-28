@@ -124,6 +124,109 @@ fn card_lines(drawn: &str) -> Vec<&str> {
     drawn.lines().filter(|line| on_the_spine(line)).collect()
 }
 
+/// Which line of the screen holds this text, the card's own lines aside: the
+/// line the list drew for it. The card says the name of the agent it is a look
+/// at, so the two are told apart by the spine.
+fn line_holding(drawn: &str, text: &str) -> usize {
+    drawn
+        .lines()
+        .position(|line| line.contains(text) && !on_the_spine(line))
+        .unwrap_or_else(|| panic!("no line holding {text} in:\n{drawn}"))
+}
+
+/// The lines the card stands on, first and last.
+fn card_stands_on(drawn: &str) -> (usize, usize) {
+    let on: Vec<usize> = drawn
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| on_the_spine(line))
+        .map(|(at, _)| at)
+        .collect();
+    match (on.first(), on.last()) {
+        (Some(top), Some(foot)) => (*top, *foot),
+        _ => panic!("no card in:\n{drawn}"),
+    }
+}
+
+#[test]
+fn card_stands_under_its_own_row_and_moves_the_rows_below_it_down() {
+    let amx = Harness::new();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+    finished(&amx, "old-job-b2c", "done", 60);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let before = amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("ask-a1b") && drawn.contains("old-job-b2c")).then_some(drawn)
+    });
+    // The waiting agent is the first row, so it is the one the view opens on,
+    // with a heading and a finished row under it.
+    for below in ["COMPLETED", "old-job-b2c"] {
+        assert!(
+            line_holding(&before, below) > line_holding(&before, "ask-a1b"),
+            "{below} is under the row the card will hang off:\n{before}"
+        );
+    }
+
+    let carded = card_on(&amx, &view, "ask-a1b");
+    let (top, foot) = card_stands_on(&carded);
+    assert_eq!(
+        top,
+        line_holding(&carded, "ask-a1b") + 1,
+        "the card starts on the line under the row it hangs off, with no wall \
+         between them:\n{carded}"
+    );
+    for below in ["COMPLETED", "old-job-b2c"] {
+        assert!(
+            line_holding(&carded, below) > foot,
+            "{below} was under that row, so the card moved it down rather than \
+             standing over it:\n{carded}"
+        );
+    }
+}
+
+/// A left click where a person clicks, as the raw SGR bytes a terminal sends
+/// once a program has asked for the mouse: press and release on one spot, with
+/// the column and the row counted from one, which is the terminal's own way.
+fn click(amx: &Harness, view: &str, column: u16, row: u16) {
+    for end in ['M', 'm'] {
+        types(amx, view, &format!("\u{1b}[<0;{column};{row}{end}"));
+    }
+}
+
+#[test]
+fn a_click_under_the_card_lands_on_the_row_the_card_moved_down() {
+    let amx = Harness::new();
+    finished(&amx, "old-job-a1b", "done", 60);
+    finished(&amx, "older-job-b2c", "done", 120);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("old-job-a1b") && drawn.contains("older-job-b2c")).then_some(())
+    });
+
+    // The card opens on the first row and moves the second one down.
+    let carded = card_on(&amx, &view, "old-job-a1b");
+    let (_, foot) = card_stands_on(&carded);
+    let moved = line_holding(&carded, "older-job-b2c");
+    assert!(
+        moved > foot,
+        "the row the click is for is under the card:\n{carded}"
+    );
+
+    // A click where that row now stands lands on it rather than on the row
+    // that was drawn there before the card pushed it down, and the card
+    // follows the cursor onto it.
+    click(&amx, &view, 5, moved as u16 + 1);
+    amx.until("the card to move to the row that was clicked", || {
+        screen(&amx, &view)
+            .contains("│ older-job-b2c")
+            .then_some(())
+    });
+}
+
 #[test]
 fn card_hangs_a_spine_off_the_row_with_the_question_alone_on_it() {
     let amx = Harness::new();

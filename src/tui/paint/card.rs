@@ -301,14 +301,15 @@ pub(super) fn card_rows(
     rows.min(u16::MAX as usize) as u16
 }
 
-/// The bottom `height` rows of the list, which is where the card floats.
+/// The `height` rows under the line the card hangs off, which is where it
+/// floats.
 ///
-/// The bottom because a list is read from the top: the rows above it are the
-/// ones the cursor is kept among, and the card stands between them and the row
-/// it was opened from rather than over the whole wall.
-pub(super) fn over(band: Rect, height: u16) -> Rect {
+/// Under that line because the card is a thing said about it: the rows above
+/// stay where they are and the rows below give up the room, so what the card
+/// belongs to is the line it is touching rather than one somewhere up the wall.
+pub(super) fn under(band: Rect, line: u16, height: u16) -> Rect {
     Rect {
-        y: band.y + band.height - height,
+        y: band.y + line + 1,
         height,
         ..band
     }
@@ -1114,14 +1115,29 @@ mod tests {
             "and drawn with no border cells at all: {card:?}"
         );
 
+        let row = screen
+            .iter()
+            .position(|line| line.contains("ask-a1b"))
+            .expect("the row the card was opened from");
+        let top = screen
+            .iter()
+            .position(|line| line.starts_with("  │"))
+            .expect("the top of the card");
+        assert_eq!(
+            top,
+            row + 1,
+            "and it starts on the line under that row rather than at the foot \
+             of the list: {screen:?}"
+        );
         let bottom = screen
             .iter()
             .rposition(|line| line.starts_with("  ╰"))
             .expect("the foot of the card");
-        assert_eq!(
-            bottom + 2,
-            screen.len(),
-            "and the hint row is the one beneath it: {screen:?}"
+        assert!(
+            screen[bottom + 1..]
+                .iter()
+                .any(|line| line.contains("busy-b2c")),
+            "with the rows that were under it moved down: {screen:?}"
         );
     }
 
@@ -1233,9 +1249,9 @@ mod tests {
         );
         assert_eq!(
             caret(&answering(question(), "the docker one"), (60, 14)),
-            (20, 12),
+            (20, 9),
             "with the terminal's own cursor at the end of what was typed, on \
-             a card that is the question block's own size"
+             the answer row of a card that is the question block's own size"
         );
     }
 
@@ -1266,10 +1282,10 @@ mod tests {
             .iter()
             .position(|line| line.starts_with("  │"))
             .expect("the top of the card");
-        assert_eq!(
-            screen[top - 1],
-            "",
-            "with the rows it is not covering behind it: {screen:?}"
+        assert!(
+            screen[top - 1].contains("ask-a1b"),
+            "hung off its own row, with the rows it is not taking still on the \
+             wall around it: {screen:?}"
         );
     }
 

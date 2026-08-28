@@ -14,6 +14,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use std::iter::repeat_n;
 use std::sync::OnceLock;
 
 use super::empty;
@@ -28,16 +29,18 @@ use crate::tui::rows::{self, Group, Item, List, Tally, Under};
 
 /// The agents themselves.
 ///
-/// `visible` is how many of the rows are not behind the card, and it is what
-/// the cursor is kept inside. The rest are drawn anyway: a card is in front of
-/// a list, not instead of one, and the rows it covers are the ones somebody
-/// gets back by closing it.
+/// `floated` is the card's own box, where one is up. The rows above it are
+/// drawn where they stood and the rows under it are moved down by its height,
+/// so the card stands between the line it hangs off and the rest of the list
+/// rather than over any of them. What that pushes off the bottom of the band
+/// is what somebody gets back by closing it, and what is left above the card
+/// is what the cursor is kept inside.
 pub(super) fn agents(
     frame: &mut Frame,
     list: &List,
     area: Rect,
     moment: Moment,
-    visible: u16,
+    floated: Option<Rect>,
     theme: Theme,
 ) {
     if list.is_empty() {
@@ -46,18 +49,18 @@ pub(super) fn agents(
         return;
     }
 
-    let height = area.height as usize;
+    let visible = area.height - floated.map_or(0, |card| card.height);
     let offset = first_drawn(list, visible);
     let width = area.width as usize;
     let widths = grid::widths(width, list.axis());
     let requests = request_column(list);
 
-    let lines: Vec<Line> = list
+    let mut lines: Vec<Line> = list
         .items()
         .iter()
         .enumerate()
         .skip(offset)
-        .take(height)
+        .take(visible as usize)
         .map(|(at, item)| {
             line(
                 list,
@@ -74,6 +77,12 @@ pub(super) fn agents(
             )
         })
         .collect();
+    // The room the card takes, given up by the rows under the line it hangs
+    // off: blank here, because the card draws over them itself.
+    if let Some(card) = floated {
+        let at = (card.y - area.y) as usize;
+        lines.splice(at..at, repeat_n(Line::raw(""), card.height as usize));
+    }
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -84,6 +93,22 @@ pub(super) fn agents(
 pub(super) fn first_drawn(list: &List, visible: u16) -> usize {
     list.cursor()
         .saturating_sub((visible.max(1) as usize).saturating_sub(1))
+}
+
+/// Which line of the band the card hangs off: the line the agent it is a look
+/// at stands on.
+///
+/// The cursor's own line where that agent has none, which is where the card was
+/// opened from. Never below the last line drawn in front of the card, so the
+/// line it hangs off is one somebody can still see.
+pub(super) fn hangs_off(list: &List, id: &str, visible: u16) -> u16 {
+    let at = list
+        .items()
+        .iter()
+        .position(|item| list.agent(*item).is_some_and(|view| view.id() == id))
+        .unwrap_or_else(|| list.cursor());
+    at.saturating_sub(first_drawn(list, visible))
+        .min(visible.saturating_sub(1) as usize) as u16
 }
 
 /// What the clock has made of the list at the moment it is drawn: which frame

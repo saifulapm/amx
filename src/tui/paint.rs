@@ -8,8 +8,8 @@
 //! A surface to a file, and this one only stands them next to each other:
 //! [`mod@header`] draws the two bands above the list, [`wall`] the agents
 //! themselves, [`empty`] what stands there when there are none, [`card`] the
-//! closer look floated over them, [`input`] the line being typed and the keys
-//! under it, and [`mod@help`] the screen of every key. Under all of those,
+//! closer look hung off one of them, [`input`] the line being typed and the
+//! keys under it, and [`mod@help`] the screen of every key. Under all of those,
 //! [`text`] measures and cuts what a row says and [`style`] turns what a thing
 //! means into the paint that says so.
 //!
@@ -46,11 +46,11 @@ use std::cell::Cell;
 
 use super::rows;
 use super::{Mode, Screen};
-use card::{card_height, card_rows, float, over};
+use card::{card_height, card_rows, float, under};
 use header::{header, header_rows, space_rows};
 use help::help;
 use input::{composer_height, composing_line, footer, permission};
-use wall::{Moment, agents, first_drawn};
+use wall::{Moment, agents, first_drawn, hangs_off};
 
 #[cfg(test)]
 pub(super) use card::walks;
@@ -86,10 +86,11 @@ impl Map {
 
     /// The line of the list under this point, as an index into the items.
     ///
-    /// The card is in front of the rows it covers, so a point on it names no
-    /// line. What comes back can run past the end of the items — the band is
-    /// taller than the list — and the caller holds the bound, because only it
-    /// has the items.
+    /// The card is a thing of its own rather than a row, so a point on it names
+    /// no line, and every line below it was moved down by the card's height to
+    /// let it stand. What comes back can run past the end of the items — the
+    /// band is taller than the list — and the caller holds the bound, because
+    /// only it has the items.
     pub(super) fn line_under(&self, column: u16, row: u16) -> Option<usize> {
         if self.over_the_card(column, row) {
             return None;
@@ -98,7 +99,12 @@ impl Map {
         if !band.contains(Position { x: column, y: row }) {
             return None;
         }
-        Some(self.offset.get() + (row - band.y) as usize)
+        let pushed = self
+            .card
+            .get()
+            .filter(|card| row >= card.y + card.height)
+            .map_or(0, |card| card.height as usize);
+        Some(self.offset.get() + (row - band.y) as usize - pushed)
     }
 
     /// Whether this point is on the floating card.
@@ -175,7 +181,13 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         _ => 0,
     };
     let visible = middle.height - floating;
-    let card_over = (floating > 0).then(|| over(middle, floating));
+    // Where the card floats: under the line its own agent stands on, with the
+    // rows below that line moved down to make the room.
+    let card_over = screen
+        .card
+        .as_ref()
+        .filter(|_| floating > 0)
+        .map(|card| under(middle, hangs_off(&screen.list, &card.id, visible), floating));
     // How many rows the list has in front of the card, told back to it the
     // way the map and the scroll are: the fold in the completed group is cut
     // to this, by the next rebuild rather than under the frame being drawn.
@@ -188,8 +200,8 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     );
     match &screen.mode {
         Mode::Keys => help(frame, middle),
-        // What the card is covering is still drawn under it, and the rows the
-        // cursor walks are the ones it is not.
+        // The card stands among the rows rather than over them, so the list is
+        // drawn around it and the rows the cursor walks are the ones above.
         _ => agents(
             frame,
             &screen.list,
@@ -199,7 +211,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
                 armed: screen.armed(),
                 hover: screen.hover,
             },
-            visible,
+            card_over,
             theme,
         ),
     }
