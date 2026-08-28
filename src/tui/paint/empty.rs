@@ -1,8 +1,10 @@
 //! What a wall with nothing on it says for itself.
 
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 
-use super::style::dim;
+use super::help::HELP;
+use super::style::{bold, dim};
+use crate::tui::grid;
 use crate::tui::rows::List;
 
 /// What a wall nobody has put anything on says for itself.
@@ -11,23 +13,58 @@ use crate::tui::rows::List;
 /// stand: there is nothing to read off the rows, and a view that explains the
 /// list before there is a list is doing the manual's job on the screen a
 /// person came to work at. What is worth knowing about this wall is that it is
-/// the good one, and the keys under it already say which one starts an agent.
+/// the good one.
 pub(super) const WELCOME: &str = "nothing running, nothing broken, nobody asking. enjoy it";
 
-/// The one line a list holding nothing is drawn as.
+/// What stands before an agent's name on a row: the two marks, the state glyph
+/// and the space after it. The offers stand where a name would, so the empty
+/// wall is the wall with its rows taken out rather than a screen of its own.
+const NAME: usize = 4;
+
+/// The key column those offers stand in, which is one key and the air that
+/// holds what it does off it.
+const KEY: usize = 4;
+
+/// The rows a list holding nothing is drawn as.
 ///
 /// Nothing to show is one thing while a narrowing is holding every agent back,
-/// another while nobody has started one, and the line for the second of those
-/// is a sentence rather than a label — so it is said whole or not at all, and a
-/// screen too narrow for it gets the label instead of two thirds of a joke.
-pub(super) fn nothing(list: &List, width: usize) -> Line<'static> {
+/// another while nobody has started one. The first is answered in the words
+/// somebody typed and nothing else: they narrowed the wall themselves, and
+/// they have agents the narrowing is holding back. The second is the sentence,
+/// and under it the two keys that do something about it.
+///
+/// The sentence is said whole or not at all — a screen too narrow for it gets
+/// the label instead of two thirds of a joke — but the two keys stand either
+/// way, because they are the only thing on the screen that leads anywhere.
+pub(super) fn nothing(list: &List, width: usize) -> Vec<Line<'static>> {
+    if let Some(narrowing) = list.narrowing() {
+        return vec![Line::styled(format!("nothing matches {narrowing}"), dim())];
+    }
     let room = width >= WELCOME.chars().count();
-    let said = match (list.narrowing(), list.unstarted() && room) {
-        (Some(narrowing), _) => format!("nothing matches {narrowing}"),
-        (None, true) => WELCOME.to_string(),
-        (None, false) => "no agents".to_string(),
+    let said = match list.unstarted() && room {
+        true => WELCOME,
+        false => "no agents",
     };
-    Line::styled(said, dim())
+    vec![
+        Line::styled(said, dim()),
+        Line::raw(""),
+        offer("n", "start an agent".to_string()),
+        // Every key but the one already offered above it.
+        offer("?", format!("the other {} keys", HELP.len() - 1)),
+    ]
+}
+
+/// A key and what pressing it would do, in the column a row's name stands in.
+///
+/// Two rather than the whole table, because a person looking at an empty wall
+/// has one thing to decide, and the keys that arrange, page and stop things
+/// have nothing to work on yet.
+fn offer(key: &str, does: String) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(" ".repeat(NAME)),
+        Span::styled(grid::pad(key, KEY), bold()),
+        Span::styled(does, dim()),
+    ])
 }
 
 #[cfg(test)]
@@ -42,6 +79,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
+    use ratatui::style::Modifier;
     use std::path::PathBuf;
 
     fn view(id: &str, phase: Phase, said: Option<&str>, age: u64) -> View {
@@ -148,15 +186,19 @@ mod tests {
     }
 
     #[test]
-    fn a_wall_nobody_has_put_anything_on_says_so_in_one_line_of_its_own() {
+    fn a_wall_nobody_has_put_anything_on_says_so_and_offers_the_two_keys_that_answer_it() {
         let screen = drawn(Vec::new(), None, WALL);
 
+        // One line where the four groups used to have a sentence each, a row
+        // of air, and the two keys that lead anywhere from here, standing
+        // where a row's name would stand.
         assert_eq!(screen[3], WELCOME, "{screen:?}");
-        // Everything under it down to the keys is the empty wall itself: one
-        // line where the four groups used to have a sentence each.
+        assert_eq!(screen[4], "", "{screen:?}");
+        assert_eq!(screen[5], "    n   start an agent", "{screen:?}");
+        assert_eq!(screen[6], "    ?   the other 28 keys", "{screen:?}");
         assert!(
-            screen[4..screen.len() - 1].iter().all(String::is_empty),
-            "one line, and no more: {screen:?}"
+            screen[7..screen.len() - 1].iter().all(String::is_empty),
+            "and nothing else: {screen:?}"
         );
         for group in Group::ALL {
             assert!(
@@ -165,6 +207,25 @@ mod tests {
                 group.title()
             );
         }
+    }
+
+    #[test]
+    fn the_offers_on_an_empty_wall_carry_the_weight_on_the_key() {
+        let buffer = cells(&showing(Vec::new(), None), WALL);
+
+        let key = buffer[(4, 5)].clone();
+        assert_eq!(key.symbol(), "n");
+        assert!(
+            key.modifier.contains(Modifier::BOLD),
+            "the key is what there is to press: {:?}",
+            key.modifier
+        );
+        let does = buffer[(8, 5)].clone();
+        assert!(
+            does.modifier.contains(Modifier::DIM),
+            "and what it would do stands behind it: {:?}",
+            does.modifier
+        );
     }
 
     #[test]
@@ -201,7 +262,12 @@ mod tests {
         screen
             .list
             .narrow(vec![Narrow::Name(Some("nobody".to_string()))]);
-        assert_eq!(painted(&screen, WALL)[3], "nothing matches a:nobody");
+        let narrowed = painted(&screen, WALL);
+        assert_eq!(narrowed[3], "nothing matches a:nobody");
+        assert!(
+            !narrowed.iter().any(|line| line.contains("start an agent")),
+            "somebody who narrowed the wall themselves has agents already: {narrowed:?}"
+        );
 
         // And the project axis is a list of places, which nobody arrives at
         // with nothing to arrange.
