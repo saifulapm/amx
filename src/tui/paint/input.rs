@@ -357,25 +357,28 @@ fn hints(screen: &Screen) -> Vec<&'static str> {
     said
 }
 
-/// Those keys on one row, cut to what a screen this wide can hold.
+/// Those keys on one row, cut to what a screen this wide can hold, with
+/// `last` pinned to the end of it.
 ///
-/// What goes is what is furthest from `?`, and `?` itself never does: a hint
-/// clipped by the terminal reads as a key that ends where the screen does, and
-/// the last one a narrow row has room for should be the one that leads to all
-/// the others.
-fn fitted(said: &[&str], width: usize) -> String {
+/// What goes is what is furthest from the pinned one, and the pinned one never
+/// does: a hint clipped by the terminal reads as a key that ends where the
+/// screen does. Walking the list, the one worth that place is `?`, which leads
+/// to all the others; on a line being typed `?` is a character like any other
+/// and there is no overlay to shed into, so the place goes to esc, because a
+/// mode nobody can see the way out of is a mode they are stuck in.
+fn fitted(said: &[&str], last: &str, width: usize) -> String {
     let taken = |kept: &[&str]| {
         kept.iter()
             .map(|hint| hint.chars().count() + SEPARATOR.chars().count())
             .sum::<usize>()
-            + MORE.chars().count()
+            + last.chars().count()
     };
 
     let mut kept = said.to_vec();
     while !kept.is_empty() && taken(&kept) > width {
         kept.pop();
     }
-    kept.push(MORE);
+    kept.push(last);
     kept.join(SEPARATOR)
 }
 
@@ -400,30 +403,37 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
     if let Mode::Confirming(asked) = &screen.mode {
         return Line::styled(asked.question(), Style::new().fg(screen.theme.waiting));
     }
+    let width = width as usize;
     Line::styled(
         match &screen.mode {
-            Mode::List => fitted(&hints(screen), width as usize),
+            Mode::List => fitted(&hints(screen), MORE, width),
             Mode::Keys => "any key goes back · q quits".to_string(),
             // A question up is the whole of this row, and is drawn above.
-            Mode::Confirming(_) => fitted(&hints(screen), width as usize),
-            Mode::Typing(composer) if composer.narrows() => {
-                "enter narrows it · s: or a: alone clears · esc cancels".to_string()
-            }
+            Mode::Confirming(_) => fitted(&hints(screen), MORE, width),
+            Mode::Typing(composer) if composer.narrows() => fitted(
+                &["enter narrows it", "s: or a: alone clears"],
+                "esc cancels",
+                width,
+            ),
             Mode::Typing(composer) => match composer.asking {
-                // The dial on the rule above is unlabelled and says nothing
-                // about the key that turns it, so this row does: a setting
-                // nobody can find the key for is a setting nobody can change.
-                // A vendor that declares no dial has none to name.
-                Asking::Task => match screen.profile.permission_dial().is_some() {
-                    true => "enter starts it · alt+enter newline · shift+tab permission \
-                             · esc cancels"
-                        .to_string(),
-                    false => "enter starts it · alt+enter newline · esc cancels".to_string(),
-                },
-                Asking::Reply { .. } => {
-                    "enter sends it · alt+enter newline · esc cancels".to_string()
+                Asking::Task => {
+                    let mut said = vec!["enter starts it", "alt+enter newline"];
+                    // The dial on the rule above wears no label and says
+                    // nothing about the key that turns it, so this row does: a
+                    // setting nobody can find the key for is a setting nobody
+                    // can change. A vendor that declares no dial has none to
+                    // name.
+                    if screen.profile.permission_dial().is_some() {
+                        said.push("shift+tab permission");
+                    }
+                    fitted(&said, "esc cancels", width)
                 }
-                Asking::Name { .. } => "enter renames it · esc leaves it alone".to_string(),
+                Asking::Reply { .. } => fitted(
+                    &["enter sends it", "alt+enter newline"],
+                    "esc cancels",
+                    width,
+                ),
+                Asking::Name { .. } => fitted(&["enter renames it"], "esc leaves it alone", width),
             },
         },
         dim(),
@@ -789,6 +799,27 @@ mod tests {
     }
 
     #[test]
+    fn keymap_hints_on_a_line_being_typed_keep_the_way_out_of_it() {
+        for width in 12..=80 {
+            let row = hint_row(&typing("port it"), (width, 12));
+            assert!(
+                row.chars().count() <= width as usize,
+                "a hint cut in half is a key that reads as another one: {row:?}"
+            );
+            assert!(
+                row.ends_with("esc cancels"),
+                "and the way out of the mode is the last thing to go: {row:?}"
+            );
+        }
+
+        assert_eq!(
+            hint_row(&typing("port it"), (80, 12)),
+            "enter starts it · alt+enter newline · shift+tab permission · esc cancels",
+            "the key that turns the dial on the rule is named among them"
+        );
+    }
+
+    #[test]
     fn view_says_what_it_could_not_do_where_the_keys_are() {
         let mut screen = showing(Vec::new(), None);
         screen.notice = Some(Notice::Advice(
@@ -1070,7 +1101,7 @@ mod tests {
             "{painted:?}"
         );
         assert!(
-            painted.iter().any(|line| line.contains("shift+tab")),
+            painted.iter().any(|line| line.contains("vendor default")),
             "{painted:?}"
         );
         assert!(painted[9].contains("enter starts it"), "{:?}", painted[9]);
