@@ -35,6 +35,22 @@ fn pane_field(amx: &Harness, pane: &str, format: &str) -> String {
     amx.tmux(&["display-message", "-p", "-t", pane, format])
 }
 
+/// Give the pane a terminal of this shape. A window with nobody attached to it
+/// takes tmux's own default of eighty by twenty-four, and the overlay is drawn
+/// for a screen wider than that.
+fn resize(amx: &Harness, view: &str, width: u16, height: u16) {
+    amx.tmux(&["set-option", "-w", "-t", view, "window-size", "manual"]);
+    amx.tmux(&[
+        "resize-window",
+        "-t",
+        view,
+        "-x",
+        &width.to_string(),
+        "-y",
+        &height.to_string(),
+    ]);
+}
+
 #[test]
 fn acts_the_first_quit_offers_the_status_line_and_no_quit_after_it_does() {
     let amx = Harness::new();
@@ -134,13 +150,16 @@ fn the_keys_are_on_the_screen_for_the_asking() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);
     until_empty(&amx, &view);
+    // The screen the overlay is drawn for: wide enough for two columns and
+    // deep enough for the longer of them.
+    resize(&amx, &view, 120, 40);
 
     types(&amx, &view, "?");
-    // Waited for by the last of them, so a screen caught halfway through
-    // being written is not read as a key that is missing.
+    // Waited for by the last row of the deeper column, so a screen caught
+    // halfway through being written is not read as a key that is missing.
     let keys = amx.until("the keys", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("close the view").then_some(drawn)
+        drawn.contains("write the line in $EDITOR").then_some(drawn)
     });
     for does in [
         "start an agent",
@@ -152,6 +171,23 @@ fn the_keys_are_on_the_screen_for_the_asking() {
     ] {
         assert!(keys.contains(does), "{does} is not among the keys:\n{keys}");
     }
+
+    // Two columns, each headed the way the wall heads a group of agents: the
+    // second stands beside the first rather than under it, and a screen this
+    // wide says what every key does in full.
+    let heading = keys
+        .lines()
+        .find(|line| line.contains("WALK"))
+        .unwrap_or_default();
+    assert!(
+        heading.contains("ARRANGE"),
+        "the columns stand side by side:\n{keys}"
+    );
+    assert!(heading.contains('─'), "and each is ruled: {heading:?}");
+    assert!(
+        !keys.contains('…'),
+        "a screen this wide cuts nothing short:\n{keys}"
+    );
 
     // And back to the agents, which is what the view is for.
     press(&amx, &view, "Escape");
