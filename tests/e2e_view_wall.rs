@@ -855,9 +855,19 @@ fn a_group_heading_is_uppercase_over_a_rule_that_ends_in_its_count() {
     finished(&amx, "two-c3d", "done", 120);
 
     let view = amx.in_a_terminal(&[], &[]);
-    let drawn = amx.until("the headings", || {
+    // Drawn whole, not merely drawn: the view puts out no synchronized-output
+    // markers, so a capture can land between a heading's rule and the count
+    // that ends it — measured once as a 73-cell COMPLETED, about one run in
+    // twenty-four under parallel load. Waiting for the width the assertions
+    // below take is what makes them assertions rather than a coin toss.
+    let drawn = amx.until("the headings, both drawn to the edge", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("NEEDS INPUT") && drawn.contains("COMPLETED")).then_some(drawn)
+        let whole = ["NEEDS INPUT", "COMPLETED"].iter().all(|label| {
+            drawn
+                .lines()
+                .any(|line| line.starts_with(&format!(" {label} ")) && line.chars().count() == 80)
+        });
+        whole.then_some(drawn)
     });
 
     for (label, members) in [("NEEDS INPUT", 1), ("COMPLETED", 2)] {
