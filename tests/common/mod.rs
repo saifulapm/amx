@@ -418,7 +418,23 @@ impl Drop for Harness {
         let _ = Command::new("tmux")
             .args(["-L", &self.socket, "kill-server"])
             .output();
+        // And so does the socket. tmux does not always unlink it -- a server
+        // that was already gone leaves it behind -- and repeated suite runs
+        // piled up thousands of dead sockets until /tmp/tmux-1000 itself made
+        // new servers time out (friction #G40BJA0X).
+        let _ = std::fs::remove_file(socket_dir().join(&self.socket));
     }
+}
+
+/// Where `tmux -L <name>` keeps its sockets: `$TMUX_TMPDIR`, else
+/// `/tmp/tmux-<uid>`, the same rule tmux applies.
+fn socket_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("TMUX_TMPDIR") {
+        return PathBuf::from(dir);
+    }
+    use std::os::unix::fs::MetadataExt;
+    let uid = std::fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(0);
+    PathBuf::from(format!("/tmp/tmux-{uid}"))
 }
 
 impl Default for Harness {

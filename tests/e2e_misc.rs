@@ -344,3 +344,18 @@ fn following_prints_events_as_they_arrive() {
     child.wait().expect("waiting for the stream");
     reading.join().expect("the reader");
 }
+
+#[test]
+fn a_dropped_harness_takes_its_tmux_socket_with_it() {
+    let path = {
+        let amx = Harness::new();
+        // A session keeps the server alive, and the server makes the socket.
+        amx.tmux(&["new-session", "-d", "-s", "keep", "sleep", "60"]);
+        let path = PathBuf::from(amx.tmux(&["display-message", "-p", "#{socket_path}"]));
+        assert!(path.exists(), "no socket at {}", path.display());
+        path
+    };
+    // Dead sockets piled up in /tmp/tmux-1000 by the thousand until tmux
+    // itself timed out opening the directory (friction #G40BJA0X).
+    assert!(!path.exists(), "{} outlived its harness", path.display());
+}
