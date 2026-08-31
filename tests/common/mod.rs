@@ -433,7 +433,9 @@ fn socket_dir() -> PathBuf {
         return PathBuf::from(dir);
     }
     use std::os::unix::fs::MetadataExt;
-    let uid = std::fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(0);
+    let uid = std::fs::metadata("/proc/self")
+        .map(|m| m.uid())
+        .unwrap_or(0);
     PathBuf::from(format!("/tmp/tmux-{uid}"))
 }
 
