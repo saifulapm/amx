@@ -186,21 +186,38 @@ impl Harness {
 
     // ── tmux ─────────────────────────────────────────────────────────────────
 
-    /// Run one tmux command against this harness's own server.
+    /// Run one tmux command against this harness's own server, asking again
+    /// if the server went while it was being asked.
+    ///
+    /// A test that waits for its agents to finish empties this server — the
+    /// panes exit, the sessions go with them — and a server on its way out
+    /// still holds its socket for a moment. A command arriving inside that
+    /// moment is told `server exited unexpectedly`, which under parallel
+    /// suites failed the wall's ctrl+x test about six runs in twenty-four.
+    /// Nothing was half-done, and the next client starts a fresh server, so
+    /// the question is worth asking again. Any other failure is still this
+    /// harness's to shout about.
     pub fn tmux(&self, args: &[&str]) -> String {
-        let out = Command::new("tmux")
-            .args(["-L", &self.socket, "-f", "/dev/null"])
-            .args(args)
-            .env("AMX_STATE_DIR", self.state.path())
-            .env("HOME", self.home.path())
-            .output()
-            .expect("running tmux");
+        let mut out = self.tmux_once(args);
+        if !out.status.success() && the_server_went(&out.stderr) {
+            out = self.tmux_once(args);
+        }
         assert!(
             out.status.success(),
             "tmux {args:?}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8_lossy(&out.stdout).trim_end().to_string()
+    }
+
+    fn tmux_once(&self, args: &[&str]) -> std::process::Output {
+        Command::new("tmux")
+            .args(["-L", &self.socket, "-f", "/dev/null"])
+            .args(args)
+            .env("AMX_STATE_DIR", self.state.path())
+            .env("HOME", self.home.path())
+            .output()
+            .expect("running tmux")
     }
 
     /// What is on a pane's screen now.
@@ -424,6 +441,17 @@ impl Drop for Harness {
         // new servers time out (friction #G40BJA0X).
         let _ = std::fs::remove_file(socket_dir().join(&self.socket));
     }
+}
+
+/// Whether tmux is saying nothing was listening, in the three shapes amx's
+/// own `is_no_server` (src/tmux.rs) reads: a socket that was never there, one
+/// with no server behind it any more, and a server that went while it was
+/// being asked.
+fn the_server_went(stderr: &[u8]) -> bool {
+    let said = String::from_utf8_lossy(stderr);
+    said.contains("error connecting to")
+        || said.contains("no server running")
+        || said.contains("server exited")
 }
 
 /// Where `tmux -L <name>` keeps its sockets: `$TMUX_TMPDIR`, else
