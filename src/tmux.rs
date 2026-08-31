@@ -264,7 +264,7 @@ impl Server {
         }
         push_spawn(&mut args, spawn);
 
-        let printed = self.run(&borrow(&args))?;
+        let printed = again_if_the_server_went(|| self.run(&borrow(&args)))?;
         let (session, pane) = printed
             .split_once(' ')
             .with_context(|| format!("new-session printed {printed:?}"))?;
@@ -671,6 +671,23 @@ fn is_no_server(err: &anyhow::Error) -> bool {
         || said.contains("server exited")
 }
 
+/// Ask once more when the first answer was that nothing was listening.
+///
+/// A server shutting down after its last session ended still holds its socket
+/// for a moment, and a client that arrives inside that moment is told the
+/// server exited. Nothing was half-done — a server that went changed nothing
+/// — and the next client on that socket starts a fresh one, so the question
+/// is simply worth asking again.
+///
+/// Once, and no further. Two servers going under one caller is not a race any
+/// more, and a loop would sit forever on a socket nobody is going to answer.
+fn again_if_the_server_went<T>(mut attempt: impl FnMut() -> Result<T>) -> Result<T> {
+    match attempt() {
+        Err(e) if is_no_server(&e) => attempt(),
+        answer => answer,
+    }
+}
+
 /// Where process `pid` is standing, and whether that place still exists.
 ///
 /// Linux only. `/proc/<pid>/cwd` is the one place a process's working
@@ -896,6 +913,60 @@ mod tests {
     fn a_socket_with_no_server_is_standing_nowhere() {
         let server = TestServer::new();
         assert_eq!(server.cwd(), None, "nothing is listening on it");
+    }
+
+    /// What tmux says to a client that reached a server on its way out, in
+    /// the shape `run` hands it on: measured against tmux 3.5a.
+    fn the_server_went() -> anyhow::Error {
+        anyhow::anyhow!("tmux new-session -d: server exited unexpectedly")
+    }
+
+    #[test]
+    fn a_session_asked_for_as_the_server_went_is_asked_for_again() {
+        let asked = std::cell::Cell::new(0);
+        let answer = again_if_the_server_went(|| {
+            asked.set(asked.get() + 1);
+            match asked.get() {
+                1 => Err(the_server_went()),
+                _ => Ok("$1 %2"),
+            }
+        });
+        assert_eq!(asked.get(), 2, "the first answer was nobody listening");
+        assert_eq!(
+            answer.unwrap(),
+            "$1 %2",
+            "and the second is what the caller gets"
+        );
+    }
+
+    #[test]
+    fn a_failure_that_is_not_the_server_going_is_asked_once_and_no_more() {
+        let asked = std::cell::Cell::new(0);
+        let answer: Result<&str> = again_if_the_server_went(|| {
+            asked.set(asked.get() + 1);
+            Err(anyhow::anyhow!(
+                "tmux new-session -d: duplicate session: a1b"
+            ))
+        });
+        assert_eq!(asked.get(), 1, "a name already taken is not a race");
+        assert!(format!("{:#}", answer.unwrap_err()).contains("duplicate session"));
+    }
+
+    #[test]
+    fn a_second_server_going_is_the_error_the_caller_hears() {
+        let asked = std::cell::Cell::new(0);
+        let answer: Result<&str> = again_if_the_server_went(|| {
+            asked.set(asked.get() + 1);
+            Err(anyhow::anyhow!(
+                "tmux new-session -d: server exited {}",
+                asked.get()
+            ))
+        });
+        assert_eq!(asked.get(), 2, "asked again, once, and no further");
+        assert!(
+            format!("{:#}", answer.unwrap_err()).contains("server exited 2"),
+            "the second failure is the one reported"
+        );
     }
 
     #[test]
