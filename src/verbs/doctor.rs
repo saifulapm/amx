@@ -1,12 +1,13 @@
 //! `amx doctor` — what amx needs from this machine, and what is missing.
 //!
-//! Six things have to be true before an agent can run: a tmux new enough to
+//! Seven things have to be true before an agent can run: a tmux new enough to
 //! address panes by id, a vendor command to run, a config amx can read, amx's
 //! hooks wired into the vendor's settings, a state root amx can keep an agent
-//! in, and no agent already stopped at a screen the vendor puts in front of
-//! the work. Each check that fails says what to do about it, because a check
-//! that only says "no" leaves somebody guessing at a machine they thought was
-//! fine.
+//! in, no handoff still carrying the spawner's environment from before that
+//! moved to a file of its own, and no agent already stopped at a screen the
+//! vendor puts in front of the work. Each check that fails says what to do
+//! about it, because a check that only says "no" leaves somebody guessing at
+//! a machine they thought was fine.
 //!
 //! What two of them are worth depends on the vendor, and the table is what
 //! says: one that reports nothing has no wiring to be missing, and one with no
@@ -14,7 +15,7 @@
 //! asked for a repair nobody can make would send somebody looking for a fault
 //! in their own machine.
 //!
-//! A seventh is asked only where there is something to ask it of. When a tmux
+//! An eighth is asked only where there is something to ask it of. When a tmux
 //! server is already running, and the machine can say where a process is
 //! standing, doctor checks that the directory that server is standing in still
 //! exists. A server holds the directory it was started in for as long as it
@@ -22,10 +23,13 @@
 //! there and dies at once. No server yet is not a fault, and neither is a
 //! platform amx cannot ask, so both go unsaid rather than answered green.
 //!
-//! `--fix` does the one repair amx can make safely: wiring the hooks, after
-//! asking.
+//! `--fix` makes two repairs. Wiring the hooks needs asking, because the
+//! settings file it writes to is the vendor's and may hold anything else
+//! beside amx's own entries. Rewriting a handoff that still carries the
+//! environment needs none: amx wrote every one of those files itself, and
+//! taking a stray key back out of one is not a change anybody could object to.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::ffi::OsStr;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -34,7 +38,7 @@ use crate::config::Config;
 use crate::derive::View;
 use crate::store::Phase;
 use crate::vendor::{Capability, Vendor};
-use crate::{derive, exit, install, registry, rules, store, tmux};
+use crate::{derive, exit, install, registry, rules, spawn, store, tmux};
 
 /// One thing amx looked at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +94,9 @@ pub struct Findings {
     /// cannot.
     pub state_root: PathBuf,
     pub state_error: Option<String>,
+    /// Handoffs still carrying the spawner's environment inline, from before
+    /// it moved to a file of its own beside the handoff.
+    pub dirty_handoffs: Vec<PathBuf>,
     /// The agents that never got past the vendor's own setup.
     pub parked: Vec<Parked>,
     /// The tmux server amx would put an agent on, when one is already running
@@ -142,7 +149,7 @@ impl Setup {
 
 /// Judge what was found.
 ///
-/// Six of these are asked on every machine. The seventh is asked only where
+/// Seven of these are asked on every machine. The eighth is asked only where
 /// there is something to ask it of: a tmux server already running, on a
 /// platform that can say where a process is standing.
 pub fn report(found: &Findings) -> Vec<Check> {
@@ -152,6 +159,7 @@ pub fn report(found: &Findings) -> Vec<Check> {
         config_check(found),
         wiring_check(found, registry::entry(&found.vendor)),
         state_check(found),
+        env_check(found),
     ];
     checks.extend(server_check(found));
     checks.push(setup_check(found, trusting()));
@@ -314,6 +322,29 @@ fn state_check(found: &Findings) -> Check {
     }
 }
 
+/// Whether any handoff still carries the spawner's environment inline, from
+/// before it moved to a file of its own beside the handoff.
+///
+/// [`spawn::Handoff`] dropped its `env` field, so a record an older amx wrote
+/// still reads fine — serde drops the stray key rather than refusing it — but
+/// the bytes on disk go on holding somebody's environment long after the pane
+/// that needed it ever ran.
+fn env_check(found: &Findings) -> Check {
+    let dirty = found.dirty_handoffs.len();
+    if dirty == 0 {
+        return Check::ok(
+            "env",
+            "no handoff.json still carries the environment inline",
+        );
+    }
+    let what = if dirty == 1 {
+        "one handoff.json still carries the environment inline".to_string()
+    } else {
+        format!("{dirty} handoff.json files still carry the environment inline")
+    };
+    Check::wrong("env", what, "run `amx doctor --fix`")
+}
+
 fn setup_check(found: &Findings, trusting: Option<&Vendor>) -> Check {
     let Some(first) = found.parked.first() else {
         return Check::ok("setup", "no agent is stopped at the vendor's own setup");
@@ -353,7 +384,8 @@ pub fn run(
     input: &mut impl BufRead,
     out: &mut impl Write,
 ) -> Result<i32> {
-    let mut checks = report(found);
+    let mut current = found.clone();
+    let mut checks = report(&current);
     for check in &checks {
         match &check.remedy {
             None => writeln!(out, "  ok  {:<7} {}", check.name, check.found)?,
@@ -365,11 +397,22 @@ pub fn run(
         }
     }
 
+    if fix && !current.dirty_handoffs.is_empty() {
+        let cleaned = clean_handoffs(&current.dirty_handoffs)?;
+        writeln!(
+            out,
+            "\ncleaned the environment out of {cleaned} handoff.json {}",
+            if cleaned == 1 { "file" } else { "files" }
+        )?;
+        current.dirty_handoffs = Vec::new();
+        checks = report(&current);
+    }
+
     if fix && fixable(&checks) {
         writeln!(
             out,
             "\n{}",
-            install::consent_line(&found.settings, found.settings.exists())
+            install::consent_line(&current.settings, current.settings.exists())
         )?;
         write!(out, "go ahead? [y/N] ")?;
         out.flush()?;
@@ -377,16 +420,16 @@ pub fn run(
         let mut answer = String::new();
         input.read_line(&mut answer)?;
         if answer.trim().eq_ignore_ascii_case("y") {
-            let report = install::install(&found.settings, &found.command, now)?;
+            let report = install::install(&current.settings, &current.command, now)?;
             writeln!(out, "wired the hooks into {}", report.path.display())?;
             if let Some(backup) = report.backup {
                 writeln!(out, "the file as it was is at {}", backup.display())?;
             }
             // Judge again: the machine is not what it was a moment ago.
-            let (wired, settings_error) = wiring(&found.settings, &found.command);
-            checks = report_with_wiring(found, wired, settings_error);
+            let (wired, settings_error) = wiring(&current.settings, &current.command);
+            checks = report_with_wiring(&current, wired, settings_error);
         } else {
-            writeln!(out, "left {} alone", found.settings.display())?;
+            writeln!(out, "left {} alone", current.settings.display())?;
         }
     }
 
@@ -397,7 +440,8 @@ pub fn run(
     })
 }
 
-/// Whether the one repair amx can make is the repair that is needed.
+/// Whether wiring the hooks — the repair that needs asking — is still needed,
+/// once the repair that does not has already run.
 fn fixable(checks: &[Check]) -> bool {
     checks
         .iter()
@@ -439,6 +483,7 @@ pub fn gather(config: &Config) -> Result<Findings> {
         settings_error,
         command,
         state_error: usable(&state_root),
+        dirty_handoffs: dirty_handoffs(&state_root),
         parked: parked(
             // A state root amx cannot read has no agents to report on, and the
             // check above is where that is said. Here it means none were found.
@@ -447,6 +492,54 @@ pub fn gather(config: &Config) -> Result<Findings> {
         state_root,
         server: standing_server(),
     })
+}
+
+/// Every handoff under `root` that still carries the spawner's environment
+/// inline. A root amx cannot read has none to report, the same as it has no
+/// agents.
+fn dirty_handoffs(root: &Path) -> Vec<PathBuf> {
+    store::list(root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|id| {
+            let path = root.join(id).join(spawn::HANDOFF);
+            carries_env(&path).then_some(path)
+        })
+        .collect()
+}
+
+/// Whether the handoff at `path` still has an `env` key in it.
+fn carries_env(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|doc| doc.get("env").is_some())
+}
+
+/// Rewrite each dirty handoff without its stray `env` key, at the mode
+/// [`spawn::write_handoff`] promises. Answers how many actually needed it —
+/// one gone before this got to it is not a fault, just skipped.
+fn clean_handoffs(dirty: &[PathBuf]) -> Result<usize> {
+    let mut cleaned = 0;
+    for path in dirty {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let mut doc: serde_json::Value =
+            serde_json::from_str(&text).with_context(|| format!("reading {}", path.display()))?;
+        let Some(object) = doc.as_object_mut() else {
+            continue;
+        };
+        if object.remove("env").is_none() {
+            continue;
+        }
+        let mut bytes = serde_json::to_vec_pretty(&doc).context("writing the handoff")?;
+        bytes.push(b'\n');
+        std::fs::write(path, &bytes).with_context(|| format!("writing {}", path.display()))?;
+        crate::paths::keep_to_the_owner(path, crate::paths::FILE_MODE)?;
+        cleaned += 1;
+    }
+    Ok(cleaned)
 }
 
 /// The server amx would start an agent on, when one is already running.
@@ -608,6 +701,7 @@ mod tests {
             command: COMMAND.to_string(),
             state_root: PathBuf::from("/home/dev/.local/state/amx/agents"),
             state_error: None,
+            dirty_handoffs: Vec::new(),
             parked: Vec::new(),
             server: None,
         }
@@ -670,8 +764,8 @@ mod tests {
         assert!(checks.iter().all(Check::is_ok), "{checks:#?}");
         assert_eq!(
             checks.len(),
-            6,
-            "tmux, the vendor, the config, the hooks, the state root, setup"
+            7,
+            "tmux, the vendor, the config, the hooks, the state root, env, setup"
         );
 
         let (code, printed) = said(&healthy(), false);
@@ -1052,6 +1146,77 @@ mod tests {
         // the name in the answer is the directory that actually refused.
         let why = usable(&closed.join("amx/agents")).expect("nowhere to make it");
         assert!(why.contains(&closed.display().to_string()), "{why}");
+    }
+
+    /// An agent record, with a handoff written the way `spawn` writes one —
+    /// only `meta.json` matters to `store::list`, so it need not parse.
+    fn a_record(root: &Path, id: &str, handoff: &[u8]) -> PathBuf {
+        let dir = root.join(id);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("meta.json"), "{}").unwrap();
+        let handoff_path = dir.join(spawn::HANDOFF);
+        std::fs::write(&handoff_path, handoff).unwrap();
+        handoff_path
+    }
+
+    #[test]
+    fn env_scan_finds_a_dirty_handoff_and_cleans_it_leaving_a_clean_one_alone() {
+        let root = TempDir::new().unwrap();
+        let dirty = a_record(
+            root.path(),
+            "fix-login-a1b",
+            br#"{"task":"fix the login bug","command":["claude"],"env":{"PATH":"/usr/bin"}}"#,
+        );
+        let clean_before = b"{\"task\":\"port the importer\",\"command\":[\"claude\"]}\n";
+        let clean = a_record(root.path(), "port-importer-c2d", clean_before);
+
+        let found = dirty_handoffs(root.path());
+        assert_eq!(
+            found,
+            vec![dirty.clone()],
+            "the clean record is not among them"
+        );
+
+        assert_eq!(clean_handoffs(&found).unwrap(), 1);
+
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&dirty).unwrap()).unwrap();
+        assert!(after.get("env").is_none(), "the stray key is gone");
+        assert_eq!(after["task"], "fix the login bug");
+        let mode = std::fs::metadata(&dirty).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "kept to its owner");
+
+        assert_eq!(
+            std::fs::read_to_string(&clean).unwrap().as_bytes(),
+            clean_before,
+            "a clean record is left alone"
+        );
+    }
+
+    #[test]
+    fn doctor_fix_cleans_the_environment_out_of_a_handoff_and_says_how_many() {
+        let dir = TempDir::new().unwrap();
+        let handoff = dir.path().join("handoff.json");
+        std::fs::write(
+            &handoff,
+            br#"{"task":"fix the login bug","command":["claude"],"env":{"PATH":"/usr/bin"}}"#,
+        )
+        .unwrap();
+
+        let mut found = healthy();
+        found.dirty_handoffs = vec![handoff.clone()];
+
+        let env = check(&found, "env");
+        assert!(!env.is_ok(), "{env:?}");
+        assert!(env.remedy.as_deref().unwrap().contains("--fix"), "{env:?}");
+
+        let (code, printed) = said(&found, true);
+        assert_eq!(code, exit::OK, "nothing is wrong any more: {printed}");
+        assert!(printed.contains('1'), "how many it cleaned: {printed}");
+
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&handoff).unwrap()).unwrap();
+        assert!(after.get("env").is_none(), "{after}");
     }
 
     #[test]

@@ -37,23 +37,27 @@ cargo install --path .
 amx doctor --fix
 ```
 
-`doctor` checks the six things that have to be true before an agent can run:
+`doctor` checks the seven things that have to be true before an agent can run:
 tmux, the agent command, the config file, the hooks, a state directory amx can
-keep records in, and no agent already stopped at a screen the vendor puts in
-front of the work. Every check that fails says what to do about it.
+keep records in, no handoff still carrying the spawner's environment from
+before that moved to a file of its own, and no agent already stopped at a
+screen the vendor puts in front of the work. Every check that fails says what
+to do about it.
 
-Where a tmux server is already running, it checks a seventh: that the directory
+Where a tmux server is already running, it checks an eighth: that the directory
 that server is standing in still exists. A server keeps the directory it was
 started in for as long as it lives, and once that directory is deleted every
 pane it starts lands somewhere that is not there and dies immediately — which
 from the outside looks like agents failing in under a second having said
 nothing. Restarting the server is the fix, and the check prints the command.
 
-`--fix` does the one repair amx can make safely: wiring amx's seven hooks into
+`--fix` makes two repairs. It wires amx's seven hooks into
 `~/.claude/settings.json`, beside whatever is already there, after asking once
 and backing the file up. `amx uninstall` puts the backed-up bytes back and
 removes amx's records. It refuses while any agent is still running: those
-records are the only place their answers are kept.
+records are the only place their answers are kept. It also rewrites any
+handoff still carrying the environment inline, which needs no asking — amx
+wrote every one of those files itself.
 
 Without the hooks amx falls back to reading panes, which is enough to say what
 an agent is doing but not enough to hand you what it said. Answers come from

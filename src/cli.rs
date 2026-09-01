@@ -212,12 +212,13 @@ pub enum Command {
 
     /// Check what amx needs from this machine, and what is missing.
     ///
-    /// Six things have to be true before an agent can run: tmux, the agent
+    /// Seven things have to be true before an agent can run: tmux, the agent
     /// command, the config, amx's hooks in the vendor's settings, a state
-    /// directory to keep records in, and no agent already stopped at a screen
-    /// the vendor puts in front of the work.
+    /// directory to keep records in, no handoff still carrying the spawner's
+    /// environment from before that moved to a file of its own, and no agent
+    /// already stopped at a screen the vendor puts in front of the work.
     ///
-    /// Where a tmux server is already running, a seventh: that the directory
+    /// Where a tmux server is already running, an eighth: that the directory
     /// the server itself is standing in still exists. One that outlived its
     /// own working directory kills every pane it starts.
     Doctor {
@@ -1049,6 +1050,7 @@ mod tests {
             command: String::new(),
             state_root: PathBuf::new(),
             state_error: None,
+            dirty_handoffs: Vec::new(),
             parked: Vec::new(),
             // The counted checks are the ones every machine is asked. The
             // server check is asked only where there is a server to ask about,
