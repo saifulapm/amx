@@ -581,6 +581,75 @@ pub fn read(
     }
 }
 
+/// One agent's last look, kept only long enough to compare it to the next.
+#[derive(Clone, Copy)]
+struct Settled {
+    /// The screen the look found, cut to the rows above the vendor's chrome
+    /// and hashed: [`still_looks`] only ever asks whether it changed, never
+    /// what it said.
+    hash: u64,
+    /// The phase the record held on that look.
+    recorded: Phase,
+    /// How many consecutive looks, this one included, found the same hash
+    /// under the same recorded phase.
+    looks: usize,
+}
+
+/// One agent's last look, for every agent this process has read, so the next
+/// look at the same one has something to compare against.
+static SETTLED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Settled>>> =
+    std::sync::OnceLock::new();
+
+/// How many consecutive looks at `id`, this one included, have found the same
+/// screen above the vendor's chrome with `recorded` the phase on file.
+///
+/// The chrome is cut off before anything is compared — see
+/// [`Furniture::cut`] — because a statusline that ticks off elapsed time or a
+/// spinner's own clock changes every second, and neither is the screen a
+/// quiescent rule is waiting to see hold still. What survives the cut is
+/// hashed rather than kept whole, so a fleet of long-lived agents costs this
+/// process one small number apiece and not their transcripts.
+///
+/// The count starts over at one — the answer every look gave before anything
+/// was counted — the moment either half of what it is a count of stops being
+/// true: the screen reads different from the look before it, or the record
+/// has moved to a different phase since, which is a hook's news arriving
+/// between two looks at a pane that has not visibly changed. Either way, a
+/// streak counted before that moment is not a streak about the screen this
+/// look is asking a quiescent rule to trust.
+fn still_looks(id: &str, screen: Option<&str>, recorded: Phase, rules: &Ruleset) -> usize {
+    let Some(screen) = screen else { return 1 };
+    let rows: Vec<&str> = screen.lines().collect();
+    let hash = hashed(rules.furniture().cut(&rows));
+
+    let map = SETTLED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let Ok(mut settled) = map.lock() else {
+        return 1;
+    };
+    let looks = match settled.get(id) {
+        Some(prior) if prior.hash == hash && prior.recorded == recorded => prior.looks + 1,
+        _ => 1,
+    };
+    settled.insert(
+        id.to_string(),
+        Settled {
+            hash,
+            recorded,
+            looks,
+        },
+    );
+    looks
+}
+
+/// A cheap stand-in for a slice of rows too large to keep one of for every
+/// agent a long-lived process has read.
+fn hashed(rows: &[&str]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    rows.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Write down what a screen is asking, when the record has not got it.
 ///
 /// The one thing a reader records rather than works out and forgets. A
@@ -940,15 +1009,14 @@ pub fn view(root: &Path, id: &str, rules: &Ruleset, now: u64) -> Result<View> {
     let server = Server::from_socket(meta.socket.clone());
 
     let alive = state.state.is_terminal() || server.pane_alive(&meta.pane);
-    let reading = read(
-        &state,
-        meta.created,
-        alive,
-        || server.capture(&meta.pane).ok(),
-        rules,
-        now,
-        1,
-    );
+    // Taken here rather than left to the closure below, so there is a screen
+    // in hand to weigh against the last one this process saw of this id
+    // before `read` is asked to trust a count of anything.
+    let screen = wants_the_screen(&state, alive, now)
+        .then(|| server.capture(&meta.pane).ok())
+        .flatten();
+    let looks = still_looks(id, screen.as_deref(), state.state, rules);
+    let reading = read(&state, meta.created, alive, || screen, rules, now, looks);
     if let Some(asking) = &reading.asking {
         note(&agent, &mut state, asking);
     }
@@ -1049,8 +1117,9 @@ pub fn views_of(root: &Path, records: Vec<Record>, rules: &Ruleset, now: u64) ->
         // Taken rather than borrowed: the reading is handed the screen, and
         // there is one reading it belongs to.
         let screen = screens[at].take();
+        let looks = still_looks(&meta.id, screen.as_deref(), state.state, rules);
 
-        let reading = read(&state, meta.created, alive, || screen, rules, now, 1);
+        let reading = read(&state, meta.created, alive, || screen, rules, now, looks);
         if let Some(asking) = &reading.asking {
             note(&agent, &mut state, asking);
         }
@@ -1900,6 +1969,86 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(verdict.evidence, Evidence::Hooks);
         assert_eq!(verdict.rule.as_deref(), Some("idle_prompt"), "and says why");
         assert_eq!(verdict.age, 100);
+    }
+
+    /// claude's chrome, whole, with `tick` standing in for whatever changes
+    /// every second — a statusline's elapsed timer or its token count — under
+    /// a transcript that never moves. Two calls with different ticks are two
+    /// different captures of the same still screen.
+    fn a_ticking_screen(tick: u64) -> String {
+        format!(
+            "\
+  Done building the feature.
+
+──────────────────────────── amx-42 ─
+❯
+───────────────────────────────────────
+  Sonnet 5 · {tick} tokens
+  ⏵⏵ auto mode on (shift+tab to cycle)
+"
+        )
+    }
+
+    #[test]
+    fn still_looks_settles_after_settled_looks_even_while_the_chrome_ticks() {
+        let rules = rules::bundled();
+        let id = "ticking-t4a";
+        let mut looks = 0;
+        for tick in 0..rules::SETTLED_LOOKS as u64 {
+            looks = still_looks(id, Some(&a_ticking_screen(tick)), Phase::Working, rules);
+        }
+        assert_eq!(
+            looks,
+            rules::SETTLED_LOOKS,
+            "the statusline ticked on every look, and none of it is the screen"
+        );
+    }
+
+    #[test]
+    fn still_looks_resets_the_moment_the_transcript_itself_changes() {
+        let rules = rules::bundled();
+        let id = "resets-t4b";
+        let first = a_ticking_screen(1);
+        assert_eq!(still_looks(id, Some(&first), Phase::Working, rules), 1);
+        assert_eq!(still_looks(id, Some(&first), Phase::Working, rules), 2);
+        assert_eq!(still_looks(id, Some(&first), Phase::Working, rules), 3);
+
+        let changed = a_ticking_screen(1).replace("Done building", "Ran the migration and");
+        assert_eq!(
+            still_looks(id, Some(&changed), Phase::Working, rules),
+            1,
+            "a mid-turn change is not the screen holding still"
+        );
+    }
+
+    #[test]
+    fn still_looks_resets_when_the_record_moves_to_another_phase() {
+        let rules = rules::bundled();
+        let id = "moves-t4c";
+        let screen = a_ticking_screen(1);
+        assert_eq!(still_looks(id, Some(&screen), Phase::Working, rules), 1);
+        assert_eq!(still_looks(id, Some(&screen), Phase::Working, rules), 2);
+
+        assert_eq!(
+            still_looks(id, Some(&screen), Phase::Waiting, rules),
+            1,
+            "a hook's own news between two looks is not the screen holding still either"
+        );
+    }
+
+    #[test]
+    fn still_looks_reads_a_first_look_the_way_a_one_shot_verb_always_has() {
+        let rules = rules::bundled();
+        assert_eq!(
+            still_looks(
+                "fresh-t4d",
+                Some(&a_ticking_screen(1)),
+                Phase::Working,
+                rules
+            ),
+            1,
+            "status, send and the rest read one look at a time, same as before this counted anything"
+        );
     }
 
     #[test]
