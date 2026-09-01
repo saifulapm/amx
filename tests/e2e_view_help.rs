@@ -203,9 +203,11 @@ fn the_keys_a_short_screen_cannot_hold_are_a_page_away() {
     resize(&amx, &view, 80, 24);
 
     types(&amx, &view, "?");
-    let first = amx.until("the keys", || {
+    // Waited for by the page 1 foot as well as the keys, so a screen caught
+    // before the foot catches up to the keys is not read as the page missing.
+    let first = amx.until("the keys and the foot that says page 1 of", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("walk the agents").then_some(drawn)
+        (drawn.contains("walk the agents") && drawn.contains("page 1 of")).then_some(drawn)
     });
     assert!(
         first.contains("page 1 of"),
@@ -230,11 +232,14 @@ fn the_keys_a_short_screen_cannot_hold_are_a_page_away() {
     for _ in 1..pages {
         press(&amx, &view, "PageDown");
     }
-    let last = amx.until("the rest of the keys", || {
+    // Waited for by the last page's foot as well as its keys, so a screen
+    // caught before the foot catches up to the keys is not read as the wrong
+    // page.
+    let last = amx.until("the rest of the keys and their page", || {
         let drawn = screen(&amx, &view);
-        drawn
-            .contains("which vendor runs it, for one spawn")
-            .then_some(drawn)
+        (drawn.contains("which vendor runs it, for one spawn")
+            && drawn.contains(&format!("page {pages} of {pages}")))
+        .then_some(drawn)
     });
     assert!(
         last.contains(&format!("page {pages} of {pages}")),
