@@ -3,6 +3,7 @@ name: CI
 on:
   pull_request:
   push:
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
 
@@ -15,6 +16,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
 
       # The e2e suite drives throwaway `tmux -L` servers.
       - name: Install tmux
