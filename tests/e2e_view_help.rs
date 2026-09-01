@@ -264,15 +264,14 @@ fn q_closes_the_view_and_gives_the_screen_back() {
     amx.tmux(&["set-option", "-w", "-t", &view, "remain-on-exit", "on"]);
     amx.tmux(&["send-keys", "-t", &view, "q"]);
 
-    amx.until("the view to close", || {
-        let dead = amx.tmux(&["display-message", "-p", "-t", &view, "#{pane_dead}"]);
-        (dead == "1").then_some(())
+    // Waited for by the status the assertion reads, not merely the death:
+    // tmux marks a pane dead a beat before it records what it died with, and
+    // a look landing between the two reads an empty status.
+    let status = amx.until("the view to close with its status recorded", || {
+        let status = amx.tmux(&["display-message", "-p", "-t", &view, "#{pane_dead_status}"]);
+        (!status.is_empty()).then_some(status)
     });
-    assert_eq!(
-        amx.tmux(&["display-message", "-p", "-t", &view, "#{pane_dead_status}"]),
-        "0",
-        "closing a view is not a failure"
-    );
+    assert_eq!(status, "0", "closing a view is not a failure");
     assert!(
         !screen(&amx, &view).contains("nobody asking"),
         "the screen the view borrowed is handed back"
