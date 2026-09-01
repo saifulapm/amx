@@ -16,12 +16,17 @@
 //! in. A spawn typed inside another agent's pane inherits that pane's, and the
 //! new agent is not the old one.
 //!
-//! Two things travel in the handoff file rather than on the tmux command line.
-//! The **task** is arbitrary text, and a tmux command line is the one place it
-//! could be read as syntax. The **environment** is the one `new` was run with:
-//! a tmux server started an hour ago carries an hour-old environment, and an
-//! agent that inherited it would be missing whatever its owner exported since.
-//! The file is the owner's alone to read, because their environment is in it.
+//! Two things travel beside the tmux command line rather than on it, because a
+//! tmux command line is the one place either could be read as syntax. The
+//! **task** rides in the handoff, which outlives the boot that reads it: every
+//! verb that later asks what an agent was started with reads it there. The
+//! **environment** is the one `new` was run with — a tmux server started an
+//! hour ago carries an hour-old environment, and an agent that inherited it
+//! would be missing whatever its owner exported since — and it rides a file of
+//! its own, read once by `_boot` and unlinked the moment it has been: nothing
+//! that runs after `_boot` has a use for a second copy of somebody's
+//! environment sitting in the agent's own directory for as long as the record
+//! does. Both files are the owner's alone to read.
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -39,6 +44,11 @@ use crate::vendor::Vendor;
 
 /// What the pane is handed at birth.
 pub const HANDOFF: &str = "handoff.json";
+
+/// Where the environment `new` was run with waits for `_boot`, and nowhere
+/// else: beside the handoff rather than in it, so that a copy of somebody's
+/// environment never outlives the one pane that needed it.
+pub const BOOT_ENV: &str = "boot-env.json";
 
 /// Where a pane is told to find the directory that is its own to write in.
 pub const AGENT_DIR_ENV: &str = "AMX_AGENT_DIR";
@@ -66,15 +76,15 @@ const NOT_INHERITED: [&str; 4] = ["TMUX", "TMUX_PANE", "PWD", "OLDPWD"];
 /// How long `_boot` waits for the record whose pane it is.
 const RECORD_PATIENCE: Duration = Duration::from_secs(10);
 
-/// Everything the pane needs to become an agent.
+/// What the pane is handed at birth, apart from the environment: that rides
+/// [`BOOT_ENV`] instead, because this outlives the boot that reads it and the
+/// environment should not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Handoff {
     /// What the agent was asked to do.
     pub task: String,
     /// The vendor and its arguments, as an argv.
     pub command: Vec<String>,
-    /// The environment to run it in.
-    pub env: BTreeMap<String, String>,
 }
 
 /// The environment an agent inherits, given the one `new` was run with.
@@ -167,18 +177,29 @@ pub fn exec_command(command: &str) -> Vec<String> {
     vec!["sh".to_string(), "-c".to_string(), command.to_string()]
 }
 
-/// Write the handoff, readable by nobody else: the person's environment is in
-/// it.
+/// Write the handoff, readable by nobody else: what a command was launched
+/// with is the owner's account of it, not everyone's to read.
 pub fn write_handoff(dir: &Path, handoff: &Handoff) -> Result<()> {
-    let path = dir.join(HANDOFF);
+    write_owned(&dir.join(HANDOFF), handoff)
+}
+
+/// Write the environment a pane is about to be started with, readable by
+/// nobody else: the person's environment is in it.
+pub fn write_boot_env(dir: &Path, env: &BTreeMap<String, String>) -> Result<()> {
+    write_owned(&dir.join(BOOT_ENV), env)
+}
+
+/// Write `value` as JSON that only its owner can read: the mode `write_handoff`
+/// and `write_boot_env` both promise, kept in the one place that sets it.
+fn write_owned<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
-        .open(&path)
+        .open(path)
         .with_context(|| format!("creating {}", path.display()))?;
-    let mut bytes = serde_json::to_vec_pretty(handoff).context("writing the handoff")?;
+    let mut bytes = serde_json::to_vec_pretty(value).context("writing the record")?;
     bytes.push(b'\n');
     file.write_all(&bytes)
         .with_context(|| format!("writing {}", path.display()))
@@ -225,6 +246,18 @@ pub fn read_handoff(dir: &Path) -> Result<Handoff> {
     let text =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     serde_json::from_str(&text).with_context(|| format!("reading {}", path.display()))
+}
+
+/// The environment `_boot` was written to become, read once and taken away:
+/// nothing that runs after `_boot` has a use for a second copy of it sitting
+/// in the agent's own directory.
+fn take_boot_env(dir: &Path) -> Result<BTreeMap<String, String>> {
+    let path = dir.join(BOOT_ENV);
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let env = serde_json::from_str(&text).with_context(|| format!("reading {}", path.display()))?;
+    std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+    Ok(env)
 }
 
 /// The server an agent lives on: the one the caller is already inside, or the
@@ -285,6 +318,7 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
     let dir = crate::paths::agent_dir_in(root, id)?;
     wait_for(&dir.join("meta.json"))?;
     let handoff = read_handoff(&dir)?;
+    let env = take_boot_env(&dir)?;
 
     let Some(vendor) = handoff.command.first() else {
         bail!("the handoff for {id} names no command to run");
@@ -311,7 +345,7 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
         command.env_remove(marker);
     }
 
-    for (name, value) in pane_env(&handoff.env, &std::env::current_exe()?, id, &scratch(&dir)?) {
+    for (name, value) in pane_env(&env, &std::env::current_exe()?, id, &scratch(&dir)?) {
         command.env(name, value);
     }
 
@@ -609,7 +643,6 @@ mod tests {
         let started = |command: &[&str]| Handoff {
             task: "fix the login bug".to_string(),
             command: command.iter().map(|word| word.to_string()).collect(),
-            env: BTreeMap::new(),
         };
 
         assert_eq!(
@@ -636,7 +669,6 @@ mod tests {
         let handoff = Handoff {
             task: "fix the login bug".to_string(),
             command: vec!["claude".to_string(), "fix the login bug".to_string()],
-            env: env_snapshot(vars(&[("ANTHROPIC_API_KEY", "not-a-real-key")])),
         };
         write_handoff(dir.path(), &handoff).unwrap();
 
@@ -644,8 +676,48 @@ mod tests {
             .unwrap()
             .permissions()
             .mode();
-        assert_eq!(mode & 0o777, 0o600, "somebody's environment is in it");
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "what a command was launched with is not everyone's to read"
+        );
         assert_eq!(read_handoff(dir.path()).unwrap(), handoff);
+    }
+
+    #[test]
+    fn spawn_the_boot_environment_is_read_once_and_then_gone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let env = env_snapshot(vars(&[("ANTHROPIC_API_KEY", "not-a-real-key")]));
+        write_boot_env(dir.path(), &env).unwrap();
+
+        let path = dir.path().join(BOOT_ENV);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "somebody's environment is in it");
+
+        assert_eq!(take_boot_env(dir.path()).unwrap(), env);
+        assert!(!path.exists(), "read once, and not there for a second read");
+    }
+
+    #[test]
+    fn spawn_a_handoff_an_older_amx_wrote_still_parses_with_its_env_ignored() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(HANDOFF),
+            br#"{"task":"fix the login bug","command":["claude","fix the login bug"],"env":{"PATH":"/usr/bin"}}"#,
+        )
+        .unwrap();
+
+        let handoff = read_handoff(dir.path()).unwrap();
+        assert_eq!(
+            handoff,
+            Handoff {
+                task: "fix the login bug".to_string(),
+                command: vec!["claude".to_string(), "fix the login bug".to_string()],
+            },
+            "the stray env key an older amx wrote is ignored, not refused"
+        );
     }
 
     #[test]

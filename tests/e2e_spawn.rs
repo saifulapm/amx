@@ -154,7 +154,7 @@ fn the_task_never_rides_the_tmux_command_line() {
     assert_eq!(
         mode(&amx.agent_dir(&id).join("handoff.json")) & 0o777,
         0o600,
-        "the handoff carries the environment, so it is the owner's alone"
+        "what a command was launched with is not everyone's to read"
     );
 }
 
@@ -162,6 +162,9 @@ fn the_task_never_rides_the_tmux_command_line() {
 fn the_agent_gets_the_environment_new_was_run_with() {
     // A tmux server started an hour ago has an hour-old environment. The
     // agent's comes from the command that asked for it, not from the server.
+    // The environment no longer rides the handoff, so this reads the pane's
+    // real environment off the kernel, the same way `boot_strips_a_marker...`
+    // does below.
     let amx = Harness::new();
     let mock = amx.mock();
     let out = amx
@@ -172,23 +175,46 @@ fn the_agent_gets_the_environment_new_was_run_with() {
             &mock,
             "fix the login bug",
         ])
-        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("happy-turn"))
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("a-dispatched-worker"))
         .env("ANTHROPIC_MODEL", "opus")
         .env("TMUX_PANE", "%404")
         .output()
         .expect("running amx new");
 
     let id = id_of(&out);
-    let handoff = amx.handoff(&id);
 
-    assert_eq!(handoff["env"]["ANTHROPIC_MODEL"], "opus");
-    assert!(
-        handoff["env"]["TMUX"].is_null() && handoff["env"]["TMUX_PANE"].is_null(),
-        "tmux's own variables belong to the pane it makes, not to the one it left"
+    // Waiting for the vendor to say how it was called is waiting for `_boot`
+    // to have already read the boot file, unlinked it and exec'd the vendor
+    // with what it held.
+    argv_of(&amx, &id);
+    let pid = amx.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &amx.pane_of(&id),
+        "#{pane_pid}",
+    ]);
+    let env = pane_environ(&pid);
+
+    assert_eq!(
+        env.get("ANTHROPIC_MODEL").map(String::as_str),
+        Some("opus"),
+        "a variable exported at `new` reaches the agent: {env:?}"
+    );
+    assert_ne!(
+        env.get("TMUX_PANE").map(String::as_str),
+        Some("%404"),
+        "tmux's own variables belong to the pane it makes, not to the one it left: {env:?}"
     );
     assert_eq!(
-        handoff["env"]["AMX_ID"], id,
+        env.get("AMX_ID").map(String::as_str),
+        Some(id.as_str()),
         "and the agent knows who it is"
+    );
+    assert!(
+        !amx.agent_dir(&id).join("boot-env.json").exists(),
+        "no file under the agent's directory holds the spawner's environment \
+         once the pane is up"
     );
 }
 

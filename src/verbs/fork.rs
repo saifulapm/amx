@@ -163,12 +163,12 @@ fn start(
     let dir = paths::agent_dir_in(root, id)?;
     let mut env = env.clone();
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
+    spawn::write_boot_env(&dir, &env)?;
     spawn::write_handoff(
         &dir,
         &Handoff {
             task: task.to_string(),
             command,
-            env,
         },
     )?;
     names_its_origin(root, id, origin, session)?;
@@ -378,7 +378,6 @@ mod tests {
         Handoff {
             task: task.to_string(),
             command: command.iter().map(|word| word.to_string()).collect(),
-            env: BTreeMap::new(),
         }
     }
 

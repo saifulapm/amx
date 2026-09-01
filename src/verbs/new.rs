@@ -284,12 +284,12 @@ fn start(
     }
 
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
+    spawn::write_boot_env(agent_dir, &env)?;
     spawn::write_handoff(
         agent_dir,
         &Handoff {
             task: args.task.clone(),
             command: launched(args, launch),
-            env,
         },
     )?;
 

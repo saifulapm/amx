@@ -221,12 +221,12 @@ fn bring_back(root: &Path, id: &str, env: &BTreeMap<String, String>) -> Result<(
     // an hour-old environment is nobody's idea of the one to run in.
     let mut env = env.clone();
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
+    spawn::write_boot_env(agent.dir(), &env)?;
     spawn::write_handoff(
         agent.dir(),
         &Handoff {
             task: recorded.task.clone(),
             command: continuing(&recorded, session),
-            env,
         },
     )?;
 
@@ -456,7 +456,6 @@ mod tests {
         Handoff {
             task: task.to_string(),
             command: command.iter().map(|word| word.to_string()).collect(),
-            env: BTreeMap::new(),
         }
     }
 
