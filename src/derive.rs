@@ -32,9 +32,10 @@
 //! And one thing a reader asks for rather than reads. What a turn leaves
 //! behind is an answer, not a line about one, so a row of an agent that has
 //! finished shows the answer's first sentence. Where somebody has configured a
-//! `summary_command`, the first reader to see the turn end sets it going, and
-//! the line it writes is on the record for every reader after — see
-//! [`wants_a_line`]. Nothing configured is nothing run.
+//! `summary_command`, the first reader that is staying long enough to hear it
+//! back sets it going, and the line it writes is on the record for every
+//! reader after — see [`wants_a_line`] and [`staying`]. Nothing configured is
+//! nothing run, and nothing staying is nothing asked.
 //!
 //! Whatever it concludes, it concludes once. Every reader of an agent — `ls`,
 //! `status`, the view, `--json` — is handed one [`View`], and what is on that
@@ -817,6 +818,39 @@ fn write_the_line(root: &Path, id: &str, turn: u64, at: &Path, command: &str, an
     });
 }
 
+thread_local! {
+    /// Whether this thread is one that stays for whatever it asks, rather
+    /// than printing a line or drawing a frame and exiting.
+    ///
+    /// A thread local and not a flag for the whole process: everything
+    /// downstream of one verb's dispatch runs on a single thread in the amx
+    /// that is actually running, so the distinction costs a real process
+    /// nothing, but a test binary is one process running its whole suite at
+    /// once, on a thread of its own per test (`tui::rows` reasons the same
+    /// way about its own thread local). A process-wide flag would have the
+    /// first test that opens a view leave every test after it believing an
+    /// `ls` was staying too.
+    static STAYING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Declare that this process is staying for whatever it asks, not exiting
+/// once it has drawn a frame or printed a line.
+///
+/// Called once, where the view's own loop starts — the one caller with
+/// somewhere to put an answer that comes back after the read that asked for
+/// it has finished. A one-shot verb, `ls` and `statusline` among them, never
+/// calls this, so [`have_a_line_written`] never claims a turn on their
+/// account: nothing would be left to hear the command back, or to pay for
+/// running it.
+pub(crate) fn will_stay_for_the_answer() {
+    STAYING.with(|staying| staying.set(true));
+}
+
+/// Whether this thread declared [`will_stay_for_the_answer`].
+fn staying() -> bool {
+    STAYING.with(std::cell::Cell::get)
+}
+
 /// Whether an ask is out already.
 ///
 /// The command is whatever somebody configured, routinely a model call, and a
@@ -934,25 +968,25 @@ fn asked(dir: &Path) -> Option<Asked> {
     serde_json::from_str(&std::fs::read_to_string(dir.join(ASKED)).ok()?).ok()
 }
 
+/// Through [`crate::store::write_atomic`], so a write torn by a crash or a
+/// second amx cannot read back as no claim at all: the file is either the one
+/// there before or the whole of this one, and never half of either.
 fn write_asked(dir: &Path, asked: Asked) -> bool {
     let Ok(said) = serde_json::to_string(&asked) else {
         return false;
     };
-    let path = dir.join(ASKED);
-    if std::fs::write(&path, said).is_err() {
-        return false;
-    }
-    let _ = crate::paths::keep_to_the_owner(&path, crate::paths::FILE_MODE);
-    true
+    crate::store::write_atomic(&dir.join(ASKED), said.as_bytes()).is_ok()
 }
 
-/// Set that going, with nobody waiting for it.
+/// Set that going, with nobody waiting for it — except a caller that has said
+/// it will be.
 ///
 /// The thread is never joined, the way a look at a forge is not
 /// (`crate::pr`): a view is open for hours and has the line on its next
-/// reading, and a verb that exits first leaves the turn unsummarised, which
-/// costs the line and nothing else. A command that never returns costs the
-/// thread it is on, and the queue behind it.
+/// reading. A verb that exits first is never in this function at all — see
+/// [`staying`] — so exiting first truly costs the line and nothing else,
+/// rather than a claim it never comes back to settle. A command that never
+/// returns costs the thread it is on, and the queue behind it.
 fn have_a_line_written(
     root: &Path,
     agent: &Agent,
@@ -961,6 +995,11 @@ fn have_a_line_written(
     command: &str,
     now: u64,
 ) {
+    // Only a reader that can settle the ask may claim a turn: nothing else is
+    // here to hear the command back, or ought to be paying to run it.
+    if !staying() {
+        return;
+    }
     // Before the queue rather than after it. A turn somebody has already asked
     // about is one this reading will never ask about, and a row that stood in
     // the queue holding a place it cannot use would keep every row under it
@@ -2653,6 +2692,74 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         settle_the_ask(&agent, ended.since, 1_002);
         assert!(!claim_the_turn(&agent, ended.since, 90_000));
         assert!(agent.state().unwrap().summary.is_none());
+    }
+
+    #[test]
+    fn summary_a_reader_that_is_not_staying_never_claims_a_turn() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta()).unwrap();
+        let writer = agent.writer().unwrap();
+        let ended = writer
+            .update_state(|state| {
+                state.state = Phase::Idle;
+                state.result = Some("fixed the redirect".to_string());
+            })
+            .unwrap();
+        drop(writer);
+
+        // Nothing on this thread has declared it is staying for the answer,
+        // which is every verb but the view.
+        have_a_line_written(root.path(), &agent, &meta(), &ended, "true", 1_000);
+
+        assert!(
+            asked(agent.dir()).is_none(),
+            "a reader that will not be here to settle it never claims the turn"
+        );
+        assert!(agent.state().unwrap().summary.is_none());
+    }
+
+    #[test]
+    fn summary_a_reader_that_is_staying_claims_a_turn_as_before() {
+        let _queue = the_queue_to_itself();
+        will_stay_for_the_answer();
+
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta()).unwrap();
+        let writer = agent.writer().unwrap();
+        let ended = writer
+            .update_state(|state| {
+                state.state = Phase::Idle;
+                state.result = Some("fixed the redirect".to_string());
+            })
+            .unwrap();
+        drop(writer);
+
+        have_a_line_written(root.path(), &agent, &meta(), &ended, "true", 1_000);
+
+        assert_eq!(
+            asked(agent.dir()),
+            Some(Asked {
+                turn: ended.since,
+                at: 1_000,
+                over: false,
+            }),
+            "a reader staying for the answer claims a turn exactly as it always has"
+        );
+
+        // The command runs on a thread of its own; wait for it to settle and
+        // free the queue before the next test takes it.
+        let waited = std::time::Instant::now();
+        loop {
+            if may_ask() {
+                done_asking();
+                break;
+            }
+            assert!(
+                waited.elapsed() < std::time::Duration::from_secs(5),
+                "the command never came back"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]

@@ -668,6 +668,12 @@ where
     // after that is the one that asks tmux.
     let mut records_only = true;
 
+    // Declared once, here, rather than anywhere a record is merely read: this
+    // loop is the one caller that stays for an answer that comes back after
+    // the read that asked for it has returned, so it is the only one
+    // `have_a_line_written` should ever claim a turn on behalf of.
+    derive::will_stay_for_the_answer();
+
     loop {
         let opening = std::mem::take(&mut records_only);
         let refreshing = screen.read.is_none_or(|at| at.elapsed() >= REFRESH);
