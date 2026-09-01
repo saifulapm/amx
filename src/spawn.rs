@@ -344,11 +344,16 @@ fn wait_for(path: &Path) -> Result<()> {
 
 /// The agents that are still going: their record says they have not finished,
 /// and their pane is still there on the server it was recorded on.
+///
+/// An agent whose state amx cannot read is skipped rather than failing the
+/// whole walk: one bad document should cost that agent, not everyone listed
+/// after it.
 pub fn live(root: &Path) -> Result<Vec<String>> {
     let mut live = Vec::new();
     for id in crate::store::list(root)? {
         let agent = Agent::open(root, &id)?;
-        if agent.state()?.state.is_terminal() {
+        let Ok(state) = agent.state() else { continue };
+        if state.state.is_terminal() {
             continue;
         }
         let Ok(meta) = agent.meta() else { continue };
@@ -630,6 +635,58 @@ mod tests {
     fn spawn_boot_gives_up_rather_than_waiting_for_a_record_that_is_not_coming() {
         let root = TempDir::new().unwrap();
         assert!(boot(root.path(), "../elsewhere").is_err(), "not an id");
+    }
+
+    fn meta(id: &str, socket: crate::tmux::Socket, pane: PaneId) -> Meta {
+        Meta {
+            id: id.to_string(),
+            task: "fix the login bug".to_string(),
+            dir: PathBuf::from("/srv/app"),
+            worktree: None,
+            branch: None,
+            base: None,
+            socket,
+            pane,
+            bg: false,
+            session: None,
+            transcript: None,
+            created: 1,
+        }
+    }
+
+    /// A tmux server of this test's own, gone when the test is.
+    struct Own(Server);
+
+    impl Drop for Own {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+        }
+    }
+
+    #[test]
+    fn live_skips_an_agent_whose_state_json_is_unreadable_but_lists_the_rest() {
+        let root = TempDir::new().unwrap();
+        let server =
+            Own(Server::named(format!("amx-spawn-{}", std::process::id())).with_conf("/dev/null"));
+        let (_, pane) = server
+            .0
+            .new_session(&Spawn {
+                command: &["sh", "-c", "while :; do sleep 0.05; done"],
+                ..Spawn::default()
+            })
+            .expect("a pane");
+        let socket = server.0.socket().clone();
+
+        let broken = Agent::create(
+            root.path(),
+            &meta("broken-a1b", socket.clone(), pane.clone()),
+        )
+        .expect("a record");
+        std::fs::write(broken.dir().join("state.json"), b"not json at all").expect("garbage bytes");
+        Agent::create(root.path(), &meta("fine-b2c", socket, pane)).expect("a record");
+
+        let live = live(root.path()).expect("the walk to finish");
+        assert_eq!(live, vec!["fine-b2c".to_string()]);
     }
 
     #[test]
