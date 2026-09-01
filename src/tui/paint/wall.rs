@@ -347,7 +347,7 @@ fn row(
     let armed = moment.armed.iter().any(|id| id == view.id());
     let said = match armed {
         true => AGAIN.to_string(),
-        false => first_line(view.line().unwrap_or("")).to_string(),
+        false => inert(first_line(view.line().unwrap_or(""))),
     };
 
     let asking = phase == Phase::Waiting;
@@ -1471,6 +1471,27 @@ mod tests {
             .into_iter()
             .find(|line| line.contains("rests-a1b"))
             .expect("the agent's row");
+        assert!(row.ends_with("1m"), "{row:?}");
+    }
+
+    #[test]
+    fn rows_neutralise_what_an_agent_said_the_way_the_name_and_the_question_are() {
+        // An escape byte and a zero-width character in what an agent said are
+        // neutralised the way the name at row 338 and the card's question at
+        // card.rs:402 are: replaced with a space rather than dropped, so the
+        // row stays exactly as wide as the record spells it.
+        let said = "pro\u{1b}ceed\u{200b}now";
+        let row = drawn(
+            vec![view("fix-login-a1b", Phase::Done, Some(said), 60)],
+            None,
+            (60, 8),
+        )
+        .into_iter()
+        .find(|line| line.contains("fix-login-a1b"))
+        .expect("the agent's row");
+        assert!(!row.contains('\u{1b}'), "{row:?}");
+        assert!(!row.contains('\u{200b}'), "{row:?}");
+        assert!(row.contains("pro ceed now"), "{row:?}");
         assert!(row.ends_with("1m"), "{row:?}");
     }
 
