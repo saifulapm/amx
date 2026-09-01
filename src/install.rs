@@ -20,6 +20,7 @@
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::vendor::claude;
@@ -344,17 +345,37 @@ fn amx_commands(settings: &Value) -> Vec<String> {
 }
 
 /// Copy the file aside before changing it.
+///
+/// Opened with `create_new`, so a name a planted symlink already stands at is
+/// refused rather than copied through: the backup path is predictable, and a
+/// symlink waiting there before amx ever runs must not decide where the
+/// person's settings end up.
 fn back_up(path: &Path, now: u64, exists: bool) -> Result<Option<PathBuf>> {
     if !exists {
         return Ok(None);
     }
     let backup = backup_path(path, now);
-    std::fs::copy(path, &backup)
+    let mut source =
+        std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut dest = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&backup)
+        .with_context(|| format!("copying {} to {}", path.display(), backup.display()))?;
+    std::io::copy(&mut source, &mut dest)
         .with_context(|| format!("copying {} to {}", path.display(), backup.display()))?;
     Ok(Some(backup))
 }
 
 /// The most recent backup taken of `path`, if any.
+///
+/// Ordered by each entry's own mtime, and only among regular files: the
+/// number in a backup's name is easy to plant, but the filesystem's own clock
+/// is not, and a symlink or directory under a backup's name is not a backup
+/// amx wrote, whatever number follows it. `trust::back_up` asks this same
+/// question to decide whether it still needs to take a copy, so a name that
+/// could win the answer without amx ever having written it would leave that
+/// copy untaken.
 pub fn latest_backup(path: &Path) -> Result<Option<PathBuf>> {
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
         return Ok(None);
@@ -367,19 +388,28 @@ pub fn latest_backup(path: &Path) -> Result<Option<PathBuf>> {
         Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
     };
 
-    let mut newest: Option<(u64, PathBuf)> = None;
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
     for entry in entries {
         let entry = entry.with_context(|| format!("reading {}", dir.display()))?;
-        let file = entry.file_name();
-        let Some(taken) = file
+        let is_backup = entry
+            .file_name()
             .to_string_lossy()
             .strip_prefix(&prefix)
-            .and_then(|stamp| stamp.parse::<u64>().ok())
-        else {
+            .is_some_and(|stamp| stamp.parse::<u64>().is_ok());
+        if !is_backup {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
             continue;
         };
-        if newest.as_ref().is_none_or(|(seen, _)| taken > *seen) {
-            newest = Some((taken, entry.path()));
+        if !metadata.is_file() {
+            continue;
+        }
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        if newest.as_ref().is_none_or(|(seen, _)| modified > *seen) {
+            newest = Some((modified, entry.path()));
         }
     }
     Ok(newest.map(|(_, path)| path))
@@ -407,6 +437,11 @@ fn read(path: &Path) -> Result<Option<Value>> {
 }
 
 /// Write a settings document the way the vendor writes one.
+///
+/// Staged beside the target and renamed over it, rather than written to the
+/// path directly: a rename replaces whatever is at that name without ever
+/// opening it, so a symlink standing at the path is replaced and never
+/// written through.
 fn write(path: &Path, settings: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -414,7 +449,30 @@ fn write(path: &Path, settings: &Value) -> Result<()> {
     }
     let mut text = serde_json::to_string_pretty(settings).context("writing settings")?;
     text.push('\n');
-    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let part = path.with_file_name(format!("{name}.amx-{}", std::process::id()));
+    match staged(&part, text.as_bytes()).and_then(|()| {
+        std::fs::rename(&part, path).with_context(|| format!("putting {} in place", path.display()))
+    }) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&part);
+            Err(e)
+        }
+    }
+}
+
+/// The half of the write that happens beside the file rather than to it.
+fn staged(part: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(part)
+        .with_context(|| format!("creating {}", part.display()))?;
+    file.write_all(bytes)
+        .with_context(|| format!("writing {}", part.display()))
 }
 
 #[cfg(test)]
@@ -732,6 +790,107 @@ mod tests {
             latest_backup(&path).unwrap(),
             Some(backup_path(&path, 200)),
             "the newest, not whichever the filesystem lists first"
+        );
+    }
+
+    /// Set a file's mtime to a moment in the past, the way `trust`'s own tests
+    /// put an old stamp on a lock.
+    fn stamp_the_past(path: &Path) {
+        let past = nix::sys::time::TimeSpec::new(1, 0);
+        nix::sys::stat::utimensat(
+            nix::fcntl::AT_FDCWD,
+            path,
+            &past,
+            &past,
+            nix::sys::stat::UtimensatFlags::FollowSymlink,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn latest_backup_orders_by_the_files_own_mtime_not_the_number_in_its_name() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("settings.json");
+
+        // Planted first, and stamped with a number no real backup would ever
+        // reach — but its mtime says it is old.
+        let planted = backup_path(&path, u64::MAX);
+        std::fs::write(&planted, "{}\n").unwrap();
+        stamp_the_past(&planted);
+
+        // Taken after it, under an ordinary timestamp.
+        let real = backup_path(&path, 5);
+        std::fs::write(&real, "{}\n").unwrap();
+
+        assert_eq!(
+            latest_backup(&path).unwrap(),
+            Some(real),
+            "the file taken most recently, not the largest number in a name"
+        );
+    }
+
+    #[test]
+    fn latest_backup_ignores_a_symlink_planted_under_the_name() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("settings.json");
+        let outside = dir.path().join("outside.json");
+        std::fs::write(&outside, "{}\n").unwrap();
+
+        let planted = backup_path(&path, u64::MAX);
+        std::os::unix::fs::symlink(&outside, &planted).unwrap();
+
+        assert_eq!(
+            latest_backup(&path).unwrap(),
+            None,
+            "a symlink is not a backup amx wrote, whatever number follows it"
+        );
+    }
+
+    #[test]
+    fn back_up_refuses_to_copy_through_a_planted_symlink() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{}\n").unwrap();
+
+        let outside = dir.path().join("outside.json");
+        std::fs::write(&outside, "SENTINEL").unwrap();
+        let backup = backup_path(&path, 1);
+        std::os::unix::fs::symlink(&outside, &backup).unwrap();
+
+        let refused = back_up(&path, 1, true).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("settings.json"),
+            "{refused:#}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "SENTINEL",
+            "a planted symlink is refused, not written through"
+        );
+    }
+
+    #[test]
+    fn install_never_writes_through_a_symlink_standing_at_the_path() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("settings.json");
+        let outside = dir.path().join("outside.json");
+        std::fs::write(&outside, "{}\n").unwrap();
+        std::os::unix::fs::symlink(&outside, &path).unwrap();
+
+        let report = install(&path, AMX, 1).unwrap();
+        assert!(report.changed);
+
+        assert!(
+            !std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the symlink was replaced, not written through"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "{}\n",
+            "and whatever it pointed at is untouched"
         );
     }
 }
