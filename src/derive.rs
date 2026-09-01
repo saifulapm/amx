@@ -975,15 +975,16 @@ pub struct Record {
 
 /// Every agent's record on the machine, in whatever order the directory is in.
 ///
-/// A record amx cannot read the meta of is skipped: how an agent was started is
-/// how every surface names it, and there is nothing to say about one nothing
-/// can be said about.
+/// A record amx cannot read the meta or the state of is skipped: how an agent
+/// was started and what it is doing are each read from their own file, and a
+/// walk that broke on one unreadable document would cost every agent listed
+/// after it, not just the one whose file is bad.
 pub fn records(root: &Path) -> Result<Vec<Record>> {
     let mut records = Vec::new();
     for id in crate::store::list(root)? {
         let agent = Agent::open(root, &id)?;
         let Ok(meta) = agent.meta() else { continue };
-        let state = agent.state()?;
+        let Ok(state) = agent.state() else { continue };
         records.push(Record { agent, meta, state });
     }
     Ok(records)
@@ -1795,6 +1796,46 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(recorded[0].phase(), Phase::Done);
         assert_eq!(recorded[0].verdict.evidence, Evidence::Record);
         assert_eq!(recorded[0].verdict.age, 100, "and how long it worked");
+    }
+
+    #[test]
+    fn records_skips_an_agent_whose_state_json_is_unreadable_but_keeps_the_rest() {
+        let root = TempDir::new().unwrap();
+        let broken = Agent::create(
+            root.path(),
+            &Meta {
+                id: "broken-a1b".to_string(),
+                ..meta()
+            },
+        )
+        .expect("a record");
+        std::fs::write(broken.dir().join("state.json"), b"not json at all").expect("garbage bytes");
+        a_record(
+            root.path(),
+            &Meta {
+                id: "fine-b2c".to_string(),
+                ..meta()
+            },
+            &state(Phase::Working, 1_000),
+        );
+
+        let records = records(root.path()).expect("the walk to finish");
+        assert_eq!(
+            records.iter().map(|r| r.agent.id()).collect::<Vec<_>>(),
+            vec!["fine-b2c"]
+        );
+    }
+
+    #[test]
+    fn records_reads_a_phase_this_build_has_never_heard_of_as_unknown() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta()).expect("a record");
+        std::fs::write(agent.dir().join("state.json"), br#"{"state":"reviewing"}"#)
+            .expect("a state naming an unrecognized phase");
+
+        let records = records(root.path()).expect("the walk to finish");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].state.state, Phase::Unknown);
     }
 
     #[test]
