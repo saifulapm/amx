@@ -89,16 +89,21 @@ pub fn env_snapshot(vars: impl IntoIterator<Item = (String, String)>) -> BTreeMa
         .collect()
 }
 
-/// Whether `name` is a variable some vendor marks the session a command was
-/// typed inside with.
+/// Every name some vendor marks the session a command was typed inside with.
 ///
 /// Every vendor amx knows, rather than the one about to be started: the
 /// markers to leave behind are the ones around whoever typed the command, and
 /// nothing here is told what they were sitting in.
-fn marks_a_session(name: &str) -> bool {
+fn session_markers() -> impl Iterator<Item = &'static str> {
     registry::entries()
         .iter()
-        .any(|vendor| vendor.not_inherited.contains(&name))
+        .flat_map(|vendor| vendor.not_inherited.iter().copied())
+}
+
+/// Whether `name` is a variable some vendor marks the session a command was
+/// typed inside with.
+fn marks_a_session(name: &str) -> bool {
+    session_markers().any(|marker| marker == name)
 }
 
 /// Where a spawn's three dials are pointed, each of them a value the vendor
@@ -293,6 +298,18 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
         .arg(r#""$0" "$@"; "$AMX_BIN" _exit "$AMX_ID" $?"#)
         .arg(vendor)
         .args(&handoff.command[1..]);
+
+    // A `Command` starts from this process's own environment, and this
+    // process is the pane tmux made it in -- not the one `new` was typed in.
+    // Its baseline can be as stale as the server itself: a server first
+    // started inside a claude session still carries that session's markers,
+    // and no snapshot taken later ever reaches them because a snapshot only
+    // ever strips a name from what it is given, not from what a later pane
+    // inherits some other way. Removed here rather than trusted to the
+    // snapshot below.
+    for marker in session_markers() {
+        command.env_remove(marker);
+    }
 
     for (name, value) in pane_env(&handoff.env, &std::env::current_exe()?, id, &scratch(&dir)?) {
         command.env(name, value);

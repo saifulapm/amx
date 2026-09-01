@@ -61,6 +61,22 @@ fn argv_of(amx: &Harness, id: &str) -> String {
     })
 }
 
+/// A process's real environment, read from the kernel rather than from
+/// anything amx wrote down -- the only way to see what a pane started with
+/// underneath whatever amx laid over it.
+fn pane_environ(pid: &str) -> std::collections::BTreeMap<String, String> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ"))
+        .unwrap_or_else(|e| panic!("reading /proc/{pid}/environ: {e}"));
+    raw.split(|&byte| byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let text = String::from_utf8_lossy(entry);
+            let (name, value) = text.split_once('=').expect("NAME=VALUE");
+            (name.to_string(), value.to_string())
+        })
+        .collect()
+}
+
 fn id_of(out: &Output) -> String {
     assert!(
         out.status.success(),
@@ -174,6 +190,72 @@ fn the_agent_gets_the_environment_new_was_run_with() {
         handoff["env"]["AMX_ID"], id,
         "and the agent knows who it is"
     );
+}
+
+#[test]
+fn boot_strips_a_marker_sitting_in_the_tmux_servers_own_environment() {
+    // A snapshot taken when `new` runs only ever strips a vendor's markers
+    // from what travels in the handoff. It says nothing about what the pane
+    // starts with before that snapshot is laid over it, and a server first
+    // started inside a claude session carries that session's markers as its
+    // own baseline -- set here on the command that starts this harness's
+    // server, before amx ever touches the socket.
+    let amx = Harness::new();
+    let state_dir = amx
+        .state_root()
+        .parent()
+        .expect("the state root has a parent")
+        .to_path_buf();
+    let status = std::process::Command::new("tmux")
+        .args([
+            "-L",
+            amx.socket(),
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "--",
+            "sh",
+            "-c",
+            "while :; do sleep 0.05; done",
+        ])
+        .env("AMX_STATE_DIR", &state_dir)
+        .env("HOME", amx.home())
+        .env("CLAUDE_CODE_CHILD_SESSION", "1")
+        .status()
+        .expect("running tmux");
+    assert!(status.success(), "starting the harness's server");
+
+    let mock = amx.mock();
+    let id = id_of(&new(
+        &amx,
+        "a-dispatched-worker",
+        &["--no-worktree", "--agent", &mock, "fix the login bug"],
+    ));
+
+    // Waiting for the vendor to say how it was called is waiting for `_boot`
+    // to have already exec'd it: only then is the pane's own environment the
+    // one this test needs to read.
+    argv_of(&amx, &id);
+    let pid = amx.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &amx.pane_of(&id),
+        "#{pane_pid}",
+    ]);
+    let env = pane_environ(&pid);
+
+    assert!(
+        !env.contains_key("CLAUDE_CODE_CHILD_SESSION"),
+        "a marker sitting in the server's own environment reached the agent: {env:?}"
+    );
+    for kept in ["TMUX", "TMUX_PANE", "PATH", "HOME"] {
+        assert!(
+            env.contains_key(kept),
+            "{kept} belongs to the pane amx made and stands: {env:?}"
+        );
+    }
 }
 
 #[test]
