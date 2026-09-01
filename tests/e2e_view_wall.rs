@@ -817,10 +817,9 @@ fn a_row_lands_its_name_summary_and_age_in_the_columns_the_grid_fixes() {
     finished(&amx, "fix-login-a1b", "done", 60);
 
     let view = amx.in_a_terminal(&[], &[]);
-    amx.until("the row", || {
-        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+    let row = amx.until("the row, drawn to the edge", || {
+        row_of(&amx, &view, "fix-login-a1b").filter(|row| row.chars().count() == 80)
     });
-    let row = row_of(&amx, &view, "fix-login-a1b").expect("a row");
     let cells: Vec<char> = row.chars().collect();
     assert_eq!(cells.len(), 80, "a row is drawn to the edge:\n{row:?}");
 
@@ -922,9 +921,12 @@ fn a_path_heading_keeps_its_case_and_carries_the_same_rule_and_count() {
         screen(&amx, &view).contains("NEEDS INPUT").then_some(())
     });
     press(&amx, &view, "C-s");
-    let drawn = amx.until("the project headings", || {
+    let drawn = amx.until("the heading over the repository, drawn to the edge", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("~/repo").then_some(drawn)
+        let whole = drawn
+            .lines()
+            .any(|line| line.starts_with(" ~/repo ") && line.chars().count() == 80);
+        whole.then_some(drawn)
     });
 
     let line = drawn
@@ -982,10 +984,10 @@ fn a_path_too_long_for_its_heading_loses_its_middle_and_not_its_end() {
         screen(&amx, &view).contains("NEEDS INPUT").then_some(())
     });
     press(&amx, &view, "C-s");
-    let line = amx.until("the heading over the deep path", || {
+    let line = amx.until("the heading over the deep path, drawn to the edge", || {
         screen(&amx, &view)
             .lines()
-            .find(|line| line.starts_with(" /srv/"))
+            .find(|line| line.starts_with(" /srv/") && line.chars().count() == 80)
             .map(str::to_string)
     });
 
@@ -1028,8 +1030,9 @@ fn a_row_under_a_path_grows_a_state_word_and_moves_no_other_column() {
     let before = row_of(&amx, &view, "fix-login-a1b").expect("a row under its state");
 
     press(&amx, &view, "C-s");
-    let row = amx.until("the state word on the row", || {
-        row_of(&amx, &view, "fix-login-a1b").filter(|row| row.contains("done"))
+    let row = amx.until("the state word on the row, drawn to the edge", || {
+        row_of(&amx, &view, "fix-login-a1b")
+            .filter(|row| row.contains("done") && row.chars().count() == 80)
     });
     let cells: Vec<char> = row.chars().collect();
     let column = |from: usize, to: usize| cells[from..to].iter().collect::<String>();
