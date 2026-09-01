@@ -441,6 +441,7 @@ impl State {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct Wire {
+    #[serde(deserialize_with = "phase_or_unknown")]
     state: Phase,
     name: Option<String>,
     seq: u64,
@@ -454,6 +455,30 @@ struct Wire {
     ended: u64,
     seen: u64,
     worked: u64,
+}
+
+/// A phase this build knows, or [`Phase::Unknown`] for one it does not.
+///
+/// `state.json` is written by whatever build of amx last touched an agent, and
+/// a phase this reader has never heard of is not a document to give up on: the
+/// rest of it — the question, the summary, everything else a surface draws —
+/// still reads. Only the shared [`Phase`] type stays strict about naming a
+/// phase that does not exist, because the screen rules a vendor ships lean on
+/// that strictness to catch a typo in the state a rule claims.
+fn phase_or_unknown<'de, D>(deserializer: D) -> std::result::Result<Phase, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Named {
+        Known(Phase),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Named::deserialize(deserializer)? {
+        Named::Known(phase) => phase,
+        Named::Other(_) => Phase::Unknown,
+    })
 }
 
 /// A question on the record: its words alone, or the whole of it.
