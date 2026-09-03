@@ -83,12 +83,21 @@ pub fn is_valid(id: &str) -> bool {
 /// Validate a user-supplied `--name`: the same charset and the same
 /// uniqueness as a minted id, but deliberately not length-capped — the cap
 /// exists to keep *derived* stems readable, and a typed name is not derived.
+///
+/// The ends are held to more than the charset: a hyphen is legal in the
+/// middle of an id but not at either edge, because that is where a vendor's
+/// own session-id rule tends to draw the line. `generate` has produced
+/// nothing else since the stem was first trimmed, so this asks a typed name
+/// for the shape a minted one already has.
 pub fn validate_name(name: &str, state_root: &Path) -> Result<()> {
     if name.is_empty() {
         bail!("a name cannot be empty");
     }
     if let Some(bad) = name.chars().find(|c| !legal(*c)) {
         bail!("name {name:?} contains {bad:?}: names are lowercase letters, digits and '-'");
+    }
+    if !edges_are_alphanumeric(name) {
+        bail!("name {name:?} must start and end with a letter or digit");
     }
     if state_root.join(name).exists() {
         bail!("name {name:?} is already taken");
@@ -99,6 +108,14 @@ pub fn validate_name(name: &str, state_root: &Path) -> Result<()> {
 /// One character of the id charset.
 fn legal(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
+}
+
+/// Whether `s` opens and closes on a letter or digit rather than a hyphen.
+fn edges_are_alphanumeric(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && s.chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
 }
 
 /// Three base36 characters that tell two ids with the same stem apart.
@@ -245,5 +262,40 @@ mod tests {
 
         fs::create_dir_all(root.path().join("taken")).unwrap();
         assert!(validate_name("taken", root.path()).is_err());
+    }
+
+    #[test]
+    fn a_name_must_start_and_end_alphanumeric() {
+        let root = TempDir::new().unwrap();
+        assert!(validate_name("fine-in-the-middle", root.path()).is_ok());
+
+        for bad in ["-leading", "trailing-", "-both-", "-"] {
+            let err = format!("{:#}", validate_name(bad, root.path()).unwrap_err());
+            assert!(
+                err.contains("start and end"),
+                "{bad:?} should refuse by the rule, not the character: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_generated_id_satisfies_the_rule_a_typed_name_must_meet() {
+        // generate has always trimmed a stem's edges and appended a base36
+        // suffix, so its output was already shaped this way before
+        // validate_name learned to ask for it. This is the proof of that,
+        // not the enforcement.
+        let root = TempDir::new().unwrap();
+        for task in [
+            "Fix the login bug",
+            "  !!! ---   ",
+            "supercalifragilisticexpialidocious",
+            "café ☕ time",
+            "",
+            "a",
+            "twenty characters ok please",
+        ] {
+            let id = generate(task, root.path()).unwrap();
+            assert!(validate_name(&id, root.path()).is_ok(), "{id:?}");
+        }
     }
 }
