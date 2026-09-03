@@ -28,24 +28,11 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, now};
-use crate::vendor::{Capability, Vendor};
+use crate::vendor::{self, Capability, ForkSpec, SessionSpec, Vendor};
 use crate::{Severity, exit, ids, paths, said};
 
 /// What amx records when it copies a conversation.
 const FORKED: &str = "fork";
-
-/// The vendor's flag for the session to open.
-const RESUME: &str = "--resume";
-
-/// The vendor's flag for copying that session rather than continuing it.
-const FORK: &str = "--fork-session";
-
-/// Every way of writing a flag that decides which session the vendor opens.
-///
-/// These are the words a fork replaces rather than carries. Everything else the
-/// agent was started with is the agent's and goes with it: a directory it was
-/// given access to is one the copy still needs.
-const NAMES_A_SESSION: [&str; 3] = ["--session-id", RESUME, "-r"];
 
 /// How many minted ids to try to claim before giving up.
 const MAX_CLAIMS: usize = 8;
@@ -232,6 +219,28 @@ fn names_its_origin(root: &Path, id: &str, origin: &Meta, session: &str) -> Resu
 /// last resume of the original left behind. `--fork-session` goes too, so that a
 /// copy of a copy asks for one fork rather than two.
 fn copying(handoff: &Handoff, session: &str, prompt: Option<&str>) -> Vec<String> {
+    build_copy(handoff, session, prompt, &spelling(handoff))
+}
+
+/// [`copying`], with the vendor's own spelling passed in rather than looked
+/// up, so a shape the table has never seen can be proved out here too.
+///
+/// A vendor branches one of two ways. [`ForkSpec::Marker`] rides beside the
+/// resume flag: the copy opens through `resume` exactly as a continuation
+/// does, and the marker is what turns that into a branch rather than a
+/// carry-on. [`ForkSpec::Origin`] is the flag itself: it carries the session
+/// to copy, and `resume` is not written at all, because this vendor's copy
+/// is not asking to continue anything.
+fn build_copy(
+    handoff: &Handoff,
+    session: &str,
+    prompt: Option<&str>,
+    spec: &SessionSpec,
+) -> Vec<String> {
+    let fork = spec
+        .fork
+        .expect("a copy is only asked of a vendor that declares how it branches");
+
     let mut words = handoff.command.clone().into_iter().peekable();
     let mut command: Vec<String> = Vec::new();
 
@@ -240,10 +249,15 @@ fn copying(handoff: &Handoff, session: &str, prompt: Option<&str>) -> Vec<String
         if words.peek().is_none() && word == handoff.task {
             break;
         }
-        if word == FORK {
-            continue;
+        if let ForkSpec::Marker(marker) = fork {
+            // A bare word, never carrying a value of its own: a copy of a
+            // copy drops it here rather than asking the vendor to branch
+            // twice.
+            if word == marker {
+                continue;
+            }
         }
-        let Some(value_is_a_word_of_its_own) = names_a_session(&word) else {
+        let Some(value_is_a_word_of_its_own) = names_a_session(&word, spec, fork) else {
             command.push(word);
             continue;
         };
@@ -256,23 +270,66 @@ fn copying(handoff: &Handoff, session: &str, prompt: Option<&str>) -> Vec<String
         }
     }
 
-    command.push(format!("{RESUME}={session}"));
-    command.push(FORK.to_string());
+    match fork {
+        ForkSpec::Marker(marker) => {
+            push_flag(&mut command, spec.resume, spec.joined, session);
+            command.push(marker.to_string());
+        }
+        ForkSpec::Origin(flag) => push_flag(&mut command, flag, spec.joined, session),
+    }
     command.extend(prompt.map(str::to_string));
     command
 }
 
+/// A flag and its value, joined with `=` or as two words, whichever the
+/// vendor's own spelling says.
+fn push_flag(command: &mut Vec<String>, flag: &str, joined: bool, value: &str) {
+    if joined {
+        command.push(format!("{flag}={value}"));
+    } else {
+        command.push(flag.to_string());
+        command.push(value.to_string());
+    }
+}
+
 /// Whether a word is a flag naming a session, and if so whether its value is
 /// the word after it rather than joined on with `=`.
-fn names_a_session(word: &str) -> Option<bool> {
-    NAMES_A_SESSION.iter().find_map(|flag| {
-        if word == *flag {
+///
+/// The origin flag counts too, when that is how this vendor branches: a copy
+/// of a copy asks for one origin rather than carrying the first one's
+/// forward.
+fn names_a_session(word: &str, spec: &SessionSpec, fork: ForkSpec) -> Option<bool> {
+    let mut flags: Vec<&str> = spec.conflicts.to_vec();
+    flags.push(spec.resume);
+    if let ForkSpec::Origin(flag) = fork {
+        flags.push(flag);
+    }
+    flags.into_iter().find_map(|flag| {
+        if word == flag {
             return Some(true);
         }
         word.strip_prefix(flag)
             .is_some_and(|rest| rest.starts_with('='))
             .then_some(false)
     })
+}
+
+/// The vendor's own session vocabulary, read off the table by the program the
+/// recorded command names. Claude's — the vendor amx was written against — for
+/// a command amx has measured nothing about: unmeasured is not refused
+/// ([`cannot_branch`] already says so), and claude's is the only spelling amx
+/// has ever assumed for one.
+fn spelling(handoff: &Handoff) -> SessionSpec {
+    spawn::vendor_of(handoff)
+        .and_then(|vendor| vendor.session)
+        .unwrap_or_else(unmeasured)
+}
+
+/// Claude's own session vocabulary. See [`spelling`].
+fn unmeasured() -> SessionSpec {
+    vendor::claude::VENDOR
+        .session
+        .expect("claude declares a session vocabulary")
 }
 
 /// Why this vendor cannot be asked for a copy of a conversation, when it
@@ -289,9 +346,20 @@ fn names_a_session(word: &str) -> Option<bool> {
 /// own wrapper command does today.
 fn cannot_branch(vendor: Option<&Vendor>, id: &str) -> Option<String> {
     let vendor = vendor?;
-    (!vendor.can(Capability::Fork)).then(|| {
-        format!(
+    if !vendor.can(Capability::Fork) {
+        return Some(format!(
             "{id} runs {}, which cannot branch a conversation, so there is no \
+             copy to ask it for. carry this one on with `amx resume {id}`, or \
+             start a fresh agent with `amx new`",
+            vendor.name
+        ));
+    }
+    // A capability with no spelling to answer it: refused the same way as an
+    // absent capability, because there is just as little here to ask for a
+    // copy with.
+    vendor.session.is_none().then(|| {
+        format!(
+            "{id} runs {}, which names no session vocabulary, so there is no \
              copy to ask it for. carry this one on with `amx resume {id}`, or \
              start a fresh agent with `amx new`",
             vendor.name
@@ -511,6 +579,50 @@ mod tests {
             copying(&started, "def-456", None),
             ["claude", "--verbose", "--resume=def-456", "--fork-session"]
         );
+    }
+
+    #[test]
+    fn fork_answers_a_vendor_that_branches_by_naming_the_origin() {
+        // The other shape ForkSpec offers: the flag itself carries the
+        // session to copy, and `resume` is never written, because this
+        // vendor's copy is not asking to continue anything.
+        let spec = SessionSpec {
+            start: None,
+            resume: "--resume",
+            joined: true,
+            conflicts: &["--session-id"],
+            fork: Some(ForkSpec::Origin("--branch-from")),
+        };
+        let started = handoff(&["pi", "--model", "big", "go"], "go");
+        assert_eq!(
+            build_copy(&started, "abc-123", None, &spec),
+            ["pi", "--model", "big", "--branch-from=abc-123"]
+        );
+
+        // A copy of a copy asks for one origin, not two.
+        let started = handoff(&["pi", "--branch-from=old", "go"], "go");
+        assert_eq!(
+            build_copy(&started, "def-456", None, &spec),
+            ["pi", "--branch-from=def-456"]
+        );
+    }
+
+    #[test]
+    fn fork_refuses_a_vendor_that_names_no_session_vocabulary() {
+        // A capability with nothing behind it, which is a different way of
+        // being unable to answer to the one the vendor's own name is missing
+        // from `capabilities` entirely, and refused the same way.
+        let cannot = Vendor {
+            session: None,
+            capabilities: &[Capability::Fork],
+            ..SECOND
+        };
+        let said =
+            cannot_branch(Some(&cannot), "fix-login-a1b").expect("it names no session vocabulary");
+        assert!(said.contains("fix-login-a1b"), "{said}");
+        assert!(said.contains(cannot.name), "{said}");
+        assert!(said.contains("no session vocabulary"), "{said}");
+        assert!(said.contains("amx resume fix-login-a1b"), "{said}");
     }
 
     #[test]
