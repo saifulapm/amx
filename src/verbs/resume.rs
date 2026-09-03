@@ -26,24 +26,11 @@ use crate::config::Config;
 use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, Phase, State};
 use crate::tmux::Server;
-use crate::vendor::{Capability, Vendor};
+use crate::vendor::{self, Capability, SessionSpec, Vendor};
 use crate::{complain, derive, exit, paths, rules, store, warn, worktree};
 
 /// What amx records when it brings an agent back.
 const RESUMED: &str = "resume";
-
-/// The vendor's flag for a session to continue.
-const RESUME: &str = "--resume";
-
-/// The vendor's flag for a session to *start*, under an id the caller chose.
-const START_SESSION: &str = "--session-id";
-
-/// Every way of writing a flag that decides which session the vendor opens.
-///
-/// These are the words a resume replaces rather than carries. Everything else
-/// the agent was started with is the agent's, not the first turn's, and goes
-/// with it: a directory it was given access to is one it still needs.
-const NAMES_A_SESSION: [&str; 3] = [START_SESSION, RESUME, "-r"];
 
 /// What bringing an agent back came to, for the doors that reach an agent
 /// rather than start one.
@@ -279,9 +266,15 @@ fn bring_back(root: &Path, id: &str, env: &BTreeMap<String, String>) -> Result<(
 /// already carries the one the last resume wrote. Two of them would leave which
 /// session the vendor opens up to the vendor.
 ///
-/// `--resume=<id>` then arrives as a single token, because that is the one
-/// spelling with no ambiguity about where the value is.
+/// The flag and its value arrive joined or as two words, whichever the
+/// vendor's own spelling says.
 fn continuing(handoff: &Handoff, session: &str) -> Vec<String> {
+    build_continuation(handoff, session, &spelling(handoff))
+}
+
+/// [`continuing`], with the vendor's own spelling passed in rather than looked
+/// up, so a spelling the table has never seen can be proved out here too.
+fn build_continuation(handoff: &Handoff, session: &str, spec: &SessionSpec) -> Vec<String> {
     let mut words = handoff.command.clone().into_iter().peekable();
     let mut command: Vec<String> = Vec::new();
 
@@ -290,7 +283,7 @@ fn continuing(handoff: &Handoff, session: &str) -> Vec<String> {
         if words.peek().is_none() && word == handoff.task {
             break;
         }
-        let Some(value_is_a_word_of_its_own) = names_a_session(&word) else {
+        let Some(value_is_a_word_of_its_own) = names_a_session(&word, spec) else {
             command.push(word);
             continue;
         };
@@ -303,21 +296,47 @@ fn continuing(handoff: &Handoff, session: &str) -> Vec<String> {
         }
     }
 
-    command.push(format!("{RESUME}={session}"));
+    if spec.joined {
+        command.push(format!("{}={session}", spec.resume));
+    } else {
+        command.push(spec.resume.to_string());
+        command.push(session.to_string());
+    }
     command
 }
 
 /// Whether a word is a flag naming a session, and if so whether its value is
 /// the word after it rather than joined on with `=`.
-fn names_a_session(word: &str) -> Option<bool> {
-    NAMES_A_SESSION.iter().find_map(|flag| {
-        if word == *flag {
-            return Some(true);
-        }
-        word.strip_prefix(flag)
-            .is_some_and(|rest| rest.starts_with('='))
-            .then_some(false)
-    })
+fn names_a_session(word: &str, spec: &SessionSpec) -> Option<bool> {
+    spec.conflicts
+        .iter()
+        .chain(std::iter::once(&spec.resume))
+        .find_map(|flag| {
+            if word == *flag {
+                return Some(true);
+            }
+            word.strip_prefix(flag)
+                .is_some_and(|rest| rest.starts_with('='))
+                .then_some(false)
+        })
+}
+
+/// The vendor's own session vocabulary, read off the table by the program the
+/// recorded command names. Claude's — the vendor amx was written against — for
+/// a command amx has measured nothing about: unmeasured is not refused
+/// ([`cannot_continue`] already says so), and claude's is the only spelling
+/// amx has ever assumed for one.
+fn spelling(handoff: &Handoff) -> SessionSpec {
+    spawn::vendor_of(handoff)
+        .and_then(|vendor| vendor.session)
+        .unwrap_or_else(unmeasured)
+}
+
+/// Claude's own session vocabulary. See [`spelling`].
+fn unmeasured() -> SessionSpec {
+    vendor::claude::VENDOR
+        .session
+        .expect("claude declares a session vocabulary")
 }
 
 /// Where the agent runs, put back if it is not there any more.
@@ -423,10 +442,20 @@ fn to_start(dir: &Path, id: &str) -> Result<(), String> {
 /// own wrapper command does today.
 fn cannot_continue(vendor: Option<&Vendor>, id: &str) -> Option<String> {
     let vendor = vendor?;
-    (!vendor.can(Capability::Resume)).then(|| {
-        format!(
+    if !vendor.can(Capability::Resume) {
+        return Some(format!(
             "{id} runs {}, which cannot be told to carry a session on, so \
              there is nothing to pick up. start a fresh agent with `amx new`",
+            vendor.name
+        ));
+    }
+    // A capability with no spelling to answer it: refused the same way as an
+    // absent capability, because there is just as little here to carry a
+    // session on with.
+    vendor.session.is_none().then(|| {
+        format!(
+            "{id} runs {}, which names no session vocabulary, so there is \
+             nothing to pick up. start a fresh agent with `amx new`",
             vendor.name
         )
     })
@@ -485,6 +514,39 @@ mod tests {
             None,
             "and a command amx has no entry for is not amx's to refuse: \
              nothing measured is not a measurement"
+        );
+    }
+
+    #[test]
+    fn resume_refuses_a_vendor_that_names_no_session_vocabulary() {
+        // A capability with nothing behind it, which is a different way of
+        // being unable to answer to the one the vendor's own name is missing
+        // from `capabilities` entirely, and refused the same way.
+        let cannot = Vendor {
+            session: None,
+            ..SECOND
+        };
+        assert!(
+            cannot.can(Capability::Resume),
+            "the capability is claimed; only the spelling is missing"
+        );
+        let said = cannot_continue(Some(&cannot), "fix-login-a1b")
+            .expect("it names no session vocabulary");
+        assert!(said.contains("fix-login-a1b"), "{said}");
+        assert!(said.contains(cannot.name), "{said}");
+        assert!(said.contains("no session vocabulary"), "{said}");
+        assert!(said.contains("amx new"), "{said}");
+    }
+
+    #[test]
+    fn resume_reads_a_different_vendors_own_spelling_off_the_table() {
+        // The second vendor's resume flag is a word of its own, not joined
+        // with `=`, and its own conflict is spelled nothing like claude's.
+        let spec = SECOND.session.expect("the second vendor names a session");
+        let started = handoff(&["second", "--open", "old", "go"], "go");
+        assert_eq!(
+            build_continuation(&started, "abc-123", &spec),
+            ["second", "-c", "abc-123"]
         );
     }
 
