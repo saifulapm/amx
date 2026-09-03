@@ -301,11 +301,11 @@ fn start(
     ];
     let pane = spawn::place(&server, id, &cwd, &boot)?;
 
-    // A vendor that opens under the id amx offered it is recorded here,
-    // rather than left `None` for a Started hook that a vendor with no hooks
-    // at all could never send.
-    let session = (!args.exec && spawn::opens_under_id(&launch.agent, &args.vendor_args))
-        .then(|| id.to_string());
+    let session = session_written(
+        args.exec,
+        spawn::opens_under_id(&launch.agent, &args.vendor_args),
+        id,
+    );
 
     spawn::record(
         root,
@@ -327,6 +327,16 @@ fn start(
         },
     )?;
     Ok(())
+}
+
+/// What `Meta::session` is recorded as: the id amx minted, the moment a
+/// vendor that declares a start flag opens under it, rather than left `None`
+/// for a Started hook that a vendor with no hooks at all could never send.
+///
+/// `None` from a command spawn, which opens no session of its own, and from
+/// a vendor `opens_under_id` says was never offered one.
+fn session_written(exec: bool, opens_under_id: bool, id: &str) -> Option<String> {
+    (!exec && opens_under_id).then(|| id.to_string())
 }
 
 /// What the pane runs: a shell command when that is what was asked for, else
@@ -735,6 +745,27 @@ mod tests {
         assert!(told.contains("trust store amx can read"), "{told}");
         assert_eq!(told.lines().count(), 1, "{told}");
         assert!(told.starts_with("\u{1b}[33mamx new: "), "{told:?}");
+    }
+
+    #[test]
+    fn spawn_writes_the_minted_id_into_metasession_the_moment_a_vendor_opens_under_it() {
+        // Recorded at the moment the pane is started, rather than left None
+        // for a Started hook that a vendor with no hooks at all could never
+        // send.
+        assert_eq!(
+            session_written(false, true, "fix-login-a1b"),
+            Some("fix-login-a1b".to_string())
+        );
+        assert_eq!(
+            session_written(false, false, "fix-login-a1b"),
+            None,
+            "no start flag was offered, so nothing was minted to record"
+        );
+        assert_eq!(
+            session_written(true, true, "fix-login-a1b"),
+            None,
+            "a command spawn opens no session of its own"
+        );
     }
 
     #[test]

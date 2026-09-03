@@ -162,15 +162,9 @@ pub fn vendor_command(
     session: Option<&str>,
 ) -> Vec<String> {
     let mut command: Vec<String> = agent.split_whitespace().map(str::to_string).collect();
-    let carried: Vec<&str> = command[1..].iter().map(String::as_str).collect();
+    let carried: Vec<&str> = command.iter().skip(1).map(String::as_str).collect();
 
-    let mut args = Vec::new();
-    if let Some(id) = session
-        && let Some(flag) = start_flag(registry::entry(agent), &carried, vendor_args)
-    {
-        args.push(flag.to_string());
-        args.push(id.to_string());
-    }
+    let mut args = session_flag(registry::entry(agent), &carried, vendor_args, session);
     args.extend(vendor_args.iter().cloned());
 
     command.extend(registry::inject(
@@ -197,11 +191,42 @@ fn start_flag(
 ) -> Option<&'static str> {
     let session = vendor?.session?;
     let start = session.start?;
-    let present = |flag: &str| carried.contains(&flag) || vendor_args.iter().any(|arg| arg == flag);
+    let present = |flag: &str| {
+        let joined = format!("{flag}=");
+        carried
+            .iter()
+            .any(|arg| *arg == flag || arg.starts_with(&joined))
+            || vendor_args
+                .iter()
+                .any(|arg| arg == flag || arg.starts_with(&joined))
+    };
     if present(start) || session.conflicts.iter().any(|conflict| present(conflict)) {
         return None;
     }
     Some(start)
+}
+
+/// The session flag and the id it opens, as the first tokens of the vendor's
+/// own arguments — empty from a vendor with nothing to offer, or from a spawn
+/// that opens no session of its own.
+///
+/// Split out of [`vendor_command`] so that the flag and the id landing
+/// together, rather than [`start_flag`] merely answering yes, is provable on
+/// its own.
+fn session_flag(
+    vendor: Option<&Vendor>,
+    carried: &[&str],
+    vendor_args: &[String],
+    session: Option<&str>,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(id) = session
+        && let Some(flag) = start_flag(vendor, carried, vendor_args)
+    {
+        args.push(flag.to_string());
+        args.push(id.to_string());
+    }
+    args
 }
 
 /// Whether this spawn opens its session under the id amx mints for it, so
@@ -744,15 +769,50 @@ mod tests {
 
     #[test]
     fn spawn_the_start_flag_stands_down_from_a_flag_the_entry_lists_as_conflicting() {
+        use crate::vendor::SessionSpec;
         use crate::vendor::second::SECOND;
 
-        // second's own entry lists --open among what conflicts with its
-        // resume flag; carrying that conflict is carrying a flag that already
-        // says which session to open, the same as carrying --open itself.
-        assert!(SECOND.session.unwrap().conflicts.contains(&"--open"));
+        // second's own conflicts list is ["--open"], its own start flag, so
+        // testing with --open cannot tell this arm from the one above it.
+        // Built here instead: the same vendor, with a conflict of its own
+        // that is not the flag that mints a session.
+        let disagrees = Vendor {
+            session: Some(SessionSpec {
+                conflicts: &["--resume-elsewhere"],
+                ..SECOND.session.unwrap()
+            }),
+            ..SECOND
+        };
         assert_eq!(
-            start_flag(Some(&SECOND), &[], &["--open".to_string()]),
-            None
+            start_flag(Some(&disagrees), &[], &["--resume-elsewhere".to_string()]),
+            None,
+            "a flag the entry lists as conflicting already says which \
+             session this vendor opens"
+        );
+        assert_eq!(
+            start_flag(Some(&disagrees), &["--open"], &[]),
+            None,
+            "and its own start flag still stands down, same as before"
+        );
+    }
+
+    #[test]
+    fn spawn_the_start_flag_stands_down_from_a_joined_spelling_of_itself() {
+        use crate::vendor::second::SECOND;
+
+        // Every other reader of an argv in this tree counts `flag=value` as
+        // the flag: vendor::already and resume::names_a_session. A session
+        // flag written that way already says which session to open, the
+        // same as the flag on its own.
+        assert_eq!(
+            start_flag(Some(&SECOND), &["--open=mine"], &[]),
+            None,
+            "flag=value already carries the flag"
+        );
+        assert_eq!(
+            start_flag(Some(&SECOND), &[], &["--open=mine".to_string()]),
+            None,
+            "wherever it was written"
         );
     }
 
@@ -761,6 +821,44 @@ mod tests {
         assert_eq!(start_flag(registry::entry("claude"), &[], &[]), None);
         assert_eq!(start_flag(registry::entry("mock-claude"), &[], &[]), None);
         assert_eq!(start_flag(None, &[], &[]), None);
+    }
+
+    #[test]
+    fn spawn_the_flag_and_the_id_it_opens_land_in_the_vendors_own_args() {
+        use crate::vendor::second::SECOND;
+
+        // start_flag above proves the vendor is offered its own flag; this
+        // proves the id amx minted rides beside it in what vendor_command
+        // hands the vendor, not merely that start_flag said yes.
+        assert_eq!(
+            session_flag(Some(&SECOND), &[], &[], Some("fix-login-a1b")),
+            ["--open", "fix-login-a1b"]
+        );
+        assert_eq!(
+            session_flag(Some(&SECOND), &[], &[], None),
+            Vec::<String>::new(),
+            "nothing to open a session under, so nothing is offered"
+        );
+        assert_eq!(
+            session_flag(registry::entry("claude"), &[], &[], Some("fix-login-a1b")),
+            Vec::<String>::new(),
+            "claude declares no start flag to offer the id with"
+        );
+    }
+
+    #[test]
+    fn spawn_an_agent_that_splits_to_nothing_still_spawns_something_that_runs() {
+        // `agent = ""` in the config, or `amx new --agent "" ...` typed by
+        // hand: nothing requires it non-empty, and indexing the split argv
+        // at 1 used to panic on a vector with nothing at 0 either.
+        let command = vendor_command(
+            "",
+            &Dials::default(),
+            &[],
+            "fix the login bug",
+            Some("fix-login-a1b"),
+        );
+        assert_eq!(command, ["fix the login bug"]);
     }
 
     #[test]
