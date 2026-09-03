@@ -278,6 +278,18 @@ mod tests {
         }
     }
 
+    /// pi's own rule for a session id it will accept, hand-rolled because
+    /// `regex` is not a dependency here: `/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/`,
+    /// measured from `dist/core/session-manager.js:15` at pi 0.84.4.
+    fn matches_pis_session_id_pattern(s: &str) -> bool {
+        s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+            && s.chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric())
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    }
+
     #[test]
     fn every_generated_id_satisfies_the_rule_a_typed_name_must_meet() {
         // generate has always trimmed a stem's edges and appended a base36
@@ -296,6 +308,26 @@ mod tests {
         ] {
             let id = generate(task, root.path()).unwrap();
             assert!(validate_name(&id, root.path()).is_ok(), "{id:?}");
+        }
+    }
+
+    #[test]
+    fn every_generated_id_is_one_pi_will_take_as_a_session_id() {
+        // The proposition the plan actually asks for: an id amx hands pi is
+        // one pi's own charset accepts, not merely one validate_name accepts
+        // under whatever charset it happens to enforce today.
+        let root = TempDir::new().unwrap();
+        for task in [
+            "Fix the login bug",
+            "  !!! ---   ",
+            "supercalifragilisticexpialidocious",
+            "café ☕ time",
+            "",
+            "a",
+            "twenty characters ok please",
+        ] {
+            let id = generate(task, root.path()).unwrap();
+            assert!(matches_pis_session_id_pattern(&id), "{id:?}");
         }
     }
 }
