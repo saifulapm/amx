@@ -11,7 +11,7 @@
 //! later field arrives on the descriptor, the way to keep it honest is to
 //! answer it differently here.
 
-use super::{Capability, DEFAULT, DialSpec, Vendor};
+use super::{Capability, DEFAULT, DialSpec, SessionSpec, Vendor};
 
 /// The fixture. Read the module docs before changing a value: each of these
 /// disagrees with claude on purpose.
@@ -31,6 +31,17 @@ pub const SECOND: Vendor = Vendor {
         cycle: &[DEFAULT, "quick", "thorough"],
         open: true,
         flag: "--care",
+    }),
+    // Unlike claude, it declares a start flag: proof that a vendor is free to
+    // ask amx to open a session under an id amx chose. Its resume flag is a
+    // word of its own rather than joined with `=`, and it names no fork
+    // shape at all, because it does not claim `Capability::Fork`.
+    session: Some(SessionSpec {
+        start: Some("--open"),
+        resume: "-c",
+        joined: false,
+        conflicts: &["--open"],
+        fork: None,
     }),
     // A session variable spelled nothing like the other one, so that a test
     // reading it is reading the descriptor.

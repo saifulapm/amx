@@ -5,7 +5,9 @@
 //! choose, and a renamed mode or a dropped alias turns a dial into a spawn
 //! that fails.
 
-use super::{Capability, DEFAULT, DialSpec, Hooks, Moment, TOOL, Vendor, Wiring};
+use super::{
+    Capability, DEFAULT, DialSpec, ForkSpec, Hooks, Moment, SessionSpec, TOOL, Vendor, Wiring,
+};
 
 /// claude's entry in the table.
 pub const VENDOR: Vendor = Vendor {
@@ -41,6 +43,24 @@ pub const VENDOR: Vendor = Vendor {
         cycle: &[DEFAULT, "low", "medium", "high", "xhigh", "max"],
         open: false,
         flag: "--effort",
+    }),
+    // amx never asks claude to open a session under an id amx chose: claude's
+    // own SessionStart hook already names the one it opened
+    // (src/hook.rs:311), and the id it wants there is a UUID, not the
+    // <stem>-<suffix> amx mints. `--session-id` stays in the entry, but as a
+    // flag `resume` and `fork` strip rather than one either ever writes.
+    //
+    // `--resume` carries an agent on, its value joined on with `=` because
+    // that is the one spelling with no ambiguity about where the value is.
+    // `--fork-session` is a bare marker written beside it: measured against
+    // 2.1.237, it takes no value of its own and only says to branch rather
+    // than continue.
+    session: Some(SessionSpec {
+        start: None,
+        resume: "--resume",
+        joined: true,
+        conflicts: &["--session-id", "-r"],
+        fork: Some(ForkSpec::Marker("--fork-session")),
     }),
     // Measured at 2.1.240 on 2026-08-24: every process the vendor starts, a
     // tool call or a hook alike, is handed this, holding the same session id
@@ -248,6 +268,23 @@ mod tests {
             ["default", "low", "medium", "high", "xhigh", "max"]
         );
         assert!(!effort.open, "--effort is a closed set");
+    }
+
+    #[test]
+    fn claude_declares_no_start_flag_and_a_resume_flag_joined_with_equals() {
+        // amx never asks claude to open a session under an id amx chose: its
+        // own SessionStart hook already names the one it opened, and the id
+        // it wants there is a UUID, not the id amx mints. `--session-id`
+        // stays in the entry as a flag `resume` and `fork` strip rather than
+        // write.
+        let session = VENDOR
+            .session
+            .expect("claude declares a session vocabulary");
+        assert_eq!(session.start, None);
+        assert_eq!(session.resume, "--resume");
+        assert!(session.joined, "--resume=<id> is one word, not two");
+        assert_eq!(session.conflicts, ["--session-id", "-r"]);
+        assert_eq!(session.fork, Some(ForkSpec::Marker("--fork-session")));
     }
 
     #[test]

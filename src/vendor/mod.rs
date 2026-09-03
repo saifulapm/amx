@@ -122,6 +122,45 @@ impl Hooks {
 /// Where the tool a vendor sentence is about goes, in the sentence.
 pub const TOOL: &str = "{tool}";
 
+/// How a vendor branches a session it opened into a copy, for a vendor that
+/// claims [`Capability::Fork`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForkSpec {
+    /// A bare flag with no value of its own, written beside the resume flag:
+    /// the copy still opens through [`SessionSpec::resume`], and this is what
+    /// tells the vendor to branch rather than carry on. claude's
+    /// `--fork-session`.
+    Marker(&'static str),
+    /// A flag naming the session to branch from, carrying the origin's id
+    /// rather than riding beside the resume flag.
+    Origin(&'static str),
+}
+
+/// How a vendor spells the flags that decide which session a process opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionSpec {
+    /// The flag that starts a session under an id amx chose, or `None` from a
+    /// vendor amx never asks to do that. claude declares none: its own
+    /// Started hook already names the session it opened, and the id it wants
+    /// there is a UUID, not the id amx mints for a session it starts.
+    pub start: Option<&'static str>,
+    /// The flag that carries an agent on into a session it already has.
+    pub resume: &'static str,
+    /// Whether the value rides joined onto [`resume`](Self::resume) with `=`,
+    /// the way claude spells `--resume=<id>`, rather than as a word of its
+    /// own.
+    pub joined: bool,
+    /// Every other flag that also names a session, so a resume or a fork
+    /// replaces it rather than leaving two words that both claim to say
+    /// which session the vendor opens. Never
+    /// [`resume`](Self::resume) itself: that flag is always replaced with the
+    /// session being carried on to, which needs no listing here.
+    pub conflicts: &'static [&'static str],
+    /// How this vendor branches a session into a copy, for a vendor that
+    /// claims [`Capability::Fork`]. `None` from a vendor that cannot.
+    pub fork: Option<ForkSpec>,
+}
+
 /// One vendor, and everything amx has been taught about it.
 ///
 /// A `None` dial means this vendor has no such dial at all, which is a
@@ -134,6 +173,11 @@ pub struct Vendor {
     pub model: Option<DialSpec>,
     pub permission: Option<DialSpec>,
     pub effort: Option<DialSpec>,
+    /// The flags that decide which session a process this vendor starts
+    /// opens. `None` from a vendor amx has measured no session vocabulary
+    /// for, and then a verb that would carry a session on or branch one has
+    /// nothing to spell either with.
+    pub session: Option<SessionSpec>,
     /// Where this vendor tells a process it starts which conversation that
     /// process belongs to. `None` from a vendor that says nothing, and then
     /// there is no way for the events of an agent amx did not start to find
@@ -513,6 +557,97 @@ mod tests {
                 assert!(
                     vendor.session_env.is_some(),
                     "{} claims it can be adopted and names no session",
+                    vendor.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_flag_a_vendor_declares_for_its_session_is_a_flag() {
+        // The same law the dials answer to, over the words a session is
+        // spelled with: a word that does not start with `-` would never be
+        // read back as a flag once it sat in an argv.
+        for vendor in known() {
+            let Some(session) = vendor.session else {
+                continue;
+            };
+            assert!(
+                session.resume.starts_with('-'),
+                "{}'s resume flag is not one",
+                vendor.name
+            );
+            if let Some(start) = session.start {
+                assert!(
+                    start.starts_with('-'),
+                    "{}'s start flag is not one",
+                    vendor.name
+                );
+            }
+            for conflict in session.conflicts {
+                assert!(
+                    conflict.starts_with('-'),
+                    "{}'s {conflict} is not a flag",
+                    vendor.name
+                );
+            }
+            if let Some(fork) = session.fork {
+                let (ForkSpec::Marker(flag) | ForkSpec::Origin(flag)) = fork;
+                assert!(
+                    flag.starts_with('-'),
+                    "{}'s fork flag is not one",
+                    vendor.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fork_spec_expresses_a_marker_beside_resume_and_a_flag_naming_the_origin() {
+        // Both shapes measured so far, so the type does not change again once
+        // a verb reads it: claude branches with a bare marker beside its
+        // resume flag, and the other vendor already measured branches with a
+        // flag naming the session to copy from.
+        assert_eq!(
+            ForkSpec::Marker("--fork-session"),
+            ForkSpec::Marker("--fork-session")
+        );
+        assert_ne!(
+            ForkSpec::Marker("--fork-session"),
+            ForkSpec::Origin("--fork")
+        );
+    }
+
+    #[test]
+    fn a_vendor_never_lists_its_own_resume_flag_among_what_conflicts_with_it() {
+        // The resume flag is always the one being replaced, with the session
+        // being carried on to; listing it again here would say nothing a
+        // reader does not already know from `resume` itself.
+        for vendor in known() {
+            let Some(session) = vendor.session else {
+                continue;
+            };
+            assert!(
+                !session.conflicts.contains(&session.resume),
+                "{} names its own resume flag as one that conflicts with it",
+                vendor.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_vendor_that_can_fork_declares_how_it_branches() {
+        // Branching is asking the vendor for a second flag beside the one
+        // that opens the session to copy; a vendor claiming the capability
+        // without a shape for it promises a verb an argv it cannot build.
+        for vendor in known() {
+            if vendor.can(Capability::Fork) {
+                let session = vendor.session.unwrap_or_else(|| {
+                    panic!("{} claims it can fork and names no session", vendor.name)
+                });
+                assert!(
+                    session.fork.is_some(),
+                    "{} claims it can fork and names no shape for it",
                     vendor.name
                 );
             }
