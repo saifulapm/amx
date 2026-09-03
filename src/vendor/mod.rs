@@ -658,6 +658,29 @@ mod tests {
     }
 
     #[test]
+    fn a_vendor_that_forks_through_no_hooks_declares_a_start_flag() {
+        // A vendor that reports through hooks has its Started hook to learn
+        // a copy's id from, the way claude's does. One that reports through
+        // none has no other way to find out what a fork opened, so the copy
+        // is a session amx can never name again unless the entry itself can
+        // ask for the id, which is what the start flag is for. pi is the
+        // first entry of this shape.
+        for vendor in known() {
+            if vendor.can(Capability::Fork) && vendor.hooks.is_none() {
+                let session = vendor.session.unwrap_or_else(|| {
+                    panic!("{} claims it can fork and names no session", vendor.name)
+                });
+                assert!(
+                    session.start.is_some(),
+                    "{} forks through no hooks and declares no start flag, \
+                     so a copy it makes is one it can never name again",
+                    vendor.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_vendor_keeps_the_variables_that_name_its_own_session_to_itself() {
         // The list is the vendor's own words and nothing here knows one of
         // them. What a new pane must not inherit is whatever this vendor calls
