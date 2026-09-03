@@ -141,28 +141,80 @@ impl Default for Dials {
     }
 }
 
-/// The vendor's argv: the configured command, the dials that are turned,
+/// The vendor's argv: the configured command, the dials that are turned, the
+/// session flag when this spawn opens one under an id of amx's own choosing,
 /// whatever the caller passed through, and the task last — where a prompt
 /// goes.
 ///
+/// `session` is the agent's own id, offered to a vendor that declares a start
+/// flag — [`opens_under_id`] is the same question asked of the same two
+/// arguments, for a caller that has to know without building the whole argv.
+///
 /// A dial yields to the same flag written by hand, wherever it was written, so
-/// the vendor is never handed one flag twice.
+/// the vendor is never handed one flag twice. The session flag yields the
+/// same way: to itself, and to whatever the entry lists as conflicting with
+/// it.
 pub fn vendor_command(
     agent: &str,
     dials: &Dials,
     vendor_args: &[String],
     task: &str,
+    session: Option<&str>,
 ) -> Vec<String> {
     let mut command: Vec<String> = agent.split_whitespace().map(str::to_string).collect();
+    let carried: Vec<&str> = command[1..].iter().map(String::as_str).collect();
+
+    let mut args = Vec::new();
+    if let Some(id) = session
+        && let Some(flag) = start_flag(registry::entry(agent), &carried, vendor_args)
+    {
+        args.push(flag.to_string());
+        args.push(id.to_string());
+    }
+    args.extend(vendor_args.iter().cloned());
+
     command.extend(registry::inject(
         agent,
         &dials.model,
         &dials.permission,
         &dials.effort,
-        vendor_args,
+        &args,
     ));
     command.push(task.to_string());
     command
+}
+
+/// The flag that opens this spawn's session under an id amx chose, or `None`
+/// from a vendor with no start flag to offer one — the same `None` a vendor
+/// declaring one answers when the command line already carries it, or a flag
+/// the entry lists as conflicting with it: either way the command line has
+/// already said which session this vendor opens, and amx is not the one
+/// minting it.
+fn start_flag(
+    vendor: Option<&Vendor>,
+    carried: &[&str],
+    vendor_args: &[String],
+) -> Option<&'static str> {
+    let session = vendor?.session?;
+    let start = session.start?;
+    let present = |flag: &str| carried.contains(&flag) || vendor_args.iter().any(|arg| arg == flag);
+    if present(start) || session.conflicts.iter().any(|conflict| present(conflict)) {
+        return None;
+    }
+    Some(start)
+}
+
+/// Whether this spawn opens its session under the id amx mints for it, so
+/// that whoever writes the record can put it in [`Meta::session`] at the
+/// moment it spawns rather than leave it for a hook that may never come.
+///
+/// The same question [`vendor_command`] answers while building the argv, for
+/// a caller that needs it without building one.
+///
+/// [`Meta::session`]: crate::store::Meta::session
+pub fn opens_under_id(agent: &str, vendor_args: &[String]) -> bool {
+    let carried: Vec<&str> = agent.split_whitespace().skip(1).collect();
+    start_flag(registry::entry(agent), &carried, vendor_args).is_some()
 }
 
 /// A shell command's argv: the command itself, for a shell to read.
@@ -548,6 +600,7 @@ mod tests {
             &Dials::default(),
             &["--session-id".to_string(), "abc-123".to_string()],
             "fix the login bug",
+            None,
         );
         assert_eq!(
             command,
@@ -573,6 +626,7 @@ mod tests {
             },
             &["--session-id".to_string(), "abc-123".to_string()],
             "fix the login bug",
+            None,
         );
         assert_eq!(
             command,
@@ -606,6 +660,7 @@ mod tests {
             &dials,
             &["--model=sonnet".to_string()],
             "fix the login bug",
+            None,
         );
         assert_eq!(
             command,
@@ -634,8 +689,106 @@ mod tests {
             },
             &[],
             "fix the login bug",
+            None,
         );
         assert_eq!(command, ["mock-claude", "fix the login bug"]);
+    }
+
+    #[test]
+    fn spawn_claude_declares_no_start_flag_and_its_argv_is_unchanged() {
+        // claude's own SessionStart hook already names the session it opened,
+        // so its entry declares no start flag at all -- offering a session
+        // here changes nothing about what it is launched with.
+        let without = vendor_command("claude", &Dials::default(), &[], "fix the login bug", None);
+        let with = vendor_command(
+            "claude",
+            &Dials::default(),
+            &[],
+            "fix the login bug",
+            Some("fix-login-a1b"),
+        );
+        assert_eq!(with, without);
+        assert_eq!(with, ["claude", "fix the login bug"]);
+    }
+
+    #[test]
+    fn spawn_a_vendor_that_declares_a_start_flag_is_offered_it_with_the_agents_own_id() {
+        // second is the fixture that disagrees with claude here: it declares
+        // a start flag amx is free to open a session under. It answers with
+        // its own flag alone -- the agent's own id is vendor_command's to add
+        // once this says yes, not this function's to know.
+        use crate::vendor::second::SECOND;
+
+        assert_eq!(
+            start_flag(Some(&SECOND), &[], &[]),
+            Some("--open"),
+            "the vendor's own start flag, offered with nothing on the argv yet"
+        );
+    }
+
+    #[test]
+    fn spawn_the_start_flag_stands_down_from_one_the_argv_already_carries() {
+        use crate::vendor::second::SECOND;
+
+        assert_eq!(
+            start_flag(Some(&SECOND), &["--open"], &[]),
+            None,
+            "the command line already says which session this vendor opens"
+        );
+        assert_eq!(
+            start_flag(Some(&SECOND), &[], &["--open".to_string()]),
+            None,
+            "wherever it was written, in the configured command or after it"
+        );
+    }
+
+    #[test]
+    fn spawn_the_start_flag_stands_down_from_a_flag_the_entry_lists_as_conflicting() {
+        use crate::vendor::second::SECOND;
+
+        // second's own entry lists --open among what conflicts with its
+        // resume flag; carrying that conflict is carrying a flag that already
+        // says which session to open, the same as carrying --open itself.
+        assert!(SECOND.session.unwrap().conflicts.contains(&"--open"));
+        assert_eq!(
+            start_flag(Some(&SECOND), &[], &["--open".to_string()]),
+            None
+        );
+    }
+
+    #[test]
+    fn spawn_the_start_flag_is_none_from_a_vendor_with_no_session_vocabulary_or_no_entry() {
+        assert_eq!(start_flag(registry::entry("claude"), &[], &[]), None);
+        assert_eq!(start_flag(registry::entry("mock-claude"), &[], &[]), None);
+        assert_eq!(start_flag(None, &[], &[]), None);
+    }
+
+    #[test]
+    fn spawn_an_unregistered_agent_still_spawns_something_that_runs() {
+        // A command line that already carries a flag of its own, for a
+        // program amx has no entry for at all: nothing about the session
+        // parameter changes what runs.
+        let command = vendor_command(
+            "pi -c",
+            &Dials::default(),
+            &[],
+            "fix the login bug",
+            Some("fix-login-a1b"),
+        );
+        assert_eq!(command, ["pi", "-c", "fix the login bug"]);
+    }
+
+    #[test]
+    fn spawn_opens_under_id_answers_the_same_question_vendor_command_asks_itself() {
+        // opens_under_id does the same lookup and the same call to
+        // start_flag as vendor_command; start_flag above is where a vendor
+        // that answers yes is proven, this is the wiring for one that never
+        // gets that far: no entry, or an entry with nothing to offer.
+        assert!(!opens_under_id("claude", &[]), "no start flag to offer");
+        assert!(
+            !opens_under_id("pi -c", &[]),
+            "no entry, so nothing to offer either"
+        );
     }
 
     #[test]

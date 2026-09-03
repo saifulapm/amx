@@ -289,7 +289,7 @@ fn start(
         agent_dir,
         &Handoff {
             task: args.task.clone(),
-            command: launched(args, launch),
+            command: launched(args, launch, id),
         },
     )?;
 
@@ -300,6 +300,12 @@ fn start(
         id.to_string(),
     ];
     let pane = spawn::place(&server, id, &cwd, &boot)?;
+
+    // A vendor that opens under the id amx offered it is recorded here,
+    // rather than left `None` for a Started hook that a vendor with no hooks
+    // at all could never send.
+    let session = (!args.exec && spawn::opens_under_id(&launch.agent, &args.vendor_args))
+        .then(|| id.to_string());
 
     spawn::record(
         root,
@@ -315,7 +321,7 @@ fn start(
             // Nothing is out of sight any more: an agent is a session nobody
             // is attached to until somebody looks in on it.
             bg: false,
-            session: None,
+            session,
             transcript: None,
             created: now(),
         },
@@ -329,10 +335,19 @@ fn start(
 /// A command spawn has no vendor and no dials — the command line refuses them
 /// beside `--exec` — so nothing about the launch is resolved for it. What was
 /// typed is what runs.
-fn launched(args: &NewArgs, launch: &Launch) -> Vec<String> {
+///
+/// `id` rides along as the session a vendor that declares a start flag is
+/// asked to open under; a vendor with no such flag is unaffected by it.
+fn launched(args: &NewArgs, launch: &Launch, id: &str) -> Vec<String> {
     match args.exec {
         true => spawn::exec_command(&args.task),
-        false => spawn::vendor_command(&launch.agent, &launch.dials, &args.vendor_args, &args.task),
+        false => spawn::vendor_command(
+            &launch.agent,
+            &launch.dials,
+            &args.vendor_args,
+            &args.task,
+            Some(id),
+        ),
     }
 }
 
@@ -573,12 +588,12 @@ mod tests {
         let launch = Launch::resolve(&Config::default(), &a_command("cargo test")).unwrap();
 
         assert_eq!(
-            launched(&a_command("cargo test"), &launch),
+            launched(&a_command("cargo test"), &launch, "port-it-b2c"),
             ["sh", "-c", "cargo test"],
             "no vendor, no dials, and no task appended after it"
         );
         assert_eq!(
-            launched(&spawn(Some("claude"), [None; 3]), &launch),
+            launched(&spawn(Some("claude"), [None; 3]), &launch, "port-it-b2c"),
             ["claude", "port the importer"],
             "and an ordinary spawn is launched the way it always was"
         );

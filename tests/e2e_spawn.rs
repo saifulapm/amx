@@ -116,6 +116,22 @@ fn new_starts_an_agent_and_prints_its_id() {
 }
 
 #[test]
+fn new_leaves_the_session_for_a_hook_to_report_from_a_vendor_with_no_start_flag() {
+    // claude declares no start flag of its own -- its SessionStart hook is
+    // the one thing that ever learns which session it opened, so the record
+    // waits on it rather than guessing a session amx never told the vendor to
+    // use.
+    let amx = Harness::new();
+    let id = id_of(&new_as_claude(
+        &amx,
+        "a-dispatched-worker",
+        &["--no-worktree", "--agent", "claude", "fix the login bug"],
+    ));
+
+    assert!(amx.meta(&id)["session"].is_null());
+}
+
+#[test]
 fn the_task_never_rides_the_tmux_command_line() {
     // A task is arbitrary text and a tmux command line is not a place for it.
     // It travels in a file only its owner can read, and the pane is started
