@@ -2733,6 +2733,9 @@ mod tests {
         );
 
         profile.cycle_vendor();
+        assert_eq!(profile.agent, "pi", "then the other registered vendor");
+
+        profile.cycle_vendor();
         assert_eq!(
             profile.agent, "mock-claude",
             "and round again to the file's own answer"
@@ -2752,6 +2755,18 @@ mod tests {
         assert_eq!(profile.model, "fable");
 
         profile.cycle_vendor();
+        assert_eq!(profile.agent, "pi");
+        assert_eq!(
+            profile.model, "fable",
+            "pi's model dial is open, so a value claude's cycle chose still \
+             rides along"
+        );
+
+        profile.cycle_vendor();
+        assert_eq!(
+            profile.agent, "mock-claude",
+            "and round again to the command amx has no entry for"
+        );
         assert_eq!(
             profile.model,
             registry::DEFAULT,
@@ -2762,18 +2777,24 @@ mod tests {
 
     #[test]
     fn header_dials_the_vendor_key_leaves_a_command_it_could_not_put_back() {
-        // The one registered vendor, so there is nowhere to cycle to.
+        // Two registered vendors, so the key walks from claude to pi and a
+        // second press brings it back.
         let mut profile = Profile::default();
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "pi");
         profile.cycle_vendor();
         assert_eq!(profile.agent, "claude");
 
         // And the same vendor with arguments of its own: no cycle knows what
-        // they were, so the key that would drop them does nothing.
+        // they were, so only a full trip through the other vendor puts them
+        // back.
         let config = Config {
             agent: "claude --add-dir ..".to_string(),
             ..Config::default()
         };
         let mut profile = Profile::open(&config, None, None);
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "pi");
         profile.cycle_vendor();
         assert_eq!(profile.agent, "claude --add-dir ..");
     }

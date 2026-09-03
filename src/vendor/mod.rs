@@ -17,6 +17,7 @@
 //! and all.
 
 pub mod claude;
+pub mod pi;
 
 /// A vendor that exists to keep this module honest. Test builds only: it is
 /// nobody's agent, and it is not in the table.
@@ -245,10 +246,12 @@ pub const DEFAULT: &str = "default";
 
 /// Every vendor amx has an entry for, in the order a cycle key offers them.
 ///
-/// One real entry today. The table is the whole of what makes a second vendor
-/// possible, and a test-only [`second`] proves that nothing in here is shaped
-/// around the first.
-static TABLE: [Vendor; 1] = [claude::VENDOR];
+/// claude first, because `rules::of` and `rules::bundled` read
+/// `entries().first()` as the screens an unregistered agent is watched by,
+/// and reordering this would silently change what those answer. The table is
+/// the whole of what makes a second vendor possible, and a test-only
+/// [`second`] proves that nothing in here is shaped around the first.
+static TABLE: [Vendor; 2] = [claude::VENDOR, pi::VENDOR];
 
 impl Vendor {
     /// Whether amx may ask this vendor for `what`.
@@ -359,9 +362,9 @@ mod tests {
     }
 
     #[test]
-    fn the_table_lists_claude_and_only_claude() {
+    fn the_table_lists_claude_first_and_pi_second() {
         let names: Vec<_> = table().iter().map(|v| v.name).collect();
-        assert_eq!(names, ["claude"]);
+        assert_eq!(names, ["claude", "pi"]);
         assert!(
             !names.contains(&SECOND.name),
             "the second vendor is a fixture, not an agent anybody can spawn"
