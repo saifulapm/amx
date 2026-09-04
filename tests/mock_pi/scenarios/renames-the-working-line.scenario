@@ -1,0 +1,10 @@
+# An ordinary turn under a working message an extension wrote.
+# `ctx.ui.setWorkingMessage` replaces the vendor's own word with whatever the
+# extension likes and leaves the rest of the row alone, so nothing about this
+# screen says `Working...` and a turn is running on it all the same. The agent
+# is still there afterwards, the way pi is: whoever is driving this scenario
+# decides when it ends.
+screen boot
+sleep 50
+screen renamed
+sleep 600000

@@ -1,0 +1,11 @@
+# A turn that stops to make room for itself. `/compact` takes the working
+# indicator down and puts a compaction one where it was, so the word
+# `Working...` is off the pane for the whole of it while a call nobody can
+# interrupt usefully runs. The agent is still there afterwards, the way pi is:
+# whoever is driving this scenario decides when it ends.
+screen boot
+sleep 50
+screen working
+sleep 50
+screen compacting
+sleep 600000

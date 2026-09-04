@@ -978,6 +978,165 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
 ";
 
+    /// pi compacting the context at 100 columns, raised with `/compact`.
+    /// `Working...` is off the pane while this is up: the vendor takes the
+    /// working indicator down and puts this one where it was, on the same row
+    /// with the same frame in front of it.
+    ///
+    /// Measured 2026-09-05 against a provider that takes the summarisation
+    /// request and never answers it, which is what holds the screen still long
+    /// enough to read. The footer's first row is `~` because the run was made
+    /// from a home of its own.
+    const A_PI_COMPACTING: &str = r"
+ pi v0.84.4
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+[Extensions]
+  rig.js
+
+
+ what did you do
+
+
+ The rig answered.
+
+
+ and then
+
+
+ The rig answered.
+
+ ⠼ Compacting context... (escape to cancel)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~
+0.0%/264k (auto)                                                                         (bench) rig
+";
+
+    /// The same screen at 20 columns, where the message wraps across three
+    /// rows and the frame stays on the first of them. This is the widest span
+    /// measured between a frame and the box below it, and it is what the
+    /// spinner rule's `within` is counted off.
+    const A_PI_COMPACTING_20: &str = r" Pi can explain its
+ own features and
+ look up its docs.
+ Ask it how to use
+ or extend Pi.
+
+[Extensions]
+  rig.js
+
+
+ what did you do
+
+
+ The rig answered.
+
+
+ and then
+
+
+ The rig answered.
+
+ ⠸ Compacting
+ context... (escape
+ to cancel)
+
+────────────────────
+
+────────────────────
+~
+0.0%/264k (auto)  ri
+";
+
+    /// A turn that lost its provider and is waiting to try again, at 100
+    /// columns. Measured 2026-09-05 against a provider answering 503 to every
+    /// call, which is the error pi retries.
+    const A_PI_RETRYING: &str = r#"
+ pi v0.84.4
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+[Extensions]
+  rig.js
+
+
+ what did you do
+
+
+ Error: 503: {"message":"upstream overloaded","type":"overloaded_error"}
+
+ ⠙ Retrying (1/3) in 2s... (escape to cancel)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~
+0.0%/264k (auto)                                                                         (bench) rig
+"#;
+
+    /// A turn running under a working message an extension wrote, at 100
+    /// columns. `ctx.ui.setWorkingMessage` takes `Working...` off the row and
+    /// leaves everything else about it alone; what the extension puts there is
+    /// its own, and this one says `Reviewing the diff`.
+    const A_PI_RENAMED: &str = r"
+ pi v0.84.4
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+[Extensions]
+  rig.js
+
+
+ hold the line
+
+
+ ⠙ Reviewing the diff
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~
+0.0%/264k (auto)                                                                         (bench) rig
+";
+
+    /// A shell command somebody ran in the pane with `!cmd`, at 100 columns.
+    /// pi draws a box of its own for it in the transcript with the composer
+    /// still under that, and spins the same frame on the row inside it.
+    /// Measured 2026-09-05 with `!sleep 20`.
+    const A_PI_RUNNING_A_COMMAND: &str = r"
+ pi v0.84.4
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+[Extensions]
+  rig.js
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ $ sleep 20
+
+ ⠏ Running... (escape/ctrl+c to cancel)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~
+0.0%/264k (auto)                                                                         (bench) rig
+";
+
     /// pi blocked on a dialog at 100 columns. The dialog is drawn inside the
     /// composer box, the working directory and the stats line are under it as
     /// on any other screen, and the spinner is still up above it.
@@ -2020,6 +2179,75 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
             claim(pi(), A_PI_DIALOG, Phase::Working).rule_name(),
             Some("dialog")
         );
+    }
+
+    #[test]
+    fn rules_a_turn_pi_has_stopped_calling_working_is_still_a_turn() {
+        // pi has four status lines and only one of them says `Working...`.
+        // Compaction and a retry each take the working indicator down and put
+        // their own where it was, and an extension rewrites the message on the
+        // one that is up — so the word the spinner rule used to stand on is
+        // off the pane on three screens where a turn is running. The frame pi
+        // spins in front of the message is on all four.
+        for (what, screen) in [
+            ("a turn under the vendor's own word", A_PI_WORKING),
+            ("a compacting turn", A_PI_COMPACTING),
+            (
+                "the same at 20 columns, the message wrapped across three rows",
+                A_PI_COMPACTING_20,
+            ),
+            ("a retrying turn", A_PI_RETRYING),
+            (
+                "a turn under an extension's own working message",
+                A_PI_RENAMED,
+            ),
+        ] {
+            let claimed = claim(pi(), screen, Phase::Idle);
+            assert_eq!(
+                claimed.phase(),
+                Some(Phase::Working),
+                "{what} must rule working, ruled {claimed:?}"
+            );
+            assert_eq!(claimed.rule_name(), Some("spinner"), "{what}");
+        }
+
+        for (what, screen) in [
+            ("a compacting turn", A_PI_COMPACTING),
+            ("a retrying turn", A_PI_RETRYING),
+            ("a turn under an extension's own message", A_PI_RENAMED),
+        ] {
+            assert!(
+                !screen.to_lowercase().contains("working..."),
+                "{what} carries no working line for a rule to find"
+            );
+        }
+
+        // What anchoring on the frame costs, measured rather than argued
+        // about: `!cmd` spins the same frame in a box of its own three rows
+        // above pi's, and this rule takes it. A command somebody ran in the
+        // pane is not a turn the agent is taking, and `working` is still the
+        // better of the two answers on offer — the pane is busy, and what it
+        // read before was `unknown`.
+        assert_eq!(
+            claim(pi(), A_PI_RUNNING_A_COMMAND, Phase::Idle).rule_name(),
+            Some("spinner"),
+            "a shell command running in the pane"
+        );
+
+        // And the screens with no turn running under them still have none: the
+        // frame is the anchor, and a pane pi is not spinning anything on
+        // carries no frame to find.
+        for (what, screen) in [
+            ("a finished turn", A_PI_IDLE),
+            ("a pi nobody has typed into yet", A_PI_BOOT),
+            ("a caller waiting to be typed at", A_PI_INPUT),
+        ] {
+            assert_ne!(
+                claim(pi(), screen, Phase::Idle).rule_name(),
+                Some("spinner"),
+                "{what} is not a turn"
+            );
+        }
     }
 
     #[test]

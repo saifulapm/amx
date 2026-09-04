@@ -36,11 +36,13 @@
 #
 #   screen <name>   repaint the pane with one of pi's screens: `boot`, the pane
 #                   of a pi nobody has typed into yet; `working`, with the line
-#                   pi spins above its box; `dialog`, blocked on a question with
-#                   the composer replaced; `input` and `editor`, blocked the
-#                   same way on a line and on a block of text; `trust`, blocked
-#                   on whether this folder is one to trust; and `idle`, the
-#                   prompt a finished turn leaves behind.
+#                   pi spins above its box; `compacting`, `retrying` and
+#                   `renamed`, the same row with each of the other three things
+#                   pi says on it; `dialog`, blocked on a question with the
+#                   composer replaced; `input` and `editor`, blocked the same
+#                   way on a line and on a block of text; `trust`, blocked on
+#                   whether this folder is one to trust; and `idle`, the prompt
+#                   a finished turn leaves behind.
 #   sleep <ms>      wait. A long trailing sleep is how a scenario keeps its
 #                   agent alive for the test driving it.
 #
@@ -204,6 +206,35 @@ working() {
 	box "$TURNED"
 }
 
+# The other three things pi puts on that row, drawn where `working` draws its
+# own. pi has one status line and swaps out which of its four kinds is on it:
+# `/compact` and a retry each take the working indicator down and put their own
+# where it was, so `Working...` is off the pane for the whole of either, and
+# `ctx.ui.setWorkingMessage` rewrites the message on the kind that is left.
+# What none of them changes is the frame in front of the message or the row it
+# is on. The frame is a different one of the ten on each screen below, because
+# the vendor cycles them and no capture can say which one a pane is on.
+# Measured at 100 columns on 2026-09-05 — the first two against a provider that
+# never answered and one that answered 503 to everything, the third against an
+# extension that set its own message on session start.
+compacting() {
+	printf ' Run this exact bash command and nothing else: echo hi\n\n\n'
+	printf ' ⠴ Compacting context... (escape to cancel)\n\n'
+	box "$TURNED"
+}
+
+retrying() {
+	printf ' Run this exact bash command and nothing else: echo hi\n\n\n'
+	printf ' ⠋ Retrying (1/3) in 2s... (escape to cancel)\n\n'
+	box "$TURNED"
+}
+
+renamed() {
+	printf ' Run this exact bash command and nothing else: echo hi\n\n\n'
+	printf ' ⠧ Reviewing the diff\n\n'
+	box "$FRESH"
+}
+
 idle() {
 	printf ' Run this exact bash command and nothing else: echo hi\n\n'
 	printf ' $ echo hi (timeout 10s)\n\n hi\n\n Took 15.2s\n\n'
@@ -277,6 +308,9 @@ draw() {
 	case $1 in
 	boot) screen=$(boot) ;;
 	working) screen=$(working) ;;
+	compacting) screen=$(compacting) ;;
+	retrying) screen=$(retrying) ;;
+	renamed) screen=$(renamed) ;;
 	idle) screen=$(idle) ;;
 	dialog) screen=$(dialog) ;;
 	input) screen=$(input) ;;

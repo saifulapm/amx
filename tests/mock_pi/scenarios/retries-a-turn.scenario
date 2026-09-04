@@ -1,0 +1,11 @@
+# A turn whose provider call failed and will be made again. The retry
+# indicator replaces the working one and counts down on the same row, so this
+# is a running turn with `Working...` nowhere on the pane. The agent is still
+# there afterwards, the way pi is: whoever is driving this scenario decides
+# when it ends.
+screen boot
+sleep 50
+screen working
+sleep 50
+screen retrying
+sleep 600000

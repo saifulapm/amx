@@ -412,34 +412,60 @@ asks = { above = ">" }
 #   ⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏ — all ten seen across the captures. The frame cycles,
 #   the message does not.
 #
-# This is where the tree beside the binary would have argued the other way. It
-# offers the frame as the thing every status line shares and the message as the
-# thing an extension can rewrite, which reads like an argument for anchoring on
-# the ten glyphs. What the captures say is that the message held: across a turn
-# streaming a 600-word answer, a 40-second bash call, and a turn stopped on a
-# dialog, at 100, 54, 40, 30, 24 and 20 columns, it was `Working...` every
-# time. And ten alternative single glyphs is a rule an agent's own output trips
-# by drawing one spinner frame.
-#
 # What this buys over claude, which drops its spinner line entirely while an
 # answer streams: on pi the line stays up for the whole turn. There is no
 # window where a running turn and an idle prompt are the same bytes, so nothing
 # on this vendor rests on how long a screen has held still.
 #
-# The same row carries whatever else pi has to say about a turn. A turn that
-# lost its connection and retried was seen still carrying `Working...`, so a
-# retry reads `working` rather than `unknown`. The tree names other messages
-# for compacting the context and for summarising a branch; nobody has driven
-# either, so nothing here claims them. A screen this rule does not claim falls
-# through to the prompt rule below, which is quiescent — and a spinner row this
-# file's furniture does not recognise as one is a row that ticks with the
-# frame, so that screen never holds still and the prompt rule never ends the
-# turn on it.
+# ── The three turns that do not say `Working...` ─────────────────────────────
+# pi draws ONE status line and swaps out which one it is. `Working...` is the
+# message of one of four kinds, and the other three take that row over rather
+# than sharing it: for the whole of a compaction and the whole of a retry the
+# word is off the pane, and an extension can rewrite it on the kind that is
+# left. Driven 2026-09-05 at 100, 54, 40, 30, 24 and 20 columns and a pane
+# height of 30, against a provider an extension registered and a server on this
+# machine answered — one that takes the request and never answers it, one that
+# answers 503 to every call — which is what arranges the two screens the vendor
+# will not draw for the asking:
 #
-# `within` is 2 and it is not a margin: the spinner, one blank row and the
-# box's top border, in that order, at all six widths measured. It is what turns
-# a word half the build tools print into the word on the row directly above
-# pi's own box.
+#    ⠼ Compacting context... (escape to cancel)    /compact, the request held open
+#    ⠙ Retrying (1/3) in 2s... (escape to cancel)  a 503 from every call
+#    ⠙ Reviewing the diff                          ctx.ui.setWorkingMessage
+#
+# The last of the three is what settles the anchor. That call replaces the
+# message with whatever an extension likes and leaves the rest of the row
+# alone, so on that screen there is no word to anchor on at all — and it is one
+# line in any extension pi loads. The tree beside the binary named the first
+# two as well, and naming them is not measuring them; these were driven.
+#
+# ── The frame, which is what all four have in common ─────────────────────────
+# So `any` is the ten frames, and this is the anchor the tree argued for and an
+# earlier pass of this document turned down. That pass had it that the message
+# held across every capture taken, which was true of every capture that had
+# been taken, and that ten alternative single glyphs is a rule an agent's own
+# output trips by drawing one spinner frame, which is still true and is what
+# `within` is for. All ten were seen on one compacting line, over 80
+# consecutive captures at eight a second.
+#
+# `within` is 4, and it is the widest span measured rather than a margin. With
+# `Working...` on the row it is 2 at every width — the message, one blank row
+# and the box's top border. The other three messages are long enough to wrap
+# and the frame stays on the FIRST row of the wrap, which pushes the box
+# further down: compaction and a retry measured 2 at 100 and 54 columns, 3 at
+# 40 and 30, and 4 at 24 and 20. A message longer than those wraps further and
+# this rule goes quiet, which is a running turn reading `idle` from a record
+# with nothing outstanding and nothing at all from a record that says a turn is
+# under way — the prompt rule below is quiescent and a row that ticks never
+# holds still.
+#
+# What four rows of frame cost is one screen more than the status lines, and it
+# was measured rather than reasoned about: `!cmd` draws its own bordered box in
+# the transcript with `⠧ Running... (escape/ctrl+c to cancel)` inside it and
+# the composer still under it, three rows between the frame and a border. Seen
+# at 100 columns on 2026-09-05 with `!sleep 20`. A shell command somebody ran
+# in the pane is not a turn the agent is taking, and `working` is still the
+# better of the two answers available: the pane is busy, and what it read
+# before was `unknown`.
 #
 # One measured floor: the spinner is the first row a short pane loses. At eight
 # rows it is still on the screen; at six the box, the working directory and the
@@ -447,8 +473,9 @@ asks = { above = ">" }
 [[rule]]
 name = "spinner"
 state = "working"
-all = ["working...", "────────────────────"]
-within = 2
+all = ["────────────────────"]
+any = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+within = 4
 
 # pi is drawn and waiting for somebody to type. Nothing more specific claimed
 # the screen and pi's own chrome is on it: the box, and the stats line under

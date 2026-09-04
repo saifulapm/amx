@@ -190,6 +190,33 @@ fn row_of(rows: &[String], text: &str) -> Option<usize> {
     rows.iter().position(|row| row.contains(text))
 }
 
+/// Whether a row opens with one of the frames pi spins a status line with.
+///
+/// Ten glyphs out of Unicode's braille block, cycled at eight a second, and
+/// the one thing every status line pi draws carries whatever its message says
+/// — which is why `assets/screen-rules-pi.toml` anchors its spinner rule on
+/// them rather than on the word one of the four happens to use.
+fn spins(row: &str) -> bool {
+    row.trim_start()
+        .starts_with(|glyph: char| ('\u{2800}'..='\u{28ff}').contains(&glyph))
+}
+
+/// The three status lines pi draws that do not say `Working...`, and the
+/// scenario that puts each on a pane.
+const OTHER_STATUS_LINES: [(&str, &str, &str); 3] = [
+    (
+        "a compacting turn",
+        "compacts-the-context",
+        "Compacting context...",
+    ),
+    ("a retrying turn", "retries-a-turn", "Retrying (1/3)"),
+    (
+        "a turn under an extension's own working message",
+        "renames-the-working-line",
+        "Reviewing the diff",
+    ),
+];
+
 /// Doctor's line about one check: whether it passed, and what it said.
 fn check_line(printed: &str, name: &str) -> (bool, String) {
     printed
@@ -485,6 +512,89 @@ fn the_stand_in_spins_pis_line_two_rows_above_pis_own_box() {
         2,
         "the line, one blank row, and the top of the box: {rows:?}"
     );
+}
+
+#[test]
+fn the_stand_in_spins_the_status_lines_that_do_not_say_working() {
+    // pi has one status line and swaps out which of its four kinds is on it.
+    // Compaction and a retry each take the working indicator down and put
+    // their own where it was, so `Working...` is off the pane for the whole of
+    // either, and `ctx.ui.setWorkingMessage` rewrites the message on the kind
+    // that is left. What all three keep is the frame and the row: two above
+    // the box's top border with a blank row between, exactly where the working
+    // line sits, which is the shape the spinner rule was measured against.
+    for (what, scenario, message) in OTHER_STATUS_LINES {
+        let amx = Harness::new();
+        let id = "watch-log-c3d";
+        start(&amx, id, scenario);
+        let pane = amx.pane_of(id);
+
+        let rows = amx.until("the status line to be drawn", || {
+            let rows = drawn(&amx, &pane);
+            row_of(&rows, message).is_some().then_some(rows)
+        });
+
+        let line = row_of(&rows, message).expect("the status line");
+        let top = *borders(&rows)
+            .first()
+            .unwrap_or_else(|| panic!("pi's composer box: {rows:?}"));
+        assert_eq!(
+            top - line,
+            2,
+            "{what}: the line, one blank row, and the top of the box: {rows:?}"
+        );
+        assert!(
+            spins(&rows[line]),
+            "{what}: the row opens with the frame pi spins: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("Working...")),
+            "{what}: the word the spinner rule used to stand on is nowhere on \
+             the pane: {rows:?}"
+        );
+        assert_eq!(
+            rows.len() - borders(&rows)[1],
+            3,
+            "{what}: the working directory and the stats line under the box, \
+             same as any other screen: {rows:?}"
+        );
+    }
+}
+
+#[test]
+fn a_pi_whose_status_line_stopped_saying_working_is_still_working() {
+    // Three ways a turn can be under way with the word `Working...` nowhere on
+    // the pane, and all three read `unknown` under a rule that stands on that
+    // word: a compacting pi is doing work nobody can interrupt usefully, a
+    // retrying one is between two provider calls, and a turn under an
+    // extension's own message is an ordinary turn with the message rewritten.
+    // The frame is what says a turn is running on all three.
+    for (what, scenario, message) in OTHER_STATUS_LINES {
+        let amx = Harness::new();
+        let id = "watch-log-c3d";
+        start(&amx, id, scenario);
+        let pane = amx.pane_of(id);
+
+        amx.until("the status line to be drawn", || {
+            row_of(&drawn(&amx, &pane), message).is_some().then_some(())
+        });
+
+        // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
+        // nothing outstanding, which is where the screen is the only witness
+        // there is on this vendor.
+        amx.set_state(
+            id,
+            json!({ "state": "starting", "since": 1, "last_event": 1 }),
+        );
+
+        let agent = status(&amx, id);
+        assert_eq!(agent["state"], "working", "{what}: {agent}");
+        assert_eq!(agent["evidence"], "screen", "{what}: {agent}");
+        assert_eq!(
+            agent["rule"], "spinner",
+            "pi's own rule, out of pi's own document: {agent}"
+        );
+    }
 }
 
 #[test]
