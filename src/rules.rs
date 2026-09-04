@@ -156,14 +156,6 @@ pub fn of(agent: &str) -> &'static Ruleset {
     select(parsed(), vendor.map_or("", |vendor| vendor.name)).unwrap_or_else(unmeasured)
 }
 
-/// The screens amx reads when nothing has said which vendor's pane it is
-/// looking at, which is every reader there is today: a record says which pane
-/// an agent is in, not what is running in it. [`of`] is the door for anything
-/// that does know.
-pub fn bundled() -> &'static Ruleset {
-    of(registry::entries().first().map_or("", |vendor| vendor.name))
-}
-
 /// The screens `vendor` draws, out of the ones amx has parsed.
 fn select<'a>(parsed: &'a [(&'static str, Ruleset)], vendor: &str) -> Option<&'a Ruleset> {
     parsed
@@ -1124,6 +1116,12 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
         rules.claim(screen, recorded, SETTLED_LOOKS)
     }
 
+    /// claude's screens, read the way a reader reaches them: by naming the
+    /// vendor whose pane the capture came off.
+    fn claude() -> &'static Ruleset {
+        of("claude")
+    }
+
     /// The documents these tests weigh against each other: the two amx ships
     /// and the second vendor's, which shares no string with either. A law that
     /// holds for all three is a law about the machinery.
@@ -1156,7 +1154,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
         );
         assert_eq!(
             select(&documents, "claude").map(named),
-            Some(named(bundled()))
+            Some(named(claude()))
         );
         assert!(
             select(&documents, "nobody").is_none(),
@@ -1170,7 +1168,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
         // amx has no entry for is a wrapper around one it has: both are read
         // with the screens of the vendor that ends up drawing them.
         for agent in ["claude", "claude --add-dir ..", "my-claude", ""] {
-            assert_eq!(named(of(agent)), named(bundled()), "{agent:?}");
+            assert_eq!(named(of(agent)), named(claude()), "{agent:?}");
         }
 
         // And what a command with no entry falls back to is the vendor amx
@@ -1188,10 +1186,9 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
         // reader that took one for an answer would leave somebody reading the
         // pane themselves. Which sentences they are is the vendor's own
         // wording and nobody else's.
-        let claude = bundled();
-        assert!(claude.placeholder("Claude needs your permission"));
+        assert!(claude().placeholder("Claude needs your permission"));
         assert!(
-            !claude.placeholder("Claude needs your permission to use Bash"),
+            !claude().placeholder("Claude needs your permission to use Bash"),
             "a whole sentence and never the start of one: the one that names \
              the tool is something a caller can act on"
         );
@@ -1224,7 +1221,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
     #[test]
     fn rules_the_bundled_file_is_the_ruleset() {
-        let rules = bundled();
+        let rules = claude();
         let names: Vec<_> = rules.rules().iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
             names,
@@ -1304,7 +1301,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
     #[test]
     fn rules_the_four_blocking_prompts_rule_waiting() {
-        let rules = bundled();
+        let rules = claude();
         for (what, screen) in [
             ("trust at 220 columns", TRUST_SCREEN_220),
             ("trust at 54 columns", TRUST_SCREEN_54),
@@ -1329,7 +1326,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
         // No anchor string can tell these from the real thing; the layout can.
         // claude draws no composer under a blocking prompt, so a widget with
         // the mode footer beneath it is text about a widget.
-        let rules = bundled();
+        let rules = claude();
         for (what, screen) in [
             ("a quoted permission box", QUOTED_PERMISSION_BOX),
             (
@@ -1377,7 +1374,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
         // Rust it would be one vendor's rule names deciding what is read off
         // another's pane.
         let asks = |name: &str| {
-            let rule = bundled().rules().iter().find(|rule| rule.name == name);
+            let rule = claude().rules().iter().find(|rule| rule.name == name);
             rule.map(|rule| rule.asks.clone())
         };
         assert_eq!(
@@ -1418,7 +1415,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
     #[test]
     fn rules_a_permission_box_carries_the_question_and_the_two_answers() {
-        let asked = asked(bundled(), PERMISSION_BOX);
+        let asked = asked(claude(), PERMISSION_BOX);
         assert_eq!(asked.text, "Do you want to proceed?");
         assert_eq!(
             asked.options,
@@ -1437,7 +1434,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
              from your team). If not, take a moment to review what's in this folder \
              first.";
         for (width, screen) in [("220", TRUST_SCREEN_220), ("54", TRUST_SCREEN_54)] {
-            let asked = asked(bundled(), screen);
+            let asked = asked(claude(), screen);
             assert_eq!(asked.text, whole, "at {width} columns");
             assert_eq!(
                 asked.options,
@@ -1449,7 +1446,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
     #[test]
     fn rules_a_menu_carries_the_agents_own_question_and_every_choice() {
-        let wide = asked(bundled(), ASK_MENU_80);
+        let wide = asked(claude(), ASK_MENU_80);
         assert_eq!(
             wide.text,
             "Should this project be indented with spaces or tabs?"
@@ -1464,7 +1461,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
         // The same menu at 24 columns. The choices survive the wrap; the first
         // row of the question does not survive the floor, which only reads the
         // bottom of the pane, so what is recorded is what could be seen.
-        let narrow = asked(bundled(), ASK_MENU_24);
+        let narrow = asked(claude(), ASK_MENU_24);
         assert_eq!(narrow.options, wide.options);
         assert_eq!(narrow.text, "indented with spaces or tabs?");
     }
@@ -1478,11 +1475,11 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
             ("54", PLAN_APPROVAL_54),
             ("24", PLAN_APPROVAL_24),
         ] {
-            assert_eq!(asked(bundled(), screen).text, whole, "at {width} columns");
+            assert_eq!(asked(claude(), screen).text, whole, "at {width} columns");
         }
 
         assert_eq!(
-            asked(bundled(), PLAN_APPROVAL_220).options,
+            asked(claude(), PLAN_APPROVAL_220).options,
             [
                 "Yes, and use auto mode",
                 "Yes, manually approve edits",
@@ -1490,7 +1487,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
             ]
         );
         assert_eq!(
-            asked(bundled(), PLAN_APPROVAL_24).options,
+            asked(claude(), PLAN_APPROVAL_24).options,
             ["Yes, and use", "Yes, manually", "Tell Claude"],
             "a label the vendor wrapped is read as far as its own row goes: the \
              rows under it are where the menu keeps its descriptions"
@@ -1503,7 +1500,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
         // is waiting; what it has not got is what for. So this door takes
         // neither a state nor a count of looks, and it answers with what the
         // claimed screens above said.
-        let rules = bundled();
+        let rules = claude();
         let permission = rules
             .asking(PERMISSION_BOX)
             .expect("a box that blocks is asking something");
@@ -1526,7 +1523,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
     #[test]
     fn rules_a_screen_that_is_not_blocking_asks_no_question() {
-        let rules = bundled();
+        let rules = claude();
         for (what, screen) in [
             ("an idle prompt", IDLE_SCREEN),
             ("a running turn", WORKING_SCREEN),
@@ -1541,7 +1538,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
     #[test]
     fn rules_the_spinner_rules_working() {
-        let rules = bundled();
+        let rules = claude();
         for (what, screen) in [
             ("a tool call", WORKING_SCREEN),
             ("thinking", THINKING_SCREEN),
@@ -1564,7 +1561,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
     #[test]
     fn rules_idle_furniture_rules_idle_in_every_mode_and_width() {
-        let rules = bundled();
+        let rules = claude();
         for (what, screen) in [
             ("auto mode", IDLE_SCREEN),
             ("manual mode, no cycle hint", IDLE_SCREEN_MANUAL),
@@ -1581,7 +1578,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
     #[test]
     fn rules_a_screen_nothing_knows_claims_nothing() {
-        let rules = bundled();
+        let rules = claude();
         for (what, screen) in [
             ("a shell", A_SHELL),
             ("an empty pane", ""),
@@ -1600,7 +1597,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
     #[test]
     fn rules_a_still_screen_is_what_ends_a_running_turn() {
-        let rules = bundled();
+        let rules = claude();
 
         // Mid-turn and idle are the same bytes, so a turn on the record is not
         // ended by the screen until it has held still.
@@ -1649,7 +1646,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
     fn rules_only_the_bottom_of_the_capture_is_evidence() {
         // The agent's own output scrolls; the vendor's chrome does not. A
         // spinner line far above the floor is transcript, not state.
-        let rules = bundled();
+        let rules = claude();
         let old_news = format!(
             "✢ Infusing… (1m 54s · ↓ 6.9k)\n{}{}",
             "\n".repeat(40),
@@ -1660,7 +1657,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
     #[test]
     fn rules_matching_folds_case() {
-        let rules = bundled();
+        let rules = claude();
         let shouted = PERMISSION_BOX.to_uppercase();
         assert_eq!(
             claim(rules, &shouted, Phase::Working).phase(),
@@ -1810,7 +1807,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
             ("a pi dialog", A_PI_DIALOG),
         ] {
             assert_eq!(
-                bundled().claim(screen, Phase::Working, SETTLED_LOOKS),
+                claude().claim(screen, Phase::Working, SETTLED_LOOKS),
                 Claim::Unclaimed,
                 "claude's document claims {what}"
             );

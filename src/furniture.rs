@@ -257,7 +257,7 @@ mod tests {
             "the line a turn spins is the vendor's too"
         );
 
-        let claude = crate::rules::bundled().furniture();
+        let claude = crate::rules::of("claude").furniture();
         assert_eq!(claude.cut(A_CLAUDE_PANE), ["  Ran the migration.", ""]);
     }
 
@@ -268,7 +268,7 @@ mod tests {
         // bottom of keeps every row it has.
         assert_eq!(second().cut(A_CLAUDE_PANE), A_CLAUDE_PANE);
         assert_eq!(
-            crate::rules::bundled()
+            crate::rules::of("claude")
                 .furniture()
                 .cut(A_SECOND_VENDOR_PANE),
             A_SECOND_VENDOR_PANE

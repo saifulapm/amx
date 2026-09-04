@@ -1409,7 +1409,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             created,
             alive,
             || screen.map(str::to_string),
-            rules::bundled(),
+            rules::of("claude"),
             now,
             1,
         )
@@ -1596,7 +1596,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             options: vec!["Yes".to_string(), "No".to_string()],
         };
 
-        forget_the_placeholder(rules::bundled(), &mut state);
+        forget_the_placeholder(rules::of("claude"), &mut state);
         assert!(state.learns_from(&seen), "there is something to learn now");
         state.learn(&seen);
         assert_eq!(state.question.as_deref(), Some("Do you want to proceed?"));
@@ -1690,7 +1690,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             Some("thinking for 12s about the file you named")
         );
         assert_eq!(
-            doing(rules::bundled(), its_own),
+            doing(rules::of("claude"), its_own),
             None,
             "claude spins nothing that reads like that"
         );
@@ -1740,7 +1740,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
                 asked.set(true);
                 Some(A_BLOCKING_SCREEN.to_string())
             },
-            rules::bundled(),
+            rules::of("claude"),
             now,
             1,
         );
@@ -1776,7 +1776,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
                 // Fresh, on the last second of freshness, and stale.
                 for now in [1_000, 1_000 + FRESH, 1_100] {
                     assert_eq!(
-                        wants_the_screen(rules::bundled(), &record, alive, now),
+                        wants_the_screen(rules::of("claude"), &record, alive, now),
                         looked_at_the_pane(&record, alive, now),
                         "{} alive={alive} at {now}",
                         record.state
@@ -2061,7 +2061,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn still_looks_settles_after_settled_looks_even_while_the_chrome_ticks() {
-        let rules = rules::bundled();
+        let rules = rules::of("claude");
         let id = "ticking-t4a";
         let mut looks = 0;
         for tick in 0..rules::SETTLED_LOOKS as u64 {
@@ -2076,7 +2076,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn still_looks_resets_the_moment_the_transcript_itself_changes() {
-        let rules = rules::bundled();
+        let rules = rules::of("claude");
         let id = "resets-t4b";
         let first = a_ticking_screen(1);
         assert_eq!(still_looks(id, Some(&first), Phase::Working, rules), 1);
@@ -2093,7 +2093,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn still_looks_resets_when_the_record_moves_to_another_phase() {
-        let rules = rules::bundled();
+        let rules = rules::of("claude");
         let id = "moves-t4c";
         let screen = a_ticking_screen(1);
         assert_eq!(still_looks(id, Some(&screen), Phase::Working, rules), 1);
@@ -2108,7 +2108,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn still_looks_reads_a_first_look_the_way_a_one_shot_verb_always_has() {
-        let rules = rules::bundled();
+        let rules = rules::of("claude");
         assert_eq!(
             still_looks(
                 "fresh-t4d",
@@ -2321,7 +2321,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // document, because the law is about screens that block and not about
         // whose they are.
         let second = second_vendors_screens();
-        for screens in [rules::bundled(), &second] {
+        for screens in [rules::of("claude"), &second] {
             for rule in screens.rules() {
                 let kind = asked_kind(screens, Some(&rule.name));
                 assert_eq!(
@@ -2334,7 +2334,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             }
         }
 
-        let claude = rules::bundled();
+        let claude = rules::of("claude");
         assert_eq!(asked_kind(claude, Some("folder_trust")), Some(Kind::Trust));
         assert_eq!(asked_kind(claude, Some("ask_menu")), Some(Kind::Question));
         assert_eq!(asked_kind(claude, None), None);

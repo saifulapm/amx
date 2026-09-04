@@ -244,7 +244,7 @@ mod tests {
     /// the surface a person reads it off.
     fn reading(id: &str, state: State, created: u64, now: u64) -> View {
         let verdict =
-            derive::read(&state, created, true, || None, rules::bundled(), now, 1).verdict;
+            derive::read(&state, created, true, || None, rules::of("claude"), now, 1).verdict;
         View::new(meta(id, created), state, verdict)
     }
 

@@ -246,11 +246,11 @@ pub const DEFAULT: &str = "default";
 
 /// Every vendor amx has an entry for, in the order a cycle key offers them.
 ///
-/// claude first, because `rules::of` and `rules::bundled` read
-/// `entries().first()` as the screens an unregistered agent is watched by,
-/// and reordering this would silently change what those answer. The table is
-/// the whole of what makes a second vendor possible, and a test-only
-/// [`second`] proves that nothing in here is shaped around the first.
+/// claude first, because `rules::of` reads `entries().first()` as the screens
+/// an unregistered agent is watched by, and reordering this would silently
+/// change what it answers. The table is the whole of what makes a second
+/// vendor possible, and a test-only [`second`] proves that nothing in here is
+/// shaped around the first.
 static TABLE: [Vendor; 2] = [claude::VENDOR, pi::VENDOR];
 
 impl Vendor {
