@@ -206,8 +206,66 @@ fn adopted(amx: &Harness, id: &str) -> String {
     pane
 }
 
-/// The conversation the adopted claude says it is.
+/// The conversation the adopted agent says it is.
 const ADOPTED: &str = "9f3c1d20-5a44-4e7b-8c19-6d0a2b5f7e31";
+
+/// A pi somebody started themselves, stopped on the dialog it raises, in a
+/// pane amx never opened. Answers with that pane, once the dialog is on it.
+///
+/// The stand-in next door to mock-claude, started here by hand: what makes a
+/// pane pi's is the program running in it, and adoption is about a pane that
+/// was running before amx was asked about it. Nothing here goes through the
+/// PATH the way `amx new --agent pi` has to.
+fn a_pi_on_its_dialog(amx: &Harness) -> String {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mock_pi");
+    let scenario = format!(
+        "MOCK_PI_SCENARIO={}",
+        fixtures
+            .join("scenarios/asks-a-question.scenario")
+            .display()
+    );
+    let pi = fixtures.join("pi").to_string_lossy().into_owned();
+    let pane = amx.tmux(&[
+        "new-session",
+        "-d",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "--",
+        "env",
+        &scenario,
+        &pi,
+    ]);
+
+    // The hint row pi draws under every dialog, which is the anchor its own
+    // document reads the screen by. A capture taken before it is painted is a
+    // different screen, and adoption reads the pane once.
+    amx.until("pi's dialog on the pane", || {
+        amx.capture(&pane).contains("↑↓ navigate").then_some(())
+    });
+    pane
+}
+
+/// `amx adopt`, typed in a pane by the vendor that names `session`.
+///
+/// The suite is run from inside somebody's own agent often enough that a
+/// vendor's session variable is already in this process's environment. claude
+/// is the first entry in the table, so a stray copy of its variable would
+/// answer for every adoption here before the vendor under test was reached.
+fn adopt_as(amx: &Harness, id: &str, pane: &str, session: (&str, &str)) {
+    let out = amx
+        .amx_command(&["adopt", "--name", id, "--task", "fix the login bug"])
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env("TMUX_PANE", pane)
+        .env(session.0, session.1)
+        .output()
+        .expect("running amx adopt");
+    assert!(
+        out.status.success(),
+        "amx adopt: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
 
 /// Something on the server that is not the agent under test, the way a machine
 /// somebody works on has something else on it.
@@ -752,6 +810,56 @@ fn resume_says_so_when_amx_never_started_the_agent() {
     let why = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(why.contains(id), "{why}");
     assert!(why.contains("by hand"), "{why}");
+}
+
+#[test]
+fn adopt_reads_the_pane_by_the_document_of_the_vendor_it_took_over() {
+    // What is in a pane amx did not open is whatever somebody started, so the
+    // screens the record's first reading is made against are that vendor's.
+    // This pane is pi blocked on a dialog: pi's document claims that screen,
+    // and the difference between reading it with that document and with the
+    // one at the head of the table is a record that says somebody is wanted
+    // here against a record that says amx cannot tell.
+    let amx = Harness::new();
+    let theirs = "their-own-pi-a1b";
+    adopt_as(
+        &amx,
+        theirs,
+        &a_pi_on_its_dialog(&amx),
+        ("PI_SESSION_ID", ADOPTED),
+    );
+    assert_eq!(
+        amx.meta(theirs)["agent"],
+        "pi",
+        "the vendor whose variable is in the pane"
+    );
+    assert_eq!(
+        amx.state(theirs)["state"],
+        "waiting",
+        "read by pi's own document, which is the only one that claims this \
+         screen"
+    );
+
+    // The same screen taken over as claude, which is what makes the reading
+    // above evidence about the document and not about the screen. A second
+    // pane and a second conversation, because one of either is one record's.
+    let mistaken = "read-as-claude-c3d";
+    adopt_as(
+        &amx,
+        mistaken,
+        &a_pi_on_its_dialog(&amx),
+        (
+            "CLAUDE_CODE_SESSION_ID",
+            "4c1e8b73-2f60-4a15-9d38-7e2b6c0f9a54",
+        ),
+    );
+    assert_eq!(amx.meta(mistaken)["agent"], "claude");
+    assert_eq!(
+        amx.state(mistaken)["state"],
+        "unknown",
+        "claude's document has no anchor on a pi screen, and an adoption is \
+         not the moment to guess"
+    );
 }
 
 #[test]

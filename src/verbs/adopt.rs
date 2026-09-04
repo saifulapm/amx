@@ -18,7 +18,9 @@
 //! config: what is in this pane is what somebody started themselves, which
 //! need not be what `amx new` would spawn. So the table is read for the
 //! vendors that can be taken over, and the one whose variable is here is the
-//! one that is here.
+//! one that is here. It is the answer to more than the record's `agent` field:
+//! the screens this pane is read by are that vendor's, and no other vendor's
+//! document has anything true to say about it.
 //!
 //! The session is the half that keeps working afterwards. amx cannot put its
 //! own id into a pane it did not start, so the events this agent fires carry
@@ -57,21 +59,12 @@ pub fn from_env(args: &AdoptArgs) -> Result<i32> {
     let here = std::env::current_dir().context("no working directory")?;
     let server = spawn::server()?;
     let mut out = std::io::stdout().lock();
-    run(
-        &root,
-        rules::bundled(),
-        &server,
-        &env,
-        &here,
-        args,
-        &mut out,
-    )
+    run(&root, &server, &env, &here, args, &mut out)
 }
 
 /// The verb, with everything it reads named.
 pub fn run(
     root: &Path,
-    rules: &Ruleset,
     server: &Server,
     env: &BTreeMap<String, String>,
     here: &Path,
@@ -165,7 +158,9 @@ pub fn run(
             "vendor": vendor.name,
         }),
     ))?;
-    writer.update_state(|state| seed(state, rules, &screen))?;
+    // Read by the document of the vendor whose variable was in this pane. Any
+    // other vendor's is a document about screens this pane cannot draw.
+    writer.update_state(|state| seed(state, rules::of(vendor.name), &screen))?;
     drop(writer);
 
     writeln!(out, "{id}")?;
@@ -451,7 +446,6 @@ mod tests {
         let mut out = Vec::new();
         let code = run(
             root,
-            rules::bundled(),
             &pane.server,
             env,
             Path::new("/srv/app"),
