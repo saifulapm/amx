@@ -34,10 +34,22 @@ pub struct Config {
     pub worktrees: bool,
     /// Post desktop notifications on the transitions worth interrupting for.
     pub notifications: bool,
-    /// Answer claude's folder-trust screen for the worktrees amx cuts, by
-    /// writing the vendor's own trust store. Off until the person says so:
-    /// the store is their file, and this is the consent the write stands
-    /// behind, the way the hooks stand behind doctor --fix's yes.
+    /// Answer the vendor's folder-trust screen for the agents amx starts, so
+    /// that one begins on its task instead of on a question nobody has to
+    /// think about. Off until the person says so, the way the hooks stand
+    /// behind doctor --fix's yes.
+    ///
+    /// One key, two answers, because the vendors answer it two ways and the
+    /// difference is worth knowing. For claude it writes an entry in the
+    /// vendor's own trust store, for the worktree amx cut and nothing else,
+    /// and the entry outlives the agent: the store is the person's file, and
+    /// this is the consent that write stands behind. For pi it puts
+    /// `--approve` on the argv of the pane, which trusts that folder for that
+    /// one run and writes nothing anywhere.
+    ///
+    /// What both say to the vendor is the same, and it is what the key is
+    /// really about: load what this repository keeps in it — its settings, its
+    /// extensions, its skills, its prompts — without asking first.
     pub trust: bool,
     /// Where the model dial starts. Absent is the vendor's own choice, which
     /// amx says by passing no flag, so there is no value here that means
