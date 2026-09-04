@@ -1,0 +1,10 @@
+# A turn the way pi runs one: the box it draws before anybody has typed, the
+# line it spins while the turn is under way, and the prompt it leaves behind.
+# The agent is still there afterwards, the way pi is: whoever is driving this
+# scenario decides when it ends.
+screen boot
+sleep 50
+screen working
+sleep 50
+screen idle
+sleep 600000

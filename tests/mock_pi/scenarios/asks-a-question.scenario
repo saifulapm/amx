@@ -1,0 +1,10 @@
+# A turn that stops on a dialog, the way pi raises one when a tool call is
+# gated: the spinner while the turn runs, and the dialog it leaves for a
+# person to answer. The agent is still there afterwards, the way pi is:
+# whoever is driving this scenario decides when it ends.
+screen boot
+sleep 50
+screen working
+sleep 50
+screen dialog
+sleep 600000

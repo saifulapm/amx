@@ -1,0 +1,245 @@
+#!/bin/sh
+# A stand-in for pi, replaying a scenario of timed steps.
+#
+# It is called `pi`, and reached through the PATH, because that is the whole of
+# what makes it pi: amx keys its vendor table by the program an agent command
+# runs, so this directory in front of the PATH and `--agent pi` is the only way
+# to drive pi's entry on a machine with no pi on it. mock-claude next door is
+# the opposite fixture — a command the table has no entry for — and both are
+# shell scripts for the same reason: what is under test is amx's handling of a
+# foreign program in the pane, and a fixture sharing amx's own code would only
+# ever prove that amx agrees with itself.
+#
+# It answers for two of the things pi's entry claims, and for nothing else:
+#
+#   the session flags   `--session-id <id>` opens the session already kept
+#                       under that id and creates one under it when there is
+#                       none, and `--fork <origin> --session-id <new>` branches
+#                       the first into the second. A `--session-id` written
+#                       beside a flag pi refuses it next to ends this the way
+#                       it ends pi: an exit, not a warning.
+#   the screens         the screens `assets/screen-rules-pi.toml` was measured
+#                       off, drawn by repainting the pane rather than
+#                       appending to it. The rules read the bottom of a
+#                       capture, and a screen with the last one still above it
+#                       is not a screen pi ever drew.
+#
+# How it was called, and what it did with the session it was handed, are
+# written before the first repaint: they leave the screen with it and stay in
+# the pane's history, which is where `capture-pane -S -` reads them. pi reports
+# nothing through hooks, so a test has nowhere else to read either of them.
+#
+# Steps, one per line. Blank lines and `#` comments are ignored.
+#
+#   screen <name>   repaint the pane with one of pi's screens: `boot`, the pane
+#                   of a pi nobody has typed into yet; `working`, with the line
+#                   pi spins above its box; `dialog`, blocked on a question with
+#                   the composer replaced; and `idle`, the prompt a finished
+#                   turn leaves behind.
+#   sleep <ms>      wait. A long trailing sleep is how a scenario keeps its
+#                   agent alive for the test driving it.
+#
+# Environment:
+#   MOCK_PI_SCENARIO   the scenario to replay (required)
+
+set -u
+
+scenario=${MOCK_PI_SCENARIO:-}
+if [ -z "$scenario" ]; then
+	echo "mock pi: \$MOCK_PI_SCENARIO names the scenario to replay" >&2
+	exit 64
+fi
+if [ ! -r "$scenario" ]; then
+	echo "mock pi: cannot read the scenario $scenario" >&2
+	exit 66
+fi
+
+sessions=$HOME/.pi/sessions
+
+# Every flag pi will not take `--session-id` beside, in the vendor's own words:
+# five that make it exit, and `--no-session`, which takes the id and keeps the
+# conversation in memory. Its entry lists all six, and none of them should ever
+# reach this stand-in beside a minted id.
+REFUSES="-c -r --continue --no-session --resume --session"
+
+printf 'argv: %s\n' "$*"
+
+# `--session-id <id>` and `--fork <origin>` are two words each: `--help` shows
+# them that way and nothing in pi reads a `=` spelling of either, so neither is
+# read here.
+session=
+origin=
+clash=
+value_of=
+for arg do
+	case $value_of in
+	session)
+		session=$arg
+		value_of=
+		continue
+		;;
+	fork)
+		origin=$arg
+		value_of=
+		continue
+		;;
+	esac
+	case $arg in
+	--session-id) value_of=session ;;
+	--fork) value_of=fork ;;
+	*)
+		case " $REFUSES " in
+		*" $arg "*) clash=$arg ;;
+		esac
+		;;
+	esac
+done
+
+if [ -n "$clash" ] && [ -n "$session" ]; then
+	echo "mock pi: --session-id cannot be combined with $clash" >&2
+	exit 2
+fi
+
+if [ -n "$origin" ]; then
+	if [ -z "$session" ]; then
+		echo "mock pi: --fork $origin names no id to branch into" >&2
+		exit 2
+	fi
+	from=$sessions/$origin.jsonl
+	if [ ! -f "$from" ]; then
+		echo "mock pi: no session with id $origin" >&2
+		exit 1
+	fi
+	if [ -f "$sessions/$session.jsonl" ]; then
+		echo "mock pi: Session already exists with id $session" >&2
+		exit 1
+	fi
+	mkdir -p "$sessions"
+	cp "$from" "$sessions/$session.jsonl"
+	printf 'session: branched %s from %s\n' "$session" "$origin"
+elif [ -n "$session" ]; then
+	if [ -f "$sessions/$session.jsonl" ]; then
+		printf 'session: opened %s\n' "$session"
+	else
+		mkdir -p "$sessions"
+		: >"$sessions/$session.jsonl"
+		printf 'session: created %s\n' "$session"
+	fi
+fi
+
+# ── The screens ──────────────────────────────────────────────────────────────
+# Trimmed from the captures in `assets/screen-rules-pi.toml`, which were read
+# off pi 0.84.4 on 2026-09-04. Two things are drawn rather than copied. The box
+# is as wide as the pane, which is what pi does and what makes twenty columns
+# of border worth anchoring on; and the stats line is written to fit eighty
+# columns rather than the hundred it was captured at, because pi truncates
+# that line from the right and what a narrower pane keeps is its opening —
+# which is where every anchor in the document sits.
+
+width=$( (stty size </dev/tty) 2>/dev/null | cut -d' ' -f2 )
+case $width in
+'' | *[!0-9]*) width=80 ;;
+esac
+border=
+column=0
+while [ "$column" -lt "$width" ]; do
+	border=$border─
+	column=$((column + 1))
+done
+
+# Where pi says it is running, which is the first of its two footer rows.
+here=$PWD
+case $here in
+"$HOME"*) here="~${here#"$HOME"}" ;;
+esac
+
+# The two stats lines measured: a subscription-backed session before its first
+# turn, and one that has taken a turn.
+FRESH='$0.000 (sub) 0.0%/264k (auto)              (github-copilot) gpt-5-mini • minimal'
+TURNED='↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)   (github-copilot)'
+
+# The composer box and the footer under it, which every screen below ends with.
+# `$1` is the stats line, because its opening is the one part of the chrome
+# that differs between a session that has taken a turn and one that has not.
+box() {
+	printf '%s\n\n%s\n%s\n%s\n' "$border" "$border" "$here" "$1"
+}
+
+boot() {
+	printf ' pi v0.84.4\n'
+	printf ' escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more\n'
+	printf ' Press ctrl+o to show full startup help and loaded resources.\n\n'
+	printf ' Pi can explain its own features and look up its docs.\n\n\n'
+	box "$FRESH"
+}
+
+# The line pi spins sits two rows above the box's top border, with one blank
+# row between them, and stays up for the whole turn.
+working() {
+	printf ' Run this exact bash command and nothing else: echo hi\n\n\n'
+	printf ' ⠼ Working...\n\n'
+	box "$TURNED"
+}
+
+idle() {
+	printf ' Run this exact bash command and nothing else: echo hi\n\n'
+	printf ' $ echo hi (timeout 10s)\n\n hi\n\n Took 15.2s\n\n'
+	box "$TURNED"
+}
+
+# pi blocked on a dialog raised while gating a tool call: the editor inside the
+# composer box is replaced by the question and its choices, and the two
+# borders stay where they were, with the working directory and the stats line
+# under them exactly as on any other screen. Measured at 100 columns with an
+# extension gating the bash tool with `ctx.ui.select`.
+dialog() {
+	printf '%s\n\n' "$border"
+	printf ' Run echo hi?\n\n'
+	printf ' → Allow once\n   Allow always\n   Deny\n\n'
+	printf ' ↑↓ navigate  enter select  escape/ctrl+c cancel\n\n'
+	printf '%s\n' "$border"
+	printf '%s\n%s\n' "$here" "$TURNED"
+}
+
+# Repaint, the way a program that owns its pane draws a new screen. What was
+# there goes into the pane's history rather than above the new screen.
+draw() {
+	printf '\033[H\033[2J'
+	case $1 in
+	boot) boot ;;
+	working) working ;;
+	idle) idle ;;
+	dialog) dialog ;;
+	*)
+		echo "mock pi: $scenario: no screen called \`$1\`" >&2
+		exit 65
+		;;
+	esac
+}
+
+# Milliseconds, because a scenario's interesting waits are shorter than a
+# second.
+nap() {
+	[ "$1" -gt 0 ] || return 0
+	sleep "$(($1 / 1000)).$(printf '%03d' "$(($1 % 1000))")"
+}
+
+while IFS= read -r line || [ -n "$line" ]; do
+	case "$line" in
+	'' | '#'*) continue ;;
+	esac
+	verb=${line%% *}
+	rest=${line#"$verb"}
+	rest=${rest# }
+
+	case "$verb" in
+	screen) draw "$rest" ;;
+	sleep) nap "$rest" ;;
+	*)
+		echo "mock pi: $scenario: no step called \`$verb\`" >&2
+		exit 65
+		;;
+	esac
+done <"$scenario"
+
+exit 0

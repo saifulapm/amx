@@ -1,0 +1,6 @@
+# A turn that never ends, so the screen a test is reading is the one pi draws
+# while it is working rather than whichever screen the race left there.
+screen boot
+sleep 50
+screen working
+sleep 600000
