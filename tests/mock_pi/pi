@@ -187,18 +187,17 @@ idle() {
 	box "$TURNED"
 }
 
-# pi blocked on a dialog raised while gating a tool call: the editor inside the
-# composer box is replaced by the question and its choices, and the two
-# borders stay where they were, with the working directory and the stats line
-# under them exactly as on any other screen. Measured at 100 columns with an
-# extension gating the bash tool with `ctx.ui.select`.
+# pi blocked on a dialog raised while gating a tool call: the turn is still
+# running, so the line pi spins is up above the box exactly as it is on
+# `working`, and inside the box the editor is replaced by the question and its
+# choices. The two borders stay where they were, with the working directory
+# and the stats line under them exactly as on any other screen. Measured at
+# 100 columns with an extension gating the bash tool with `ctx.ui.select`.
 dialog() {
-	printf '%s\n\n' "$border"
-	printf ' Run echo hi?\n\n'
-	printf ' → Allow once\n   Allow always\n   Deny\n\n'
-	printf ' ↑↓ navigate  enter select  escape/ctrl+c cancel\n\n'
-	printf '%s\n' "$border"
-	printf '%s\n%s\n' "$here" "$TURNED"
+	printf ' Run this exact bash command and nothing else: echo hi\n\n\n'
+	printf ' ⠼ Working...\n\n'
+	printf '%s\n\n Run echo hi?\n\n → Allow once\n   Allow always\n   Deny\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel\n\n%s\n%s\n%s\n' \
+		"$border" "$border" "$here" "$TURNED"
 }
 
 # Repaint, the way a program that owns its pane draws a new screen. What was
