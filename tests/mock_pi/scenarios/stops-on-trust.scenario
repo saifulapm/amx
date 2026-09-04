@@ -1,0 +1,9 @@
+# The folder-trust question, which pi draws where the composer usually is.
+# Nothing runs under it: a person raises this screen before a turn rather than
+# a tool call raising it inside one, so there is no spinner over the box the
+# way there is on a gated tool call. The agent is still there afterwards, the
+# way pi is: whoever is driving this scenario decides when it ends.
+screen boot
+sleep 50
+screen trust
+sleep 600000

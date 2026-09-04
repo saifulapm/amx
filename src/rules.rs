@@ -1042,6 +1042,75 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ↑1.3k ↓64 $0.000 ...
 ";
 
+    /// pi asking whether this folder is one to trust, at 100 columns, raised
+    /// with `/trust` on a worktree the vendor has nothing saved about. The
+    /// same box the dialog above is drawn in, ending in the same hint row,
+    /// with nothing running over it: a person raises this screen before a turn
+    /// rather than a tool call raising it inside one.
+    const A_PI_TRUST: &str = r"
+ pi v0.84.4
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Project trust
+ /home/saiful/.claude/jobs/1e9e9b98/tmp/worktrees/fix-login-a1b
+
+ Saved decision: none
+ Current session: trusted
+
+ → Trust
+   Trust parent folder (/home/saiful/.claude/jobs/1e9e9b98/tmp/worktrees)
+   Do not trust
+
+ ↑↓ navigate  enter save  escape/ctrl+c cancel
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.claude/jobs/1e9e9b98/tmp/worktrees/fix-login-a1b
+0.0%/1.0M (auto)                                   (opencode) muse-spark-1.3-contributor-free • high
+";
+
+    /// The same question at 20 columns. This is the tallest box pi draws, and
+    /// on a tree the depth amx cuts its own it is taller than the rows a rule
+    /// may see: the title and the top border are both above the floor, and
+    /// what is left to read the screen by is the hint row and the one border
+    /// under it.
+    const A_PI_TRUST_20: &str = r"
+────────────────────
+
+ Project trust
+ /home/saiful/.clau
+ de/jobs/1e9e9b98/t
+ mp/worktrees/fix-l
+ ogin-a1b
+
+ Saved decision:
+ none
+ Current session:
+ trusted
+
+ → Trust
+   Trust parent
+ folder
+ (/home/saiful/.cla
+ ude/jobs/1e9e9b98/
+ tmp/worktrees)
+   Do not trust
+
+ ↑↓ navigate  enter
+  save
+ escape/ctrl+c
+ cancel
+
+────────────────────
+~/.claude/jobs/1e...
+0.0%/1.0M (auto)  mu
+";
+
     /// The turn is over and the prompt is waiting for a person. The line pi
     /// spins is off the screen; the box, the working directory and the stats
     /// line are where they were.
@@ -1702,10 +1771,10 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
     }
 
     #[test]
-    fn rules_pi_reads_the_three_screens_it_draws() {
+    fn rules_pi_reads_the_four_screens_it_draws() {
         assert_eq!(
             named(pi()),
-            ["dialog", "spinner", "prompt"],
+            ["project_trust", "dialog", "spinner", "prompt"],
             "order decides, so it is part of the data"
         );
     }
@@ -1763,6 +1832,33 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
             claim(pi(), A_PI_DIALOG, Phase::Working).rule_name(),
             Some("dialog")
         );
+    }
+
+    #[test]
+    fn rules_pi_asking_about_the_folder_is_not_pi_asking_about_a_tool_call() {
+        // pi draws its folder-trust question in the same box a gated tool call
+        // is drawn in and ends it in the same `↑↓ navigate` hint row, so the
+        // dialog rule holds on this screen too and only the order decides.
+        // Both say a person is needed. What a person is being asked for is not
+        // the same thing, and the kind is where that is written down.
+        let Claim::Ruled(rule) = claim(pi(), A_PI_TRUST, Phase::Starting) else {
+            panic!("pi's own rule claims pi's own screen");
+        };
+        assert_eq!(rule.name, "project_trust");
+        assert_eq!(rule.state, Phase::Waiting);
+        assert_eq!(rule.kind, Some(crate::store::Kind::Trust));
+
+        // And at 20 columns the box is taller than the rows a rule may see, so
+        // the title is out of reach and the screen falls to the rule below.
+        // Still waiting, and asked about the way a tool call would be: quiet
+        // in the direction of the weaker claim, which is what the fall-through
+        // is for and what this screen read before the rule above existed.
+        let Claim::Ruled(narrow) = claim(pi(), A_PI_TRUST_20, Phase::Starting) else {
+            panic!("something still claims the screen at 20 columns");
+        };
+        assert_eq!(narrow.name, "dialog");
+        assert_eq!(narrow.state, Phase::Waiting);
+        assert_eq!(narrow.kind, Some(crate::store::Kind::Question));
     }
 
     #[test]

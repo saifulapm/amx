@@ -576,6 +576,77 @@ fn the_stand_in_draws_the_dialog_in_pis_box_with_the_turn_still_over_it() {
 }
 
 #[test]
+fn a_pi_on_the_folder_trust_question_reads_trust_and_not_a_tool_call() {
+    // pi draws this in the same box a gated tool call's dialog is drawn in and
+    // ends it in the same `↑↓ navigate` hint row, so the dialog rule claimed
+    // it and the record said a tool call was waiting on an answer. What kind
+    // of thing is being asked is what decides what may be sent back, and this
+    // one takes a decision about the tree amx cut rather than a choice off a
+    // caller's own menu.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "stops-on-trust");
+    let pane = amx.pane_of(id);
+
+    // The title pi draws on this screen and on no other, waited for on its
+    // own, with the rest of the screen read off that same capture.
+    let rows = amx.until("the trust question to be drawn", || {
+        let rows = drawn(&amx, &pane);
+        row_of(&rows, "Project trust").is_some().then_some(rows)
+    });
+
+    assert_eq!(borders(&rows).len(), 2, "the box is drawn whole: {rows:?}");
+    let (top, bottom) = (borders(&rows)[0], borders(&rows)[1]);
+    let title = row_of(&rows, "Project trust").expect("the title");
+    assert_eq!(
+        title - top,
+        2,
+        "the border, one blank row, and then the title: {rows:?}"
+    );
+    // The hint row this screen ends in, which is the one the dialog rule
+    // stands on and the one this rule must not: it says `enter save` where a
+    // tool call's says `enter select`, and it is inside the box exactly where
+    // the other one is.
+    assert!(
+        row_of(&rows, "enter save").is_some_and(|hint| top < hint && hint < bottom),
+        "the hint row sits inside the box, where the editor usually is: {rows:?}"
+    );
+    // And nothing is running over it. A person raises this screen before a
+    // turn rather than a tool call raising it inside one, so the line pi spins
+    // is not on the pane the way it is over a dialog.
+    assert!(
+        row_of(&rows, "Working...").is_none(),
+        "no turn is under way behind this question: {rows:?}"
+    );
+    assert_eq!(
+        rows.len() - bottom,
+        3,
+        "the working directory and the stats line under it, same as any other \
+         screen: {rows:?}"
+    );
+
+    // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
+    // nothing outstanding, which is where the screen is the only witness there
+    // is on this vendor.
+    amx.set_state(
+        id,
+        json!({ "state": "starting", "since": 1, "last_event": 1 }),
+    );
+
+    let agent = status(&amx, id);
+    assert_eq!(agent["state"], "waiting", "{agent}");
+    assert_eq!(
+        agent["kind"], "trust",
+        "the folder-trust question, and not the tool call the dialog rule \
+         would have made of it: {agent}"
+    );
+    assert_eq!(
+        agent["rule"], "project_trust",
+        "pi's own rule, out of pi's own document: {agent}"
+    );
+}
+
+#[test]
 fn a_quiet_pi_is_read_against_pis_own_document() {
     // Every reader held one document against whatever pane it was handed, and
     // that document was claude's. pi draws not one of claude's anchors, so a pi

@@ -28,6 +28,10 @@
 # footer's two other openings measured off an openrouter and a groq run of the
 # same version.
 #
+# The folder-trust question was driven the same way on 2026-09-05, at 100, 54,
+# 40, 30, 24 and 20 columns and a pane height of 30, on an opencode run of the
+# same version.
+#
 # ── Whose screens these are ──────────────────────────────────────────────────
 # pi's, and nobody else's. Which document a reader uses is not written here —
 # `src/vendor/pi.rs` points at this file, and the program an agent command runs
@@ -35,8 +39,8 @@
 #
 # ── pi's own composer box, which every rule here stands on ───────────────────
 # pi draws an input box at the bottom of every pane: a border the full width of
-# the pane, a row for what is staged in it, and another border. All three rules
-# below ask for twenty columns of that border, because it is the one thing on a
+# the pane, a row for what is staged in it, and another border. Every rule
+# below asks for twenty columns of that border, because it is the one thing on a
 # pi screen that says the program drawing it is pi. Without it `↑↓ navigate` is
 # a string half the selection widgets ever written put on a screen and
 # `Working...` is a string half the build tools print, and the pane amx is
@@ -48,15 +52,15 @@
 # stops — four agents on an 80-column terminal — and a row that says "I can't
 # tell" is the right answer about a pane nothing has been measured on.
 #
-# Two of the rules go further and say HOW FAR from that border their own anchor
-# sits, because a string that is merely somewhere on the same screen is not
-# evidence about the vendor's chrome. Both `within` values below were counted
-# off the captures and both have the same weakness: the floor finds the TOPMOST
-# row carrying a string, so an earlier copy of one in the agent's own output
-# pushes the span past the window and the rule goes quiet until that row
-# scrolls off. Quiet is the direction to be wrong in — the alternative, on a
-# vendor with no hooks to correct it, is a row that says `working` about an
-# agent that has been sitting at its prompt since.
+# Three of the rules go further and say HOW FAR from that border their own
+# anchor sits, because a string that is merely somewhere on the same screen is
+# not evidence about the vendor's chrome. Every `within` below was counted off
+# the captures and they share one weakness: the floor finds the TOPMOST row
+# carrying a string, so an earlier copy of one in the agent's own output pushes
+# the span past the window and the rule goes quiet until that row scrolls off.
+# Quiet is the direction to be wrong in — the alternative, on a vendor with no
+# hooks to correct it, is a row that says `working` about an agent that has been
+# sitting at its prompt since.
 #
 # ── No placeholders ──────────────────────────────────────────────────────────
 # The `placeholders` list claude's document carries names the sentences that
@@ -126,10 +130,92 @@ rule = "─"
 statusline = 1
 bottom = 1
 
-# pi is blocked on a dialog. This is the one screen on this vendor that needs a
-# person, and it is drawn INSIDE the composer box: the editor is replaced by
-# the dialog and the two borders stay where they were, with the working
-# directory and the stats line under them exactly as on any other screen.
+# pi is asking whether this folder is one to trust. It comes first because the
+# rule below claims it too — same box, same hint row — and what the two screens
+# want from a person is not the same thing: a gated tool call takes one of the
+# choices its own caller wrote, and this takes a decision about the tree amx
+# cut, made once and saved.
+#
+# Measured at 100 columns on 2026-09-05, raised with `/trust` in a folder
+# carrying a `.pi/settings.json`, which is what gives pi a trust decision to
+# offer. The run was `pi --offline --no-session --no-context-files
+# --no-extensions --no-skills --no-themes --approve`, so nothing was written to
+# the vendor's store and the screen reads the way it reads on a folder nobody
+# has decided about:
+#
+#   ──────────────────────────────────────────────────────────
+#
+#    Project trust
+#    /home/saiful/.claude/jobs/1e9e9b98/tmp/worktrees/fix-login-a1b
+#
+#    Saved decision: none
+#    Current session: trusted
+#
+#    → Trust
+#      Trust parent folder (/home/saiful/.claude/jobs/1e9e9b98/tmp/worktrees)
+#      Do not trust
+#
+#    ↑↓ navigate  enter save  escape/ctrl+c cancel
+#
+#   ──────────────────────────────────────────────────────────
+#   ~/.claude/jobs/1e9e9b98/tmp/worktrees/fix-login-a1b
+#   0.0%/1.0M (auto)      (opencode) muse-spark-1.3-contributor-free • high
+#
+# `Project trust` is the anchor. It is the vendor's own title for this screen,
+# it is fixed — the folder goes on the row under it rather than into the title
+# — and no other screen in `docs/pi-screens.md` carries it. Thirteen columns,
+# whole and unwrapped on all six captures.
+#
+# The hint row is what this screen must NOT be anchored on, and that is the
+# whole difference from the rule below. Both end in `↑↓ navigate`, and this one
+# reads `enter save` where a gated tool call reads `enter select` — but that
+# fragment breaks between its two words at 24 columns and again at 20, so a
+# rule resting on it would go quiet exactly where amx tiles its own wall.
+#
+# `any` is what stops the title from being a title anywhere it happens to land.
+# Both rows are the selector's own body, nothing else pi draws carries either,
+# and both were on every capture; the rule takes whichever sits higher.
+#
+# `within` is 7, the widest span measured: the top border, a blank row, the
+# title, the folder wrapped across as many rows as it takes, a blank row, and
+# then `Saved decision:`. Against the tree above — 62 characters written out in
+# full, which is the shape of a worktree amx cuts — it was 5 at 100 columns, 6
+# at 54 and 40, and 7 at 30. A deeper tree wraps further and pushes the span
+# past 7, and then this rule goes quiet and the screen falls to the rule below:
+# still `waiting`, with `question` for its kind instead of `trust`, which is
+# what it read before this rule existed.
+#
+# One measured floor, and it is higher than the 20 columns the other rules
+# reach. This is the tallest box pi draws, and on that same tree it is taller
+# than the 24 rows a rule may see at both 24 and 20 columns: the top border is
+# above the floor with the title, and the bottom border is the only one left.
+# The same fall-through catches it. A shallower tree buys a width or two — a
+# 43-character one, driven the same day, still read `trust` at 24 — so where
+# the floor is depends on how deep the folder is, and there is no width below
+# 30 this rule can be promised at.
+#
+# Like the rule below, it cannot tell this screen from a QUOTATION of it, and
+# for the same reason: pi draws its footer under the box either way, so
+# `not_below` has nothing to find. What it costs if it is wrong is a row that
+# says a person is needed when nobody is.
+#
+# There is no `asks` here. The question is the title and the folder under it,
+# and the choices are not numbered, so the reading that walks up from a first
+# option has no first option to find. What to do about this screen is not one
+# of the three choices on it anyway — it is whether amx should have answered it
+# before the agent ever met it.
+[[rule]]
+name = "project_trust"
+state = "waiting"
+kind = "trust"
+all = ["project trust", "────────────────────"]
+any = ["saved decision:", "current session:"]
+within = 7
+
+# pi is blocked on a dialog a tool call raised, and it is drawn INSIDE the
+# composer box: the editor is replaced by the dialog and the two borders stay
+# where they were, with the working directory and the stats line under them
+# exactly as on any other screen.
 #
 # Measured at 100 columns on 2026-09-04, an extension gating the bash tool with
 # `ctx.ui.select`:
@@ -186,8 +272,9 @@ bottom = 1
 #
 # The screen also carries pi's spinner: a dialog raised from a tool call goes
 # up while the turn is running, so `Working...` is on the pane above the box.
-# That is why this rule is first — order, and not the anchors, is what keeps
-# the spinner rule off a screen that is blocked.
+# That is why this rule sits above the spinner — order, and not the anchors, is
+# what keeps the spinner rule off a screen that is blocked, the same way order
+# is what keeps this rule off the trust screen above.
 [[rule]]
 name = "dialog"
 state = "waiting"

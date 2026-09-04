@@ -37,8 +37,9 @@
 #   screen <name>   repaint the pane with one of pi's screens: `boot`, the pane
 #                   of a pi nobody has typed into yet; `working`, with the line
 #                   pi spins above its box; `dialog`, blocked on a question with
-#                   the composer replaced; and `idle`, the prompt a finished
-#                   turn leaves behind.
+#                   the composer replaced; `trust`, blocked the same way on
+#                   whether this folder is one to trust; and `idle`, the prompt
+#                   a finished turn leaves behind.
 #   sleep <ms>      wait. A long trailing sleep is how a scenario keeps its
 #                   agent alive for the test driving it.
 #
@@ -221,6 +222,23 @@ dialog() {
 		"$border" "$border" "$here" "$TURNED"
 }
 
+# pi asking whether this folder is one to trust. The same box the dialog above
+# is drawn in, ending in the same hint row, and two rows are what tell the two
+# apart: the title `Project trust`, which no other screen pi draws carries, and
+# a hint row that reads `enter save` where a gated tool call's reads `enter
+# select`. Nothing is running under it — a person raises this with `/trust`
+# rather than a tool call raising it mid-turn — so the line pi spins is not on
+# this screen and the stats line is a session that has not taken a turn.
+#
+# The folder is written out in full on its own row under the title and
+# abbreviated in the footer, which is pi's own inconsistency and the reason
+# `within` has to allow for a row that wraps. Measured at 100 columns on
+# 2026-09-05, on a worktree the vendor had nothing saved about.
+trust() {
+	printf '%s\n\n Project trust\n %s\n\n Saved decision: none\n Current session: trusted\n\n → Trust\n   Trust parent folder (%s)\n   Do not trust\n\n ↑↓ navigate  enter save  escape/ctrl+c cancel\n\n%s\n%s\n%s\n' \
+		"$border" "$PWD" "${PWD%/*}" "$border" "$here" "$FRESH"
+}
+
 # Repaint, the way a program that owns its pane draws a new screen. What was
 # there goes into the pane's history rather than above the new screen.
 #
@@ -242,6 +260,7 @@ draw() {
 	working) screen=$(working) ;;
 	idle) screen=$(idle) ;;
 	dialog) screen=$(dialog) ;;
+	trust) screen=$(trust) ;;
 	*)
 		echo "mock pi: $scenario: no screen called \`$1\`" >&2
 		exit 65
