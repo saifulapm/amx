@@ -205,6 +205,30 @@ second document to choose from.
    the suite reads it. Under that sit the table's laws, the unit tests in
    `pi.rs`, and the panes the screens were measured off, checked into
    `rules.rs`.
+5. **Dogfood it.** The laws and the stand-in prove the entry against what amx
+   measured. Only the real program proves the measurement. Three things to get
+   right before the first spawn: install the binary you just built rather than
+   the one already on the PATH, name the vendor in the config's `agent` key
+   rather than passing `--agent` each time, and point it at a scratch
+   repository. The config key earns it twice, because that is how somebody who
+   uses this vendor runs and because `doctor` checks the configured agent and
+   no other. The scratch repository earns it because every spawn cuts a
+   worktree and leaves a branch behind.
+
+   Then one pass per capability the entry claims. Two vendors on the wall at
+   once is the reading test: each row should carry the name of a rule from its
+   own document and a state that is not `unknown`. Resume is a second pane on
+   the session id the first one minted, fork is a second session file carrying
+   the copy's own id, adopt is a record whose first state came off the pane it
+   took over. The refusals are part of the pass, since a dial the vendor does
+   not have and a value off a closed cycle should both come back in the
+   vendor's own words. What the capability list leaves off is not a finding: a
+   vendor reporting through no hooks lags its pane by `FRESH` seconds and
+   leaves `result` nothing to print, which is a partial entry being honest. A
+   finding is amx promising what the program does not honour, or a pane read
+   with another vendor's anchors. Write down what you saw beside the
+   measurements it tests, with the version on it. An entry is measured on a
+   date, and so is a dogfood.
 
 A vendor can also land partially, and honestly. An entry with dials, a session
 vocabulary and screens but no hooks still resumes, forks and is adopted, and
