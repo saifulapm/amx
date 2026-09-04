@@ -304,6 +304,100 @@ all = ["↑↓ navigate", "─────────────────�
 any = ["escape/ctrl+c", "enter select"]
 asks = { above = "→" }
 
+# pi is blocked on a caller asking for a BLOCK of text — `ctx.ui.editor`, the
+# third of the three calls an extension stops pi with. Same box as the dialog
+# above, with a second box inside it for the text being asked for.
+#
+# Measured at 100 columns on 2026-09-05, on a fresh `--offline` boot with an
+# extension that does nothing but raise the dialog:
+#
+#   ────────────────────────────────────────────────────────
+#
+#    Write the commit message
+#
+#   ────────────────────────────────────────────────────────
+#
+#   ────────────────────────────────────────────────────────
+#
+#    enter submit  shift+enter/ctrl+j newline  escape/ctrl+c cancel  ctrl+g …
+#
+#   ────────────────────────────────────────────────────────
+#   ~/.claude/jobs/3876e46d/tmp/pane
+#   0.0%/1.0M (auto)      (opencode) muse-spark-1.3-contributor-free • high
+#
+# Why this screen is worth a rule at all is `docs/pi-screens.md`: this and the
+# one below are the same kind of stop as the dialog above, raised the same way
+# by the same callers, and both read `unknown` — so a permission gate written
+# with `ctx.ui.editor` instead of `ctx.ui.select` was a screen amx said nothing
+# about while somebody waited to be typed at.
+#
+# `enter submit` is what the hint row opens with, and it was whole at 100, 54,
+# 40, 30, 24 and 20 columns. `shift+enter/ctrl+j` is what tells this screen
+# from the one below, which opens its own hint row the same way and asks for
+# one line rather than a block: 18 columns, whole at all six widths. The whole
+# term `shift+enter/ctrl+j newline` is not — the break falls between its two
+# halves at 30 and again at 20 — and neither is `ctrl+g external editor`.
+#
+# So this rule has to come first: every string it stands on is on the screen
+# below's too, and order is what keeps a one-line stop from being read as a
+# block. There is no `within` here for the same reason there is none on the
+# dialog above: the rows between the border and the hint are the caller's own
+# title, wrapped as far as its own words take it. And it cannot tell this
+# screen from a quotation of one, on this vendor and for the reason given
+# above: pi draws its footer under a dialog and under a quotation of one alike.
+#
+# `asks` is the sentence above the hint row, which on this screen is the title.
+# Everything between the two is the box pi draws for the text — two borders and
+# a row of spaces — and a row with nothing on it but the glyph a box is drawn
+# with is not a sentence, so the reading walks over it. What that costs: a
+# block that has been typed into IS content, and then this reads the text
+# somebody is writing rather than the question they were asked. The screen it
+# was measured on is the one pi has just raised, which is the screen amx is
+# looking at when it reads a pane nobody has answered yet.
+[[rule]]
+name = "editor"
+state = "waiting"
+kind = "question"
+all = ["enter submit", "shift+enter/ctrl+j", "────────────────────"]
+asks = { above = "enter submit" }
+
+# pi is blocked on a caller asking for ONE LINE — `ctx.ui.input`. The same box
+# again, with a row for the line in place of the block above.
+#
+# Measured at 100 columns on 2026-09-05, the same way:
+#
+#   ────────────────────────────────────────────────────────
+#
+#    Which branch should I push to?
+#
+#   >
+#
+#    enter submit  escape/ctrl+c cancel
+#
+#   ────────────────────────────────────────────────────────
+#   ~/.claude/jobs/3876e46d/tmp/pane
+#   0.0%/1.0M (auto)      (opencode) muse-spark-1.3-contributor-free • high
+#
+# `enter submit` again, and nothing else of the hint row's: what is left of it
+# is `escape/ctrl+c cancel`, which breaks between its two words at 40 columns
+# and is shared with every dialog above anyway. This rule is the weakest in the
+# file for that reason — one term and a border — and it sits under the editor
+# rule so that the screen carrying both is claimed by the one that says more.
+#
+# `asks` cannot be the hint row here. pi draws the row it is waiting to be
+# typed into between the title and the hint, and that row is content: reading
+# up from the hint stops on it and answers `>`. So the reading is the sentence
+# above the `>` itself, which is the title, wrap and all — two rows at 20
+# columns, one at the other five widths measured. It stays the title once
+# somebody has typed, because the typing lands on that same row rather than on
+# a new one.
+[[rule]]
+name = "input"
+state = "waiting"
+kind = "question"
+all = ["enter submit", "────────────────────"]
+asks = { above = ">" }
+
 # A turn is running. pi spins one line just above the composer box, with a
 # blank row between them:
 #

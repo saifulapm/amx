@@ -1049,6 +1049,145 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ↑1.3k ↓64 $0.000 ...
 ";
 
+    /// pi stopped on `ctx.ui.input` at 100 columns: the caller's title, the row
+    /// pi draws for the line it is waiting for, and a hint row of its own.
+    /// Measured 2026-09-05 on a fresh `--offline` boot with an extension that
+    /// does nothing but raise the dialog.
+    const A_PI_INPUT: &str = r"
+ pi v0.84.4
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+[Extensions]
+  screens.js
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Which branch should I push to?
+
+>
+
+ enter submit  escape/ctrl+c cancel
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.claude/jobs/3876e46d/tmp/pane
+0.0%/1.0M (auto)                                   (opencode) muse-spark-1.3-contributor-free • high
+
+
+
+
+
+
+
+
+";
+
+    /// The same screen at 20 columns. The title wraps across two rows and the
+    /// hint row across three; `enter submit` is what the row still opens with.
+    const A_PI_INPUT_20: &str = r" · ctrl+o more
+ Press ctrl+o to
+ show full startup
+ help and loaded
+ resources.
+
+ Pi can explain its
+ own features and
+ look up its docs.
+ Ask it how to use
+ or extend Pi.
+
+[Extensions]
+  screens.js
+
+
+────────────────────
+
+ Which branch
+ should I push to?
+
+>
+
+ enter submit
+ escape/ctrl+c
+ cancel
+
+────────────────────
+~/.claude/jobs/38...
+0.0%/1.0M (auto)  mu
+";
+
+    /// pi stopped on `ctx.ui.editor` at 100 columns. The same box, with a
+    /// second one inside it for the block of text being asked for, and a hint
+    /// row that says how to end a line as well as how to submit.
+    const A_PI_EDITOR: &str = r"
+ pi v0.84.4
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+[Extensions]
+  screens.js
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Write the commit message
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ enter submit  shift+enter/ctrl+j newline  escape/ctrl+c cancel  ctrl+g external editor
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.claude/jobs/3876e46d/tmp/pane
+0.0%/1.0M (auto)                                   (opencode) muse-spark-1.3-contributor-free • high
+
+
+
+
+
+
+";
+
+    /// The same screen at 20 columns, where the hint row wraps across six rows
+    /// and `shift+enter/ctrl+j` is still whole on one of them.
+    const A_PI_EDITOR_20: &str = r"
+ Pi can explain its
+ own features and
+ look up its docs.
+ Ask it how to use
+ or extend Pi.
+
+[Extensions]
+  screens.js
+
+
+────────────────────
+
+ Write the commit
+ message
+
+────────────────────
+
+────────────────────
+
+ enter submit
+ shift+enter/ctrl+j
+  newline
+ escape/ctrl+c
+ cancel  ctrl+g
+ external editor
+
+────────────────────
+~/.claude/jobs/38...
+0.0%/1.0M (auto)  mu
+";
+
     /// `ctx.ui.confirm` at 100 columns, which draws the same box with two
     /// choices and the caller's message on the row under its title. Measured
     /// 2026-09-05 with an extension that does nothing but raise the dialog.
@@ -1813,10 +1952,17 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
     }
 
     #[test]
-    fn rules_pi_reads_the_four_screens_it_draws() {
+    fn rules_pi_reads_the_six_screens_it_draws() {
         assert_eq!(
             named(pi()),
-            ["project_trust", "dialog", "spinner", "prompt"],
+            [
+                "project_trust",
+                "dialog",
+                "editor",
+                "input",
+                "spinner",
+                "prompt"
+            ],
             "order decides, so it is part of the data"
         );
     }
@@ -1904,6 +2050,61 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
     }
 
     #[test]
+    fn rules_every_way_a_caller_stops_pi_is_a_screen_that_says_so() {
+        // An extension stops pi for a person three ways, and until now one of
+        // them was the only one amx could see. A permission gate is as easily
+        // written with `ctx.ui.input` as with `ctx.ui.select` — same caller,
+        // same stop, and the row said idle or unknown while somebody waited to
+        // be typed at. Each of the three draws a hint row of its own and all
+        // three keep the caller's title in the same place, at the top of the
+        // box.
+        for (what, screen, named, sentence) in [
+            (
+                "a caller asking for a choice",
+                A_PI_DIALOG,
+                "dialog",
+                "Run echo hi?",
+            ),
+            (
+                "a caller asking for a line",
+                A_PI_INPUT,
+                "input",
+                "Which branch should I push to?",
+            ),
+            (
+                "the same at 20 columns, the title wrapped in two",
+                A_PI_INPUT_20,
+                "input",
+                "Which branch should I push to?",
+            ),
+            (
+                "a caller asking for a block",
+                A_PI_EDITOR,
+                "editor",
+                "Write the commit message",
+            ),
+            (
+                "the same at 20 columns",
+                A_PI_EDITOR_20,
+                "editor",
+                "Write the commit message",
+            ),
+        ] {
+            let Claim::Ruled(rule) = claim(pi(), screen, Phase::Working) else {
+                panic!("{what} is claimed by a rule");
+            };
+            assert_eq!(rule.name, named, "{what}");
+            assert_eq!(rule.state, Phase::Waiting, "{what}");
+            assert_eq!(rule.kind, Some(crate::store::Kind::Question), "{what}");
+            assert_eq!(
+                pi().asking(screen).map(|asked| asked.text),
+                Some(sentence.to_string()),
+                "{what}"
+            );
+        }
+    }
+
+    #[test]
     fn rules_a_pi_dialog_carries_the_callers_question_and_none_of_its_choices() {
         // The sentence a gated tool call asks is whatever its caller passed,
         // and pi draws it at the top of the box with the choices under it. The
@@ -1961,6 +2162,8 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
             ("a pi prompt", A_PI_IDLE),
             ("a pi turn running", A_PI_WORKING),
             ("a pi dialog", A_PI_DIALOG),
+            ("a pi asking for a line", A_PI_INPUT),
+            ("a pi asking for a block", A_PI_EDITOR),
         ] {
             assert_eq!(
                 claude().claim(screen, Phase::Working, SETTLED_LOOKS),
