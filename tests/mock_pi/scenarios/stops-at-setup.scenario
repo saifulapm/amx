@@ -1,0 +1,7 @@
+# The gate a first run stops at. There is no `screen boot` in front of it
+# because there is no boot yet: pi asks for a theme and an analytics answer
+# before it draws a pane at all, so this screen is the whole of what a person
+# starting their first agent sees. The agent is still there afterwards, the way
+# pi is: whoever is driving this scenario decides when it ends.
+screen setup
+sleep 600000

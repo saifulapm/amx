@@ -1451,6 +1451,139 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/1.0M (auto)  mu
 ";
 
+    /// The gate pi puts in front of a first run, at 100 columns on a pane of
+    /// 30 rows, with `PI_EXPERIMENTAL=1` and an agent directory with no
+    /// `settings.json` in it. Its own startup screen rather than the pane a
+    /// session runs in: the box is the whole of it, and the rows under it are
+    /// the empty pane. Six of those rows are why there is no `within` on this
+    /// rule — they push the box's top border above the floor, and the topmost
+    /// border left to find is the box's own bottom.
+    const A_PI_SETUP: &str = r"
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ ██████
+ ██  ██
+ ████  ██
+ ██    ██
+
+ Welcome to pi, the minimal coding agent.
+
+ Pick a theme.
+ Detected system appearance: dark
+
+ → Dark
+   Light
+
+ ↑↓ navigate  enter continue  escape/ctrl+c skip setup
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+
+
+
+
+
+
+";
+
+    /// The second step of the same gate at 20 columns. Four rows of prose about
+    /// what sharing usage data means, wrapped until the box is taller than the
+    /// pane: the banner has scrolled off with the top border, and what is left
+    /// is the hint row and the border under it.
+    const A_PI_SETUP_ANALYTICS_20: &str = r" anonymous usage
+ data sharing?
+ Opting in stores a
+ tracking
+ identifier in
+ settings.json and
+ enables anonymous
+ usage analytics.
+ This helps us to
+ better debug,
+ reproduce, and
+ resolve issues
+ and bugs within
+ Pi. You can
+ observe what is
+ shared using
+ /privacy and make
+ changes anytime in
+ settings.json.
+
+ → Share anonymous
+ usage data
+   Don't share
+
+ ↑↓ navigate  enter
+  finish
+ escape/ctrl+c skip
+ setup
+
+────────────────────
+";
+
+    /// pi waiting for the key a provider wants, at 100 columns, driven with
+    /// `/login` through the two selectors in front of it. The box is in the
+    /// composer's slot with the footer under it, and the rows above it are the
+    /// vendor's own warning that it has no models to run a turn with — the row
+    /// that spells `/login to log into`, which is why this rule cannot anchor
+    /// on the title.
+    const A_PI_LOGIN: &str = r"
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+
+ Warning: No models available. Use /login to log into a provider via OAuth or API key. See:
+
+ /home/saiful/.local/share/mise/installs/node/24.20.0/lib/node_modules/@earendil-works/pi-coding-ag
+ ent/docs/providers.md
+
+ /home/saiful/.local/share/mise/installs/node/24.20.0/lib/node_modules/@earendil-works/pi-coding-ag
+ ent/docs/models.md
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Login to Cerebras
+
+ Enter Cerebras API key
+>
+ (escape/ctrl+c to cancel, enter to submit)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/home/saiful/.claude/jobs/6bbcd928/tmp/rig/work
+0.0%/0 (auto)                                                                                unknown
+";
+
+    /// The same screen at 20 columns, where the hint row takes a second row and
+    /// the span from the box's top border to it is 6 — the widest measured, and
+    /// what `within` on that rule is.
+    const A_PI_LOGIN_20: &str = r" oding-agent/docs/p
+ roviders.md
+
+ /home/saiful/.loca
+ l/share/mise/insta
+ lls/node/24.20.0/l
+ ib/node_modules/@e
+ arendil-works/pi-c
+ oding-agent/docs/m
+ odels.md
+
+────────────────────
+ Login to Cerebras
+
+ Enter Cerebras API
+ key
+>
+ (escape/ctrl+c to
+ cancel, enter to
+ submit)
+────────────────────
+/home/saiful/.cla...
+0.0%/0 (auto)  unkno
+";
+
     /// The turn is over and the prompt is waiting for a person. The line pi
     /// spins is off the screen; the box, the working directory and the stats
     /// line are where they were.
@@ -2111,15 +2244,17 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
     }
 
     #[test]
-    fn rules_pi_reads_the_six_screens_it_draws() {
+    fn rules_pi_reads_the_eight_screens_it_draws() {
         assert_eq!(
             named(pi()),
             [
+                "first_time_setup",
                 "project_trust",
                 "dialog",
                 "editor",
                 "input",
                 "spinner",
+                "login",
                 "prompt"
             ],
             "order decides, so it is part of the data"
@@ -2275,6 +2410,83 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
         assert_eq!(narrow.name, "dialog");
         assert_eq!(narrow.state, Phase::Waiting);
         assert_eq!(narrow.kind, Some(crate::store::Kind::Question));
+    }
+
+    #[test]
+    fn rules_the_screens_a_fresh_pi_stops_on_are_screens_that_say_so() {
+        // Two ways a pi nobody has set up stops before it can do anything, and
+        // both were read as something else. The first-run gate ends in the
+        // dialog rule's own hint row, so it was reported as a tool call
+        // waiting on an answer; the login dialog is short enough that the box
+        // and the stats line under it added up to `prompt`, and a card said
+        // idle over a pi that cannot take a turn until somebody types a key
+        // into it.
+        for (what, screen, named, sentence) in [
+            (
+                "the gate a first run stops at",
+                A_PI_SETUP,
+                "first_time_setup",
+                "Pick a theme. Detected system appearance: dark",
+            ),
+            (
+                "a pi waiting for a provider's key",
+                A_PI_LOGIN,
+                "login",
+                "Enter Cerebras API key",
+            ),
+            (
+                "the same login at 20 columns, its hint row wrapped in three",
+                A_PI_LOGIN_20,
+                "login",
+                "Enter Cerebras API key",
+            ),
+        ] {
+            let Claim::Ruled(rule) = claim(pi(), screen, Phase::Starting) else {
+                panic!("{what} is claimed by a rule");
+            };
+            assert_eq!(rule.name, named, "{what}");
+            assert_eq!(rule.state, Phase::Waiting, "{what}");
+            assert_eq!(rule.kind, Some(crate::store::Kind::Question), "{what}");
+            assert_eq!(
+                pi().asking(screen).map(|asked| asked.text),
+                Some(sentence.to_string()),
+                "{what}"
+            );
+        }
+
+        // The gate's second step wraps four rows of prose about usage data
+        // until the box is taller than the pane, and at 20 columns the banner
+        // has scrolled off with the top border. The screen falls to the dialog
+        // rule: still waiting, and asked about the way a tool call would be,
+        // which is what it read before this rule existed.
+        let Claim::Ruled(narrow) = claim(pi(), A_PI_SETUP_ANALYTICS_20, Phase::Starting) else {
+            panic!("something still claims the screen at 20 columns");
+        };
+        assert_eq!(narrow.name, "dialog");
+        assert_eq!(narrow.state, Phase::Waiting);
+    }
+
+    #[test]
+    fn rules_a_setup_gate_with_pis_own_footer_under_it_is_a_quotation() {
+        // The one screen on this vendor where the layout tells a widget from a
+        // quotation of one: pi draws no composer and no footer under its
+        // first-run gate, so a stats line below that banner says the box is
+        // text on somebody else's pane. This is not a capture — it is the
+        // measured gate with a measured footer written under it, which is the
+        // shape a quotation of it has on a pane that is running a session.
+        let quoted = format!(
+            "{}\n~/.claude/jobs/eef72778/tmp/pipane\n\
+             ↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)\n",
+            A_PI_SETUP.trim_end()
+        );
+
+        let Claim::Ruled(rule) = claim(pi(), &quoted, Phase::Starting) else {
+            panic!("the dialog rule still has the screen");
+        };
+        assert_ne!(
+            rule.name, "first_time_setup",
+            "a gate with a session's chrome under it is not the gate"
+        );
     }
 
     #[test]

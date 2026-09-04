@@ -38,6 +38,15 @@
 # `ctx.ui.select`, `confirm`, `input` and `editor` from them, which is the only
 # way to reach the last two.
 #
+# The two screens a pi nobody has set up stops on were driven that day too, at
+# the same six widths and the same pane height. The first-run gate wants an
+# agent directory with no `settings.json` in it, so each of those runs had
+# `HOME` pointed at an empty directory of its own and `PI_EXPERIMENTAL=1` set,
+# which is the whole of what makes the vendor draw it; nothing of anybody's was
+# moved to reach it. The login dialog was driven with `/login` through both of
+# the selectors in front of it to a provider that wants a key, and nothing was
+# typed into it.
+#
 # ── Whose screens these are ──────────────────────────────────────────────────
 # pi's, and nobody else's. Which document a reader uses is not written here —
 # `src/vendor/pi.rs` points at this file, and the program an agent command runs
@@ -154,11 +163,103 @@ rule = "─"
 statusline = 1
 bottom = 1
 
-# pi is asking whether this folder is one to trust. It comes first because the
-# rule below claims it too — same box, same hint row — and what the two screens
-# want from a person is not the same thing: a gated tool call takes one of the
-# choices its own caller wrote, and this takes a decision about the tree amx
-# cut, made once and saved.
+# pi has never been run on this machine and will not draw a pane until somebody
+# has answered it: a theme first, and then whether to share usage data. This is
+# the vendor's own startup screen rather than the pane a session runs in, and
+# it is the one screen in this file with none of pi's chrome around it — the
+# box is the whole of it, there is no composer inside and no working directory
+# or stats line under it.
+#
+# It comes first for the same reason the trust question below does: the dialog
+# rule claims it too, on the same `↑↓ navigate` hint row, and what the two
+# screens want is not the same thing. A gated tool call takes one of the
+# choices its own caller wrote. This takes an answer about the person's own
+# machine, saved once and never asked for again, and no agent has started yet
+# to take it.
+#
+# Measured at 100, 54, 40, 30, 24 and 20 columns on 2026-09-05, at 100 columns:
+#
+#   ──────────────────────────────────────────────────────────
+#
+#    ██████
+#    ██  ██
+#    ████  ██
+#    ██    ██
+#
+#    Welcome to pi, the minimal coding agent.
+#
+#    Pick a theme.
+#    Detected system appearance: dark
+#
+#    → Dark
+#      Light
+#
+#    ↑↓ navigate  enter continue  escape/ctrl+c skip setup
+#
+#   ──────────────────────────────────────────────────────────
+#
+# `Welcome to pi,` is the anchor. It is the vendor's own banner for this
+# screen, it is drawn over both of the two steps — the theme question above and
+# the analytics one after it — and no other screen in `docs/pi-screens.md`
+# carries it. Fourteen columns, whole and unwrapped on all six captures.
+#
+# The hint row is what this screen must NOT be anchored on, and it is worth
+# saying why, because it is the row that makes the screen look like a dialog.
+# Every term after the first breaks somewhere, and the two steps do not break
+# them at the same widths: `skip setup` is split between its words at 54, 24
+# and 20 columns on the theme step and at 20 on the analytics one, and where
+# the analytics step keeps that pair whole at 24 it splits `escape/ctrl+c skip`
+# instead. There is no fragment of that row whole on both steps at all six
+# widths.
+#
+# There is no `within` on this one, and the reason is where pi puts this box
+# rather than how tall it is. Every other screen in this file is drawn at the
+# BOTTOM of the pane, so its top border is always inside the rows a rule may
+# see; this one is drawn at the top, with whatever room is left under it blank.
+# On a pane a few rows taller than the box the floor begins below that top
+# border, the topmost border left to find is the bottom one, and a window
+# counted from it would be a question about how much empty pane is underneath.
+# Measured both ways at 100 columns: 7 rows from the top border to the banner
+# on a pane the box fills, and the top border out of reach on a pane six rows
+# taller.
+#
+# `not_below` is what tells this screen from a QUOTATION of it, and it is the
+# only rule in this file that has anything to try: pi draws no footer under
+# this box, so a stats line below the banner means the box is text on somebody
+# else's pane. The two strings are the stats-line openings `[furniture]`
+# already measures, minus the one the walk reads as `↑` — that one is on this
+# screen's own hint row. What is left uncovered is the third opening, a session
+# whose stats line has been truncated back to `↑1.5k ↓69 R1.3k CH90....`: a
+# quotation sitting over that footer is claimed, and what it costs is a row
+# that says a person is needed when nobody is.
+#
+# One measured floor, and it is the second step rather than a width. The
+# analytics step draws four rows of prose about what sharing means and they
+# wrap, so the box outgrows the pane: at 30 columns its top border has scrolled
+# off, and at 20 the banner has gone with it. The rule holds for as long as the
+# banner is on the pane and goes quiet at 20, where the screen falls to the
+# dialog rule below — still `waiting`, with `question` for its kind, which is
+# what it read before this rule existed.
+#
+# `asks` is the sentence above the arrow, the same reading the dialog rule
+# uses: pi marks the choice it is on with a leading `→ ` here as well, and
+# numbers nothing. On the theme step that reads `Pick a theme. Detected system
+# appearance: dark`, which is the question and the row pi wrapped under it; on
+# the analytics step it is the opt-in question and the prose beneath it, read
+# as the one sentence the vendor drew them as.
+[[rule]]
+name = "first_time_setup"
+state = "waiting"
+kind = "question"
+all = ["welcome to pi,", "────────────────────"]
+not_below = ["$0.", "%/"]
+asks = { above = "→" }
+
+# pi is asking whether this folder is one to trust. It comes above the dialog
+# rule because that rule claims it too — same box, same hint row — and what the
+# two screens want from a person is not the same thing: a gated tool call takes
+# one of the choices its own caller wrote, and this takes a decision about the
+# tree amx cut, made once and saved.
 #
 # Measured at 100 columns on 2026-09-05, raised with `/trust` in a folder
 # carrying a `.pi/settings.json`, which is what gives pi a trust decision to
@@ -494,6 +595,92 @@ state = "working"
 all = ["────────────────────"]
 any = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 within = 4
+
+# pi is waiting for the credentials a provider wants. `/login` ends here on
+# every provider that is not signed into with an account, and so does a pi
+# nobody has logged in at all: the vendor draws its box where the composer was,
+# with the working directory and the stats line under it as on any other
+# screen.
+#
+# Measured at 100, 54, 40, 30, 24 and 20 columns on 2026-09-05, driven with
+# `/login` through the two selectors in front of this screen to a provider that
+# wants an API key. At 100 columns, with the rows the vendor writes above the
+# box on a pi that has no models to run a turn with:
+#
+#    Warning: No models available. Use /login to log into a provider via OAuth
+#    or API key. See:
+#
+#   ────────────────────────────────────────────────────────
+#    Login to Cerebras
+#
+#    Enter Cerebras API key
+#   >
+#    (escape/ctrl+c to cancel, enter to submit)
+#   ────────────────────────────────────────────────────────
+#   ~/.claude/jobs/6bbcd928/tmp/rig/work
+#   0.0%/0 (auto)                                    unknown
+#
+# `escape/ctrl+c to` is the anchor, and it is what tells this screen from the
+# three a caller raises: their hint rows spell the same key `escape/ctrl+c
+# cancel`, with no `to` in it. Sixteen columns, whole at all six widths. The
+# whole row is not — `(escape/ctrl+c to cancel, enter to submit)` breaks after
+# `to` at 40 columns, after `cancel,` at 30, and twice at 24 and 20.
+#
+# ── Why this rule sits here, under the spinner ───────────────────────────────
+# One other screen pi draws carries that row: `!cmd` puts `⠧ Running...
+# (escape/ctrl+c to cancel)` in a box of its own in the transcript, three rows
+# above the composer's border, which is inside this rule's window as well as
+# the spinner rule's. What tells the two apart is the frame in front of it, and
+# the frame is the anchor the rule above already stands on — so the order does
+# the telling, the same way it does between the dialog rule and the spinner.
+#
+# What that costs is a login dialog with a turn running behind it: the rule
+# above would claim it and the row would read `working`. Nothing measured puts
+# pi in that state — a person raises this screen between turns, and a pi with
+# no provider to call has no turn to be in the middle of — and a screen amx has
+# not seen is not a screen to reorder a document around.
+#
+# The vendor's own title is what this rule cannot use, and the capture above is
+# the reason. `Login to ` would be the better anchor by every other measure —
+# it is fixed, the provider's name is what follows it, and it is on no other
+# screen — but a pi nobody has logged in draws `Use /login to log into a
+# provider` two rows above its own box, `row_of` takes the topmost row carrying
+# a string, and the span from that row to the hint would put this rule out of
+# its own window. The screen that anchor was for is exactly the screen that row
+# is on.
+#
+# `within` is 6, the widest span measured, and it is what ties the hint row to
+# pi's own box rather than to a rule somewhere above it. The rows between are
+# the title, a blank row, the question, and the row pi waits to be typed into;
+# the hint row takes a second row at 20 columns, which is where the 6 comes
+# from. It was 5 at 100, 54, 40, 30 and 24.
+#
+# What this rule is for is what the screen read without it: `prompt`, idle. The
+# box is short enough that the stats line sits 8 rows under its top border,
+# which is exactly the window that rule allows, so a pi that can do nothing at
+# all until somebody types a key into it was reported as one sitting at its
+# prompt with nothing to do. That is the worse of the two wrong answers
+# available on this vendor — `send` types into whatever widget is up, and a row
+# that says idle is a row saying there is nothing here to look at.
+#
+# `asks` is the sentence above the row pi waits to be typed into, which is the
+# same reading the input rule above uses and for the same reason: the title
+# names the provider and the question is the row under it, with pi's own `>`
+# between that and the hint row. What it costs is the same as well — the typing
+# lands on that row rather than a new one, so the reading holds once somebody
+# has begun.
+#
+# One shape of this screen was not driven. Signing in with an account puts a
+# URL and a device code in the box instead of a row to type into, and reaching
+# it means a call to somebody's identity provider and a browser opening on
+# their machine. What that screen reads is not written down here.
+[[rule]]
+name = "login"
+state = "waiting"
+kind = "question"
+all = ["escape/ctrl+c to", "────────────────────"]
+within = 6
+asks = { above = ">" }
 
 # pi is drawn and waiting for somebody to type. Nothing more specific claimed
 # the screen and pi's own chrome is on it: the box, and the stats line under

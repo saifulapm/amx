@@ -41,8 +41,10 @@
 #                   pi says on it; `dialog`, blocked on a question with the
 #                   composer replaced; `input` and `editor`, blocked the same
 #                   way on a line and on a block of text; `trust`, blocked on
-#                   whether this folder is one to trust; and `idle`, the prompt
-#                   a finished turn leaves behind.
+#                   whether this folder is one to trust; `setup`, the gate a
+#                   first run stops at before there is a pane at all; `login`,
+#                   waiting for the key a provider wants; and `idle`, the
+#                   prompt a finished turn leaves behind.
 #   sleep <ms>      wait. A long trailing sleep is how a scenario keeps its
 #                   agent alive for the test driving it.
 #
@@ -174,10 +176,12 @@ esac
 # emptied, which every screen opens with.
 CLEAR=$(printf '\033[H\033[2J')
 
-# The two stats lines measured: a subscription-backed session before its first
-# turn, and one that has taken a turn.
+# The three stats lines measured: a subscription-backed session before its
+# first turn, one that has taken a turn, and one on a pi with no provider to
+# take a turn with, which is the pi the login screen below belongs to.
 FRESH='$0.000 (sub) 0.0%/264k (auto)              (github-copilot) gpt-5-mini • minimal'
 TURNED='↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)   (github-copilot)'
+UNSET='0.0%/0 (auto)                                                        unknown'
 
 # Each screen below is written to a pipe rather than to the pane: `draw` reads
 # what it printed, adds the clear in front of it, and puts the whole screen on
@@ -289,6 +293,41 @@ trust() {
 		"$border" "$PWD" "${PWD%/*}" "$border" "$here" "$FRESH"
 }
 
+# The gate pi puts in front of a first run: no settings.json under the agent
+# directory, so the vendor asks for a theme and then for an answer about
+# analytics before it will draw a pane at all. It is the one screen here that
+# is not the pane a session runs in — its own TUI, with no composer, no working
+# directory and no stats line under it — and pi draws it at the top of the
+# pane with whatever room is left below. The theme step is what a fresh run
+# stops on first, and the banner over it is on both steps.
+#
+# Measured at 100 columns on 2026-09-05, with PI_EXPERIMENTAL=1 and an agent
+# directory with nothing saved in it, which is what makes the vendor draw this
+# rather than skip it.
+setup() {
+	printf '%s\n\n ██████\n ██  ██\n ████  ██\n ██    ██\n\n' "$border"
+	printf ' Welcome to pi, the minimal coding agent.\n\n'
+	printf ' Pick a theme.\n Detected system appearance: dark\n\n'
+	printf ' → Dark\n   Light\n\n'
+	printf ' ↑↓ navigate  enter continue  escape/ctrl+c skip setup\n\n%s\n' "$border"
+}
+
+# pi asking for the key a provider wants, which is where `/login` ends on every
+# provider that is not signed into with an account. The dialog takes the
+# editor's slot the way an extension's does and keeps the same footer under it;
+# what is drawn differently is the title, which sits directly under the top
+# border rather than a blank row below it.
+#
+# Measured at 100 columns on 2026-09-05 on a pi with no provider configured —
+# the one a spawned agent has when nobody has logged it in — so the rows above
+# the box are the vendor's own warning about it and the stats line says
+# `unknown` where a model would be.
+login() {
+	printf ' Warning: No models available. Use /login to log into a provider via OAuth\n or API key. See:\n\n'
+	printf '%s\n Login to Cerebras\n\n Enter Cerebras API key\n>\n (escape/ctrl+c to cancel, enter to submit)\n%s\n%s\n%s\n' \
+		"$border" "$border" "$here" "$UNSET"
+}
+
 # Repaint, the way a program that owns its pane draws a new screen. What was
 # there goes into the pane's history rather than above the new screen.
 #
@@ -316,6 +355,8 @@ draw() {
 	input) screen=$(input) ;;
 	editor) screen=$(editor) ;;
 	trust) screen=$(trust) ;;
+	setup) screen=$(setup) ;;
+	login) screen=$(login) ;;
 	*)
 		echo "mock pi: $scenario: no screen called \`$1\`" >&2
 		exit 65

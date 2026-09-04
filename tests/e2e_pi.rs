@@ -881,6 +881,149 @@ fn a_pi_on_the_folder_trust_question_reads_trust_and_not_a_tool_call() {
 }
 
 #[test]
+fn the_stand_in_draws_the_gate_pi_puts_in_front_of_a_first_run() {
+    // The screen `assets/screen-rules-pi.toml` names `first_time_setup`, and
+    // it is the one screen in that document with none of pi's chrome under it:
+    // the vendor asks for a theme before it will draw a pane at all, so what
+    // is on this one is a box, the vendor's own banner inside it, and nothing
+    // else whatsoever.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "stops-at-setup");
+    let pane = amx.pane_of(id);
+
+    let rows = amx.until("the setup gate to be drawn", || {
+        let rows = drawn(&amx, &pane);
+        row_of(&rows, "Welcome to pi,").is_some().then_some(rows)
+    });
+
+    assert_eq!(borders(&rows).len(), 2, "the box is drawn whole: {rows:?}");
+    let (top, bottom) = (borders(&rows)[0], borders(&rows)[1]);
+    let banner = row_of(&rows, "Welcome to pi,").expect("the vendor's banner");
+    assert_eq!(
+        banner - top,
+        7,
+        "the border, a blank row, the four rows pi draws its mark in, another \
+         blank row, and then the banner: {rows:?}"
+    );
+    assert!(
+        row_of(&rows, "navigate").is_some_and(|hint| top < hint && hint < bottom),
+        "the hint row sits inside the box: {rows:?}"
+    );
+    assert_eq!(
+        rows.len() - bottom,
+        1,
+        "and nothing under it: no working directory and no stats line, because \
+         this is the vendor's own startup screen and not the pane a session \
+         runs in: {rows:?}"
+    );
+}
+
+#[test]
+fn the_stand_in_draws_the_login_dialog_in_the_slot_pis_composer_had() {
+    // The screen `assets/screen-rules-pi.toml` names `login`, drawn the way it
+    // was measured: the box where the composer was, the footer under it as on
+    // any other screen, and the vendor's title on the row directly under the
+    // top border rather than a blank row below it, which is the one way this
+    // box is drawn differently from the dialogs a caller raises.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "stops-on-login");
+    let pane = amx.pane_of(id);
+
+    let rows = amx.until("the login dialog to be drawn", || {
+        let rows = drawn(&amx, &pane);
+        row_of(&rows, "Login to").is_some().then_some(rows)
+    });
+
+    assert_eq!(borders(&rows).len(), 2, "the box is drawn whole: {rows:?}");
+    let (top, bottom) = (borders(&rows)[0], borders(&rows)[1]);
+    let title = row_of(&rows, "Login to").expect("the vendor's title");
+    assert_eq!(title - top, 1, "the border and then the title: {rows:?}");
+    assert!(
+        row_of(&rows, "escape/ctrl+c to").is_some_and(|hint| top < hint && hint < bottom),
+        "the hint row sits inside the box, where the editor usually is: {rows:?}"
+    );
+    assert_eq!(
+        rows.len() - bottom,
+        3,
+        "the working directory and the stats line under it, same as any other \
+         screen: {rows:?}"
+    );
+    let stats = rows.last().expect("a stats line");
+    assert!(
+        stats.starts_with("0.0%/"),
+        "a pi nobody has logged in has no cost and no tokens to show, so its \
+         stats line opens on the context indicator: {stats}"
+    );
+}
+
+#[test]
+fn the_two_screens_a_fresh_pi_stops_on_each_read_waiting() {
+    // Neither of these is a turn and neither is a prompt, and both were read
+    // as one or the other: the setup gate carries the dialog rule's own hint
+    // row, so it was reported as a tool call waiting on an answer, and the
+    // login dialog is short enough that the box and the stats line under it
+    // added up to `prompt` — a card saying idle over a pi that cannot take a
+    // turn until somebody types a key into it.
+    for (what, scenario, drawn_row, rule, question) in [
+        (
+            "the gate a first run stops at",
+            "stops-at-setup",
+            "Welcome to pi,",
+            "first_time_setup",
+            "Pick a theme. Detected system appearance: dark",
+        ),
+        (
+            "a pi waiting for a provider's key",
+            "stops-on-login",
+            "Login to",
+            "login",
+            "Enter Cerebras API key",
+        ),
+    ] {
+        let amx = Harness::new();
+        let id = "fix-login-a1b";
+        start(&amx, id, scenario);
+        let pane = amx.pane_of(id);
+
+        // The row the vendor draws on this screen and on no other, waited for
+        // on its own, with the rest of the screen read off that same capture.
+        amx.until("the screen to be drawn", || {
+            row_of(&drawn(&amx, &pane), drawn_row)
+                .is_some()
+                .then_some(())
+        });
+
+        // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
+        // nothing outstanding, which is where the screen is the only witness
+        // there is on this vendor.
+        amx.set_state(
+            id,
+            json!({ "state": "starting", "since": 1, "last_event": 1 }),
+        );
+
+        let agent = status(&amx, id);
+        assert_eq!(agent["state"], "waiting", "{what}: {agent}");
+        assert_eq!(
+            agent["rule"], rule,
+            "pi's own rule, out of pi's own document: {agent}"
+        );
+        assert_eq!(agent["kind"], "question", "{what}: {agent}");
+        assert_eq!(
+            agent["question"], question,
+            "the sentence the vendor is waiting on, off the pane it is drawn \
+             on: {agent}"
+        );
+        assert_eq!(
+            agent["options"],
+            json!([]),
+            "pi numbers none of its choices: {agent}"
+        );
+    }
+}
+
+#[test]
 fn a_quiet_pi_is_read_against_pis_own_document() {
     // Every reader held one document against whatever pane it was handed, and
     // that document was claude's. pi draws not one of claude's anchors, so a pi
