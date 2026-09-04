@@ -32,6 +32,12 @@
 # 40, 30, 24 and 20 columns and a pane height of 30, on an opencode run of the
 # same version.
 #
+# The two screens a caller asks for words on were driven that same day and the
+# same way, at those six widths, one fresh `pi --offline … -e screens.js` per
+# screen: an extension registering four commands and doing nothing but raising
+# `ctx.ui.select`, `confirm`, `input` and `editor` from them, which is the only
+# way to reach the last two.
+#
 # ── Whose screens these are ──────────────────────────────────────────────────
 # pi's, and nobody else's. Which document a reader uses is not written here —
 # `src/vendor/pi.rs` points at this file, and the program an agent command runs
@@ -282,7 +288,7 @@ within = 7
 # the first one carry two spaces instead.
 #
 # `ctx.ui.confirm` draws its message on the row directly under the title, and
-# the reading takes both as the one sentence they are drawn as:
+# the reading takes the two rows as the one sentence pi drew them as:
 #
 #    Push to origin?
 #    This rewrites the remote branch.
@@ -319,7 +325,7 @@ asks = { above = "→" }
 #
 #   ────────────────────────────────────────────────────────
 #
-#    enter submit  shift+enter/ctrl+j newline  escape/ctrl+c cancel  ctrl+g …
+#    enter submit  shift+enter/ctrl+j newline  …  ctrl+g external editor
 #
 #   ────────────────────────────────────────────────────────
 #   ~/.claude/jobs/3876e46d/tmp/pane
@@ -336,7 +342,8 @@ asks = { above = "→" }
 # from the one below, which opens its own hint row the same way and asks for
 # one line rather than a block: 18 columns, whole at all six widths. The whole
 # term `shift+enter/ctrl+j newline` is not — the break falls between its two
-# halves at 30 and again at 20 — and neither is `ctrl+g external editor`.
+# halves at 24 and again at 20 — and `ctrl+g external editor` breaks at every
+# width from 40 down.
 #
 # So this rule has to come first: every string it stands on is on the screen
 # below's too, and order is what keeps a one-line stop from being read as a
@@ -379,7 +386,7 @@ asks = { above = "enter submit" }
 #   0.0%/1.0M (auto)      (opencode) muse-spark-1.3-contributor-free • high
 #
 # `enter submit` again, and nothing else of the hint row's: what is left of it
-# is `escape/ctrl+c cancel`, which breaks between its two words at 40 columns
+# is `escape/ctrl+c cancel`, which breaks between its two words at 20 columns
 # and is shared with every dialog above anyway. This rule is the weakest in the
 # file for that reason — one term and a border — and it sits under the editor
 # rule so that the screen carrying both is claimed by the one that says more.
@@ -387,10 +394,9 @@ asks = { above = "enter submit" }
 # `asks` cannot be the hint row here. pi draws the row it is waiting to be
 # typed into between the title and the hint, and that row is content: reading
 # up from the hint stops on it and answers `>`. So the reading is the sentence
-# above the `>` itself, which is the title, wrap and all — two rows at 20
-# columns, one at the other five widths measured. It stays the title once
-# somebody has typed, because the typing lands on that same row rather than on
-# a new one.
+# above the `>` itself, which is the title, wrap and all — one row at 100, 54
+# and 40 columns, two at 30, 24 and 20. It stays the title once somebody has
+# typed, because the typing lands on that same row rather than on a new one.
 [[rule]]
 name = "input"
 state = "waiting"
