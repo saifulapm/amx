@@ -89,8 +89,8 @@ amx new --agent claude --model opus --permission plan --effort high "port it"
 
 Each falls back to the config, and the config falls back to the vendor: amx
 passes no flag at all for a dial nobody turned. Which dials exist is the
-vendor's answer, so a value claude would refuse is refused here instead, while
-the command is still on your screen.
+vendor's answer, so a dial pi does not have, or a value claude would refuse, is
+refused here instead, while the command is still on your screen.
 
 Anything after `--` is handed to the agent command untouched, and the task is
 added after it, where a prompt goes:
@@ -99,8 +99,8 @@ added after it, where a prompt goes:
 amx new "port the importer" -- --model opus --session-id "$uuid"
 ```
 
-`--model` before the separator turns amx's dial; the same word after it is
-claude's own flag, and amx stands its dial down rather than send the flag
+`--model` before the separator turns amx's dial; the same word after it is the
+vendor's own flag, and amx stands its dial down rather than send the flag
 twice.
 
 ## A shell command as a row
@@ -565,25 +565,28 @@ over. The copy's log opens with a `fork` line naming the agent it came from and
 the conversation it took, before the vendor has said anything at all:
 `amx events <id> --json` is where to read it.
 
-## A claude that was already there
+## An agent that was already there
 
-Not every agent is one amx started. `adopt` writes the record a claude you
+Not every agent is one amx started. `adopt` writes the record an agent you
 started yourself has been missing, so it joins the list beside the rest:
 
 ```sh
-amx adopt                                   # the claude this is typed inside
+amx adopt                                   # the agent this is typed inside
 amx adopt --task "port the importer"        # and what the row should say
 amx adopt --name importer --task "port it"  # a name you chose
 ```
 
-It is typed inside the claude being adopted — ask the agent to run it, or run it
-yourself in its shell mode — and that is what says which pane and which
-conversation are meant. Two variables carry it, and both describe the claude
-that ran the command and no other: tmux's own `$TMUX_PANE`, and
-`$CLAUDE_CODE_SESSION_ID`, which claude puts in the environment of every command
-it starts. Without them there is nothing to adopt and amx says so rather than
-guessing at which claude on the machine was meant. A claude outside tmux
-cannot be adopted at all: adopt needs it to be running inside a tmux pane,
+It is typed inside the agent being adopted — ask the agent to run it, or run
+it yourself where it offers you a shell — and that is what says which pane and
+which conversation are meant. Two variables carry it, and both describe the
+agent that ran the command and no other: tmux's own `$TMUX_PANE`, and
+whichever variable the vendor names its session in, which it puts in the
+environment of every command it starts. `$CLAUDE_CODE_SESSION_ID` is claude's
+and `$PI_SESSION_ID` is pi's, and the one that is here is what says which
+vendor is in the pane: what somebody started themselves need not be what
+`amx new` would spawn. Without them there is nothing to adopt and amx says so
+rather than guessing at which agent on the machine was meant. An agent outside
+tmux cannot be adopted at all: adopt needs it to be running inside a tmux pane,
 because a pane is the only thing amx can watch and type at.
 
 Nothing is started and nothing is sent. The agent goes on with whatever it was
@@ -591,14 +594,18 @@ in the middle of, amx prints the new id the way `new` does, and the row is there
 the moment the command returns with what the pane was showing already on it — a
 question and its choices, if that is where the agent is standing.
 
-That session id is what keeps it working afterwards. amx cannot put its own
-`AMX_ID` in a pane it did not open, so this agent's hook events arrive with
-nothing on them saying whose they are, and amx finds the record by the session
-the vendor stamps on every one of them instead.
+What that session id is worth afterwards is the vendor's answer. amx cannot put
+its own `AMX_ID` in a pane it did not open, so the events of a vendor that
+reports through hooks arrive with nothing on them saying whose they are, and
+the session is what carries them home: amx finds the record whose session
+matches the payload's. pi reports through no hooks at all, so there is nothing
+to carry home, and an adopted pi is read off its pane the way any other pi is.
+The id is worth writing down either way: a conversation amx already has an
+agent for is one it refuses to adopt a second time.
 
 What amx did not do for this agent it does not claim. There is no worktree, no
 branch and no commit to measure against, so `amx diff` has nothing to show and
-`amx stop` takes the pane and nothing else — the pane that claude is sitting in,
+`amx stop` takes the pane and nothing else — the pane the agent is sitting in,
 so stopping an adopted agent is what ends it. amx holds no command it was
 launched with either, so `resume` and `fork` have nothing to start again: it was
 started by hand, and can be again.
@@ -719,7 +726,7 @@ recorded: it is true for a second, and the next reading takes it again.
 
 ## Vendors
 
-What amx knows about claude is an entry in a table, not the shape of the
+What amx knows about a vendor is an entry in a table, not the shape of the
 program. The entry says which dials the vendor declares and what flags they
 become, which environment variables name its sessions, which hooks to wire
 and what its screens look like — and what amx may ask of it: hooks, a
@@ -727,10 +734,15 @@ transcript, resume, fork, adopt, trust. A verb asks before it acts, so
 `amx fork` on a vendor that cannot branch a session is a refusal naming the
 gap, not a spawn that fails somewhere in a pane.
 
-`agent = "opencode"` in the config, or `--agent opencode` on one spawn, runs
-that command for every new agent. A command the table has no entry for gets
-the floor: a real pane, a row that reads what the screen says, and no
-pretending beyond that — the same footing every `--exec` command stands on.
+Two commands have an entry today. `claude` is the one amx runs unless told
+otherwise. `pi` is the other, and it reports through no hooks at all: nothing
+for `doctor` to wire, no conversation for `amx logs` to read back, and its pane
+is what amx reads it by. `agent = "pi"` in the config, or `--agent pi` on one
+spawn, runs it for every new agent.
+
+A command the table has no entry for — `agent = "opencode"` — gets the floor:
+a real pane, a row that reads what the screen says, and no pretending beyond
+that — the same footing every `--exec` command stands on.
 
 Adding a vendor is adding an entry: the dials out of its `--help`, the
 moments its hooks report, the anchors its screens are measured by. Every law
@@ -752,7 +764,7 @@ the notice is handed over and never waited for.
 `~/.config/amx/config.toml`, ten keys and no more:
 
 ```toml
-agent = "claude"        # the command a new agent runs
+agent = "claude"        # the command a new agent runs: claude, pi or your own
 max_agents = 5          # how many live agents before `new` refuses
 worktrees = true        # give each agent its own worktree in a repository
 notifications = true    # desktop notification when one needs you or finishes
