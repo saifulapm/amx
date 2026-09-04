@@ -247,10 +247,19 @@ bottom = 1
 # appearance: dark`, which is the question and the row pi wrapped under it; on
 # the analytics step it is the opt-in question and the prose beneath it, read
 # as the one sentence the vendor drew them as.
+#
+# `setup` is what tells `doctor` this screen stands in front of the work rather
+# than inside it: nothing the agent was spawned to do has begun, nobody but the
+# person at the keyboard can get it past, and no amount of waiting ends it.
+# Three screens in this document carry the flag — this one, the trust question
+# below and the login dialog — and the check that reads it knows none of their
+# names: which screens gate a run is this vendor's business, so it is answered
+# here.
 [[rule]]
 name = "first_time_setup"
 state = "waiting"
 kind = "question"
+setup = true
 all = ["welcome to pi,", "────────────────────"]
 not_below = ["$0.", "%/"]
 asks = { above = "→" }
@@ -335,10 +344,16 @@ asks = { above = "→" }
 # already has, so reading above the arrow here would take those instead. What
 # to do about this screen is not one of the three choices on it anyway — it is
 # whether amx should have answered it before the agent ever met it.
+#
+# `setup` for the reason given at the rule above: the agent is stopped in front
+# of its work and only a person gets it past. The `trust` kind is the other half
+# of what `doctor` reads here — a gate that asks about the tree amx cut is one
+# amx can offer to answer, once the vendor is one it knows how to answer for.
 [[rule]]
 name = "project_trust"
 state = "waiting"
 kind = "trust"
+setup = true
 all = ["project trust", "────────────────────"]
 any = ["saved decision:", "current session:"]
 within = 7
@@ -674,10 +689,15 @@ within = 4
 # URL and a device code in the box instead of a row to type into, and reaching
 # it means a call to somebody's identity provider and a browser opening on
 # their machine. What that screen reads is not written down here.
+#
+# `setup` for the reason given at the first rule in this file. A pi waiting for
+# a key has no model to answer with, so there is no turn under this screen and
+# nothing behind it will move until somebody types.
 [[rule]]
 name = "login"
 state = "waiting"
 kind = "question"
+setup = true
 all = ["escape/ctrl+c to", "────────────────────"]
 within = 6
 asks = { above = ">" }

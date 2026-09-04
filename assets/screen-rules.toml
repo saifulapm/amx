@@ -139,10 +139,21 @@ bottom = 2
 # and a link to the security guide, and neither of those is being asked, so the
 # question is the sentence the rule's own anchor is on and not the one above
 # the choices.
+#
+# `setup` says this screen stands in front of the work rather than inside it:
+# the vendor draws it before there is a session to speak of and will do nothing
+# else until somebody answers, and no amount of waiting ends it. `doctor` reads
+# the flag rather than this rule's name, which is what lets one check speak for
+# every vendor's gates — the screens are theirs, and so are their names. It is
+# the only screen in this document that carries the flag: the three other
+# screens that block are raised inside a turn that is already running, the two
+# after them are states rather than questions, and claude's login prompt has no
+# rule here to carry anything, for the reason `src/verbs/doctor.rs` gives.
 [[rule]]
 name = "folder_trust"
 state = "waiting"
 kind = "trust"
+setup = true
 all = ["trust"]
 any = ["❯ 1.", "enter to confirm"]
 within = 16

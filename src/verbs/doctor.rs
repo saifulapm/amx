@@ -9,11 +9,14 @@
 //! about it, because a check that only says "no" leaves somebody guessing at
 //! a machine they thought was fine.
 //!
-//! What two of them are worth depends on the vendor, and the table is what
-//! says: one that reports nothing has no wiring to be missing, and one with no
-//! folder-trust screen has no question amx could offer to answer. A check that
-//! asked for a repair nobody can make would send somebody looking for a fault
-//! in their own machine.
+//! What two of them are worth depends on the vendor, and the vendor is what
+//! says. The table answers the first: one that reports nothing has no wiring to
+//! be missing. The vendor's own screens document answers the second — which of
+//! the screens amx can recognise stand in front of the work, so that a check
+//! naming an agent stopped at one holds no list of screens of its own — and
+//! whether amx knows how to answer the one it is stopped at decides what it is
+//! offered. A check that asked for a repair nobody can make would send somebody
+//! looking for a fault in their own machine.
 //!
 //! An eighth is asked only where there is something to ask it of. When a tmux
 //! server is already running, and the machine can say where a process is
@@ -36,9 +39,10 @@ use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::derive::View;
-use crate::store::Phase;
+use crate::rules::Rule;
+use crate::store::{Kind, Phase};
 use crate::vendor::{Capability, Vendor};
-use crate::{derive, exit, install, registry, spawn, store, tmux};
+use crate::{derive, exit, install, registry, spawn, store, tmux, trust};
 
 /// One thing amx looked at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,10 +128,13 @@ pub struct Parked {
 }
 
 /// What is in the way.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Setup {
-    /// The folder-trust question, which amx has a measured rule for.
-    Trust,
+    /// A screen this agent's own vendor draws in front of the work, under the
+    /// name that vendor's document gives it, and whether it is one amx could
+    /// have answered for the tree it cut: the folder-trust question, on a
+    /// vendor whose answer amx knows how to write.
+    Gate { screen: String, trust: bool },
     /// A screen no rule claims, under a record that has never left `starting`.
     Unread,
 }
@@ -135,14 +142,13 @@ pub enum Setup {
 impl Setup {
     /// What is in the way, worded for the line that names the agent it stopped.
     ///
-    /// Whose question it is comes off the table rather than out of a string
-    /// here, because the screen is the vendor's. Where no vendor in the table
-    /// draws one, the question is still described and simply not named.
-    fn says(self, trusting: Option<&Vendor>) -> String {
-        match (self, trusting) {
-            (Setup::Trust, Some(vendor)) => format!("{}'s folder-trust question", vendor.name),
-            (Setup::Trust, None) => "a folder-trust question".to_string(),
-            (Setup::Unread, _) => "an opening screen amx has no rule for".to_string(),
+    /// A gate is named the way the vendor drawing it names it, because the
+    /// screen is the vendor's and so is the word for it. What is left is the
+    /// screen nobody has a rule for, which can only be described.
+    fn says(&self) -> String {
+        match self {
+            Setup::Gate { screen, .. } => format!("its vendor's {screen} screen"),
+            Setup::Unread => "an opening screen amx has no rule for".to_string(),
         }
     }
 }
@@ -162,16 +168,8 @@ pub fn report(found: &Findings) -> Vec<Check> {
         env_check(found),
     ];
     checks.extend(server_check(found));
-    checks.push(setup_check(found, trusting()));
+    checks.push(setup_check(found));
     checks
-}
-
-/// The vendor amx would answer a folder-trust screen for, when the table has
-/// one.
-fn trusting() -> Option<&'static Vendor> {
-    registry::entries()
-        .iter()
-        .find(|vendor| vendor.can(Capability::Trust))
 }
 
 fn tmux_check(found: &Findings) -> Check {
@@ -345,7 +343,7 @@ fn env_check(found: &Findings) -> Check {
     Check::wrong("env", what, "run `amx doctor --fix`")
 }
 
-fn setup_check(found: &Findings, trusting: Option<&Vendor>) -> Check {
+fn setup_check(found: &Findings) -> Check {
     let Some(first) = found.parked.first() else {
         return Check::ok("setup", "no agent is stopped at the vendor's own setup");
     };
@@ -353,19 +351,20 @@ fn setup_check(found: &Findings, trusting: Option<&Vendor>) -> Check {
     let each: Vec<String> = found
         .parked
         .iter()
-        .map(|agent| format!("{} at {}", agent.id, agent.screen.says(trusting)))
+        .map(|agent| format!("{} at {}", agent.id, agent.screen.says()))
         .collect();
     let what = match each.as_slice() {
         [one] => one.clone(),
         many => format!("{} agents are stopped: {}", many.len(), many.join(", ")),
     };
 
-    let remedy = match (first.screen, trusting) {
+    let remedy = match &first.screen {
         // The one screen amx can take off the person's hands, once they have
         // said so: the config key is the consent the write stands behind. Only
-        // offered for a vendor whose screen amx knows how to answer, because
-        // the key does nothing for any other.
-        (Setup::Trust, Some(_)) => format!(
+        // offered where the gate is the folder-trust question and the vendor
+        // standing at it is one amx answers that question for, because the key
+        // does nothing for any other.
+        Setup::Gate { trust: true, .. } => format!(
             "answer it yourself: amx attach {}, or set trust = true in the \
              config and amx answers it for the trees it cuts",
             first.id
@@ -558,27 +557,37 @@ fn standing_server() -> Option<StandingServer> {
 /// else, and which screen each of them is at.
 ///
 /// Two shapes, because amx can name one of them and can only describe the
-/// other. The folder-trust question has a rule measured off a live vendor, so
-/// an agent stopped there is named for what it is. The login prompt has no
-/// rule and cannot honestly be given one from here: measuring it means logging
-/// a real claude out, and a string nobody read off a running vendor is exactly
-/// what the ruleset's anchor law forbids.
+/// other. A screen its vendor's document marks as a gate has a rule measured
+/// off a live vendor, so an agent stopped there is named for what it is — and
+/// named out of that document, which is what lets one check speak for every
+/// vendor's gates rather than for the first vendor's.
 ///
-/// So the second shape is described rather than named: a record that has never
-/// left `starting` — the vendor has begun no turn, and `SessionStart` alone
-/// does not move it — under a screen no rule claims. A vendor that changed its
-/// opening screen reads the same way, and so does one still drawing its first
-/// frame once the record has gone stale enough for the pane to be asked. That
-/// is the cost of describing it, and it is the cheaper mistake: the remedy is
-/// to attach and look, which is what a person would do anyway.
+/// What is left is a screen no document has a rule for, and claude's login
+/// prompt is why there is a second shape at all: it cannot honestly be given a
+/// rule from here, because measuring it means logging a real claude out and a
+/// string nobody read off a running vendor is exactly what the ruleset's anchor
+/// law forbids.
+///
+/// So that one is described rather than named: a record that has never left
+/// `starting` — the vendor has begun no turn, and `SessionStart` alone does not
+/// move it — under a screen no rule claims. A vendor that changed its opening
+/// screen reads the same way, and so does one still drawing its first frame
+/// once the record has gone stale enough for the pane to be asked. That is the
+/// cost of describing it, and it is the cheaper mistake: the remedy is to
+/// attach and look, which is what a person would do anyway.
 fn parked(views: &[View]) -> Vec<Parked> {
     views
         .iter()
         .filter_map(|view| {
-            let screen = if view.phase() == Phase::Waiting
-                && view.verdict.rule.as_deref() == Some("folder_trust")
-            {
-                Setup::Trust
+            let screen = if let Some(gate) = gate(view) {
+                Setup::Gate {
+                    screen: gate.name.clone(),
+                    // The document says the screen is the folder-trust
+                    // question; the table says whether amx can answer that
+                    // question for the vendor drawing it. Both, or the offer
+                    // below is a config key that changes nothing.
+                    trust: gate.kind == Some(Kind::Trust) && trust::is_vendor(runs(view)),
+                }
             } else if view.state.state == Phase::Starting && view.phase() == Phase::Unknown {
                 Setup::Unread
             } else {
@@ -590,6 +599,31 @@ fn parked(views: &[View]) -> Vec<Parked> {
             })
         })
         .collect()
+}
+
+/// The gate this agent is standing at, when the screen its reader claimed is
+/// one its own vendor's document marks as one.
+///
+/// The verdict has to say `waiting` as well: a rule is found again by the name
+/// on it, and a reader that concluded anything else has said the agent is past
+/// this screen or never reached it.
+fn gate(view: &View) -> Option<&'static Rule> {
+    if view.phase() != Phase::Waiting {
+        return None;
+    }
+    let claimed = view.verdict.rule.as_deref()?;
+    crate::rules::of(runs(view))
+        .rules()
+        .iter()
+        .find(|rule| rule.setup && rule.name == claimed)
+}
+
+/// What runs this agent, which is what finds both the document its screen was
+/// read against and the entry amx would answer a folder-trust screen from. A
+/// record naming no command falls back the way every other reader falls back —
+/// see [`crate::rules::of`].
+fn runs(view: &View) -> &str {
+    view.meta.agent.as_deref().unwrap_or_default()
 }
 
 /// Why amx cannot use `root`, when it cannot.
@@ -681,9 +715,29 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
-    /// The vendor amx would answer a folder-trust screen for.
-    fn a_trusting_vendor() -> &'static Vendor {
-        trusting().expect("a vendor with a trust screen amx has measured")
+    /// The screens a vendor's document marks as gates in front of the work,
+    /// which is the list this check reads instead of holding one of its own.
+    fn gates(agent: &str) -> Vec<&'static Rule> {
+        crate::rules::of(agent)
+            .rules()
+            .iter()
+            .filter(|rule| rule.setup)
+            .collect()
+    }
+
+    /// One screen out of a vendor's document: what it means, and whether it is
+    /// one of that vendor's gates.
+    ///
+    /// No screen is spelled out in this file, for the reason none is spelled
+    /// out in the code it tests: the names are the vendors' own, and a test
+    /// holding a copy of one is the same list in a second place.
+    fn screen(agent: &str, means: Phase, gate: bool) -> &'static str {
+        crate::rules::of(agent)
+            .rules()
+            .iter()
+            .find(|rule| rule.state == means && rule.setup == gate)
+            .map(|rule| rule.name.as_str())
+            .unwrap_or_else(|| panic!("{agent:?} draws no such screen"))
     }
 
     const COMMAND: &str = "/home/dev/.cargo/bin/amx _hook";
@@ -710,11 +764,23 @@ mod tests {
     /// An agent as a reader hands it over. The record is deserialised rather
     /// than built field by field, because that is how a real one arrives and a
     /// field added to `Meta` tomorrow should not land here.
-    fn view(id: &str, recorded: Phase, seen: Phase, rule: Option<&str>) -> derive::View {
+    ///
+    /// `agent` is the command in the pane, which is what decides whose screens
+    /// this record is read against. `None` is a record that names none — a
+    /// shell command, or one an older amx wrote — and reads the vendor every
+    /// reader falls back to.
+    fn view(
+        agent: Option<&str>,
+        id: &str,
+        recorded: Phase,
+        seen: Phase,
+        rule: Option<&str>,
+    ) -> derive::View {
         derive::View {
             meta: serde_json::from_value(serde_json::json!({
                 "id": id,
                 "task": "fix the login bug",
+                "agent": agent,
                 "dir": "/srv/app",
                 "socket": {"name": "amx"},
                 "pane": "%1",
@@ -1221,18 +1287,23 @@ mod tests {
 
     #[test]
     fn doctor_names_the_agent_stopped_at_the_vendors_trust_question() {
+        // The folder-trust question, read as the vendor's document marks it
+        // rather than as a name this file knows.
+        let gate = screen("claude", Phase::Waiting, true);
         let mut found = healthy();
-        found.parked = vec![Parked {
-            id: "fix-auth-2k3".to_string(),
-            screen: Setup::Trust,
-        }];
+        found.parked = parked(&[view(
+            Some("claude"),
+            "fix-auth-2k3",
+            Phase::Starting,
+            Phase::Waiting,
+            Some(gate),
+        )]);
 
         let setup = check(&found, "setup");
         assert!(setup.found.contains("fix-auth-2k3"), "{}", setup.found);
-        assert!(setup.found.contains("trust"), "{}", setup.found);
         assert!(
-            setup.found.contains(a_trusting_vendor().name),
-            "whose screen it is comes off the table: {}",
+            setup.found.contains(gate),
+            "the screen, as the vendor drawing it names it: {}",
             setup.found
         );
         let remedy = setup.remedy.as_deref().unwrap();
@@ -1242,14 +1313,65 @@ mod tests {
             "the key that makes it never happen again is named: {remedy}"
         );
         assert_eq!(said(&found, false).0, exit::FAILURE);
+    }
 
-        // The offer to answer it is only amx's to make for a vendor whose
-        // screen amx knows: told there is none, it leaves the question to
-        // whoever is at the keyboard.
-        let setup = setup_check(&found, None);
-        let remedy = setup.remedy.as_deref().unwrap();
-        assert!(remedy.contains("amx attach fix-auth-2k3"), "{remedy}");
-        assert!(!remedy.contains("trust = true"), "{remedy}");
+    #[test]
+    fn doctor_names_an_agent_stopped_at_another_vendors_gate() {
+        // The gates are the vendor's own, and pi's are screens claude never
+        // draws: a check that knew one vendor's rule by name said nothing at
+        // all about an agent that never got past any of these.
+        let gates = gates("pi");
+        assert!(!gates.is_empty(), "pi's document marks its own gates");
+
+        for gate in gates {
+            let mut found = healthy();
+            found.parked = parked(&[view(
+                Some("pi"),
+                "port-cli-b91",
+                Phase::Starting,
+                Phase::Waiting,
+                Some(&gate.name),
+            )]);
+
+            let setup = check(&found, "setup");
+            assert!(setup.found.contains("port-cli-b91"), "{}", setup.found);
+            assert!(setup.found.contains(gate.name.as_str()), "{}", setup.found);
+            let remedy = setup.remedy.as_deref().unwrap();
+            assert!(remedy.contains("amx attach port-cli-b91"), "{remedy}");
+
+            // The offer is the folder-trust question's alone. On a gate that
+            // asks anything else the config key answers nothing, whoever drew
+            // the screen.
+            if gate.kind != Some(Kind::Trust) {
+                assert!(!remedy.contains("trust = true"), "{remedy}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_offer_to_answer_a_gate_is_made_for_the_vendors_amx_answers_it_for() {
+        // The config key stands behind a write into one vendor's own store,
+        // and amx makes that write only for a command it has an entry for.
+        // These two are read against that vendor's screens — a wrapper is that
+        // program underneath, and a record naming nothing falls back to it —
+        // but the key would answer for neither, so the screen is still named
+        // and the question is left to whoever is at the keyboard.
+        for command in [Some("my-claude"), None] {
+            let mut found = healthy();
+            found.parked = parked(&[view(
+                command,
+                "fix-auth-2k3",
+                Phase::Starting,
+                Phase::Waiting,
+                Some(screen(command.unwrap_or_default(), Phase::Waiting, true)),
+            )]);
+
+            let setup = check(&found, "setup");
+            assert!(!setup.is_ok(), "the agent is still stopped: {setup:?}");
+            let remedy = setup.remedy.as_deref().unwrap();
+            assert!(remedy.contains("amx attach fix-auth-2k3"), "{remedy}");
+            assert!(!remedy.contains("trust = true"), "{command:?}: {remedy}");
+        }
     }
 
     #[test]
@@ -1277,7 +1399,10 @@ mod tests {
         found.parked = vec![
             Parked {
                 id: "fix-auth-2k3".to_string(),
-                screen: Setup::Trust,
+                screen: Setup::Gate {
+                    screen: screen("claude", Phase::Waiting, true).to_string(),
+                    trust: true,
+                },
             },
             Parked {
                 id: "port-cli-b91".to_string(),
@@ -1301,31 +1426,60 @@ mod tests {
 
     #[test]
     fn only_an_agent_that_never_got_started_is_stopped_at_setup() {
+        // Every screen here is read out of the document of the vendor the
+        // record names, and most of these name none — what an older amx wrote,
+        // and what a shell command still writes — so they are read against the
+        // vendor every reader falls back to.
+        let working = screen("", Phase::Working, false);
+        let idle = screen("", Phase::Idle, false);
+        let asking = screen("", Phase::Waiting, false);
+        let gate = screen("", Phase::Waiting, true);
+        // A gate of pi's that asks something other than whether to trust the
+        // folder, so that what it is offered turns on the screen and not on
+        // which vendor is standing at it.
+        let elsewhere = gates("pi")
+            .into_iter()
+            .find(|rule| rule.kind != Some(Kind::Trust))
+            .expect("pi gates a run with more than its trust question");
+
         let views = vec![
-            view("works-a1b", Phase::Working, Phase::Working, Some("spinner")),
             view(
+                None,
+                "works-a1b",
+                Phase::Working,
+                Phase::Working,
+                Some(working),
+            ),
+            view(
+                None,
                 "asks-b2c",
                 Phase::Working,
                 Phase::Waiting,
-                Some("permission_prompt"),
+                Some(asking),
             ),
-            view("waits-c3d", Phase::Idle, Phase::Idle, Some("idle_prompt")),
+            view(None, "waits-c3d", Phase::Idle, Phase::Idle, Some(idle)),
             view(
+                Some("claude"),
                 "trust-d4e",
                 Phase::Starting,
                 Phase::Waiting,
-                Some("folder_trust"),
+                Some(gate),
             ),
-            view("login-e5f", Phase::Starting, Phase::Unknown, None),
+            view(None, "login-e5f", Phase::Starting, Phase::Unknown, None),
             // Interrupted mid-turn onto a screen no rule claims. The vendor let
             // this one start, so it is not stopped at setup.
-            view("lost-f6g", Phase::Working, Phase::Unknown, None),
+            view(None, "lost-f6g", Phase::Working, Phase::Unknown, None),
             // Started, drawn, and sitting at its prompt with nothing to do.
+            view(None, "fresh-g7h", Phase::Starting, Phase::Idle, Some(idle)),
+            // Another vendor's gate, on a record that says so. Read against
+            // claude's screens this is a name no rule has, and the agent is
+            // one nobody would have been told about.
             view(
-                "fresh-g7h",
+                Some("pi"),
+                "setup-h8i",
                 Phase::Starting,
-                Phase::Idle,
-                Some("idle_prompt"),
+                Phase::Waiting,
+                Some(&elsewhere.name),
             ),
         ];
 
@@ -1334,11 +1488,21 @@ mod tests {
             vec![
                 Parked {
                     id: "trust-d4e".to_string(),
-                    screen: Setup::Trust,
+                    screen: Setup::Gate {
+                        screen: gate.to_string(),
+                        trust: true,
+                    },
                 },
                 Parked {
                     id: "login-e5f".to_string(),
                     screen: Setup::Unread,
+                },
+                Parked {
+                    id: "setup-h8i".to_string(),
+                    screen: Setup::Gate {
+                        screen: elsewhere.name.clone(),
+                        trust: false,
+                    },
                 },
             ]
         );

@@ -88,6 +88,16 @@ pub struct Rule {
     /// than a question wants nothing and says so by leaving this out.
     #[serde(default)]
     pub kind: Option<crate::store::Kind>,
+    /// Whether this is a screen the vendor puts in front of the work rather
+    /// than one it draws in the middle of it: a gate nobody but the person at
+    /// the keyboard can get an agent past, and which no amount of waiting ends.
+    ///
+    /// `doctor` is what reads it, and reading it here is the point: which
+    /// screens gate a run is a fact about the vendor, so it is written in the
+    /// vendor's own document beside the rule that recognises one, and no verb
+    /// carries a list of screen names of its own.
+    #[serde(default)]
+    pub setup: bool,
 }
 
 /// What the screen had to say.
@@ -1704,6 +1714,40 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
         );
     }
 
+    /// The screens a document marks as gates in front of the work.
+    fn gates(screens: &Ruleset) -> Vec<&str> {
+        screens
+            .rules()
+            .iter()
+            .filter(|rule| rule.setup)
+            .map(|rule| rule.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn rules_each_document_names_the_screens_its_vendor_gates_a_run_with() {
+        // The list `doctor` reads, which is why it is here and not there: a
+        // screen only the person at the keyboard can get an agent past is a
+        // fact about the vendor, so each document answers for its own.
+        assert_eq!(gates(claude()), ["folder_trust"]);
+        assert_eq!(
+            gates(pi()),
+            ["first_time_setup", "project_trust", "login"],
+            "the gate in front of a first run, the question a folder nobody \
+             has decided about raises, and a pi with no key to call a provider \
+             with"
+        );
+
+        // And a gate is a screen somebody is standing in front of. One marked
+        // on a rule that means anything else would be a check reporting an
+        // agent parked on a turn that is running.
+        for (vendor, screens) in documents() {
+            for rule in screens.rules().iter().filter(|rule| rule.setup) {
+                assert_eq!(rule.state, Phase::Waiting, "{vendor}'s {}", rule.name);
+            }
+        }
+    }
+
     #[test]
     fn rules_an_agent_command_is_read_as_the_vendor_it_runs() {
         // `agent` is a command line rather than a program name, and a command
@@ -1813,9 +1857,10 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
         // A match arm on a rule name reads one vendor's document with
         // another's names in hand, and the second vendor's screens are called
         // something else entirely: every arm would miss them without a word.
-        // What a screen wants — where its question is, what it asks for — is
-        // written beside the rule, and the name a verdict carries is only ever
-        // looked up in the document it came out of.
+        // What a screen wants — where its question is, what it asks for,
+        // whether it stands in front of the work — is written beside the rule,
+        // and the name a verdict carries is only ever looked up in the document
+        // it came out of.
         let ships = |source: &str| {
             source
                 .split("#[cfg(test)]")
@@ -1826,6 +1871,11 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
         let reading = [
             ships(include_str!("rules.rs")),
             ships(include_str!("derive.rs")),
+            // Whole, tests and all. `doctor` names an agent stopped at one of
+            // these screens and has to name the screen with it, so a fixture
+            // spelling one out would be the same list of vendors' names in a
+            // second place — which is the thing this law is about.
+            include_str!("verbs/doctor.rs").to_string(),
         ];
 
         for (vendor, screens) in documents() {
