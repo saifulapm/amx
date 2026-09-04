@@ -111,12 +111,29 @@
 # harmless because only the last drawn row is tested and pi draws its footer
 # under a dialog too — see the dialog rule.
 #
-# `spinner` is `Working...`, and it is the one string in this file written
-# UNFOLDED: the rules fold the capture before matching and this walk does not,
-# so the same string is spelled `working...` in the rule below and `Working...`
-# here. A shared punctuation anchor of the kind claude's document uses is not
-# available — pi's spinner row is a braille frame, a space and the message, and
-# the frame cycles through ten glyphs.
+# `spinner` is empty on this vendor and `frames` carries the anchor instead,
+# which is the same move the spinner rule below makes and for the same reason.
+# pi's status row is a braille frame, a space and the message; the vendor draws
+# ONE such row and swaps out which of four messages is on it, and one of the
+# four is an extension's to write. So there is no fragment all four carry — a
+# shared punctuation anchor of the kind claude's document uses is not available
+# — and the ten glyphs the frame cycles through are the whole of what they have
+# in common. They are read at the HEAD of the row, the way `mode` is read, so a
+# frame the vendor indents still opens the row and the same glyph inside a
+# sentence opens nothing.
+#
+# Two costs, both measured. A row of the agent's own output that opens with one
+# of the ten and sits directly above the box with one blank row between would
+# be taken for the status line and cut. And a message long enough to wrap keeps
+# its frame on the FIRST row of the wrap while this walk reads the LAST row
+# above the box, so at the narrow widths where compaction and a retry wrap —
+# 40 columns and below, which is where the spinner rule below counts a span of
+# 3 rather than 2 — the whole status line stays on the card. `Working...` is
+# short enough to hold one row at every width measured and is cut at all of
+# them. Cutting the rest of a wrap means taking rows by position
+# with nothing under them to stop on, and furniture left on the screen is the
+# direction this walk is built to be wrong in; a row of work taken off it is
+# not.
 #
 # `rule` is the glyph the box is drawn with. `statusline` is 1, and exactly 1:
 # pi's footer is the working directory and then the stats line, always both and
@@ -131,7 +148,8 @@
 # screen keeps every row it has.
 [furniture]
 mode = ["↑", "$0.", "0.0%/"]
-spinner = ["Working..."]
+spinner = []
+frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 rule = "─"
 statusline = 1
 bottom = 1

@@ -32,6 +32,17 @@ pub struct Furniture {
     /// the one row. What tells the line a running turn spins from the line it
     /// leaves behind when the turn is over.
     pub spinner: Vec<String>,
+    /// The frames the vendor pulses in front of that line's message, any one
+    /// of them and at the head of the row.
+    ///
+    /// The other way to find the same row, for a vendor that has more than one
+    /// thing to say on it: pi draws a single status line and swaps out which
+    /// of four messages is on it — one of them an extension's to write — so
+    /// there is no fragment all four carry and the frame is the whole of what
+    /// they share. A vendor whose message is fixed names fragments instead and
+    /// leaves this out.
+    #[serde(default)]
+    pub frames: Vec<String>,
     /// The rule the vendor draws its composer's box with.
     pub rule: char,
     /// How many rows of statusline the walk will step over to reach the
@@ -177,13 +188,27 @@ impl Furniture {
     }
 
     /// The line the vendor spins while a turn runs, told apart from the line
-    /// it leaves behind when the turn is over by the fragments only the
-    /// running one carries.
+    /// it leaves behind when the turn is over.
     ///
-    /// A vendor amx has measured no spinner for has nothing to find, and an
-    /// empty list would say every row is one, so it says none is.
+    /// Two anchors and either of them finds it: the fragments only the running
+    /// line carries, all of them on the row, and the frames the vendor pulses
+    /// in front of the message, any one of them at the head of it. Which of
+    /// the two a vendor is read by is that vendor's own document to say.
+    ///
+    /// A vendor amx has measured neither for has nothing to find, and an empty
+    /// list of fragments would say every row is one, so it says none is.
     pub fn spinning(&self, row: &str) -> bool {
-        !self.spinner.is_empty() && self.spinner.iter().all(|fragment| row.contains(fragment))
+        let fragments =
+            !self.spinner.is_empty() && self.spinner.iter().all(|fragment| row.contains(fragment));
+        fragments || self.framed(row)
+    }
+
+    /// A row one of the vendor's spinner frames opens. Read from what the row
+    /// opens with, the same way the mode footer is: a frame the vendor indents
+    /// still opens the row, and the same glyph mid-sentence opens nothing.
+    fn framed(&self, row: &str) -> bool {
+        let drawn = row.trim_start();
+        self.frames.iter().any(|frame| drawn.starts_with(frame))
     }
 }
 
@@ -286,6 +311,10 @@ mod tests {
         assert!(
             !unmeasured.spinning(" thinking for 12s"),
             "no fragments to find is not every row found"
+        );
+        assert!(
+            !unmeasured.spinning(" ⠼ Working..."),
+            "and neither is no frames to find"
         );
     }
 }

@@ -968,6 +968,50 @@ fn logs_cut_the_furniture_pi_drew_and_print_the_work_above_it() {
 }
 
 #[test]
+fn logs_cut_the_status_line_pi_spins_whatever_it_says_on_it() {
+    // The row pi spins is the vendor's, and which of its four messages is on
+    // it is not the agent's business either. The walk held the one message,
+    // so it cut that row while `Working...` was on it and printed it back at
+    // somebody the other three times: `amx logs` on a compacting turn opened
+    // with the vendor telling them it was compacting.
+    for (what, scenario, message) in OTHER_STATUS_LINES {
+        let amx = Harness::new();
+        let id = "fix-login-a1b";
+        start(&amx, id, scenario);
+        let pane = amx.pane_of(id);
+
+        let rows = amx.until("the status line to be drawn", || {
+            let rows = drawn(&amx, &pane);
+            row_of(&rows, message).is_some().then_some(rows)
+        });
+
+        // Everything above the row pi spins, which is the whole of what the
+        // agent earned on this screen.
+        let line = row_of(&rows, message).expect("the status line");
+        let mut work: Vec<String> = rows[..line].to_vec();
+        while work.last().is_some_and(String::is_empty) {
+            work.pop();
+        }
+
+        let out = amx.amx(&["logs", id, "--lines", &work.len().to_string()]);
+        assert!(
+            out.status.success(),
+            "amx logs: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let printed: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|row| row.trim_end().to_string())
+            .collect();
+        assert_eq!(
+            printed, work,
+            "{what}: the rows the agent earned, and none of the status line \
+             or the chrome pi drew under it"
+        );
+    }
+}
+
+#[test]
 fn install_writes_nothing_anywhere_for_a_vendor_that_reports_nothing() {
     // The one repair `--fix` asks about is wiring amx's hooks into the
     // vendor's settings, and pi has no hooks to wire: there are no entries to

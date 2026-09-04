@@ -2443,6 +2443,58 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
     }
 
     #[test]
+    fn rules_the_walk_cuts_pis_status_line_whatever_it_is_saying() {
+        // The rule above reads all four of pi's status lines off the frame,
+        // and the walk under it has to cut the same four rows. Anchored on the
+        // one message, it cut the row while `Working...` was on it and left it
+        // for the other three: a compacting turn's own status line went onto
+        // the card and into `amx logs` as work the agent had done.
+        let cut = |screen: &'static str| -> Vec<&'static str> {
+            let rows: Vec<&str> = screen.lines().collect();
+            pi().furniture().cut(&rows).to_vec()
+        };
+
+        for (what, screen, message) in [
+            (
+                "a compacting turn",
+                A_PI_COMPACTING,
+                "Compacting context...",
+            ),
+            ("a retrying turn", A_PI_RETRYING, "Retrying (1/3)"),
+            (
+                "a turn under an extension's own message",
+                A_PI_RENAMED,
+                "Reviewing the diff",
+            ),
+        ] {
+            let rows: Vec<&str> = screen.lines().collect();
+            let line = rows
+                .iter()
+                .position(|row| row.contains(message))
+                .unwrap_or_else(|| panic!("{what} has a status line"));
+            assert_eq!(
+                cut(screen).len(),
+                line,
+                "{what}: the status line goes with the chrome under it, and \
+                 the rows above it stay"
+            );
+        }
+
+        // What the walk still cannot do, and it is the narrow panes. The frame
+        // is on the FIRST row of a message that wraps and the walk reads the
+        // LAST row above the box, so at 20 columns a compacting turn keeps its
+        // whole status line. Cutting the rest of a wrap means taking rows by
+        // position with nothing under them to stop on, and furniture left on
+        // the screen is the direction this walk is built to be wrong in.
+        assert!(
+            cut(A_PI_COMPACTING_20)
+                .iter()
+                .any(|row| row.contains("Compacting")),
+            "a wrapped status line is left whole"
+        );
+    }
+
+    #[test]
     fn rules_a_ruleset_that_is_not_one_is_an_error() {
         assert!(
             Ruleset::parse("[[rule]]\nname = \"x\"\n").is_err(),
