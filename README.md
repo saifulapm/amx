@@ -559,11 +559,14 @@ records no worktree and no branch for the copy — `amx stop` on a fork takes it
 pane and nothing else — and `amx diff <id>` on the original is where that work
 is read.
 
-What is copied is the session the vendor recorded, so an agent that never
-announced one cannot be forked, and amx says so rather than starting the task
-over. The copy's log opens with a `fork` line naming the agent it came from and
-the conversation it took, before the vendor has said anything at all:
-`amx events <id> --json` is where to read it.
+What is copied is the session amx has on the record: the id amx minted at
+spawn, where the vendor opens under one amx hands it, and the id the vendor
+reported, where it reports through hooks. An agent with no session on its
+record cannot be forked — a command row, or a vendor that reports and has not
+reported yet — and amx says so rather than starting the task over. The copy's
+log opens with a `fork` line naming the agent it came from and the conversation
+it took, before the vendor has said anything at all: `amx events <id> --json`
+is where to read it.
 
 ## An agent that was already there
 
@@ -600,8 +603,9 @@ reports through hooks arrive with nothing on them saying whose they are, and
 the session is what carries them home: amx finds the record whose session
 matches the payload's. pi reports through no hooks at all, so there is nothing
 to carry home, and an adopted pi is read off its pane the way any other pi is.
-The id is worth writing down either way: a conversation amx already has an
-agent for is one it refuses to adopt a second time.
+The id is worth writing down either way: a conversation amx still has an agent
+going on is one it refuses to adopt a second time. An agent whose record has
+ended is not in the way.
 
 What amx did not do for this agent it does not claim. There is no worktree, no
 branch and no commit to measure against, so `amx diff` has nothing to show and
