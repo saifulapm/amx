@@ -100,9 +100,11 @@ pub const VENDOR: Vendor = Vendor {
     // 0.84.4 on 2026-09-03.
     capabilities: &[Capability::Resume, Capability::Fork, Capability::Adopt],
     hooks: None,
-    // Measured off pi's own panes at t6, not before: a document written from
-    // anywhere else is a transcription, not a measurement.
-    screens: None,
+    // The screens amx has measured off this vendor, every anchor in them with
+    // the capture, the version and the date it was read at. Driven live
+    // against 0.84.4 on 2026-09-04: a dialog, a running turn and a prompt,
+    // plus the chrome that gets cut off a capture before anybody reads it.
+    screens: Some(include_str!("../../assets/screen-rules-pi.toml")),
 };
 
 #[cfg(test)]
@@ -202,11 +204,20 @@ mod tests {
     }
 
     #[test]
-    fn pi_reports_through_no_hooks_and_declares_no_screens_yet() {
+    fn pi_reports_through_no_hooks_and_reads_its_state_off_the_pane() {
         // Its extension events are JS callbacks, not settings-file entries,
-        // so install has nothing to write. Screens wait on t6: a document
-        // written from anywhere but a running pane is a transcription.
+        // so install has nothing to write and hook has nothing to read. The
+        // pane is not the last witness on this vendor, it is the only one, and
+        // the screens document is where what amx can see on it is written
+        // down.
         assert!(VENDOR.hooks.is_none());
-        assert!(VENDOR.screens.is_none());
+        let screens = crate::rules::Ruleset::parse(VENDOR.screens.expect("pi declares screens"))
+            .expect("pi's screens parse");
+        let named: Vec<_> = screens
+            .rules()
+            .iter()
+            .map(|rule| rule.name.as_str())
+            .collect();
+        assert_eq!(named, ["dialog", "spinner", "prompt"]);
     }
 }

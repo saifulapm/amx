@@ -1,0 +1,284 @@
+# What amx can recognise on a pi pane.
+#
+# The same job `assets/screen-rules.toml` does for claude, done for the other
+# vendor in the table: when the record has gone quiet a reader looks at the
+# bottom of the pane and matches it against these rules. pi has no hooks at
+# all, so on this vendor the pane is not the last witness left — it is the only
+# one there ever was, and a screen no rule claims is reported as `unknown`
+# rather than guessed at.
+#
+# Rules are ORDERED: the first whose conditions hold decides, so the more
+# specific screens come first. A rule holds when every string in `all` appears
+# and — if `any` is given — at least one of those appears too. Matching is done
+# against the capture with its control characters replaced and its case folded,
+# so a colour change in the middle of a word cannot hide a rule.
+#
+# ── The anchor law, on this vendor ───────────────────────────────────────────
+# Every string here was read off a live pi and where it was measured is
+# recorded beside it. pi's unbundled JS is on disk next to the binary and no
+# string here was taken from it: a string recognised from a reference tree is
+# not a measurement. It was read to know which screens exist and how to drive
+# them, and the one place where it would have argued for a different anchor
+# than the captures did is called out at the spinner rule below.
+#
+# Driven live against pi 0.84.4 on 2026-09-04, in a tmux pane captured the way
+# `src/tmux.rs` captures one — `capture-pane -p -J`, control characters
+# replaced — at 100, 54, 40, 30, 24, 20, 16 and 12 columns and at pane heights
+# 30, 12, 10, 8 and 6. The agent was github-copilot's gpt-5-mini, with the
+# footer's two other openings measured off an openrouter and a groq run of the
+# same version.
+#
+# ── Whose screens these are ──────────────────────────────────────────────────
+# pi's, and nobody else's. Which document a reader uses is not written here —
+# `src/vendor/pi.rs` points at this file, and the program an agent command runs
+# is what finds that entry. One document per vendor.
+#
+# ── pi's own composer box, which every rule here stands on ───────────────────
+# pi draws an input box at the bottom of every pane: a border the full width of
+# the pane, a row for what is staged in it, and another border. All three rules
+# below ask for twenty columns of that border, because it is the one thing on a
+# pi screen that says the program drawing it is pi. Without it `↑↓ navigate` is
+# a string half the selection widgets ever written put on a screen and
+# `Working...` is a string half the build tools print, and the pane amx is
+# looking at is whatever survived pi exiting.
+#
+# What that costs is the two narrowest panes measured: at 16 and at 12 columns
+# the border is 16 and 12 rules wide, this anchor is not on the screen, and pi
+# reads `unknown` at every width below 20. Twenty is where amx's own tiling
+# stops — four agents on an 80-column terminal — and a row that says "I can't
+# tell" is the right answer about a pane nothing has been measured on.
+#
+# Two of the rules go further and say HOW FAR from that border their own anchor
+# sits, because a string that is merely somewhere on the same screen is not
+# evidence about the vendor's chrome. Both `within` values below were counted
+# off the captures and both have the same weakness: the floor finds the TOPMOST
+# row carrying a string, so an earlier copy of one in the agent's own output
+# pushes the span past the window and the rule goes quiet until that row
+# scrolls off. Quiet is the direction to be wrong in — the alternative, on a
+# vendor with no hooks to correct it, is a row that says `working` about an
+# agent that has been sitting at its prompt since.
+#
+# ── No placeholders ──────────────────────────────────────────────────────────
+# The `placeholders` list claude's document carries names the sentences that
+# vendor sends about a dialog it will not describe. pi sends amx nothing at
+# all: with no hooks there is no payload to write a sentence into a record
+# from, so no record of a pi agent can hold one where a question should be,
+# and there is nothing here to turn away.
+
+# ── The furniture ────────────────────────────────────────────────────────────
+# The chrome pi draws under every pane it has the room for, as the anchors that
+# find it: the composer's two borders, whatever is staged between them, the
+# working directory, and the stats line. `src/furniture.rs` walks up from the
+# bottom of a capture over these, so that a card and `amx logs` show the rows
+# an agent earned and not the rows the vendor drew under them.
+#
+# `mode` is what pi's LAST row opens with, and pi's last row is its stats line.
+# This is the awkward one and it is worth saying why. The line is a sequence of
+# parts, each present only when it has something to say — tokens in, tokens
+# out, cache reads and writes, the cache hit rate, the cost, and last of all
+# the context window — and the vendor truncates it from the right, so what
+# survives every width is the FIRST part that happens to be there. Three
+# openings across every run measured:
+#
+#   $0.000 (sub) 0.0%/264k (auto)          (github-copilot) gpt-5-mini • high
+#   0.0%/1.0M (auto)                (openrouter) ~google/gemini-flash-latest • high
+#   ↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)   (github-copilot) …
+#
+# — a subscription-backed provider before its first turn, an API-key provider
+# before its first turn, and any session that has taken a turn. `$0.` rather
+# than `$`, because pi prints every shell command its bash tool runs as ` $ cmd
+# (timeout 10s)` in the transcript, and `$` alone would take one of those rows
+# for a footer whenever it was the last thing on the pane. `0.0%/` rather than
+# a bare digit for the same reason: the percentage only ever leads before the
+# first turn, where it is exactly zero.
+#
+# What is not covered: a first turn whose input tokens are all cache reads
+# would open on `R`, and neither `R` nor `W` is an anchor worth having. That
+# screen keeps its whole chrome rather than losing a row of work, which is the
+# direction this walk is built to be wrong in.
+#
+# `↑` also opens the hint row of every dialog below (`↑↓ navigate …`). It is
+# harmless because only the last drawn row is tested and pi draws its footer
+# under a dialog too — see the dialog rule.
+#
+# `spinner` is `Working...`, and it is the one string in this file written
+# UNFOLDED: the rules fold the capture before matching and this walk does not,
+# so the same string is spelled `working...` in the rule below and `Working...`
+# here. A shared punctuation anchor of the kind claude's document uses is not
+# available — pi's spinner row is a braille frame, a space and the message, and
+# the frame cycles through ten glyphs.
+#
+# `rule` is the glyph the box is drawn with. `statusline` is 1, and exactly 1:
+# pi's footer is the working directory and then the stats line, always both and
+# never anything between them and the box. `bottom` is 1 for a measured reason
+# rather than a hopeful one — the border is `width` rules on one row and does
+# not wrap, confirmed down to 12 columns, where the box is 12 wide and still on
+# a single row.
+#
+# An extension that sets a status adds a row UNDER the stats line — measured
+# with one calling `ctx.ui.setStatus`, which drew `gate: armed` beneath it. The
+# last row is then not a footer this walk knows, no anchor is found, and the
+# screen keeps every row it has.
+[furniture]
+mode = ["↑", "$0.", "0.0%/"]
+spinner = ["Working..."]
+rule = "─"
+statusline = 1
+bottom = 1
+
+# pi is blocked on a dialog. This is the one screen on this vendor that needs a
+# person, and it is drawn INSIDE the composer box: the editor is replaced by
+# the dialog and the two borders stay where they were, with the working
+# directory and the stats line under them exactly as on any other screen.
+#
+# Measured at 100 columns on 2026-09-04, an extension gating the bash tool with
+# `ctx.ui.select`:
+#
+#   ────────────────────────────────────────────────────────
+#
+#    Run echo hi?
+#
+#    → Allow once
+#      Allow always
+#      Deny
+#
+#    ↑↓ navigate  enter select  escape/ctrl+c cancel
+#
+#   ────────────────────────────────────────────────────────
+#   ~/.claude/jobs/eef72778/tmp/pipane
+#   ↑1.3k ↓64 $0.000 (sub) 0.5%/264k (auto)   (github-copilot) gpt-5-mini • …
+#
+# `ctx.ui.confirm` draws the same shape with two choices and a line of message
+# under the title, and it was driven at 100, 54, 40, 30, 24 and 20 columns; the
+# select above at 100 and 20. Every one of those captures carries the same hint
+# row. The anchor is what that row OPENS with, because it wraps rather than
+# truncating and every term after the first breaks somewhere: `enter select` is
+# split between its two words at 20 columns, and `escape/ctrl+c cancel` between
+# its two at 40. `↑↓ navigate` is whole at all six widths, and it is 11
+# columns.
+#
+# ── What this rule cannot do, and why nothing here fixes it ──────────────────
+# It cannot tell a dialog from a QUOTATION of one. claude's document leans on
+# layout for that: that vendor draws no composer under a blocking prompt, so a
+# widget with a footer beneath it is text about a widget. pi's layout says the
+# opposite. The dialog is in the box and the footer is under it, which is the
+# same shape a quoted dialog sitting in the transcript has, and `not_below` has
+# nothing to find. Measured at all six widths: the working directory and the
+# stats line are drawn under every dialog pi raises.
+#
+# So this rule is as strong as its anchor and no stronger, and the anchor is a
+# vendor's key-hint row rather than a sentence anybody writes by accident. What
+# it costs if it is wrong is a row that says an agent is waiting when it is
+# working, and a `send` that refuses.
+#
+# There is no `within` on this one. The box's height is the caller's own — it
+# names the choices and pi draws a row for each — so at 20 columns eight rows
+# already sit between the border and the hint, and a dialog taller than the
+# floor puts its top border out of reach entirely. There is no height a window
+# could be sized to.
+#
+# It also cannot say WHAT is being asked, and there is no `asks` here for that
+# reason. pi numbers none of its choices — the selected one carries `→ ` and
+# the rest carry two spaces — so the reading that walks up from the first
+# option has no first option to find, and the sentence pi asks is whatever the
+# caller passed, with no fixed string of the vendor's own on its row. The rule
+# names the screen; the question on it is read by a person.
+#
+# The screen also carries pi's spinner: a dialog raised from a tool call goes
+# up while the turn is running, so `Working...` is on the pane above the box.
+# That is why this rule is first — order, and not the anchors, is what keeps
+# the spinner rule off a screen that is blocked.
+[[rule]]
+name = "dialog"
+state = "waiting"
+kind = "question"
+all = ["↑↓ navigate", "────────────────────"]
+any = ["escape/ctrl+c", "enter select"]
+
+# A turn is running. pi spins one line just above the composer box, with a
+# blank row between them:
+#
+#    ⠼ Working...
+#
+#   ⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏ — all ten seen across the captures. The frame cycles,
+#   the message does not.
+#
+# This is where the tree beside the binary would have argued the other way. It
+# offers the frame as the thing every status line shares and the message as the
+# thing an extension can rewrite, which reads like an argument for anchoring on
+# the ten glyphs. What the captures say is that the message held: across a turn
+# streaming a 600-word answer, a 40-second bash call, and a turn stopped on a
+# dialog, at 100, 54, 40, 30, 24 and 20 columns, it was `Working...` every
+# time. And ten alternative single glyphs is a rule an agent's own output trips
+# by drawing one spinner frame.
+#
+# What this buys over claude, which drops its spinner line entirely while an
+# answer streams: on pi the line stays up for the whole turn. There is no
+# window where a running turn and an idle prompt are the same bytes, so nothing
+# on this vendor rests on how long a screen has held still.
+#
+# The same row carries whatever else pi has to say about a turn. A turn that
+# lost its connection and retried was seen still carrying `Working...`, so a
+# retry reads `working` rather than `unknown`. The tree names other messages
+# for compacting the context and for summarising a branch; nobody has driven
+# either, so nothing here claims them. A screen this rule does not claim falls
+# through to the prompt rule below, which is quiescent — and a spinner row this
+# file's furniture does not recognise as one is a row that ticks with the
+# frame, so that screen never holds still and the prompt rule never ends the
+# turn on it.
+#
+# `within` is 2 and it is not a margin: the spinner, one blank row and the
+# box's top border, in that order, at all six widths measured. It is what turns
+# a word half the build tools print into the word on the row directly above
+# pi's own box.
+#
+# One measured floor: the spinner is the first row a short pane loses. At eight
+# rows it is still on the screen; at six the box, the working directory and the
+# stats line are all that fit, and a running pi reads idle.
+[[rule]]
+name = "spinner"
+state = "working"
+all = ["working...", "────────────────────"]
+within = 2
+
+# pi is drawn and waiting for somebody to type. Nothing more specific claimed
+# the screen and pi's own chrome is on it: the box, and the stats line under
+# it. This is the rule that gets a booted agent named rather than left at
+# `starting` — a pi that has never taken a turn draws its banner, its box and a
+# footer, and nothing else at all.
+#
+# `any` is the same three openings the furniture walk anchors on, read here as
+# substrings rather than as prefixes, plus what a longer stats line leaves when
+# the vendor truncates it. That truncation is why `↑` has to be in the list on
+# its own: at 24 columns a session with cache statistics reads
+#
+#   ↑1.5k ↓69 R1.3k CH90....
+#
+# and the context indicator `%/` that the wide screens all carry is gone. Below
+# 20 columns the border anchor in `all` is gone too and this rule goes silent
+# with the other two.
+#
+# `within` is what stops those three from adding up to a prompt anywhere they
+# happen to land. Four rows separate the box's top border from the stats line
+# with the composer empty — border, composer, border, working directory, stats
+# — and the window is 8, which is that plus room for four rows staged in the
+# box by `amx send`. Without it the rule reads a screen as a prompt on nothing
+# more than a horizontal rule and an arrow glyph, and an arrow glyph in a key
+# hint is what half the terminal programs ever written draw at the bottom of a
+# pane, this vendor's own dialog included.
+#
+# `quiescent` says this rule may not end a turn that is on the record as
+# running until the screen has held still across a run of consecutive looks. It
+# carries less weight here than on claude, where an idle screen and a mid-turn
+# pause are the same bytes: the spinner rule above claims a running turn
+# outright, on a line that is up for the whole of it. What is left for the gate
+# is the status lines this file does not name. From a state with nothing
+# outstanding this rule decides at once, which is what names a parked agent
+# inside ten seconds.
+[[rule]]
+name = "prompt"
+state = "idle"
+quiescent = true
+all = ["────────────────────"]
+any = ["↑", "$0.", "%/"]
+within = 8

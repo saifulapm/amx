@@ -485,8 +485,8 @@ fn wrapped(row: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vendor::claude;
     use crate::vendor::second::SECOND;
+    use crate::vendor::{claude, pi};
 
     // ── Screens measured off a live claude ───────────────────────────────────
     // Every capture below came off a running vendor, at the version, date and
@@ -895,18 +895,243 @@ Cargo.toml  README.md  src  tests
 $
 ";
 
+    // ── Screens measured off a live pi ───────────────────────────────────────
+    // pi 0.84.4, driven on 2026-09-04 in a tmux pane captured the way
+    // `src/tmux.rs` captures one, at the width named with each. The dialogs
+    // were raised by an extension gating the bash tool with `ctx.ui.select`,
+    // which is how a caller asks pi a question. Trailing spaces are off the
+    // rows and nothing else is: every reading here trims or asks whether a row
+    // contains something, so the pane's own padding changes no answer. They
+    // are raw strings rather than continued ones because a leading space and a
+    // leading blank row are both things `\` at the end of a line eats, and
+    // both are on these captures.
+    //
+    // These are checked in so the suite runs on a machine with no pi on it.
+    // Re-measure at every vendor bump — see `assets/screen-rules-pi.toml`.
+
+    /// A pi nobody has typed into yet: the banner, the box, and a footer whose
+    /// stats line has nothing but the context window to say. 100 columns, and
+    /// the vendor pads the rest of the pane out rather than sitting at the
+    /// bottom of it.
+    const A_PI_BOOT: &str = r"
+ pi v0.84.4
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+
+[Context]
+  ~/.claude/CLAUDE.md
+
+[Extensions]
+  gate2.js
+
+[Themes]
+  qshell
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.claude/jobs/eef72778/tmp/pipane
+$0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) gpt-5-mini • minimal
+
+
+
+
+
+
+
+";
+
+    /// The same pane with a turn running on it. pi spins its line above the
+    /// box and keeps it there for the whole turn, streaming answer and all.
+    const A_PI_WORKING: &str = r"
+ pi v0.84.4
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+
+[Context]
+  ~/.claude/CLAUDE.md
+
+[Extensions]
+  gate2.js
+
+[Themes]
+  qshell
+
+
+ Run this exact bash command and nothing else: echo hi
+
+
+ ⠼ Working...
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.claude/jobs/eef72778/tmp/pipane
+$0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) gpt-5-mini • minimal
+
+
+";
+
+    /// pi blocked on a dialog at 100 columns. The dialog is drawn inside the
+    /// composer box, the working directory and the stats line are under it as
+    /// on any other screen, and the spinner is still up above it.
+    const A_PI_DIALOG: &str = r"
+ Run this exact bash command and nothing else: echo hi
+
+
+ Executing command via bash
+
+ I’m thinking about how to use the functions.bash tool to run a command. I’ll need to incorporate a
+ timeout, just in case the command takes too long. My plan is to call bash with the command “echo
+ hi” and set the timeout as part of the call. Once it's executed, I’ll return the output. I just
+ want to make sure this runs smoothly and effectively!
+
+
+ $ echo hi (timeout 10s)
+
+
+ ⠧ Working...
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Run echo hi?
+
+ → Allow once
+   Allow always
+   Deny
+
+ ↑↓ navigate  enter select  escape/ctrl+c cancel
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.claude/jobs/eef72778/tmp/pipane
+↑1.3k ↓64 $0.000 (sub) 0.5%/264k (auto)                        (github-copilot) gpt-5-mini • minimal
+";
+
+    /// The same dialog at 20 columns, the narrowest pane pi draws its box wide
+    /// enough for. The hint row wraps across four rows and `enter select`
+    /// breaks between its two words; `↑↓ navigate` is what the row still opens
+    /// with.
+    const A_PI_DIALOG_20: &str = r" it's executed,
+ I’ll return the
+ output. I just
+ want to make sure
+ this runs smoothly
+ and effectively!
+
+
+ $ echo hi (timeout
+ 10s)
+
+
+ ⠹ Working...
+
+────────────────────
+
+ Run echo hi?
+
+ → Allow once
+   Allow always
+   Deny
+
+ ↑↓ navigate  enter
+  select
+ escape/ctrl+c
+ cancel
+
+────────────────────
+~/.claude/jobs/ee...
+↑1.3k ↓64 $0.000 ...
+";
+
+    /// The turn is over and the prompt is waiting for a person. The line pi
+    /// spins is off the screen; the box, the working directory and the stats
+    /// line are where they were.
+    const A_PI_IDLE: &str = r"
+[Themes]
+  qshell
+
+
+ Run this exact bash command and nothing else: echo hi
+
+
+ Executing command via bash
+
+ I’m thinking about how to use the functions.bash tool to run a command. I’ll need to incorporate a
+ timeout, just in case the command takes too long. My plan is to call bash with the command “echo
+ hi” and set the timeout as part of the call. Once it's executed, I’ll return the output. I just
+ want to make sure this runs smoothly and effectively!
+
+
+ $ echo hi (timeout 10s)
+
+ hi
+
+ Took 15.2s
+
+
+ hi
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.claude/jobs/eef72778/tmp/pipane
+↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)          (github-copilot) gpt-5-mini • minimal
+";
+
+    /// The same idle screen at 24 columns. The stats line is truncated from
+    /// the right and the context indicator the wide screens carry is gone,
+    /// which is why the tokens count has to be an anchor of its own.
+    const A_PI_IDLE_24: &str = r" need to incorporate a
+ timeout, just in case
+ the command takes too
+ long. My plan is to
+ call bash with the
+ command “echo hi” and
+ set the timeout as
+ part of the call. Once
+ it's executed, I’ll
+ return the output. I
+ just want to make sure
+ this runs smoothly and
+ effectively!
+
+
+ $ echo hi (timeout
+ 10s)
+
+ hi
+
+ Took 15.2s
+
+
+ hi
+
+────────────────────────
+
+────────────────────────
+~/.claude/jobs/eef727...
+↑1.5k ↓69 R1.3k CH90....
+";
+
     fn claim<'a>(rules: &'a Ruleset, screen: &str, recorded: Phase) -> Claim<'a> {
         rules.claim(screen, recorded, SETTLED_LOOKS)
     }
 
-    /// The two documents these tests weigh against each other: the one amx
-    /// ships and the second vendor's, which shares no string with it. A law
-    /// that holds for both is a law about the machinery.
+    /// The documents these tests weigh against each other: the two amx ships
+    /// and the second vendor's, which shares no string with either. A law that
+    /// holds for all three is a law about the machinery.
     fn documents() -> Vec<(&'static str, Ruleset)> {
-        [claude::VENDOR, SECOND]
+        [claude::VENDOR, pi::VENDOR, SECOND]
             .iter()
             .map(|vendor| {
-                let screens = vendor.screens.expect("both of these have screens");
+                let screens = vendor.screens.expect("each of these has screens");
                 (vendor.name, Ruleset::parse(screens).expect(vendor.name))
             })
             .collect()
@@ -1469,6 +1694,167 @@ $
             ruleset.claim(&apart, Phase::Working, 1),
             Claim::Unclaimed,
             "six rows apart is not one box"
+        );
+    }
+
+    /// pi's screens, read the way a reader reaches them: through the entry in
+    /// the table, which is what proves the document is in the binary and
+    /// parses.
+    fn pi() -> &'static Ruleset {
+        of("pi")
+    }
+
+    #[test]
+    fn rules_pi_reads_the_three_screens_it_draws() {
+        assert_eq!(
+            named(pi()),
+            ["dialog", "spinner", "prompt"],
+            "order decides, so it is part of the data"
+        );
+    }
+
+    #[test]
+    fn rules_pi_names_a_dialog_a_running_turn_and_a_prompt() {
+        // Every screen here came off a live pi. What each one means is the
+        // whole of what amx knows about this vendor: it reports through no
+        // hooks, so the pane is not the last witness but the only one.
+        for (what, screen, recorded, means) in [
+            (
+                "a dialog gating a tool call",
+                A_PI_DIALOG,
+                Phase::Working,
+                Phase::Waiting,
+            ),
+            (
+                "the same dialog at 20 columns",
+                A_PI_DIALOG_20,
+                Phase::Working,
+                Phase::Waiting,
+            ),
+            ("a turn running", A_PI_WORKING, Phase::Idle, Phase::Working),
+            ("a finished turn", A_PI_IDLE, Phase::Starting, Phase::Idle),
+            (
+                "the same at 24 columns, the context indicator truncated away",
+                A_PI_IDLE_24,
+                Phase::Starting,
+                Phase::Idle,
+            ),
+            (
+                "a pi nobody has typed into yet",
+                A_PI_BOOT,
+                Phase::Starting,
+                Phase::Idle,
+            ),
+        ] {
+            let claimed = claim(pi(), screen, recorded);
+            assert_eq!(claimed.phase(), Some(means), "{what}, ruled {claimed:?}");
+        }
+
+        assert_eq!(claim(pi(), A_SHELL, Phase::Working), Claim::Unclaimed);
+    }
+
+    #[test]
+    fn rules_a_pi_dialog_outranks_the_turn_it_went_up_in() {
+        // pi raises a dialog from a tool call without taking its spinner down,
+        // so both rules hold on that screen and only the order decides. A
+        // screen that blocks is what the row has to say.
+        assert!(
+            A_PI_DIALOG.contains("Working..."),
+            "the line pi spins is on this screen too"
+        );
+        assert_eq!(
+            claim(pi(), A_PI_DIALOG, Phase::Working).rule_name(),
+            Some("dialog")
+        );
+    }
+
+    #[test]
+    fn rules_a_pi_dialog_says_it_blocks_and_not_what_on() {
+        // pi numbers none of its choices — the selected one carries `→ ` and
+        // the rest two spaces — and the sentence it asks is whatever the
+        // caller passed, with no string of the vendor's own on its row. So the
+        // rule names the screen and the question stays on the pane for a
+        // person to read. Written down here because it is a measurement about
+        // this vendor and not an oversight.
+        let Claim::Ruled(rule) = claim(pi(), A_PI_DIALOG, Phase::Working) else {
+            panic!("pi's own rule claims pi's own screen");
+        };
+        assert_eq!(rule.kind, Some(crate::store::Kind::Question));
+        assert_eq!(rule.question(A_PI_DIALOG), None);
+        assert_eq!(pi().asking(A_PI_DIALOG), None);
+    }
+
+    #[test]
+    fn rules_pi_and_claude_claim_nothing_on_each_others_panes() {
+        // Every anchor in a document is its own vendor's. On somebody else's
+        // chrome they are not nearly right, they are absent — which is what
+        // keeps a wrapper around one vendor from being read with the other's
+        // document and told a confident wrong thing.
+        for (what, screen) in [
+            ("a claude idle prompt", IDLE_SCREEN),
+            ("a claude turn running", WORKING_SCREEN),
+            ("a claude permission box", PERMISSION_BOX),
+            ("a claude ask menu", ASK_MENU_80),
+            ("a claude plan approval", PLAN_APPROVAL_220),
+        ] {
+            assert_eq!(
+                pi().claim(screen, Phase::Working, SETTLED_LOOKS),
+                Claim::Unclaimed,
+                "pi's document claims {what}"
+            );
+        }
+
+        for (what, screen) in [
+            ("a pi prompt", A_PI_IDLE),
+            ("a pi turn running", A_PI_WORKING),
+            ("a pi dialog", A_PI_DIALOG),
+        ] {
+            assert_eq!(
+                bundled().claim(screen, Phase::Working, SETTLED_LOOKS),
+                Claim::Unclaimed,
+                "claude's document claims {what}"
+            );
+        }
+    }
+
+    #[test]
+    fn rules_pi_cuts_its_own_chrome_and_leaves_the_work() {
+        // The anchors that find pi's furniture are in the same document as the
+        // rules and measured off the same panes. What the walk takes is the
+        // box, the working directory, the stats line, and the line pi spins
+        // above them — and on this vendor the dialog too, because pi draws it
+        // between the box's own borders.
+        let cut = |screen: &'static str| -> Vec<&'static str> {
+            let rows: Vec<&str> = screen.lines().collect();
+            pi().furniture().cut(&rows).to_vec()
+        };
+
+        let idle = cut(A_PI_IDLE);
+        assert_eq!(
+            idle.last().map(|row| row.trim()),
+            Some(""),
+            "the walk stops at the box's top border"
+        );
+        assert!(
+            !idle.iter().any(|row| row.contains("0.5%/264k")),
+            "the stats line is chrome"
+        );
+        assert!(
+            idle.iter().any(|row| row.contains("Took 15.2s")),
+            "the rows the agent earned are not"
+        );
+
+        assert!(
+            !cut(A_PI_WORKING)
+                .iter()
+                .any(|row| row.contains("Working...")),
+            "so is the line a turn spins"
+        );
+        assert!(
+            !cut(A_PI_DIALOG)
+                .iter()
+                .any(|row| row.contains("↑↓ navigate")),
+            "and so is a dialog, which pi stages in the composer's own box"
         );
     }
 
