@@ -89,6 +89,21 @@ fn start(amx: &Harness, id: &str, scenario: &str) {
     );
 }
 
+/// Run the stand-in itself, with the home a pi would keep its sessions under
+/// pinned to this harness.
+///
+/// For the one argv amx will not build. `--no-session` is on pi's conflicts
+/// list, so amx never mints an id beside it, and what pi does when somebody
+/// else writes both is still the fixture's to get right.
+fn stand_in(amx: &Harness, args: &[&str]) -> std::process::Output {
+    std::process::Command::new(fixtures().join("pi"))
+        .args(args)
+        .env("HOME", amx.home())
+        .env("MOCK_PI_SCENARIO", scenario("one-screen"))
+        .output()
+        .expect("running the stand-in")
+}
+
 /// Everything the stand-in has said in this pane, including what has scrolled
 /// off it.
 ///
@@ -260,6 +275,96 @@ fn spawn_asks_pi_to_create_the_session_when_there_is_no_file_under_that_id() {
         session_file(&amx, id).exists(),
         "and the conversation is on disk under the id amx chose"
     );
+}
+
+#[test]
+fn a_spawn_told_to_keep_no_session_is_minted_no_id_to_offer_back() {
+    // `--no-session` is the one flag on pi's conflicts list that is not a
+    // refusal. The vendor takes it, runs the turn and keeps the conversation
+    // in memory, so what amx owes a person who typed it is silence: no minted
+    // id beside it, and no record offering back a conversation that was never
+    // written down.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let out = amx_with_pi(
+        &amx,
+        "takes-a-turn",
+        &[
+            "new",
+            "--name",
+            id,
+            "--dir",
+            &amx.home().to_string_lossy(),
+            "--agent",
+            "pi",
+            TASK,
+            "--",
+            "--no-session",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let called = argv_of(&amx, id);
+    assert!(
+        called.contains("--no-session"),
+        "the flag reached the vendor as it was typed: {called}"
+    );
+    assert!(
+        !called.contains("--session-id"),
+        "and amx minted nothing to put beside it: {called}"
+    );
+    assert!(
+        amx.meta(id)["session"].is_null(),
+        "so the record names no conversation: {}",
+        amx.meta(id)
+    );
+    assert!(
+        !amx.home().join(".pi/sessions").exists(),
+        "and none was written anywhere under the person's home"
+    );
+}
+
+#[test]
+fn the_stand_in_parts_the_flags_pi_refuses_from_the_one_it_throws_away() {
+    // The stand-in is asked directly here, because amx will not build this
+    // argv: `--no-session` is on the conflicts list, so no id is ever minted
+    // beside it. What the fixture has to get right is the difference between
+    // the six. Five are an exit. The sixth takes the id and drops it, and a
+    // fixture that exited on it too would turn the one failure this flag
+    // causes on the real vendor — a conversation amx records that was never on
+    // disk — into a loud one no test could ever reach.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+
+    let out = stand_in(&amx, &["--no-session", "--session-id", id]);
+    assert!(
+        out.status.success(),
+        "pi runs the turn: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !said.contains("session:"),
+        "and says nothing about a session: {said}"
+    );
+    assert!(
+        !session_file(&amx, id).exists(),
+        "and leaves no conversation on disk under the id it was handed"
+    );
+
+    for refusal in ["-c", "-r", "--continue", "--resume", "--session"] {
+        let out = stand_in(&amx, &[refusal, "--session-id", id]);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "pi exits rather than take a minted id beside {refusal}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }
 
 #[test]

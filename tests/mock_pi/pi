@@ -16,8 +16,10 @@
 #                       under that id and creates one under it when there is
 #                       none, and `--fork <origin> --session-id <new>` branches
 #                       the first into the second. A `--session-id` written
-#                       beside a flag pi refuses it next to ends this the way
-#                       it ends pi: an exit, not a warning.
+#                       beside one of the five flags pi refuses it next to ends
+#                       this the way it ends pi: an exit, not a warning. Beside
+#                       `--no-session`, which pi refuses nothing over, the run
+#                       goes ahead and the id is thrown away.
 #   the screens         the screens `assets/screen-rules-pi.toml` was measured
 #                       off, drawn by repainting the pane rather than
 #                       appending to it, and each in one write. The rules read
@@ -57,11 +59,13 @@ fi
 
 sessions=$HOME/.pi/sessions
 
-# Every flag pi will not take `--session-id` beside, in the vendor's own words:
-# five that make it exit, and `--no-session`, which takes the id and keeps the
-# conversation in memory. Its entry lists all six, and none of them should ever
-# reach this stand-in beside a minted id.
-REFUSES="-c -r --continue --no-session --resume --session"
+# The five flags pi exits rather than take `--session-id` beside. Its entry
+# lists a sixth, `--no-session`, and that one is not here: pi takes the id
+# under it and keeps the conversation in memory, writing no file and saying
+# nothing about it. amx displaces all six, but only these five are a refusal,
+# and a stand-in that refused where the vendor is silent would prove a test
+# against a pi nobody can run.
+REFUSES="-c -r --continue --resume --session"
 
 printf 'argv: %s\n' "$*"
 
@@ -71,6 +75,7 @@ printf 'argv: %s\n' "$*"
 session=
 origin=
 clash=
+in_memory=
 value_of=
 for arg do
 	case $value_of in
@@ -88,6 +93,7 @@ for arg do
 	case $arg in
 	--session-id) value_of=session ;;
 	--fork) value_of=fork ;;
+	--no-session) in_memory=yes ;;
 	*)
 		case " $REFUSES " in
 		*" $arg "*) clash=$arg ;;
@@ -101,7 +107,13 @@ if [ -n "$clash" ] && [ -n "$session" ]; then
 	exit 2
 fi
 
-if [ -n "$origin" ]; then
+if [ -n "$in_memory" ]; then
+	# pi reads this branch before the one that writes a session to disk, so the
+	# id is taken and the conversation is kept in memory: no file under it, and
+	# nothing said about one. This is the run amx's `conflicts` list exists to
+	# keep a minted id out of.
+	:
+elif [ -n "$origin" ]; then
 	if [ -z "$session" ]; then
 		echo "mock pi: --fork $origin names no id to branch into" >&2
 		exit 2
