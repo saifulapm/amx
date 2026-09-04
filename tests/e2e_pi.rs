@@ -408,13 +408,14 @@ fn the_stand_in_draws_the_box_and_the_footer_pi_keeps_under_every_screen() {
 }
 
 #[test]
-fn the_stand_in_draws_the_dialog_inside_pis_own_box() {
+fn the_stand_in_draws_the_dialog_in_pis_box_with_the_turn_still_over_it() {
     // The screen `assets/screen-rules-pi.toml` names `dialog`, and it is drawn
     // the way it was measured: inside the composer box rather than above it,
-    // with the same footer under it as every other screen carries. The rule's
-    // own anchor is the hint row this stops on, `↑↓ navigate …`, so this is
-    // what proves the stand-in draws the shape the rule was measured against
-    // rather than only the words.
+    // with the same footer under it as every other screen carries, and with
+    // the turn that raised it still running over the top. The rule's own
+    // anchor is the hint row this stops on, `↑↓ navigate …`, so this is what
+    // proves the stand-in draws the shape the rule was measured against rather
+    // than only the words.
     let amx = Harness::new();
     let id = "watch-log-c3d";
     start(&amx, id, "asks-a-question");
@@ -431,6 +432,19 @@ fn the_stand_in_draws_the_dialog_inside_pis_own_box() {
     assert!(
         top < hint && hint < bottom,
         "the hint row sits inside the box, where the editor usually is: {rows:?}"
+    );
+    // And the spinner is still up above the box, because pi raises this dialog
+    // from a tool call while the turn is running. Both documented anchors are
+    // on this one pane — the hint row the dialog rule stands on and the
+    // spinner two rows over the border the spinner rule stands on — which is
+    // why the document's order, and not its anchors, is what keeps the spinner
+    // rule off a screen that is blocked.
+    let spinner =
+        row_of(&rows, "Working...").unwrap_or_else(|| panic!("the line pi spins: {rows:?}"));
+    assert_eq!(
+        top - spinner,
+        2,
+        "the line, one blank row, and the top of the box: {rows:?}"
     );
     assert_eq!(
         rows.len() - bottom,
