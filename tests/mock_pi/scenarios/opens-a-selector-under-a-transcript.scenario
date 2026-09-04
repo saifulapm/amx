@@ -1,0 +1,9 @@
+# The same selector, on a pane with a transcript above it. What changes is not
+# the widget: it is what else is on the screen for a rule to find a border on,
+# and the rules read the topmost one they can see. The same widget has to read
+# the same way. The agent is still there afterwards, the way pi is: whoever is
+# driving this scenario decides when it ends.
+screen boot
+sleep 50
+screen scrolled
+sleep 600000

@@ -43,8 +43,11 @@
 #                   way on a line and on a block of text; `trust`, blocked on
 #                   whether this folder is one to trust; `setup`, the gate a
 #                   first run stops at before there is a pane at all; `login`,
-#                   waiting for the key a provider wants; and `idle`, the
-#                   prompt a finished turn leaves behind.
+#                   waiting for the key a provider wants; `selector` and
+#                   `scrolled`, one of pi's own selectors in the slot the
+#                   composer had, with nothing above it and with a transcript
+#                   above it; and `idle`, the prompt a finished turn leaves
+#                   behind.
 #   sleep <ms>      wait. A long trailing sleep is how a scenario keeps its
 #                   agent alive for the test driving it.
 #
@@ -328,6 +331,33 @@ login() {
 		"$border" "$border" "$here" "$UNSET"
 }
 
+# One of pi's own selectors, in the slot the composer had. Every screen above
+# is here for the words a rule stands on; these two are here for a shape and a
+# distance — a widget between the composer's borders with the footer under it,
+# and how far the last rule in the document reaches over it.
+#
+# Measured at 100 columns on 2026-09-05 with the show-images selector, which is
+# the shortest box pi puts in that slot: the vendor's own component, raised
+# through `ctx.ui.custom` by an extension that does nothing else. With nothing
+# above it, five rows separate its top border from the stats line. Under a
+# transcript it is seven, because `!seq 1 60` leaves the bottom border of its
+# own box on the pane and the rules read the TOPMOST border they can see. The
+# widget did not move and neither did its box.
+selector() {
+	printf ' pi v0.84.4\n'
+	printf ' escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more\n'
+	printf ' Press ctrl+o to show full startup help and loaded resources.\n\n'
+	printf ' Pi can explain its own features and look up its docs.\n\n\n'
+	printf '%s\n  Yes         Show images inline in terminal\n→ No          Show text placeholder instead\n%s\n%s\n%s\n' \
+		"$border" "$border" "$here" "$FRESH"
+}
+
+scrolled() {
+	printf ' 58\n 59\n 60\n\n\n ... 41 more lines (ctrl+o to expand)\n'
+	printf '%s\n\n%s\n  Yes         Show images inline in terminal\n→ No          Show text placeholder instead\n%s\n%s\n%s\n' \
+		"$border" "$border" "$border" "$here" "$FRESH"
+}
+
 # Repaint, the way a program that owns its pane draws a new screen. What was
 # there goes into the pane's history rather than above the new screen.
 #
@@ -357,6 +387,8 @@ draw() {
 	trust) screen=$(trust) ;;
 	setup) screen=$(setup) ;;
 	login) screen=$(login) ;;
+	selector) screen=$(selector) ;;
+	scrolled) screen=$(scrolled) ;;
 	*)
 		echo "mock pi: $scenario: no screen called \`$1\`" >&2
 		exit 65

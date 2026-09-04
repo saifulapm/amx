@@ -703,10 +703,10 @@ within = 6
 asks = { above = ">" }
 
 # pi is drawn and waiting for somebody to type. Nothing more specific claimed
-# the screen and pi's own chrome is on it: the box, and the stats line under
-# it. This is the rule that gets a booted agent named rather than left at
-# `starting` — a pi that has never taken a turn draws its banner, its box and a
-# footer, and nothing else at all.
+# the screen and pi's own chrome is the whole of what is on it: an empty box,
+# and the two footer rows under it. This is the rule that gets a booted agent
+# named rather than left at `starting` — a pi that has never taken a turn draws
+# its banner, its box and a footer, and nothing else at all.
 #
 # `any` is the same three openings the furniture walk anchors on, read here as
 # substrings rather than as prefixes, plus what a longer stats line leaves when
@@ -720,13 +720,52 @@ asks = { above = ">" }
 # with the other two.
 #
 # `within` is what stops those three from adding up to a prompt anywhere they
-# happen to land. Four rows separate the box's top border from the stats line
-# with the composer empty — border, composer, border, working directory, stats
-# — and the window is 8, which is that plus room for four rows staged in the
-# box by `amx send`. Without it the rule reads a screen as a prompt on nothing
+# happen to land. Without it the rule reads a screen as a prompt on nothing
 # more than a horizontal rule and an arrow glyph, and an arrow glyph in a key
 # hint is what half the terminal programs ever written draw at the bottom of a
 # pane, this vendor's own dialog included.
+#
+# ── The window is the box, and nothing wider ─────────────────────────────────
+# `within` is 4 and `apart` is 4, which is to say the span is exactly four
+# rows: the box's top border, the row pi keeps for what is staged in it, the
+# bottom border, the working directory, and the stats line. That is the whole
+# of what this rule was ever measured against, and the `[furniture]` table
+# above is where the two footer rows are measured: always both, never anything
+# between them and the box, and truncated rather than wrapped at every width.
+#
+# The window was 8 before, which was those four plus room for four rows staged
+# in the box by `amx send`. What the four spare rows decided in practice was
+# not about a composer at all, and this is the third finding in
+# `docs/pi-screens.md`. pi draws every widget a person opens between those same
+# two borders, so a selector five or six or eight rows tall was a box, a
+# footer, and a span inside the window: `/model`, `/scoped-models`, `/tree`,
+# `/fork`, the theme and show-images selectors, and the login dialog until the
+# rule above claimed it, were all read as a prompt while somebody was being
+# asked to pick something or to type something. `idle` is
+# the worse of the two wrong answers available on this vendor — `send` types
+# into whatever widget is up, and a row that says idle is a row saying there is
+# nothing here to look at.
+#
+# `apart` is the other half of the same finding, and what it answers is
+# `row_of` taking the TOPMOST row that carries a string. A box taller than the
+# rows a rule may see has its own top border out of reach, and then the topmost
+# border left to find is the bottom one: three rows of screen, a span of 2, and
+# the same verdict again. So which reading a selector got turned on what
+# happened to be above it rather than on the widget. Measured at 100 columns
+# and a pane of 30 rows on 2026-09-05, on an opencode run of the same version:
+# the show-images selector spanned 5 with nothing above it and 7 with the
+# output of `!seq 1 60` above it, because `!cmd` leaves the bottom border of
+# its own box on the pane; `/model`, whose list is taller than the floor,
+# spanned 2. The widget is the same widget on all three, and now all three read
+# `unknown`, which is the right answer about a screen no rule here was measured
+# on.
+#
+# What the pair costs is the seconds after a paste. `amx send` types into the
+# box and then submits, and between the two the composer holds rows this rule
+# now reads past its window, so a pane that used to say idle says `unknown`
+# until the submit lands. Quiet is the direction to be wrong in, and a box with
+# somebody's text sitting in it is not a pi waiting for somebody to type
+# anyway: it is a pi that has already been typed into.
 #
 # `quiescent` says this rule may not end a turn that is on the record as
 # running until the screen has held still across a run of consecutive looks. It
@@ -742,4 +781,5 @@ state = "idle"
 quiescent = true
 all = ["────────────────────"]
 any = ["↑", "$0.", "%/"]
-within = 8
+within = 4
+apart = 4

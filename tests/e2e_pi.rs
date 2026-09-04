@@ -217,6 +217,22 @@ const OTHER_STATUS_LINES: [(&str, &str, &str); 3] = [
     ),
 ];
 
+/// The two panes one of pi's own selectors makes, and how far the topmost
+/// border a rule can see is from the stats line on each.
+///
+/// The widget is the same widget and its box is the same three rows. What
+/// differs is what else is on the screen: a transcript above it leaves the
+/// bottom border of `!cmd`'s own box on the pane, and a rule reading the
+/// topmost border it can find starts from that one instead.
+const SELECTORS: [(&str, &str, usize); 2] = [
+    ("a selector with nothing above it", "opens-a-selector", 5),
+    (
+        "the same selector under a transcript",
+        "opens-a-selector-under-a-transcript",
+        7,
+    ),
+];
+
 /// Doctor's line about one check: whether it passed, and what it said.
 fn check_line(printed: &str, name: &str) -> (bool, String) {
     printed
@@ -1021,6 +1037,124 @@ fn the_two_screens_a_fresh_pi_stops_on_each_read_waiting() {
             "pi numbers none of its choices: {agent}"
         );
     }
+}
+
+#[test]
+fn the_stand_in_draws_a_selector_in_the_slot_pis_composer_had() {
+    // The screen no rule in `assets/screen-rules-pi.toml` is named for, and
+    // `docs/pi-screens.md` counts fourteen of them: a widget a person opened,
+    // drawn between the composer's own two borders with the working directory
+    // and the stats line under them. There is no hint row on it that any rule
+    // knows and no title, which is the whole reason it reaches the last rule in
+    // the document at all.
+    //
+    // The distance is what this fixture is for. Five rows separate the topmost
+    // border a rule can see from the stats line with nothing above the box, and
+    // seven with a transcript above it, because `!cmd` leaves the bottom border
+    // of its own box on the pane. The widget did not move.
+    for (what, scenario, span) in SELECTORS {
+        let amx = Harness::new();
+        let id = "fix-login-a1b";
+        start(&amx, id, scenario);
+        let pane = amx.pane_of(id);
+
+        let rows = amx.until("the selector to be drawn", || {
+            let rows = drawn(&amx, &pane);
+            row_of(&rows, "Show images inline")
+                .is_some()
+                .then_some(rows)
+        });
+
+        let drawn_borders = borders(&rows);
+        let (top, bottom) = (
+            drawn_borders[0],
+            *drawn_borders
+                .last()
+                .unwrap_or_else(|| panic!("{what}: pi's composer box: {rows:?}")),
+        );
+        let choice = row_of(&rows, "Show images inline").expect("the first choice");
+        assert!(
+            drawn_borders[drawn_borders.len() - 2] < choice && choice < bottom,
+            "{what}: the choices sit inside the box, where the editor usually \
+             is: {rows:?}"
+        );
+        assert_eq!(
+            rows.len() - 1 - top,
+            span,
+            "{what}: the topmost border a rule can see, and the stats line \
+             under the box: {rows:?}"
+        );
+        assert_eq!(
+            rows.len() - bottom,
+            3,
+            "{what}: the working directory and the stats line under it, same \
+             as any other screen: {rows:?}"
+        );
+        // And nothing on it that a rule above the last one would stop at: pi
+        // spells this widget's keys nowhere on the pane, so the screen falls
+        // past every rule that reads a hint row.
+        for hint in ["navigate", "enter submit", "escape/ctrl+c"] {
+            assert!(
+                row_of(&rows, hint).is_none(),
+                "{what}: no hint row for a rule to claim it by: {rows:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_widget_in_the_slot_pis_composer_had_is_not_pis_prompt() {
+    // The last rule in pi's document was counted off a composer: an empty box,
+    // the working directory and the stats line, four rows. A selector is the
+    // same two borders with somebody's list between them, and at five rows and
+    // at seven it fell inside a window of eight — so a card said idle over a pi
+    // that would take the next keystroke as a menu choice, and `send` would
+    // have typed into the widget.
+    //
+    // The second half is that it said it differently on the same widget. What
+    // is above the box is not a fact about the box, and a verdict that turns on
+    // how much output has scrolled by is not a reading of the screen at all.
+    let mut verdicts = Vec::new();
+    for (what, scenario, _) in SELECTORS {
+        let amx = Harness::new();
+        let id = "fix-login-a1b";
+        start(&amx, id, scenario);
+        let pane = amx.pane_of(id);
+
+        // The row this widget draws and no earlier screen in the scenario
+        // carries, waited for on its own, with the rest of the screen read off
+        // that same capture.
+        amx.until("the selector to be drawn", || {
+            row_of(&drawn(&amx, &pane), "Show images inline")
+                .is_some()
+                .then_some(())
+        });
+
+        // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
+        // nothing outstanding, which is where the screen is the only witness
+        // there is on this vendor.
+        amx.set_state(
+            id,
+            json!({ "state": "starting", "since": 1, "last_event": 1 }),
+        );
+
+        let agent = status(&amx, id);
+        assert_eq!(
+            agent["state"], "unknown",
+            "{what}: a widget in the composer's slot is not a prompt: {agent}"
+        );
+        assert!(
+            agent["rule"].is_null(),
+            "{what}: and no rule in pi's document claims it: {agent}"
+        );
+        verdicts.push(agent["state"].clone());
+    }
+
+    assert_eq!(
+        verdicts[0], verdicts[1],
+        "the same widget, read the same way with a transcript above it as with \
+         none"
+    );
 }
 
 #[test]

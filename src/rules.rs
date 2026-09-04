@@ -70,6 +70,16 @@ pub struct Rule {
     /// not two things that happen to share a screen.
     #[serde(default)]
     pub within: Option<usize>,
+    /// How few rows they may span: the floor that `within` is the ceiling of.
+    ///
+    /// A vendor's chrome is as tall as it is, and anchors that come out nearer
+    /// than that have not found the whole of it. The rows are read from the
+    /// TOPMOST one carrying each string, so a box too tall for the rows a rule
+    /// may see has its own top out of reach and the topmost border left to
+    /// find is the bottom one — which is a widget with the vendor's footer
+    /// under it wearing the chrome's own numbers.
+    #[serde(default)]
+    pub apart: Option<usize>,
     /// None of these may appear below the match. claude draws no composer
     /// under a blocking prompt, so a widget with the mode footer beneath it is
     /// a quotation of a widget rather than one.
@@ -272,6 +282,12 @@ impl Rule {
 
         if let Some(within) = self.within
             && last - first > within
+        {
+            return false;
+        }
+
+        if let Some(apart) = self.apart
+            && last - first < apart
         {
             return false;
         }
@@ -1664,6 +1680,126 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ↑1.5k ↓69 R1.3k CH90....
 ";
 
+    /// One of the widgets a person opens on pi, in the slot the composer had:
+    /// the show-images selector, which is the shortest box the vendor puts
+    /// there. 100 columns and a pane of 30 rows, 2026-09-05, on an opencode
+    /// run of the same version, raised through `ctx.ui.custom` by an extension
+    /// that does nothing else — which is the only way to reach this one, and
+    /// the component drawing it is pi's own.
+    ///
+    /// Five rows from the box's top border to the stats line, and that is the
+    /// whole of what makes this screen interesting: a box with the vendor's
+    /// footer under it and a span the last rule in the document used to allow,
+    /// so a pi that would take the next keystroke as a menu choice was
+    /// reported as one waiting to be typed at.
+    const A_PI_SELECTOR: &str = r"
+ pi v0.84.4
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+[Extensions]
+  screens.ts
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Yes         Show images inline in terminal
+→ No          Show text placeholder instead
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.claude/jobs/3bd43671/tmp/measure
+0.0%/1.0M (auto)                                   (opencode) muse-spark-1.3-contributor-free • high
+
+
+
+
+
+
+
+
+
+
+
+
+";
+
+    /// The same selector on a pane with a transcript above it, raised the same
+    /// way after `!seq 1 60`. The widget did not move and its box is the same
+    /// three rows; what changed is that `!cmd` leaves the bottom border of its
+    /// own box on the pane, and a rule reads the TOPMOST border it can see, so
+    /// the span from there to the stats line is 7 rather than 5.
+    ///
+    /// Which is what this pair is here for: the verdict was turning on what
+    /// had scrolled by rather than on the screen.
+    const A_PI_SELECTOR_UNDER_A_TRANSCRIPT: &str = r" 42
+ 43
+ 44
+ 45
+ 46
+ 47
+ 48
+ 49
+ 50
+ 51
+ 52
+ 53
+ 54
+ 55
+ 56
+ 57
+ 58
+ 59
+ 60
+
+
+ ... 41 more lines (ctrl+o to expand)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Yes         Show images inline in terminal
+→ No          Show text placeholder instead
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.claude/jobs/3bd43671/tmp/measure
+0.0%/1.0M (auto)                                   (opencode) muse-spark-1.3-contributor-free • high
+";
+
+    /// pi's model selector, raised with `/model` on the same pane the same day.
+    /// The other end of the same reading: this box is taller than the rows a
+    /// rule may see, so its own top border is above the floor and the topmost
+    /// border left to find is the bottom one. Three rows of screen, a span of
+    /// 2, and it read as a prompt on that alone.
+    const A_PI_MODEL_SELECTOR: &str = r"
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Only showing models from configured providers. Use /login to add providers.
+
+>
+
+→ muse-spark-1.3-contributor-free [opencode] · default ✓
+  claude-haiku-4.5 [github-copilot]
+  claude-sonnet-4.6 [github-copilot]
+  gemini-3.5-flash [github-copilot]
+  gpt-5-mini [github-copilot]
+  gpt-5.3-codex [github-copilot]
+  gpt-5.4 [github-copilot]
+  gpt-5.4-mini [github-copilot]
+  mai-code-1-flash-picker [github-copilot]
+  mai-code-1.1-flash [github-copilot]
+  (1/100)
+
+  Model Name: Muse Spark 1.3 Free
+
+  Model catalogs refreshed.
+
+  Enter to select · Ctrl+S to set as default · Esc to cancel
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.claude/jobs/3bd43671/tmp/measure
+0.0%/1.0M (auto)                                   (opencode) muse-spark-1.3-contributor-free • high
+";
+
     fn claim<'a>(rules: &'a Ruleset, screen: &str, recorded: Phase) -> Claim<'a> {
         rules.claim(screen, recorded, SETTLED_LOOKS)
     }
@@ -2286,6 +2422,40 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
         );
     }
 
+    #[test]
+    fn rules_a_lone_border_is_the_bottom_of_a_box_and_not_a_box() {
+        // `apart` is the floor `within` is the ceiling of, and what it is for
+        // is the reading being taken from the TOPMOST row carrying a string. A
+        // box too tall for the rows a rule may see has its own top out of
+        // reach, so what is left to find is its bottom border and the chrome
+        // under it — which is the same handful of rows every screen this
+        // vendor draws ends in.
+        let ruleset = Ruleset::parse(
+            r#"
+            [[rule]]
+            name = "boxed"
+            state = "idle"
+            all = ["---"]
+            any = ["mode:"]
+            within = 4
+            apart = 4
+            "#,
+        )
+        .unwrap();
+
+        let whole_box = "---\n\n---\nhere\nmode: careful\n";
+        let bottom_of_one = "---\nhere\nmode: careful\n";
+        assert_eq!(
+            ruleset.claim(whole_box, Phase::Starting, 1).phase(),
+            Some(Phase::Idle)
+        );
+        assert_eq!(
+            ruleset.claim(bottom_of_one, Phase::Starting, 1),
+            Claim::Unclaimed,
+            "one border with a footer under it is not the box it is the end of"
+        );
+    }
+
     /// pi's screens, read the way a reader reaches them: through the entry in
     /// the table, which is what proves the document is in the binary and
     /// parses.
@@ -2624,6 +2794,57 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
                 asked.options.is_empty(),
                 "{what}: pi numbers none of these, so none of them is read: {:?}",
                 asked.options
+            );
+        }
+    }
+
+    #[test]
+    fn rules_a_widget_in_the_slot_pis_composer_had_is_not_pis_prompt() {
+        // pi draws every widget a person opens between the composer's own two
+        // borders and keeps the same footer under it, so the last rule in the
+        // document — a box, a footer, and the rows between them — held on all
+        // of them. That window was counted off an empty composer and nothing
+        // else, and `docs/pi-screens.md` measured seven screens that need a
+        // person going out as `idle` because of it.
+        for (what, screen) in [
+            ("a selector with nothing above it", A_PI_SELECTOR),
+            (
+                "the same selector under a transcript",
+                A_PI_SELECTOR_UNDER_A_TRANSCRIPT,
+            ),
+            (
+                "a selector taller than the rows a rule may see",
+                A_PI_MODEL_SELECTOR,
+            ),
+        ] {
+            assert_eq!(
+                claim(pi(), screen, Phase::Starting),
+                Claim::Unclaimed,
+                "{what} is not a pi waiting for somebody to type"
+            );
+        }
+
+        // And what is above the box is not a fact about the box: the two
+        // captures of the one widget differ by a transcript and by nothing
+        // else, and a reading that told them apart was reading the transcript.
+        assert_eq!(
+            claim(pi(), A_PI_SELECTOR, Phase::Starting),
+            claim(pi(), A_PI_SELECTOR_UNDER_A_TRANSCRIPT, Phase::Starting),
+            "the same widget, read the same way"
+        );
+
+        // The screen the rule was measured on is still the screen it claims,
+        // at both the widths it was measured at and on a pi nobody has typed
+        // into yet.
+        for (what, screen) in [
+            ("a finished turn", A_PI_IDLE),
+            ("the same at 24 columns", A_PI_IDLE_24),
+            ("a pi nobody has typed into yet", A_PI_BOOT),
+        ] {
+            assert_eq!(
+                claim(pi(), screen, Phase::Starting).rule_name(),
+                Some("prompt"),
+                "{what}"
             );
         }
     }

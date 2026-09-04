@@ -1,0 +1,9 @@
+# A pi with one of its own selectors up, on a pane with nothing above it. This
+# is not a stop a tool call raised and not a prompt: a person opened a widget,
+# it is drawn where the composer was, and `send` would type into it. The agent
+# is still there afterwards, the way pi is: whoever is driving this scenario
+# decides when it ends.
+screen boot
+sleep 50
+screen selector
+sleep 600000
