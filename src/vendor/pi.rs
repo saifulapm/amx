@@ -210,14 +210,12 @@ mod tests {
         // pane is not the last witness on this vendor, it is the only one, and
         // the screens document is where what amx can see on it is written
         // down.
+        //
+        // Which screens that document names, and in which order, is asserted
+        // in src/rules.rs and only there. A second copy here would be a second
+        // place to edit every time a screen is measured, and the two would
+        // disagree the first time somebody edited one of them.
         assert!(VENDOR.hooks.is_none());
-        let screens = crate::rules::Ruleset::parse(VENDOR.screens.expect("pi declares screens"))
-            .expect("pi's screens parse");
-        let named: Vec<_> = screens
-            .rules()
-            .iter()
-            .map(|rule| rule.name.as_str())
-            .collect();
-        assert_eq!(named, ["dialog", "spinner", "prompt"]);
+        assert!(VENDOR.screens.is_some(), "pi declares screens");
     }
 }
