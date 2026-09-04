@@ -2164,15 +2164,28 @@ fn card_of(view: &View) -> Card<Body> {
                     .unwrap_or_default();
                 // An agent whose command has ended has no pane left to hold
                 // the vendor's furniture, so nothing is cut off what it left.
+                // A live pane is cut with the anchors of the vendor the record
+                // says was started in it: every one of them is that vendor's
+                // own, and claude's find nothing on a pi screen.
                 match view.phase().is_terminal() {
                     true => Body::said(said),
-                    false => Body::screen(said),
+                    false => Body::screen(own_chrome(&view.meta), said),
                 }
             }
         },
         changes: false,
         answer: answered,
     }
+}
+
+/// The chrome the vendor in this agent's pane draws under it.
+///
+/// Off the record, which is where the command that resolved the vendor is
+/// written down: the flag and the config it came from are gone by the time
+/// anybody opens a card. A record naming no command reads the vendor amx falls
+/// back to, and its pane keeps the reading it has always had.
+fn own_chrome(meta: &crate::store::Meta) -> &'static crate::furniture::Furniture {
+    crate::rules::of(meta.agent.as_deref().unwrap_or_default()).furniture()
 }
 
 /// The tmux the view is itself running in.
@@ -2339,6 +2352,14 @@ mod tests {
     /// The keys of a word, one at a time, the way somebody types it.
     fn word(text: &str) -> Vec<KeyCode> {
         text.chars().map(KeyCode::Char).collect()
+    }
+
+    /// The anchors a body planted straight into a card is walked against,
+    /// which are the fallback vendor's. No body planted that way carries a row
+    /// of anybody's chrome: those tests are about where the card stands, not
+    /// about what came off the pane under it.
+    fn chrome() -> &'static crate::furniture::Furniture {
+        crate::rules::of("").furniture()
     }
 
     /// An agent whose command ended `ago` seconds back: no pane, and nothing
@@ -3061,6 +3082,36 @@ mod tests {
     }
 
     #[test]
+    fn card_cuts_a_pane_with_the_furniture_of_the_vendor_the_record_names() {
+        // pi's chrome carries not one of claude's anchors, so a card that
+        // walked a pi pane with the document amx falls back to would float the
+        // vendor's own box and stats line over the work the card was opened
+        // for. Which anchors the walk holds is the command the record kept at
+        // the spawn.
+        let pane = [
+            " the work itself",
+            "",
+            "────────────────────────────",
+            "",
+            "────────────────────────────",
+            "~/srv/app",
+            "$0.001 (sub) 0.5%/264k (auto)",
+        ];
+        let ran = |agent: Option<&str>| {
+            let mut view = reading("fix-login-a1b", Phase::Working, State::default());
+            view.meta.agent = agent.map(str::to_string);
+            crate::furniture::cut(own_chrome(&view.meta), &pane).to_vec()
+        };
+
+        assert_eq!(ran(Some("pi")), [" the work itself", ""]);
+        assert_eq!(
+            ran(None),
+            pane,
+            "and a record naming no command keeps the reading it has always had"
+        );
+    }
+
+    #[test]
     fn card_reads_the_recorded_answer_rather_than_taking_a_copy_of_it() {
         // The card is built with the record's own words read: one walk, and
         // no copy of an answer that would only have been walked later. A card
@@ -3629,7 +3680,7 @@ mod tests {
         let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
         screen.look = Look::Screen;
         screen.follow_the_cursor();
-        screen.card.as_mut().expect("a card").body = Body::screen("what she was reading");
+        screen.card.as_mut().expect("a card").body = Body::screen(chrome(), "what she was reading");
 
         // Paged away, the card holds still between rereads: recapturing under
         // somebody's eyes would move the text they are on.
@@ -3665,7 +3716,7 @@ mod tests {
         )]);
         screen.look = Look::Screen;
         screen.follow_the_cursor();
-        screen.card.as_mut().expect("a card").body = Body::screen("old capture");
+        screen.card.as_mut().expect("a card").body = Body::screen(chrome(), "old capture");
         screen.scroll.away.set(3);
 
         // The agent stops on a question while somebody is reading history:
@@ -3829,7 +3880,7 @@ mod tests {
         )]);
         screen.look = Look::Screen;
         screen.follow_the_cursor();
-        screen.card.as_mut().expect("a card").body = Body::screen("what the pane said");
+        screen.card.as_mut().expect("a card").body = Body::screen(chrome(), "what the pane said");
 
         let walked = paint::walks();
         for _ in 0..4 {

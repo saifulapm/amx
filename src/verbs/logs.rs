@@ -29,6 +29,7 @@ use anyhow::Result;
 use std::io::Write;
 use std::path::Path;
 
+use crate::furniture::Furniture;
 use crate::store::Agent;
 use crate::tmux::{PaneId, Server};
 use crate::vendor::{Capability, Vendor};
@@ -80,7 +81,7 @@ pub fn run(
                 send::line(&send::rendered(&tail, to_terminal), out)?;
                 Ok(exit::OK)
             }
-            None => screen(&server, &meta.pane, id, lines, out),
+            None => screen(&server, &meta.pane, id, lines, chrome(vendor), out),
         },
         false => recorded(&agent, id, vendor, to_terminal, out),
     }
@@ -95,6 +96,18 @@ pub fn run(
 /// neither way, and its record is taken at its word.
 fn keeps_a_conversation(vendor: Option<&Vendor>) -> bool {
     vendor.is_none_or(|vendor| vendor.can(Capability::Transcript))
+}
+
+/// The chrome this vendor draws under its panes, which is what comes off a
+/// screen before it is printed.
+///
+/// The vendor this reading already resolved, because every anchor the walk
+/// steps on is one vendor's own: pi's box and stats line are nothing claude
+/// draws, and a walk handed the wrong document finds no anchor and leaves the
+/// furniture on the screen. A command amx has no entry for is read with the
+/// vendor amx falls back to, which is the reading this verb has always had.
+fn chrome(vendor: Option<&Vendor>) -> &'static Furniture {
+    crate::rules::of(vendor.map_or("", |vendor| vendor.name)).furniture()
 }
 
 /// The agent's recent conversation, read from the transcript the vendor keeps.
@@ -172,6 +185,7 @@ fn screen(
     pane: &PaneId,
     id: &str,
     lines: u32,
+    chrome: &Furniture,
     out: &mut impl Write,
 ) -> Result<i32> {
     // The vendor's furniture comes off the bottom before the tail is cut:
@@ -179,7 +193,7 @@ fn screen(
     // and the walk is the same one the card takes.
     let sanitized = tmux::sanitize(&capture(server, pane, lines)?);
     let rows: Vec<&str> = sanitized.lines().collect();
-    let tail = tail_of(&furniture::cut(&rows).join("\n"), lines as usize);
+    let tail = tail_of(&furniture::cut(chrome, &rows).join("\n"), lines as usize);
     if tail.is_empty() {
         // A live pane with nothing on it is an answer, and an empty stdout on
         // its own reads as amx having failed to look.

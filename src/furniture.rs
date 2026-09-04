@@ -43,10 +43,12 @@ pub struct Furniture {
 
 /// The vendor's own furniture, cut off the bottom of a capture.
 ///
-/// The anchors are the default vendor's, which is the reader amx has: a record
-/// says which pane an agent is in, not what is running in it.
-pub fn cut<'a, 'b>(rows: &'a [&'b str]) -> &'a [&'b str] {
-    crate::rules::bundled().furniture().cut(rows)
+/// The door the surfaces that print a pane come through, and the anchors come
+/// with them: the record says which vendor was started in the pane, so the
+/// walk is handed that vendor's own glyphs rather than whichever document the
+/// binary happens to bundle first.
+pub fn cut<'a, 'b>(furniture: &Furniture, rows: &'a [&'b str]) -> &'a [&'b str] {
+    furniture.cut(rows)
 }
 
 impl Furniture {

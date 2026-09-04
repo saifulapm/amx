@@ -29,7 +29,7 @@ use super::input::composer_lines;
 use super::style::{colour, dim, request_colour};
 use super::text::{SEPARATOR, fit, inert, width_of};
 use crate::ansi::{self, Colour, Painted};
-use crate::furniture::cut;
+use crate::furniture::{Furniture, cut};
 use crate::pr::Pr;
 use crate::store::{Kind, Phase};
 use crate::theme::Theme;
@@ -91,11 +91,14 @@ impl Card<String> {
             // A patch is amx's own reading of a repository, not a pane; a
             // recorded answer and a finished agent's last words are whole,
             // with no vendor furniture under them; and what is left is a
-            // picture of a pane somebody is still working in.
+            // picture of a pane somebody is still working in — one whose
+            // vendor nothing here names, so the walk is handed the document
+            // amx falls back to. The card the view floats over a live agent is
+            // built where the record says whose pane it is.
             body: match (self.changes, self.answer || self.phase.is_terminal()) {
                 (true, _) => Body::patch(&self.body),
                 (_, true) => Body::said(&self.body),
-                _ => Body::screen(&self.body),
+                _ => Body::screen(crate::rules::of("").furniture(), &self.body),
             },
             id: self.id,
             phase: self.phase,
@@ -152,23 +155,28 @@ impl Body {
         }
     }
 
-    /// A live pane, in the paint the vendor drew it in, with the vendor's own
+    /// A live pane, in the paint the vendor drew it in, with that vendor's own
     /// furniture cut off the bottom.
-    pub(in crate::tui) fn screen(text: &str) -> Body {
-        Body::walk(text, true)
+    ///
+    /// Whose furniture is the caller's to say, because every anchor the walk
+    /// steps on is one vendor's own: the anchors that find claude's composer
+    /// are absent from a pi pane, and a walk given the wrong ones leaves the
+    /// chrome where it is.
+    pub(in crate::tui) fn screen(chrome: &Furniture, text: &str) -> Body {
+        Body::walk(text, Some(chrome))
     }
 
     /// What an agent said: a recorded answer, or whatever an agent whose
     /// command has ended left behind. Nothing is cut off it — there is no
     /// pane under it to hold furniture.
     pub(in crate::tui) fn said(text: &str) -> Body {
-        Body::walk(text, false)
+        Body::walk(text, None)
     }
 
-    /// The walk itself. `live` is whether the text came off a pane the vendor
-    /// is still drawing on, which is the only body the furniture cut is taken
-    /// off.
-    fn walk(text: &str, live: bool) -> Body {
+    /// The walk itself. The furniture is the vendor's whose pane this came
+    /// off, and `None` is text that came off no pane at all — the only body
+    /// the cut is not taken off.
+    fn walk(text: &str, chrome: Option<&Furniture>) -> Body {
         #[cfg(test)]
         WALKS.with(|walks| walks.set(walks.get() + 1));
         // The escapes are walked into styling here and nowhere else, so
@@ -177,9 +185,9 @@ impl Body {
         let said: Vec<String> = read.iter().map(|row| words(row)).collect();
         let plain: Vec<&str> = said.iter().map(String::as_str).collect();
         // What the vendor drew on, with its own furniture off the bottom.
-        let drawn = match live {
-            true => cut(&plain).len(),
-            false => plain.len(),
+        let drawn = match chrome {
+            Some(chrome) => cut(chrome, &plain).len(),
+            None => plain.len(),
         };
         // The blank rows a pane is padded out with go the same way, so what
         // is left ends on the last row anybody wrote on: the edge both ends
@@ -616,8 +624,8 @@ fn requests(prs: &[Pr], theme: Theme) -> Vec<Span<'static>> {
 /// whose question amx has not read keeps its capture, because the pane is
 /// the one place that question is written at all.
 ///
-/// claude's own furniture came off the screen before it was ever counted, in
-/// [`Body::screen`]. After would be worse than not at all: the card would
+/// The vendor's own furniture came off the screen before it was ever counted,
+/// in [`Body::screen`]. After would be worse than not at all: the card would
 /// spend its window on the vendor's composer and then have nothing left for
 /// the work.
 pub(super) fn body(card: &Card<Body>, rows: usize, away: usize) -> Vec<Line<'static>> {
@@ -733,7 +741,10 @@ const ANSI: [Color; 16] = [
 ];
 
 /// What the card says where the walk finds nothing underneath the chrome.
-pub(super) const ALL_CHROME: &str = "amx captured nothing but claude's own chrome";
+///
+/// Whichever vendor drew it: the walk holds that agent's own anchors, so the
+/// row this stands in for is the composer of whatever is running in the pane.
+pub(super) const ALL_CHROME: &str = "amx captured nothing but the vendor's own chrome";
 
 /// Which question of the call the card is showing, and how many there are.
 ///
@@ -1717,6 +1728,13 @@ mod tests {
     /// A row of the agent's own work, which is the one thing no step may take.
     const SAID: &str = "what the agent said";
 
+    /// claude's own anchors, which the rows above were measured off. The walk
+    /// is handed the furniture of the vendor whose pane it is reading, and
+    /// none of this chrome is findable without them.
+    fn chrome() -> &'static Furniture {
+        crate::rules::of("claude").furniture()
+    }
+
     /// That screen with `typed` staged in the composer, under a row of work.
     fn staged(typed: &[&'static str]) -> Vec<&'static str> {
         let mut screen = vec![SAID, CHROME[0]];
@@ -1730,7 +1748,7 @@ mod tests {
         let mut screen = vec![SAID, "", "✻ Nesting… (15s · thinking)", ""];
         screen.extend_from_slice(&CHROME);
         assert_eq!(
-            cut(&screen),
+            cut(chrome(), &screen),
             [SAID, ""].as_slice(),
             "the spinner goes with the box it sits over"
         );
@@ -1747,10 +1765,10 @@ mod tests {
             "  call site that used to take the old",
             "  shape",
         ]);
-        assert_eq!(cut(&wrapped), [SAID].as_slice());
+        assert_eq!(cut(chrome(), &wrapped), [SAID].as_slice());
 
         let lines = staged(&["❯ first", "  second", "  third", "  fourth"]);
-        assert_eq!(cut(&lines), [SAID].as_slice());
+        assert_eq!(cut(chrome(), &lines), [SAID].as_slice());
     }
 
     #[test]
@@ -1766,12 +1784,12 @@ mod tests {
             "   2. No",
             " Esc to cancel · Tab to amend",
         ];
-        assert_eq!(cut(&prompt), prompt.as_slice());
+        assert_eq!(cut(chrome(), &prompt), prompt.as_slice());
 
         // And a pane too short for the vendor to draw its chrome in, whose
         // last row is the composer's own bottom border.
         let short = [SAID, CHROME[0], CHROME[1], CHROME[2]];
-        assert_eq!(cut(&short), short.as_slice());
+        assert_eq!(cut(chrome(), &short), short.as_slice());
     }
 
     #[test]
@@ -1780,7 +1798,7 @@ mod tests {
         // this was measured against, so the statusline step abandons and only
         // the footer — matched by its own opener — stays cut.
         let odd = [SAID, CHROME[2], "one", "two", "three", CHROME[4]];
-        assert_eq!(cut(&odd), &odd[..odd.len() - 1]);
+        assert_eq!(cut(chrome(), &odd), &odd[..odd.len() - 1]);
 
         // A composer whose staged text is taller than half the capture: the
         // scan runs past its cap without meeting a top border, so it gives
@@ -1789,7 +1807,7 @@ mod tests {
         runaway.extend((0..8).map(|_| "  typed"));
         runaway.extend_from_slice(&CHROME[2..]);
         assert_eq!(
-            cut(&runaway),
+            cut(chrome(), &runaway),
             &runaway[..runaway.len() - 3],
             "the footer, the statusline and the bottom border keep their anchors"
         );
@@ -1821,7 +1839,7 @@ mod tests {
         // The warning claude renders flush against the composer's top border
         // with no blank row between them stays: it is above the box, and a
         // walk that ran upward until a blank row would have eaten it.
-        assert_eq!(cut(&screen), &CAPTURED[..2]);
+        assert_eq!(cut(chrome(), &screen), &CAPTURED[..2]);
     }
 
     /// What a card's body says, with the paint it says it in set aside.

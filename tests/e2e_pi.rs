@@ -612,6 +612,57 @@ fn a_quiet_pi_is_read_against_pis_own_document() {
 }
 
 #[test]
+fn logs_cut_the_furniture_pi_drew_and_print_the_work_above_it() {
+    // The walk that takes a vendor's chrome off a reading held claude's
+    // anchors against whatever pane it was handed, and pi's box, working
+    // directory and stats line carry not one of them: `amx logs` printed the
+    // vendor's own furniture back at somebody asking what the agent had been up
+    // to. Which anchors the walk holds is the record's to say, the same way the
+    // rules are.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "takes-a-turn");
+    let pane = amx.pane_of(id);
+
+    // The row a finished turn leaves and no earlier screen in this scenario
+    // carries, waited for on its own, with the rest of the screen read off that
+    // same capture.
+    let rows = amx.until("the turn to be over", || {
+        let rows = drawn(&amx, &pane);
+        row_of(&rows, "Took").is_some().then_some(rows)
+    });
+
+    // Everything above pi's own box, which is the whole of what the agent
+    // earned on this screen.
+    let top = *borders(&rows)
+        .first()
+        .unwrap_or_else(|| panic!("pi's composer box: {rows:?}"));
+    let mut work: Vec<String> = rows[..top].to_vec();
+    while work.last().is_some_and(String::is_empty) {
+        work.pop();
+    }
+
+    // Asked for exactly those rows: pi repaints its pane rather than appending
+    // to it, so a longer reading is the screens before this one, which tmux
+    // keeps in the pane's history.
+    let out = amx.amx(&["logs", id, "--lines", &work.len().to_string()]);
+    assert!(
+        out.status.success(),
+        "amx logs: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|row| row.trim_end().to_string())
+        .collect();
+    assert_eq!(
+        printed, work,
+        "the rows the agent earned, and none of the box, working directory or \
+         stats line pi drew under them"
+    );
+}
+
+#[test]
 fn install_writes_nothing_anywhere_for_a_vendor_that_reports_nothing() {
     // The one repair `--fix` asks about is wiring amx's hooks into the
     // vendor's settings, and pi has no hooks to wire: there are no entries to
