@@ -37,9 +37,10 @@
 #   screen <name>   repaint the pane with one of pi's screens: `boot`, the pane
 #                   of a pi nobody has typed into yet; `working`, with the line
 #                   pi spins above its box; `dialog`, blocked on a question with
-#                   the composer replaced; `trust`, blocked the same way on
-#                   whether this folder is one to trust; and `idle`, the prompt
-#                   a finished turn leaves behind.
+#                   the composer replaced; `input` and `editor`, blocked the
+#                   same way on a line and on a block of text; `trust`, blocked
+#                   on whether this folder is one to trust; and `idle`, the
+#                   prompt a finished turn leaves behind.
 #   sleep <ms>      wait. A long trailing sleep is how a scenario keeps its
 #                   agent alive for the test driving it.
 #
@@ -222,6 +223,24 @@ dialog() {
 		"$border" "$border" "$here" "$TURNED"
 }
 
+# The other two stops a caller puts pi on, drawn where the dialog above is and
+# with the same footer under them. `ctx.ui.input` asks for one line, and pi
+# draws the row it waits to be typed into between the title and the hint row;
+# `ctx.ui.editor` asks for a block, and draws a second box there instead. Both
+# hint rows open on `enter submit`, and the editor's says how to end a line as
+# well, which is what tells the two apart. Nothing runs over either: an
+# extension raised these with no turn under way, which is how they were
+# measured at 100 columns on 2026-09-05.
+input() {
+	printf '%s\n\n Which branch should I push to?\n\n>\n\n enter submit  escape/ctrl+c cancel\n\n%s\n%s\n%s\n' \
+		"$border" "$border" "$here" "$FRESH"
+}
+
+editor() {
+	printf '%s\n\n Write the commit message\n\n%s\n\n%s\n\n enter submit  shift+enter/ctrl+j newline  escape/ctrl+c cancel  ctrl+g external editor\n\n%s\n%s\n%s\n' \
+		"$border" "$border" "$border" "$border" "$here" "$FRESH"
+}
+
 # pi asking whether this folder is one to trust. The same box the dialog above
 # is drawn in, ending in the same hint row, and two rows are what tell the two
 # apart: the title `Project trust`, which no other screen pi draws carries, and
@@ -260,6 +279,8 @@ draw() {
 	working) screen=$(working) ;;
 	idle) screen=$(idle) ;;
 	dialog) screen=$(dialog) ;;
+	input) screen=$(input) ;;
+	editor) screen=$(editor) ;;
 	trust) screen=$(trust) ;;
 	*)
 		echo "mock pi: $scenario: no screen called \`$1\`" >&2

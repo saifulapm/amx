@@ -1,0 +1,9 @@
+# A caller asking pi for one line, which is `ctx.ui.input`. The same kind of
+# stop as the dialog next door — same extension, same tool call gated — and a
+# screen amx said nothing about until there was a rule for it. The agent is
+# still there afterwards, the way pi is: whoever is driving this scenario
+# decides when it ends.
+screen boot
+sleep 50
+screen input
+sleep 600000

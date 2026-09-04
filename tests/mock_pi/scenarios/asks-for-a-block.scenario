@@ -1,0 +1,8 @@
+# The third stop, `ctx.ui.editor`, which asks for a block of text rather than a
+# line and draws a second box inside pi's own to take it in. The agent is still
+# there afterwards, the way pi is: whoever is driving this scenario decides when
+# it ends.
+screen boot
+sleep 50
+screen editor
+sleep 600000

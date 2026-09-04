@@ -576,6 +576,130 @@ fn the_stand_in_draws_the_dialog_in_pis_box_with_the_turn_still_over_it() {
 }
 
 #[test]
+fn the_stand_in_draws_the_two_screens_a_caller_asks_for_words_on() {
+    // The screens `assets/screen-rules-pi.toml` names `input` and `editor`,
+    // drawn the way they were measured: the caller's title two rows under the
+    // top of the composer box, what pi is waiting to be typed into below it,
+    // and a hint row opening on `enter submit` where the dialog's opens on
+    // `↑↓ navigate`. The editor draws a second box for the block it wants,
+    // which is the shape that told the two rules apart.
+    for (what, scenario, title, boxes) in [
+        (
+            "a line",
+            "asks-for-a-line",
+            "Which branch should I push to?",
+            2,
+        ),
+        ("a block", "asks-for-a-block", "Write the commit message", 4),
+    ] {
+        let amx = Harness::new();
+        let id = "fix-login-a1b";
+        start(&amx, id, scenario);
+        let pane = amx.pane_of(id);
+
+        // The title this scenario asks for and no earlier screen in it
+        // carries, waited for on its own, with the rest of the screen read off
+        // that same capture.
+        let rows = amx.until("the caller's question to be drawn", || {
+            let rows = drawn(&amx, &pane);
+            row_of(&rows, title).is_some().then_some(rows)
+        });
+
+        let drawn_borders = borders(&rows);
+        assert_eq!(
+            drawn_borders.len(),
+            boxes,
+            "asking for {what}, the box is drawn whole: {rows:?}"
+        );
+        let (top, bottom) = (drawn_borders[0], drawn_borders[boxes - 1]);
+        assert_eq!(
+            row_of(&rows, title).expect("the title") - top,
+            2,
+            "the border, one blank row, and then the title: {rows:?}"
+        );
+        assert!(
+            row_of(&rows, "enter submit").is_some_and(|hint| top < hint && hint < bottom),
+            "the hint row sits inside the box, where the editor usually is: {rows:?}"
+        );
+        // And nothing is running over it. A caller raises either of these from
+        // a turn or between two of them; the fixture draws them the way they
+        // were measured, which was with no turn under way.
+        assert!(
+            row_of(&rows, "Working...").is_none(),
+            "no turn is under way behind this question: {rows:?}"
+        );
+        assert_eq!(
+            rows.len() - bottom,
+            3,
+            "the working directory and the stats line under it, same as any \
+             other screen: {rows:?}"
+        );
+    }
+}
+
+#[test]
+fn a_pi_stopped_by_a_caller_carries_the_question_that_caller_asked() {
+    // An extension stops pi three ways and two of them read `unknown`, so a
+    // permission gate written with `ctx.ui.input` was a pane amx said nothing
+    // about while somebody waited to be typed at. All three block, all three
+    // put the caller's own sentence at the top of pi's box, and the row is
+    // where a person reads it: the vendor reports through no hooks, so there
+    // is no payload the question could arrive in.
+    for (what, scenario, rule, question) in [
+        ("a choice", "asks-a-question", "dialog", "Run echo hi?"),
+        (
+            "a line",
+            "asks-for-a-line",
+            "input",
+            "Which branch should I push to?",
+        ),
+        (
+            "a block",
+            "asks-for-a-block",
+            "editor",
+            "Write the commit message",
+        ),
+    ] {
+        let amx = Harness::new();
+        let id = "fix-login-a1b";
+        start(&amx, id, scenario);
+        let pane = amx.pane_of(id);
+
+        amx.until("the caller's question to be drawn", || {
+            row_of(&drawn(&amx, &pane), question)
+                .is_some()
+                .then_some(())
+        });
+
+        // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
+        // nothing outstanding, which is where the screen is the only witness
+        // there is on this vendor.
+        amx.set_state(
+            id,
+            json!({ "state": "starting", "since": 1, "last_event": 1 }),
+        );
+
+        let agent = status(&amx, id);
+        assert_eq!(agent["state"], "waiting", "asking for {what}: {agent}");
+        assert_eq!(
+            agent["rule"], rule,
+            "pi's own rule, out of pi's own document: {agent}"
+        );
+        assert_eq!(agent["kind"], "question", "asking for {what}: {agent}");
+        assert_eq!(
+            agent["question"], question,
+            "the sentence the caller passed, off the pane it is drawn on: {agent}"
+        );
+        assert_eq!(
+            agent["options"],
+            json!([]),
+            "pi numbers none of its choices, and two of these have none to \
+             number: {agent}"
+        );
+    }
+}
+
+#[test]
 fn a_pi_on_the_folder_trust_question_reads_trust_and_not_a_tool_call() {
     // pi draws this in the same box a gated tool call's dialog is drawn in and
     // ends it in the same `↑↓ navigate` hint row, so the dialog rule claimed
