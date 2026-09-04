@@ -220,6 +220,12 @@ impl Ask {
 pub struct Meta {
     pub id: String,
     pub task: String,
+    /// What runs the agent: the command `new` resolved for it, the word the
+    /// agent it was forked from was launched with, or the vendor an adoption
+    /// found in the pane. `None` from a shell command, which runs no vendor,
+    /// and from a record written before amx kept this.
+    #[serde(default)]
+    pub agent: Option<String>,
     /// Where the agent runs — its worktree, or the directory it was asked for.
     pub dir: PathBuf,
     /// The worktree amx made for it, if it made one.
@@ -957,6 +963,7 @@ mod tests {
         Meta {
             id: id.to_string(),
             task: "fix the login bug".to_string(),
+            agent: None,
             dir: PathBuf::from("/srv/app"),
             worktree: Some(PathBuf::from("/srv/app/.amx/worktrees/fix-login-a1b")),
             branch: Some("amx/fix-login-a1b".to_string()),

@@ -1359,6 +1359,7 @@ mod tests {
         let meta = crate::store::Meta {
             id: "pick-a1b".to_string(),
             task: "port the importer".to_string(),
+            agent: None,
             dir: std::path::PathBuf::from("/srv/app"),
             worktree: None,
             branch: None,

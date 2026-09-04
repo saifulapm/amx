@@ -2356,6 +2356,7 @@ mod tests {
             &Meta {
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
+                agent: None,
                 dir: PathBuf::from(dir),
                 worktree: None,
                 branch: None,
@@ -2516,6 +2517,7 @@ mod tests {
             &Meta {
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
+                agent: None,
                 dir: PathBuf::from("/srv/app"),
                 worktree: None,
                 branch: None,
@@ -2905,6 +2907,7 @@ mod tests {
             Meta {
                 id: id.to_string(),
                 task: "port the importer".to_string(),
+                agent: None,
                 dir: PathBuf::from("/srv/app"),
                 worktree: None,
                 branch: None,
@@ -4201,6 +4204,7 @@ mod tests {
             &Meta {
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
+                agent: None,
                 dir: PathBuf::from("/srv/app"),
                 worktree: None,
                 branch: None,

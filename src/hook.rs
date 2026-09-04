@@ -596,6 +596,7 @@ mod tests {
         Meta {
             id: "fix-login-a1b".to_string(),
             task: "fix the login bug".to_string(),
+            agent: None,
             dir: PathBuf::from("/srv/app"),
             worktree: None,
             branch: None,

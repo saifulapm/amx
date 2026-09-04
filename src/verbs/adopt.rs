@@ -126,6 +126,10 @@ pub fn run(
         &Meta {
             id: id.clone(),
             task,
+            // Which vendor is in the pane is the environment's word, not the
+            // config's, and it is the one thing about this agent amx learns
+            // here that outlives the reading.
+            agent: Some(vendor.name.to_string()),
             dir,
             // amx cut nothing and started nothing here. A record claiming this
             // person's tree as an agent's worktree would be one `amx stop`
@@ -152,9 +156,9 @@ pub fn run(
     let writer = agent.writer()?;
     writer.append(&Event::new(
         ADOPTED,
-        // The vendor goes with them: it is the one thing amx learns here that
-        // the record has nowhere to keep, and what was in that pane is the
-        // question somebody asks a week later.
+        // The vendor goes with them, as it does on the record: what was in
+        // that pane is the question somebody asks a week later, and the log is
+        // where they read what happened rather than what is so now.
         serde_json::json!({
             "pane": pane.as_str(),
             "session": session,
@@ -487,6 +491,12 @@ mod tests {
             (meta.worktree, meta.branch, meta.base),
             (None, None, None),
             "amx cut nothing here, so it claims nothing"
+        );
+        assert_eq!(
+            meta.agent.as_deref(),
+            Some(a_vendor().name),
+            "the vendor whose variable is in this pane, and not the one the \
+             config would have spawned"
         );
 
         // The screen, read at the moment of adoption: a record saying

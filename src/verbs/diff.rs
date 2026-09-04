@@ -63,6 +63,7 @@ mod tests {
             &Meta {
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
+                agent: None,
                 dir: worktree
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| PathBuf::from("/srv/app")),

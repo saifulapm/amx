@@ -1337,6 +1337,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         Meta {
             id: "fix-login-a1b".to_string(),
             task: "fix the login bug".to_string(),
+            agent: None,
             dir: std::path::PathBuf::from("/srv/app"),
             worktree: None,
             branch: None,

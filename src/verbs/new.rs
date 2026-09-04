@@ -312,6 +312,7 @@ fn start(
         &Meta {
             id: id.to_string(),
             task: args.task.clone(),
+            agent: vendor_written(args.exec, &launch.agent),
             dir: cwd,
             worktree: tree.as_ref().map(|tree| tree.path.clone()),
             branch: tree.as_ref().map(|tree| tree.branch.clone()),
@@ -337,6 +338,18 @@ fn start(
 /// a vendor `opens_under_id` says was never offered one.
 fn session_written(exec: bool, opens_under_id: bool, id: &str) -> Option<String> {
     (!exec && opens_under_id).then(|| id.to_string())
+}
+
+/// What `Meta::agent` is recorded as: the command this spawn resolved, which
+/// is what was typed, else what the config holds, else the vendor amx falls
+/// back to.
+///
+/// `None` from a command spawn. A shell command runs no vendor — the dials are
+/// refused beside `--exec` and nothing about the launch is resolved for it —
+/// and a row claiming one would be a row somebody went looking for a session
+/// on.
+fn vendor_written(exec: bool, agent: &str) -> Option<String> {
+    (!exec).then(|| agent.to_string())
 }
 
 /// What the pane runs: a shell command when that is what was asked for, else
@@ -498,6 +511,26 @@ mod tests {
         assert_eq!(launch.dials.model, "opus", "typed over configured");
         assert_eq!(launch.dials.permission, "plan", "configured, never typed");
         assert_eq!(launch.dials.effort, "high", "typed, never configured");
+    }
+
+    #[test]
+    fn the_record_names_the_vendor_this_spawn_resolved() {
+        // Which vendor an agent runs is settled here, out of the flag, the
+        // config and amx's own fallback, and nothing that reads the record
+        // afterwards can work it out again.
+        let launch = Launch::resolve(&Config::default(), &spawn(None, [None; 3])).unwrap();
+        assert_eq!(
+            vendor_written(false, &launch.agent).as_deref(),
+            Some("claude")
+        );
+
+        // A command spawn resolves a launch it never uses — what was typed is
+        // what runs — and a row claiming a vendor is one somebody goes looking
+        // for a conversation on.
+        assert_eq!(
+            vendor_written(a_command("make test").exec, &launch.agent),
+            None
+        );
     }
 
     #[test]

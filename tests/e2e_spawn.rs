@@ -137,6 +137,33 @@ fn new_leaves_the_session_for_a_hook_to_report_from_a_vendor_with_no_start_flag(
 }
 
 #[test]
+fn new_records_the_command_it_launched_the_agent_with() {
+    // Which vendor is in the pane is settled at the spawn, from the flag, the
+    // config and the vendor amx falls back to. Nothing after the spawn can
+    // work it out again, so the record keeps it.
+    let amx = Harness::new();
+    let id = id_of(&new_as_claude(
+        &amx,
+        "happy-turn",
+        &["--no-worktree", "--agent", "claude", "fix the login bug"],
+    ));
+    assert_eq!(amx.meta(&id)["agent"], "claude");
+
+    // A shell command runs no vendor, and a record saying it ran one would be
+    // read as an agent to resume or fork.
+    let ran = id_of(
+        &amx.amx_command(&["new", "--exec", "true"])
+            .output()
+            .expect("running amx new --exec"),
+    );
+    assert!(
+        amx.meta(&ran)["agent"].is_null(),
+        "{}",
+        amx.meta(&ran)["agent"]
+    );
+}
+
+#[test]
 fn the_task_never_rides_the_tmux_command_line() {
     // A task is arbitrary text and a tmux command line is not a place for it.
     // It travels in a file only its owner can read, and the pane is started

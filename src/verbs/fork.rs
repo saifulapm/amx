@@ -125,10 +125,13 @@ pub fn run(
     // declares a start flag is asked to open the copy under it.
     let command = copying(&recorded, &session, &copy, prompt);
     let opened = opened_under(&recorded, &copy);
+    let launched = launched_with(&recorded);
 
     // From here a failure leaves nothing behind, as in `new`: the directory is
     // this fork's own, so removing it can never take another agent's record.
-    match start(root, &copy, &meta, &session, task, command, opened, env) {
+    match start(
+        root, &copy, &meta, &session, task, command, opened, launched, env,
+    ) {
         Ok(()) => {
             writeln!(out, "{copy}")?;
             Ok(exit::OK)
@@ -157,6 +160,7 @@ fn start(
     task: &str,
     command: Vec<String>,
     opened: Option<String>,
+    launched: Option<String>,
     env: &BTreeMap<String, String>,
 ) -> Result<()> {
     let dir = paths::agent_dir_in(root, id)?;
@@ -185,6 +189,7 @@ fn start(
         &Meta {
             id: id.to_string(),
             task: task.to_string(),
+            agent: launched,
             dir: origin.dir.clone(),
             // amx cut nothing for this agent. The tree it runs in belongs to
             // the agent it was copied from, and a copy that wrote that tree
@@ -249,6 +254,18 @@ fn copying(handoff: &Handoff, session: &str, copy: &str, prompt: Option<&str>) -
 /// command.
 fn opened_under(handoff: &Handoff, copy: &str) -> Option<String> {
     spelling(handoff).start.map(|_| copy.to_string())
+}
+
+/// What [`Meta::agent`] is recorded as for the copy: the word the agent it was
+/// copied from was launched with, which is the word the copy is launched with
+/// too.
+///
+/// Read off the handoff rather than off the original's record, because the
+/// handoff is what a fork already stands on — an agent whose words are gone
+/// cannot be copied at all — while the record says nothing about the vendor on
+/// every agent started before amx kept it.
+fn launched_with(handoff: &Handoff) -> Option<String> {
+    handoff.command.first().cloned()
 }
 
 /// [`copying`], with the vendor's own spelling passed in rather than looked
@@ -490,6 +507,7 @@ mod tests {
         Meta {
             id: id.to_string(),
             task: "fix the login bug".to_string(),
+            agent: None,
             dir: PathBuf::from("/srv/app"),
             worktree: None,
             branch: None,
@@ -521,6 +539,19 @@ mod tests {
             "the flag and its value are one word: the value is optional, and a \
              separate one would be read as a flag of its own"
         );
+    }
+
+    #[test]
+    fn fork_records_the_vendor_the_agent_it_copied_was_launched_with() {
+        // The copy is launched with the original's own words, so what runs it
+        // is the first of them — and the original's record cannot answer for
+        // an agent started before amx kept the vendor on it.
+        let started = handoff(
+            &["claude", "--model", "opus", "fix the login bug"],
+            "fix the login bug",
+        );
+        assert_eq!(launched_with(&started).as_deref(), Some("claude"));
+        assert_eq!(launched_with(&handoff(&[], "")), None);
     }
 
     #[test]
