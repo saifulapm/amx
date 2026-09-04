@@ -152,12 +152,15 @@ and is adopted with no hooks at all, because a session flag amx can hand it
 directly stands in for the id a Started hook would otherwise have had to
 report.
 
-`screens` is where what amx can read off a pi pane is written down: three
-rules — dialog, spinner, prompt — plus the chrome that comes off a capture
-before anybody reads it, driven live against 0.84.4 and checked in as
-`assets/screen-rules-pi.toml`. The entry declares it with `include_str!`, so
-it is in the binary; `rules::of("pi")` finds it, parses it and hands it back,
-and `rules.rs`'s own tests read pi's screens exactly that way.
+`screens` is where what amx can read off a pi pane is written down: eight
+rules — the first-run setup gate, the folder-trust question, a dialog, an
+editor, an input, the spinner, the login box and the prompt — plus the chrome
+that comes off a capture before anybody reads it, driven live against 0.84.4
+and checked in as `assets/screen-rules-pi.toml`. The entry declares it with
+`include_str!`, so it is in the binary; `rules::of("pi")` finds it, parses it
+and hands it back, and `rules.rs`'s own tests read pi's screens exactly that
+way. Which screen each rule was measured on, and what the rest of pi's screens
+read as beside them, is `docs/pi-screens.md`.
 
 Every reader asks for them. `furniture`, `derive`, `send`, `doctor`, `status`
 and the view all reach a document through `rules::of` on the command the
@@ -168,6 +171,84 @@ command, or one written before amx kept that field — reads
 `registry::entries().first()`, claude by where the table lists it and a law
 holding that order, which is the reading every pane had before there was a
 second document to choose from.
+
+## What the dogfood saw
+
+pi 0.84.4, 2026-09-05, on a scratch repository with `agent = "pi"` in the
+config, amx built from the entry above and put on the PATH in front of whatever
+was there, and a state directory and a tmux socket of its own so nothing landed
+on anybody's real wall. The provider was
+opencode's muse-spark-1.3-contributor-free. This is the pass step 5 below asks
+for, written down where the measurements it tests are.
+
+`doctor` came up green on all seven, and the hooks row said what the entry
+claims rather than that something was missing: *pi reports nothing amx can
+wire, so its pane is what amx reads.*
+
+**The four capabilities.** `new` ran `pi --session-id <the id amx minted>`, and
+pi wrote its session to `~/.pi/agent/sessions/<encoded cwd>/<ts>_<id>.jsonl`
+under that id. `stop` and then `resume` ran the same flag with the same id, and
+the pane came back with the whole conversation replayed on it; a message sent
+after that was answered out of the turn before the stop. `fork` ran `pi --fork
+<origin> --session-id <new>`, which left a second session file beside the
+first, carrying the copy's own id, in the directory the original ran in. `adopt`
+was typed inside a pi started by hand, through the vendor's own bash tool,
+which is how `PI_SESSION_ID` and `$TMUX_PANE` reach it: the record came out
+`agent: pi` with pi's own session id on it, and its first state was read off
+the pane it took over. Asked a second time in the same pane it refused —
+`amx: %5 is agent the-pi-i-started-hnx already`. With `trust = true` the argv
+was `pi --session-id <id> --approve <task>`, the folder-trust screen was not
+drawn at all, `~/.pi/agent/trust.json` was never created, and no file of
+claude's was written after the pi spawn. pi's own `core/project-trust.ts`
+returns on that flag before it reads its store, which is the same answer from
+the other side.
+
+**Two vendors on the wall.** Five rows at once, each read by the document of
+the vendor that drew the pane: a claude agent `waiting` on `folder_trust` with
+*Yes, I trust this folder* beside it, and pi agents on `prompt`, on `dialog`
+and on `spinner`. No row carried the other vendor's rule.
+
+**The refusals came back in pi's own words.** `--permission plan`:
+*amx knows no permission dial for pi*. `--effort ultra`: *pi takes default,
+off, minimal, low, medium, high, xhigh, max*. Both exit 64, before anything is
+spawned.
+
+**What it found.** Two are about which screen amx is looking at and are written
+down in `docs/pi-screens.md`: pi's startup trust gate is not the screen
+`project_trust` was measured off, and pi's update notice takes every windowed
+rule off the pane. The other four are the hooks gap showing up in places the
+capability list does not obviously cover, and none of them is answered here:
+
+- **`send` always says the message may not have arrived.** It waits five
+  seconds for the vendor's `UserPromptSubmit` and pi sends none, so every send
+  to a pi agent exits failure with *did not start working within 5s; the
+  message may not have reached it*. Measured four times, and the message had
+  landed and the turn had run every time.
+- **`result` never returns to a pi agent that was sent a message.** It waits
+  for a turn that ended after the last `send`, and only a `Stop` event says one
+  did. With no `--timeout` it waits forever; with one it exits on the deadline
+  and says nothing. On an agent nobody has sent anything to it does what this
+  file describes below, and says it captured no answer.
+- **An adopted pi whose first reading was `working` stays there.** Nothing ever
+  writes a pi record's phase again, and the `prompt` rule is quiescent: from a
+  record that says a turn is running it may not decide until the screen has
+  held still for thirty consecutive looks, and `still_looks` counts within one
+  process. `amx ls` looks once per process, so the row said `working` at an
+  empty composer for as long as it was watched, while `amx result` — which
+  polls in one process — cleared the same pane in six seconds. `amx status` on
+  it named *the vendor's hooks* as the evidence, on a vendor that has none.
+- **The first question amx reads off a pi pane is the question every later one
+  shows.** A record learns a question and overwrites nothing, because a hook is
+  the vendor's own word and a screen is amx's reading of a picture. On claude
+  the next hook clears it. On pi nothing does: an agent driven through a dozen
+  screens was still offering *Run echo hi?* as its question when it was stopped
+  on the login box, which is the first `ctx.ui.select` it had ever been read on.
+
+One more, from the rig rather than from pi. `adopt` takes the first vendor in
+the table whose session variable is in the environment, so a pi started from a
+terminal that already had `CLAUDE_CODE_SESSION_ID` in it was adopted as claude,
+with claude's session id on the record and claude's document reading the pane —
+`unknown`, and no rule. Unset that variable and the same pane adopted as pi.
 
 ## Adding one
 
@@ -238,5 +319,10 @@ rather than opening a path that was never going to be one. `result` asks the
 table nothing: it reads whatever a hook already wrote to the record, or
 failing that the transcript path a hook already named, and a vendor with
 neither leaves both empty, so `result` says plainly that it captured no answer
-instead of naming a capability. The capabilities list is what keeps a partial
-entry truthful: nothing is promised that is not there.
+instead of naming a capability. What it does not do is get that far on a turn
+somebody sent, which the dogfood measured: the turn it waits for is the one
+after the last message, only a hook says a turn ended, and a vendor that sends
+none leaves it waiting. The capabilities list is what keeps a partial entry
+truthful: nothing is promised that is not there, and where an unclaimed
+capability costs a verb more than an empty answer, the place to write that down
+is the pass above.
