@@ -291,6 +291,79 @@ fn everything_under(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// Every rule `assets/screen-rules-pi.toml` declares, in the order it declares
+/// them.
+///
+/// Read off the file rather than out of the binary: the document is one rule
+/// per `[[rule]]` table and each opens on its own name, so the names are a
+/// line-scan away and the test needs no parser of its own.
+fn rules_declared() -> Vec<String> {
+    let doc = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/screen-rules-pi.toml"),
+    )
+    .expect("pi's screens document");
+    doc.lines()
+        .filter_map(|line| line.trim().strip_prefix("name = \""))
+        .filter_map(|rest| rest.strip_suffix('"'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every rule the inventory says it measured a screen reading as.
+///
+/// The Reads column is the last cell of every table row in
+/// `docs/pi-screens.md`, and a rule that claimed a screen is written in bold
+/// there — `**`dialog`**` — which is what tells a verdict from the other
+/// backticked words in the same cell.
+fn rules_read() -> Vec<String> {
+    let inventory =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/pi-screens.md"))
+            .expect("pi's screen inventory");
+    let mut found = Vec::new();
+    for row in inventory.lines() {
+        let cells: Vec<&str> = row.split('|').collect();
+        if cells.len() < 5 || row.contains("| ---") {
+            continue;
+        }
+        let mut rest = cells[cells.len() - 2];
+        while let Some((_, after)) = rest.split_once("**`") {
+            let Some((name, tail)) = after.split_once("`**") else {
+                break;
+            };
+            if !found.contains(&name.to_string()) {
+                found.push(name.to_string());
+            }
+            rest = tail;
+        }
+    }
+    found
+}
+
+#[test]
+fn the_inventory_measured_a_screen_for_every_rule_pi_has() {
+    // `docs/pi-screens.md` is the coverage half of pi's document: the whole
+    // list of screens the vendor can put on a pane, and what each one reads as.
+    // What it is for is knowing which screens the rules cover and which they
+    // walk past, and that only holds while the two are read together — a rule
+    // landing with no row against it is a rule whose coverage nobody measured,
+    // and a row naming a rule the document dropped is a verdict nobody can get
+    // any more.
+    //
+    // Which rules those are, and in which order they sit, is asserted in
+    // `src/rules.rs` and only there. This is the other question: that every one
+    // of them was measured against a screen somebody drove.
+    let mut declared = rules_declared();
+    let mut read = rules_read();
+    assert!(!declared.is_empty(), "pi's document declares rules");
+    declared.sort();
+    read.sort();
+    assert_eq!(
+        read, declared,
+        "docs/pi-screens.md's Reads column and assets/screen-rules-pi.toml's \
+         rules are the same set, or one of them was written without the other"
+    );
+}
+
 #[test]
 fn spawn_hands_pi_the_start_flag_and_the_id_amx_minted_for_the_agent() {
     // The flag was built against a table where no entry declared one, so
