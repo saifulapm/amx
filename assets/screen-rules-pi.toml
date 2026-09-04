@@ -183,7 +183,12 @@ bottom = 1
 # at 54 and 40, and 7 at 30. A deeper tree wraps further and pushes the span
 # past 7, and then this rule goes quiet and the screen falls to the rule below:
 # still `waiting`, with `question` for its kind instead of `trust`, which is
-# what it read before this rule existed.
+# what it read before this rule existed. The rule below reads a question off
+# the rows above the choices, so a screen that falls that far carries the
+# decision pi already has — `Saved decision: none Current session: trusted` —
+# where its own title would have gone. It is the screen, and it is not the
+# question; quiet in the direction of the weaker claim is what the whole
+# fall-through is for.
 #
 # One measured floor, and it is higher than the 20 columns the other rules
 # reach. This is the tallest box pi draws, and on that same tree it is taller
@@ -199,11 +204,12 @@ bottom = 1
 # `not_below` has nothing to find. What it costs if it is wrong is a row that
 # says a person is needed when nobody is.
 #
-# There is no `asks` here. The question is the title and the folder under it,
-# and the choices are not numbered, so the reading that walks up from a first
-# option has no first option to find. What to do about this screen is not one
-# of the three choices on it anyway — it is whether amx should have answered it
-# before the agent ever met it.
+# There is no `asks` here, and the reading the rule below uses is the reason.
+# The question on this screen is the title and the folder under it, and what
+# sits directly above the choices is the two rows pi draws for the decision it
+# already has, so reading above the arrow here would take those instead. What
+# to do about this screen is not one of the three choices on it anyway — it is
+# whether amx should have answered it before the agent ever met it.
 [[rule]]
 name = "project_trust"
 state = "waiting"
@@ -263,12 +269,27 @@ within = 7
 # floor puts its top border out of reach entirely. There is no height a window
 # could be sized to.
 #
-# It also cannot say WHAT is being asked, and there is no `asks` here for that
-# reason. pi numbers none of its choices — the selected one carries `→ ` and
-# the rest carry two spaces — so the reading that walks up from the first
-# option has no first option to find, and the sentence pi asks is whatever the
-# caller passed, with no fixed string of the vendor's own on its row. The rule
-# names the screen; the question on it is read by a person.
+# ── What it asks, and what it cannot list ────────────────────────────────────
+# The question is the caller's own title, and pi draws it at the top of the box
+# with a blank row under it and the choices under that. `asks` is what reads
+# it: the sentence above the arrow, because pi marks its selected choice with a
+# leading `→ ` and numbers nothing. That is also what the reading cannot do.
+# The choices are read off a screen by their numbers — first, second, third,
+# each on its own row — and on this vendor there are none, so a row waiting on
+# a pi dialog carries the sentence and an empty list of answers where claude's
+# carries both. `→` is one column, it was on every capture measured, and it is
+# the lowest row carrying it that the question is read above: the choices under
+# the first one carry two spaces instead.
+#
+# `ctx.ui.confirm` draws its message on the row directly under the title, and
+# the reading takes both as the one sentence they are drawn as:
+#
+#    Push to origin?
+#    This rewrites the remote branch.
+#
+# read as `Push to origin? This rewrites the remote branch.`, measured at 100
+# columns on 2026-09-05. The title alone is not what a person is being asked
+# there, and the vendor draws no blank row between the two.
 #
 # The screen also carries pi's spinner: a dialog raised from a tool call goes
 # up while the turn is running, so `Working...` is on the pane above the box.
@@ -281,6 +302,7 @@ state = "waiting"
 kind = "question"
 all = ["↑↓ navigate", "────────────────────"]
 any = ["escape/ctrl+c", "enter select"]
+asks = { above = "→" }
 
 # A turn is running. pi spins one line just above the composer box, with a
 # blank row between them:

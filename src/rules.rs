@@ -284,6 +284,7 @@ impl Rule {
         let choices = screen.first_option();
         let (from, to) = match &self.asks {
             Asks::Sentence(anchor) => screen.sentence_at(screen.row_above(choices, anchor)?),
+            Asks::Above(anchor) => screen.sentence_above(screen.row_above(choices, anchor)?)?,
             Asks::AboveOptions => screen.sentence_above(choices?)?,
         };
 
@@ -316,8 +317,8 @@ impl Rule {
 ///
 /// The blocking screens do not all keep it in the same place and no one
 /// reading finds it on every one of them, so each rule says which of these its
-/// own screen wants. `asks = { sentence = "do you want to" }` in the document,
-/// or nothing at all for the usual place.
+/// own screen wants. `asks = { sentence = "do you want to" }` or `asks =
+/// { above = "→" }` in the document, or nothing at all for the usual place.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Asks {
@@ -331,6 +332,12 @@ pub enum Asks {
     /// not part of it: the tool a request is about, a sentence about what the
     /// vendor will be able to do, a link to a guide.
     Sentence(String),
+    /// The sentence that ends just above the lowest row carrying this string.
+    /// The same reading as [`Asks::AboveOptions`] on a screen whose choices
+    /// are not numbered, so the rule has to say for itself what the question
+    /// sits above: the glyph a vendor marks its selected choice with, or the
+    /// row it draws for the words it is waiting to be given.
+    Above(String),
 }
 
 /// The part of a capture a rule is allowed to look at: the bottom rows, twice
@@ -1042,6 +1049,41 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ↑1.3k ↓64 $0.000 ...
 ";
 
+    /// `ctx.ui.confirm` at 100 columns, which draws the same box with two
+    /// choices and the caller's message on the row under its title. Measured
+    /// 2026-09-05 with an extension that does nothing but raise the dialog.
+    const A_PI_CONFIRM: &str = r"
+ pi v0.84.4
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+[Extensions]
+  screens.js
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Push to origin?
+ This rewrites the remote branch.
+
+ → Yes
+   No
+
+ ↑↓ navigate  enter select  escape/ctrl+c cancel
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.claude/jobs/3876e46d/tmp/pane
+0.0%/1.0M (auto)                                   (opencode) muse-spark-1.3-contributor-free • high
+
+
+
+
+
+
+";
+
     /// pi asking whether this folder is one to trust, at 100 columns, raised
     /// with `/trust` on a worktree the vendor has nothing saved about. The
     /// same box the dialog above is drawn in, ending in the same hint row,
@@ -1314,7 +1356,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
         for (vendor, screens) in documents() {
             for rule in screens.rules() {
                 let asks = match &rule.asks {
-                    Asks::Sentence(anchor) => Some(anchor),
+                    Asks::Sentence(anchor) | Asks::Above(anchor) => Some(anchor),
                     Asks::AboveOptions => None,
                 };
                 for needle in rule
@@ -1862,19 +1904,37 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
     }
 
     #[test]
-    fn rules_a_pi_dialog_says_it_blocks_and_not_what_on() {
-        // pi numbers none of its choices — the selected one carries `→ ` and
-        // the rest two spaces — and the sentence it asks is whatever the
-        // caller passed, with no string of the vendor's own on its row. So the
-        // rule names the screen and the question stays on the pane for a
-        // person to read. Written down here because it is a measurement about
-        // this vendor and not an oversight.
+    fn rules_a_pi_dialog_carries_the_callers_question_and_none_of_its_choices() {
+        // The sentence a gated tool call asks is whatever its caller passed,
+        // and pi draws it at the top of the box with the choices under it. The
+        // choices are the half of this the reading cannot have: pi marks the
+        // selected one with a leading arrow and numbers nothing, so there is
+        // no first option to walk up from and no telling a choice from the
+        // description under one. The arrow is what the question is read above.
         let Claim::Ruled(rule) = claim(pi(), A_PI_DIALOG, Phase::Working) else {
             panic!("pi's own rule claims pi's own screen");
         };
         assert_eq!(rule.kind, Some(crate::store::Kind::Question));
-        assert_eq!(rule.question(A_PI_DIALOG), None);
-        assert_eq!(pi().asking(A_PI_DIALOG), None);
+
+        for (what, screen, sentence) in [
+            ("a gated tool call", A_PI_DIALOG, "Run echo hi?"),
+            ("the same at 20 columns", A_PI_DIALOG_20, "Run echo hi?"),
+            (
+                "a confirm, which draws its message under its title",
+                A_PI_CONFIRM,
+                "Push to origin? This rewrites the remote branch.",
+            ),
+        ] {
+            let asked = pi()
+                .asking(screen)
+                .unwrap_or_else(|| panic!("{what} says what it is blocking on"));
+            assert_eq!(asked.text, sentence, "{what}");
+            assert!(
+                asked.options.is_empty(),
+                "{what}: pi numbers none of these, so none of them is read: {:?}",
+                asked.options
+            );
+        }
     }
 
     #[test]
