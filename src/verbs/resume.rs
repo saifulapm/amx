@@ -26,7 +26,7 @@ use crate::config::Config;
 use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, Phase, State};
 use crate::tmux::Server;
-use crate::vendor::{self, Capability, SessionSpec, Vendor};
+use crate::vendor::{self, Capability, ForkSpec, SessionSpec, Vendor};
 use crate::{complain, derive, exit, paths, rules, store, warn, worktree};
 
 /// What amx records when it brings an agent back.
@@ -307,18 +307,30 @@ fn build_continuation(handoff: &Handoff, session: &str, spec: &SessionSpec) -> V
 
 /// Whether a word is a flag naming a session, and if so whether its value is
 /// the word after it rather than joined on with `=`.
+///
+/// The flag a vendor branches by naming the origin with counts too. A copy is
+/// opened under an id of its own, so its recorded command carries that flag
+/// beside the one that minted the id, and a respawn keeping both would ask the
+/// vendor to branch into a session it already has — which pi refuses outright.
+/// Read here rather than listed among the entry's conflicts, because a
+/// conflict is also what stands a start flag down, and a fork somebody asks
+/// for by hand on `amx new` still wants an id minted for it.
 fn names_a_session(word: &str, spec: &SessionSpec) -> Option<bool> {
-    spec.conflicts
-        .iter()
-        .chain(std::iter::once(&spec.resume))
-        .find_map(|flag| {
-            if word == *flag {
-                return Some(true);
-            }
-            word.strip_prefix(flag)
-                .is_some_and(|rest| rest.starts_with('='))
-                .then_some(false)
-        })
+    let mut flags: Vec<&str> = spec.conflicts.to_vec();
+    flags.push(spec.resume);
+    // A marker names no session: what claude branches from rides on the resume
+    // flag beside it, and that is already replaced.
+    if let Some(ForkSpec::Origin(flag)) = spec.fork {
+        flags.push(flag);
+    }
+    flags.into_iter().find_map(|flag| {
+        if word == flag {
+            return Some(true);
+        }
+        word.strip_prefix(flag)
+            .is_some_and(|rest| rest.starts_with('='))
+            .then_some(false)
+    })
 }
 
 /// The vendor's own session vocabulary, read off the table by the program the
@@ -678,6 +690,57 @@ mod tests {
         assert_eq!(
             continuing(&started, "def-456"),
             ["claude", "--verbose", "--resume=def-456"]
+        );
+    }
+
+    #[test]
+    fn resume_drops_the_flag_naming_the_session_a_copy_was_branched_from() {
+        // A copy is opened under an id of its own, so its recorded command
+        // carries both the flag that branched it and the one that minted that
+        // id. Handing pi the pair again is a session it already has under a
+        // flag asking it to be made: "Session already exists with id".
+        //
+        // pi's own spelling, off the table: the vendor that branches by
+        // naming the origin is the one this arm exists for.
+        let spec = crate::registry::entry("pi")
+            .and_then(|pi| pi.session)
+            .expect("pi declares a session vocabulary");
+        for written in [
+            &[
+                "pi",
+                "--fork",
+                "abc-123",
+                "--session-id",
+                "port-it-b2c",
+                "go",
+            ][..],
+            &["pi", "--fork=abc-123", "--session-id=port-it-b2c", "go"],
+        ] {
+            let started = handoff(written, "go");
+            assert_eq!(
+                build_continuation(&started, "port-it-b2c", &spec),
+                ["pi", "--session-id", "port-it-b2c"],
+                "{written:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resume_leaves_a_bare_fork_marker_where_the_vendor_wrote_it() {
+        // Only a flag naming a session is replaced. claude's marker names
+        // none — the session it branched from rides on the resume flag beside
+        // it, which is already replaced — so it is not this reader's to take,
+        // and claude's argv comes back the way it always did.
+        let spec = crate::registry::entry("claude")
+            .and_then(|claude| claude.session)
+            .expect("claude declares a session vocabulary");
+        let started = handoff(
+            &["claude", "--resume=abc-123", "--fork-session", "go"],
+            "go",
+        );
+        assert_eq!(
+            build_continuation(&started, "def-456", &spec),
+            ["claude", "--fork-session", "--resume=def-456"]
         );
     }
 
