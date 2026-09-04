@@ -1,9 +1,9 @@
 //! pi, the second vendor amx knows anything about.
 //!
 //! Everything here is the vendor's own words, measured against 0.84.4's
-//! `--help` and the unbundled JS shipped beside it on 2026-09-03. Re-measure
-//! at every vendor bump: these are not amx's names to choose, and a renamed
-//! flag turns a dial into a spawn that fails.
+//! `--help` and the unbundled JS shipped beside it, each value on the date it
+//! carries. Re-measure at every vendor bump: these are not amx's names to
+//! choose, and a renamed flag turns a dial into a spawn that fails.
 
 use super::{Capability, DEFAULT, DialSpec, ForkSpec, SessionSpec, Vendor};
 
@@ -42,18 +42,31 @@ pub const VENDOR: Vendor = Vendor {
     //
     // It refuses to be combined with `--session`, `--continue` or `--resume`
     // (dist/main.js:237-247), and `-c`/`-r` are `--help`'s own short
-    // spellings of the latter two, so all five are what a minted id has to
-    // displace.
+    // spellings of the latter two. `--no-session` is the sixth, and it
+    // refuses nothing: pi reads that branch before the one that writes a
+    // session to disk (dist/main.js:278-280), so `--session-id` under it
+    // names an in-memory session and no file is ever left behind. amx would
+    // have put that id in `meta.session` and offered it back, telling
+    // somebody a conversation was carried on that was never written. Its own
+    // `validateForkFlags` groups `--no-session` with the other three
+    // (dist/main.js:227-231). All six are what a minted id has to displace.
     //
     // `pi --fork <origin> --session-id <new>` branches into a chosen id
     // (dist/main.js:283-295): the origin rides on `--fork` itself rather than
     // beside `--session-id`, which is `ForkSpec::Origin`. Measured at 0.84.4
-    // on 2026-09-03.
+    // on 2026-09-04.
     session: Some(SessionSpec {
         start: Some("--session-id"),
         resume: "--session-id",
         joined: false,
-        conflicts: &["-c", "-r", "--continue", "--resume", "--session"],
+        conflicts: &[
+            "-c",
+            "-r",
+            "--continue",
+            "--no-session",
+            "--resume",
+            "--session",
+        ],
         fork: Some(ForkSpec::Origin("--fork")),
     }),
     // Handed to every command pi's bash tool runs, measured at 0.84.4 on
@@ -128,11 +141,29 @@ mod tests {
         assert_eq!(session.start, Some("--session-id"));
         assert_eq!(session.resume, "--session-id");
         assert!(!session.joined, "--session-id <id> is two words, not one");
+        assert_eq!(session.fork, Some(ForkSpec::Origin("--fork")));
+    }
+
+    #[test]
+    fn pi_lists_every_flag_that_would_ignore_or_refuse_a_minted_id() {
+        // Six, not the five that refuse. `--session`, `--continue`,
+        // `--resume` and the two short spellings make pi exit rather than
+        // take an id amx chose. `--no-session` takes it and throws it away:
+        // its branch is read before the one that writes a session file, so
+        // the id names a conversation that only ever existed in memory, and
+        // amx would have recorded it as one somebody can come back to.
+        let session = VENDOR.session.expect("pi declares a session vocabulary");
         assert_eq!(
             session.conflicts,
-            ["-c", "-r", "--continue", "--resume", "--session"]
+            [
+                "-c",
+                "-r",
+                "--continue",
+                "--no-session",
+                "--resume",
+                "--session"
+            ]
         );
-        assert_eq!(session.fork, Some(ForkSpec::Origin("--fork")));
     }
 
     #[test]
