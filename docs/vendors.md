@@ -3,8 +3,16 @@
 amx runs coding agents it did not write, and everything it knows about one is
 an entry in a table: `src/vendor/`. This file says what an entry carries, what
 the rest of amx asks of it, and what adding one takes. pi is the second real
-vendor to land, and it landed the way this file describes: an afternoon of
-measurement and one new file, not a re-architecture.
+vendor to land, and it cost more than the recipe at the end asks of a third:
+one new file, `src/vendor/pi.rs`, and beside it the machinery pi needed that
+the table did not have. `resume` and `fork` had claude's session flags written
+into them by hand, so those became a [`session`](#what-an-entry-carries)
+vocabulary in the table and both verbs were rewritten to read it; `spawn`
+learned to hand a vendor the id amx had already minted, because a vendor
+reporting through no hooks names no session of its own; and `rules` grew a
+per-vendor door for a second screens document. What is left for a third vendor
+is what the recipe describes: the measurement, the entry, and the laws that
+already hold both.
 
 ## The shape: a descriptor, not a trait
 
@@ -83,13 +91,15 @@ variables. The questions the rest of amx puts to an entry:
 - `hook` — which moment a payload's event name is, which tool is the
   question tool, how the permission sentence reads.
 - `rules` / `derive` / the card — which screens document, whose chrome
-  anchors cut the furniture.
+  anchors cut the furniture. Through `rules::bundled()` today, which is the
+  first entry's document whatever vendor the pane runs: see [pi](#pi).
 - `fork`, `resume`, `adopt`, `trust` — may I, before anything is spawned.
   The refusal is immediate and says which capability is missing.
 - `logs` — whether this vendor keeps a conversation to read back, before it
-  opens a transcript path a record carries; whose chrome comes off the
-  capture when it falls back to the pane; and which gap to name when the pane
-  has gone and nothing was recorded either.
+  opens a transcript path a record carries, and which gap to name when the
+  pane has gone and nothing was recorded either. The chrome it cuts off a
+  fallback capture is not one of its questions: that comes off `bundled()`
+  like everybody else's.
 
 Three things stay outside the table anyway, and not because a vendor's word for
 them was hardcoded somewhere it should not have been: each is the wire format
@@ -179,7 +189,11 @@ is which door a reader goes through, not a measurement nobody made.
 4. **Prove the conformance.** `tests/mock_claude/` is a stand-in that replays
    scenarios — hook payloads, transcripts, screens — against the real tmux.
    A second vendor's harness takes the same shape: a fake that speaks the
-   vendor's dialect, and the suite driven against it.
+   vendor's dialect, and the suite driven against it. pi has no such harness.
+   What proves its entry is the table's laws, the unit tests in `pi.rs`, and
+   the panes its screens were measured off, checked into `rules.rs` so the
+   suite runs on a machine with no pi installed. Nothing yet drives amx
+   end to end against something answering as pi.
 
 A vendor can also land partially, and honestly. An entry with dials, a session
 vocabulary and screens but no hooks still resumes, forks and is adopted, and
