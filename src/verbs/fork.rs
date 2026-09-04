@@ -7,6 +7,13 @@
 //! so the recorded session id is the whole of what a fork needs, and an agent
 //! that never announced one cannot be forked at all.
 //!
+//! The copy needs a session of its own as well as the one it took, and where
+//! the vendor declares a flag to open one under, that session is the id amx
+//! minted for the copy: a vendor that reports nothing has no other way to be
+//! told which session the copy is, and a copy amx cannot name is one nobody
+//! can resume or fork again. Where the vendor declares no such flag, the
+//! record waits for the copy's own first report, which is claude's way.
+//!
 //! It runs where the agent it copies ran. A conversation is about the files it
 //! was held over, down to the ones no commit has yet, and a tree of its own
 //! would be a copy talking about work that is not there. What amx never does is
@@ -113,12 +120,15 @@ pub fn run(
     // nothing about itself, and this one is about the same work as the agent
     // it came from.
     let task = prompt.unwrap_or(&meta.task);
-    let command = copying(&recorded, &session, prompt);
     let (copy, dir) = claim(root, task)?;
+    // The id is minted before the argv is built, because a vendor that
+    // declares a start flag is asked to open the copy under it.
+    let command = copying(&recorded, &session, &copy, prompt);
+    let opened = opened_under(&recorded, &copy);
 
     // From here a failure leaves nothing behind, as in `new`: the directory is
     // this fork's own, so removing it can never take another agent's record.
-    match start(root, &copy, &meta, &session, task, command, env) {
+    match start(root, &copy, &meta, &session, task, command, opened, env) {
         Ok(()) => {
             writeln!(out, "{copy}")?;
             Ok(exit::OK)
@@ -138,6 +148,7 @@ pub fn run(
 /// the vendor's first hook always has somewhere to go. What the copy came from
 /// is written before any of it, so that the first line of its log is the one
 /// amx wrote rather than the first thing the vendor said.
+#[allow(clippy::too_many_arguments)]
 fn start(
     root: &Path,
     id: &str,
@@ -145,6 +156,7 @@ fn start(
     session: &str,
     task: &str,
     command: Vec<String>,
+    opened: Option<String>,
     env: &BTreeMap<String, String>,
 ) -> Result<()> {
     let dir = paths::agent_dir_in(root, id)?;
@@ -183,10 +195,7 @@ fn start(
             socket: server.socket().clone(),
             pane,
             bg: false,
-            // The vendor mints a session id of its own for a copy, and amx
-            // hears it from the first hook the pane fires, exactly as it hears
-            // an agent's first session.
-            session: None,
+            session: opened,
             transcript: None,
             created: now(),
         },
@@ -215,11 +224,31 @@ fn names_its_origin(root: &Path, id: &str, origin: &Meta, session: &str) -> Resu
 /// The **task** goes: it was put to the session in its first turn, and the copy
 /// has that turn already. Every **flag naming a session** goes with it, because
 /// which session the vendor opens is this command's answer and not the recorded
-/// command's — `--session-id` asks it to start one, and a `--resume` is what the
-/// last resume of the original left behind. `--fork-session` goes too, so that a
-/// copy of a copy asks for one fork rather than two.
-fn copying(handoff: &Handoff, session: &str, prompt: Option<&str>) -> Vec<String> {
-    build_copy(handoff, session, prompt, &spelling(handoff))
+/// command's — a start flag asks the vendor to open one, and a `--resume` is
+/// what the last resume of the original left behind. `--fork-session` goes too,
+/// so that a copy of a copy asks for one fork rather than two.
+///
+/// What this command answers with is both halves: the session the copy is
+/// branched from, and `copy` — the id amx minted for it — as the session the
+/// copy itself opens, for a vendor that declares a flag to ask for one.
+fn copying(handoff: &Handoff, session: &str, copy: &str, prompt: Option<&str>) -> Vec<String> {
+    build_copy(handoff, session, copy, prompt, &spelling(handoff))
+}
+
+/// What [`Meta::session`] is recorded as for the copy: the id amx minted for
+/// it, the moment a vendor that declares a start flag is asked to open it
+/// under that id, rather than left `None` for a report that vendor never
+/// sends.
+///
+/// `None` from a vendor that declares no start flag, which is claude: its own
+/// Started hook names the session the copy opened, and the copy's record waits
+/// for it exactly as an agent's does.
+///
+/// The same question [`build_copy`] answers while building the argv, asked of
+/// the same spelling, for the caller writing the record rather than the
+/// command.
+fn opened_under(handoff: &Handoff, copy: &str) -> Option<String> {
+    spelling(handoff).start.map(|_| copy.to_string())
 }
 
 /// [`copying`], with the vendor's own spelling passed in rather than looked
@@ -231,9 +260,14 @@ fn copying(handoff: &Handoff, session: &str, prompt: Option<&str>) -> Vec<String
 /// carry-on. [`ForkSpec::Origin`] is the flag itself: it carries the session
 /// to copy, and `resume` is not written at all, because this vendor's copy
 /// is not asking to continue anything.
+///
+/// Either way, a vendor that declares a start flag is handed `copy` beside it:
+/// the copy is a second agent, and a vendor that reports nothing has no other
+/// way to be told which session that agent is.
 fn build_copy(
     handoff: &Handoff,
     session: &str,
+    copy: &str,
     prompt: Option<&str>,
     spec: &SessionSpec,
 ) -> Vec<String> {
@@ -276,6 +310,9 @@ fn build_copy(
             command.push(marker.to_string());
         }
         ForkSpec::Origin(flag) => push_flag(&mut command, flag, spec.joined, session),
+    }
+    if let Some(start) = spec.start {
+        push_flag(&mut command, start, spec.joined, copy);
     }
     command.extend(prompt.map(str::to_string));
     command
@@ -473,7 +510,7 @@ mod tests {
             "fix the login bug",
         );
         assert_eq!(
-            copying(&started, "abc-123", None),
+            copying(&started, "abc-123", "port-it-b2c", None),
             [
                 "claude",
                 "--model",
@@ -496,7 +533,12 @@ mod tests {
             "fix the login bug",
         );
         assert_eq!(
-            copying(&started, "abc-123", Some("now do it with sqlite")),
+            copying(
+                &started,
+                "abc-123",
+                "port-it-b2c",
+                Some("now do it with sqlite")
+            ),
             [
                 "claude",
                 "--model",
@@ -525,7 +567,7 @@ mod tests {
             "port the importer",
         );
         assert_eq!(
-            copying(&started, "abc-123", None),
+            copying(&started, "abc-123", "port-it-b2c", None),
             [
                 "claude",
                 "--model",
@@ -560,7 +602,7 @@ mod tests {
         ] {
             let started = handoff(written, "go");
             assert_eq!(
-                copying(&started, "def-456", None),
+                copying(&started, "def-456", "port-it-b2c", None),
                 [
                     "claude",
                     "--add-dir",
@@ -576,7 +618,7 @@ mod tests {
         // it could be: a flag after `--resume` is a flag, and it stays.
         let started = handoff(&["claude", "--resume", "--verbose", "go"], "go");
         assert_eq!(
-            copying(&started, "def-456", None),
+            copying(&started, "def-456", "port-it-b2c", None),
             ["claude", "--verbose", "--resume=def-456", "--fork-session"]
         );
     }
@@ -585,7 +627,8 @@ mod tests {
     fn fork_answers_a_vendor_that_branches_by_naming_the_origin() {
         // The other shape ForkSpec offers: the flag itself carries the
         // session to copy, and `resume` is never written, because this
-        // vendor's copy is not asking to continue anything.
+        // vendor's copy is not asking to continue anything. This one declares
+        // no start flag either, so the minted id is nowhere in the argv.
         let spec = SessionSpec {
             start: None,
             resume: "--resume",
@@ -595,15 +638,103 @@ mod tests {
         };
         let started = handoff(&["pi", "--model", "big", "go"], "go");
         assert_eq!(
-            build_copy(&started, "abc-123", None, &spec),
+            build_copy(&started, "abc-123", "port-it-b2c", None, &spec),
             ["pi", "--model", "big", "--branch-from=abc-123"]
         );
 
         // A copy of a copy asks for one origin, not two.
         let started = handoff(&["pi", "--branch-from=old", "go"], "go");
         assert_eq!(
-            build_copy(&started, "def-456", None, &spec),
+            build_copy(&started, "def-456", "port-it-b2c", None, &spec),
             ["pi", "--branch-from=def-456"]
+        );
+    }
+
+    #[test]
+    fn fork_opens_the_copy_under_the_id_amx_minted_for_it() {
+        // pi's own spelling, read off the table: the flag naming the session
+        // to branch carries the origin, and the start flag beside it carries
+        // the copy's own id. Without that id the copy answers to nothing amx
+        // chose, and a vendor with no hooks never reports the one it opened.
+        let spec = crate::registry::entry("pi")
+            .and_then(|pi| pi.session)
+            .expect("pi declares a session vocabulary");
+        let started = handoff(
+            &["pi", "--model", "big", "--session-id", "abc-123", "go"],
+            "go",
+        );
+        assert_eq!(
+            build_copy(&started, "abc-123", "port-it-b2c", None, &spec),
+            [
+                "pi",
+                "--model",
+                "big",
+                "--fork",
+                "abc-123",
+                "--session-id",
+                "port-it-b2c"
+            ]
+        );
+        assert_eq!(
+            opened_under(&started, "port-it-b2c"),
+            Some("port-it-b2c".to_string()),
+            "and the record says the same id the argv asked for"
+        );
+
+        // A copy of a copy branches from the copy's own session, under an id
+        // of its own again.
+        let started = handoff(
+            &[
+                "pi",
+                "--fork",
+                "abc-123",
+                "--session-id",
+                "port-it-b2c",
+                "go",
+            ],
+            "go",
+        );
+        assert_eq!(
+            build_copy(&started, "port-it-b2c", "redo-it-c3d", None, &spec),
+            ["pi", "--fork", "port-it-b2c", "--session-id", "redo-it-c3d"]
+        );
+    }
+
+    #[test]
+    fn fork_asks_for_no_id_from_a_vendor_that_reports_the_one_it_opened() {
+        // claude declares no start flag: its own Started hook names the
+        // session the copy opened, and the id it wants there is not the one
+        // amx mints. The argv is what it always was, and the record waits for
+        // that hook exactly as it did.
+        let started = handoff(&["claude", "--model", "opus", "go"], "go");
+        assert_eq!(
+            copying(&started, "abc-123", "port-it-b2c", None),
+            [
+                "claude",
+                "--model",
+                "opus",
+                "--resume=abc-123",
+                "--fork-session"
+            ]
+        );
+        assert_eq!(opened_under(&started, "port-it-b2c"), None);
+    }
+
+    #[test]
+    fn fork_records_the_minted_id_only_where_the_copy_opens_under_it() {
+        assert_eq!(
+            opened_under(&handoff(&["pi", "go"], "go"), "port-it-b2c"),
+            Some("port-it-b2c".to_string())
+        );
+        assert_eq!(
+            opened_under(&handoff(&["claude", "go"], "go"), "port-it-b2c"),
+            None,
+            "no start flag was offered, so nothing was minted to record"
+        );
+        assert_eq!(
+            opened_under(&handoff(&["mock-claude", "go"], "go"), "port-it-b2c"),
+            None,
+            "and a command amx has measured nothing about is read as claude's"
         );
     }
 
