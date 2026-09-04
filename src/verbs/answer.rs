@@ -57,7 +57,7 @@ use crate::derive;
 use crate::store::{Agent, Ask, Event, Kind, Phase, State};
 use crate::tmux::{PaneId, Server};
 use crate::verbs::send::nothing_more_is_coming;
-use crate::{exit, paths, rules, store, warn};
+use crate::{exit, paths, store, warn};
 
 /// The key that moves a menu's cursor onto the vendor's own free-text row.
 ///
@@ -112,7 +112,7 @@ pub fn from_env(id: &str, typed: &AnswerArgs) -> Result<i32> {
 
 /// The verb, with the state directory named.
 pub fn run(root: &Path, id: &str, typed: &AnswerArgs) -> Result<i32> {
-    let view = derive::view(root, id, rules::bundled(), store::now())?;
+    let view = derive::view(root, id, store::now())?;
     let phase = view.phase();
     if phase.is_terminal() {
         return Ok(nothing_more_is_coming(id, phase));

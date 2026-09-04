@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use crate::derive::{self, View};
 use crate::store::{Agent, Event, Kind, Phase};
 use crate::tmux::{PaneId, Server};
-use crate::{complain, exit, paths, rules, store, warn};
+use crate::{complain, exit, paths, store, warn};
 
 /// The event amx records for a message it sent.
 pub const SEND: &str = "send";
@@ -67,7 +67,7 @@ pub fn run(
     to_terminal: bool,
     out: &mut impl Write,
 ) -> Result<i32> {
-    let view = derive::view(root, id, rules::bundled(), store::now())?;
+    let view = derive::view(root, id, store::now())?;
     let phase = view.phase();
     match phase {
         Phase::Waiting => return waiting_on_a_question(&view, to_terminal, out),

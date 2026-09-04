@@ -22,7 +22,7 @@ use std::path::Path;
 
 use crate::derive::{self, View};
 use crate::store::{Phase, now};
-use crate::{exit, paths, rules};
+use crate::{exit, paths};
 
 /// The whole of amx's vocabulary here: a pulse for the agents getting on with
 /// it, and the warning sign for the ones that cannot get any further alone.
@@ -42,10 +42,7 @@ pub fn from_env() -> Result<i32> {
 /// status line runs itself on a timer, and a chore on a timer is a background
 /// job amx never offered to be.
 pub fn run(root: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
-    let phases: Vec<Phase> = derive::views(root, rules::bundled(), now)?
-        .iter()
-        .map(View::phase)
-        .collect();
+    let phases: Vec<Phase> = derive::views(root, now)?.iter().map(View::phase).collect();
 
     let line = summary(&phases);
     // Nothing is nothing. An empty line is still a line — it leaves the gap

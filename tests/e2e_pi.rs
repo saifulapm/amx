@@ -27,6 +27,7 @@
 mod common;
 
 use common::Harness;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// The task every agent here is started on.
@@ -102,6 +103,17 @@ fn stand_in(amx: &Harness, args: &[&str]) -> std::process::Output {
         .env("MOCK_PI_SCENARIO", scenario("one-screen"))
         .output()
         .expect("running the stand-in")
+}
+
+/// What amx makes of one agent, as a caller reads it.
+fn status(amx: &Harness, id: &str) -> Value {
+    let out = amx.amx(&["status", id, "--json"]);
+    assert!(
+        out.status.success(),
+        "amx status: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("the status is json")
 }
 
 /// Everything the stand-in has said in this pane, including what has scrolled
@@ -560,6 +572,42 @@ fn the_stand_in_draws_the_dialog_in_pis_box_with_the_turn_still_over_it() {
     assert!(
         ['↑', '$'].iter().any(|opening| stats.starts_with(*opening)),
         "the stats line opens on one of the parts pi truncates towards: {stats}"
+    );
+}
+
+#[test]
+fn a_quiet_pi_is_read_against_pis_own_document() {
+    // Every reader held one document against whatever pane it was handed, and
+    // that document was claude's. pi draws not one of claude's anchors, so a pi
+    // that had gone quiet read `unknown` with its own prompt plainly on the
+    // screen. What picks the document is the command the record kept at the
+    // spawn.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "takes-a-turn");
+    assert_eq!(amx.meta(id)["agent"], "pi", "the record says which vendor");
+    let pane = amx.pane_of(id);
+
+    // The prompt a finished turn leaves, stopped on the row no earlier screen
+    // in this scenario carries.
+    amx.until("the turn to be over", || {
+        row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
+    });
+
+    // Aged the way `e2e_reader` ages one: nothing heard for an hour, with
+    // nothing outstanding, which is the state a quiescent rule decides from at
+    // once.
+    amx.set_state(
+        id,
+        json!({ "state": "starting", "since": 1, "last_event": 1 }),
+    );
+
+    let agent = status(&amx, id);
+    assert_eq!(agent["state"], "idle", "{agent}");
+    assert_eq!(agent["evidence"], "screen", "{agent}");
+    assert_eq!(
+        agent["rule"], "prompt",
+        "pi's own rule, out of pi's own document: {agent}"
     );
 }
 

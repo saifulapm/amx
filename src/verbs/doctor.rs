@@ -38,7 +38,7 @@ use crate::config::Config;
 use crate::derive::View;
 use crate::store::Phase;
 use crate::vendor::{Capability, Vendor};
-use crate::{derive, exit, install, registry, rules, spawn, store, tmux};
+use crate::{derive, exit, install, registry, spawn, store, tmux};
 
 /// One thing amx looked at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -487,7 +487,7 @@ pub fn gather(config: &Config) -> Result<Findings> {
         parked: parked(
             // A state root amx cannot read has no agents to report on, and the
             // check above is where that is said. Here it means none were found.
-            &derive::views(&state_root, rules::bundled(), store::now()).unwrap_or_default(),
+            &derive::views(&state_root, store::now()).unwrap_or_default(),
         ),
         state_root,
         server: standing_server(),

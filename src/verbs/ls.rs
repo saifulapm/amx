@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use crate::derive::{self, View};
 use crate::store::{Meta, now};
 use crate::verbs::send;
-use crate::{exit, gc, paths, rules, worktree};
+use crate::{exit, gc, paths, worktree};
 
 /// Run the verb against the machine.
 pub fn from_env(json: bool, dir: Option<&Path>) -> Result<i32> {
@@ -35,7 +35,7 @@ pub fn run(root: &Path, json: bool, scope: &Scope, now: u64, out: &mut impl Writ
 
     // Narrowed once, before either reader is answered, so the table and the
     // JSON are the same reading of the same agents.
-    let views = scope.narrow(derive::views_of(root, records, rules::bundled(), now));
+    let views = scope.narrow(derive::views_of(root, records, now));
     if json {
         let listed: Vec<_> = views.iter().map(View::json).collect();
         writeln!(out, "{}", serde_json::to_string_pretty(&listed)?)?;
@@ -198,6 +198,7 @@ fn first_line(text: &str) -> &str {
 mod tests {
     use super::*;
     use crate::derive::{Evidence, Verdict};
+    use crate::rules;
     use crate::store::{Meta, Phase, State};
     use crate::tmux::{PaneId, Socket};
     use std::path::PathBuf;

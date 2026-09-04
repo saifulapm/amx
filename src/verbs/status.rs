@@ -17,7 +17,7 @@ use std::path::Path;
 use crate::derive::{self, Evidence, View};
 use crate::store::{Phase, now};
 use crate::verbs::send;
-use crate::{exit, paths, rules};
+use crate::{exit, paths};
 
 /// Run the verb against the machine.
 pub fn from_env(id: &str, json: bool) -> Result<i32> {
@@ -28,7 +28,7 @@ pub fn from_env(id: &str, json: bool) -> Result<i32> {
 
 /// The verb, with the state directory and the clock named.
 pub fn run(root: &Path, id: &str, json: bool, now: u64, out: &mut impl Write) -> Result<i32> {
-    let view = derive::view(root, id, rules::bundled(), now)?;
+    let view = derive::view(root, id, now)?;
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&view.json())?)?;
     } else {

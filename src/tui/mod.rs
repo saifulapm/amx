@@ -52,7 +52,7 @@ use crate::theme::{Theme, Watch};
 use crate::tmux::{PaneId, Server, SessionId};
 use crate::verbs::ls::Scope;
 use crate::verbs::resume::Comeback;
-use crate::{exit, registry, rules, spawn, verbs};
+use crate::{exit, registry, spawn, verbs};
 use act::{Asking, Composer, Edited, Renamed, Replied, Started};
 use paint::{Body, Card, Notice};
 use rows::{Arrangement, List, Narrow};
@@ -908,8 +908,7 @@ impl Screen {
 
     /// Read the agents again, the ones the view was opened about.
     fn reread(&mut self, root: &Path, scope: &Scope) -> Result<()> {
-        self.list
-            .show(scope.narrow(derive::views(root, rules::bundled(), now())?));
+        self.list.show(scope.narrow(derive::views(root, now())?));
         self.read = Some(Instant::now());
         self.keep_the_sweep();
         self.follow_the_cursor();
@@ -1578,7 +1577,7 @@ impl Screen {
         id: &str,
         here: Option<&Here>,
     ) -> Result<Doing> {
-        let view = match derive::view(root, id, rules::bundled(), now()) {
+        let view = match derive::view(root, id, now()) {
             Ok(view) => view,
             // Started and unreachable is worth saying and not worth closing the
             // view over: the agent is running either way, and `amx attach` is
@@ -2238,7 +2237,7 @@ fn reach(root: &Path, config: &Config, here: Option<&Here>, view: &View) -> Resu
         // and where the agent is is the whole of what the rest of this is
         // about, so the record is read again rather than argued with.
         Comeback::Back => {
-            let back = derive::view(root, view.id(), rules::bundled(), now())?;
+            let back = derive::view(root, view.id(), now())?;
             let server = Server::from_socket(back.meta.socket.clone());
             reaching(server, here, &back)
         }
@@ -5234,7 +5233,7 @@ mod tests {
         // have been carried back on, and this one never had one.
         let root = TempDir::new().unwrap();
         finished(root.path(), "first-a1b", "wrote the parser", 60);
-        let view = derive::view(root.path(), "first-a1b", rules::bundled(), now()).unwrap();
+        let view = derive::view(root.path(), "first-a1b", now()).unwrap();
 
         let Reach::Say(Notice::Advice(said)) =
             reach(root.path(), &Config::default(), None, &view).unwrap()

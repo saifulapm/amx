@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 use crate::derive::{self, Evidence, View};
 use crate::store::{Agent, Event, Phase};
 use crate::verbs::send::{self, nothing_more_is_coming, waiting_on_a_question};
-use crate::{complain, exit, paths, rules, store};
+use crate::{complain, exit, paths, store};
 
 /// How often the record is read while waiting. Short enough that a caller
 /// chaining turns is not waiting on amx, long enough to cost nothing.
@@ -66,7 +66,7 @@ pub fn run(
     let deadline = timeout.map(|patience| Instant::now() + patience);
 
     loop {
-        let view = derive::view(root, id, rules::bundled(), store::now())?;
+        let view = derive::view(root, id, store::now())?;
         let phase = view.phase();
         // Only an ending needs the log: while an agent is working there is no
         // turn to place against the last message.

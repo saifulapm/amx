@@ -27,7 +27,7 @@ use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, Phase, State};
 use crate::tmux::Server;
 use crate::vendor::{self, Capability, ForkSpec, SessionSpec, Vendor};
-use crate::{complain, derive, exit, paths, rules, store, warn, worktree};
+use crate::{complain, derive, exit, paths, store, warn, worktree};
 
 /// What amx records when it brings an agent back.
 const RESUMED: &str = "resume";
@@ -105,7 +105,7 @@ fn one(
     env: &BTreeMap<String, String>,
     out: &mut impl Write,
 ) -> Result<i32> {
-    let view = derive::view(root, id, rules::bundled(), store::now())?;
+    let view = derive::view(root, id, store::now())?;
     // Anything that has not ended is already doing what a resume would start.
     // Starting a second command over the top of it is the one outcome nobody
     // asked for.
@@ -137,7 +137,7 @@ fn sweep(
     env: &BTreeMap<String, String>,
     out: &mut impl Write,
 ) -> Result<i32> {
-    let stopped: Vec<_> = derive::views(root, rules::bundled(), store::now())?
+    let stopped: Vec<_> = derive::views(root, store::now())?
         .into_iter()
         .filter(|view| view.phase() == Phase::Stopped)
         .collect();

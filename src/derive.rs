@@ -13,7 +13,8 @@
 //!    is on the pane and nowhere else, so it is read from there at once rather
 //!    than waited for.
 //! 4. **The screen, against the rules.** Older than that, the pane is captured
-//!    and matched. A rule that claims it decides.
+//!    and matched against the screens of the vendor the record says was started
+//!    in it — see [`own_screens`]. A rule that claims it decides.
 //! 5. **Neither.** The screen is claimed by nothing, so the answer is
 //!    `unknown` — with how long it has been since anything was heard, because
 //!    "I can't tell" is only useful with that beside it.
@@ -127,7 +128,7 @@ impl View {
         if !matches!(verdict.phase, Phase::Waiting | Phase::Unknown) {
             state.asks(None);
         }
-        forget_the_placeholder(&mut state);
+        forget_the_placeholder(own_screens(&meta), &mut state);
         View {
             meta,
             state,
@@ -176,7 +177,7 @@ impl View {
     /// hold for whichever vendor is being read: the name on the verdict is
     /// looked up in the document that named it.
     pub fn kind(&self) -> Option<crate::store::Kind> {
-        match asked_kind(crate::rules::bundled(), self.verdict.rule.as_deref()) {
+        match asked_kind(own_screens(&self.meta), self.verdict.rule.as_deref()) {
             seen @ Some(crate::store::Kind::Question) => seen,
             seen => self.state.kind.or(seen),
         }
@@ -247,6 +248,19 @@ impl View {
     }
 }
 
+/// The screens amx can read on this agent's pane.
+///
+/// Every string a rule matches is one vendor's own, so which document a reader
+/// holds against a capture follows from the program in the pane — and the
+/// record is where that is written down, because the flag and the config it was
+/// resolved from are gone by the time anybody reads one. A record naming no
+/// command, which is every shell command and every record written before amx
+/// kept one, reads the vendor amx falls back to: the document every reader used
+/// before there was a second one to choose from.
+fn own_screens(meta: &Meta) -> &'static Ruleset {
+    crate::rules::of(meta.agent.as_deref().unwrap_or_default())
+}
+
 /// What kind of thing the screen a rule claimed is asking for.
 ///
 /// The rules say which screen is on the pane; the same rule says what that
@@ -291,11 +305,12 @@ pub struct Reading {
 ///
 /// Which sentences those are is the vendor's own wording, so they are written
 /// down where the rest of its screens are — see the `placeholders` key of
-/// `assets/screen-rules.toml`. An empty question is nobody's wording and is
-/// recognised here.
-fn placeholder(question: &str) -> bool {
+/// `assets/screen-rules.toml`, and the agent's own document rather than any
+/// other vendor's. An empty question is nobody's wording and is recognised
+/// here.
+fn placeholder(screens: &Ruleset, question: &str) -> bool {
     let question = question.trim();
-    question.is_empty() || crate::rules::bundled().placeholder(question)
+    question.is_empty() || screens.placeholder(question)
 }
 
 /// Forget a question that says nothing about what is being asked.
@@ -307,8 +322,12 @@ fn placeholder(question: &str) -> bool {
 ///
 /// What kind of thing is being asked stays. The vendor said that much, it is
 /// not in the words, and it is what decides what may be sent back.
-fn forget_the_placeholder(state: &mut State) {
-    if state.question.as_deref().is_some_and(placeholder) {
+fn forget_the_placeholder(screens: &Ruleset, state: &mut State) {
+    if state
+        .question
+        .as_deref()
+        .is_some_and(|question| placeholder(screens, question))
+    {
         state.question = None;
         state.options.clear();
     }
@@ -371,8 +390,12 @@ fn unglyphed(row: &str) -> String {
 /// freshness window is eight, so a reader that waited for the record to go
 /// stale would hand back a waiting agent with nothing to answer — which is
 /// what `status` and `answer` did on the first ask, every time.
-fn wants_the_question(state: &State) -> bool {
-    state.state == Phase::Waiting && state.question.as_deref().is_none_or(placeholder)
+fn wants_the_question(screens: &Ruleset, state: &State) -> bool {
+    state.state == Phase::Waiting
+        && state
+            .question
+            .as_deref()
+            .is_none_or(|question| placeholder(screens, question))
 }
 
 /// Whether concluding about this agent means looking at its pane.
@@ -388,12 +411,12 @@ fn wants_the_question(state: &State) -> bool {
 /// The two have to agree, and a test says so rather than a comment: a reading
 /// wanting a screen nobody asked for concludes `unknown` off a capture that
 /// was never taken.
-fn wants_the_screen(state: &State, alive: bool, now: u64) -> bool {
+fn wants_the_screen(screens: &Ruleset, state: &State, alive: bool, now: u64) -> bool {
     if state.state.is_terminal() || !alive {
         return false;
     }
     if now.saturating_sub(heard(state)) <= FRESH {
-        return wants_the_question(state);
+        return wants_the_question(screens, state);
     }
     true
 }
@@ -544,7 +567,7 @@ pub fn read(
         // on. The hooks still decide the phase — this is the same conclusion
         // with the question beside it, on the first look rather than on the
         // one after the freshness runs out.
-        let asking = wants_the_question(state)
+        let asking = wants_the_question(rules, state)
             .then(capture)
             .flatten()
             .and_then(|screen| rules.asking(&screen));
@@ -668,8 +691,8 @@ fn hashed(rows: &[&str]) -> u64 {
 /// The writer's lock is taken only when there is something new to write, so
 /// the promise that readers never wait on writers holds for every look but the
 /// one that finds the question.
-fn note(agent: &Agent, state: &mut State, asking: &Question) {
-    forget_the_placeholder(state);
+fn note(agent: &Agent, screens: &Ruleset, state: &mut State, asking: &Question) {
+    forget_the_placeholder(screens, state);
     if !state.learns_from(asking) {
         return;
     }
@@ -680,7 +703,7 @@ fn note(agent: &Agent, state: &mut State, asking: &Question) {
             // A hook that arrived while the pane was being read is the
             // vendor's own account of a moment this picture is already behind.
             if current.last_event == heard {
-                forget_the_placeholder(current);
+                forget_the_placeholder(screens, current);
                 current.learn(asking);
             }
         })
@@ -1040,24 +1063,25 @@ fn where_it_ran(meta: &Meta) -> std::path::PathBuf {
     }
 }
 
-/// Read one agent.
-pub fn view(root: &Path, id: &str, rules: &Ruleset, now: u64) -> Result<View> {
+/// Read one agent, against the screens of the vendor it runs.
+pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
     let agent = Agent::open(root, id)?;
     let meta = agent.meta()?;
     let mut state = agent.state()?;
     let server = Server::from_socket(meta.socket.clone());
+    let rules = own_screens(&meta);
 
     let alive = state.state.is_terminal() || server.pane_alive(&meta.pane);
     // Taken here rather than left to the closure below, so there is a screen
     // in hand to weigh against the last one this process saw of this id
     // before `read` is asked to trust a count of anything.
-    let screen = wants_the_screen(&state, alive, now)
+    let screen = wants_the_screen(rules, &state, alive, now)
         .then(|| server.capture(&meta.pane).ok())
         .flatten();
     let looks = still_looks(id, screen.as_deref(), state.state, rules);
     let reading = read(&state, meta.created, alive, || screen, rules, now, looks);
     if let Some(asking) = &reading.asking {
-        note(&agent, &mut state, asking);
+        note(&agent, rules, &mut state, asking);
     }
     if let Some(command) = crate::config::current().summary_command.as_deref()
         && wants_a_line(&state)
@@ -1105,8 +1129,8 @@ struct Pending {
 }
 
 /// Read every agent, oldest first.
-pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
-    Ok(views_of(root, records(root)?, rules, now))
+pub fn views(root: &Path, now: u64) -> Result<Vec<View>> {
+    Ok(views_of(root, records(root)?, now))
 }
 
 /// The same, over records that have already been read.
@@ -1116,7 +1140,11 @@ pub fn views(root: &Path, rules: &Ruleset, now: u64) -> Result<Vec<View>> {
 /// for all of them at once: one pane list per server, and one call for every
 /// screen the reading needs. A wall of ten agents is two tmux calls, not
 /// twenty.
-pub fn views_of(root: &Path, records: Vec<Record>, rules: &Ruleset, now: u64) -> Vec<View> {
+///
+/// A wall is a wall of whatever somebody started, so each record brings its own
+/// document — see [`own_screens`]. Two vendors side by side are read against
+/// their own screens rather than both against the first one's.
+pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
     let mut pending: Vec<Pending> = Vec::new();
     let mut panes: Vec<(crate::tmux::Socket, Vec<crate::tmux::PaneId>)> = Vec::new();
 
@@ -1156,11 +1184,12 @@ pub fn views_of(root: &Path, records: Vec<Record>, rules: &Ruleset, now: u64) ->
         // Taken rather than borrowed: the reading is handed the screen, and
         // there is one reading it belongs to.
         let screen = screens[at].take();
+        let rules = own_screens(&meta);
         let looks = still_looks(&meta.id, screen.as_deref(), state.state, rules);
 
         let reading = read(&state, meta.created, alive, || screen, rules, now, looks);
         if let Some(asking) = &reading.asking {
-            note(&agent, &mut state, asking);
+            note(&agent, rules, &mut state, asking);
         }
         if let Some(command) = crate::config::current().summary_command.as_deref()
             && wants_a_line(&state)
@@ -1189,7 +1218,8 @@ fn screens_of(pending: &[Pending], now: u64) -> Vec<Option<String>> {
     let mut wanted: Vec<(crate::tmux::Socket, Vec<usize>)> = Vec::new();
 
     for (at, item) in pending.iter().enumerate() {
-        if !wants_the_screen(&item.record.state, item.alive, now) {
+        let rules = own_screens(&item.record.meta);
+        if !wants_the_screen(rules, &item.record.state, item.alive, now) {
             continue;
         }
         match wanted
@@ -1566,7 +1596,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             options: vec!["Yes".to_string(), "No".to_string()],
         };
 
-        forget_the_placeholder(&mut state);
+        forget_the_placeholder(rules::bundled(), &mut state);
         assert!(state.learns_from(&seen), "there is something to learn now");
         state.learn(&seen);
         assert_eq!(state.question.as_deref(), Some("Do you want to proceed?"));
@@ -1746,7 +1776,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
                 // Fresh, on the last second of freshness, and stale.
                 for now in [1_000, 1_000 + FRESH, 1_100] {
                     assert_eq!(
-                        wants_the_screen(&record, alive, now),
+                        wants_the_screen(rules::bundled(), &record, alive, now),
                         looked_at_the_pane(&record, alive, now),
                         "{} alive={alive} at {now}",
                         record.state
@@ -1831,7 +1861,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             );
         }
 
-        let views = views(root.path(), rules::bundled(), 1_100).expect("a reading");
+        let views = views(root.path(), 1_100).expect("a reading");
         let read = |id: &str| {
             views
                 .iter()
@@ -1874,7 +1904,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(recorded[0].verdict.evidence, Evidence::Hooks);
         assert_eq!(recorded[0].verdict.age, 100, "with the record's own clock");
 
-        let read = views(root.path(), rules::bundled(), 1_100).expect("a reading");
+        let read = views(root.path(), 1_100).expect("a reading");
         assert_eq!(
             read[0].phase(),
             Phase::Stopped,

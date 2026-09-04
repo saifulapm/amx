@@ -29,7 +29,7 @@ use crate::derive::View;
 use crate::store::{Agent, Ask, Kind, Phase};
 use crate::tmux::Server;
 use crate::verbs::answer::Answered;
-use crate::{derive, exit, registry, rules, spawn, store, verbs, worktree};
+use crate::{derive, exit, registry, spawn, store, verbs, worktree};
 
 /// A line somebody is typing, and what it is for.
 pub struct Composer {
@@ -527,7 +527,7 @@ pub enum Replied {
 /// the pane — and refuses them here in the same words, because it is the same
 /// reading of the same record.
 pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
-    let view = derive::view(root, id, rules::bundled(), store::now())?;
+    let view = derive::view(root, id, store::now())?;
     let agent = Agent::open(root, id)?;
     let server = Server::from_socket(view.meta.socket.clone());
 
