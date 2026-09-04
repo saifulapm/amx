@@ -91,15 +91,16 @@ variables. The questions the rest of amx puts to an entry:
 - `hook` — which moment a payload's event name is, which tool is the
   question tool, how the permission sentence reads.
 - `rules` / `derive` / the card — which screens document, whose chrome
-  anchors cut the furniture. Through `rules::bundled()` today, which is the
-  first entry's document whatever vendor the pane runs: see [pi](#pi).
+  anchors cut the furniture. Through `rules::of` on the command the record
+  kept, so a pane is read by the document of the vendor that drew it: see
+  [pi](#pi).
 - `fork`, `resume`, `adopt`, `trust` — may I, before anything is spawned.
   The refusal is immediate and says which capability is missing.
 - `logs` — whether this vendor keeps a conversation to read back, before it
   opens a transcript path a record carries, and which gap to name when the
   pane has gone and nothing was recorded either. The chrome it cuts off a
-  fallback capture is not one of its questions: that comes off `bundled()`
-  like everybody else's.
+  fallback capture comes off the same entry, like everybody else's: the
+  anchors that find pi's box are nothing claude draws.
 
 Three things stay outside the table anyway, and not because a vendor's word for
 them was hardcoded somewhere it should not have been: each is the wire format
@@ -158,12 +159,15 @@ before anybody reads it, driven live against 0.84.4 and checked in as
 it is in the binary; `rules::of("pi")` finds it, parses it and hands it back,
 and `rules.rs`'s own tests read pi's screens exactly that way.
 
-No reader asks for them yet. `furniture`, `derive`, `send`, `doctor`, `status`
-and the view all take `rules::bundled()`, which is `rules::of` on
-`registry::entries().first()` — claude, by where the table lists it, and there
-is a law holding that order. So a pi pane is cut and claimed with claude's
-anchors today, the same as an unmeasured vendor's would be. The gap to close
-is which door a reader goes through, not a measurement nobody made.
+Every reader asks for them. `furniture`, `derive`, `send`, `doctor`, `status`
+and the view all reach a document through `rules::of` on the command the
+record kept, which is where the vendor a spawn resolved survives: the flag and
+the config it came out of are gone by the time anybody reads one. So a pi pane
+is cut and claimed with pi's own anchors. A record naming no command — a shell
+command, or one written before amx kept that field — reads
+`registry::entries().first()`, claude by where the table lists it and a law
+holding that order, which is the reading every pane had before there was a
+second document to choose from.
 
 ## Adding one
 
@@ -189,11 +193,18 @@ is which door a reader goes through, not a measurement nobody made.
 4. **Prove the conformance.** `tests/mock_claude/` is a stand-in that replays
    scenarios — hook payloads, transcripts, screens — against the real tmux.
    A second vendor's harness takes the same shape: a fake that speaks the
-   vendor's dialect, and the suite driven against it. pi has no such harness.
-   What proves its entry is the table's laws, the unit tests in `pi.rs`, and
-   the panes its screens were measured off, checked into `rules.rs` so the
-   suite runs on a machine with no pi installed. Nothing yet drives amx
-   end to end against something answering as pi.
+   vendor's dialect, and the suite driven against it. pi's stand-in is
+   `tests/mock_pi/pi`, a shell script reached through the PATH, since the
+   table is keyed by the program a command runs and that is the whole of what
+   makes an agent pi's on a machine with no pi installed; `tests/e2e_pi.rs` is
+   the suite driven against it. It replays what pi's entry claims and nothing
+   else: the session flags, down to the five pi refuses `--session-id` beside,
+   and the screens `assets/screen-rules-pi.toml` was measured off, each
+   painted in one write. No payload and no transcript, because pi reports
+   neither — what the vendor was asked for is on its pane, and that is where
+   the suite reads it. Under that sit the table's laws, the unit tests in
+   `pi.rs`, and the panes the screens were measured off, checked into
+   `rules.rs`.
 
 A vendor can also land partially, and honestly. An entry with dials, a session
 vocabulary and screens but no hooks still resumes, forks and is adopted, and
