@@ -1355,6 +1355,37 @@ fn logs_cut_the_status_line_pi_spins_whatever_it_says_on_it() {
 }
 
 #[test]
+fn doctor_offers_the_trust_key_to_a_pi_stopped_on_its_folder_trust_screen() {
+    // The other half of the same key, from the other side: an agent already
+    // sitting on the screen. doctor asks whether amx could have answered the
+    // gate at all, which is now true of pi, so the remedy names the key that
+    // makes it never happen again rather than leaving it at attach and look.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "stops-on-trust");
+    let pane = amx.pane_of(id);
+
+    amx.until("the trust question to be drawn", || {
+        row_of(&drawn(&amx, &pane), "Project trust")
+    });
+    // Nothing heard for an hour and nothing outstanding, which is where the
+    // screen is the only witness there is on a vendor that reports nothing.
+    amx.set_state(
+        id,
+        json!({ "state": "starting", "since": 1, "last_event": 1 }),
+    );
+
+    let printed = doctor_fix(&amx, "\n");
+    let (ok, line) = check_line(&printed, "setup");
+    assert!(!ok, "the agent is stopped in front of its work: {line}");
+    assert!(line.contains(id), "{line}");
+    assert!(
+        printed.contains("trust = true"),
+        "the key amx would have answered it with: {printed}"
+    );
+}
+
+#[test]
 fn install_writes_nothing_anywhere_for_a_vendor_that_reports_nothing() {
     // The one repair `--fix` asks about is wiring amx's hooks into the
     // vendor's settings, and pi has no hooks to wire: there are no entries to
