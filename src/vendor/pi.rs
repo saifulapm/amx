@@ -92,13 +92,20 @@ pub const VENDOR: Vendor = Vendor {
     // pi's extension events are JS callbacks inside its own process, not
     // command entries a settings file can name, so there is nothing for
     // `install` to write and nothing for `hook` to read: Hooks and
-    // Transcript are both left off. Trust is left off too: `--help` shows
-    // `--approve, -a` trusting project-local files for a run, but nothing
-    // measured yet says amx can answer that screen unattended the way it
-    // answers claude's. What is left is what pi does today: carry a session
-    // on, branch one, and be adopted by way of PI_SESSION_ID. Measured at
-    // 0.84.4 on 2026-09-03.
-    capabilities: &[Capability::Resume, Capability::Fork, Capability::Adopt],
+    // Transcript are both left off. Trust is on, and it is the one amx sends
+    // rather than writes: `--help` documents `--approve, -a` as trusting
+    // project-local files for a run, which is a word on the argv of the pane
+    // amx was starting anyway and leaves nothing behind in anybody's files.
+    // `crate::trust` is where that answer is measured and written down. So
+    // this is what pi does today: carry a session on, branch one, be adopted
+    // by way of PI_SESSION_ID, and take its folder-trust answer from amx.
+    // Measured at 0.84.4 on 2026-09-05.
+    capabilities: &[
+        Capability::Resume,
+        Capability::Fork,
+        Capability::Adopt,
+        Capability::Trust,
+    ],
     hooks: None,
     // The screens amx has measured off this vendor, every anchor in them with
     // the capture, the version and the date it was read at. Driven live
@@ -194,11 +201,21 @@ mod tests {
     }
 
     #[test]
-    fn pi_can_resume_fork_and_be_adopted_and_nothing_else() {
-        for can in [Capability::Resume, Capability::Fork, Capability::Adopt] {
+    fn pi_can_resume_fork_be_adopted_and_have_its_trust_screen_answered() {
+        // Trust is the one pi claims without reporting anything: the answer is
+        // a flag on the argv rather than an entry in a file, so a vendor with
+        // no hooks can still have its screen taken off a person's hands. Which
+        // flag, and that pi is the vendor answered that way, is asserted in
+        // src/trust.rs, where it was measured.
+        for can in [
+            Capability::Resume,
+            Capability::Fork,
+            Capability::Adopt,
+            Capability::Trust,
+        ] {
             assert!(VENDOR.can(can), "{can:?}");
         }
-        for cannot in [Capability::Hooks, Capability::Transcript, Capability::Trust] {
+        for cannot in [Capability::Hooks, Capability::Transcript] {
             assert!(!VENDOR.can(cannot), "{cannot:?}");
         }
     }

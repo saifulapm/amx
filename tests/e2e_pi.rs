@@ -384,6 +384,72 @@ fn a_spawn_told_to_keep_no_session_is_minted_no_id_to_offer_back() {
 }
 
 #[test]
+fn a_pi_under_the_trust_key_is_answered_on_its_argv_and_in_nobodys_file() {
+    // pi's folder-trust screen is answered with a word on the argv of the pane
+    // rather than an entry in a file, so the proof is read off the vendor that
+    // really ran. Into a repository rather than a bare directory, because that
+    // is what cuts a worktree and so reaches the other half of the same config
+    // key: the store that half writes is claude's own file, and a pi agent is
+    // not something to write it for.
+    let amx = Harness::new();
+    amx.config("trust = true\n");
+    let repo = amx.a_repo();
+    let id = "fix-login-a1b";
+
+    let out = amx_with_pi(
+        &amx,
+        "takes-a-turn",
+        &[
+            "new",
+            "--name",
+            id,
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            "pi",
+            TASK,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let called = argv_of(&amx, id);
+    assert!(
+        called.contains("--approve"),
+        "the flag pi's own --help documents: {called}"
+    );
+    assert!(
+        called.ends_with(TASK),
+        "and the task is still the last word: {called}"
+    );
+
+    let stores: Vec<PathBuf> = everything_under(amx.home())
+        .into_iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == ".claude.json"))
+        .collect();
+    assert!(
+        stores.is_empty(),
+        "another vendor's store, written for a pi agent: {stores:?}"
+    );
+}
+
+#[test]
+fn a_pi_spawned_without_the_trust_key_is_left_to_answer_its_own_screen() {
+    // The key is the whole of the consent. Without it the flag is one nobody
+    // asked for, and what pi loads out of the repository it was pointed at is
+    // still pi's own question to put to whoever is at the keyboard.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "takes-a-turn");
+
+    let called = argv_of(&amx, id);
+    assert!(!called.contains("--approve"), "{called}");
+}
+
+#[test]
 fn the_stand_in_parts_the_flags_pi_refuses_from_the_one_it_throws_away() {
     // The stand-in is asked directly here, because amx will not build this
     // argv: `--no-session` is on the conflicts list, so no id is ever minted

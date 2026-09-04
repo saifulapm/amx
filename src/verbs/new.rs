@@ -289,7 +289,7 @@ fn start(
         agent_dir,
         &Handoff {
             task: args.task.clone(),
-            command: launched(args, launch, id),
+            command: launched(args, launch, id, config.trust),
         },
     )?;
 
@@ -361,7 +361,12 @@ fn vendor_written(exec: bool, agent: &str) -> Option<String> {
 ///
 /// `id` rides along as the session a vendor that declares a start flag is
 /// asked to open under; a vendor with no such flag is unaffected by it.
-fn launched(args: &NewArgs, launch: &Launch, id: &str) -> Vec<String> {
+///
+/// `trust` is the same config key [`trust_the_tree`] stands behind, carried
+/// here because a vendor whose folder-trust answer is a flag is answered on
+/// this argv rather than in a file. The key is read here, where the config is,
+/// because `spawn` is handed no config of its own.
+fn launched(args: &NewArgs, launch: &Launch, id: &str, trust: bool) -> Vec<String> {
     match args.exec {
         true => spawn::exec_command(&args.task),
         false => spawn::vendor_command(
@@ -370,6 +375,7 @@ fn launched(args: &NewArgs, launch: &Launch, id: &str) -> Vec<String> {
             &args.vendor_args,
             &args.task,
             Some(id),
+            trust,
         ),
     }
 }
@@ -399,9 +405,14 @@ fn cut_worktree(
     Ok(Some(worktree::create(&repo, id)?))
 }
 
-/// Answer the vendor's folder-trust screen for the tree amx has just cut, so
-/// that the agent starts on the task instead of on a question nobody has to
-/// think about.
+/// Write the vendor's own trust store for the tree amx has just cut, so that
+/// the agent starts on the task instead of on a question nobody has to think
+/// about.
+///
+/// The half of the answer that is a file. A vendor answered with a flag
+/// instead is answered in [`launched`], on the argv of the pane it is about,
+/// and nothing here runs for it — a store amx wrote for a pi agent would be
+/// another vendor's file touched over a screen pi never draws.
 ///
 /// Never a reason to refuse the spawn. An agent that meets the screen is an
 /// agent somebody answers by hand, which is exactly where amx stood before it
@@ -422,7 +433,9 @@ fn trust_the_tree(
     if !config.trust {
         return;
     }
-    if !trust::is_vendor(agent) {
+    // Which vendors amx can answer for is the wider question, and `doctor`
+    // asks it. The one this write turns on is narrower: whose file it is.
+    if !trust::writes_a_store(agent) {
         return;
     }
     let Some(store) = trust::store_in(env) else {
@@ -631,12 +644,17 @@ mod tests {
         let launch = Launch::resolve(&Config::default(), &a_command("cargo test")).unwrap();
 
         assert_eq!(
-            launched(&a_command("cargo test"), &launch, "port-it-b2c"),
+            launched(&a_command("cargo test"), &launch, "port-it-b2c", false),
             ["sh", "-c", "cargo test"],
             "no vendor, no dials, and no task appended after it"
         );
         assert_eq!(
-            launched(&spawn(Some("claude"), [None; 3]), &launch, "port-it-b2c"),
+            launched(
+                &spawn(Some("claude"), [None; 3]),
+                &launch,
+                "port-it-b2c",
+                false
+            ),
             ["claude", "port the importer"],
             "and an ordinary spawn is launched the way it always was"
         );
@@ -759,6 +777,50 @@ mod tests {
             "a store amx invented for a vendor that keeps none"
         );
         assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn trust_writes_no_other_vendors_store_for_an_agent_answered_on_its_argv() {
+        // The store this write is about is claude's own file. pi claims the
+        // folder-trust capability too, and a guard that asked the capability
+        // question would have written `~/.claude.json` for a tree no claude
+        // will ever open.
+        let dir = tempfile::TempDir::new().unwrap();
+        let (tree, env) = a_tree(&dir);
+        let mut problems = Vec::new();
+
+        trust_the_tree(&agreed(), &env, "pi", &tree, &mut problems, false);
+
+        assert!(
+            !trust::store_in(&env).unwrap().exists(),
+            "another vendor's file, touched over a screen that vendor never draws"
+        );
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn trust_is_answered_on_the_argv_for_a_vendor_whose_answer_is_a_flag() {
+        // pi's half of the same key, and the reason the config is read here:
+        // `spawn` is handed none, and the flag has to reach the argv of the
+        // pane this spawn is about to start.
+        let args = spawn(Some("pi"), [None; 3]);
+        let launch = Launch::resolve(&agreed(), &args).unwrap();
+
+        assert_eq!(
+            launched(&args, &launch, "port-it-b2c", true),
+            [
+                "pi",
+                "--session-id",
+                "port-it-b2c",
+                "--approve",
+                "port the importer"
+            ]
+        );
+        assert_eq!(
+            launched(&args, &launch, "port-it-b2c", false),
+            ["pi", "--session-id", "port-it-b2c", "port the importer"],
+            "and nothing at all without the key"
+        );
     }
 
     #[test]

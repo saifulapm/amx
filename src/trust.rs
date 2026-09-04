@@ -1,23 +1,38 @@
-//! Answering claude's folder-trust screen for a tree amx cut.
+//! Answering a vendor's folder-trust screen for a tree amx cut.
 //!
-//! claude asks once per folder it has never worked in — "Is this a project you
-//! created or one you trust?" — and it draws that question in front of the
-//! session every hook comes from, so no hook can report it. An agent that
-//! meets the screen sits on it until somebody attaches and answers.
+//! A vendor asks once per folder it has never worked in — claude's wording is
+//! "Is this a project you created or one you trust?" — and it draws that
+//! question in front of the session every hook comes from, so no hook can
+//! report it. An agent that meets the screen sits on it until somebody
+//! attaches and answers.
 //!
 //! A tree amx cut a second ago, inside a repository the person is already
 //! working in, is the one case where there is nothing to decide. So amx
-//! answers it, by writing the entry the vendor's own message tells you to
-//! write, and it answers for that tree and nothing else: never the repository
-//! around it, and never a directory somebody merely pointed amx at.
+//! answers it, and [`answers_for`] is where each vendor's answer is written
+//! down — because the two amx has measured are not the same act:
+//!
+//! * [`Answer::Store`] is an entry in the vendor's own file, written by this
+//!   module and still there long after the run. claude's, measured below.
+//! * [`Answer::Flag`] is a word on the argv of the process amx was starting
+//!   anyway, spent the moment that process exits and writing nothing of
+//!   anybody's. pi's `--approve`, put on the command line by `spawn`.
+//!
+//! Both stand behind the same consent, given once in the config's `trust` key,
+//! because both say the same thing to the vendor: load what this repository
+//! keeps in it without asking. Which is also why neither is offered for a
+//! vendor whose answer nobody has measured — [`answers_for`] names the vendors
+//! it has, and a law in the tests keeps the table from growing one it has not.
+//!
+//! The store write answers for the tree amx cut and nothing else: never the
+//! repository around it, and never a directory somebody merely pointed amx at.
 //!
 //! Whether the agent being launched asks the question at all is the table's to
 //! say, and it is asked before any of this: a vendor with no folder-trust
 //! screen would get an entry written in somebody's file for a screen that is
 //! never drawn.
 //!
-//! Everything here was measured on claude 2.1.237, and is the vendor's own
-//! file, so re-measure it at every vendor bump:
+//! Everything from here down is the store, measured on claude 2.1.237, and is
+//! the vendor's own file, so re-measure it at every vendor bump:
 //!
 //! * The store is `$CLAUDE_CONFIG_DIR/.claude.json`, and `~/.claude.json`
 //!   when that variable is unset. Both were watched being written.
@@ -54,14 +69,60 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::vendor::{Capability, Vendor};
 use crate::{install, registry, worktree};
 
-/// The vendor everything below was measured off: its file, its two keys, and
-/// the lock it takes while it writes.
+/// The vendor the store was measured off: its file, its two keys, and the lock
+/// it takes while it writes.
 ///
 /// Which vendors have a folder-trust screen at all is the table's to say, and
 /// [`answers_for`] asks it. This name is the other half of the question — the
 /// one vendor whose store amx has watched being written — and a law in the
 /// tests keeps the two from drifting apart.
-const VENDOR: &str = "claude";
+const CLAUDE: &str = "claude";
+
+/// The vendor whose screen amx answers on the argv instead of in a file.
+const PI: &str = "pi";
+
+/// The flag pi answers it with, and every spelling that already settles the
+/// question for a run.
+///
+/// Measured at pi 0.84.4 on 2026-09-05, in the vendor's own words. `--help`
+/// documents `--approve, -a` as "Trust project-local files for this run" and
+/// `--no-approve, -na` as ignoring them; `dist/cli/args.js:205-209` reads all
+/// four into `projectTrustOverride`, and `dist/main.js:574` takes an override
+/// as the whole answer, so the screen is never drawn. Nothing is written for
+/// it: pi keeps its saved decisions in `~/.pi/agent/trust.json`, which
+/// docs/security.md names and an override never reaches.
+///
+/// Both spellings of both flags, because whichever of the four somebody wrote
+/// has already said what this run does about the folder.
+const APPROVE: &str = "--approve";
+const AS_GOOD_AS: &[&str] = &[APPROVE, "-a", "--no-approve", "-na"];
+
+/// How amx answers a folder-trust screen, for the vendors whose answer it has
+/// measured.
+///
+/// Two acts that are not interchangeable, which is why the shape says which
+/// one this is rather than a bare yes: one leaves an entry in a file of the
+/// person's, the other is spent on the run it was written for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    /// An entry in the vendor's own trust store, which [`seed`] writes.
+    Store,
+    /// A flag on the argv of the process amx is starting anyway.
+    Flag(Flag),
+}
+
+/// A folder-trust screen answered on the command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Flag {
+    /// What amx writes to answer it.
+    pub send: &'static str,
+    /// Every spelling that already settles project trust for this run, this
+    /// flag's own included. An argv carrying one of them has said what to do
+    /// about the folder, and amx is not the one to say it a second time — a
+    /// `--approve` written after somebody's own `--no-approve` would overrule
+    /// them rather than answer anything.
+    pub settled: &'static [&'static str],
+}
 
 /// How long amx waits for the vendor's lock before leaving the file alone,
 /// and how often it looks again while it waits.
@@ -81,18 +142,61 @@ const ACCEPTED: &str = "hasTrustDialogAccepted";
 /// The variable that moves the whole file somewhere else.
 const CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
 
-/// Whether the agent about to be launched is one amx can answer for.
+/// Whether the agent about to be launched is one amx can answer for, however
+/// it answers.
+///
+/// The question `doctor` asks, because what it offers on a folder-trust gate
+/// is the config key, and the key covers both answers. Whether answering means
+/// writing anything is [`writes_a_store`], and the two are separate questions:
+/// a caller that asks this one before it writes claude's file would write it
+/// for every vendor amx can answer for.
 pub fn is_vendor(agent: &str) -> bool {
-    registry::entry(agent).is_some_and(answers_for)
+    answer_for(agent).is_some()
 }
 
-/// Whether this vendor's folder-trust screen is one amx knows how to answer.
+/// Whether answering this agent's screen means writing the vendor's own trust
+/// store — the one answer that leaves something behind in the person's files,
+/// and so the only one [`seed`] is about.
+pub fn writes_a_store(agent: &str) -> bool {
+    matches!(answer_for(agent), Some(Answer::Store))
+}
+
+/// The flag that answers this agent's screen on the argv of the process amx is
+/// starting anyway, for an agent answered that way and `None` for any other.
+pub fn flag_for(agent: &str) -> Option<Flag> {
+    match answer_for(agent)? {
+        Answer::Flag(flag) => Some(flag),
+        Answer::Store => None,
+    }
+}
+
+/// How amx answers this vendor's folder-trust screen, and `None` where it
+/// cannot.
 ///
-/// The table says whether a vendor asks the question at all, and a vendor that
-/// does not is one amx would be answering nothing for: an entry in somebody's
-/// file, written for a screen that is never drawn.
-fn answers_for(vendor: &Vendor) -> bool {
-    vendor.can(Capability::Trust)
+/// Two questions, in this order. The table says whether the vendor draws the
+/// screen at all, and a vendor that does not is one amx would be answering
+/// nothing for. Then the name says which answer amx measured off it, because
+/// the answer is the vendor's own and there is no answering a screen in
+/// general: a vendor that claims the capability and is not named here is one
+/// amx would leave sitting on the question, and the law in the tests is what
+/// says so on the day one arrives in the table.
+pub fn answers_for(vendor: &Vendor) -> Option<Answer> {
+    if !vendor.can(Capability::Trust) {
+        return None;
+    }
+    match vendor.name {
+        CLAUDE => Some(Answer::Store),
+        PI => Some(Answer::Flag(Flag {
+            send: APPROVE,
+            settled: AS_GOOD_AS,
+        })),
+        _ => None,
+    }
+}
+
+/// The same, for the command an agent runs rather than the entry behind it.
+fn answer_for(agent: &str) -> Option<Answer> {
+    registry::entry(agent).and_then(answers_for)
 }
 
 /// Where the store is for an agent that will run with `env`.
@@ -178,7 +282,7 @@ fn seed_within(
 
     let Some(held) = Held::take(store, patience, STALE)? else {
         bail!(
-            "{} is being written by {VENDOR}, so amx left it alone",
+            "{} is being written by {CLAUDE}, so amx left it alone",
             store.display()
         );
     };
@@ -199,7 +303,7 @@ fn seed_within(
     // store rewritten on a lock no longer held loses that holder's changes.
     if !held.holds() {
         bail!(
-            "{} is being written by {VENDOR}, so amx left it alone",
+            "{} is being written by {CLAUDE}, so amx left it alone",
             store.display()
         );
     }
@@ -521,11 +625,28 @@ mod tests {
     }
 
     #[test]
-    fn trust_knows_the_vendor_whose_screen_it_can_answer() {
+    fn trust_knows_the_vendors_whose_screen_it_can_answer() {
         assert!(is_vendor("claude"));
         assert!(is_vendor("claude --verbose"));
+        assert!(is_vendor("pi"), "answered on the argv, but answered");
         assert!(!is_vendor("mock-claude"));
         assert!(!is_vendor("codex"));
+    }
+
+    #[test]
+    fn trust_tells_the_store_write_apart_from_the_screen_it_can_answer() {
+        // Two questions with one predicate between them until a second vendor
+        // answered its screen some other way. `new` asks which vendor's own
+        // file to write, and writing claude's for a pi agent is a file amx has
+        // no business touching; `doctor` asks whether amx could have answered
+        // the gate at all, which is what the config key it offers is about.
+        assert!(writes_a_store("claude") && is_vendor("claude"));
+        assert!(!writes_a_store("pi") && is_vendor("pi"));
+        assert!(!writes_a_store("mock-claude") && !is_vendor("mock-claude"));
+
+        assert_eq!(flag_for("claude"), None, "claude's answer is the store");
+        assert_eq!(flag_for("pi").map(|flag| flag.send), Some("--approve"));
+        assert_eq!(flag_for("mock-claude"), None);
     }
 
     #[test]
@@ -533,27 +654,43 @@ mod tests {
         // Whether there is a screen to answer is the table's to say, not a
         // name's. A vendor that has none is one amx would be writing an entry
         // for a question nobody asked it.
-        let measured = registry::entry(VENDOR).expect("the vendor amx measured");
-        assert!(answers_for(measured));
-        assert!(!answers_for(&Vendor {
-            capabilities: &[Capability::Hooks],
-            ..*measured
-        }));
-        assert!(!answers_for(&SECOND));
+        let measured = registry::entry(CLAUDE).expect("the vendor amx measured");
+        assert_eq!(answers_for(measured), Some(Answer::Store));
+        assert_eq!(
+            answers_for(&Vendor {
+                capabilities: &[Capability::Hooks],
+                ..*measured
+            }),
+            None
+        );
+        assert_eq!(answers_for(&SECOND), None);
     }
 
     #[test]
-    fn trust_is_answered_for_the_one_vendor_whose_store_amx_has_measured() {
-        // The file and the keys in this module are one vendor's own, watched
-        // being written. A second vendor with a folder-trust screen wants its
-        // own measurement before amx writes anything for it, and this is what
-        // says so on the day one arrives in the table.
-        let with_a_screen: Vec<&str> = registry::entries()
+    fn trust_names_an_answer_for_every_vendor_that_claims_the_screen() {
+        // The two answers are different acts on somebody's machine, so which
+        // one a vendor gets is measured off that vendor and written here by
+        // name. A vendor that claims the capability and is not named is an
+        // agent amx would leave sitting on the screen it said it could answer,
+        // and this is what says so on the day one arrives in the table.
+        let answered: Vec<(&str, Option<Answer>)> = registry::entries()
             .iter()
             .filter(|vendor| vendor.can(Capability::Trust))
-            .map(|vendor| vendor.name)
+            .map(|vendor| (vendor.name, answers_for(vendor)))
             .collect();
-        assert_eq!(with_a_screen, [VENDOR]);
+        assert_eq!(
+            answered,
+            [
+                ("claude", Some(Answer::Store)),
+                (
+                    "pi",
+                    Some(Answer::Flag(Flag {
+                        send: "--approve",
+                        settled: &["--approve", "-a", "--no-approve", "-na"],
+                    }))
+                ),
+            ]
+        );
     }
 
     #[test]

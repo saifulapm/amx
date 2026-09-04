@@ -143,28 +143,36 @@ impl Default for Dials {
 
 /// The vendor's argv: the configured command, the dials that are turned, the
 /// session flag when this spawn opens one under an id of amx's own choosing,
-/// whatever the caller passed through, and the task last — where a prompt
-/// goes.
+/// the flag that answers this vendor's folder-trust screen when the person has
+/// said amx may, whatever the caller passed through, and the task last — where
+/// a prompt goes.
 ///
 /// `session` is the agent's own id, offered to a vendor that declares a start
 /// flag — [`opens_under_id`] is the same question asked of the same two
 /// arguments, for a caller that has to know without building the whole argv.
 ///
+/// `trust` is the config key, which is the whole of the person's consent to
+/// amx answering that screen. A spawn without it is one this never writes a
+/// trust flag for, whatever the vendor would take.
+///
 /// A dial yields to the same flag written by hand, wherever it was written, so
 /// the vendor is never handed one flag twice. The session flag yields the
 /// same way: to itself, and to whatever the entry lists as conflicting with
-/// it.
+/// it. So does the trust flag, to every spelling of the question its vendor
+/// takes.
 pub fn vendor_command(
     agent: &str,
     dials: &Dials,
     vendor_args: &[String],
     task: &str,
     session: Option<&str>,
+    trust: bool,
 ) -> Vec<String> {
     let mut command: Vec<String> = agent.split_whitespace().map(str::to_string).collect();
     let carried: Vec<&str> = command.iter().skip(1).map(String::as_str).collect();
 
     let mut args = session_flag(registry::entry(agent), &carried, vendor_args, session);
+    args.extend(trust_flag(agent, &carried, vendor_args, trust));
     args.extend(vendor_args.iter().cloned());
 
     command.extend(registry::inject(
@@ -191,19 +199,54 @@ fn start_flag(
 ) -> Option<&'static str> {
     let session = vendor?.session?;
     let start = session.start?;
-    let present = |flag: &str| {
-        let joined = format!("{flag}=");
-        carried
-            .iter()
-            .any(|arg| *arg == flag || arg.starts_with(&joined))
-            || vendor_args
-                .iter()
-                .any(|arg| arg == flag || arg.starts_with(&joined))
-    };
+    let present = |flag: &str| already(flag, carried, vendor_args);
     if present(start) || session.conflicts.iter().any(|conflict| present(conflict)) {
         return None;
     }
     Some(start)
+}
+
+/// Whether the command line already carries `flag`, wherever it was written —
+/// in the configured command or after the separator — and whichever way: on
+/// its own, or joined onto its value with `=`.
+///
+/// The reading every other walker of an argv in this tree uses, `vendor::already`
+/// and `resume::names_a_session` included, so a flag amx would add stands down
+/// from a spelling of it the person wrote.
+fn already(flag: &str, carried: &[&str], vendor_args: &[String]) -> bool {
+    let joined = format!("{flag}=");
+    carried
+        .iter()
+        .any(|arg| *arg == flag || arg.starts_with(&joined))
+        || vendor_args
+            .iter()
+            .any(|arg| arg == flag || arg.starts_with(&joined))
+}
+
+/// The flag that answers this vendor's folder-trust screen, as a word of the
+/// vendor's own arguments — empty from a spawn the person has not consented to,
+/// from a vendor amx cannot answer for, and from one whose answer is a write
+/// rather than a word.
+///
+/// It stands down from every spelling that already settles the question, this
+/// flag's own included: an argv carrying one of them has said what this run
+/// does about the folder, and a flag amx added after it would be overruling
+/// somebody rather than answering anything.
+fn trust_flag(
+    agent: &str,
+    carried: &[&str],
+    vendor_args: &[String],
+    trust: bool,
+) -> Option<String> {
+    if !trust {
+        return None;
+    }
+    let flag = crate::trust::flag_for(agent)?;
+    let settled = flag
+        .settled
+        .iter()
+        .any(|written| already(written, carried, vendor_args));
+    (!settled).then(|| flag.send.to_string())
 }
 
 /// The session flag and the id it opens, as the first tokens of the vendor's
@@ -626,6 +669,7 @@ mod tests {
             &["--session-id".to_string(), "abc-123".to_string()],
             "fix the login bug",
             None,
+            false,
         );
         assert_eq!(
             command,
@@ -652,6 +696,7 @@ mod tests {
             &["--session-id".to_string(), "abc-123".to_string()],
             "fix the login bug",
             None,
+            false,
         );
         assert_eq!(
             command,
@@ -686,6 +731,7 @@ mod tests {
             &["--model=sonnet".to_string()],
             "fix the login bug",
             None,
+            false,
         );
         assert_eq!(
             command,
@@ -715,6 +761,7 @@ mod tests {
             &[],
             "fix the login bug",
             None,
+            false,
         );
         assert_eq!(command, ["mock-claude", "fix the login bug"]);
     }
@@ -724,13 +771,21 @@ mod tests {
         // claude's own SessionStart hook already names the session it opened,
         // so its entry declares no start flag at all -- offering a session
         // here changes nothing about what it is launched with.
-        let without = vendor_command("claude", &Dials::default(), &[], "fix the login bug", None);
+        let without = vendor_command(
+            "claude",
+            &Dials::default(),
+            &[],
+            "fix the login bug",
+            None,
+            false,
+        );
         let with = vendor_command(
             "claude",
             &Dials::default(),
             &[],
             "fix the login bug",
             Some("fix-login-a1b"),
+            false,
         );
         assert_eq!(with, without);
         assert_eq!(with, ["claude", "fix the login bug"]);
@@ -847,6 +902,95 @@ mod tests {
     }
 
     #[test]
+    fn spawn_answers_pis_trust_screen_only_where_the_person_said_amx_may() {
+        // pi's answer to the folder-trust question is a word on the argv
+        // rather than a write, so this is where it is sent — and the config
+        // key is the whole of the consent it is sent on. Ungated, every pi
+        // amx started would be told to load whatever repository it was
+        // pointed at without anybody being asked.
+        let approved = vendor_command(
+            "pi",
+            &Dials::default(),
+            &[],
+            "fix the login bug",
+            None,
+            true,
+        );
+        assert_eq!(approved, ["pi", "--approve", "fix the login bug"]);
+
+        let ungated = vendor_command(
+            "pi",
+            &Dials::default(),
+            &[],
+            "fix the login bug",
+            None,
+            false,
+        );
+        assert_eq!(ungated, ["pi", "fix the login bug"]);
+    }
+
+    #[test]
+    fn spawn_sends_no_trust_flag_for_a_vendor_answered_some_other_way() {
+        // claude's answer is an entry in its own store, written before the
+        // pane is started. There is no flag for it, and the key being on for a
+        // claude spawn must not grow one.
+        let claude = vendor_command(
+            "claude",
+            &Dials::default(),
+            &[],
+            "fix the login bug",
+            None,
+            true,
+        );
+        assert_eq!(claude, ["claude", "fix the login bug"]);
+
+        let unregistered = vendor_command(
+            "mock-claude",
+            &Dials::default(),
+            &[],
+            "fix the login bug",
+            None,
+            true,
+        );
+        assert_eq!(
+            unregistered,
+            ["mock-claude", "fix the login bug"],
+            "and a command with no entry has no screen amx knows anything about"
+        );
+    }
+
+    #[test]
+    fn spawn_the_trust_flag_stands_down_from_an_argv_that_settles_it_already() {
+        // All four spellings pi reads, wherever they were written. The
+        // opposite two are why this matters most: amx's flag lands behind the
+        // configured command's own arguments, and pi takes the last of the
+        // four it sees, so a `--approve` added over somebody's `--no-approve`
+        // would overrule them rather than answer anything.
+        for written in ["--approve", "-a", "--no-approve", "-na"] {
+            assert_eq!(
+                trust_flag("pi", &[written], &[], true),
+                None,
+                "{written}, written in the configured command"
+            );
+            assert_eq!(
+                trust_flag("pi", &[], &[written.to_string()], true),
+                None,
+                "{written}, written after the separator"
+            );
+        }
+        assert_eq!(
+            trust_flag("pi", &["--approve=yes"], &[], true),
+            None,
+            "a spelling pi would not read is still somebody saying it themselves"
+        );
+        assert_eq!(
+            trust_flag("pi", &[], &[], true),
+            Some("--approve".to_string()),
+            "and an argv that says nothing about the folder is answered"
+        );
+    }
+
+    #[test]
     fn spawn_an_agent_that_splits_to_nothing_still_spawns_something_that_runs() {
         // `agent = ""` in the config, or `amx new --agent "" ...` typed by
         // hand: nothing requires it non-empty, and indexing the split argv
@@ -857,6 +1001,7 @@ mod tests {
             &[],
             "fix the login bug",
             Some("fix-login-a1b"),
+            false,
         );
         assert_eq!(command, ["fix the login bug"]);
     }
@@ -872,6 +1017,7 @@ mod tests {
             &[],
             "fix the login bug",
             Some("fix-login-a1b"),
+            false,
         );
         assert_eq!(command, ["pi", "-c", "fix the login bug"]);
     }
