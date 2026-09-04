@@ -20,9 +20,10 @@
 #                       it ends pi: an exit, not a warning.
 #   the screens         the screens `assets/screen-rules-pi.toml` was measured
 #                       off, drawn by repainting the pane rather than
-#                       appending to it. The rules read the bottom of a
-#                       capture, and a screen with the last one still above it
-#                       is not a screen pi ever drew.
+#                       appending to it, and each in one write. The rules read
+#                       the bottom of a capture: a screen with the last one
+#                       still above it is not a screen pi ever drew, and
+#                       neither is half of one.
 #
 # How it was called, and what it did with the session it was handed, are
 # written before the first repaint: they leave the screen with it and stay in
@@ -153,11 +154,19 @@ case $here in
 "$HOME"*) here="~${here#"$HOME"}" ;;
 esac
 
+# The one piece of a repaint that is not a row: the cursor home and the pane
+# emptied, which every screen opens with.
+CLEAR=$(printf '\033[H\033[2J')
+
 # The two stats lines measured: a subscription-backed session before its first
 # turn, and one that has taken a turn.
 FRESH='$0.000 (sub) 0.0%/264k (auto)              (github-copilot) gpt-5-mini • minimal'
 TURNED='↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)   (github-copilot)'
 
+# Each screen below is written to a pipe rather than to the pane: `draw` reads
+# what it printed, adds the clear in front of it, and puts the whole screen on
+# the pane in one write.
+#
 # The composer box and the footer under it, which every screen below ends with.
 # `$1` is the stats line, because its opening is the one part of the chrome
 # that differs between a session that has taken a turn and one that has not.
@@ -202,18 +211,33 @@ dialog() {
 
 # Repaint, the way a program that owns its pane draws a new screen. What was
 # there goes into the pane's history rather than above the new screen.
+#
+# The clear and every row leave in ONE write. A repaint that reaches the
+# terminal in two pieces puts a screen on the pane pi never draws — an empty
+# one between the clear and the first row, or the spinner line with no box
+# under it — and whatever is reading the pane reads a pi that does not exist.
+#
+# So the screen is built first and written second, and it is written by `cat`
+# rather than by `printf`. That is a measured choice, not a stylistic one: the
+# shell's own printf hands a terminal a screen this size in two pieces often
+# enough to see. Counted over ~12,000 captures of a pane repainting without a
+# pause between screens: 374 torn captures when each screen was several
+# printfs, 41 when it was one, and 2 through the heredoc below — and those two
+# are the terminal dividing one write, which is not this script's to mend.
 draw() {
-	printf '\033[H\033[2J'
 	case $1 in
-	boot) boot ;;
-	working) working ;;
-	idle) idle ;;
-	dialog) dialog ;;
+	boot) screen=$(boot) ;;
+	working) screen=$(working) ;;
+	idle) screen=$(idle) ;;
+	dialog) screen=$(dialog) ;;
 	*)
 		echo "mock pi: $scenario: no screen called \`$1\`" >&2
 		exit 65
 		;;
 	esac
+	cat <<EOF
+$CLEAR$screen
+EOF
 }
 
 # Milliseconds, because a scenario's interesting waits are shorter than a

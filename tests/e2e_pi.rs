@@ -16,6 +16,13 @@
 //! exists. There is no payload to assert on and no `meta.transcript` to read:
 //! what the vendor was asked for is on its pane and nowhere else, so that is
 //! where these read it.
+//!
+//! Which is why the stand-in paints a screen in one write, and why no test
+//! below waits for two halves of one to arrive. Half a repaint is a pane pi
+//! never drew, and a test that polled until the other half landed would be
+//! agreeing with the screen it wanted instead of asserting the screen there
+//! is: every wait here settles on one anchor, and the rest of the screen is
+//! read off that same capture.
 
 mod common;
 
@@ -342,17 +349,16 @@ fn the_stand_in_spins_pis_line_two_rows_above_pis_own_box() {
     start(&amx, id, "works-without-end");
     let pane = amx.pane_of(id);
 
-    // Both halves of the screen have to be on the pane before either is read:
-    // `working()` writes the spinner line and the box in separate printfs, so
-    // a capture landing between them would otherwise find one without the
-    // other.
-    let rows = amx.until(
-        "the turn to be under way, spinner and box both drawn",
-        || {
-            let rows = drawn(&amx, &pane);
-            (row_of(&rows, "Working...").is_some() && !borders(&rows).is_empty()).then_some(rows)
-        },
-    );
+    // One anchor is waited for and the rest of the screen is read off the same
+    // capture. The stand-in paints a screen in one write, so a capture with
+    // the spinner on it is a capture with the whole screen on it, and the box
+    // below is an assertion rather than a second thing to wait for. Waiting
+    // for both would be waiting for a pane that was never drawn to turn into
+    // one that was, which is the reading this whole file exists to rule out.
+    let rows = amx.until("the turn to be under way", || {
+        let rows = drawn(&amx, &pane);
+        row_of(&rows, "Working...").is_some().then_some(rows)
+    });
     let spinner = row_of(&rows, "Working...").expect("the line pi spins");
     let top = *borders(&rows)
         .first()
@@ -374,11 +380,19 @@ fn the_stand_in_draws_the_box_and_the_footer_pi_keeps_under_every_screen() {
     start(&amx, id, "takes-a-turn");
     let pane = amx.pane_of(id);
 
-    let rows = amx.until("pi's box, with no turn running over it", || {
+    // The row a finished turn leaves and no other screen carries, waited for
+    // on its own: which screen is up is what a wait is for, and how much of it
+    // has been painted is not a question this fixture leaves open.
+    let rows = amx.until("the turn to be over", || {
         let rows = drawn(&amx, &pane);
-        (row_of(&rows, "Working...").is_none() && borders(&rows).len() == 2).then_some(rows)
+        row_of(&rows, "Took").is_some().then_some(rows)
     });
 
+    assert!(
+        row_of(&rows, "Working...").is_none(),
+        "the spinner went with the turn: {rows:?}"
+    );
+    assert_eq!(borders(&rows).len(), 2, "the box is drawn whole: {rows:?}");
     let (top, bottom) = (borders(&rows)[0], borders(&rows)[1]);
     assert_eq!(bottom - top, 2, "a row for what is staged in it: {rows:?}");
     assert_eq!(
@@ -408,9 +422,10 @@ fn the_stand_in_draws_the_dialog_inside_pis_own_box() {
 
     let rows = amx.until("the dialog to be drawn", || {
         let rows = drawn(&amx, &pane);
-        (row_of(&rows, "navigate").is_some() && borders(&rows).len() == 2).then_some(rows)
+        row_of(&rows, "navigate").is_some().then_some(rows)
     });
 
+    assert_eq!(borders(&rows).len(), 2, "the box is drawn whole: {rows:?}");
     let (top, bottom) = (borders(&rows)[0], borders(&rows)[1]);
     let hint = row_of(&rows, "navigate").expect("the hint row");
     assert!(
