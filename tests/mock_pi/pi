@@ -46,8 +46,9 @@
 #                   waiting for the key a provider wants; `selector` and
 #                   `scrolled`, one of pi's own selectors in the slot the
 #                   composer had, with nothing above it and with a transcript
-#                   above it; and `idle`, the prompt a finished turn leaves
-#                   behind.
+#                   above it; `idle`, the prompt a finished turn leaves behind;
+#                   and `wordless`, the prompt left by a turn the model
+#                   answered with no prose at all.
 #   sleep <ms>      wait. A long trailing sleep is how a scenario keeps its
 #                   agent alive for the test driving it.
 #
@@ -248,6 +249,27 @@ idle() {
 	box "$TURNED"
 }
 
+# The prompt a turn the model answered with no prose at all leaves behind. pi
+# draws an answer with no glyph, no label and no colour of its own, and draws
+# the model's thinking in the same column, so a turn that wrote no answer
+# leaves a pane carrying the tail of the turn before it, this turn's tool call,
+# and the thinking under it — and not one row of it is what the turn was asked
+# for. Same screen as `idle` to every rule in the document, and a different one
+# to anything reading the rows.
+#
+# The turn `docs/pi-screens.md` drove at 100 columns, with its sentences cut to
+# fit eighty the way the stats line above is. The words on those rows are the
+# model's; the shapes they are drawn in are the vendor's, and those are what
+# this screen is here for.
+wordless() {
+	printf ' Took 15.2s\n\n\n'
+	printf ' Now run: sleep 25; echo finished  with the bash tool. Say nothing else.\n\n\n'
+	printf ' $ sleep 25; echo finished (timeout 35s)\n\n finished\n\n Took 25.0s\n\n'
+	printf ' Following the instruction to say nothing after the tool completes.\n\n'
+	printf ' Analyzing the post-tool turn to confirm nothing more is wanted.\n\n'
+	box "$TURNED"
+}
+
 # pi blocked on a dialog raised while gating a tool call: the turn is still
 # running, so the line pi spins is up above the box exactly as it is on
 # `working`, and inside the box the editor is replaced by the question and its
@@ -381,6 +403,7 @@ draw() {
 	retrying) screen=$(retrying) ;;
 	renamed) screen=$(renamed) ;;
 	idle) screen=$(idle) ;;
+	wordless) screen=$(wordless) ;;
 	dialog) screen=$(dialog) ;;
 	input) screen=$(input) ;;
 	editor) screen=$(editor) ;;

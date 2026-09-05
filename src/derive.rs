@@ -31,7 +31,10 @@
 //! out of — see [`answers_on_the_pane`]. There the screen a rule read as a
 //! finished turn is the whole of the account there will ever be, and a pane is
 //! a picture the next repaint takes away, so what was on it is written down
-//! rather than left for the next reader to find gone.
+//! rather than left for the next reader to find gone. By the reading that
+//! watched the turn end, and by no other: a pane says which screen is up and
+//! never which turn drew it, so a look arriving at a prompt some later turn
+//! left would put a picture of that turn where this one's answer was.
 //!
 //! The third is which screen was up and when it went up. A quiescent rule may
 //! not end a turn that is on the record as running until the screen has held
@@ -47,7 +50,8 @@
 //! record lasted, and left the turn it was on with edges nothing could find.
 //! The phase goes down, and where the reading crossed the beginning or the end
 //! of a turn that goes in the log too — under amx's own name for it, never the
-//! vendor's. See [`write_the_phase`].
+//! vendor's. The end of a turn is also where the second of these is written,
+//! which is why the two go down together. See [`write_the_reading`].
 //!
 //! A screen with a turn running on it carries one more thing worth handing on
 //! and nothing worth recording: the vendor's own spinner line, which says what
@@ -100,7 +104,7 @@ pub const FRESH: u64 = 8;
 /// speak would be waiting on amx agreeing with amx.
 ///
 /// The record's freshness is the other half of the same promise, and
-/// [`write_the_phase`] is where it is kept.
+/// [`write_the_reading`] is where it is kept.
 pub const READ_PROMPT: &str = "read.prompt";
 
 /// And for a turn a reader watched end — see [`READ_PROMPT`].
@@ -526,6 +530,19 @@ fn reads_its_own_record(meta: &Meta) -> bool {
         .is_some_and(|vendor| !vendor.can(Capability::Hooks))
 }
 
+/// What this reading has to write down beside the turn it watched end, if
+/// anything: the screen it read, on a vendor whose pane is the only place its
+/// answer will ever be — see [`answers_on_the_pane`].
+///
+/// Nothing where the vendor reported its own words, and nothing where the
+/// screen was not a finished turn. Whether the turn ended is asked further in,
+/// under the lock that moves the phase — see [`write_the_reading`].
+fn worth_writing_down<'a>(meta: &Meta, reading: &'a Reading) -> Option<&'a str> {
+    answers_on_the_pane(meta)
+        .then_some(reading.said.as_deref())
+        .flatten()
+}
+
 /// The spinner line without the glyph the vendor pulses in front of it.
 ///
 /// The glyph cycles through six shapes — `✻ ✽ ✢ ✶ · *` — and a vendor bump may
@@ -912,7 +929,8 @@ fn note(agent: &Agent, screens: &Ruleset, state: &mut State, asking: &Question) 
     }
 }
 
-/// Write down what a finished turn left on the pane.
+/// Put the screen a finished turn left on the pane where every surface reads
+/// an answer.
 ///
 /// The other thing a reader records rather than concludes and forgets, and for
 /// the same reason the question is: on this vendor nothing else is ever going
@@ -920,45 +938,20 @@ fn note(agent: &Agent, screens: &Ruleset, state: &mut State, asking: &Question) 
 /// a reading nobody kept is an answer gone — which is what `amx result` and
 /// every blank summary column on a wall of pi agents were reading.
 ///
-/// Written with the observing hand, like the summary command's line: amx heard
-/// nothing from the agent by looking at a picture of it, and moving the
-/// record's freshness would have the next reader believe this document over the
-/// pane it is meant to be checking.
-///
-/// Against what is on the record rather than against the clock. A look that
-/// reads the screen the last look read has nothing to say, which is every look
-/// after the first for as long as the agent stands at its prompt, and a screen
-/// that has changed is a later turn than the one the record answered for.
-fn write_the_answer(agent: &Agent, state: &mut State, said: &str) {
-    if state.result.as_deref() == Some(said) {
-        return;
-    }
-
-    let heard = state.last_event;
-    let noted = agent.writer().and_then(|writer| {
-        writer.observe(|current| {
-            // Anything that reached the record while the pane was being read is
-            // about a moment this picture is already behind.
-            if current.last_event == heard {
-                current.result = Some(said.to_string());
-                current.source = Some(Source::Screen);
-            }
-        })
-    });
-
-    match noted {
-        Ok(current) => *state = current,
-        // A record that cannot be written is still an answer this reading can
-        // hand back, and the next look will try again.
-        Err(_) => {
-            state.result = Some(said.to_string());
-            state.source = Some(Source::Screen);
-        }
-    }
+/// Reached from [`write_the_reading`] and from nowhere else, because the turn
+/// this screen belongs to is the one that write has just watched end.
+fn keep_the_answer(state: &mut State, said: &str) {
+    state.result = Some(said.to_string());
+    state.source = Some(Source::Screen);
 }
 
 /// Write down what a reading concluded, on the vendor where nothing else ever
 /// will — see [`reads_its_own_record`].
+///
+/// Three things go down together, and the lock they go down under is what
+/// keeps them one account: the phase, the edge of a turn the phase crossed,
+/// and — where that edge is a turn's end, and the pane is the only place this
+/// agent's answer will ever be — the screen the turn ended on.
 ///
 /// Only a settled reading gets here: a rule claimed the screen and was allowed
 /// to speak, which is what [`Evidence::Screen`] says. A rule that claims a
@@ -986,7 +979,19 @@ fn write_the_answer(agent: &Agent, state: &mut State, said: &str) {
 /// the two cannot disagree and the edge is recorded once however many readers
 /// arrive at it together. Whoever gets the lock second finds the phase already
 /// moved and writes nothing at all.
-fn write_the_phase(agent: &Agent, state: &mut State, verdict: &Verdict) {
+///
+/// **The answer goes down on that edge and nowhere else.** A pane carries no
+/// mark of which turn drew which row, so the one thing that ever ties a screen
+/// to a turn is a reader having watched the turn end on it. A look that wrote
+/// down whichever finished screen it found would be writing down the turn it
+/// happened to arrive after: `docs/pi-screens.md` drove that at 100 columns on
+/// a turn the model answered with no prose at all, where the pane left over was
+/// the tail of the turn before it, this turn's tool call and the thinking under
+/// it — and where every one of those rows went on the record in place of the
+/// answer of the turn that did say something. A finished screen no reader
+/// watched a turn end on says only that the answer already on the record is the
+/// last one amx can vouch for.
+fn write_the_reading(agent: &Agent, state: &mut State, verdict: &Verdict, said: Option<&str>) {
     if state.state == verdict.phase {
         return;
     }
@@ -1003,6 +1008,11 @@ fn write_the_phase(agent: &Agent, state: &mut State, verdict: &Verdict) {
             }
             crossed = boundary(current.state, verdict.phase);
             current.state = verdict.phase;
+            if crossed == Some(READ_TURN_END)
+                && let Some(said) = said
+            {
+                keep_the_answer(current, said);
+            }
         })?;
         if let Some(kind) = crossed {
             // The rule that claimed the screen goes with it: this is amx's
@@ -1016,12 +1026,20 @@ fn write_the_phase(agent: &Agent, state: &mut State, verdict: &Verdict) {
         Ok(current)
     });
 
-    // A record that cannot be written leaves the reading exactly as it was.
-    // Unlike the question and the answer there is nothing here to fall back to:
-    // the phase this reader concluded is on the verdict already, which is what
-    // every surface prints.
-    if let Ok(current) = noted {
-        *state = current;
+    match noted {
+        Ok(current) => *state = current,
+        // A record that cannot be written leaves the phase exactly as it was:
+        // the phase this reader concluded is on the verdict already, which is
+        // what every surface prints. The answer has no such second home, so it
+        // is kept on the reading — and the record is where this look found it,
+        // so the next look arrives at the same edge and writes it again.
+        Err(_) => {
+            if boundary(state.state, verdict.phase) == Some(READ_TURN_END)
+                && let Some(said) = said
+            {
+                keep_the_answer(state, said);
+            }
+        }
     }
 }
 
@@ -1417,13 +1435,9 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
     if let Some(asking) = &reading.asking {
         note(&agent, rules, &mut state, asking);
     }
-    if answers_on_the_pane(&meta)
-        && let Some(said) = &reading.said
-    {
-        write_the_answer(&agent, &mut state, said);
-    }
     if reads_its_own_record(&meta) && reading.verdict.evidence == Evidence::Screen {
-        write_the_phase(&agent, &mut state, &reading.verdict);
+        let said = worth_writing_down(&meta, &reading);
+        write_the_reading(&agent, &mut state, &reading.verdict, said);
     }
     if let Some(command) = crate::config::current().summary_command.as_deref()
         && wants_a_line(&state)
@@ -1533,13 +1547,9 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
         if let Some(asking) = &reading.asking {
             note(&agent, rules, &mut state, asking);
         }
-        if answers_on_the_pane(&meta)
-            && let Some(said) = &reading.said
-        {
-            write_the_answer(&agent, &mut state, said);
-        }
         if reads_its_own_record(&meta) && reading.verdict.evidence == Evidence::Screen {
-            write_the_phase(&agent, &mut state, &reading.verdict);
+            let said = worth_writing_down(&meta, &reading);
+            write_the_reading(&agent, &mut state, &reading.verdict, said);
         }
         if let Some(command) = crate::config::current().summary_command.as_deref()
             && wants_a_line(&state)

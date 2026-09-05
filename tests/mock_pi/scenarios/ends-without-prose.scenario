@@ -1,0 +1,12 @@
+# A turn that ends without a word of prose in it. The model ran its tool, said
+# nothing after it, and what pi leaves on the pane is the tail of the turn
+# before it, this turn's tool call and the thinking under it — a screen no rule
+# can tell from the one next door, and the only screen here whose rows are not
+# an answer to anything. The agent is still there afterwards, the way pi is:
+# whoever is driving this scenario decides when it ends.
+screen boot
+sleep 50
+screen working
+sleep 50
+screen wordless
+sleep 600000

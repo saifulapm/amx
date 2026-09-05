@@ -233,6 +233,13 @@ const READ_TURN_END: &str = "read.turn-end";
 /// have every verb that waits on the vendor believing the vendor had spoken.
 const VENDORS_WORDS: [&str; 2] = ["UserPromptSubmit", "Stop"];
 
+/// What a turn before the one under test answered, as the reading that watched
+/// that turn end wrote it down.
+///
+/// A row off a pane rather than a sentence a vendor sent, because a row off a
+/// pane is the only kind of answer a pi record ever carries.
+const ANSWERED: &str = " I moved the timeout into the config, and the tests pass.";
+
 /// The clock every stamp on a record is kept in.
 fn epoch() -> u64 {
     std::time::SystemTime::now()
@@ -1921,6 +1928,124 @@ fn a_turn_that_ends_on_a_pi_leaves_what_the_pane_said_on_the_record() {
     assert!(
         !row.contains(work[0].trim()),
         "and not the first row of the transcript over it: {row}"
+    );
+}
+
+#[test]
+fn a_turn_that_answered_nothing_leaves_the_record_the_answer_it_had() {
+    // `docs/pi-screens.md` drove this at 100 columns: a turn the model answered
+    // with no prose at all leaves a pane carrying the tail of the turn before
+    // it, this turn's tool call and the thinking under it, and not one row of
+    // that is an answer to anything. Every reading of a finished screen wrote
+    // the screen down, so this picture landed in place of the answer of the
+    // turn that did say something and `amx result` handed a caller two other
+    // turns. A screen goes on the record where a reading watched the turn end
+    // on it, and nowhere else.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "ends-without-prose");
+    let pane = amx.pane_of(id);
+
+    // The tool call this turn ran, which is the row no earlier screen in the
+    // scenario carries, with the rest of the screen read off that same capture.
+    let rows = amx.until("the wordless turn to be over", || {
+        let rows = drawn(&amx, &pane);
+        row_of(&rows, "sleep 25").is_some().then_some(rows)
+    });
+    assert!(
+        row_of(&rows, ANSWERED.trim()).is_none(),
+        "and not a word of the turn before it is still on the pane: {rows:?}"
+    );
+
+    // Everything above pi's own box, which is what a reading writes down where
+    // it has a turn of its own to write it against.
+    let top = *borders(&rows)
+        .first()
+        .unwrap_or_else(|| panic!("pi's composer box: {rows:?}"));
+    let mut work: Vec<String> = rows[..top].to_vec();
+    while work.last().is_some_and(String::is_empty) {
+        work.pop();
+    }
+
+    // The record the turn before this one left: idle, with what that turn
+    // answered and `screen` beside it saying where it came from. Nothing has
+    // been heard since, because on this vendor nothing ever is.
+    amx.set_state(
+        id,
+        json!({
+            "state": "idle",
+            "since": 1,
+            "last_event": 1,
+            "result": ANSWERED,
+            "source": "screen",
+        }),
+    );
+
+    // One look to write the screen down, and the stillness aged on the record
+    // so that the next one settles: a reading that claims the screen and reads
+    // it as a finished turn is exactly the reading that used to overwrite.
+    status(&amx, id);
+    let mut aged = amx.state(id);
+    let since = aged["still"]["since"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("when that look first saw the screen: {aged}"));
+    aged["still"]["since"] = json!(since - SETTLED);
+    amx.set_state(id, aged);
+
+    // Read by a wall this time, which is the other of the two ways a screen
+    // reaches the record: one look at every agent on the machine, in a process
+    // that prints its table and exits.
+    let row = listed(&amx, id);
+    assert_eq!(row["state"], "idle", "{row}");
+    assert_eq!(row["evidence"], "screen", "{row}");
+    assert_eq!(
+        row["rule"], "prompt",
+        "pi's own rule, out of pi's own document: {row}"
+    );
+    assert_eq!(
+        amx.state(id)["result"],
+        ANSWERED,
+        "the answer of the turn that did say something, left where it was"
+    );
+    assert_eq!(
+        row["result"], ANSWERED,
+        "and handed back as the record has it: {row}"
+    );
+    let kinds = amx.event_kinds(id);
+    assert!(
+        kinds.is_empty(),
+        "a turn nothing watched end is an edge nothing crossed: {kinds:?}"
+    );
+
+    // A reading that does watch this turn end writes its screen down, poor as
+    // that screen is. A turn with nothing to show for itself is still this
+    // turn, and the reader standing at the end of it is the only thing that
+    // will ever say what it left.
+    let mut running = amx.state(id);
+    running["state"] = json!("working");
+    amx.set_state(id, running);
+
+    let agent = status(&amx, id);
+    assert_eq!(agent["state"], "idle", "{agent}");
+    let said = agent["result"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the screen the turn ended on: {agent}"));
+    assert_eq!(
+        rows_of(said),
+        work,
+        "the rows the turn left, and none of the box, working directory or \
+         stats line pi drew under them"
+    );
+    assert_eq!(
+        amx.state(id)["source"],
+        "screen",
+        "amx's reading of a picture, and the record says which"
+    );
+    let kinds = amx.event_kinds(id);
+    assert_eq!(
+        kinds.iter().filter(|kind| *kind == READ_TURN_END).count(),
+        1,
+        "written on the one edge that ties a screen to a turn: {kinds:?}"
     );
 }
 
