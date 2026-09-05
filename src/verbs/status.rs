@@ -48,11 +48,7 @@ fn report(view: &View, out: &mut impl Write) -> Result<()> {
         }
     }
     if view.phase() == Phase::Waiting {
-        writeln!(
-            out,
-            "  answer    {}",
-            send::how_to_answer(view.id(), view.kind())
-        )?;
+        writeln!(out, "  answer    {}", send::how_to_answer(view))?;
     }
     if let Some(summary) = &view.state.summary {
         say(out, "doing", summary)?;

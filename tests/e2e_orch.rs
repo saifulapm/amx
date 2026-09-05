@@ -30,6 +30,28 @@ fn result(amx: &Harness, id: &str) -> Output {
     amx.amx(&["result", id, "--timeout", "20"])
 }
 
+/// The command a surface offers for the question an agent is waiting on, off
+/// the line that says what answers it.
+fn offered(said: &str) -> String {
+    said.lines()
+        .find_map(|line| line.trim().strip_prefix("answer "))
+        .expect("the line that says what answers it")
+        .trim()
+        .to_string()
+}
+
+/// The keys an offer names, as a person reads them off it.
+fn keys_offered(offer: &str) -> Vec<String> {
+    offer
+        .split_once('<')
+        .expect("an offer says what it will take")
+        .1
+        .trim_end_matches('>')
+        .split('|')
+        .map(str::to_string)
+        .collect()
+}
+
 #[test]
 fn result_waits_for_the_turn_to_end_and_prints_the_answer() {
     let amx = Harness::new();
@@ -376,6 +398,30 @@ fn surfaces_status_prints_the_question_with_the_choices_under_it() {
 }
 
 #[test]
+fn surfaces_the_offer_runs_to_the_choices_that_were_read_off_the_screen() {
+    // A box amx read two choices off is not answered by `7`, so a row offering
+    // `1-9` at one is naming seven keys that do nothing to it.
+    let amx = Harness::new();
+    parked_on_the_box(&amx, "ask-a1b");
+
+    let out = amx.amx(&["status", "ask-a1b"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let offer = offered(&stdout(&out));
+    assert!(offer.contains("1-2"), "{offer:?}");
+    assert!(!offer.contains("1-9"), "{offer:?}");
+
+    // And the same on a question of the vendor's own, where the digits run to
+    // the choices it named and the words are the rest of the offer.
+    parked_on_a_menu(&amx, "pick-a1b");
+    let out = amx.amx(&["send", "pick-a1b", "carry on"]);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    let offer = stderr(&out);
+    assert!(offer.contains("<1-2|"), "{offer}");
+    assert!(offer.contains("words"), "{offer}");
+    assert!(!offer.contains("1-9"), "{offer}");
+}
+
+#[test]
 fn surfaces_status_neutralises_the_task_it_quotes() {
     // The task is free text typed by whoever spawned the agent, and status
     // hands it to a terminal: an escape or a bidi override in it must arrive
@@ -483,6 +529,33 @@ fn surfaces_the_key_that_takes_the_highlighted_row_is_refused_where_none_is_numb
     let out = amx.amx(&["answer", "trusts-b2c", "down"]);
     assert_eq!(code(&out), 64, "{}", stderr(&out));
     assert!(stderr(&out).contains("down enter"), "{}", stderr(&out));
+}
+
+#[test]
+fn surfaces_a_row_waiting_on_a_screen_that_numbers_nothing_is_offered_the_walk() {
+    // The same gate, from the other side: what a person is told to type at it.
+    // `1`, `2` and `y` do nothing there and `enter` ends the agent, so an offer
+    // of `y|n|1-9|enter|esc` names eight keys, seven of which do nothing and
+    // one of which is the exit.
+    let amx = Harness::new();
+    parked_on_the_gate(&amx, "trusts-b2c");
+
+    let out = amx.amx(&["status", "trusts-b2c"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let offer = offered(&stdout(&out));
+    assert!(offer.starts_with("amx answer trusts-b2c"), "{offer:?}");
+    assert!(!offer.contains("1-9"), "no digit reaches a row: {offer:?}");
+    assert!(offer.contains("down enter"), "{offer:?}");
+
+    // And every key it does offer is one `amx answer` takes. An offer amx then
+    // refuses is worse than none: it is the sentence a person reads before
+    // they type.
+    for (at, key) in keys_offered(&offer).iter().enumerate() {
+        let id = format!("gate-{at}-a1b");
+        parked_on_the_gate(&amx, &id);
+        let out = amx.amx(&["answer", &id, key]);
+        assert_eq!(code(&out), 0, "{key:?} was offered: {}", stderr(&out));
+    }
 }
 
 #[test]

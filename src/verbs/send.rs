@@ -33,7 +33,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::derive::{self, View};
-use crate::store::{Agent, Event, Kind, Phase};
+use crate::store::{Agent, Ask, Event, Kind, Phase, State};
 use crate::tmux::{PaneId, Server};
 use crate::{complain, exit, paths, store, warn};
 
@@ -186,7 +186,7 @@ pub fn waiting_on_a_question(view: &View, to_terminal: bool, out: &mut impl Writ
     }
     warn!(
         "amx: {id} is waiting on a question. answer it with `{}`",
-        how_to_answer(id, view.kind())
+        how_to_answer(view)
     );
     Ok(exit::BLOCKED)
 }
@@ -204,14 +204,75 @@ pub fn numbered(options: &[String]) -> impl Iterator<Item = String> + '_ {
 
 /// The command that answers this question, with the grammar it will take.
 ///
-/// Which kind it is decides that grammar, so the offer is not the same
-/// sentence twice: a permission box and the trust screen want one key, and a
-/// question the vendor asked itself takes a choice or words of your own.
-pub fn how_to_answer(id: &str, kind: Option<Kind>) -> String {
-    match kind {
-        Some(Kind::Question) => format!("amx answer {id} <1-9|\"words of your own\">"),
-        _ => format!("amx answer {id} <y|n|1-9|enter|esc>"),
+/// What the screen was read as decides that grammar, not the kind of thing it
+/// is: two screens of one kind take different keys when one of them numbers
+/// its choices and the other does not. Every key named here is one `amx
+/// answer` takes, and an offer amx then refuses is worse than no offer at all
+/// — it is the sentence a person reads before they type.
+pub fn how_to_answer(view: &View) -> String {
+    format!(
+        "amx answer {} {}",
+        view.id(),
+        takes(view.kind(), &view.state)
+    )
+}
+
+/// The keys the screen showing will take, named the way a usage line names its
+/// argument.
+///
+/// Three readings decide it. A list the vendor puts no numbers on takes only
+/// the walk. A question the vendor asked itself takes its choices and, unless
+/// it draws a preview beside them, words of your own. Everything else — a
+/// permission box, a numbered trust screen, a question amx knows nothing about
+/// — reads one key.
+fn takes(kind: Option<Kind>, state: &State) -> String {
+    if unnumbered(kind, state) {
+        return "<down enter|up enter|esc>".to_string();
     }
+    let digits = digits(&state.options);
+    match kind {
+        Some(Kind::Question) if previewed(state) => format!("<{digits}|enter|esc>"),
+        Some(Kind::Question) => format!("<{digits}|\"words of your own\">"),
+        _ => format!("<y|n|{digits}|enter|esc>"),
+    }
+}
+
+/// Whether the screen showing is a list the vendor puts no numbers on.
+///
+/// Measured against claude 2.1.259 on 2026-09-05 and written up in
+/// `docs/claude-screens.md`: its folder-trust gate draws `❯ No, exit` over
+/// `Yes, I trust this folder` with a number on neither, so `1`, `2` and `y` do
+/// nothing there and the key that takes what is highlighted is the key that
+/// ends the agent. The choices a reader hands back are the numbered ones, so
+/// none on the record is how that screen says so.
+///
+/// `answer` reads the same thing off the same record to refuse that key. The
+/// two are one sentence said twice on purpose: what is offered here has to be
+/// what is taken there.
+fn unnumbered(kind: Option<Kind>, state: &State) -> bool {
+    kind == Some(Kind::Trust) && state.options.is_empty()
+}
+
+/// The run of digits that reaches a row of this screen.
+///
+/// As long as the choices amx read off it, so a box of two does not invite a
+/// `7`. Nine where amx counted none — a question a hook carried the words of
+/// and nothing else — because `1-9` is what a box of two and a box of five
+/// have in common. Nine is also the end of it: past that the grammar has no
+/// key to send.
+fn digits(options: &[String]) -> String {
+    match options.len().min(9) {
+        0 => "1-9".to_string(),
+        1 => "1".to_string(),
+        last => format!("1-{last}"),
+    }
+}
+
+/// Whether the vendor draws this question with a preview beside its choices,
+/// which is the shape that has no row for words of your own — so offering them
+/// is offering something `answer` will refuse.
+fn previewed(state: &State) -> bool {
+    state.pending().is_some_and(Ask::takes_notes)
 }
 
 /// Exit `FAILURE`: this agent is not going to answer anybody.
@@ -258,7 +319,7 @@ pub fn rendered(text: &str, to_terminal: bool) -> String {
 mod tests {
     use super::*;
     use crate::derive::{Evidence, Verdict};
-    use crate::store::{Meta, State};
+    use crate::store::{Choice, Meta};
     use crate::tmux::Socket;
     use serde_json::json;
 
@@ -399,14 +460,77 @@ mod tests {
         // A permission box and the trust screen take one key. Offering words
         // at either would be an offer amx cannot keep.
         for kind in [None, Some(Kind::Permission), Some(Kind::Trust)] {
-            let offered = how_to_answer("fix-login-a1b", kind);
-            assert!(offered.contains("y|n|1-9"), "{offered}");
+            let offered = how_to_answer(&asking(Some("Proceed?"), &["Yes", "No"], kind));
+            assert!(offered.contains("y|n|1-2"), "{offered}");
             assert!(!offered.contains("words"), "{offered}");
         }
 
-        let menu = how_to_answer("fix-login-a1b", Some(Kind::Question));
+        let menu = how_to_answer(&asking(
+            Some("Which fixture?"),
+            &["the sqlite one", "the docker one"],
+            Some(Kind::Question),
+        ));
         assert!(menu.contains("words of your own"), "{menu}");
         assert!(menu.starts_with("amx answer fix-login-a1b"), "{menu}");
+    }
+
+    #[test]
+    fn surfaces_the_offer_names_the_keys_that_move_the_screen_it_was_read_off() {
+        // The run of digits is as long as the choices amx read: a box of two
+        // is not answered by `7`, and offering it invites seven keys that do
+        // nothing to that screen.
+        let box_of_two = how_to_answer(&asking(Some("Proceed?"), &["Yes", "No"], None));
+        assert!(box_of_two.contains("1-2"), "{box_of_two}");
+        assert!(!box_of_two.contains("1-9"), "{box_of_two}");
+
+        // Where amx counted no choices, `1-9` is what a box of two and a box
+        // of five have in common.
+        let unread = how_to_answer(&asking(Some("Proceed?"), &[], Some(Kind::Permission)));
+        assert!(unread.contains("1-9"), "{unread}");
+
+        // claude 2.1.259's folder-trust gate numbers neither of its rows, so no
+        // digit reaches one and the key that takes what is highlighted takes
+        // the exit. What is offered is the walk that names the row first.
+        let gate = how_to_answer(&asking(Some("Quick safety check"), &[], Some(Kind::Trust)));
+        assert_eq!(gate, "amx answer fix-login-a1b <down enter|up enter|esc>");
+
+        // And a trust screen of a vendor that still numbers its rows is read
+        // as what it is rather than as what claude's does.
+        let numbered = how_to_answer(&asking(
+            Some("Trust this folder?"),
+            &["Yes", "No"],
+            Some(Kind::Trust),
+        ));
+        assert!(numbered.contains("y|n|1-2|enter|esc"), "{numbered}");
+    }
+
+    #[test]
+    fn surfaces_a_question_drawn_beside_a_preview_is_offered_no_words() {
+        // That shape has no row for words of your own — measured against
+        // 2.1.240 and refused by `answer` — so naming them here would be amx
+        // offering what it will not take.
+        let mut view = asking(Some("Which layout?"), &[], Some(Kind::Question));
+        view.state.asks_all(vec![Ask {
+            header: None,
+            text: "Which layout?".to_string(),
+            options: vec![
+                Choice {
+                    label: "Stacked".to_string(),
+                    description: None,
+                    preview: Some("| TITLE |".to_string()),
+                },
+                Choice {
+                    label: "Inline".to_string(),
+                    description: None,
+                    preview: Some("| TITLE - subtitle |".to_string()),
+                },
+            ],
+            multi: false,
+            answer: None,
+        }]);
+
+        let offered = how_to_answer(&view);
+        assert_eq!(offered, "amx answer fix-login-a1b <1-2|enter|esc>");
     }
 
     #[test]
