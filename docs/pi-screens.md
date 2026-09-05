@@ -9,6 +9,11 @@ which screens the eight rules cover and which they walk past, so the next pass
 at that document starts from a list rather than from whatever screen somebody
 happened to hit.
 
+One section is about something other than a screen, and it is near the end. A pi
+turn's answer is read off the pane now, which puts the rows *above* the box on
+the record as well as on the screen, and no rule has anything to say about
+those. *Where pi's tools stop and pi starts* is the measurement of them.
+
 The short version: nineteen of pi's components draw something that waits for a
 keystroke. Six are claimed by a rule of their own and read `waiting`. One is
 the composer, which is the screen `prompt` was written for. The remaining
@@ -249,7 +254,9 @@ about what the agent is doing:
   `tool-execution.js`, `diff.js`, `mermaid.js`, `skill-invocation-message.js`,
   `branch-summary-message.js`, `compaction-summary-message.js`,
   `custom-message.js`, `custom-entry.js`. Rows in the document container, above
-  everything a rule reads.
+  everything a rule reads. Not a screen is not the same as not read: these are
+  the rows amx writes down as a pi turn's answer, and they have a section of
+  their own below.
 - **Helpers with no rows of their own** — `dynamic-border.js` (the rule every
   box is drawn with), `keybinding-hints.js` (the words in every hint row above),
   `markdown-transform.js`, `visual-truncate.js`, `index.js`,
@@ -268,6 +275,316 @@ about what the agent is doing:
 Nineteen widgets, four status lines and twenty of these: that is every file in
 the directory, and the point of counting them is that the next person does not
 have to.
+
+## Where pi's tools stop and pi starts
+
+Everything above this line is about the bottom of a pane. This section is about
+the rest of it, and the reason it needs one is that the rest of it is now on the
+record. pi reports through no hooks and keeps no conversation amx can read back,
+so a reading that ends a pi turn writes the screen to `state.result` with
+`screen` beside it as the source, and what lands on the record there is
+**what the agent last said** — the pane with the vendor's own furniture cut off
+the bottom by `src/furniture.rs`, the same walk a card and `amx logs` print
+through. Everything left over is the transcript. So: every row shape a turn
+leaves above the box, what draws each one, and which of those rows is the answer
+a caller asked for.
+
+### How this was read
+
+One pi, one tmux pane 30 rows tall, `resize-window` between captures so that the
+same live screen is what each width reads: 220, 100 and 40 columns. The run was
+`pi --offline --approve --no-session --no-context-files --no-extensions
+--no-skills --no-themes`, in a scratch git repository holding one four-line
+`notes.md` and nothing else, on opencode's muse-spark-1.3-contributor-free. The
+prompt asked for `wc -l notes.md` through the bash tool, then a read of the same
+file, then one sentence about it and no other tools, which is the shortest turn
+that puts all four shapes on one pane. Driven 2026-09-05.
+
+pi repaints its whole transcript on a resize, which is why the 220-column
+reading has scrolled one row further than the two narrower ones: it is the pane
+as the turn left it, and they are the pane redrawn from pi's own buffer. The
+rows themselves are the same rows.
+
+Captures are taken the way `src/tmux.rs` takes one: `capture-pane -p -J`,
+control and format characters replaced with a space, trailing whitespace off the
+end of the whole capture. The rows below are those captures with trailing spaces
+stripped and nothing else done to them. Where colour is the point, a second
+capture was taken with `-e` on the same pane and the two were lined up row by
+row — `-e` is exactly what amx does not pass, and a good deal of this section is
+about what that costs.
+
+The renderers were read off the tree beside the binary, and one correction
+belongs before the captures rather than after them: three of the four shapes are
+not drawn in `components/` at all. `components/tool-execution.js` is the
+component a tool call is mounted in and it draws none of the words — it asks the
+tool's own definition for a `renderCall` and a `renderResult`, and for pi's
+built-in tools those live in `core/tools/`. Only the agent's prose is drawn
+where this document has been looking, by `components/assistant-message.js`.
+Nothing here is an anchor on the strength of being in either tree; the rows are
+the measurement, and the renderers say which row is whose.
+
+### The four shapes
+
+The whole 100-column capture, thirty rows:
+
+     pi v0.84.4
+     escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+     Press ctrl+o to show full startup help and loaded resources.
+
+     Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+
+     Run: wc -l notes.md using the bash tool. Then read notes.md. Then say in one short sentence what
+     the file describes. Use no other tools.
+
+
+
+     $ wc -l notes.md
+
+     4 notes.md
+
+     Took 0.0s
+
+
+
+     read notes.md
+
+
+     The file describes recent changes to caching and timeout configuration.
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────────
+    ~/.claude/jobs/c9abca70/tmp/rig/work (main)
+    ↑2.1k ↓386 R3.9k CH93.1% 0.2%/1.0M (auto)          (opencode) muse-spark-1.3-contributor-free • high
+
+Rows 1 to 5 are pi's own startup banner. Rows 8 and 9 are the prompt somebody
+typed. Rows 13, 15 and 17 are the bash call, its output and the line it ends on;
+row 21 is the read; row 24 is the agent. Rows 26 to 30 are the furniture the
+rest of this document measures.
+
+The same screen at 40 columns, where the prompt and the answer both wrap:
+
+     look up its docs. Ask it how to use or
+     extend Pi.
+
+
+     Run: wc -l notes.md using the bash
+     tool. Then read notes.md. Then say in
+     one short sentence what the file
+     describes. Use no other tools.
+
+
+
+     $ wc -l notes.md
+
+     4 notes.md
+
+     Took 0.0s
+
+
+
+     read notes.md
+
+
+     The file describes recent changes to
+     caching and timeout configuration.
+
+    ────────────────────────────────────────
+
+    ────────────────────────────────────────
+    ~/.claude/jobs/c9abca70/tmp/rig/work ...
+    ↑2.1k ↓386 R3.9k CH93.1% 0.2%/1.0M (a...
+
+At 220 columns the four shapes are the same four strings and nothing wraps: the
+prompt is one row rather than two, the answer is one row rather than two, and
+the box's two borders and the two footer rows run the full 220 columns, which is
+why they are not reproduced here. The transcript rows are ` $ wc -l notes.md`,
+` 4 notes.md`, ` Took 0.0s`, ` read notes.md` and ` The file describes recent
+changes to caching and timeout configuration.` — byte for byte what the two
+narrower captures carry, leading space included.
+
+So the four shapes, at every width driven:
+
+| Shape | The row | What draws it |
+| --- | --- | --- |
+| the bash tool's own row | ` $ wc -l notes.md` | `core/tools/bash.js`, `formatShellCall` |
+| the line the call ends on | ` Took 0.0s` | `core/tools/bash.js`, `rebuildBashResultRenderComponent` |
+| a read's row | ` read notes.md` | `core/tools/read.js`, `formatReadCall` |
+| the agent's prose | ` The file describes recent changes to caching and timeout configuration.` | `components/assistant-message.js` |
+
+And what each of those renderers says about the row beside it.
+
+**The bash row** is `${prompt} ${command}`, and `prompt` is `"$"` — one
+character, from the tool's own config. A `timeout` argument adds a muted
+` (timeout Ns)` after the command, which the second turn of this session drew:
+` $ sleep 25; echo finished (timeout 35s)`. There is a second shell tool with
+the same code behind it and `PS>` for its prompt, `core/tools/powershell.js`,
+not driven here. Every other built-in opens its call row with its own name in
+lower case instead — `read`, `edit`, `write`, `grep`, `find`, `ls` — and so does
+an extension tool that ships no `renderCall` of its own, because
+`createCallFallback` in `tool-execution.js` draws the bare tool name.
+
+**`Took`** is the shell tools' line and not something every call ends with,
+which is worth saying plainly because the name suggests otherwise. It is one
+`addChild` at the end of `rebuildBashResultRenderComponent`, the duration is
+`(ms / 1000).toFixed(1)` and the label is the one word that changes while the
+call is in flight: `Elapsed` where `isPartial`, `Took` where it is not. Driven
+at 100 columns on a `sleep 25` — ` Elapsed 11.0s` mid-call, ` Took 25.0s` after.
+No other tool in `core/tools/` draws either word.
+
+**A read's row is the whole of a read.** `formatReadResult` returns an empty
+string unless the block has been expanded or the call errored, so a successful
+read leaves one row on the pane and none of the file it read. That is the
+capture above: ` read notes.md`, and no line of `notes.md` anywhere on the
+screen at any of the three widths. It is the one shape here that is shorter than
+a reader would guess, and the guess is the dangerous direction: an answer read
+off a pane is short of a read's output whether or not anybody knows it.
+
+**The agent's prose** is a `Markdown` with a padding of one column, a padding of
+zero rows, and a `Spacer(1)` in front of it. No glyph, no label, no border,
+nothing at the head of the row. That is the shape, and the next two sections are
+what it costs.
+
+### Nothing on the pane says which of them is which
+
+The four shapes share one leading space and carry nothing else at the head of a
+row that a rule could stand on. What tells them apart is colour, and colour is
+what `capture-pane -p -J` throws away. A second capture with `-e` on the same
+pane, at the same width, lined up against the first row for row:
+
+| Row | What it is | What the `-e` capture carries |
+| --- | --- | --- |
+| 7 to 10 | the box the typed prompt is drawn in | background `48;2;33;34;47`, opened on row 7 and still in force at row 10 |
+| 8, 9 | the prompt itself | `38;2;205;214;244` |
+| 12 to 18 | the bash block | background `48;2;39;47;49`, opened on row 12 |
+| 13 | ` $ wc -l notes.md` | bold, `38;2;137;180;250` |
+| 15 | ` 4 notes.md` | `38;2;205;214;244` |
+| 17 | ` Took 0.0s` | `38;2;143;149;173` |
+| 20 to 22 | the read block | the same background as the bash block |
+| 21 | ` read notes.md` | `read` bold and `38;2;137;180;250`, the path the same colour unbolded |
+| 24 | ` The file describes recent changes…` | `49`, and no foreground code at all |
+
+Three things in that table are worth having. The agent's own sentence is the one
+row shape on a pi pane with no colour of its own: it is drawn in the terminal's
+default foreground, which is the one colour a theme has nothing to say about.
+The row a tool's output lands on carries `38;2;205;214;244`, which is the same
+paint the person's typed prompt carries — so even the capture amx does not take
+would not tell those two apart. And a tool block's *extent* is a background and
+nothing else: rows 12 and 18 are blank on the plain capture and are the vendor's
+own padding, while rows 11 and 19 are blank and belong to nobody. Eleven of the
+twenty-four rows on the record here have anything on them at all, and which of
+the other thirteen are furniture is knowable only from the capture that was
+thrown away.
+
+The one column of indent is not a marker either, and it is a setting rather than
+a fact about the vendor. `getOutputPad` in `core/settings-manager.js` gives 0
+where `outputPad` is exactly 0 and 1 for everything else including a setting
+nobody has written, and it reads the merge of the global settings with a
+project-local `.pi/settings.json`. `tool-execution.js` does not consult it: the
+box a tool block is drawn in is `Box(1, 1, …)` with the 1 written in. Driven at
+100 columns with `{"outputPad": 0}` in the scratch repository's own
+`.pi/settings.json`, so nothing of anybody's was moved. It is a fresh pi given
+the same prompt rather than the screen above, so the sentence it ends on is the
+model's own and not the setting's:
+
+    Run: wc -l notes.md using the bash tool. Then read notes.md. Then say in one short sentence what the
+    file describes. Use no other tools.
+
+
+
+     $ wc -l notes.md
+
+     4 notes.md
+
+     Took 0.0s
+
+
+
+     read notes.md
+
+
+    The file describes release notes for cache write-through eviction and configurable timeouts.
+
+The prose and the typed prompt lose the column; every tool row keeps it. Which
+is the inversion worth writing down: on the default the indent is on all four
+shapes and tells nobody anything, and on the one other setting the only indented
+rows left are the vendor's.
+
+Two more kinds of row have no marker and are not the agent answering. A tool row
+too long for the pane wraps at its width less two, and the continuation carries
+the same one space and none of the head that named it: the timeout row quoted
+above, captured again at 40 columns, reads ` $ sleep 25; echo finished (timeout`
+and then ` 35s)`. And pi draws a model's thinking through the same
+`assistant-message.js` in the same column, told from an answer by italics and
+`38;2;110;114;135` and by nothing else at all.
+
+### Which rows are the answer a caller asked for
+
+`Ruleset::claim` reads all three captures as `prompt`, idle, which is the state
+in which the screen is written down at all. The walk then cuts five rows off the
+bottom of each — the box's top border, the row kept for what is staged in it,
+the bottom border, the working directory, the stats line — and one blank row
+comes off the end with them:
+
+| Width | Rows on the pane | Cut | On the record | With anything on them | The answer asked for |
+| --- | --- | --- | --- | --- | --- |
+| 220 | 28 | 5 | 22 | 9 | row 22, one row |
+| 100 | 30 | 5 | 24 | 11 | row 24, one row |
+| 40 | 30 | 5 | 24 | 12 | rows 23 and 24 |
+
+Five rows at every width, and not one of them from the transcript: the walk is
+exact about where the furniture begins and says nothing at all about where the
+answer does. So the answer a caller asked for is one row of twenty-two at 220
+columns, one of twenty-four at 100, and two of twenty-four at 40. Taking the
+middle one apart: thirteen rows blank, four rows of pi's startup banner, two
+rows of the prompt somebody typed, four rows of the two tool blocks, and the
+answer. A reader with only the record in front of them has no way to say which
+was which.
+
+The turn after it is where that bites, and it was driven rather than reasoned
+about. A later turn on the same pane — `sleep 25` through the bash tool and an
+instruction to say nothing else — read at 100 columns once it had ended. This is
+the record's twenty-two rows rather than the pane's thirty: the five furniture
+rows are already off the bottom.
+
+     $ sleep 6; echo done
+
+     done
+
+     Took 6.0s
+
+
+
+     Now run: sleep 25; echo finished  with the bash tool. Say nothing else.
+
+
+
+     $ sleep 25; echo finished (timeout 35s)
+
+     finished
+
+     Took 25.0s
+
+
+     Following the instruction to say nothing after the tool completes, with no further text.
+
+     Analyzing the post-tool turn to confirm no user-visible output is required.
+
+Twenty-eight rows on the pane, five cut, twenty-two on the record — and none of
+them is an answer. The model wrote no assistant text at all: the last two rows
+are the thinking the section above measures, and the first five rows are the
+tail of the turn before it. This screen is not the screen the previous turn was
+written from, so it is written down in that one's place, and what `amx result`
+hands back for this turn is a picture of two other things.
+
+None of this is an argument for cutting more. The walk's own law is that a wrong
+number costs furniture left on the screen and never a row of work taken off it,
+and every marker measured above — the `$`, the tool's name, the indent, the
+colour — is either the agent's to write or the person's to switch off. What the
+measurement is for is knowing what the record means: a `source` reading `screen`
+is amx saying it looked at a picture, and this section is how much of the
+picture is in there.
 
 ## What the first pass found, and what answered it
 
