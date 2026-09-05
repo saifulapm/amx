@@ -132,7 +132,8 @@ export default function (pi: ExtensionAPI) {
   let streamed: string | undefined;
   let timer;
   function stream(text: string): void {
-    if (!AMX_DIR) return;
+    // Nothing said yet — a message still thinking — is nothing to stream.
+    if (!AMX_DIR || !text.trim()) return;
     pending = text;
     if (timer) return;
     timer = setTimeout(() => {
