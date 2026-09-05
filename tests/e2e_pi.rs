@@ -1546,17 +1546,24 @@ fn a_turn_that_ends_on_a_pi_leaves_what_the_pane_said_on_the_record() {
     );
     assert_eq!(rows_of(&String::from_utf8_lossy(&out.stdout)), work);
 
-    // And the row on the wall carries the first line of it, where a pi row
-    // carried nothing at all.
+    // And the row on the wall carries the last of those rows, where a pi row
+    // carried nothing at all. The first of them is the prompt somebody typed
+    // and the rows between are the tool call it ran: what a turn leaves for
+    // somebody to read is at the bottom of a transcript, not the top.
     let out = amx.amx(&["ls"]);
     let printed = String::from_utf8_lossy(&out.stdout);
     let row = printed
         .lines()
         .find(|row| row.contains(id))
         .unwrap_or_else(|| panic!("a row for {id}: {printed}"));
+    let last = work.last().expect("a turn that left something");
     assert!(
-        row.contains(work[0].trim()),
-        "the first line of what the turn left: {row}"
+        row.contains(last.trim()),
+        "the last thing said on the screen: {row}"
+    );
+    assert!(
+        !row.contains(work[0].trim()),
+        "and not the first row of the transcript over it: {row}"
     );
 }
 

@@ -155,12 +155,26 @@ impl View {
 
     /// The one line that says what this agent is up to: what it is waiting to
     /// be told, else what it is doing, else what it answered.
+    ///
+    /// The first two are a line already. The third is an answer, and where the
+    /// answer was read off a pane it is a whole transcript — see [`said`] — so
+    /// what a line is taken from it is [`last_said`]. Where the vendor reported
+    /// its own words there is no transcript around them, and the answer is
+    /// handed over as it was written.
     pub fn line(&self) -> Option<&str> {
+        let said = self
+            .state
+            .result
+            .as_deref()
+            .map(|result| match self.state.source {
+                Some(Source::Screen) => last_said(result),
+                _ => result,
+            });
         self.state
             .question
             .as_deref()
             .or(self.state.summary.as_deref())
-            .or(self.state.result.as_deref())
+            .or(said)
     }
 
     /// What kind of thing this agent is being asked, if anything.
@@ -401,6 +415,42 @@ fn said(screens: &Ruleset, capture: &str) -> Option<String> {
         said = &said[..said.len() - 1];
     }
     (!said.is_empty()).then(|| said.join("\n"))
+}
+
+/// The last thing said on a screen, out of the whole of the screen [`said`]
+/// wrote down.
+///
+/// What a reading keeps is the transcript: the answer a turn ended on, the
+/// tool calls that turn made above it, and however much of the turn before
+/// them the vendor has not repainted over. The answer is the bottom of that
+/// and never the top — `docs/pi-screens.md` measures it at 220, 100 and 40
+/// columns and it is the last row at all three, two rows at the width it
+/// wraps at. The columns that show one line of an agent take the first line of
+/// whatever they are given, so until they were given this a pi row carried a
+/// shell command from some minutes before while the sentence somebody asked
+/// for sat four rows under it on the same record.
+///
+/// The rows under the last blank one, rather than the last row: a column
+/// taking the first line of a wrapped answer should get the opening of it and
+/// not the end.
+///
+/// Only the one line takes this. `amx result`, `amx logs` and the card hand
+/// back the whole cut pane, because the rows between are the log somebody
+/// opened them to read.
+fn last_said(said: &str) -> &str {
+    let (mut answer, mut under, mut at) = (0, 0, 0);
+    for row in said.split('\n') {
+        at += row.len() + 1;
+        match row.trim().is_empty() {
+            // Where the block below this row starts, taken as the answer by
+            // the first row that turns out to have anything on it. A blank row
+            // with nothing under it says where nothing starts, and is why this
+            // is not read as an offset until something is found there.
+            true => under = at,
+            false => answer = under,
+        }
+    }
+    &said[answer..]
 }
 
 /// Whether the pane is the only place this agent's answer will ever be.
@@ -1478,6 +1528,69 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 ~/srv/app
 ↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)
 ";
+
+    /// What a reading of a finished pi turn writes to the record: the whole
+    /// transcript above the box, with the vendor's furniture already cut off
+    /// the bottom of it. pi's startup banner, the prompt somebody typed, the
+    /// bash call with its output and the line it ended on, a read, and under
+    /// them all the one sentence that was asked for.
+    ///
+    /// Measured at 100 columns off a live 0.84.4 on 2026-09-05 and written out
+    /// row by row, renderer by renderer, in `docs/pi-screens.md`. Opens on the
+    /// row itself rather than on a continued line, the way [`A_PI_PROMPT`]
+    /// does and for the same reason.
+    const A_PI_TURN: &str = " pi v0.84.4
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+
+ Run: wc -l notes.md using the bash tool. Then read notes.md. Then say in one short sentence what
+ the file describes. Use no other tools.
+
+
+
+ $ wc -l notes.md
+
+ 4 notes.md
+
+ Took 0.0s
+
+
+
+ read notes.md
+
+
+ The file describes recent changes to caching and timeout configuration.";
+
+    /// The same turn at 40 columns, which is the width the answer wraps at.
+    /// Every tool row above it is the string it is at 100 columns; the
+    /// sentence is two rows.
+    const A_PI_TURN_AT_40: &str = " look up its docs. Ask it how to use or
+ extend Pi.
+
+
+ Run: wc -l notes.md using the bash
+ tool. Then read notes.md. Then say in
+ one short sentence what the file
+ describes. Use no other tools.
+
+
+
+ $ wc -l notes.md
+
+ 4 notes.md
+
+ Took 0.0s
+
+
+
+ read notes.md
+
+
+ The file describes recent changes to
+ caching and timeout configuration.";
 
     /// A permission box, which is a screen with a question on it.
     const A_BLOCKING_SCREEN: &str = "\
@@ -3185,6 +3298,70 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(
             view.json()["result"],
             "Three that made me stop and re-read:"
+        );
+    }
+
+    #[test]
+    fn reader_a_row_takes_the_last_thing_a_screen_said_and_not_the_first() {
+        // A result read off a pane is a whole transcript, and the answer is at
+        // the bottom of it: above it are this turn's tool calls and whatever
+        // the vendor has not repainted of the turn before. The columns that
+        // print this take the first line of what they are handed, so a pi row
+        // carried a shell command from some minutes ago while the sentence
+        // somebody asked for sat four rows below it on the same record.
+        let read_off_a_screen = |screen: &str| State {
+            state: Phase::Idle,
+            result: Some(screen.to_string()),
+            source: Some(Source::Screen),
+            ..State::default()
+        };
+
+        let view = View::new(
+            meta(),
+            read_off_a_screen(A_PI_TURN),
+            verdict(Phase::Idle, Evidence::Screen, Some("prompt")),
+        );
+        assert_eq!(
+            view.line(),
+            Some(" The file describes recent changes to caching and timeout configuration."),
+        );
+        assert_eq!(
+            view.state.result.as_deref(),
+            Some(A_PI_TURN),
+            "the record still holds the screen, which is what result, logs and \
+             the card print"
+        );
+
+        // The same answer at 40 columns, where pi wrapped it over two rows.
+        // Both of them, so that a column taking the first line of this takes
+        // the opening of the answer rather than the end of it.
+        let wrapped = View::new(
+            meta(),
+            read_off_a_screen(A_PI_TURN_AT_40),
+            verdict(Phase::Idle, Evidence::Screen, Some("prompt")),
+        );
+        assert_eq!(
+            wrapped.line(),
+            Some(" The file describes recent changes to\n caching and timeout configuration."),
+        );
+
+        // And an answer the vendor reported in its own words is not a picture
+        // of anything: it opens where the answer opens, and it is handed over
+        // whole.
+        let reported = State {
+            state: Phase::Done,
+            result: Some("Three that made me stop and re-read:\n\nThe cache.".to_string()),
+            source: Some(Source::Payload),
+            ..State::default()
+        };
+        let reported = View::new(
+            meta(),
+            reported,
+            verdict(Phase::Done, Evidence::Record, None),
+        );
+        assert_eq!(
+            reported.line(),
+            Some("Three that made me stop and re-read:\n\nThe cache.")
         );
     }
 
