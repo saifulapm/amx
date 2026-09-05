@@ -47,14 +47,14 @@ use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::derive::{self, View};
-use crate::store::{Phase, now};
+use crate::store::{Agent, Phase, now};
 use crate::theme::{Theme, Watch};
 use crate::tmux::{PaneId, Server, SessionId};
 use crate::verbs::ls::Scope;
 use crate::verbs::resume::Comeback;
 use crate::{exit, registry, spawn, verbs};
 use act::{Asking, Composer, Edited, Renamed, Replied, Started};
-use paint::{Body, Card, Notice};
+use paint::{Body, Card, Live, Notice};
 use rows::{Arrangement, List, Narrow};
 
 /// How often the agents are read again.
@@ -405,6 +405,9 @@ struct Arm {
 /// are doing, and what the view last had to say for itself.
 #[derive(Default)]
 struct Screen {
+    /// Where every agent's record is kept, which is where a card reads what
+    /// its agent is saying at this moment.
+    root: PathBuf,
     list: List,
     /// What the next agent will be started with.
     profile: Profile,
@@ -635,6 +638,7 @@ where
     // while somebody is looking at the screen, and a dial they turn is theirs
     // until they close it.
     let mut screen = Screen {
+        root: root.to_path_buf(),
         profile: Profile::open(
             config,
             std::env::current_dir().ok().as_deref(),
@@ -1005,11 +1009,19 @@ impl Screen {
     /// asking is never held either, since the record moves under it while the
     /// vendor redraws, and freshness is what keeps the question and its tab
     /// paired.
+    /// How wide a card's body is this frame: the band the last frame drew the
+    /// list in, less the name column. Eighty columns before anything has been
+    /// drawn, which is a card wrapped for a terminal nobody has measured yet
+    /// and redrawn to the real one at the next reading.
+    fn body_width(&self) -> u16 {
+        paint::body_width(self.map.width().unwrap_or(80))
+    }
+
     fn follow_the_cursor(&mut self) {
         match self.look {
             Look::Away => self.card = None,
             Look::Screen => {
-                let held = self.scroll.away.get() > 0
+                let held = self.scroll.paged()
                     && match (&self.card, self.list.selected()) {
                         (Some(card), Some(view)) => {
                             !card.asks() && view.phase() != Phase::Waiting && card.id == view.id()
@@ -1017,8 +1029,18 @@ impl Screen {
                         _ => false,
                     };
                 if !held {
-                    self.scroll.away.set(0);
-                    self.card = self.list.selected().map(card_of);
+                    self.card = self
+                        .list
+                        .selected()
+                        .map(|view| card_of(view, &self.root, self.body_width(), self.theme));
+                    // A card read forward opens on its anchor — the last
+                    // answer of a conversation — and everything else at its
+                    // edge. Where it opened is where it is held from.
+                    let anchor = match &self.card {
+                        Some(card) if card.forward() => card.body.anchor(),
+                        _ => 0,
+                    };
+                    self.scroll.open_at(anchor);
                 }
             }
             // A diff was taken when somebody asked for it, and stays as it was
@@ -1353,7 +1375,7 @@ impl Screen {
                             self.card = Some(card.read());
                             self.look = Look::Changes;
                             // A patch just taken is read from its top.
-                            self.scroll.away.set(0);
+                            self.scroll.open_at(0);
                         }
                         Err(e) => self.notice = Some(Notice::Failed(format!("{e:#}"))),
                     }
@@ -1945,7 +1967,7 @@ impl Screen {
     /// list included: the arrows retake the card, exactly as they did before
     /// there was a page to keep.
     fn moved(&mut self) {
-        self.scroll.away.set(0);
+        self.scroll.open_at(0);
         if self.look == Look::Changes {
             self.look = Look::Screen;
         }
@@ -2110,9 +2132,19 @@ fn said(outcome: Result<String>) -> Option<Notice> {
     })
 }
 
-/// The card for one agent: what it is asking and the answers it is offering,
-/// over the screen it is asking on — or, for an agent whose command has ended,
-/// the answer it left.
+/// The card for one agent: what it is asking and the answers it is offering;
+/// the whole conversation where its vendor keeps one, with what it is saying
+/// now under that while a turn runs; or the screen it is working on, or the
+/// answer it left.
+///
+/// The conversation comes first wherever the record names a transcript amx
+/// can read — see [`crate::conversation`] — because it is the agent's own
+/// words, whole, where a pane is one screen of them and a recorded answer is
+/// one turn. It is drawn into rows here, wrapped to the width the card has,
+/// with the vendor's own markdown rendered rather than shown. A turn still
+/// running ends on a live tail: what the vendor streams to the record, where
+/// it streams anything, and the pane with its furniture cut where it does not.
+///
 /// The screen is captured with its paint kept, because the card shows the
 /// pane as the vendor drew it: bold where claude went bold, coloured where it
 /// coloured. What comes back is escape sequences, and the one thing allowed to
@@ -2122,13 +2154,48 @@ fn said(outcome: Result<String>) -> Option<Notice> {
 /// it gave back. So the record's own words are read where they lie rather than
 /// copied first: a card is taken again on every pass a question is up for, and
 /// a copy nothing would draw is work for nobody.
-fn card_of(view: &View) -> Card<Body> {
+fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> Card<Body> {
     let server = Server::from_socket(view.meta.socket.clone());
     // A card holding a question is the question block and nothing else, so
     // there is no capture to take for it. The waiting agent whose question amx
     // has not read still gets one, because the pane is the one place that
     // question is written at all.
     let asks = view.phase() == Phase::Waiting && view.state.question.is_some();
+
+    if !asks && let Some(said) = conversation_of(&view.meta) {
+        let working = view.phase() == Phase::Working;
+        // What it is saying now, under the record: the vendor's own stream
+        // where there is one, and the pane where there is not. Only while a
+        // turn runs — a finished turn's words are all on the record already.
+        let live = working
+            .then(|| {
+                Agent::open(root, view.id())
+                    .ok()
+                    .and_then(|agent| agent.live())
+                    .map(Live::Text)
+                    .or_else(|| {
+                        server
+                            .capture_painted(&view.meta.pane)
+                            .ok()
+                            .filter(|screen| !crate::ansi::strip_ansi(screen).trim().is_empty())
+                            .map(|screen| Live::Screen(own_chrome(&view.meta), screen))
+                    })
+            })
+            .flatten();
+        return Card {
+            id: view.id().to_string(),
+            phase: view.phase(),
+            question: view.state.question.clone(),
+            options: view.state.options.clone(),
+            kind: view.kind(),
+            body: Body::conversation(&said, live, width, theme),
+            changes: false,
+            // A conversation still being added to is read up from its live
+            // edge; one whose turn is over reads forward from its last answer.
+            answer: !working,
+        };
+    }
+
     // An agent whose turn is over and whose record holds its answer — idle at
     // its prompt, done, failed or stopped alike — shows that whole answer.
     // The pane is not consulted: it is a viewport claude scrolls on its own,
@@ -2176,6 +2243,21 @@ fn card_of(view: &View) -> Card<Body> {
         changes: false,
         answer: answered,
     }
+}
+
+/// The conversation on the record's transcript, where the record names one
+/// amx can read and there is anything in it.
+///
+/// Read by the shape the record's own vendor writes, the way `amx logs` reads
+/// it, and none at all from a vendor that keeps no conversation — a record
+/// only ever names a transcript its vendor announced, and a vendor with no
+/// shape to read one by has announced nothing.
+fn conversation_of(meta: &crate::store::Meta) -> Option<Vec<crate::conversation::Said>> {
+    let path = meta.transcript.as_ref()?;
+    let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default())?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let said = crate::conversation::read(format, &text);
+    (!said.is_empty()).then_some(said)
 }
 
 /// The chrome the vendor in this agent's pane draws under it.
@@ -3044,7 +3126,7 @@ mod tests {
                     ..State::default()
                 },
             );
-            let card = card_of(&agent);
+            let card = card_of(&agent, Path::new(""), 76, Theme::default());
             assert_eq!(card.body.says(), long, "the whole answer, {phase:?}");
             assert!(card.answer, "an answer reads forward, {phase:?}");
         }
@@ -3062,7 +3144,7 @@ mod tests {
                 ..State::default()
             },
         );
-        assert!(!card_of(&busy).answer);
+        assert!(!card_of(&busy, Path::new(""), 76, Theme::default()).answer);
 
         // And an idle agent with nothing recorded falls back to it too:
         // there is no pane here to capture, so its card is simply empty.
@@ -3076,7 +3158,7 @@ mod tests {
                 ..State::default()
             },
         );
-        let card = card_of(&quiet);
+        let card = card_of(&quiet, Path::new(""), 76, Theme::default());
         assert!(!card.answer);
         assert_eq!(card.body.says(), "");
     }
@@ -4846,7 +4928,10 @@ mod tests {
             }),
             ("a card", |screen| {
                 screen.look = Look::Screen;
-                screen.card = screen.list.selected().map(card_of);
+                screen.card = screen
+                    .list
+                    .selected()
+                    .map(|view| card_of(view, Path::new(""), 76, Theme::default()));
             }),
         ];
 

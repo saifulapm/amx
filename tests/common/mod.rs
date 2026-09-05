@@ -278,6 +278,19 @@ impl Harness {
         write(&dir.join("state.json"), &json!({ "state": "starting" }));
     }
 
+    /// Rewrite part of how the agent was started: whatever `patch` names, over
+    /// what the record holds.
+    pub fn set_meta(&self, id: &str, patch: Value) {
+        let path = self.agent_dir(id).join("meta.json");
+        let mut meta = read(&path).unwrap_or_else(|| json!({}));
+        if let (Some(into), Some(from)) = (meta.as_object_mut(), patch.as_object()) {
+            for (key, value) in from {
+                into.insert(key.clone(), value.clone());
+            }
+        }
+        write(&path, &meta);
+    }
+
     /// What the record says now.
     pub fn state(&self, id: &str) -> Value {
         read(&self.agent_dir(id).join("state.json")).unwrap_or_else(|| json!({}))

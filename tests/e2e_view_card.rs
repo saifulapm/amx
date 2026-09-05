@@ -1277,3 +1277,124 @@ fn ctrl_f_and_ctrl_b_page_the_card_like_the_page_keys() {
     });
     assert!(!back.contains("more"), "{back}");
 }
+
+/// A claude-shaped transcript of these turns, each a prompt and the answer to
+/// it, written where the record can name it — and named there.
+fn a_transcript(amx: &Harness, id: &str, turns: &[(&str, &str)]) {
+    let path = amx.transcript(id);
+    let mut lines = String::new();
+    for (asked, said) in turns {
+        lines.push_str(&json!({"type":"user","message":{"content":asked}}).to_string());
+        lines.push('\n');
+        lines.push_str(
+            &json!({"type":"assistant","message":{"content":[{"type":"text","text":said}]}})
+                .to_string(),
+        );
+        lines.push('\n');
+    }
+    std::fs::write(&path, lines).expect("the transcript");
+    amx.set_meta(id, json!({ "transcript": path }));
+}
+
+/// A record fresh from its vendor's own report, so a reader believes the phase
+/// it names over the pane for the next few seconds.
+fn reported(amx: &Harness, id: &str, state: &str) {
+    let at = now();
+    amx.set_state(id, json!({ "state": state, "since": at, "last_event": at }));
+}
+
+#[test]
+fn card_is_the_whole_conversation_opened_on_its_last_answer() {
+    let amx = Harness::new();
+    let mut pane_rows = vec!["i ported the importer", ""];
+    pane_rows.extend_from_slice(&CHROME);
+    let pane = a_pane_showing(&amx, &pane_rows);
+    amx.record("port-cli-b2c", &pane);
+    // Paragraphs rather than lines, so each is a row of the card and the
+    // conversation is taller than any card: where it opens is then a choice.
+    let first: String = (1..=20).map(|n| format!("first line {n}\n\n")).collect();
+    let second: String = (1..=15)
+        .map(|n| format!("**second** line {n}\n\n"))
+        .collect();
+    a_transcript(
+        &amx,
+        "port-cli-b2c",
+        &[("first ask", &first), ("second ask", &second)],
+    );
+    reported(&amx, "port-cli-b2c", "idle");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let carded = card_on(&amx, &view, "port-cli-b2c");
+    let card = card_lines(&carded).join("\n");
+    assert!(card.contains("❯ second ask"), "{carded}");
+    assert!(card.contains("second line 1"), "{carded}");
+    assert!(!card.contains("**"), "markdown drawn, not shown:\n{carded}");
+    assert!(
+        !card.contains("first line"),
+        "opens on the last answer, the turn before it a page up:\n{carded}"
+    );
+    assert!(
+        !card.contains("accept edits on") && !card.contains("i ported"),
+        "nothing of the pane, the conversation is the whole of it:\n{carded}"
+    );
+    assert!(
+        card.contains("↑") && card.contains("more"),
+        "and says how much stands above:\n{carded}"
+    );
+
+    press(&amx, &view, "PPage");
+    amx.until("the earlier turn", || {
+        screen(&amx, &view).contains("first line").then_some(())
+    });
+}
+
+#[test]
+fn card_over_a_working_conversation_ends_on_what_is_being_said_now() {
+    let amx = Harness::new();
+    let mut pane_rows = vec![
+        "i ported the importer",
+        "",
+        "✻ Nesting… (15s · still thinking)",
+        "",
+    ];
+    pane_rows.extend_from_slice(&CHROME);
+    let pane = a_pane_showing(&amx, &pane_rows);
+    amx.record("port-cli-b2c", &pane);
+    a_transcript(&amx, "port-cli-b2c", &[("port it", "on it")]);
+    reported(&amx, "port-cli-b2c", "working");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let carded = card_on(&amx, &view, "port-cli-b2c");
+    let card = card_lines(&carded).join("\n");
+    for said in ["❯ port it", "on it", " live ", "i ported the importer"] {
+        assert!(card.contains(said), "{said} in:\n{carded}");
+    }
+    assert!(
+        card.find("on it") < card.find(" live ") && card.find(" live ") < card.find("i ported"),
+        "the record above the rule, the pane below it:\n{carded}"
+    );
+    for furniture in ["accept edits on", "still thinking", "execute amx-v2"] {
+        assert!(
+            !card.contains(furniture),
+            "{furniture} is claude's, not the agent's:\n{carded}"
+        );
+    }
+
+    // Where the vendor streams what it is saying, that is the tail, and the
+    // pane is not consulted.
+    std::fs::write(
+        amx.agent_dir("port-cli-b2c").join("live"),
+        "now **streaming** words\n",
+    )
+    .expect("the live file");
+    let streamed = amx.until("the stream", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("now streaming words").then_some(drawn)
+    });
+    let card = card_lines(&streamed).join("\n");
+    assert!(card.contains(" live "), "{streamed}");
+    assert!(
+        !card.contains("i ported the importer"),
+        "the stream stands where the pane stood:\n{streamed}"
+    );
+}

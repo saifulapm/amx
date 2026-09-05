@@ -284,24 +284,33 @@ opened from. It opens straight onto what it has to show: which agent this is
 and what it is doing are on the row two cells above, and a card that repeated
 them would spend a row of the wall on what you were already looking at.
 
-What the card's body is follows the agent. One that is working shows its live
-screen, chrome cut, tracking output as it lands. One whose turn is over and
-whose record holds the answer — idle at its prompt, done, failed or stopped
-alike — shows that whole answer, top first, however the pane happens to be
-scrolled; only an idle agent with nothing recorded falls back to the screen
-picture. A waiting agent's card is the question block alone.
+What the card's body is follows the agent. Where its vendor keeps the
+conversation in a file — claude and pi both do — the card is that whole
+conversation, drawn rather than pictured: every prompt behind the composer's
+own `❯`, every answer with its markdown rendered, every tool call as one dim
+row naming the tool and the command or path it was given. Nothing the vendor
+draws under its pane is in it. One whose turn is over — idle at its prompt,
+done, failed or stopped alike — opens on its last answer, with the question it
+answers on the row above and every earlier turn a page up. One that is working
+ends on a live tail under a dim `live` rule: what pi is saying at this moment,
+streamed by the extension `doctor --fix` installs, or, for claude, the last
+rows of its pane with the composer and statusline cut, tracking output as it
+lands. An agent with no conversation to read — a command row, a claude adopted
+mid-session — keeps the older card: its live screen, chrome cut, while it
+works, and the recorded answer once its turn is over. A waiting agent's card is
+the question block alone.
 
 `pgup` and `pgdn` page inside the card's body when it holds more than the card
-has room for: a patch or a recorded answer down from its top, a live screen up
-from its bottom. A paged card takes a row of its own to say how far from that
-edge it stands — `↓ 12 more`, at the far end of it — and holds still, new
-output and all, until you page back to the edge, press an arrow, or open it
-again; an agent stopping at a question takes the card back regardless, because
-a question is never left behind history. The arrows never page: they keep
-walking the list, card in tow. `ctrl+b` and `ctrl+f` are the same two pages for
-a keyboard with no page keys on it — pgup and pgdn exactly. A lone `ctrl+b`
-under tmux's default prefix is tmux's own business: `ctrl+b ctrl+b` is what
-reaches the view there.
+has room for: a patch or a finished conversation down from where it opened, a
+live one and a live screen up from their bottom. A paged card takes a row of
+its own to say how far from that edge it stands — `↓ 12 more`, at the far end
+of it — and holds still, new output and all, until you page back to where it
+opened, press an arrow, or open it again; an agent stopping at a question takes
+the card back regardless, because a question is never left behind history. The
+arrows never page: they keep walking the list, card in tow. `ctrl+b` and
+`ctrl+f` are the same two pages for a keyboard with no page keys on it — pgup
+and pgdn exactly. A lone `ctrl+b` under tmux's default prefix is tmux's own
+business: `ctrl+b ctrl+b` is what reaches the view there.
 
 `?` puts every key where the list was, in the five groups they are learned in —
 walk, look, start, arrange, dials — each under the heading a group of agents

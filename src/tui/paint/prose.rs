@@ -11,9 +11,6 @@
 //! The words are the agent's, and an agent's words go through [`inert`] before
 //! a terminal sees them, the same as every other byte amx did not write.
 
-// Nothing draws through here until the card does, one commit on.
-#![allow(dead_code)]
-
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};

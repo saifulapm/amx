@@ -26,9 +26,11 @@ use std::cell::Cell;
 use std::ops::Range;
 
 use super::input::composer_lines;
-use super::style::{colour, dim, request_colour};
-use super::text::{SEPARATOR, fit, inert, width_of};
+use super::prose;
+use super::style::{bold, colour, dim, request_colour};
+use super::text::{RULE, SEPARATOR, fit, inert, width_of};
 use crate::ansi::{self, Colour, Painted};
+use crate::conversation::Said;
 use crate::furniture::{Furniture, cut};
 use crate::pr::Pr;
 use crate::store::{Kind, Phase};
@@ -60,8 +62,10 @@ pub struct Card<B = String> {
     /// Whether the body is that diff, which is read from the top down rather
     /// than from the bottom up.
     pub changes: bool,
-    /// Whether the body is the answer the record holds — a turn's own words,
-    /// whole, rather than a picture of the pane it was said on.
+    /// Whether the body is the agent's own words read forward — the answer
+    /// the record holds, or the whole conversation of an agent whose turn is
+    /// over — rather than a picture of a pane, or a conversation still being
+    /// added to, both of which are read up from their bottom.
     pub answer: bool,
 }
 
@@ -128,7 +132,27 @@ pub struct Body {
     /// vendor's own chrome is a different fact from an agent that has said
     /// nothing yet, and the card says the first out loud.
     chrome: bool,
+    /// The row a card read forward opens on: where the last answer begins in
+    /// a conversation, and the top of everything else.
+    anchor: usize,
 }
+
+/// What a working agent is saying at this moment, under the conversation on
+/// the record: the words its vendor streams, or the pane where nothing does.
+pub enum Live {
+    /// Streamed by the vendor's own report, whole.
+    Text(String),
+    /// The pane as it stands, in the vendor's paint, with that vendor's own
+    /// furniture to cut off the bottom of it.
+    Screen(&'static Furniture, String),
+}
+
+/// The glyph a prompt wears in the conversation, which is the composer's own.
+const PROMPT: &str = "❯ ";
+/// And the one a tool call wears.
+const TOOL: &str = "⚒ ";
+/// What the rule over the live tail says.
+const LIVE: &str = " live ";
 
 impl Body {
     /// Nothing under everything else, which is what a card holding a question
@@ -138,7 +162,103 @@ impl Body {
             rows: Vec::new(),
             kept: 0,
             chrome: false,
+            anchor: 0,
         }
+    }
+
+    /// The whole conversation, drawn the way the agent meant it, with what
+    /// the agent is saying now under it where a turn is still running.
+    ///
+    /// A prompt stands behind the composer's own glyph, an answer is its
+    /// markdown drawn into rows, a tool call is one dim row naming the tool
+    /// and the argument worth a row, and a blank row stands between one thing
+    /// said and the next. Every row is wrapped to `width` here, because a
+    /// card windows its rows and does not reflow them.
+    ///
+    /// The anchor is the first row of the last prompt: the top of the last
+    /// answer, with the question it answers on the row above. A card read
+    /// forward opens there, with the turns before it a page up.
+    pub(in crate::tui) fn conversation(
+        said: &[Said],
+        live: Option<Live>,
+        width: u16,
+        theme: Theme,
+    ) -> Body {
+        let width = width.max(1);
+        let mut rows: Vec<Line<'static>> = Vec::new();
+        let mut anchor = 0;
+        for one in said {
+            let drawn: Vec<Line<'static>> = match one {
+                Said::Prompt(text) => {
+                    let lead = bold().fg(theme.accent);
+                    prose::render(text, width.saturating_sub(2), theme)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(at, line)| {
+                            let glyph = if at == 0 { PROMPT } else { "  " };
+                            let mut spans = vec![Span::styled(glyph, lead)];
+                            spans.extend(line.spans);
+                            Line::from(spans)
+                        })
+                        .collect()
+                }
+                Said::Text(text) => prose::render(text, width, theme),
+                Said::Tool { name, detail } => {
+                    let row = match detail {
+                        Some(detail) => format!("{TOOL}{name} {detail}"),
+                        None => format!("{TOOL}{name}"),
+                    };
+                    vec![Line::from(Span::styled(
+                        fit(&inert(&row), width as usize),
+                        dim(),
+                    ))]
+                }
+            };
+            if drawn.is_empty() {
+                continue;
+            }
+            if !rows.is_empty() {
+                rows.push(Line::raw(String::new()));
+            }
+            if matches!(one, Said::Prompt(_)) {
+                anchor = rows.len();
+            }
+            rows.extend(drawn);
+        }
+
+        if let Some(live) = live {
+            if !rows.is_empty() {
+                rows.push(Line::raw(String::new()));
+            }
+            let dashes = (width as usize).saturating_sub(2 + width_of(LIVE));
+            let rule = format!("{RULE}{RULE}{LIVE}{}", RULE.repeat(dashes));
+            rows.push(Line::from(Span::styled(rule, dim())));
+            match live {
+                Live::Text(text) => rows.extend(prose::render(&text, width, theme)),
+                Live::Screen(chrome, capture) => {
+                    let walked = Body::walk(&capture, Some(chrome));
+                    rows.extend(walked.rows.into_iter().take(walked.kept));
+                }
+            }
+        }
+
+        while rows
+            .last()
+            .is_some_and(|row| row.spans.iter().all(|span| span.content.trim().is_empty()))
+        {
+            rows.pop();
+        }
+        Body {
+            kept: rows.len(),
+            anchor: anchor.min(rows.len()),
+            rows,
+            chrome: false,
+        }
+    }
+
+    /// The row a card read forward opens on.
+    pub(in crate::tui) fn anchor(&self) -> usize {
+        self.anchor
     }
 
     /// A patch: amx's own reading of a repository rather than a pane, so there
@@ -152,6 +272,7 @@ impl Body {
             kept: rows.len(),
             rows,
             chrome: false,
+            anchor: 0,
         }
     }
 
@@ -200,6 +321,7 @@ impl Body {
             rows: read.iter().map(|row| as_painted(row)).collect(),
             kept,
             chrome: drawn < plain.len(),
+            anchor: 0,
         }
     }
 
@@ -240,9 +362,25 @@ pub struct Scroll {
     pub away: Cell<usize>,
     /// The rows the body had last frame, which is what one press moves by.
     pub page: Cell<usize>,
+    /// Where the card opened, in the same rows: its edge for a conversation
+    /// that opens on its last answer rather than at its top. A card standing
+    /// anywhere else has been paged by hand, and holds.
+    pub opened: Cell<usize>,
 }
 
 impl Scroll {
+    /// Open a card `away` rows from its natural edge, and remember that this
+    /// is where it opened.
+    pub fn open_at(&self, away: usize) {
+        self.away.set(away);
+        self.opened.set(away);
+    }
+
+    /// Whether somebody has paged the card away from where it opened.
+    pub fn paged(&self) -> bool {
+        self.away.get() != self.opened.get()
+    }
+
     /// Clamp the offset to the last page this body and window allow, remember
     /// what a page is, and say where the card now stands.
     ///
@@ -343,6 +481,12 @@ const GLYPH: u16 = 2;
 /// row's name starts in: the same four cells, so the card reads as a thing
 /// said under one row rather than as a table of its own.
 const NAME: u16 = 4;
+
+/// How wide a card's body is on a list band this wide: everything the card
+/// says stands in the name column.
+pub fn body_width(band: u16) -> u16 {
+    band.saturating_sub(NAME)
+}
 
 /// The spine, and the corner that closes it on the card's last row.
 const SPINE: &str = "│";
@@ -1112,6 +1256,108 @@ mod tests {
             view("ask-a1b", Phase::Waiting, None, 29),
             view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
         ]
+    }
+
+    fn a_talk(prompt: &str, answer: &str) -> Vec<Said> {
+        vec![
+            Said::Prompt(prompt.to_string()),
+            Said::Tool {
+                name: "Bash".to_string(),
+                detail: Some("cargo test".to_string()),
+            },
+            Said::Text(answer.to_string()),
+        ]
+    }
+
+    #[test]
+    fn card_draws_a_conversation_a_voice_a_glyph_and_anchors_on_the_last_prompt() {
+        let mut told = a_talk("first ask", "first answer");
+        told.extend(a_talk("second ask", "**second** answer"));
+        let body = Body::conversation(&told, None, 40, theme());
+
+        assert_eq!(
+            body.says(),
+            "❯ first ask\n\n⚒ Bash cargo test\n\nfirst answer\n\n\
+             ❯ second ask\n\n⚒ Bash cargo test\n\nsecond answer",
+            "the composer's glyph on a prompt, a tool's on a call, the words \
+             drawn rather than their marks"
+        );
+        assert_eq!(body.kept, 11);
+        assert_eq!(
+            body.anchor(),
+            6,
+            "the last prompt's own row: the top of the last answer, with what \
+             was asked on the row above"
+        );
+        assert!(!body.chrome);
+
+        // The glyph wears the accent, the tool row is dim, the words are not.
+        let prompt = &body.rows[6].spans[0];
+        assert_eq!(prompt.content.as_ref(), PROMPT);
+        assert_eq!(prompt.style.fg, Some(theme().accent));
+        assert!(
+            body.rows[8].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::DIM)
+        );
+        assert!(
+            body.rows[10]
+                .spans
+                .iter()
+                .any(|span| span.content.contains("second")
+                    && span.style.add_modifier.contains(Modifier::BOLD))
+        );
+
+        // Nothing said is no rows and no anchor.
+        let empty = Body::conversation(&[], None, 40, theme());
+        assert_eq!(empty.kept, 0);
+        assert_eq!(empty.anchor(), 0);
+    }
+
+    #[test]
+    fn card_ends_a_running_conversation_on_a_live_tail() {
+        let told = a_talk("port it", "on it");
+        let streamed = Body::conversation(
+            &told,
+            Some(Live::Text("still **going**".to_string())),
+            30,
+            theme(),
+        );
+        assert_eq!(
+            streamed.says(),
+            format!(
+                "❯ port it\n\n⚒ Bash cargo test\n\non it\n\n{RULE}{RULE}{LIVE}{}\nstill going",
+                RULE.repeat(30 - 2 - width_of(LIVE))
+            ),
+            "the vendor's own stream under a rule that says what it is"
+        );
+
+        // A pane instead, with the vendor's furniture cut off its bottom and
+        // its paint kept.
+        let pane = "\x1b[1mthe work\x1b[0m\n\n────\n❯ \n────\n  statusline\n  ⏵⏵ accept edits on\n";
+        let pictured = Body::conversation(
+            &told,
+            Some(Live::Screen(
+                crate::rules::of("claude").furniture(),
+                pane.to_string(),
+            )),
+            30,
+            theme(),
+        );
+        let drawn = pictured.says();
+        assert!(drawn.ends_with("the work"), "{drawn:?}");
+        assert!(!drawn.contains("accept edits"), "{drawn:?}");
+        assert!(
+            pictured
+                .rows
+                .last()
+                .unwrap()
+                .spans
+                .iter()
+                .any(|span| span.style.add_modifier.contains(Modifier::BOLD)),
+            "the pane's own paint is kept"
+        );
     }
 
     #[test]

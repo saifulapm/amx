@@ -40,6 +40,10 @@ const META: &str = "meta.json";
 const STATE: &str = "state.json";
 const EVENTS: &str = "events.jsonl";
 const LOCK: &str = "lock";
+/// What a vendor is saying right now, streamed by its own report while a turn
+/// runs and taken away when the turn ends. Written by the vendor's side and
+/// only ever read here.
+pub const LIVE: &str = "live";
 
 /// Where an agent is, as far as amx has been told.
 ///
@@ -772,6 +776,15 @@ impl Agent {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// What the agent is saying at this moment, where its vendor streams it —
+    /// see [`LIVE`]. `None` between turns, and from a vendor that streams
+    /// nothing.
+    pub fn live(&self) -> Option<String> {
+        std::fs::read_to_string(self.dir.join(LIVE))
+            .ok()
+            .filter(|text| !text.trim().is_empty())
     }
 
     /// How it was started.

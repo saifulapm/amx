@@ -56,7 +56,7 @@ use wall::{Moment, agents, first_drawn, hangs_off};
 
 #[cfg(test)]
 pub(super) use card::walks;
-pub use card::{Body, Card, Scroll};
+pub use card::{Body, Card, Live, Scroll, body_width};
 pub use header::title;
 /// The table the keys overlay is drawn from, for the test up in the view that
 /// presses everything a terminal can send and holds what acted against it.
@@ -84,6 +84,12 @@ impl Map {
         self.list.set(list);
         self.offset.set(offset);
         self.card.set(card);
+    }
+
+    /// How wide the band the list was drawn in is, which is the width a card
+    /// hung in it has to wrap its words to. Nothing before the first frame.
+    pub(super) fn width(&self) -> Option<u16> {
+        self.list.get().map(|band| band.width)
     }
 
     /// The line of the list under this point, as an index into the items.
