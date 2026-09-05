@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 use crate::derive::{self, Evidence, View};
 use crate::store::{Agent, Event, Phase};
+use crate::vendor::Moment;
 use crate::verbs::send::{self, nothing_more_is_coming, waiting_on_a_question};
 use crate::{complain, exit, paths, store};
 
@@ -38,8 +39,11 @@ const POLL: Duration = Duration::from_millis(200);
 /// asking tmux for a screen five times a second is not.
 const LOOK: Duration = Duration::from_secs(1);
 
-/// The vendor's hook that ends a turn.
-const TURN_END: &str = "Stop";
+/// Whether this event is a vendor saying a turn ended: the moment the table
+/// calls `Ended`, under whichever vendor's word for it arrived.
+fn turn_end(event: &Event) -> bool {
+    crate::vendor::moment_of(&event.kind) == Some(Moment::Ended)
+}
 
 /// Run the verb against the machine.
 pub fn from_env(id: &str, timeout: Option<u64>) -> Result<i32> {
@@ -166,8 +170,7 @@ fn ended_past_the_last_message(events: &[Event]) -> bool {
 ///
 /// A subagent's events ride the same log and are not the agent's turn.
 fn a_turn_ended(event: &Event) -> bool {
-    (event.kind == TURN_END || event.kind == derive::READ_TURN_END)
-        && event.payload["agent_id"].is_null()
+    (turn_end(event) || event.kind == derive::READ_TURN_END) && event.payload["agent_id"].is_null()
 }
 
 /// The answer, or the honest absence of one.
@@ -304,6 +307,9 @@ mod tests {
             "and one that ended before the message is the turn before it"
         );
     }
+
+    /// claude's word for a turn ending, as its entry spells it.
+    const TURN_END: &str = "Stop";
 
     #[test]
     fn a_subagents_turn_is_not_the_agents_turn() {

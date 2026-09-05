@@ -84,7 +84,7 @@ use std::path::Path;
 use crate::rules::{Claim, Ruleset};
 use crate::store::{Agent, Event, Meta, Phase, Question, Source, State, Still};
 use crate::tmux::Server;
-use crate::vendor::Capability;
+use crate::vendor::{Capability, Vendor};
 
 /// How long the vendor's own events are taken at their word.
 ///
@@ -502,9 +502,15 @@ fn last_said(said: &str) -> &str {
 /// A command amx has no entry for is measured neither way, which is the reading
 /// `logs` gives one too: nothing measured is not a measurement, and the rows of
 /// a screen amx can account for nothing on are not an agent's answer.
-fn answers_on_the_pane(meta: &Meta) -> bool {
-    crate::registry::entry(meta.agent.as_deref().unwrap_or_default())
+fn answers_on_the_pane(vendor: Option<&Vendor>) -> bool {
+    vendor
         .is_some_and(|vendor| !vendor.can(Capability::Hooks) && !vendor.can(Capability::Transcript))
+}
+
+/// The vendor a record runs, out of the table: `None` for a command amx has
+/// no entry for, and for a record that names none.
+fn vendor_of(meta: &Meta) -> Option<&'static Vendor> {
+    crate::registry::entry(meta.agent.as_deref().unwrap_or_default())
 }
 
 /// Whether a reading of this agent's pane is the only account of it there will
@@ -525,9 +531,8 @@ fn answers_on_the_pane(meta: &Meta) -> bool {
 /// A command amx has no entry for is neither, the way it is for the answer on
 /// its pane: nothing measured is not a measurement — see
 /// [`answers_on_the_pane`].
-fn reads_its_own_record(meta: &Meta) -> bool {
-    crate::registry::entry(meta.agent.as_deref().unwrap_or_default())
-        .is_some_and(|vendor| !vendor.can(Capability::Hooks))
+fn reads_its_own_record(vendor: Option<&Vendor>) -> bool {
+    vendor.is_some_and(|vendor| !vendor.can(Capability::Hooks))
 }
 
 /// Whether this reading stands where the record does, rather than beside it: a
@@ -541,7 +546,7 @@ fn reads_its_own_record(meta: &Meta) -> bool {
 /// come back some other way, and none of the three is an account to put over
 /// the one on file.
 fn is_the_record(meta: &Meta, reading: &Reading) -> bool {
-    reads_its_own_record(meta) && reading.verdict.evidence == Evidence::Screen
+    reads_its_own_record(vendor_of(meta)) && reading.verdict.evidence == Evidence::Screen
 }
 
 /// What this reading has to write down beside the turn it watched end, if
@@ -552,7 +557,7 @@ fn is_the_record(meta: &Meta, reading: &Reading) -> bool {
 /// screen was not a finished turn. Whether the turn ended is asked further in,
 /// under the lock that moves the phase — see [`write_the_reading`].
 fn worth_writing_down<'a>(meta: &Meta, reading: &'a Reading) -> Option<&'a str> {
-    answers_on_the_pane(meta)
+    answers_on_the_pane(vendor_of(meta))
         .then_some(reading.said.as_deref())
         .flatten()
 }
@@ -1693,6 +1698,7 @@ fn from_the_record(state: &State, created: u64, now: u64) -> Verdict {
 mod tests {
     use super::*;
     use crate::rules;
+    use crate::vendor::second::SECOND;
     use tempfile::TempDir;
 
     const IDLE_SCREEN: &str = "\
@@ -2253,19 +2259,23 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn reader_writes_a_pane_down_only_where_nothing_else_will_ever_say_it() {
-        // pi reports through no hooks and keeps no conversation, so its pane is
-        // the only account of a turn there will ever be. claude says what it
-        // answered itself, twice over, and a picture of those words is not
-        // something to write beside them. A command amx has no entry for is
-        // measured neither way, which is the reading `logs` gives one too.
+        // A vendor that reports through no hooks and keeps no conversation has
+        // a pane that is the only account of a turn there will ever be; the
+        // test-only second vendor is that shape. claude and pi say what they
+        // answered themselves — a hook payload, a transcript — and a picture
+        // of those words is not something to write beside them. A command amx
+        // has no entry for is measured neither way, which is the reading
+        // `logs` gives one too.
         let ran = |agent: Option<&str>| {
-            answers_on_the_pane(&Meta {
+            answers_on_the_pane(vendor_of(&Meta {
                 agent: agent.map(str::to_string),
                 ..meta()
-            })
+            }))
         };
 
-        assert!(ran(Some("pi")));
+        assert!(answers_on_the_pane(Some(&SECOND)));
+        assert!(reads_its_own_record(Some(&SECOND)));
+        assert!(!ran(Some("pi")), "pi reports through its extension now");
         assert!(!ran(Some("claude")));
         assert!(!ran(Some("mock-claude")), "an unregistered command");
         assert!(!ran(None), "and a record naming no command at all");
@@ -2438,7 +2448,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     }
 
     #[test]
-    fn reader_keeps_the_answer_of_a_turn_nothing_else_will_ever_report() {
+    fn reader_leaves_the_answer_to_a_vendor_that_reports_it_itself() {
         let root = TempDir::new().unwrap();
         let server = Own(
             Server::named(format!("amx-derive-said-{}", std::process::id())).with_conf("/dev/null"),
@@ -2446,10 +2456,12 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         let socket = server.0.socket().clone();
 
         // Two agents that have both gone quiet at a finished turn, each on the
-        // vendor whose prompt is on its pane. pi's answer is on that pane and
-        // nowhere else, and the next repaint takes it away; claude's is in its
-        // own Stop payload and its own transcript, and a picture of those words
-        // is not something to write down beside them.
+        // vendor whose prompt is on its pane. Both vendors say what they
+        // answered themselves — claude in its Stop payload and its transcript,
+        // pi in the report its extension sends when the turn settles and the
+        // session file that report names — and a picture of those words is not
+        // something to write down beside them. The reading still says what
+        // the screen says: idle, by the vendor's own rule.
         let pi = a_pane_showing(&server.0, A_PI_PROMPT);
         let claude = a_pane_showing(&server.0, IDLE_SCREEN);
         for (id, agent, pane) in [("pi-a1b", "pi", &pi), ("claude-b2c", "claude", &claude)] {
@@ -2482,18 +2494,15 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
         assert_eq!(read("pi-a1b").phase(), Phase::Idle);
         assert_eq!(
-            read("pi-a1b").state.result.as_deref(),
-            Some(" ran the migration\n\n Took 15.2s")
+            read("pi-a1b").verdict.rule.as_deref(),
+            Some("prompt"),
+            "pi's own rule, out of pi's own document"
         );
+        assert_eq!(read("pi-a1b").state.result, None);
         assert_eq!(
             kept("pi-a1b").result,
-            read("pi-a1b").state.result,
-            "and written down, rather than worked out again by whoever asks next"
-        );
-        assert_eq!(
-            kept("pi-a1b").source,
-            Some(Source::Screen),
-            "with the record saying it is amx's reading of a picture"
+            None,
+            "a vendor that reports what it answered is left to report it"
         );
         assert_eq!(
             kept("pi-a1b").last_event,

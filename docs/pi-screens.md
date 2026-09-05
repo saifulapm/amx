@@ -1,5 +1,13 @@
 # Every screen pi 0.84.4 draws
 
+Since 2026-09-05 pi reports through the extension `amx doctor --fix` writes
+(`assets/pi/amx.ts`), so what a pi is doing, and what a turn answered, come
+from its own reports and its session file rather than from these screens. The
+screens are still what a reader holds against the pane where the report has
+gone quiet: every gate pi draws before a turn, and every pi whose extension is
+not installed. Nothing below has changed for that; it is the inventory the
+rules were measured against.
+
 `assets/screen-rules-pi.toml` has eight rules in it, and each one was written
 from a screen somebody sat in front of. This file is the other half of that
 sitting: the whole list of screens the vendor can put on a pane, and what each

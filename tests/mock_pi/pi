@@ -29,8 +29,9 @@
 #
 # How it was called, and what it did with the session it was handed, are
 # written before the first repaint: they leave the screen with it and stay in
-# the pane's history, which is where `capture-pane -S -` reads them. pi reports
-# nothing through hooks, so a test has nowhere else to read either of them.
+# the pane's history, which is where `capture-pane -S -` reads them. What pi
+# reports is a scenario's to say, step by step, the way claude's stand-in
+# says it.
 #
 # Steps, one per line. Blank lines and `#` comments are ignored.
 #
@@ -51,6 +52,14 @@
 #                   answered with no prose at all.
 #   sleep <ms>      wait. A long trailing sleep is how a scenario keeps its
 #                   agent alive for the test driving it.
+#   hook <event> <json>
+#                   report a moment the way amx's pi extension reports one:
+#                   the payload on `amx _hook`'s stdin under pi's own event
+#                   name, with the session this run opened and the file it is
+#                   kept in added unless the json names them.
+#   transcript <json>
+#                   append a line to that session file, which is what pi does
+#                   as a turn runs and what amx reads the conversation from.
 #
 # Environment:
 #   MOCK_PI_SCENARIO   the scenario to replay (required)
@@ -429,6 +438,42 @@ nap() {
 	sleep "$(($1 / 1000)).$(printf '%03d' "$(($1 % 1000))")"
 }
 
+# One report, delivered the way amx's pi extension delivers one: the payload
+# on `amx _hook`'s stdin, under pi's own event name, with the session the
+# stand-in opened and the file it keeps that session in — which is the
+# transcript amx reads back. `AMX_BIN` and `AMX_ID` ride the pane's own
+# environment, the same as they do for the real extension.
+deliver() {
+	event=${1%% *}
+	json=${1#"$event"}
+	json=${json# }
+	[ -n "$json" ] || json='{}'
+
+	fields="\"hook_event_name\":\"$event\""
+	case "$json" in
+	*'"session_id"'*) ;;
+	*) [ -z "$session" ] || fields="$fields,\"session_id\":\"$session\"" ;;
+	esac
+	case "$json" in
+	*'"transcript_path"'*) ;;
+	*) [ -z "$session" ] || fields="$fields,\"transcript_path\":\"$sessions/$session.jsonl\"" ;;
+	esac
+
+	interior=$(printf '%s' "$json" |
+		sed -e 's/^[[:space:]]*{[[:space:]]*//' -e 's/[[:space:]]*}[[:space:]]*$//')
+	[ -z "$interior" ] || fields="$fields,$interior"
+
+	[ -n "${AMX_BIN:-}" ] || return 0
+	printf '%s' "{$fields}" | "$AMX_BIN" _hook
+}
+
+# One line of the session file, which is what pi appends to as a turn runs.
+transcribe() {
+	[ -n "$session" ] || return 0
+	mkdir -p "$sessions"
+	printf '%s\n' "$1" >>"$sessions/$session.jsonl"
+}
+
 while IFS= read -r line || [ -n "$line" ]; do
 	case "$line" in
 	'' | '#'*) continue ;;
@@ -440,6 +485,8 @@ while IFS= read -r line || [ -n "$line" ]; do
 	case "$verb" in
 	screen) draw "$rest" ;;
 	sleep) nap "$rest" ;;
+	hook) deliver "$rest" ;;
+	transcript) transcribe "$rest" ;;
 	*)
 		echo "mock pi: $scenario: no step called \`$verb\`" >&2
 		exit 65

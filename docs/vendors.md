@@ -171,35 +171,31 @@ environment of every command its bash tool runs, is what `adopt` reads to say
 which conversation it was typed inside, the same way claude's
 `CLAUDE_CODE_SESSION_ID` does.
 
-It cannot report through hooks, and amx cannot read its conversation back or
-answer a trust screen for it. `hooks` is `None` because pi's extension events
-are JS callbacks inside its own process, not command entries a settings file
-can name: there is nothing for `install` to write and nothing for `hook` to
-read, so `Hooks` is off. `Transcript` is off with it, and for that plumbing
-rather than for want of a transcript — the only path that ever reaches
-`meta.transcript` arrives on a hook payload, and pi sends none. pi does keep
-the conversation on disk: a session jsonl at
-`~/.pi/agent/sessions/<encoded-cwd>/<ts>_<id>.jsonl`, measured at 0.84.4.
-Finding one means replicating pi's own encoding of the working directory, which
-is a pass nobody has made. `logs` is the verb that puts that gap to the entry,
-and it names pi in the sentence it prints when a pi pane has gone and nothing
-was recorded off it. `Trust` is off too: `--help` shows `--approve, -a`
-trusting project-local files for a run, but nothing measured yet says amx can
-answer that screen unattended the way it answers claude's. Only `Hooks` is a
-shape pi lacks; `Transcript` and `Trust` are doors amx has not built.
+It reports through hooks, and amx reads its conversation back. pi's extension
+events are JS callbacks inside its own process, not command entries a settings
+file can name, so its wire is a file: `Wire::File` at
+`.pi/agent/extensions/amx.ts`, whose body is `assets/pi/amx.ts`, written by
+`amx doctor --fix` where pi loads a global extension from and removed by `amx
+uninstall`. That file runs `amx _hook` once per moment with the payload on
+stdin, under pi's own event names — `session_start`, `agent_start`,
+`tool_execution_start`, `ui_prompt_start`, `ui_prompt_end`, `agent_settled` —
+and the keys claude's payloads carry, so `hook` reads it with no arm of its
+own. `ui_prompt_start` lands as `Notified` and `ui_prompt_end` as `Refused`;
+there is no `Asked`, because pi asks leave for nothing. `Transcript` comes
+with it: a report names the session jsonl pi appends to as a turn runs,
+`~/.pi/agent/sessions/<encoded-cwd>/<ts>_<id>.jsonl`, and `Vendor.transcript`
+names the shape `crate::conversation` reads it by. While a turn runs the
+extension also streams the words of the answer being written to the record's
+`live` file, which the card shows under the conversation. `Trust` is the one
+amx sends rather than writes: `--approve, -a` on the argv of a pane amx was
+starting anyway.
 
-Reporting nothing costs pi none of the three it does claim. It resumes, forks
-and is adopted with no hooks at all, because a session flag amx can hand it
-directly stands in for the id a Started hook would otherwise have had to
-report.
-
-What a turn answered does reach the record, and by the one route left. A
-reading that watches a turn end on a vendor with neither `Hooks` nor
-`Transcript` writes what was on the pane to `state.result` with `screen` beside
-it as the source, so `amx result` has an answer to hand back and a pi row on
-the wall carries a summary. It is a reading of a picture and the record says so, which
-is the difference between it and the two the entry does not claim: pi has not
-told amx what it said, amx has looked.
+A pi without the extension reads the way a claude with its hooks unwired
+reads: off its pane, against the screens document, with `doctor` naming the
+gap. The hookless machinery `derive` grew for a vendor that reports nothing —
+writing what a confident reading concluded, `read.prompt` and `read.turn-end`
+— is not what pi takes any more; it stands for a vendor that has no other
+account of itself, and the test-only second vendor keeps it proven.
 
 `screens` is where what amx can read off a pi pane is written down: eight
 rules — the first-run setup gate, the folder-trust question, a dialog, an
@@ -360,7 +356,8 @@ claimed the screen is worth.
    capability is a promise a verb will act on.
 3. **Let the laws hold you.** The table's tests quantify over every entry:
    cycles start at the sentinel, dial flags are distinct and are flags, a
-   vendor that reports names every moment exactly once, an adoptable vendor
+   vendor that reports names a moment at most once and always the three a
+   turn stands on — started, prompted, ended — an adoptable vendor
    names its session variable, a session variable never travels, a session's
    own flags are flags too and none of them lists `resume` among what
    conflicts with it, a vendor that can fork says how — and one that forks
@@ -376,12 +373,11 @@ claimed the screen is worth.
    makes an agent pi's on a machine with no pi installed; `tests/e2e_pi.rs` is
    the suite driven against it. It replays what pi's entry claims and nothing
    else: the session flags, down to the five pi refuses `--session-id` beside,
-   and the screens `assets/screen-rules-pi.toml` was measured off, each
-   painted in one write. No payload and no transcript, because pi reports
-   neither — what the vendor was asked for is on its pane, and that is where
-   the suite reads it. Under that sit the table's laws, the unit tests in
-   `pi.rs`, and the panes the screens were measured off, checked into
-   `rules.rs`.
+   the screens `assets/screen-rules-pi.toml` was measured off, each painted
+   in one write, and the reports the extension delivers, as `hook` and
+   `transcript` steps of a scenario. Under that sit the table's laws, the
+   unit tests in `pi.rs`, and the panes the screens were measured off,
+   checked into `rules.rs`.
 5. **Dogfood it.** The laws and the stand-in prove the entry against what amx
    measured. Only the real program proves the measurement. Three things to get
    right before the first spawn: install the binary you just built rather than

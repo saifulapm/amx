@@ -92,24 +92,24 @@ pub const VENDOR: Vendor = Vendor {
         "AI_AGENT",
         "PI_CODING_AGENT",
     ],
-    // pi's extension events are JS callbacks inside its own process, not
-    // command entries a settings file can name, so there is nothing for
-    // `install` to write and nothing for `hook` to read: Hooks and
-    // Transcript are both left off. Trust is on, and it is the one amx sends
-    // rather than writes: `--help` documents `--approve, -a` as trusting
-    // project-local files for a run, which is a word on the argv of the pane
-    // amx was starting anyway and leaves nothing behind in anybody's files.
-    // `crate::trust` is where that answer is measured and written down. So
-    // this is what pi does today: carry a session on, branch one, be adopted
-    // by way of PI_SESSION_ID, and take its folder-trust answer from amx.
-    // Measured at 0.84.4 on 2026-09-05.
+    // pi reports through the extension `HOOKS` below carries, which is what
+    // gives it Hooks, and a report names the session file pi appends to as a
+    // turn runs, which is what gives it Transcript — `crate::conversation`
+    // reads that file by the shape named at the foot of this entry. Trust is
+    // the one amx sends rather than writes: `--help` documents `--approve,
+    // -a` as trusting project-local files for a run, which is a word on the
+    // argv of the pane amx was starting anyway and leaves nothing behind in
+    // anybody's files. `crate::trust` is where that answer is measured and
+    // written down. Measured at 0.84.4 on 2026-09-05.
     capabilities: &[
+        Capability::Hooks,
+        Capability::Transcript,
         Capability::Resume,
         Capability::Fork,
         Capability::Adopt,
         Capability::Trust,
     ],
-    hooks: None,
+    hooks: Some(HOOKS),
     // The screens amx has measured off this vendor, every anchor in them with
     // the capture, the version and the date it was read at. Driven live
     // against 0.84.4 on 2026-09-04: a dialog, a running turn and a prompt,
@@ -138,9 +138,9 @@ pub const VENDOR: Vendor = Vendor {
 /// pi asks leave for nothing. Re-measure at every vendor bump: a renamed event
 /// is a moment amx never hears.
 ///
-/// The entry does not carry this yet. Its stand-in delivers nothing through
-/// it, and the capability and the entry move together — see
-/// `a_vendor_reports_through_hooks_or_amx_has_none_to_wire`.
+/// `tests/mock_pi/pi` delivers these the way the extension does, step by step
+/// out of a scenario, so the suite drives pi's entry through them on a machine
+/// with no pi on it.
 pub const HOOKS: Hooks = Hooks {
     wire: Wire::File {
         path: ".pi/agent/extensions/amx.ts",
@@ -316,12 +316,14 @@ mod tests {
 
     #[test]
     fn pi_can_resume_fork_be_adopted_and_have_its_trust_screen_answered() {
-        // Trust is the one pi claims without reporting anything: the answer is
-        // a flag on the argv rather than an entry in a file, so a vendor with
-        // no hooks can still have its screen taken off a person's hands. Which
-        // flag, and that pi is the vendor answered that way, is asserted in
-        // src/trust.rs, where it was measured.
+        // Trust is the one pi claims that no report carries: the answer is a
+        // flag on the argv rather than an entry in a file. Which flag, and
+        // that pi is the vendor answered that way, is asserted in
+        // src/trust.rs, where it was measured. The other five are claimed too,
+        // which is every capability the table names.
         for can in [
+            Capability::Hooks,
+            Capability::Transcript,
             Capability::Resume,
             Capability::Fork,
             Capability::Adopt,
@@ -329,24 +331,25 @@ mod tests {
         ] {
             assert!(VENDOR.can(can), "{can:?}");
         }
-        for cannot in [Capability::Hooks, Capability::Transcript] {
-            assert!(!VENDOR.can(cannot), "{cannot:?}");
-        }
     }
 
     #[test]
-    fn pi_reports_through_no_hooks_and_reads_its_state_off_the_pane() {
-        // Its extension events are JS callbacks, not settings-file entries,
-        // so install has nothing to write and hook has nothing to read. The
-        // pane is not the last witness on this vendor, it is the only one, and
-        // the screens document is where what amx can see on it is written
-        // down.
+    fn pi_reports_through_its_extension_and_keeps_its_screens_for_when_it_is_quiet() {
+        // The entry carries the hooks the extension delivers through, and the
+        // two capabilities that come of them: what it is doing, in its own
+        // word, and the session file that word names, read back as the
+        // conversation. The screens document stays beside them, because a pi
+        // whose extension is not installed, and every gate pi draws before a
+        // turn, are read off the pane the way they always were.
         //
         // Which screens that document names, and in which order, is asserted
         // in src/rules.rs and only there. A second copy here would be a second
         // place to edit every time a screen is measured, and the two would
         // disagree the first time somebody edited one of them.
-        assert!(VENDOR.hooks.is_none());
+        assert_eq!(VENDOR.hooks, Some(HOOKS));
+        assert!(VENDOR.can(Capability::Hooks));
+        assert!(VENDOR.can(Capability::Transcript));
+        assert_eq!(VENDOR.transcript, Some(Transcript::Pi));
         assert!(VENDOR.screens.is_some(), "pi declares screens");
     }
 }

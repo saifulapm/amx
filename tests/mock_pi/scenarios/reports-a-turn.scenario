@@ -1,0 +1,18 @@
+# A turn the way pi reports one through amx's extension: the session it
+# opened, the turn beginning, the tool it ran, and the turn settling with its
+# answer on it — beside the screens pi draws meanwhile, and the session file
+# it appends to as it goes. The agent is still there afterwards, the way pi is.
+screen boot
+hook session_start {}
+sleep 50
+hook agent_start {}
+transcript {"type":"message","id":"u1","parentId":null,"message":{"role":"user","content":"fix the login bug","timestamp":1}}
+screen working
+hook tool_execution_start {"tool_name":"bash","tool_input":{"command":"cargo test"}}
+transcript {"type":"message","id":"a1","parentId":"u1","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"cargo test"}}],"stopReason":"toolUse"}}
+transcript {"type":"message","id":"t1","parentId":"a1","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","content":[{"type":"text","text":"ok"}],"isError":false}}
+sleep 2500
+transcript {"type":"message","id":"a2","parentId":"t1","message":{"role":"assistant","content":[{"type":"text","text":"I moved the timeout into the config, and the tests pass."}],"stopReason":"stop"}}
+screen idle
+hook agent_settled {"last_assistant_message":"I moved the timeout into the config, and the tests pass."}
+sleep 600000

@@ -1,0 +1,13 @@
+# A turn that stops on a question an extension asked, reported the way pi
+# reports one: the prompt going up, and, a while later, closing so the turn
+# goes on. The dialog is on the pane the whole time the prompt is up.
+screen boot
+hook session_start {}
+sleep 50
+hook agent_start {}
+screen dialog
+hook ui_prompt_start {"kind":"confirm","message":"Run echo hi?"}
+sleep 4000
+hook ui_prompt_end {"kind":"confirm"}
+screen working
+sleep 600000

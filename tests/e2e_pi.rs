@@ -12,10 +12,12 @@
 //! directory in front of the PATH is the whole of what makes these agents pi's
 //! — and the only way to drive its entry on a machine with no pi on it.
 //!
-//! pi reports nothing through hooks, which is the other half of why this file
-//! exists. There is no payload to assert on and no `meta.transcript` to read:
-//! what the vendor was asked for is on its pane and nowhere else, so that is
-//! where these read it.
+//! pi reports through an extension amx writes where pi loads one from, one
+//! `amx _hook` per moment, and the stand-in delivers the same reports out of
+//! a scenario — see `tests/mock_pi/pi`. What it says is what the record
+//! moves by; the screens are still read where the report has gone quiet,
+//! which is every gate pi draws before a turn and every pi whose extension is
+//! not installed.
 //!
 //! Which is why the stand-in paints a screen in one write, and why no test
 //! below waits for two halves of one to arrive. Half a repaint is a pane pi
@@ -72,19 +74,6 @@ fn amx_playing(amx: &Harness, scenario: &Path, args: &[&str]) -> std::process::O
         .env("MOCK_PI_SCENARIO", scenario)
         .output()
         .expect("running amx")
-}
-
-/// A timeline of pi's own screens, written for the one test that drives it.
-///
-/// The scenarios beside the stand-in each walk to the screen a test is reading
-/// and hold there, which is what a test of a reader wants. A message is about
-/// the moment between two screens instead — the pi is at its prompt when the
-/// text goes in, and the turn begins while the send is still waiting to hear
-/// that it did — so the test that drives one places that moment itself.
-fn timeline(amx: &Harness, name: &str, steps: &str) -> PathBuf {
-    let path = amx.home().join(format!("{name}.scenario"));
-    std::fs::write(&path, steps).expect("writing a scenario");
-    path
 }
 
 /// Start an agent the way a person starts one, on the vendor amx knows as pi.
@@ -217,29 +206,6 @@ fn listed(amx: &Harness, id: &str) -> Value {
         .unwrap_or_else(|| panic!("a row for {id}"))
 }
 
-/// Several readers looking at the same agent at once, each in a process of its
-/// own, which is what a wall beside a caller's loop beside a person at a
-/// terminal is.
-///
-/// They are started before any of them has read anything, so every one of them
-/// is holding the same record when the first one writes: a boundary appended
-/// under the writer's lock is appended once, and one appended outside it is
-/// appended once per reader.
-fn all_look_at_once(amx: &Harness, how_many: usize) {
-    let looking: Vec<_> = (0..how_many)
-        .map(|_| {
-            amx.amx_command(&["ls", "--json"])
-                .stdout(std::process::Stdio::null())
-                .spawn()
-                .expect("running amx ls")
-        })
-        .collect();
-    for mut looker in looking {
-        let out = looker.wait().expect("amx ls");
-        assert!(out.success(), "amx ls: {out}");
-    }
-}
-
 /// How long a screen must hold still before a quiescent rule may end a turn
 /// that is on the record as running: `rules::SETTLED_LOOKS` seconds, which is
 /// what that many looks at a look a second always meant.
@@ -263,17 +229,14 @@ const SENT: &str = "send";
 /// above are: what a caller is promised is a wait that ends.
 const CONFIRM: u64 = 5;
 
-/// The vendor's own words for the same two moments. claude sends both and pi
-/// sends neither, and a reading that wrote one of these in pi's place would
-/// have every verb that waits on the vendor believing the vendor had spoken.
-const VENDORS_WORDS: [&str; 2] = ["UserPromptSubmit", "Stop"];
+/// pi's own words for the two edges of a turn, which are the events its
+/// extension reports them under. Spelled here for the same reason the two
+/// names above are: a caller reads the log with `jq`.
+const PIS_WORDS: [&str; 2] = ["agent_start", "agent_settled"];
 
-/// What a turn before the one under test answered, as the reading that watched
-/// that turn end wrote it down.
-///
-/// A row off a pane rather than a sentence a vendor sent, because a row off a
-/// pane is the only kind of answer a pi record ever carries.
-const ANSWERED: &str = " I moved the timeout into the config, and the tests pass.";
+/// What a turn answered, as pi reports it when the turn settles and as the
+/// scenarios that report one write it.
+const ANSWERED: &str = "I moved the timeout into the config, and the tests pass.";
 
 /// The clock every stamp on a record is kept in.
 fn epoch() -> u64 {
@@ -334,12 +297,6 @@ fn drawn(amx: &Harness, pane: &str) -> Vec<String> {
         rows.pop();
     }
     rows
-}
-
-/// The rows of a text amx printed, with the trailing spaces a capture keeps
-/// taken off each of them, so it can be held against what [`drawn`] read.
-fn rows_of(text: &str) -> Vec<String> {
-    text.lines().map(|row| row.trim_end().to_string()).collect()
 }
 
 /// The rows pi's composer border is drawn on, topmost first.
@@ -444,8 +401,7 @@ fn doctor_fix(amx: &Harness, typed: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// Every path under `dir`, so a test can say that a command wrote nothing
-/// anywhere rather than nothing to the one file it thought to name.
+/// Every path under `dir`, files and directories alike, sorted.
 fn everything_under(dir: &Path) -> Vec<PathBuf> {
     let (mut found, mut left) = (Vec::new(), vec![dir.to_path_buf()]);
     while let Some(here) = left.pop() {
@@ -1673,296 +1629,6 @@ fn a_pi_that_has_held_still_settles_for_whichever_process_looks_next() {
 }
 
 #[test]
-fn a_reading_of_a_pi_writes_down_the_turn_it_watched_begin() {
-    // A reader concluded and forgot, which is the whole of how `derive` works
-    // on a vendor that reports. On pi nothing else was ever going to write the
-    // record at all: it kept whatever phase the spawn or the adoption put there
-    // for as long as it existed, and the turn under way in front of everybody
-    // was a turn no verb could place. What a settled reading concluded goes on
-    // the record now, and the edge it crossed goes in the log under amx's own
-    // name for it.
-    let amx = Harness::new();
-    let id = "watch-log-c3d";
-    start(&amx, id, "works-without-end");
-    let pane = amx.pane_of(id);
-
-    amx.until("the turn to be under way", || {
-        row_of(&drawn(&amx, &pane), "Working...")
-            .is_some()
-            .then_some(())
-    });
-
-    // A record that says the last turn ended an hour ago, which is what one
-    // looks like after somebody types into the pane themselves: no hook reports
-    // the prompt they submitted, so the screen is the only place this turn ever
-    // began.
-    amx.set_state(id, json!({ "state": "idle", "since": 1, "last_event": 1 }));
-
-    all_look_at_once(&amx, 3);
-
-    let state = amx.state(id);
-    assert_eq!(
-        state["state"], "working",
-        "written down, rather than concluded and forgotten: {state}"
-    );
-    assert_eq!(
-        (&state["last_event"], &state["since"]),
-        (&json!(1), &json!(1)),
-        "while the record is no fresher for having been looked at, on either \
-         of the two stamps a reader weighs it by: {state}"
-    );
-
-    let kinds = amx.event_kinds(id);
-    assert_eq!(
-        kinds.iter().filter(|kind| *kind == READ_PROMPT).count(),
-        1,
-        "one boundary, however many readers crossed it: {kinds:?}"
-    );
-    for word in VENDORS_WORDS {
-        assert!(
-            !kinds.iter().any(|kind| kind == word),
-            "and never in the vendor's words, which pi has never said: {kinds:?}"
-        );
-    }
-
-    // The record says working now, and it still reads as working off the
-    // screen: a phase amx wrote from a picture is not a phase amx may then
-    // quote back as the vendor's own word for itself.
-    let agent = status(&amx, id);
-    assert_eq!(agent["state"], "working", "{agent}");
-    assert_eq!(agent["evidence"], "screen", "{agent}");
-    assert_eq!(
-        agent["rule"], "spinner",
-        "pi's own rule, out of pi's own document: {agent}"
-    );
-    assert_eq!(
-        amx.event_kinds(id),
-        kinds,
-        "and a reader that crosses no edge writes nothing"
-    );
-}
-
-#[test]
-fn a_pi_read_as_working_once_does_not_stay_there() {
-    // The adopt finding at the end of `docs/vendors.md`, from the other end: an
-    // adoption reads the pane once and writes what it saw, and on this vendor
-    // that reading was the last one the record ever had. A pi caught mid-turn
-    // was `working` until somebody removed the record, however long it had been
-    // sitting at its prompt.
-    let amx = Harness::new();
-    let id = "fix-login-a1b";
-    start(&amx, id, "takes-a-turn");
-    let pane = amx.pane_of(id);
-
-    // The prompt a finished turn leaves, stopped on the row no earlier screen
-    // in this scenario carries.
-    amx.until("the turn to be over", || {
-        row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
-    });
-
-    // The record an adoption leaves when it catches a pi mid-turn, with nothing
-    // heard since.
-    amx.set_state(
-        id,
-        json!({ "state": "working", "since": 1, "last_event": 1 }),
-    );
-
-    // The first look ends no turn: `prompt` is quiescent, and a screen amx has
-    // only just laid eyes on has held still for no time at all. What it writes
-    // down is the screen it found, for whoever looks next.
-    let agent = status(&amx, id);
-    assert_eq!(agent["state"], "working", "{agent}");
-    let kinds = amx.event_kinds(id);
-    assert!(
-        kinds.is_empty(),
-        "and a turn nothing has ended is an edge nothing has crossed: {kinds:?}"
-    );
-
-    // The same screen, first seen `SETTLED` seconds ago — aged on the record
-    // rather than waited through.
-    let mut aged = amx.state(id);
-    let since = aged["still"]["since"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("when that look first saw the screen: {aged}"));
-    aged["still"]["since"] = json!(since - SETTLED);
-    amx.set_state(id, aged);
-
-    all_look_at_once(&amx, 3);
-
-    let state = amx.state(id);
-    assert_eq!(
-        state["state"], "idle",
-        "the turn the screen says is over is over on the record: {state}"
-    );
-    assert_eq!(
-        (&state["last_event"], &state["since"]),
-        (&json!(1), &json!(1)),
-        "while the record is no fresher for having been looked at, on either \
-         of the two stamps a reader weighs it by: {state}"
-    );
-
-    let kinds = amx.event_kinds(id);
-    assert_eq!(
-        kinds.iter().filter(|kind| *kind == READ_TURN_END).count(),
-        1,
-        "one boundary, however many readers crossed it: {kinds:?}"
-    );
-    for word in VENDORS_WORDS {
-        assert!(
-            !kinds.iter().any(|kind| kind == word),
-            "and never in the vendor's words, which pi has never said: {kinds:?}"
-        );
-    }
-
-    // And the same record read again still names the screen it was read off.
-    let agent = status(&amx, id);
-    assert_eq!(agent["state"], "idle", "{agent}");
-    assert_eq!(agent["evidence"], "screen", "{agent}");
-    assert_eq!(
-        agent["rule"], "prompt",
-        "pi's own rule, out of pi's own document: {agent}"
-    );
-    assert_eq!(
-        amx.event_kinds(id),
-        kinds,
-        "and a reader that crosses no edge writes nothing"
-    );
-}
-
-#[test]
-fn a_pi_that_stopped_to_ask_is_written_down_without_ending_its_turn() {
-    // The phase a reading concluded goes on the record whichever phase it is,
-    // and stopping on a question is not one of a turn's edges: the turn is
-    // still on, with somebody standing in front of it. An edge written here
-    // would have `result` hand a caller the previous turn's answer the moment
-    // this one stopped to ask about something.
-    let amx = Harness::new();
-    let id = "fix-login-a1b";
-    start(&amx, id, "asks-a-question");
-    let pane = amx.pane_of(id);
-
-    amx.until("the caller's question to be drawn", || {
-        row_of(&drawn(&amx, &pane), "Run echo hi?")
-            .is_some()
-            .then_some(())
-    });
-    amx.set_state(
-        id,
-        json!({ "state": "working", "since": 1, "last_event": 1 }),
-    );
-
-    let agent = status(&amx, id);
-    assert_eq!(agent["state"], "waiting", "{agent}");
-    assert_eq!(agent["evidence"], "screen", "{agent}");
-
-    let state = amx.state(id);
-    assert_eq!(
-        state["state"], "waiting",
-        "written down, rather than concluded and forgotten: {state}"
-    );
-    let kinds = amx.event_kinds(id);
-    assert!(
-        kinds.is_empty(),
-        "and the turn it stopped in the middle of has neither begun nor ended: \
-         {kinds:?}"
-    );
-}
-
-#[test]
-fn a_pi_driven_through_several_stops_offers_the_question_it_is_on() {
-    // The last of the four hooks-gap findings at the end of `docs/vendors.md`:
-    // a record learns a question and overwrites nothing, because a hook is the
-    // vendor's own word and a screen is amx's reading of a picture. On claude
-    // the next hook clears it. On pi nothing ever did, so an agent driven
-    // through a dozen screens was still offering `Run echo hi?` when it was
-    // stopped on the login box. Where the pane is the only account there is, a
-    // later reading of it is not something to learn beside the last one: it is
-    // the one that is true now.
-    let amx = Harness::new();
-    let id = "fix-login-a1b";
-    let several_stops = timeline(
-        &amx,
-        "stops-twice",
-        // A gated tool call, then the box a provider's key is asked for, then
-        // the prompt a finished turn leaves: three screens, one pane, one
-        // record.
-        "screen dialog\nsleep 8000\nscreen login\nsleep 6000\nscreen idle\nsleep 600000\n",
-    );
-    start_playing(&amx, id, &several_stops);
-    let pane = amx.pane_of(id);
-
-    // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
-    // nothing outstanding, which is where the screen is the only witness there
-    // is on this vendor. Nothing moves those stamps again — a reading writes
-    // with the observing hand — so every look below reads the pane.
-    amx.set_state(
-        id,
-        json!({ "state": "starting", "since": 1, "last_event": 1 }),
-    );
-
-    // The first question this agent was ever read on. Looked for rather than
-    // waited out, because a look is what puts a question on a record at all:
-    // the poll that finds it is the one that wrote it.
-    let agent = amx.until("the dialog to reach the record", || {
-        let agent = status(&amx, id);
-        (agent["question"] == json!("Run echo hi?")).then_some(agent)
-    });
-    assert_eq!(agent["state"], "waiting", "{agent}");
-    assert_eq!(
-        agent["rule"], "dialog",
-        "pi's own rule, out of pi's own document: {agent}"
-    );
-
-    // And the question it is on now, which is another screen asking another
-    // thing. This is the finding: the record kept the first one.
-    let agent = amx.until("the login box to replace it", || {
-        let agent = status(&amx, id);
-        (agent["question"] == json!("Enter Cerebras API key")).then_some(agent)
-    });
-    assert_eq!(agent["rule"], "login", "{agent}");
-    assert_eq!(
-        amx.state(id)["question"],
-        json!("Enter Cerebras API key"),
-        "written down, rather than concluded and forgotten"
-    );
-
-    // The prompt pi leaves when there is nothing outstanding at all, stopped
-    // on the row no earlier screen in this timeline carries.
-    amx.until("the pi to reach its prompt", || {
-        row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
-    });
-
-    // The first look ends no turn: `prompt` is quiescent, and a screen amx has
-    // only just laid eyes on has held still for no time at all. A rule that may
-    // not speak has nothing to correct either.
-    let agent = status(&amx, id);
-    assert_eq!(agent["state"], "waiting", "{agent}");
-    assert_eq!(
-        amx.state(id)["question"],
-        json!("Enter Cerebras API key"),
-        "and the question stands until something is allowed to say otherwise"
-    );
-
-    // The same screen, first seen `SETTLED` seconds ago — aged on the record
-    // rather than waited through.
-    let mut aged = amx.state(id);
-    let since = aged["still"]["since"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("when that look first saw the screen: {aged}"));
-    aged["still"]["since"] = json!(since - SETTLED);
-    amx.set_state(id, aged);
-
-    let agent = status(&amx, id);
-    assert_eq!(agent["state"], "idle", "{agent}");
-    assert_eq!(
-        amx.state(id)["question"],
-        Value::Null,
-        "a screen with nothing on it to answer is an agent with nothing \
-         outstanding, and the record says so"
-    );
-}
-
-#[test]
 fn adopt_takes_the_pi_in_the_pane_over_and_not_the_claude_in_the_terminal() {
     // The finding at the end of `docs/vendors.md`: `adopt` read the
     // environment in table order, so a pi started from a terminal that already
@@ -2038,245 +1704,127 @@ fn adopt_takes_the_pi_in_the_pane_over_and_not_the_claude_in_the_terminal() {
 }
 
 #[test]
-fn a_turn_that_ends_on_a_pi_leaves_what_the_pane_said_on_the_record() {
-    // pi reports through no hooks and keeps no conversation amx can read back,
-    // so nothing was ever going to write down what one of its turns answered:
-    // `amx result` said it had captured none and every pi row on the wall
-    // carried a blank column, while the answer sat on the pane in front of
-    // everybody. The reader that has just read that screen as a finished turn
-    // is the only thing that will ever be looking at it, so what it read goes
-    // on the record — the rows the agent earned, with the vendor's own
-    // furniture cut off the bottom the way `amx logs` and the card cut it.
+fn a_pi_reports_its_turn_and_the_record_moves_by_its_word() {
+    // What pi says through its extension is what the record moves by, the way
+    // claude's hooks move a claude record: the session it opened and the file
+    // it keeps it in, the turn beginning, the tool it is running, and the
+    // turn settling with the answer on it. Nothing here is read off the pane.
     let amx = Harness::new();
     let id = "fix-login-a1b";
-    start(&amx, id, "takes-a-turn");
-    let pane = amx.pane_of(id);
+    start(&amx, id, "reports-a-turn");
 
-    // The row a finished turn leaves and no earlier screen in this scenario
-    // carries, waited for on its own, with the rest of the screen read off that
-    // same capture.
-    let rows = amx.until("the turn to be over", || {
-        let rows = drawn(&amx, &pane);
-        row_of(&rows, "Took").is_some().then_some(rows)
+    let agent = amx.until("the tool to be running", || {
+        let agent = status(&amx, id);
+        (agent["summary"] == json!("Running bash")).then_some(agent)
     });
+    assert_eq!(agent["state"], "working", "{agent}");
+    assert_eq!(
+        agent["evidence"], "hooks",
+        "the vendor's own word, not a reading of its screen: {agent}"
+    );
 
-    // Everything above pi's own box, which is the whole of what the agent
-    // earned on this screen and the whole of what a reading of it is worth.
-    let top = *borders(&rows)
-        .first()
-        .unwrap_or_else(|| panic!("pi's composer box: {rows:?}"));
-    let mut work: Vec<String> = rows[..top].to_vec();
-    while work.last().is_some_and(String::is_empty) {
-        work.pop();
+    let agent = amx.until("the turn to settle", || {
+        let agent = status(&amx, id);
+        (agent["state"] == json!("idle")).then_some(agent)
+    });
+    assert_eq!(agent["result"], ANSWERED, "{agent}");
+    assert_eq!(
+        agent["source"], "payload",
+        "the answer came with the report: {agent}"
+    );
+
+    // The session the report named is the record's, and so is the file pi
+    // keeps it in, which is the conversation amx reads back.
+    let meta = amx.meta(id);
+    let session = meta["session"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the session pi opened: {meta}"));
+    assert_eq!(
+        meta["transcript"],
+        json!(session_file(&amx, session)),
+        "{meta}"
+    );
+
+    let kinds = amx.event_kinds(id);
+    for word in PIS_WORDS {
+        assert!(kinds.iter().any(|kind| kind == word), "{word} in {kinds:?}");
+    }
+    for word in [READ_PROMPT, READ_TURN_END] {
+        assert!(
+            !kinds.iter().any(|kind| kind == word),
+            "a reading places no edge on a vendor that places its own: {kinds:?}"
+        );
     }
 
-    // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
-    // nothing outstanding, which is where the screen is the only witness there
-    // is on this vendor.
-    amx.set_state(
-        id,
-        json!({ "state": "starting", "since": 1, "last_event": 1 }),
-    );
-
-    let agent = status(&amx, id);
-    assert_eq!(agent["state"], "idle", "{agent}");
-    let said = agent["result"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the answer the turn left: {agent}"));
-    assert_eq!(
-        rows_of(said),
-        work,
-        "the rows the agent earned, and none of the box, working directory or \
-         stats line pi drew under them"
-    );
-    assert_eq!(
-        agent["source"], "screen",
-        "amx's reading of a picture, and the record says which: {agent}"
-    );
-    assert_eq!(
-        amx.state(id)["result"],
-        agent["result"],
-        "written down, rather than worked out again by whoever asks next"
-    );
-
-    // Which is what writing it down is for: the verb a caller waits at hands
-    // back the answer instead of saying it captured none.
+    // Which is what the verbs stand on: the answer comes back, the row
+    // carries its first sentence, and the conversation reads back whole.
     let out = amx.amx(&["result", id, "--timeout", "30"]);
     assert!(
         out.status.success(),
         "amx result: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(rows_of(&String::from_utf8_lossy(&out.stdout)), work);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), ANSWERED);
 
-    // And the row on the wall carries the last of those rows, where a pi row
-    // carried nothing at all. The first of them is the prompt somebody typed
-    // and the rows between are the tool call it ran: what a turn leaves for
-    // somebody to read is at the bottom of a transcript, not the top.
-    let out = amx.amx(&["ls"]);
+    let out = amx.amx(&["logs", id]);
     let printed = String::from_utf8_lossy(&out.stdout);
-    let row = printed
-        .lines()
-        .find(|row| row.contains(id))
-        .unwrap_or_else(|| panic!("a row for {id}: {printed}"));
-    let last = work.last().expect("a turn that left something");
+    assert!(printed.contains("❯ fix the login bug"), "{printed}");
+    assert!(printed.contains("⚒ bash cargo test"), "{printed}");
+    assert!(printed.contains(ANSWERED), "{printed}");
     assert!(
-        row.contains(last.trim()),
-        "the last thing said on the screen: {row}"
-    );
-    assert!(
-        !row.contains(work[0].trim()),
-        "and not the first row of the transcript over it: {row}"
+        !printed.contains("Took") && !printed.contains("$0.0"),
+        "the conversation, not the pane: {printed}"
     );
 }
 
 #[test]
-fn a_turn_that_answered_nothing_leaves_the_record_the_answer_it_had() {
-    // `docs/pi-screens.md` drove this at 100 columns: a turn the model answered
-    // with no prose at all leaves a pane carrying the tail of the turn before
-    // it, this turn's tool call and the thinking under it, and not one row of
-    // that is an answer to anything. Every reading of a finished screen wrote
-    // the screen down, so this picture landed in place of the answer of the
-    // turn that did say something and `amx result` handed a caller two other
-    // turns. A screen goes on the record where a reading watched the turn end
-    // on it, and nowhere else.
+fn a_pi_stopped_on_a_question_it_asked_reads_waiting_by_its_own_word() {
+    // An extension's prompt is the one stop pi reports: the prompt going up
+    // says the agent is waiting and what on, and the prompt closing says the
+    // turn goes on. The choices under the question are on the pane and
+    // nowhere else, and a reading fills them in beside the vendor's word.
     let amx = Harness::new();
     let id = "fix-login-a1b";
-    start(&amx, id, "ends-without-prose");
-    let pane = amx.pane_of(id);
+    start(&amx, id, "reports-a-question");
 
-    // The tool call this turn ran, which is the row no earlier screen in the
-    // scenario carries, with the rest of the screen read off that same capture.
-    let rows = amx.until("the wordless turn to be over", || {
-        let rows = drawn(&amx, &pane);
-        row_of(&rows, "sleep 25").is_some().then_some(rows)
+    let agent = amx.until("the question to reach the record", || {
+        let agent = status(&amx, id);
+        (agent["question"] == json!("Run echo hi?")).then_some(agent)
     });
-    assert!(
-        row_of(&rows, ANSWERED.trim()).is_none(),
-        "and not a word of the turn before it is still on the pane: {rows:?}"
+    assert_eq!(agent["state"], "waiting", "{agent}");
+    assert_eq!(agent["evidence"], "hooks", "{agent}");
+
+    let out = amx.amx(&["send", id, "and now the linter"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a message typed at a question would answer it: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
 
-    // Everything above pi's own box, which is what a reading writes down where
-    // it has a turn of its own to write it against.
-    let top = *borders(&rows)
-        .first()
-        .unwrap_or_else(|| panic!("pi's composer box: {rows:?}"));
-    let mut work: Vec<String> = rows[..top].to_vec();
-    while work.last().is_some_and(String::is_empty) {
-        work.pop();
-    }
-
-    // The record the turn before this one left: idle, with what that turn
-    // answered and `screen` beside it saying where it came from. Nothing has
-    // been heard since, because on this vendor nothing ever is.
-    amx.set_state(
-        id,
-        json!({
-            "state": "idle",
-            "since": 1,
-            "last_event": 1,
-            "result": ANSWERED,
-            "source": "screen",
-        }),
-    );
-
-    // One look to write the screen down, and the stillness aged on the record
-    // so that the next one settles: a reading that claims the screen and reads
-    // it as a finished turn is exactly the reading that used to overwrite.
-    status(&amx, id);
-    let mut aged = amx.state(id);
-    let since = aged["still"]["since"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("when that look first saw the screen: {aged}"));
-    aged["still"]["since"] = json!(since - SETTLED);
-    amx.set_state(id, aged);
-
-    // Read by a wall this time, which is the other of the two ways a screen
-    // reaches the record: one look at every agent on the machine, in a process
-    // that prints its table and exits.
-    let row = listed(&amx, id);
-    assert_eq!(row["state"], "idle", "{row}");
-    assert_eq!(row["evidence"], "screen", "{row}");
+    let agent = amx.until("the prompt to close", || {
+        let agent = status(&amx, id);
+        (agent["state"] == json!("working")).then_some(agent)
+    });
     assert_eq!(
-        row["rule"], "prompt",
-        "pi's own rule, out of pi's own document: {row}"
-    );
-    assert_eq!(
-        amx.state(id)["result"],
-        ANSWERED,
-        "the answer of the turn that did say something, left where it was"
-    );
-    assert_eq!(
-        row["result"], ANSWERED,
-        "and handed back as the record has it: {row}"
-    );
-    let kinds = amx.event_kinds(id);
-    assert!(
-        kinds.is_empty(),
-        "a turn nothing watched end is an edge nothing crossed: {kinds:?}"
-    );
-
-    // A reading that does watch this turn end writes its screen down, poor as
-    // that screen is. A turn with nothing to show for itself is still this
-    // turn, and the reader standing at the end of it is the only thing that
-    // will ever say what it left.
-    let mut running = amx.state(id);
-    running["state"] = json!("working");
-    amx.set_state(id, running);
-
-    let agent = status(&amx, id);
-    assert_eq!(agent["state"], "idle", "{agent}");
-    let said = agent["result"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the screen the turn ended on: {agent}"));
-    assert_eq!(
-        rows_of(said),
-        work,
-        "the rows the turn left, and none of the box, working directory or \
-         stats line pi drew under them"
-    );
-    assert_eq!(
-        amx.state(id)["source"],
-        "screen",
-        "amx's reading of a picture, and the record says which"
-    );
-    let kinds = amx.event_kinds(id);
-    assert_eq!(
-        kinds.iter().filter(|kind| *kind == READ_TURN_END).count(),
-        1,
-        "written on the one edge that ties a screen to a turn: {kinds:?}"
+        agent["question"],
+        Value::Null,
+        "and nothing is outstanding once it has: {agent}"
     );
 }
 
 #[test]
-fn a_message_a_pi_takes_is_confirmed_by_the_reading_that_watched_the_turn_begin() {
-    // The first of the four hooks-gap findings at the end of `docs/vendors.md`:
-    // send waited five seconds for a `UserPromptSubmit`, pi sends none, and
-    // every message to a pi exited failure over text that had landed and a turn
-    // that had run. The word a send waits for is a reader's on this vendor, and
-    // the reading that writes it down is the send's own — nothing else is
-    // looking at a pane while a caller waits on one.
+fn a_message_a_pi_takes_is_confirmed_by_its_own_word() {
+    // send waits for the vendor to say the text arrived, and pi says so with
+    // the agent_start its extension reports when the turn the message starts
+    // begins.
     let amx = Harness::new();
     let id = "fix-login-a1b";
-    let picks_it_up = timeline(
-        &amx,
-        "picks-a-message-up",
-        // Long enough at the prompt that the message goes in front of a pi that
-        // is sitting at it, and the turn begins while the send is waiting.
-        "screen idle\nsleep 3000\nscreen working\nsleep 600000\n",
-    );
-    start_playing(&amx, id, &picks_it_up);
-    let pane = amx.pane_of(id);
+    start(&amx, id, "reports-a-message");
 
-    // The prompt the last turn left, stopped on the row no earlier screen in
-    // this timeline carries.
-    amx.until("the pi to be at its prompt", || {
-        row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
+    amx.until("the first turn to settle", || {
+        (status(&amx, id)["result"] == json!("the tests pass now")).then_some(())
     });
-
-    // A record nothing has moved for an hour, which is every pi record that has
-    // not been looked at: no hook will ever move one.
-    amx.set_state(id, json!({ "state": "idle", "since": 1, "last_event": 1 }));
 
     let out = amx.amx(&["send", id, "and now the linter"]);
     assert_eq!(
@@ -2287,41 +1835,33 @@ fn a_message_a_pi_takes_is_confirmed_by_the_reading_that_watched_the_turn_begin(
     );
     assert!(
         out.stderr.is_empty(),
-        "and it went in front of a pi at its prompt rather than behind a turn \
-         that was already running: {}",
+        "and nothing to warn about: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 
     let kinds = amx.event_kinds(id);
-    assert_eq!(
-        kinds.iter().filter(|kind| *kind == READ_PROMPT).count(),
-        1,
-        "the turn a reading watched begin, which is the whole of the word there \
-         is on this vendor: {kinds:?}"
+    let sent = kinds
+        .iter()
+        .rposition(|kind| kind == SENT)
+        .unwrap_or_else(|| panic!("the message on the record: {kinds:?}"));
+    assert!(
+        kinds[sent..].iter().any(|kind| kind == "agent_start"),
+        "the turn pi says the message began: {kinds:?}"
     );
-    for word in VENDORS_WORDS {
-        assert!(
-            !kinds.iter().any(|kind| kind == word),
-            "and never in the vendor's words, which pi has never said: {kinds:?}"
-        );
-    }
-
-    let state = amx.state(id);
-    assert_eq!(state["seq"], 1, "the send is on the record: {state}");
-    assert_eq!(
-        state["last_event"], 1,
-        "and the record is no fresher for a message amx typed into it — a send \
-         is amx doing the talking, and a document that says otherwise is one \
-         the reading this send waits on would believe over the pane: {state}"
+    assert!(
+        !kinds.iter().any(|kind| kind == READ_PROMPT),
+        "and no reading placed it: {kinds:?}"
     );
+    assert_eq!(amx.state(id)["seq"], 1, "the send is on the record");
 }
 
 #[test]
 fn a_message_that_starts_no_turn_on_a_pi_is_a_send_that_says_so() {
-    // The other half of the same word. A reading that watches no turn begin is
-    // a message amx cannot say arrived, and a caller told that it did would go
-    // on to wait out its own deadline on a turn nobody is taking. The pane here
-    // never leaves the prompt the last turn left it at.
+    // The other half of the same word. A pi that never reports a turn
+    // beginning is a message amx cannot say arrived, and a caller told that
+    // it did would go on to wait out its own deadline on a turn nobody is
+    // taking. The pane here never leaves the prompt the last turn left it at,
+    // and nothing reports.
     let amx = Harness::new();
     let id = "fix-login-c3d";
     start(&amx, id, "takes-a-turn");
@@ -2352,53 +1892,19 @@ fn a_message_that_starts_no_turn_on_a_pi_is_a_send_that_says_so() {
         amx.capture(&pane).contains("and now the linter"),
         "the text reached the pane; what did not happen is a turn starting"
     );
-    let kinds = amx.event_kinds(id);
-    assert!(
-        !kinds.iter().any(|kind| kind == READ_PROMPT),
-        "a turn nothing watched begin is an edge nothing crossed: {kinds:?}"
-    );
 }
 
 #[test]
-fn a_result_after_a_message_ends_on_the_turn_a_reading_watched_end() {
-    // The second of the four hooks-gap findings at the end of `docs/vendors.md`:
-    // `result` waits for a turn that ended after the last message, and only a
-    // `Stop` said one had. pi sends none, so a caller that sent a pi a message
-    // waited out its own deadline over a turn that had run, with the answer on
-    // the record beside it. The word the wait takes is a reader's as well as a
-    // vendor's, and on this vendor the reading is the wait's own: nothing else
-    // is looking at a pane while a caller waits on one.
+fn a_result_after_a_message_ends_on_the_turn_pi_reports_ending() {
+    // result waits for a turn that ended after the last message, and pi says
+    // one did with the agent_settled its extension reports, the answer on it.
     let amx = Harness::new();
     let id = "fix-login-a1b";
-    let answers_it = timeline(
-        &amx,
-        "answers-a-message",
-        // At its prompt long enough for the message to reach a pi sitting at
-        // one, then the turn that message starts, then the prompt it leaves.
-        "screen idle\nsleep 3000\nscreen working\nsleep 3000\nscreen idle\nsleep 600000\n",
-    );
-    start_playing(&amx, id, &answers_it);
-    let pane = amx.pane_of(id);
+    start(&amx, id, "reports-a-message");
 
-    // The prompt the last turn left, stopped on the row no earlier screen in
-    // this timeline carries.
-    amx.until("the pi to be at its prompt", || {
-        row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
+    amx.until("the first turn to settle", || {
+        (status(&amx, id)["result"] == json!("the tests pass now")).then_some(())
     });
-
-    // The record a pi carries between two turns: what the turn before this one
-    // answered, with nothing heard since, because on this vendor nothing ever
-    // is.
-    amx.set_state(
-        id,
-        json!({
-            "state": "idle",
-            "since": 1,
-            "last_event": 1,
-            "result": ANSWERED,
-            "source": "screen",
-        }),
-    );
 
     let out = amx.amx(&["send", id, "and now the linter"]);
     assert_eq!(
@@ -2408,67 +1914,17 @@ fn a_result_after_a_message_ends_on_the_turn_a_reading_watched_end() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // The screen that turn is running on, as the send's own look wrote it
-    // down, so the look that replaces it can be told from it.
-    let state = amx.state(id);
-    assert_eq!(
-        state["state"], "working",
-        "the turn the send watched begin: {state}"
-    );
-    let mid_turn = state["still"]["screen"].clone();
-
-    // The wait a caller makes, in a process of its own, because what it is
-    // waiting for has not happened yet.
-    let waiting = amx
-        .amx_command(&["result", id, "--timeout", "60"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("running amx result");
-
-    // Which is how the screen the turn ends on reaches the record at all: that
-    // wait is the only thing looking at this pane.
-    amx.until("the wait to have read the screen the turn ended on", || {
-        (amx.state(id)["still"]["screen"] != mid_turn).then_some(())
-    });
-
-    // Held still for `SETTLED` seconds, aged on the record the way everything
-    // about a clock is aged here rather than waited through.
-    let mut aged = amx.state(id);
-    let since = aged["still"]["since"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("when the wait first saw that screen: {aged}"));
-    aged["still"]["since"] = json!(since - SETTLED);
-    amx.set_state(id, aged);
-
-    let out = waiting.wait_with_output().expect("waiting for amx result");
+    let out = amx.amx(&["result", id, "--timeout", "60"]);
     assert_eq!(
         out.status.code(),
         Some(0),
         "the turn ended, so the answer is on stdout: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-
-    // Everything above pi's own box, which is what this turn left on the pane
-    // and the whole of what a reading of it is worth.
-    let rows = drawn(&amx, &pane);
-    let top = *borders(&rows)
-        .first()
-        .unwrap_or_else(|| panic!("pi's composer box: {rows:?}"));
-    let mut work: Vec<String> = rows[..top].to_vec();
-    while work.last().is_some_and(String::is_empty) {
-        work.pop();
-    }
-
     let said = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(
-        rows_of(&said),
-        work,
-        "the rows the turn left, and none of the box, working directory or \
-         stats line pi drew under them"
-    );
+    assert_eq!(said.trim(), "the linter is clean");
     assert!(
-        !said.contains(ANSWERED.trim()),
+        !said.contains("the tests pass now"),
         "and not the answer of the turn before the message: {said}"
     );
 
@@ -2478,25 +1934,22 @@ fn a_result_after_a_message_ends_on_the_turn_a_reading_watched_end() {
         .rposition(|kind| kind == SENT)
         .unwrap_or_else(|| panic!("the message on the record: {kinds:?}"));
     assert!(
-        kinds[sent..].iter().any(|kind| kind == READ_TURN_END),
-        "the turn the wait watched end is the one after the message: {kinds:?}"
+        kinds[sent..].iter().any(|kind| kind == "agent_settled"),
+        "the turn pi says ended is the one after the message: {kinds:?}"
     );
-    for word in VENDORS_WORDS {
-        assert!(
-            !kinds.iter().any(|kind| kind == word),
-            "and never in the vendor's words, which pi has never said: {kinds:?}"
-        );
-    }
+    assert!(
+        !kinds.iter().any(|kind| kind == READ_TURN_END),
+        "and no reading placed it: {kinds:?}"
+    );
 }
 
 #[test]
 fn a_message_leaves_result_waiting_beside_the_answer_it_will_not_serve() {
-    // The other half of the same word, and the half this verb must never get
-    // wrong. What the pane keeps is the answer of the turn amx watched end, and
-    // the turn `result` waits for after a message is the one after it. Nothing
-    // here watches a turn end — the pane never leaves the prompt the last one
-    // left — so the wait ends on the caller's own deadline rather than on an
-    // answer that belongs to the turn before the message.
+    // The half this verb must never get wrong. The answer on the record is the
+    // turn before the message's, and the turn `result` waits for after a
+    // message is the one after it. Nothing here reports a turn ending, so the
+    // wait ends on the caller's own deadline rather than on an answer that
+    // belongs to the turn before.
     let amx = Harness::new();
     let id = "fix-login-c3d";
     start(&amx, id, "takes-a-turn");
@@ -2505,28 +1958,31 @@ fn a_message_leaves_result_waiting_beside_the_answer_it_will_not_serve() {
     amx.until("the turn to be over", || {
         row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
     });
+    let at = epoch();
     amx.set_state(
         id,
-        json!({ "state": "starting", "since": 1, "last_event": 1 }),
+        json!({
+            "state": "idle",
+            "since": at,
+            "last_event": at,
+            "result": ANSWERED,
+            "source": "payload",
+        }),
     );
 
-    // Before the message, the reading is the answer and the verb hands it back.
-    let said = status(&amx, id)["result"].clone();
-    assert!(said.is_string(), "the answer the turn left: {said}");
+    // Before the message, the record's answer is the answer.
     let out = amx.amx(&["result", id, "--timeout", "30"]);
     assert!(
         out.status.success(),
         "amx result: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), ANSWERED);
 
     // The message goes in front of the agent and is recorded before it is
-    // typed. pi takes it and says nothing, which is the send this vendor
-    // always gets.
+    // typed. The stand-in takes it and reports nothing.
     amx.amx(&["send", id, "and the tests?"]);
 
-    // Now the wait has a turn in front of it that nothing will ever report the
-    // end of.
     let out = amx.amx(&["result", id, "--timeout", "1"]);
     assert_eq!(
         out.status.code(),
@@ -2540,13 +1996,11 @@ fn a_message_leaves_result_waiting_beside_the_answer_it_will_not_serve() {
          is an answer on it: {}",
         String::from_utf8_lossy(&out.stdout)
     );
-
-    // While the answer the reading wrote is still where it was put. The verb
-    // will not serve it as this turn's, which is the whole of why it is
-    // refusing: an answer from before the message belongs to the turn before
-    // it.
-    assert_eq!(amx.state(id)["result"], said);
-    assert_eq!(amx.state(id)["source"], "screen");
+    assert_eq!(
+        amx.state(id)["result"],
+        ANSWERED,
+        "while the answer is still where it was put"
+    );
 }
 
 #[test]
@@ -2672,35 +2126,5 @@ fn doctor_offers_the_trust_key_to_a_pi_stopped_on_its_folder_trust_screen() {
     assert!(
         printed.contains("trust = true"),
         "the key amx would have answered it with: {printed}"
-    );
-}
-
-#[test]
-fn install_writes_nothing_anywhere_for_a_vendor_that_reports_nothing() {
-    // The one repair `--fix` asks about is wiring amx's hooks into the
-    // vendor's settings, and pi has no hooks to wire: there are no entries to
-    // write, nothing missing, and nothing for a person to agree to. A check
-    // that asked would send somebody looking for a fault in their own machine,
-    // and a write would leave amx's hooks in a file no pi will ever read.
-    let amx = Harness::new();
-    amx.config("agent = \"pi\"\n");
-    let before = everything_under(amx.home());
-
-    let printed = doctor_fix(&amx, "y\n");
-
-    let (ok, line) = check_line(&printed, "hooks");
-    assert!(ok, "there is nothing missing to report: {line}");
-    assert!(
-        line.contains("pi"),
-        "and it says whose pane amx reads: {line}"
-    );
-    assert!(
-        !printed.contains("go ahead?"),
-        "nobody was asked to agree to anything: {printed}"
-    );
-    assert_eq!(
-        everything_under(amx.home()),
-        before,
-        "and no settings file was made anywhere under the person's home"
     );
 }

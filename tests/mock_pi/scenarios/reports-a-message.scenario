@@ -1,0 +1,20 @@
+# An agent that answers, sits at its prompt, and then takes what somebody
+# sends it. The second agent_start is the vendor's own word that the text
+# arrived; the second agent_settled is the answer that belongs to it.
+screen boot
+hook session_start {}
+sleep 50
+hook agent_start {}
+transcript {"type":"message","id":"u1","parentId":null,"message":{"role":"user","content":"fix the login bug","timestamp":1}}
+transcript {"type":"message","id":"a1","parentId":"u1","message":{"role":"assistant","content":[{"type":"text","text":"the tests pass now"}],"stopReason":"stop"}}
+screen idle
+hook agent_settled {"last_assistant_message":"the tests pass now"}
+sleep 3000
+hook agent_start {}
+transcript {"type":"message","id":"u2","parentId":"a1","message":{"role":"user","content":"and now the linter","timestamp":2}}
+screen working
+sleep 1500
+transcript {"type":"message","id":"a2","parentId":"u2","message":{"role":"assistant","content":[{"type":"text","text":"the linter is clean"}],"stopReason":"stop"}}
+screen idle
+hook agent_settled {"last_assistant_message":"the linter is clean"}
+sleep 600000

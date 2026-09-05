@@ -40,14 +40,17 @@ use std::time::{Duration, Instant};
 use crate::derive::{self, View};
 use crate::store::{Agent, Ask, Event, Kind, Meta, Phase, State};
 use crate::tmux::{PaneId, Server};
-use crate::vendor::Capability;
+use crate::vendor::{Capability, Moment};
 use crate::{complain, exit, paths, store, warn};
 
 /// The event amx records for a message it sent.
 pub const SEND: &str = "send";
 
-/// The vendor's hook that says a message was taken.
-const SUBMITTED: &str = "UserPromptSubmit";
+/// Whether this event is a vendor saying a message was taken: the moment the
+/// table calls `Prompted`, under whichever vendor's word for it arrived.
+fn submitted(event: &Event) -> bool {
+    crate::vendor::moment_of(&event.kind) == Some(Moment::Prompted)
+}
 
 /// How long a send waits for the agent to take what it was given. Long enough
 /// for a vendor that is redrawing its screen, short enough that a caller
@@ -229,7 +232,7 @@ fn submissions(events: &[Event]) -> usize {
     events
         .iter()
         .filter(|event| {
-            (event.kind == SUBMITTED || event.kind == derive::READ_PROMPT)
+            (submitted(event) || event.kind == derive::READ_PROMPT)
                 && event.payload["agent_id"].is_null()
         })
         .count()
@@ -477,6 +480,10 @@ mod tests {
         assert!(agent.events().unwrap().is_empty(), "and none is logged");
     }
 
+    /// claude's word for a prompt taken, as its entry spells it: what the
+    /// table hands back for it is what this file waits on.
+    const SUBMITTED: &str = "UserPromptSubmit";
+
     #[test]
     fn send_counts_the_prompts_the_agent_itself_submitted() {
         assert_eq!(submissions(&events(&[])), 0);
@@ -509,8 +516,10 @@ mod tests {
             only_a_reader_will_say(&meta)
         };
 
-        assert!(asked(Some("pi")), "pi has no hook to say it with");
+        // Every vendor in the table says it itself: claude through its hooks,
+        // pi through the extension amx writes.
         assert!(!asked(Some("claude")), "claude says it itself");
+        assert!(!asked(Some("pi")), "and so does pi, through its extension");
         // Neither a command amx has no entry for nor a record from before amx
         // kept the field is measured either way.
         assert!(!asked(Some("some-tool --flag")));

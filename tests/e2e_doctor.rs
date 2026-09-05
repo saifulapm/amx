@@ -259,3 +259,117 @@ fn a_machine_with_no_server_yet_has_nothing_to_report() {
         "no line at all rather than a green one nobody measured:\n{printed}"
     );
 }
+
+/// Where pi loads a global extension from, under this harness's home: the
+/// path pi's own entry names, joined the way `install` joins it.
+fn pi_extension(amx: &Harness) -> PathBuf {
+    amx.home().join(".pi/agent/extensions/amx.ts")
+}
+
+#[test]
+fn doctor_writes_pis_extension_once_somebody_agrees_and_uninstall_takes_it_back() {
+    // pi reports through a file amx writes where pi loads extensions from,
+    // not through entries in a settings file. doctor judges that file, --fix
+    // writes it after asking, and uninstall removes it.
+    let amx = Harness::new();
+    amx.config("agent = \"pi\"\n");
+    let extension = pi_extension(&amx);
+
+    let printed = doctor(&amx);
+    let (ok, line) = check_line(&printed, "hooks");
+    assert!(!ok, "nothing is wired yet: {printed}");
+    assert!(line.contains("extension"), "{line}");
+    assert!(printed.contains("amx doctor --fix"), "{printed}");
+    assert!(!extension.exists());
+
+    let out = amx.amx_with_input(&["doctor", "--fix"], "y\n");
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        printed.contains("will write its extension"),
+        "it asked: {printed}"
+    );
+    assert!(printed.contains("wrote the extension"), "{printed}");
+    let written = std::fs::read_to_string(&extension).expect("the extension");
+    assert!(written.starts_with("// installed by amx\n"), "{written}");
+    assert!(
+        written.contains("_hook"),
+        "it reports through amx: {written}"
+    );
+    let (ok, line) = check_line(&printed, "hooks");
+    assert!(!ok, "the line before the fix said what was wrong: {line}");
+
+    let printed = doctor(&amx);
+    let (ok, line) = check_line(&printed, "hooks");
+    assert!(ok, "the extension is in place: {line}");
+
+    let out = amx.amx(&["uninstall"]);
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{printed}");
+    assert!(
+        printed.contains(&extension.display().to_string()),
+        "uninstall names what it removed: {printed}"
+    );
+    assert!(!extension.exists(), "and it is gone");
+}
+
+#[test]
+fn doctor_fix_keeps_a_copy_of_a_file_that_is_not_amxs_and_uninstall_puts_it_back() {
+    let amx = Harness::new();
+    amx.config("agent = \"pi\"\n");
+    let extension = pi_extension(&amx);
+    std::fs::create_dir_all(extension.parent().unwrap()).unwrap();
+    let theirs = "// somebody else's extension\nexport default function () {}\n";
+    std::fs::write(&extension, theirs).unwrap();
+
+    let printed = doctor(&amx);
+    let (ok, line) = check_line(&printed, "hooks");
+    assert!(!ok, "a file that is not amx's is not the wiring: {line}");
+
+    let out = amx.amx_with_input(&["doctor", "--fix"], "y\n");
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        printed.contains("keeping a copy"),
+        "it said so first: {printed}"
+    );
+    assert!(printed.contains("the file as it was is at"), "{printed}");
+    assert!(
+        std::fs::read_to_string(&extension)
+            .unwrap()
+            .starts_with("// installed by amx\n")
+    );
+
+    let out = amx.amx(&["uninstall"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&extension).unwrap(),
+        theirs,
+        "their file is back where it was"
+    );
+}
+
+#[test]
+fn doctor_says_when_the_extension_on_disk_is_not_the_one_this_amx_ships() {
+    let amx = Harness::new();
+    amx.config("agent = \"pi\"\n");
+    let extension = pi_extension(&amx);
+    std::fs::create_dir_all(extension.parent().unwrap()).unwrap();
+    std::fs::write(&extension, "// installed by amx\n// an older one\n").unwrap();
+
+    let printed = doctor(&amx);
+    let (ok, line) = check_line(&printed, "hooks");
+    assert!(!ok, "{line}");
+    assert!(line.contains("not the extension this amx ships"), "{line}");
+
+    let out = amx.amx_with_input(&["doctor", "--fix"], "y\n");
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        !printed.contains("the file as it was is at"),
+        "an older amx's file is amx's to replace, and no copy is kept: {printed}"
+    );
+    let (ok, _) = check_line(&doctor(&amx), "hooks");
+    assert!(ok);
+}

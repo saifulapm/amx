@@ -51,13 +51,16 @@ pane it starts lands somewhere that is not there and dies immediately — which
 from the outside looks like agents failing in under a second having said
 nothing. Restarting the server is the fix, and the check prints the command.
 
-`--fix` makes two repairs. It wires amx's seven hooks into
-`~/.claude/settings.json`, beside whatever is already there, after asking once
-and backing the file up. `amx uninstall` puts the backed-up bytes back and
-removes amx's records. It refuses while any agent is still running: those
-records are the only place their answers are kept. It also rewrites any
-handoff still carrying the environment inline, which needs no asking — amx
-wrote every one of those files itself.
+`--fix` makes two repairs. It wires the configured agent's hooks, after asking
+once: for claude, amx's seven hooks into `~/.claude/settings.json`, beside
+whatever is already there, with the file backed up first; for pi, amx's own
+extension into `~/.pi/agent/extensions/amx.ts`, where pi loads one from, and
+a file of somebody else's standing there is copied aside. `amx uninstall` takes
+both back out, puts the backed-up bytes back, and removes amx's records. It
+refuses while any agent is still running: those records are the only place
+their answers are kept. It also rewrites any handoff still carrying the
+environment inline, which needs no asking — amx wrote every one of those files
+itself.
 
 Without the hooks amx falls back to reading panes, which is enough to say what
 an agent is doing but not enough to hand you what it said. Answers come from
@@ -610,8 +613,9 @@ What that session id is worth afterwards is the vendor's answer. amx cannot put
 its own `AMX_ID` in a pane it did not open, so the events of a vendor that
 reports through hooks arrive with nothing on them saying whose they are, and
 the session is what carries them home: amx finds the record whose session
-matches the payload's. pi reports through no hooks at all, so there is nothing
-to carry home, and an adopted pi is read off its pane the way any other pi is.
+matches the payload's. pi's reports carry its session the same way, so an
+adopted pi comes home through the extension like any other, and one whose
+extension is not installed is read off its pane the way any quiet pi is.
 The id is worth writing down either way: a conversation amx still has an agent
 going on is one it refuses to adopt a second time. An agent whose record has
 ended is not in the way.
@@ -748,10 +752,14 @@ transcript, resume, fork, adopt, trust. A verb asks before it acts, so
 gap, not a spawn that fails somewhere in a pane.
 
 Two commands have an entry today. `claude` is the one amx runs unless told
-otherwise. `pi` is the other, and it reports through no hooks at all: nothing
-for `doctor` to wire, no conversation for `amx logs` to read back, and its pane
-is what amx reads it by. `agent = "pi"` in the config, or `--agent pi` on one
-spawn, runs it for every new agent.
+otherwise. `pi` is the other. It has no settings file a hook can be named in,
+so it reports through an extension amx writes where pi loads one from — `amx
+doctor --fix` puts it there — one event per moment the way claude's hooks
+report, and the report names the session file pi writes, which is the
+conversation `amx logs` and the card read back. A pi without the extension is
+read off its pane, the way a claude with its hooks unwired is, and `doctor`
+says so. `agent = "pi"` in the config, or `--agent pi` on one spawn, runs it
+for every new agent.
 
 A command the table has no entry for — `agent = "opencode"` — gets the floor:
 a real pane, a row that reads what the screen says, and no pretending beyond
