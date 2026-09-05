@@ -10,8 +10,9 @@
 //! themselves, [`empty`] what stands there when there are none, [`card`] the
 //! closer look hung off one of them, [`input`] the line being typed and the
 //! keys under it, and [`mod@help`] the screen of every key. Under all of those,
-//! [`text`] measures and cuts what a row says and [`style`] turns what a thing
-//! means into the paint that says so.
+//! [`text`] measures and cuts what a row says, [`prose`] draws an agent's
+//! markdown into rows, and [`style`] turns what a thing means into the paint
+//! that says so.
 //!
 //! Two kinds of thing are on the screen at once and they are drawn apart:
 //! what is happening — the rows, the counters — and what the *next* agent will
@@ -35,6 +36,7 @@ mod empty;
 mod header;
 mod help;
 mod input;
+mod prose;
 mod style;
 mod text;
 mod wall;
