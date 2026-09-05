@@ -1,0 +1,28 @@
+# An agent stopped at the vendor's folder-trust gate, as claude 2.1.259 draws
+# it at 54 columns. There are no hooks under it on purpose: the vendor puts
+# this screen in front of a session rather than inside one, so the screen is
+# the whole of what a reader has to go on. The choices carry no numbers at this
+# version and the cursor opens on the exit, which is the shape that decides
+# what the question reads back as.
+print ──────────────────────────────────────────────────────
+print  Accessing workspace:
+print
+print  /home/saiful/.claude/jobs/dfc82656/tmp/scratch2
+print
+print  Quick safety check: Is this a project you created or
+print  one you trust? (Like your own code, a well-known
+print  open source project, or work from your team). If
+print  not, take a moment to review what's in this folder
+print  first.
+print
+print  Claude Code'll be able to read, edit, and execute
+print  files here.
+print
+print  Security guide
+print
+print  ❯ No, exit
+print    Yes, I trust this folder
+print
+print  Enter to confirm · Esc to cancel
+# The gate waits for a person, and nothing else ever ends it.
+sleep 600000

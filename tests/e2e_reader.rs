@@ -44,38 +44,12 @@ Should this project be indented with spaces or tabs?
 Enter to select · ↑/↓ to navigate · Esc to cancel
 ";
 
-/// The folder-trust screen, measured off claude v2.1.226 at 54 columns and
-/// reconfirmed at v2.1.237. The vendor wraps its question across five rows at
-/// this width, and breaks it between `you` and `trust`.
-const A_TRUST_SCREEN: &str = "\
-──────────────────────────────────────────────────────
- Accessing workspace:
-
- /tmp/amx-repo/repo/.amx/worktrees/fix-login-a1b
-
- Quick safety check: Is this a project you created or
- one you trust? (Like your own code, a well-known
- open source project, or work from your team). If
- not, take a moment to review what's in this folder
- first.
-
- Claude Code'll be able to read, edit, and execute
- files here.
-
- Security guide
-
- ❯ 1. Yes, I trust this folder
-   2. No, exit
-
- Enter to confirm · Esc to cancel
-";
-
 /// A pane with one of the vendor's blocking screens on it and nothing running
 /// but a sleep.
 ///
-/// claude draws these two at a boot and at a permission stop, which is not
-/// something the stand-in can be made to reach; the screen itself is what a
-/// reader has to work from, so the screen itself is what is put in front of it.
+/// claude draws the menu inside a turn it is running, which is not something
+/// the stand-in can be made to reach; the screen itself is what a reader has to
+/// work from, so the screen itself is what is put in front of it.
 fn a_pane_showing(amx: &Harness, screen: &str) -> String {
     let word = format!("'{}'", screen.replace('\'', r"'\''"));
     amx.tmux(&[
@@ -141,41 +115,61 @@ fn a_waiting_agents_question_reaches_the_record_with_the_answers_it_offers() {
 }
 
 #[test]
-fn a_menu_and_a_trust_screen_record_the_question_they_are_asking() {
+fn a_menu_records_the_question_it_is_asking() {
     let amx = Harness::new();
-    for (id, screen, text, options) in [
-        (
-            "picks-a1b",
-            A_MENU,
-            "Should this project be indented with spaces or tabs?",
-            json!(["Spaces", "Tabs", "Type something.", "Chat about this"]),
-        ),
-        (
-            "trusts-b2c",
-            A_TRUST_SCREEN,
-            "Quick safety check: Is this a project you created or one you trust? \
-             (Like your own code, a well-known open source project, or work from \
-             your team). If not, take a moment to review what's in this folder \
-             first.",
-            json!(["Yes, I trust this folder", "No, exit"]),
-        ),
-    ] {
-        let pane = a_pane_showing(&amx, screen);
-        amx.record(id, &pane);
-        amx.until("the screen to be drawn", || {
-            amx.capture(&pane).contains("❯ 1.").then_some(())
-        });
+    let text = "Should this project be indented with spaces or tabs?";
+    let pane = a_pane_showing(&amx, A_MENU);
+    amx.record("picks-a1b", &pane);
+    amx.until("the menu to be drawn", || {
+        amx.capture(&pane).contains("❯ 1.").then_some(())
+    });
 
-        // Nothing was ever heard from this one, so the screen is all there is
-        // and the question on it is nobody's but the screen's.
-        let agent = status(&amx, id);
-        assert_eq!(agent["state"], "waiting", "{id}: {agent}");
-        assert_eq!(agent["question"], text, "{id}");
+    // Nothing was ever heard from this one, so the screen is all there is and
+    // the question on it is nobody's but the screen's.
+    let agent = status(&amx, "picks-a1b");
+    assert_eq!(agent["state"], "waiting", "{agent}");
+    assert_eq!(agent["question"], text);
 
-        let recorded = amx.state(id);
-        assert_eq!(recorded["question"]["text"], text, "{id}");
-        assert_eq!(recorded["question"]["options"], options, "{id}");
-    }
+    let recorded = amx.state("picks-a1b");
+    assert_eq!(recorded["question"]["text"], text);
+    assert_eq!(
+        recorded["question"]["options"],
+        json!(["Spaces", "Tabs", "Type something.", "Chat about this"])
+    );
+}
+
+#[test]
+fn a_trust_gate_records_the_question_and_not_one_of_its_answers() {
+    // The stand-in paints the gate the way 2.1.259 draws it: choices with no
+    // numbers on them and the cursor opening on the exit. `Yes, I trust this
+    // folder` is a row that reads like an answer, and the place the record
+    // must not put it is where the question goes.
+    let amx = Harness::new();
+    let pane = amx.play("trusts-b2c", "stops-on-trust");
+    amx.until("the gate to be drawn", || {
+        amx.capture(&pane)
+            .contains("Enter to confirm")
+            .then_some(())
+    });
+
+    let text = "Quick safety check: Is this a project you created or one you trust? \
+                (Like your own code, a well-known open source project, or work from \
+                your team). If not, take a moment to review what's in this folder \
+                first.";
+    let agent = status(&amx, "trusts-b2c");
+    assert_eq!(agent["state"], "waiting", "{agent}");
+    assert_eq!(agent["rule"], "folder_trust");
+    assert_eq!(agent["question"], text);
+    assert_eq!(
+        agent["options"],
+        json!([]),
+        "the choices a reader hands back are the numbered ones, and the vendor \
+         numbers none of these"
+    );
+
+    // The words alone, which is how the record writes a question with no
+    // choices under it.
+    assert_eq!(amx.state("trusts-b2c")["question"], text);
 }
 
 #[test]
