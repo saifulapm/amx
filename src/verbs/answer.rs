@@ -39,6 +39,15 @@
 //! else's answer: `n` at a menu with no preview does nothing at all, and the
 //! note would be typed at the menu with its first digit answering it.
 //!
+//! A list the vendor puts no numbers on takes none of those keys. claude
+//! 2.1.259 draws its folder-trust gate that way — two rows, neither numbered,
+//! the cursor on the one that ends the agent — so a digit lands on nothing and
+//! the key that takes what is highlighted is the key that exits. What answers
+//! a list like that is a walk: the cursor moves that reach the row a caller
+//! means, and the take at the end of them. The two go in one answer, because
+//! what makes the take the caller's row rather than the vendor's is the walk
+//! in front of it.
+//!
 //! Two things about a menu are the screen's rather than the record's, and both
 //! were re-measured against 2.1.240 on 2026-08-25. The screen is numbered two
 //! rows past the payload — the vendor adds a free-text row and `Chat about
@@ -88,6 +97,17 @@ const OFF_THE_FIELD: &str = "Down";
 /// The key that takes what is highlighted: a choice, the `Submit` row of a
 /// checkbox box, or `1. Submit answers` on the review screen.
 const TAKE_IT: &str = "Enter";
+
+/// The keys that walk the cursor of a list the vendor puts no numbers on.
+///
+/// Measured against claude 2.1.259 on 2026-09-05 and written up in
+/// `docs/claude-screens.md`: its folder-trust gate draws `❯ No, exit` over
+/// `Yes, I trust this folder` with no number on either row. `1`, `2` and `y`
+/// do nothing at all there, `n` and `Enter` end the agent, and `Down` is the
+/// only thing that reaches the other row. pi's own gate says the same in its
+/// hint row — `↑↓ navigate  enter select` — so this is the shape of a list
+/// without numbers rather than a fact about one vendor.
+const WALKS: [&str; 2] = ["Up", "Down"];
 
 /// The key that puts the cursor in the notes field, on the one shape that
 /// draws one. Measured against 2.1.240: at a menu with no preview it does
@@ -185,6 +205,9 @@ enum Answer {
     Toggle(Vec<usize>),
     /// Words of the caller's own, for the question that offers a field.
     Words(String),
+    /// The cursor moves that reach the row a caller means on a list with no
+    /// numbers on it, and the key that takes what they land on.
+    Walk(Vec<String>),
 }
 
 impl Answer {
@@ -194,10 +217,13 @@ impl Answer {
     /// answering, so amx can put the answer on the record and press the
     /// vendor's confirm for it. `y`, `enter` and `esc` are keys whose effect
     /// on the screen amx does not model: what they did to the prompt is the
-    /// next hook's business and the screen's after that.
+    /// next hook's business and the screen's after that. A walk is the same:
+    /// the row it lands on carries no number, so there is nothing on the
+    /// record for amx to say it took.
     fn chose(&self) -> bool {
         match self {
             Answer::Key(key) => one_choice(key).is_some(),
+            Answer::Walk(_) => false,
             _ => true,
         }
     }
@@ -221,6 +247,7 @@ impl Answer {
                 .collect::<Vec<_>>()
                 .join(", "),
             Answer::Words(words) => words.clone(),
+            Answer::Walk(keys) => keys.join(" "),
         }
     }
 
@@ -234,6 +261,7 @@ impl Answer {
                 "answer": said,
             }),
             Answer::Words(words) => serde_json::json!({ "text": words }),
+            Answer::Walk(keys) => serde_json::json!({ "key": keys.join(" ") }),
         }
     }
 }
@@ -337,14 +365,24 @@ fn answer(args: &AnswerArgs, kind: Option<Kind>, state: &State) -> Result<Answer
     // `--text` says which of the two a thing that reads as both is, so it is
     // read before the grammar rather than through it.
     if let Some(text) = &args.text {
-        return field(text, kind, pending, multi);
+        return field(text, kind, state);
     }
 
     let typed = args.key.as_deref().unwrap_or_default();
     if a_list(typed) {
         return boxes(typed, multi, pending);
     }
+    if let Some(walked) = a_walk(typed) {
+        return walk(walked);
+    }
     if let Some(key) = named(typed) {
+        if key == TAKE_IT && unnumbered(kind, state) {
+            return Err(format!(
+                "`{typed}` takes the row the cursor is on, and this screen numbers none \
+                 of its rows for amx to see which that is: walk to the one you mean, \
+                 as `down enter`"
+            ));
+        }
         return match (multi, one_choice(&key)) {
             (true, Some(_)) => boxes(&key, multi, pending),
             (false, Some(at)) => {
@@ -364,9 +402,61 @@ fn answer(args: &AnswerArgs, kind: Option<Kind>, state: &State) -> Result<Answer
         }
         _ => Err(format!(
             "`{typed}` is not an answer. {}",
-            grammar(kind, multi, pending)
+            grammar(kind, state)
         )),
     }
+}
+
+/// Whether the screen showing is a list the vendor puts no numbers on, where
+/// the key that takes what is highlighted takes a row amx cannot see.
+///
+/// The trust gate is the one this was measured on, and the record says as much:
+/// the choices a reader hands back are the numbered ones, and 2.1.259 numbers
+/// none of that screen's. Everywhere else the highlighted row is either one amx
+/// has read and numbered, or a prompt whose one answer is `Enter` — and a
+/// refusal there would leave that prompt with nothing that answers it.
+fn unnumbered(kind: Option<Kind>, state: &State) -> bool {
+    kind == Some(Kind::Trust) && state.options.is_empty()
+}
+
+/// The keys of a walk, for the line that is one.
+///
+/// A walk is one or more cursor moves and at most one take, in that order.
+/// Anything else is not a walk and is read as whatever else it might be: `esc`
+/// is a key of its own, a take with nothing in front of it is the key that
+/// picks whatever the vendor highlighted, and a sentence with the word `up` in
+/// it is words.
+fn a_walk(typed: &str) -> Option<Vec<String>> {
+    let keys: Vec<String> = typed.split_whitespace().map(named).collect::<Option<_>>()?;
+    let (last, moves) = keys.split_last()?;
+    let a_move = |key: &String| walks(key);
+    match moves.iter().all(a_move) && (a_move(last) || (!moves.is_empty() && last == TAKE_IT)) {
+        true => Some(keys),
+        false => None,
+    }
+}
+
+/// A walk, once it says what to do at the end of itself.
+///
+/// A walk with no take on the end of it moves the cursor and answers nothing,
+/// and amx would write the question down as answered and report the agent back
+/// at work with the prompt still up. The take goes in the same line as the
+/// moves because that is what makes it the caller's row rather than the
+/// vendor's: on claude 2.1.259's gate the row the cursor opens on is `No, exit`.
+fn walk(keys: Vec<String>) -> Result<Answer, String> {
+    match keys.last().is_some_and(|key| key == TAKE_IT) {
+        true => Ok(Answer::Walk(keys)),
+        false => Err(
+            "a walk moves the cursor and answers nothing on its own: say what to do at \
+             the end of it, as `down enter`"
+                .to_string(),
+        ),
+    }
+}
+
+/// Whether this key moves a cursor rather than answering anything.
+fn walks(key: &str) -> bool {
+    WALKS.contains(&key)
 }
 
 /// How many choices the question showing offers, as the record has them.
@@ -424,16 +514,12 @@ fn a_choice_of(at: usize, pending: &Ask) -> Result<(), String> {
 /// measured against 2.1.240, that layout has no `Other` row at all, so the
 /// `Up` this sends would land on a choice and the words would be typed at the
 /// menu itself.
-fn field(
-    text: &str,
-    kind: Option<Kind>,
-    pending: Option<&Ask>,
-    multi: bool,
-) -> Result<Answer, String> {
+fn field(text: &str, kind: Option<Kind>, state: &State) -> Result<Answer, String> {
+    let pending = state.pending();
     if kind != Some(Kind::Question) {
         return Err(format!(
             "this prompt has no row for words of your own. {}",
-            grammar(kind, multi, pending)
+            grammar(kind, state)
         ));
     }
     if previewed(pending) {
@@ -540,6 +626,10 @@ fn steps(answer: &Answer, note: Option<&str>, shape: Shape) -> Vec<Step> {
             steps.extend(checked.iter().map(|at| key(&at.to_string())));
             steps.push(key(OFF_THE_CHOICES));
         }
+        // The moves and the take as they were given: nothing is added to the
+        // end of a walk, because the row it lands on is the caller's and the
+        // row it opened on is the vendor's.
+        Answer::Walk(walked) => steps.extend(walked.iter().map(|pressed| key(pressed))),
         Answer::Words(words) => {
             steps.push(key(TO_THE_FIELD));
             steps.push(Step::Type(words.clone()));
@@ -566,7 +656,14 @@ fn steps(answer: &Answer, note: Option<&str>, shape: Shape) -> Vec<Step> {
 ///
 /// Words are offered where there is a row to put them in, which is every
 /// question the vendor asks itself except the one it draws a preview beside.
-fn grammar(kind: Option<Kind>, multi: bool, pending: Option<&Ask>) -> String {
+///
+/// A list with no numbers on it is offered neither: no digit reaches a row of
+/// it, and the key that takes what is highlighted takes whichever row the
+/// vendor opened on — which on the one screen measured is the one that ends the
+/// agent. What is offered there is the walk, which names the row before it
+/// takes it.
+fn grammar(kind: Option<Kind>, state: &State) -> String {
+    let pending = state.pending();
     let offered = offered(pending);
     let run = match offered {
         0 => "1-9".to_string(),
@@ -577,11 +674,12 @@ fn grammar(kind: Option<Kind>, multi: bool, pending: Option<&Ask>) -> String {
         true => "enter or esc",
         false => "enter, esc, or words of your own",
     };
-    match (kind, multi) {
+    match (kind, state.multi()) {
         (Some(Kind::Question), true) if offered > 1 => {
             format!("use {run}, 1,{offered} for several, {and_words}")
         }
         (Some(Kind::Question), _) => format!("use {run}, {and_words}"),
+        _ if unnumbered(kind, state) => "use down enter, up enter, or esc".to_string(),
         _ => "use y, n, 1-9, enter or esc".to_string(),
     }
 }
@@ -726,16 +824,20 @@ fn answered(agent: &Agent, answer: &Answer, note: Option<&str>) -> Result<()> {
 
 /// One key of the grammar, under the name tmux knows it by.
 ///
-/// `enter` and `esc` are the two that are not their own keystrokes — sending
-/// the letters would type a word at the agent. Case and surrounding space are
-/// a typo, not a different intent. `enter` earns its place because a prompt
-/// with a highlighted default takes it and nothing else.
+/// `enter`, `esc`, `up` and `down` are the four that are not their own
+/// keystrokes — sending the letters would type a word at the agent. Case and
+/// surrounding space are a typo, not a different intent. `enter` earns its
+/// place because a prompt with a highlighted default takes it and nothing else,
+/// and the two moves earn theirs because a list with no numbers on it has no
+/// other way to the row a caller means.
 pub fn named(key: &str) -> Option<String> {
     let key = key.trim().to_ascii_lowercase();
     match key.as_str() {
         "y" | "n" => Some(key),
         "enter" => Some("Enter".to_string()),
         "esc" => Some("Escape".to_string()),
+        "up" => Some("Up".to_string()),
+        "down" => Some("Down".to_string()),
         digit if matches!(digit.as_bytes(), [b'1'..=b'9']) => Some(key),
         _ => None,
     }
@@ -824,6 +926,20 @@ mod tests {
             multi: false,
             answer: None,
         }])
+    }
+
+    /// claude's folder-trust gate as 2.1.259 draws it, as a reader hands it
+    /// over: the safety-check sentence off the screen, and no numbered choice
+    /// under it, because the vendor numbers neither of the two rows it draws.
+    fn a_trust_gate() -> State {
+        State {
+            state: Phase::Waiting,
+            question: Some(
+                "Quick safety check: Is this a project you created or one you trust?".to_string(),
+            ),
+            kind: Some(Kind::Trust),
+            ..State::default()
+        }
     }
 
     /// A permission box: a question with no call behind it and one key to
@@ -975,27 +1091,31 @@ mod tests {
         // Refusing `3` and then inviting `1-9` in the same breath is amx
         // pointing at the row it just refused.
         assert_eq!(
-            grammar(Some(Kind::Question), false, a_plain_question().pending()),
+            grammar(Some(Kind::Question), &a_plain_question()),
             "use 1-2, enter, esc, or words of your own"
         );
         assert!(
-            grammar(Some(Kind::Question), true, a_checkbox_question().pending()).contains("1,3"),
+            grammar(Some(Kind::Question), &a_checkbox_question()).contains("1,3"),
             "a question that takes several says how to give it several"
         );
         assert_eq!(
-            grammar(
-                Some(Kind::Question),
-                false,
-                a_previewed_question().pending()
-            ),
+            grammar(Some(Kind::Question), &a_previewed_question()),
             "use 1-2, enter or esc",
             "a previewed question has no row for words of your own"
         );
 
         // A prompt amx holds no call for does not know how many rows it has,
         // and 1-9 is what a box of two and a box of five have in common.
-        assert!(grammar(Some(Kind::Permission), false, None).contains("y, n, 1-9"));
-        assert!(grammar(Some(Kind::Question), false, None).contains("1-9"));
+        assert!(grammar(Some(Kind::Permission), &a_permission_box()).contains("y, n, 1-9"));
+        assert!(grammar(Some(Kind::Question), &State::default()).contains("1-9"));
+
+        // A list with no numbers on it is offered neither the digits, which
+        // reach none of its rows, nor the key that takes whichever row the
+        // vendor opened on.
+        assert_eq!(
+            grammar(Some(Kind::Trust), &a_trust_gate()),
+            "use down enter, up enter, or esc"
+        );
     }
 
     #[test]
@@ -1157,6 +1277,14 @@ mod tests {
             answer(&given("2"), Some(Kind::Question), &state),
             Ok(Answer::Key("2".to_string()))
         );
+
+        // A walk reads as one for the same reason and is said apart in the
+        // same way: `down enter` is two keys, and the words `down enter` are
+        // what the flag is for.
+        assert_eq!(
+            answer(&given_text("down enter"), Some(Kind::Question), &state),
+            Ok(Answer::Words("down enter".to_string()))
+        );
     }
 
     #[test]
@@ -1261,12 +1389,108 @@ mod tests {
     }
 
     #[test]
-    fn the_grammar_is_y_n_one_through_nine_enter_and_esc() {
+    fn the_grammar_is_y_n_one_through_nine_the_two_moves_enter_and_esc() {
         for key in ["y", "n", "1", "5", "9"] {
             assert_eq!(named(key).as_deref(), Some(key));
         }
         assert_eq!(named("enter").as_deref(), Some("Enter"));
         assert_eq!(named("esc").as_deref(), Some("Escape"));
+        assert_eq!(named("down").as_deref(), Some("Down"));
+        assert_eq!(named("up").as_deref(), Some("Up"));
+    }
+
+    #[test]
+    fn surfaces_a_list_with_no_numbers_is_answered_by_walking_to_the_row() {
+        // Measured against claude 2.1.259 on 2026-09-05 and written up in
+        // docs/claude-screens.md: the gate draws `❯ No, exit` over `Yes, I
+        // trust this folder`, `1`, `2` and `y` do nothing to it, and the only
+        // thing that reaches the second row is `Down` and then `Enter`.
+        let gate = a_trust_gate();
+        assert_eq!(
+            answer(&given("down enter"), Some(Kind::Trust), &gate),
+            Ok(Answer::Walk(vec!["Down".to_string(), "Enter".to_string()]))
+        );
+        assert_eq!(typed(&gate, &given("down enter")), keys(&["Down", "Enter"]));
+
+        // A list longer than two takes as many moves as it takes, and the take
+        // is still the caller's own.
+        assert_eq!(
+            typed(&gate, &given("down down enter")),
+            keys(&["Down", "Down", "Enter"])
+        );
+        assert_eq!(typed(&gate, &given("up enter")), keys(&["Up", "Enter"]));
+
+        // And each of them goes in a call of its own with a moment after it,
+        // the way every other answer of more than one key does.
+        let typist = Typed::default();
+        drive(&typist, &typed(&gate, &given("down enter"))).unwrap();
+        assert_eq!(
+            *typist.0.borrow(),
+            vec![vec!["Down"], vec!["settle"], vec!["Enter"]],
+        );
+    }
+
+    #[test]
+    fn surfaces_a_walk_that_takes_nothing_is_not_an_answer() {
+        // A move on its own leaves the prompt exactly where it was, while amx
+        // writes the question down as answered and reports the agent back at
+        // work — which is the state a caller stops watching.
+        let gate = a_trust_gate();
+        for walked in ["down", "up", "down down"] {
+            let refused = answer(&given(walked), Some(Kind::Trust), &gate).expect_err("no take");
+            assert!(refused.contains("down enter"), "{refused}");
+        }
+
+        // And a walk is moves and then the take, in that order: anything else
+        // is read as whatever else it might be.
+        assert_eq!(a_walk("enter down"), None);
+        assert_eq!(a_walk("down enter enter"), None);
+        assert_eq!(a_walk("down esc"), None);
+        assert_eq!(a_walk("hold on, up to you"), None);
+    }
+
+    #[test]
+    fn surfaces_the_key_that_takes_the_highlighted_row_is_refused_where_none_is_numbered() {
+        // 2.1.259 opens the gate's cursor on `No, exit`, so the key that takes
+        // what is highlighted is the key that ends the agent — and with no
+        // numbered row on the screen, nothing amx holds says which row that
+        // is.
+        let gate = a_trust_gate();
+        let refused = answer(&given("enter"), Some(Kind::Trust), &gate).expect_err("the default");
+        assert!(refused.contains("down enter"), "{refused}");
+
+        // Where the rows are numbered they have been read, and `enter` is the
+        // key a prompt with a highlighted default takes.
+        assert_eq!(
+            answer(&given("enter"), Some(Kind::Permission), &a_permission_box()),
+            Ok(Answer::Key("Enter".to_string()))
+        );
+        let numbered = State {
+            kind: Some(Kind::Trust),
+            ..a_permission_box()
+        };
+        assert_eq!(
+            answer(&given("enter"), Some(Kind::Trust), &numbered),
+            Ok(Answer::Key("Enter".to_string())),
+            "including the trust screen of a vendor that still numbers its rows"
+        );
+    }
+
+    #[test]
+    fn surfaces_a_walk_leaves_no_answer_amx_cannot_name_behind_it() {
+        // The row a walk lands on carries no number, and the record carries no
+        // choices for that screen either, so what amx writes down is the keys
+        // it typed and nothing it would be inventing.
+        let root = tempfile::TempDir::new().unwrap();
+        let agent = recorded(root.path(), &a_trust_gate());
+        let walked = Answer::Walk(vec!["Down".to_string(), "Enter".to_string()]);
+        answered(&agent, &walked, None).unwrap();
+
+        let state = agent.state().unwrap();
+        assert_eq!(state.state, Phase::Working);
+        assert_eq!(state.question, None);
+        assert_eq!(state.kind, None);
+        assert_eq!(agent.events().unwrap()[0].payload["key"], "Down Enter");
     }
 
     #[test]
@@ -1315,7 +1539,7 @@ mod tests {
                 answer(&given("neither, keep both"), kind, &state).is_err(),
                 "{kind:?}"
             );
-            assert!(grammar(kind, false, None).contains("y, n, 1-9"), "{kind:?}");
+            assert!(grammar(kind, &state).contains("y, n, 1-9"), "{kind:?}");
         }
     }
 
@@ -1347,10 +1571,7 @@ mod tests {
                 "{blank:?}"
             );
         }
-        assert!(
-            grammar(Some(Kind::Question), false, a_plain_question().pending())
-                .contains("words of your own")
-        );
+        assert!(grammar(Some(Kind::Question), &state).contains("words of your own"));
     }
 
     /// An agent with a record and no pane: what is written down when a

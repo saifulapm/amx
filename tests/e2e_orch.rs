@@ -416,6 +416,75 @@ fn surfaces_the_table_carries_the_choices_beside_the_question() {
     assert_eq!(row.lines().count(), 1, "and a row is still a row: {row:?}");
 }
 
+/// Park an agent on the vendor's own folder-trust gate, as claude 2.1.259
+/// draws it: two choices, no number on either, and the cursor on the one that
+/// ends the agent.
+///
+/// There are no hooks under this screen. The vendor puts it in front of a
+/// session rather than inside one, so the pane is the whole of what a reader
+/// has to go on and the record is what the reader writes off it.
+fn parked_on_the_gate(amx: &Harness, id: &str) -> String {
+    let pane = amx.play(id, "stops-on-trust");
+    amx.until("the gate to be drawn", || {
+        amx.capture(&pane)
+            .contains("Enter to confirm")
+            .then_some(())
+    });
+    pane
+}
+
+#[test]
+fn surfaces_a_screen_that_numbers_nothing_is_answered_by_walking_to_the_row() {
+    // docs/claude-screens.md, driven against a live 2.1.259 on 2026-09-05:
+    // `1`, `2` and `y` do nothing at this gate, `n` and `enter` end the agent,
+    // and the only thing that reaches `Yes, I trust this folder` is a walk
+    // down and the key that takes what it lands on.
+    let amx = Harness::new();
+    parked_on_the_gate(&amx, "trusts-b2c");
+
+    let out = amx.amx(&["answer", "trusts-b2c", "down enter"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let answered = amx
+        .events("trusts-b2c")
+        .into_iter()
+        .find(|event| event["kind"] == "answer")
+        .expect("the walk on the record");
+    assert_eq!(
+        answered["payload"]["key"], "Down Enter",
+        "what amx typed is what the record keeps: {answered}"
+    );
+}
+
+#[test]
+fn surfaces_the_key_that_takes_the_highlighted_row_is_refused_where_none_is_numbered() {
+    // The cursor opens on `No, exit`, so `enter` here is the key that ends the
+    // agent, and a screen numbering none of its choices gives amx nothing to
+    // see that with. Refusing it is what keeps the grammar off the row the
+    // vendor happened to highlight.
+    let amx = Harness::new();
+    let pane = parked_on_the_gate(&amx, "trusts-b2c");
+
+    let out = amx.amx(&["answer", "trusts-b2c", "enter"]);
+    assert_eq!(code(&out), 64, "{}", stderr(&out));
+    assert!(stderr(&out).contains("down enter"), "{}", stderr(&out));
+    assert!(
+        amx.capture(&pane).contains("Enter to confirm"),
+        "the gate is still up, and the agent is still behind it"
+    );
+    assert!(
+        !amx.event_kinds("trusts-b2c")
+            .contains(&"answer".to_string()),
+        "a refused key is not an answer, and the question is still there to be answered"
+    );
+
+    // A walk that takes nothing leaves the prompt standing, so it is not an
+    // answer either: the walk and the take go in one line.
+    let out = amx.amx(&["answer", "trusts-b2c", "down"]);
+    assert_eq!(code(&out), 64, "{}", stderr(&out));
+    assert!(stderr(&out).contains("down enter"), "{}", stderr(&out));
+}
+
 #[test]
 fn surfaces_answer_takes_words_where_the_vendor_asks_a_question_of_its_own() {
     let amx = Harness::new();
