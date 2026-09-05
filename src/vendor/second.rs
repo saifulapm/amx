@@ -58,6 +58,9 @@ pub const SECOND: Vendor = Vendor {
     hooks: None,
     // Screens of its own, drawn out of nothing claude draws: see [`SCREENS`].
     screens: Some(SCREENS),
+    // And no conversation on disk to read, which is what a vendor that keeps
+    // no transcript has to answer.
+    transcript: None,
 };
 
 /// The second vendor's screens.

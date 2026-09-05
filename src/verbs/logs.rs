@@ -68,7 +68,11 @@ pub fn run(
     let started = spawn::read_handoff(agent.dir()).ok();
     let vendor = started.as_ref().and_then(spawn::vendor_of);
     let told = keeps_a_conversation(vendor)
-        .then(|| meta.transcript.as_deref().and_then(conversation))
+        .then(|| {
+            meta.transcript
+                .as_deref()
+                .and_then(|path| conversation(path, meta.agent.as_deref().unwrap_or_default()))
+        })
         .flatten();
 
     // Whether there is a screen to read is a question for the pane list and not
@@ -112,58 +116,18 @@ fn chrome(vendor: Option<&Vendor>) -> &'static Furniture {
 
 /// The agent's recent conversation, read from the transcript the vendor keeps.
 ///
-/// One JSON document a line, and three kinds worth a reader's time — shapes
-/// measured from a live claude 2.1.240 transcript on 2026-08-25. A prompt is a
-/// `user` entry whose content is a string, and wears the composer's own `❯` so
-/// the two voices read apart. An `assistant` entry's content is typed blocks:
-/// `text` is the agent's words, verbatim; `tool_use` is a line naming the tool,
-/// because what ran matters and its output would drown the words around it.
-/// Everything else — thinking, attachments, tool results, the vendor's
-/// bookkeeping — is nobody's reading.
+/// Read by the shape the record's own vendor writes — see
+/// [`crate::conversation::format_of`] — and printed the way that module
+/// prints one: a prompt wears the composer's `❯`, a tool call `⚒` and the
+/// argument worth a row, and what the agent said is its own words.
 ///
 /// `None` when the file cannot be read or renders to nothing: a transcript
 /// with nothing in it to say is no transcript, and the screen is the fallback.
-fn conversation(path: &Path) -> Option<String> {
+fn conversation(path: &Path, agent: &str) -> Option<String> {
     let raw = std::fs::read_to_string(path).ok()?;
-    let mut told: Vec<String> = Vec::new();
-    for line in raw.lines() {
-        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        match entry["type"].as_str() {
-            Some("user") => {
-                if let Some(text) = entry["message"]["content"].as_str()
-                    && !text.trim().is_empty()
-                {
-                    told.push(format!("❯ {}", text.trim()));
-                }
-            }
-            Some("assistant") => {
-                for block in entry["message"]["content"]
-                    .as_array()
-                    .map(Vec::as_slice)
-                    .unwrap_or_default()
-                {
-                    match block["type"].as_str() {
-                        Some("text") => {
-                            let text = block["text"].as_str().unwrap_or("").trim();
-                            if !text.is_empty() {
-                                told.push(text.to_string());
-                            }
-                        }
-                        Some("tool_use") => {
-                            if let Some(name) = block["name"].as_str() {
-                                told.push(format!("⚒ {name}"));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    (!told.is_empty()).then(|| told.join("\n\n"))
+    let format = crate::conversation::format_of(agent)?;
+    let said = crate::conversation::read(format, &raw);
+    (!said.is_empty()).then(|| crate::conversation::plain(&said))
 }
 
 /// The last `lines` lines of a text, trailing blanks dropped first.

@@ -211,6 +211,36 @@ pub struct Vendor {
     /// is watched and never named. Screens are measured against a running
     /// program, and a document written from anywhere else is a transcription.
     pub screens: Option<&'static str>,
+    /// The shape of the conversation this vendor writes to disk, for
+    /// `crate::conversation` to read it by. Which file that is arrives on a
+    /// hook payload, so a vendor that reports nothing never puts one on a
+    /// record — [`Capability::Transcript`] is what a verb asks before it opens
+    /// one, and this is how the reader that opens it reads what it finds.
+    ///
+    /// `None` from a vendor whose file amx has never sat down with. A shape
+    /// is measured off a real session, the way a screen is off a real pane.
+    pub transcript: Option<Transcript>,
+}
+
+/// The shape of a conversation on disk: one JSON document a line, and where
+/// in each the words are.
+///
+/// Two vendors, two shapes, both measured. What each entry means is
+/// `crate::conversation`'s business; this is only which of them a file is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transcript {
+    /// Typed at the top — `user`, `assistant`, and bookkeeping under other
+    /// names — with the message's blocks under `message.content`. A prompt
+    /// is a `user` entry whose content is a string; a tool's result is a
+    /// `user` entry whose content is blocks. Measured off claude 2.1.240 on
+    /// 2026-08-25.
+    Claude,
+    /// Typed `message` with the voice under `message.role` — `user`,
+    /// `assistant`, `toolResult` — and the blocks under `message.content`,
+    /// where a tool call is a `toolCall` block. The rest of the file is the
+    /// session's own bookkeeping under other types. Measured off pi 0.84.4's
+    /// `~/.pi/agent/sessions/` on 2026-09-05.
+    Pi,
 }
 
 /// Something amx can do only where the vendor takes part.

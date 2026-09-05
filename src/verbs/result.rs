@@ -201,11 +201,13 @@ fn answer(view: &View, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
     Ok(exit::OK)
 }
 
-/// The transcript's own last word, read at the end of the turn.
+/// The transcript's own last word, read at the end of the turn, by the shape
+/// the record's vendor writes it in.
 fn transcript(view: &View) -> Option<String> {
     let path = view.meta.transcript.as_ref()?;
     let text = std::fs::read_to_string(path).ok()?;
-    crate::hook::transcript_answer(&text)
+    let format = crate::conversation::format_of(view.meta.agent.as_deref().unwrap_or_default())?;
+    crate::conversation::answer(format, &text)
 }
 
 #[cfg(test)]

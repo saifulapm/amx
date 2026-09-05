@@ -5,7 +5,7 @@
 //! carries. Re-measure at every vendor bump: these are not amx's names to
 //! choose, and a renamed flag turns a dial into a spawn that fails.
 
-use super::{Capability, DEFAULT, DialSpec, ForkSpec, SessionSpec, Vendor};
+use super::{Capability, DEFAULT, DialSpec, ForkSpec, SessionSpec, Transcript, Vendor};
 
 /// pi's entry in the table.
 pub const VENDOR: Vendor = Vendor {
@@ -112,6 +112,11 @@ pub const VENDOR: Vendor = Vendor {
     // against 0.84.4 on 2026-09-04: a dialog, a running turn and a prompt,
     // plus the chrome that gets cut off a capture before anybody reads it.
     screens: Some(include_str!("../../assets/screen-rules-pi.toml")),
+    // The conversation pi writes under `~/.pi/agent/sessions/<cwd>/`, one
+    // file per session named after the id it was opened under, in the shape
+    // `crate::conversation` reads pi's by. The shape is measured; whether a
+    // record ever names such a file is a question of the capabilities above.
+    transcript: Some(Transcript::Pi),
 };
 
 #[cfg(test)]

@@ -151,7 +151,9 @@ pub fn record(agent: &Agent, payload: &Value, config: &Config) -> Result<()> {
         && state.result.is_none()
         && let Some(path) = &meta.transcript
         && let Ok(text) = std::fs::read_to_string(path)
-        && let Some(answer) = transcript_answer(&text)
+        && let Some(format) =
+            crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default())
+        && let Some(answer) = crate::conversation::answer(format, &text)
     {
         state.result = Some(answer);
         state.source = Some(Source::Transcript);
@@ -545,42 +547,6 @@ fn choices(options: &Value) -> Vec<Choice> {
             })
         })
         .collect()
-}
-
-/// The answer at the end of a transcript, if the turn has ended.
-///
-/// Tool results are `user` lines — there are ten of them for every real turn —
-/// so a trailing `user` line means the turn is still running, and answering
-/// with the last assistant line would serve the *previous* turn's answer as
-/// this one's. That is the unrecoverable direction to be wrong in, so it
-/// answers with nothing instead. `attachment` lines are bookkeeping; anything
-/// else is turn content.
-pub fn transcript_answer(text: &str) -> Option<String> {
-    let lines: Vec<Value> = text
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|line| line["type"] != "attachment")
-        .collect();
-
-    if lines.last()?["type"] == "user" {
-        return None;
-    }
-    lines
-        .iter()
-        .rev()
-        .find(|line| line["type"] == "assistant")
-        .and_then(assistant_text)
-}
-
-/// The text of one assistant line.
-fn assistant_text(line: &Value) -> Option<String> {
-    let content = line["message"]["content"].as_array()?;
-    let text: Vec<&str> = content
-        .iter()
-        .filter(|block| block["type"] == "text")
-        .filter_map(|block| block["text"].as_str())
-        .collect();
-    (!text.is_empty()).then(|| text.join("\n").trim().to_string())
 }
 
 #[cfg(test)]
@@ -1896,54 +1862,6 @@ mod tests {
             assert_eq!(meta.session, None);
             assert_eq!(notice, None);
         }
-    }
-
-    #[test]
-    fn hook_the_transcript_answers_only_when_the_turn_has_ended() {
-        let ended = "\
-{\"type\":\"user\",\"message\":{\"content\":\"fix the login bug\"}}
-{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"I fixed it.\"}]}}
-";
-        assert_eq!(transcript_answer(ended).as_deref(), Some("I fixed it."));
-
-        // Tool results are `user` lines, and there are ten of them for every
-        // real turn. A trailing one means the turn is still going, and the
-        // last assistant line belongs to the turn before it.
-        let still_going = format!(
-            "{ended}{}\n",
-            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"ok\"}]}}"
-        );
-        assert_eq!(transcript_answer(&still_going), None);
-    }
-
-    #[test]
-    fn hook_the_transcript_reads_past_its_own_bookkeeping() {
-        let with_noise = "\
-{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"the answer\"}]}}
-{\"type\":\"attachment\",\"note\":\"bookkeeping\"}
-";
-        assert_eq!(
-            transcript_answer(with_noise).as_deref(),
-            Some("the answer"),
-            "an attachment is not the end of a turn"
-        );
-
-        assert_eq!(transcript_answer(""), None);
-        assert_eq!(transcript_answer("{not json\n"), None);
-        assert_eq!(
-            transcript_answer("{\"type\":\"assistant\",\"message\":{\"content\":[]}}\n"),
-            None,
-            "an assistant line with nothing in it is not an answer"
-        );
-    }
-
-    #[test]
-    fn hook_thinking_and_tool_blocks_are_not_the_answer() {
-        let mixed = "{\"type\":\"assistant\",\"message\":{\"content\":[\
-            {\"type\":\"thinking\",\"thinking\":\"hmm\"},\
-            {\"type\":\"text\",\"text\":\"the answer\"},\
-            {\"type\":\"tool_use\",\"name\":\"Bash\"}]}}\n";
-        assert_eq!(transcript_answer(mixed).as_deref(), Some("the answer"));
     }
 
     // ── The commands themselves ──────────────────────────────────────────────

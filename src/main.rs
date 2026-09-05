@@ -2,6 +2,7 @@ mod ansi;
 mod cli;
 mod cockpit;
 mod config;
+mod conversation;
 mod derive;
 mod gc;
 

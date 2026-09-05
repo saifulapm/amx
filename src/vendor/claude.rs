@@ -6,7 +6,8 @@
 //! that fails.
 
 use super::{
-    Capability, DEFAULT, DialSpec, ForkSpec, Hooks, Moment, SessionSpec, TOOL, Vendor, Wiring,
+    Capability, DEFAULT, DialSpec, ForkSpec, Hooks, Moment, SessionSpec, TOOL, Transcript, Vendor,
+    Wiring,
 };
 
 /// claude's entry in the table.
@@ -102,6 +103,9 @@ pub const VENDOR: Vendor = Vendor {
     // the capture, the version and the date it was read at. The file is the
     // whole of what amx knows how to see on a claude pane.
     screens: Some(include_str!("../../assets/screen-rules.toml")),
+    // The conversation it writes under `~/.claude/projects/`, in the shape
+    // `crate::conversation` reads claude's by.
+    transcript: Some(Transcript::Claude),
 };
 
 /// How claude reports what it is doing, and where amx asks it to.
