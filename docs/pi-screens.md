@@ -519,6 +519,40 @@ and then ` 35s)`. And pi draws a model's thinking through the same
 `assistant-message.js` in the same column, told from an answer by italics and
 `38;2;110;114;135` and by nothing else at all.
 
+### The reading that would tell them apart
+
+Every marker above is the agent's to write or the person's to switch off, so
+what goes on the record is the whole cut pane, and the boundary is measured
+rather than built: ruling #QQPQW2VZ, taken with the rows above in front of it.
+The one thing that would carry it is the capture those rows were read with,
+`capture-pane -e`, and nobody has taken it. What it would cost is written down
+here so that the next person deciding weighs it against the measurement rather
+than driving pi again for one.
+
+The walk is not what is missing. `Server::capture_painted` already takes a `-e`
+capture, for the card, and `src/ansi.rs` already turns one into runs of text
+with the paint each was drawn in. Three other things are.
+
+**Every reading would have to take it.** `derive` matches the rules against one
+capture and writes the answer out of that same string, and a wall asks tmux for
+every screen on it in one invocation (`Server::captures`). So a paint-carrying
+reading is either the whole reader moved onto `-e`, with an escape walk in front
+of every rule match and in front of the hash a quiescent rule's stillness is
+kept as, or a second capture of every pane on every look.
+
+**The anchor would be an absence.** The agent's prose is the one row shape here
+with no foreground code on it at all, which is the one colour on the pane a
+theme has nothing to say about — but that was read off one sentence of plain
+prose, and `assistant-message.js` draws a `Markdown`. Whether the absence
+survives an answer with a heading, a bold word or an inline code span in it is
+not something this pass drove, and an anchor nobody measured is a guess wearing
+the format of a fact.
+
+**And a pane still holds one screen.** A boundary would separate the vendor's
+rows from the agent's on whatever is up when somebody looks, which is not the
+same as separating this turn's rows from the last turn's: the section below is
+that problem, and no capture flag moves it.
+
 ### Which rows are the answer a caller asked for
 
 `Ruleset::claim` reads all three captures as `prompt`, idle, which is the state
@@ -574,9 +608,17 @@ rows are already off the bottom.
 Twenty-eight rows on the pane, five cut, twenty-two on the record — and none of
 them is an answer. The model wrote no assistant text at all: the last two rows
 are the thinking the section above measures, and the first five rows are the
-tail of the turn before it. This screen is not the screen the previous turn was
-written from, so it is written down in that one's place, and what `amx result`
-hands back for this turn is a picture of two other things.
+tail of the turn before it.
+
+When this was driven, every reading that found a finished screen wrote it down,
+so this picture landed where the answer of the turn that did say something had
+been and `amx result` handed a caller two other turns. A screen reaches the
+record now only where a reading watched the turn end on it, which is the one
+thing that ever ties a screen to a turn: a look arriving at this pane with the
+record already idle leaves the earlier answer where it is. What a reader that
+does watch this turn end writes down is still these twenty-two rows. There is no
+other account of that turn and there never will be, and what a `source` reading
+`screen` is worth is exactly this much.
 
 None of this is an argument for cutting more. The walk's own law is that a wrong
 number costs furniture left on the screen and never a row of work taken off it,

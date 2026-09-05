@@ -167,8 +167,9 @@ it opens the session already under that id, or creates one if none exists —
 so the same flag serves as both `start` and `resume`; `pi --fork <origin>
 --session-id <new>` branches into an id amx chose, which is `ForkSpec::Origin`
 rather than claude's marker; and `PI_SESSION_ID`, which pi puts in the
-environment of every command its bash tool runs, is what `adopt` reads to find
-its way home, the same way claude's `CLAUDE_CODE_SESSION_ID` does.
+environment of every command its bash tool runs, is what `adopt` reads to say
+which conversation it was typed inside, the same way claude's
+`CLAUDE_CODE_SESSION_ID` does.
 
 It cannot report through hooks, and amx cannot read its conversation back or
 answer a trust screen for it. `hooks` is `None` because pi's extension events
@@ -193,10 +194,10 @@ directly stands in for the id a Started hook would otherwise have had to
 report.
 
 What a turn answered does reach the record, and by the one route left. A
-reading that ends a turn on a vendor with neither `Hooks` nor `Transcript`
-writes what was on the pane to `state.result` with `screen` beside it as the
-source, so `amx result` has an answer to hand back and a pi row on the wall
-carries a summary. It is a reading of a picture and the record says so, which
+reading that watches a turn end on a vendor with neither `Hooks` nor
+`Transcript` writes what was on the pane to `state.result` with `screen` beside
+it as the source, so `amx result` has an answer to hand back and a pi row on
+the wall carries a summary. It is a reading of a picture and the record says so, which
 is the difference between it and the two the entry does not claim: pi has not
 told amx what it said, amx has looked.
 
@@ -261,17 +262,26 @@ and on `spinner`. No row carried the other vendor's rule.
 off, minimal, low, medium, high, xhigh, max*. Both exit 64, before anything is
 spawned.
 
-**What it found.** Two are about which screen amx is looking at and are written
-down in `docs/pi-screens.md`: pi's startup trust gate is not the screen
-`project_trust` was measured off, and pi's update notice takes every windowed
-rule off the pane. The other four are the hooks gap showing up in places the
-capability list does not obviously cover, and none of them is answered here:
+**What it found.** Seven things, and two of them are about which screen amx is
+looking at: pi's startup trust gate is not the screen `project_trust` was
+measured off, and pi's update notice takes every windowed rule off the pane.
+Those two are written down in `docs/pi-screens.md`, beside the rules they are
+about. The other five are verbs — four of them the hooks gap showing up in
+places the capability list does not obviously cover, and the fifth off the rig
+itself — and every one of the five is answered now. Each is here as it was
+found, with what closed it under it, so that what a partial entry cost stays
+readable after the cost has been paid:
 
 - **`send` always says the message may not have arrived.** It waits five
   seconds for the vendor's `UserPromptSubmit` and pi sends none, so every send
   to a pi agent exits failure with *did not start working within 5s; the
   message may not have reached it*. Measured four times, and the message had
-  landed and the turn had run every time.
+  landed and the turn had run every time. Closed: the word the wait takes is a
+  reader's as well as a vendor's. Where the vendor has no hooks to say it with,
+  the wait does its own looking, and the turn a look watched begin —
+  `read.prompt` in the log — confirms a send the way a `UserPromptSubmit` does.
+  A message that genuinely reaches nothing still fails inside the same five
+  seconds and still says so.
 - **`result` never returns to a pi agent that was sent a message.** It waits
   for a turn that ended after the last `send`, and only a `Stop` event says one
   did. With no `--timeout` it waits forever; with one it exits on the deadline
@@ -279,7 +289,11 @@ capability list does not obviously cover, and none of them is answered here:
   captured none, and that half has been answered since: such an agent gets back
   what the last reading saw on the pane, the way this file describes below.
   After a message it still exits on the deadline, with that same answer on the
-  record it will not serve.
+  record it will not serve. Closed: the same word on the other edge, which is
+  `read.turn-end`, and the wait takes one of those or a `Stop`. Which turn is
+  served has not moved — the log is read forward from the last message, so an
+  answer from before that message is still the turn before it — and a
+  `--timeout` on a turn nothing has watched end still exits 3.
 - **An adopted pi whose first reading was `working` stays there.** Nothing ever
   writes a pi record's phase again, and the `prompt` rule is quiescent: from a
   record that says a turn is running it may not decide until the screen has
@@ -288,18 +302,49 @@ capability list does not obviously cover, and none of them is answered here:
   empty composer for as long as it was watched, while `amx result` — which
   polls in one process — cleared the same pane in six seconds. `amx status` on
   it named *the vendor's hooks* as the evidence, on a vendor that has none.
+  Closed: by two. A quiescent rule's patience is elapsed time on a clock every
+  process reads rather than a run of looks one process counted, so a screen that
+  has held still long enough is held still for whichever process looks next, and
+  `amx ls` settles a pane it could never settle before; and on a vendor with no
+  `Hooks` a settled reading writes the phase it read, so nothing is left sitting
+  at the word a spawn or an adoption put there. `amx status` names the screen
+  and the rule that claimed it now, because the reading that moves the phase
+  leaves `last_event` and `since` exactly where they were.
 - **The first question amx reads off a pi pane is the question every later one
   shows.** A record learns a question and overwrites nothing, because a hook is
   the vendor's own word and a screen is amx's reading of a picture. On claude
   the next hook clears it. On pi nothing does: an agent driven through a dozen
   screens was still offering *Run echo hi?* as its question when it was stopped
   on the login box, which is the first `ctx.ui.select` it had ever been read on.
+  Closed: where the vendor reports nothing there is no word of its own on the
+  record for a picture to be put in front of, so a later reading replaces the
+  question and the choices under it whole, and a screen with nothing on it to
+  answer clears both. On a vendor that does report, the screen still fills what
+  the hooks left empty and corrects nothing.
+- **`adopt` takes the first vendor in the table whose session variable is in the
+  environment.** This one came off the rig rather than off pi. A pi started from
+  a terminal that already had `CLAUDE_CODE_SESSION_ID` in it was adopted as
+  claude, with claude's session id on the record and claude's document reading
+  the pane — `unknown`, and no rule. Unset that variable and the same pane
+  adopted as pi. Closed: the pane decides the vendor, because a session variable
+  travels and the program on the other end of a pane cannot. tmux says which
+  program is running there and the table is keyed by exactly that, so the
+  variable is asked one thing only, which is which of that vendor's
+  conversations this is. A pane running a program no entry is keyed by still
+  leaves the environment to answer alone.
 
-One more, from the rig rather than from pi. `adopt` takes the first vendor in
-the table whose session variable is in the environment, so a pi started from a
-terminal that already had `CLAUDE_CODE_SESSION_ID` in it was adopted as claude,
-with claude's session id on the record and claude's document reading the pane —
-`unknown`, and no rule. Unset that variable and the same pane adopted as pi.
+**Three of those five turn on the edges of a turn, and whose edges they are is
+worth saying plainly.** A vendor that reports says where a turn began and where
+it ended, in its own words and at the moment each happened. This one says
+nothing ever, so the only thing that will ever place either edge is a reading of
+the pane — and that is what goes in the log, under amx's own names for them,
+`read.prompt` and `read.turn-end`, never a `UserPromptSubmit` or a `Stop` pi did
+not send. The reading that writes one leaves `last_event` where it was, so
+nothing amx wrote can have the next reader believe the vendor spoke: `amx
+status` on that record still names the screen it was read off. It is the same
+sentence the answer beside it already carries. pi has not told amx that a turn
+ended, amx has looked, and the looking is worth what the screens document that
+claimed the screen is worth.
 
 ## Adding one
 
@@ -354,13 +399,16 @@ with claude's session id on the record and claude's document reading the pane �
    the copy's own id, adopt is a record whose first state came off the pane it
    took over. The refusals are part of the pass, since a dial the vendor does
    not have and a value off a closed cycle should both come back in the
-   vendor's own words. What the capability list leaves off is not a finding: a
-   vendor reporting through no hooks lags its pane by `FRESH` seconds and
-   leaves `result` nothing to print, which is a partial entry being honest. A
-   finding is amx promising what the program does not honour, or a pane read
-   with another vendor's anchors. Write down what you saw beside the
-   measurements it tests, with the version on it. An entry is measured on a
-   date, and so is a dogfood.
+   vendor's own words. What the capability list leaves off is not a finding by
+   itself: a vendor reporting through no hooks lags its pane by `FRESH`
+   seconds, which is a partial entry being honest. A finding is amx promising
+   what the program does not honour, a pane read with another vendor's anchors,
+   or a verb the missing capability costs more than an empty answer. Four of
+   the five above were the third kind and the fifth was the second — a pi pane
+   read with claude's anchors — which is why each is written up with what
+   closed it. Write down what you saw beside the measurements it
+   tests, with the version on it. An entry is measured on a date, and so is a
+   dogfood.
 
 A vendor can also land partially, and honestly. An entry with dials, a session
 vocabulary and screens but no hooks still resumes, forks and is adopted, and
@@ -368,7 +416,8 @@ carries everything the floor already carries. `logs` is what asks the table
 whether such a vendor keeps a conversation to read back, and it names the gap
 rather than opening a path that was never going to be one. `result` asks the
 table nothing: it reads whatever is on the record, which is what a hook wrote
-there, or failing that the transcript path a hook named.
+there, the transcript path a hook named, or — where the vendor has neither —
+what a reading of the pane put there.
 
 On a vendor with neither, what reaches the record is a reading. The screen a
 rule read as a finished turn is the only account of that turn there will ever
@@ -383,11 +432,29 @@ two it is holding asks the record. A vendor that does report is written down no
 such way: its own words are already there, and a photograph of them is not
 something to put beside them.
 
-What none of that does is get `result` to the end of a turn somebody sent,
-which the dogfood measured and `tests/e2e_pi.rs` holds: the turn it waits for
-is the one after the last message, only a hook says a turn ended, and a vendor
-that sends none leaves the wait sitting on its deadline with the answer on the
-record beside it. The capabilities list is what keeps a partial entry truthful:
-nothing is promised that is not there, and where an unclaimed capability costs
-a verb more than an empty answer, the place to write that down is the pass
-above.
+**The rows the agent earned are the whole cut pane and not the answer inside
+it**, and that is a decision rather than an oversight. Telling pi's own rows
+from pi's tools' rows was measured, in `docs/pi-screens.md`'s *Where pi's tools
+stop and pi starts*: driven live at 0.84.4 at 220, 100 and 40 columns, against
+the renderer behind each of the four shapes a turn leaves. They share one
+leading space and carry nothing else at the head of a row; what separates them
+is colour, and `capture-pane -p -J` throws colour away; `outputPad = 0` in a
+project's own settings takes the indent off the prose and leaves it on the
+vendor's rows; a tool row too long for the pane wraps with no head on the
+continuation; and pi draws a model's thinking through the same component in the
+same column as an answer. Every candidate marker is the agent's to write or the
+person's to switch off, so the boundary was refused rather than guessed at —
+ruling #QQPQW2VZ — and the walk keeps the law it already had: a wrong number
+costs furniture left on the screen and never a row of work taken off it. The
+reading that would carry the boundary is `capture-pane -e`, and that document
+costs it as an option nobody has taken. The one line a row shows takes the last
+thing on the pane, which is where all three widths put the answer.
+
+What the reading does buy is a `result` that ends where the reading ended the
+turn. The verb waits for the turn after the last message, as it always did, and
+what says one ended is a `Stop` or a reader that watched it happen; a
+`--timeout` on a turn nothing has watched end still exits 3, which is the honest
+half of it, since a reader that never looked places no edge. The capabilities
+list is what keeps a partial entry truthful: nothing is promised that is not
+there, and where an unclaimed capability costs a verb more than an empty answer,
+the place to write that down is the pass above — with what closed it beside it.

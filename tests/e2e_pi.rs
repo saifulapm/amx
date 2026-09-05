@@ -512,6 +512,76 @@ fn rules_read() -> Vec<String> {
     found
 }
 
+/// What `docs/vendors.md`'s *What the dogfood saw* found, one string per
+/// finding.
+///
+/// A finding is a bullet of the list that section ends on, gathered with the
+/// rows it runs onto. Read off the file rather than kept here, because the file
+/// is where somebody looks and a test carrying its own copy would be agreeing
+/// with itself.
+fn dogfood_findings() -> Vec<String> {
+    let vendors =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/vendors.md"))
+            .expect("the vendors document");
+    let section = vendors
+        .split("\n## What the dogfood saw\n")
+        .nth(1)
+        .expect("what the dogfood saw")
+        .split("\n## ")
+        .next()
+        .expect("everything under that heading");
+
+    let mut found: Vec<String> = Vec::new();
+    for row in section.lines() {
+        match (row.strip_prefix("- **"), found.last_mut()) {
+            (Some(opening), _) => found.push(opening.to_string()),
+            // A bullet's own continuation, which is indented under it.
+            (None, Some(last)) if row.starts_with("  ") => {
+                last.push(' ');
+                last.push_str(row.trim());
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+#[test]
+fn the_dogfood_says_what_closed_each_of_its_findings() {
+    // *What the dogfood saw* is where what a partial entry cost is written
+    // down, and the pass left five verbs on it that were each waiting on a word
+    // this vendor never says. A finding somebody has answered since is worth
+    // exactly as much as what answered it: a list saying what broke and not what
+    // closed it sends the next reader out to drive pi again for an answer that
+    // is already in the tree.
+    let findings = dogfood_findings();
+    assert_eq!(
+        findings.len(),
+        5,
+        "the findings the dogfood left: {findings:#?}"
+    );
+    for finding in &findings {
+        assert!(
+            finding.contains("Closed:"),
+            "every one of them says what closed it: {finding}"
+        );
+    }
+
+    // And in whose words. Three of the five turn on the edges of a turn, and on
+    // a vendor that reports nothing a reading of the pane is the only thing that
+    // will ever place one, so what the log carries there is amx's own name for
+    // it and never the vendor's. A document spelling a word the log does not
+    // carry sends a caller to `jq` for nothing.
+    let closed = findings.concat();
+    for word in [READ_PROMPT, READ_TURN_END] {
+        assert!(
+            closed.contains(word),
+            "the dogfood names `{word}`, which is the word a reader of the log \
+             finds: {closed}"
+        );
+    }
+}
+
 #[test]
 fn the_inventory_measured_a_screen_for_every_rule_pi_has() {
     // `docs/pi-screens.md` is the coverage half of pi's document: the whole
