@@ -146,13 +146,28 @@ fn past_the_last_message(root: &Path, id: &str) -> Result<bool> {
 /// after the last message" is a position in it. An agent nobody has sent
 /// anything to has no message to be past, and whatever it last answered is its
 /// answer.
+///
+/// Whose word said the turn ended is not this question — see [`a_turn_ended`].
 fn ended_past_the_last_message(events: &[Event]) -> bool {
     let Some(sent) = events.iter().rposition(|event| event.kind == send::SEND) else {
         return true;
     };
-    events[sent..]
-        .iter()
-        .any(|event| event.kind == TURN_END && event.payload["agent_id"].is_null())
+    events[sent..].iter().any(a_turn_ended)
+}
+
+/// Whether this event says a turn of the agent's own ended.
+///
+/// The vendor's own word where there was a vendor to say it, and amx's name for
+/// the same moment where a reading of the pane is the only thing that will ever
+/// place it — see [`derive::READ_TURN_END`]. Both say a turn ended; a wait that
+/// took only the first waited on a word half the table never sends, so `result`
+/// on a hookless agent that had been sent a message ran to its own deadline
+/// over a turn that had ended and an answer that was on the record beside it.
+///
+/// A subagent's events ride the same log and are not the agent's turn.
+fn a_turn_ended(event: &Event) -> bool {
+    (event.kind == TURN_END || event.kind == derive::READ_TURN_END)
+        && event.payload["agent_id"].is_null()
 }
 
 /// The answer, or the honest absence of one.
@@ -266,6 +281,26 @@ mod tests {
             "Stop",
             send::SEND
         ])));
+    }
+
+    #[test]
+    fn a_turn_a_reading_watched_end_ends_a_wait_like_any_other() {
+        // On the vendor that sends no Stop, a reading of the pane is the only
+        // thing that will ever place the end of a turn, so a wait that took
+        // the vendor's word alone was waiting on a word never coming.
+        assert!(ended_past_the_last_message(&log(&[
+            send::SEND,
+            derive::READ_PROMPT,
+            derive::READ_TURN_END,
+        ])));
+        assert!(
+            !ended_past_the_last_message(&log(&[send::SEND, derive::READ_PROMPT])),
+            "a turn a reading watched begin is under way, not over"
+        );
+        assert!(
+            !ended_past_the_last_message(&log(&[derive::READ_TURN_END, send::SEND])),
+            "and one that ended before the message is the turn before it"
+        );
     }
 
     #[test]

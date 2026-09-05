@@ -253,6 +253,11 @@ const SETTLED: u64 = 30;
 const READ_PROMPT: &str = "read.prompt";
 const READ_TURN_END: &str = "read.turn-end";
 
+/// And amx's word for a message it sent, which is `send::SEND`. Spelled here
+/// for the same reason: what places a turn against a message is the order of
+/// these three words in a log a caller reads with `jq`.
+const SENT: &str = "send";
+
 /// How long a send waits for the word that its message was taken, in seconds,
 /// which is `send::CONFIRM`. Spelled here for the same reason the two names
 /// above are: what a caller is promised is a wait that ends.
@@ -2191,13 +2196,143 @@ fn a_message_that_starts_no_turn_on_a_pi_is_a_send_that_says_so() {
 }
 
 #[test]
+fn a_result_after_a_message_ends_on_the_turn_a_reading_watched_end() {
+    // The second of the four hooks-gap findings at the end of `docs/vendors.md`:
+    // `result` waits for a turn that ended after the last message, and only a
+    // `Stop` said one had. pi sends none, so a caller that sent a pi a message
+    // waited out its own deadline over a turn that had run, with the answer on
+    // the record beside it. The word the wait takes is a reader's as well as a
+    // vendor's, and on this vendor the reading is the wait's own: nothing else
+    // is looking at a pane while a caller waits on one.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let answers_it = timeline(
+        &amx,
+        "answers-a-message",
+        // At its prompt long enough for the message to reach a pi sitting at
+        // one, then the turn that message starts, then the prompt it leaves.
+        "screen idle\nsleep 3000\nscreen working\nsleep 3000\nscreen idle\nsleep 600000\n",
+    );
+    start_playing(&amx, id, &answers_it);
+    let pane = amx.pane_of(id);
+
+    // The prompt the last turn left, stopped on the row no earlier screen in
+    // this timeline carries.
+    amx.until("the pi to be at its prompt", || {
+        row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
+    });
+
+    // The record a pi carries between two turns: what the turn before this one
+    // answered, with nothing heard since, because on this vendor nothing ever
+    // is.
+    amx.set_state(
+        id,
+        json!({
+            "state": "idle",
+            "since": 1,
+            "last_event": 1,
+            "result": ANSWERED,
+            "source": "screen",
+        }),
+    );
+
+    let out = amx.amx(&["send", id, "and now the linter"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the message landed and the turn ran: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The screen that turn is running on, as the send's own look wrote it
+    // down, so the look that replaces it can be told from it.
+    let state = amx.state(id);
+    assert_eq!(
+        state["state"], "working",
+        "the turn the send watched begin: {state}"
+    );
+    let mid_turn = state["still"]["screen"].clone();
+
+    // The wait a caller makes, in a process of its own, because what it is
+    // waiting for has not happened yet.
+    let waiting = amx
+        .amx_command(&["result", id, "--timeout", "60"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("running amx result");
+
+    // Which is how the screen the turn ends on reaches the record at all: that
+    // wait is the only thing looking at this pane.
+    amx.until("the wait to have read the screen the turn ended on", || {
+        (amx.state(id)["still"]["screen"] != mid_turn).then_some(())
+    });
+
+    // Held still for `SETTLED` seconds, aged on the record the way everything
+    // about a clock is aged here rather than waited through.
+    let mut aged = amx.state(id);
+    let since = aged["still"]["since"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("when the wait first saw that screen: {aged}"));
+    aged["still"]["since"] = json!(since - SETTLED);
+    amx.set_state(id, aged);
+
+    let out = waiting.wait_with_output().expect("waiting for amx result");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the turn ended, so the answer is on stdout: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Everything above pi's own box, which is what this turn left on the pane
+    // and the whole of what a reading of it is worth.
+    let rows = drawn(&amx, &pane);
+    let top = *borders(&rows)
+        .first()
+        .unwrap_or_else(|| panic!("pi's composer box: {rows:?}"));
+    let mut work: Vec<String> = rows[..top].to_vec();
+    while work.last().is_some_and(String::is_empty) {
+        work.pop();
+    }
+
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        rows_of(&said),
+        work,
+        "the rows the turn left, and none of the box, working directory or \
+         stats line pi drew under them"
+    );
+    assert!(
+        !said.contains(ANSWERED.trim()),
+        "and not the answer of the turn before the message: {said}"
+    );
+
+    let kinds = amx.event_kinds(id);
+    let sent = kinds
+        .iter()
+        .rposition(|kind| kind == SENT)
+        .unwrap_or_else(|| panic!("the message on the record: {kinds:?}"));
+    assert!(
+        kinds[sent..].iter().any(|kind| kind == READ_TURN_END),
+        "the turn the wait watched end is the one after the message: {kinds:?}"
+    );
+    for word in VENDORS_WORDS {
+        assert!(
+            !kinds.iter().any(|kind| kind == word),
+            "and never in the vendor's words, which pi has never said: {kinds:?}"
+        );
+    }
+}
+
+#[test]
 fn a_message_leaves_result_waiting_beside_the_answer_it_will_not_serve() {
-    // What the pane keeps is an answer to the turn amx watched end, and the
-    // turn `result` waits for after a message is the one after it. Only a Stop
-    // event says a turn ended, pi sends none, so the wait runs to its deadline
-    // with the earlier answer on the record beside it. That is the hooks gap
-    // costing a verb more than an empty answer, which is the one thing
-    // docs/vendors.md says a partial entry has to write down.
+    // The other half of the same word, and the half this verb must never get
+    // wrong. What the pane keeps is the answer of the turn amx watched end, and
+    // the turn `result` waits for after a message is the one after it. Nothing
+    // here watches a turn end — the pane never leaves the prompt the last one
+    // left — so the wait ends on the caller's own deadline rather than on an
+    // answer that belongs to the turn before the message.
     let amx = Harness::new();
     let id = "fix-login-c3d";
     start(&amx, id, "takes-a-turn");
