@@ -92,10 +92,12 @@ pub struct Wiring {
 /// [`Capability::Hooks`] is the question about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hooks {
-    /// The settings file amx writes its entries into, under the person's home
-    /// directory.
-    pub settings: &'static str,
-    /// Every moment amx listens for, in the order the entries are wired.
+    /// How amx's hook command reaches this vendor: what `install` writes,
+    /// where, and what `uninstall` takes back out.
+    pub wire: Wire,
+    /// The moments this vendor reports, in the order the entries are wired.
+    /// Every one of them, and never a moment twice: a vendor with no way to
+    /// say a thing leaves the moment out, and amx hears nothing of it.
     pub events: &'static [Wiring],
     /// What this vendor's matcher for every tool is spelled.
     pub matcher: &'static str,
@@ -108,6 +110,37 @@ pub struct Hooks {
     /// The sentence this vendor writes on a permission box, with [`TOOL`]
     /// where the tool it is about goes.
     pub permission_sentence: &'static str,
+}
+
+/// How a vendor is wired to amx's hook command, under the person's home
+/// directory.
+///
+/// Two shapes, both measured off the vendor that takes them. Which a vendor
+/// takes is its own business and `install`'s to honour; nothing that reads a
+/// payload afterwards can tell the two apart, which is the point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wire {
+    /// One entry per event, merged into the vendor's own JSON settings file
+    /// beside whatever is already there, each running the hook command. The
+    /// path is relative to the home directory.
+    Settings(&'static str),
+    /// A file of amx's own, written whole where the vendor loads extensions
+    /// from, which reports through the hook command itself. The path is
+    /// relative to the home directory, and the body is the file as it ships.
+    File {
+        path: &'static str,
+        body: &'static str,
+    },
+}
+
+impl Wire {
+    /// Where the wiring goes, under the home directory.
+    pub fn path(&self) -> &'static str {
+        match self {
+            Wire::Settings(path) => path,
+            Wire::File { path, .. } => path,
+        }
+    }
 }
 
 impl Hooks {
@@ -506,27 +539,46 @@ mod tests {
     }
 
     #[test]
-    fn a_vendor_that_reports_names_every_moment_once_and_no_two_alike() {
+    fn a_vendor_that_reports_names_a_moment_once_and_the_three_a_turn_stands_on() {
         // amx listens for a fixed set of moments and the vendor supplies the
-        // names. A moment left out is a turn amx would never see move, and a
-        // name given twice is two events folded into one.
-        for vendor in known() {
-            let Some(hooks) = vendor.hooks else { continue };
+        // names. A name given twice is two events folded into one, so no
+        // moment is named twice. A moment a vendor has no event for is left
+        // out and amx hears nothing of it — except the three every verb
+        // stands on: which session opened, that a turn began, that it ended.
+        // A vendor reporting through hooks that cannot say those is one
+        // `send` could never confirm and `result` could never wait for.
+        for hooks in every_hooks() {
             for moment in Moment::ALL {
                 let named = hooks
                     .events
                     .iter()
                     .filter(|wiring| wiring.moment == moment)
                     .count();
-                assert_eq!(named, 1, "{} names {moment:?} {named} times", vendor.name);
+                assert!(named <= 1, "{hooks:?} names {moment:?} {named} times");
+            }
+            for needed in [Moment::Started, Moment::Prompted, Moment::Ended] {
+                assert!(
+                    hooks.events.iter().any(|wiring| wiring.moment == needed),
+                    "{hooks:?} has no event for {needed:?}"
+                );
             }
 
             let mut events: Vec<&str> = hooks.events.iter().map(|w| w.event).collect();
             let wired = events.len();
             events.sort_unstable();
             events.dedup();
-            assert_eq!(events.len(), wired, "{} wires one event twice", vendor.name);
+            assert_eq!(events.len(), wired, "{hooks:?} wires one event twice");
         }
+    }
+
+    /// Every set of hooks amx knows: the ones on the entries in the table, and
+    /// the one a vendor carries before its entry takes it up.
+    fn every_hooks() -> Vec<Hooks> {
+        let mut all: Vec<Hooks> = known().iter().filter_map(|vendor| vendor.hooks).collect();
+        if !all.contains(&pi::HOOKS) {
+            all.push(pi::HOOKS);
+        }
+        all
     }
 
     #[test]
@@ -550,17 +602,21 @@ mod tests {
     }
 
     #[test]
-    fn a_vendor_keeps_its_settings_somewhere_under_the_persons_home() {
+    fn a_vendor_is_wired_somewhere_under_the_persons_home() {
         // amx joins this onto a home directory. An absolute path would throw
-        // the home away and write wherever the table said instead.
-        for vendor in known() {
-            let Some(hooks) = vendor.hooks else { continue };
-            assert!(!hooks.settings.is_empty(), "{}", vendor.name);
+        // the home away and write wherever the table said instead. A file
+        // wire carries the file as well, and an empty one would install
+        // nothing that reports.
+        for hooks in every_hooks() {
+            let path = hooks.wire.path();
+            assert!(!path.is_empty(), "{hooks:?}");
             assert!(
-                !std::path::Path::new(hooks.settings).is_absolute(),
-                "{} keeps its settings outside anybody's home",
-                vendor.name
+                !std::path::Path::new(path).is_absolute(),
+                "{hooks:?} is wired outside anybody's home"
             );
+            if let Wire::File { body, .. } = hooks.wire {
+                assert!(body.contains("_hook"), "{path} reports through nothing");
+            }
         }
     }
 
@@ -568,13 +624,12 @@ mod tests {
     fn a_vendor_sentence_about_a_tool_says_where_the_tool_goes() {
         // The sentence is the vendor's own words and amx has one thing to put
         // in it. One with nowhere to put it would be quoted at whoever is
-        // answering with the tool it is about left out.
-        for vendor in known() {
-            let Some(hooks) = vendor.hooks else { continue };
+        // answering with the tool it is about left out. A vendor that draws
+        // no permission box writes no sentence, and an empty one is that.
+        for hooks in every_hooks() {
             assert!(
-                hooks.permission_sentence.contains(TOOL),
-                "{} writes a sentence with no room for the tool",
-                vendor.name
+                hooks.permission_sentence.is_empty() || hooks.permission_sentence.contains(TOOL),
+                "{hooks:?} writes a sentence with no room for the tool"
             );
         }
     }

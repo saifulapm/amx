@@ -1,26 +1,29 @@
 //! `amx uninstall` — take amx back out of the machine.
 //!
-//! The hooks come out of the vendor's settings and the agents' records are
-//! deleted. It refuses while any agent is still running: those agents would
-//! keep working with nothing recording what they do, and their records would
-//! be the only place their answers were kept.
+//! Every vendor's wiring comes out — the hooks from claude's settings, the
+//! extension from where pi loads it — and the agents' records are deleted. It
+//! refuses while any agent is still running: those agents would keep working
+//! with nothing recording what they do, and their records would be the only
+//! place their answers were kept.
 
 use anyhow::{Context, Result};
 use std::io::Write;
 use std::path::Path;
 
-use crate::{exit, install, paths, store};
+use crate::vendor::Wire;
+use crate::{exit, install, paths, registry, store};
 
 /// Run the verb against the machine's own paths.
 pub fn from_env() -> Result<i32> {
     let state_root = paths::state_root()?;
-    let settings = install::settings_file()?;
+    let home = install::home()?;
     let mut out = std::io::stdout().lock();
-    run(&state_root, &settings, store::now(), &mut out)
+    run(&state_root, &home, store::now(), &mut out)
 }
 
-/// Run the verb, with everything it touches named.
-pub fn run(state_root: &Path, settings: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
+/// Run the verb, with everything it touches named: the records, and the home
+/// every vendor's wiring is under.
+pub fn run(state_root: &Path, home: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
     let live = crate::spawn::live(state_root)?;
     if !live.is_empty() {
         writeln!(
@@ -31,11 +34,16 @@ pub fn run(state_root: &Path, settings: &Path, now: u64, out: &mut impl Write) -
         return Ok(exit::FAILURE);
     }
 
-    let report = install::uninstall(settings, now)?;
-    if report.changed {
-        writeln!(out, "took the hooks out of {}", report.path.display())?;
-    } else {
-        writeln!(out, "no hooks of amx's in {}", report.path.display())?;
+    for vendor in registry::entries() {
+        let Some(hooks) = &vendor.hooks else { continue };
+        let report = install::uninstall_hooks(hooks, home, now)?;
+        let path = report.path.display();
+        match (hooks.wire, report.changed) {
+            (Wire::Settings(_), true) => writeln!(out, "took the hooks out of {path}")?,
+            (Wire::Settings(_), false) => writeln!(out, "no hooks of amx's in {path}")?,
+            (Wire::File { .. }, true) => writeln!(out, "removed {path}")?,
+            (Wire::File { .. }, false) => writeln!(out, "no extension of amx's at {path}")?,
+        }
     }
 
     if state_root.exists() {
@@ -51,6 +59,7 @@ mod tests {
     use super::*;
     use crate::store::{Agent, Meta, Phase};
     use crate::tmux::{PaneId, Server, Socket, Spawn};
+    use crate::vendor::claude;
     use serde_json::{Value, json};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -105,10 +114,13 @@ mod tests {
         agent
     }
 
-    fn settings_with_amx(dir: &Path) -> PathBuf {
-        let path = dir.join("settings.json");
+    /// Somebody's settings with amx's hooks in them, where claude keeps them
+    /// under a home directory.
+    fn settings_with_amx(home: &Path) -> PathBuf {
+        let path = install::wire_path(&claude::HOOKS, home);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{\"model\": \"opus\"}\n").unwrap();
-        install::install(&path, "/home/dev/bin/amx _hook", 1).unwrap();
+        install::install(&claude::HOOKS, &path, "/home/dev/bin/amx _hook", 1).unwrap();
         path
     }
 
@@ -139,7 +151,7 @@ mod tests {
         );
 
         let mut said = Vec::new();
-        let code = run(root.path(), &settings, 2, &mut said).unwrap();
+        let code = run(root.path(), home.path(), 2, &mut said).unwrap();
 
         assert_eq!(code, exit::FAILURE);
         assert!(
@@ -148,7 +160,8 @@ mod tests {
         );
         assert!(root.path().join("fix-login-a1b").exists(), "records kept");
         assert!(
-            !install::installed_events(&read(&settings), "/home/dev/bin/amx _hook").is_empty(),
+            !install::installed_events(&claude::HOOKS, &read(&settings), "/home/dev/bin/amx _hook")
+                .is_empty(),
             "and the hooks are still wired"
         );
     }
@@ -168,12 +181,13 @@ mod tests {
         );
 
         let mut said = Vec::new();
-        let code = run(root.path(), &settings, 2, &mut said).unwrap();
+        let code = run(root.path(), home.path(), 2, &mut said).unwrap();
 
         assert_eq!(code, exit::OK);
         assert!(!root.path().exists(), "the records are gone");
         assert!(
-            install::installed_events(&read(&settings), "/home/dev/bin/amx _hook").is_empty(),
+            install::installed_events(&claude::HOOKS, &read(&settings), "/home/dev/bin/amx _hook")
+                .is_empty(),
             "and so are the hooks"
         );
         assert_eq!(read(&settings)["model"], "opus", "the rest is left alone");
@@ -185,7 +199,7 @@ mod tests {
         // agent, and must not block a person from removing amx.
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
-        let settings = settings_with_amx(home.path());
+        settings_with_amx(home.path());
 
         record(
             root.path(),
@@ -197,7 +211,7 @@ mod tests {
 
         let mut said = Vec::new();
         assert_eq!(
-            run(root.path(), &settings, 2, &mut said).unwrap(),
+            run(root.path(), home.path(), 2, &mut said).unwrap(),
             exit::OK,
             "{}",
             String::from_utf8_lossy(&said)
@@ -209,12 +223,16 @@ mod tests {
     fn uninstall_says_so_when_there_was_nothing_of_amxs_to_remove() {
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
-        let settings = home.path().join("settings.json");
+        let settings = install::wire_path(&claude::HOOKS, home.path());
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
         std::fs::write(&settings, "{\"model\": \"opus\"}\n").unwrap();
         std::fs::remove_dir_all(root.path()).unwrap();
 
         let mut said = Vec::new();
-        assert_eq!(run(root.path(), &settings, 2, &mut said).unwrap(), exit::OK);
+        assert_eq!(
+            run(root.path(), home.path(), 2, &mut said).unwrap(),
+            exit::OK
+        );
         assert_eq!(
             std::fs::read_to_string(&settings).unwrap(),
             "{\"model\": \"opus\"}\n",
@@ -226,11 +244,15 @@ mod tests {
     #[test]
     fn uninstall_leaves_the_settings_amx_never_wrote_to() {
         let home = TempDir::new().unwrap();
-        let settings = home.path().join("settings.json");
+        let settings = install::wire_path(&claude::HOOKS, home.path());
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
         std::fs::write(&settings, json!({"hooks": {}}).to_string()).unwrap();
         let root = TempDir::new().unwrap();
 
         let mut said = Vec::new();
-        assert_eq!(run(root.path(), &settings, 2, &mut said).unwrap(), exit::OK);
+        assert_eq!(
+            run(root.path(), home.path(), 2, &mut said).unwrap(),
+            exit::OK
+        );
     }
 }

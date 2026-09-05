@@ -7,7 +7,7 @@
 
 use super::{
     Capability, DEFAULT, DialSpec, ForkSpec, Hooks, Moment, SessionSpec, TOOL, Transcript, Vendor,
-    Wiring,
+    Wire, Wiring,
 };
 
 /// claude's entry in the table.
@@ -118,7 +118,7 @@ pub const VENDOR: Vendor = Vendor {
 /// way as the dials above: a renamed event is hooks that never fire, and a
 /// renamed notification type is a nudge amx reads as a question.
 pub const HOOKS: Hooks = Hooks {
-    settings: ".claude/settings.json",
+    wire: Wire::Settings(".claude/settings.json"),
     events: &[
         Wiring {
             moment: Moment::Started,
@@ -343,7 +343,7 @@ mod tests {
         // bump: a renamed event is a hook that never fires again, and nothing
         // says so — the record simply stops moving.
         let hooks = VENDOR.hooks.expect("claude reports through hooks");
-        assert_eq!(hooks.settings, ".claude/settings.json");
+        assert_eq!(hooks.wire, Wire::Settings(".claude/settings.json"));
 
         let wired: Vec<(Moment, &str, bool)> = hooks
             .events

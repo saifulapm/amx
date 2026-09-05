@@ -5,7 +5,10 @@
 //! carries. Re-measure at every vendor bump: these are not amx's names to
 //! choose, and a renamed flag turns a dial into a spawn that fails.
 
-use super::{Capability, DEFAULT, DialSpec, ForkSpec, SessionSpec, Transcript, Vendor};
+use super::{
+    Capability, DEFAULT, DialSpec, ForkSpec, Hooks, Moment, SessionSpec, Transcript, Vendor, Wire,
+    Wiring,
+};
 
 /// pi's entry in the table.
 pub const VENDOR: Vendor = Vendor {
@@ -119,9 +122,115 @@ pub const VENDOR: Vendor = Vendor {
     transcript: Some(Transcript::Pi),
 };
 
+/// How pi reports what it is doing, and where amx asks it to.
+///
+/// pi has no settings file a hook command can be named in: its events are
+/// callbacks inside its own process, handed to whatever extension asks for
+/// them. So the wire is a file — `assets/pi/amx.ts`, written whole where pi
+/// loads extensions from — and that file is what runs `amx _hook`, one
+/// invocation per moment with the payload on stdin, under pi's own event
+/// names and the keys claude's payloads carry.
+///
+/// Six moments out of pi's list, measured against 0.84.4's extension API on
+/// 2026-09-05. `ui_prompt_start` is a stop on a question the way claude's
+/// `Notification` is, and `ui_prompt_end` the prompt closing and the turn
+/// going on, which is what `Refused` means to the record. There is no `Asked`:
+/// pi asks leave for nothing. Re-measure at every vendor bump: a renamed event
+/// is a moment amx never hears.
+///
+/// The entry does not carry this yet. Its stand-in delivers nothing through
+/// it, and the capability and the entry move together — see
+/// `a_vendor_reports_through_hooks_or_amx_has_none_to_wire`.
+pub const HOOKS: Hooks = Hooks {
+    wire: Wire::File {
+        path: ".pi/agent/extensions/amx.ts",
+        body: include_str!("../../assets/pi/amx.ts"),
+    },
+    events: &[
+        Wiring {
+            moment: Moment::Started,
+            event: "session_start",
+            matched: false,
+        },
+        Wiring {
+            moment: Moment::Prompted,
+            event: "agent_start",
+            matched: false,
+        },
+        Wiring {
+            moment: Moment::Calling,
+            event: "tool_execution_start",
+            matched: false,
+        },
+        Wiring {
+            moment: Moment::Notified,
+            event: "ui_prompt_start",
+            matched: false,
+        },
+        Wiring {
+            moment: Moment::Refused,
+            event: "ui_prompt_end",
+            matched: false,
+        },
+        Wiring {
+            moment: Moment::Ended,
+            event: "agent_settled",
+            matched: false,
+        },
+    ],
+    // None of these: pi's extension takes every event without a matcher, has
+    // no tool that draws a menu and waits on it, sends no typed notices about
+    // an idle session or a permission box, and draws no permission box to
+    // write a sentence on.
+    matcher: "",
+    question_tool: "",
+    idle_notice: "",
+    permission_notice: "",
+    permission_sentence: "",
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pi_is_wired_through_a_file_pi_loads_as_an_extension() {
+        // Where pi 0.84.4 finds a global extension, per its own docs: one
+        // `.ts` file under the agent directory's `extensions/`.
+        let Wire::File { path, body } = HOOKS.wire else {
+            panic!("pi has no settings file to name a hook in");
+        };
+        assert_eq!(path, ".pi/agent/extensions/amx.ts");
+        assert!(
+            body.starts_with("// installed by amx\n"),
+            "the first line is how uninstall knows the file is amx's"
+        );
+        assert!(
+            body.contains("\"_hook\""),
+            "it reports through amx's hook command"
+        );
+        // Every event it wires is one the file listens for, under that name.
+        for wiring in HOOKS.events {
+            assert!(
+                body.contains(&format!("pi.on(\"{}\"", wiring.event)),
+                "the extension never listens for {}",
+                wiring.event
+            );
+            assert_eq!(HOOKS.moment(wiring.event), Some(wiring.moment));
+        }
+        assert!(body.contains("pi.on(\"message_update\""), "and it streams");
+    }
+
+    #[test]
+    fn pi_asks_leave_for_nothing_and_says_so_by_naming_no_such_moment() {
+        assert!(
+            !HOOKS.events.iter().any(|w| w.moment == Moment::Asked),
+            "pi draws no permission box"
+        );
+        assert_eq!(HOOKS.moment("ui_prompt_start"), Some(Moment::Notified));
+        assert_eq!(HOOKS.moment("ui_prompt_end"), Some(Moment::Refused));
+        assert_eq!(HOOKS.moment("Stop"), None, "claude's names are not pi's");
+    }
 
     #[test]
     fn pi_declares_a_model_and_an_effort_dial_and_no_permission_dial() {
