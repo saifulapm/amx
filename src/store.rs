@@ -458,6 +458,41 @@ impl State {
             self.options.clone_from(&seen.options);
         }
     }
+
+    /// Whether a screen's reading would leave the record saying anything other
+    /// than what it says now. Asked before the writer's lock for the same
+    /// reason [`learns_from`](State::learns_from) is: a look that found the
+    /// screen the record already has has no business holding it.
+    pub fn corrected_by(&self, seen: Option<&Question>) -> bool {
+        let (text, options) = match asked(seen) {
+            Some(seen) => (Some(seen.text.as_str()), seen.options.as_slice()),
+            None => (None, &[][..]),
+        };
+        self.question.as_deref() != text || self.options != options
+    }
+
+    /// Take what a screen said over what a screen said before it.
+    ///
+    /// The other law, for the vendor that fires no hooks — see
+    /// [`crate::vendor::Capability::Hooks`], which is what decides which of the
+    /// two a reader is under. There is no vendor's word here for a picture to
+    /// be put in front of: the question on the record is what some earlier look
+    /// read off the same pane, and a pane holds one screen at a time. So a
+    /// later reading replaces an earlier one whole — the question and the
+    /// choices drawn under it together — and a screen with nothing on it to
+    /// answer leaves nothing outstanding.
+    pub fn correct(&mut self, seen: Option<&Question>) {
+        let seen = asked(seen);
+        self.question = seen.map(|seen| seen.text.clone());
+        self.options = seen.map(|seen| seen.options.clone()).unwrap_or_default();
+    }
+}
+
+/// What a reading of a screen found to answer, where it found anything. A
+/// reading with no words in it is a screen that asked nothing, whatever else
+/// was drawn on it.
+fn asked(seen: Option<&Question>) -> Option<&Question> {
+    seen.filter(|seen| !seen.text.is_empty())
 }
 
 /// A state document as it is written down.
@@ -1601,6 +1636,46 @@ mod tests {
             nothing_heard.question.as_deref(),
             Some("Do you want to proceed?")
         );
+    }
+
+    #[test]
+    fn store_lets_a_later_screen_correct_what_an_earlier_screen_said() {
+        // The other law, for the vendor that fires no hooks: there is no
+        // vendor's word on the record to be careful of, only what some earlier
+        // look read off the same pane, and a pane holds one screen at a time.
+        let mut state = State {
+            question: Some("Run echo hi?".to_string()),
+            options: vec!["Allow once".to_string(), "Deny".to_string()],
+            ..State::default()
+        };
+        let later = Question {
+            text: "Which branch should I push to?".to_string(),
+            options: Vec::new(),
+        };
+
+        assert!(state.corrected_by(Some(&later)), "the pane has moved on");
+        state.correct(Some(&later));
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Which branch should I push to?")
+        );
+        assert!(
+            state.options.is_empty(),
+            "and the choices went with the question they were drawn under"
+        );
+        assert!(
+            !state.corrected_by(Some(&later)),
+            "while looking again at the same screen corrects nothing"
+        );
+
+        // A screen with nothing on it to answer is an agent with nothing
+        // outstanding, rather than one still offering the last question its
+        // pane ever carried.
+        assert!(state.corrected_by(None));
+        state.correct(None);
+        assert_eq!(state.question, None);
+        assert!(state.options.is_empty());
+        assert!(!state.corrected_by(None), "with nothing left to clear");
     }
 
     #[test]

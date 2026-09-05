@@ -530,6 +530,20 @@ fn reads_its_own_record(meta: &Meta) -> bool {
         .is_some_and(|vendor| !vendor.can(Capability::Hooks))
 }
 
+/// Whether this reading stands where the record does, rather than beside it: a
+/// vendor with no account of its own — see [`reads_its_own_record`] — read off
+/// a screen a rule could name.
+///
+/// [`Evidence::Screen`] is the second half and it is not a formality. It says a
+/// rule claimed the capture and was allowed to speak, which is the only reading
+/// here worth writing anything down from. A screen no rule claimed, a pane
+/// nobody captured and a record still fresh from the vendor's own words all
+/// come back some other way, and none of the three is an account to put over
+/// the one on file.
+fn is_the_record(meta: &Meta, reading: &Reading) -> bool {
+    reads_its_own_record(meta) && reading.verdict.evidence == Evidence::Screen
+}
+
 /// What this reading has to write down beside the turn it watched end, if
 /// anything: the screen it read, on a vendor whose pane is the only place its
 /// answer will ever be — see [`answers_on_the_pane`].
@@ -886,7 +900,7 @@ fn hashed(rows: &[&str]) -> u64 {
     hasher.finish()
 }
 
-/// Write down what a screen is asking, when the record has not got it.
+/// Write down what a screen is asking.
 ///
 /// The one thing a reader records rather than works out and forgets. A
 /// question is not a conclusion about an agent: it is something a person or a
@@ -895,17 +909,26 @@ fn hashed(rows: &[&str]) -> u64 {
 /// and throwing away what they read there would leave every caller to capture
 /// the pane and parse it again for itself.
 ///
-/// A placeholder is dropped first, and dropped from the document as well as
-/// from the reading. It holds the one field the screen was going to fill, so a
-/// record still carrying one has nothing to learn, and every reader after this
-/// would find it there and go back to the pane for what this look already had.
+/// How far the screen goes is the vendor's business — see [`take_the_question`]
+/// — and where it goes no further than filling what the hooks left empty, a
+/// placeholder is dropped first, from the document as well as from the reading.
+/// It holds the one field the screen was going to fill, so a record still
+/// carrying one has nothing to learn, and every reader after this would find it
+/// there and go back to the pane for what this look already had.
 ///
 /// The writer's lock is taken only when there is something new to write, so
 /// the promise that readers never wait on writers holds for every look but the
-/// one that finds the question.
-fn note(agent: &Agent, screens: &Ruleset, state: &mut State, asking: &Question) {
+/// one that finds the record saying something else.
+fn note(agent: &Agent, screens: &Ruleset, meta: &Meta, state: &mut State, reading: &Reading) {
+    let corrects = is_the_record(meta, reading);
+    let asking = reading.asking.as_ref();
+
     forget_the_placeholder(screens, state);
-    if !state.learns_from(asking) {
+    let worth = match corrects {
+        true => state.corrected_by(asking),
+        false => asking.is_some_and(|asking| state.learns_from(asking)),
+    };
+    if !worth {
         return;
     }
 
@@ -916,7 +939,7 @@ fn note(agent: &Agent, screens: &Ruleset, state: &mut State, asking: &Question) 
             // vendor's own account of a moment this picture is already behind.
             if current.last_event == heard {
                 forget_the_placeholder(screens, current);
-                current.learn(asking);
+                take_the_question(current, asking, corrects);
             }
         })
     });
@@ -925,7 +948,25 @@ fn note(agent: &Agent, screens: &Ruleset, state: &mut State, asking: &Question) 
         Ok(current) => *state = current,
         // A record that cannot be written is still a question that can be
         // reported, and the next look will try again.
-        Err(_) => state.learn(asking),
+        Err(_) => take_the_question(state, asking, corrects),
+    }
+}
+
+/// Put what a screen asked on a record, as far as the vendor lets a screen go.
+///
+/// Where the vendor reports, a hook is its own words about its own state and
+/// this is amx's reading of a picture of it, so the screen fills what the hooks
+/// left empty — the options, which no hook has ever carried, and the text when
+/// no hook reported one — and corrects nothing.
+///
+/// Where it does not report there is nothing on the record but earlier readings
+/// of the same pane, and the pane holds one screen at a time: the reading is
+/// the record, so the later one replaces the earlier one whole.
+fn take_the_question(state: &mut State, asking: Option<&Question>, corrects: bool) {
+    match (corrects, asking) {
+        (true, asking) => state.correct(asking),
+        (false, Some(asking)) => state.learn(asking),
+        (false, None) => {}
     }
 }
 
@@ -1432,10 +1473,8 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
         .flatten();
     let held = held_still(&agent, &mut state, screen.as_deref(), rules, now);
     let reading = read(&state, meta.created, alive, || screen, rules, now, held);
-    if let Some(asking) = &reading.asking {
-        note(&agent, rules, &mut state, asking);
-    }
-    if reads_its_own_record(&meta) && reading.verdict.evidence == Evidence::Screen {
+    note(&agent, rules, &meta, &mut state, &reading);
+    if is_the_record(&meta, &reading) {
         let said = worth_writing_down(&meta, &reading);
         write_the_reading(&agent, &mut state, &reading.verdict, said);
     }
@@ -1544,10 +1583,8 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
         let held = held_still(&agent, &mut state, screen.as_deref(), rules, now);
 
         let reading = read(&state, meta.created, alive, || screen, rules, now, held);
-        if let Some(asking) = &reading.asking {
-            note(&agent, rules, &mut state, asking);
-        }
-        if reads_its_own_record(&meta) && reading.verdict.evidence == Evidence::Screen {
+        note(&agent, rules, &meta, &mut state, &reading);
+        if is_the_record(&meta, &reading) {
             let said = worth_writing_down(&meta, &reading);
             write_the_reading(&agent, &mut state, &reading.verdict, said);
         }

@@ -1799,6 +1799,100 @@ fn a_pi_that_stopped_to_ask_is_written_down_without_ending_its_turn() {
 }
 
 #[test]
+fn a_pi_driven_through_several_stops_offers_the_question_it_is_on() {
+    // The last of the four hooks-gap findings at the end of `docs/vendors.md`:
+    // a record learns a question and overwrites nothing, because a hook is the
+    // vendor's own word and a screen is amx's reading of a picture. On claude
+    // the next hook clears it. On pi nothing ever did, so an agent driven
+    // through a dozen screens was still offering `Run echo hi?` when it was
+    // stopped on the login box. Where the pane is the only account there is, a
+    // later reading of it is not something to learn beside the last one: it is
+    // the one that is true now.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let several_stops = timeline(
+        &amx,
+        "stops-twice",
+        // A gated tool call, then the box a provider's key is asked for, then
+        // the prompt a finished turn leaves: three screens, one pane, one
+        // record.
+        "screen dialog\nsleep 8000\nscreen login\nsleep 6000\nscreen idle\nsleep 600000\n",
+    );
+    start_playing(&amx, id, &several_stops);
+    let pane = amx.pane_of(id);
+
+    // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
+    // nothing outstanding, which is where the screen is the only witness there
+    // is on this vendor. Nothing moves those stamps again — a reading writes
+    // with the observing hand — so every look below reads the pane.
+    amx.set_state(
+        id,
+        json!({ "state": "starting", "since": 1, "last_event": 1 }),
+    );
+
+    // The first question this agent was ever read on. Looked for rather than
+    // waited out, because a look is what puts a question on a record at all:
+    // the poll that finds it is the one that wrote it.
+    let agent = amx.until("the dialog to reach the record", || {
+        let agent = status(&amx, id);
+        (agent["question"] == json!("Run echo hi?")).then_some(agent)
+    });
+    assert_eq!(agent["state"], "waiting", "{agent}");
+    assert_eq!(
+        agent["rule"], "dialog",
+        "pi's own rule, out of pi's own document: {agent}"
+    );
+
+    // And the question it is on now, which is another screen asking another
+    // thing. This is the finding: the record kept the first one.
+    let agent = amx.until("the login box to replace it", || {
+        let agent = status(&amx, id);
+        (agent["question"] == json!("Enter Cerebras API key")).then_some(agent)
+    });
+    assert_eq!(agent["rule"], "login", "{agent}");
+    assert_eq!(
+        amx.state(id)["question"],
+        json!("Enter Cerebras API key"),
+        "written down, rather than concluded and forgotten"
+    );
+
+    // The prompt pi leaves when there is nothing outstanding at all, stopped
+    // on the row no earlier screen in this timeline carries.
+    amx.until("the pi to reach its prompt", || {
+        row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
+    });
+
+    // The first look ends no turn: `prompt` is quiescent, and a screen amx has
+    // only just laid eyes on has held still for no time at all. A rule that may
+    // not speak has nothing to correct either.
+    let agent = status(&amx, id);
+    assert_eq!(agent["state"], "waiting", "{agent}");
+    assert_eq!(
+        amx.state(id)["question"],
+        json!("Enter Cerebras API key"),
+        "and the question stands until something is allowed to say otherwise"
+    );
+
+    // The same screen, first seen `SETTLED` seconds ago — aged on the record
+    // rather than waited through.
+    let mut aged = amx.state(id);
+    let since = aged["still"]["since"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("when that look first saw the screen: {aged}"));
+    aged["still"]["since"] = json!(since - SETTLED);
+    amx.set_state(id, aged);
+
+    let agent = status(&amx, id);
+    assert_eq!(agent["state"], "idle", "{agent}");
+    assert_eq!(
+        amx.state(id)["question"],
+        Value::Null,
+        "a screen with nothing on it to answer is an agent with nothing \
+         outstanding, and the record says so"
+    );
+}
+
+#[test]
 fn adopt_takes_the_pi_in_the_pane_over_and_not_the_claude_in_the_terminal() {
     // The finding at the end of `docs/vendors.md`: `adopt` read the
     // environment in table order, so a pi started from a terminal that already
