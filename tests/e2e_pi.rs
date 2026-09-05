@@ -90,6 +90,67 @@ fn start(amx: &Harness, id: &str, scenario: &str) {
     );
 }
 
+/// The conversations the two vendors name in the terminal an adoption is
+/// typed in: the claude somebody is working in, and the pi they started from
+/// inside it.
+const A_CLAUDE: &str = "4c1e8b73-2f60-4a15-9d38-7e2b6c0f9a54";
+const THEIR_PI: &str = "9f3c1d20-5a44-4e7b-8c19-6d0a2b5f7e31";
+
+/// A pi somebody started themselves, in a pane amx never opened, stopped on
+/// the dialog it raises. Answers with that pane.
+///
+/// Started under the name that makes it pi: tmux answers for a pane with the
+/// program its process was started as, and a script's is the shell named on
+/// its shebang line, so the shell that reads the stand-in is reached through a
+/// link called `pi`. Nothing here goes through the PATH the way `amx new
+/// --agent pi` has to, because what is in a pane amx did not open is whatever
+/// somebody ran.
+fn a_pi_started_by_hand(amx: &Harness) -> String {
+    let named_pi = amx.home().join("pi");
+    std::os::unix::fs::symlink("/bin/sh", &named_pi).expect("a shell called pi");
+    let scenario = format!("MOCK_PI_SCENARIO={}", scenario("asks-a-question").display());
+    let (named_pi, stand_in) = (
+        named_pi.to_string_lossy().into_owned(),
+        fixtures().join("pi").to_string_lossy().into_owned(),
+    );
+    let pane = amx.tmux(&[
+        "new-session",
+        "-d",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "--",
+        "env",
+        &scenario,
+        &named_pi,
+        &stand_in,
+    ]);
+
+    // The hint row pi draws under every dialog, which is the anchor its own
+    // document reads that screen by. A capture taken before it is painted is a
+    // different screen, and adoption reads the pane once.
+    amx.until("pi's dialog on the pane", || {
+        amx.capture(&pane).contains("↑↓ navigate").then_some(())
+    });
+    pane
+}
+
+/// `amx adopt`, typed in that pane by a command the vendors have told what
+/// they told it.
+///
+/// The suite is run from inside somebody's own agent often enough that a
+/// vendor's session variable is already in this process's environment, so both
+/// of them are cleared and only what a caller names is put back.
+fn adopt(amx: &Harness, id: &str, pane: &str, named: &[(&str, &str)]) -> std::process::Output {
+    amx.amx_command(&["adopt", "--name", id, "--task", TASK])
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("PI_SESSION_ID")
+        .env("TMUX_PANE", pane)
+        .envs(named.iter().copied())
+        .output()
+        .expect("running amx adopt")
+}
+
 /// Run the stand-in itself, with the home a pi would keep its sessions under
 /// pinned to this harness.
 ///
@@ -1335,6 +1396,81 @@ fn a_quiet_pi_is_read_against_pis_own_document() {
     assert_eq!(
         agent["rule"], "prompt",
         "pi's own rule, out of pi's own document: {agent}"
+    );
+}
+
+#[test]
+fn adopt_takes_the_pi_in_the_pane_over_and_not_the_claude_in_the_terminal() {
+    // The finding at the end of `docs/vendors.md`: `adopt` read the
+    // environment in table order, so a pi started from a terminal that already
+    // had claude's session id in it was adopted as claude — claude's id on a
+    // record no pi will ever report under, and claude's document reading a
+    // pane pi drew.
+    let amx = Harness::new();
+    let pane = a_pi_started_by_hand(&amx);
+
+    // Claude's variable alone first, which is the terminal's own and says
+    // nothing about what is running in this pane.
+    let out = adopt(
+        &amx,
+        "read-as-claude-c3d",
+        &pane,
+        &[("CLAUDE_CODE_SESSION_ID", A_CLAUDE)],
+    );
+    assert!(
+        !out.status.success(),
+        "a pi pane adopted as claude: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let why = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        why.contains("pi"),
+        "the refusal names what was in the pane: {why}"
+    );
+    assert!(
+        why.contains("PI_SESSION_ID"),
+        "and the variable that would have said which pi conversation: {why}"
+    );
+
+    // Both variables, which is what a pi started from that terminal really
+    // carries: its own session id, and the one it inherited.
+    let id = "their-own-pi-a1b";
+    let out = adopt(
+        &amx,
+        id,
+        &pane,
+        &[
+            ("CLAUDE_CODE_SESSION_ID", A_CLAUDE),
+            ("PI_SESSION_ID", THEIR_PI),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "amx adopt: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        amx.meta(id)["agent"],
+        "pi",
+        "the program tmux says is running in the pane"
+    );
+    assert_eq!(
+        amx.meta(id)["session"],
+        THEIR_PI,
+        "the conversation pi named, which is how anything ever finds this \
+         record again"
+    );
+    assert_eq!(
+        amx.state(id)["state"],
+        "waiting",
+        "read by pi's own document, which is the only one that claims this \
+         screen"
+    );
+    assert_eq!(
+        amx.state(id)["question"],
+        "Run echo hi?",
+        "the sentence the caller passed, off the pane it is drawn on"
     );
 }
 
