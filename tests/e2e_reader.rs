@@ -173,6 +173,33 @@ fn a_trust_gate_records_the_question_and_not_one_of_its_answers() {
 }
 
 #[test]
+fn a_menu_taller_than_the_floor_is_still_a_menu() {
+    // The box the question tool draws is as tall as the agent's own
+    // descriptions make it, so at 24 columns its first choice — and the marker
+    // on it — is above the rows a rule may look at, while the footer wraps in
+    // three and breaks `esc to cancel` with it. docs/claude-screens.md read
+    // this screen as unknown, which leaves an agent standing at a question
+    // nobody is told about.
+    let amx = Harness::new();
+    let pane = amx.play("picks-c3d", "asks-on-a-narrow-pane");
+    // The last row the vendor draws, so the box is whole and the rows it
+    // pushed off the top are gone rather than on their way.
+    amx.until("the menu to be drawn", || {
+        amx.capture(&pane).ends_with("cancel").then_some(())
+    });
+    let screen = amx.capture(&pane);
+    assert!(
+        !screen.contains("❯ 1."),
+        "the marker is off the rows a reader has: {screen}"
+    );
+
+    let agent = status(&amx, "picks-c3d");
+    assert_eq!(agent["state"], "waiting", "{agent}");
+    assert_eq!(agent["evidence"], "screen");
+    assert_eq!(agent["rule"], "ask_menu");
+}
+
+#[test]
 fn a_running_turn_on_a_narrow_pane_is_not_a_finished_one() {
     // The vendor drops the tail of its spinner row from the right as the pane
     // narrows, and the mode footer it draws while it works stays where it is.

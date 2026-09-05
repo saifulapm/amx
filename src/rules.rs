@@ -893,6 +893,45 @@ navigate · Esc to
 cancel
 ";
 
+    /// The same menu as v2.1.259 draws it, at 24 columns on a pane of 30 rows,
+    /// 2026-09-05. Two one-sentence descriptions are enough to make the box
+    /// taller than the rows a rule may see: `❯ 1. Spaces` is the sixth row and
+    /// the floor begins on the seventh, so the marker is out of reach, and the
+    /// footer wraps in three, which breaks `esc to cancel` with it. What is
+    /// left inside the floor is the bottom of the box. A raw string because the
+    /// capture opens with a blank row.
+    const ASK_MENU_259_24: &str = r"
+Should this project be
+indented with spaces or
+tabs?
+
+❯ 1. Spaces
+     Fixed-width
+     indentation that
+     renders identically
+     everywhere; the
+     common default for
+     most language style
+     guides and
+     formatters.
+  2. Tabs
+     One tab character
+     per level, so each
+     reader's editor
+     controls the
+     visible width;
+     better for
+     accessibility and
+     smaller files.
+  3. Type something.
+────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to
+navigate · Esc to
+cancel
+";
+
     /// An agent quoting another agent's pane back as a tool result — which is
     /// what amx's own callers have agents do. The quotation is the widget,
     /// character for character.
@@ -2142,6 +2181,7 @@ Only showing models from configured providers. Use /login to add providers.
             ("a live permission box", PERMISSION_BOX),
             ("the ask menu at 80 columns", ASK_MENU_80),
             ("the ask menu at 24 columns", ASK_MENU_24),
+            ("2.1.259's ask menu at 24 columns", ASK_MENU_259_24),
             ("the plan approval screen at 220 columns", PLAN_APPROVAL_220),
             ("the plan approval screen at 54 columns", PLAN_APPROVAL_54),
             ("the plan approval screen at 24 columns", PLAN_APPROVAL_24),
@@ -2308,6 +2348,26 @@ Only showing models from configured providers. Use /login to add providers.
         let narrow = asked(claude(), ASK_MENU_24);
         assert_eq!(narrow.options, wide.options);
         assert_eq!(narrow.text, "indented with spaces or tabs?");
+    }
+
+    #[test]
+    fn rules_a_menu_taller_than_the_floor_is_claimed_by_its_own_bottom() {
+        // Everything the vendor draws at the top of this box — the header
+        // strip, the question, the first choice and the marker on it — is as
+        // far from the footer as the agent's own descriptions make it, so at 24
+        // columns it is off the rows a rule may look at. The two anchors this
+        // rule used to have both went with it, one out of the floor and one to
+        // the wrap.
+        let screen = Screen::new(ASK_MENU_259_24);
+        assert_eq!(screen.row_of("❯ 1."), None, "the marker is above the floor");
+        assert_eq!(screen.row_of("esc to cancel"), None, "the footer wrapped");
+
+        // What is left is the bottom of the box, which is where the rule that
+        // claims the screen now stands.
+        assert_eq!(
+            claim(claude(), ASK_MENU_259_24, Phase::Working).rule_name(),
+            Some("ask_menu")
+        );
     }
 
     #[test]

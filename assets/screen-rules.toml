@@ -311,6 +311,24 @@ asks = { sentence = "do you want to" }
 # which is also why `esc to cancel` rides in `any` as an alternative and never
 # as the anchor.
 #
+# ── The affordance that survives a box taller than the floor ─────────────────
+# `❯ 1.` is at the TOP of the box, and how far that is from the footer is the
+# agent's own descriptions rather than anything a rule can bound. Driven
+# against v2.1.259 at 24 columns on 2026-09-05, two one-sentence descriptions
+# put it one row above the floor while the wrap took `esc to cancel` on the
+# same screen, so both entries in `any` were gone at once and a menu somebody
+# was standing at read `unknown` — the capture is in docs/claude-screens.md.
+#
+# `chat about this` is the row the vendor draws under the second rule at the
+# bottom of the box, between the choices and the footer. It is furniture and
+# not a choice — nothing in the tool's payload accounts for it — and it is on
+# every screen this tool draws: measured at 220, 80, 54, 40 and 24 columns
+# across all five shapes in docs/question-shapes.md, including the previewed
+# one, where it loses its number and the words are the whole of it. Being the
+# vendor's last row before the footer is what makes it the affordance to have
+# here: it is inside the floor whenever the footer this rule stands on is,
+# whatever the agent wrote above it.
+#
 # `within` is 24 here rather than 16 because the box's height is the agent's
 # own choice — the tool names its options and writes their descriptions — and
 # at 24 columns eighteen rows already sit between `❯ 1.` and the footer. There
@@ -388,7 +406,7 @@ name = "ask_menu"
 state = "waiting"
 kind = "question"
 all = ["enter to select"]
-any = ["❯ 1.", "esc to cancel"]
+any = ["chat about this", "❯ 1.", "esc to cancel"]
 within = 24
 not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 

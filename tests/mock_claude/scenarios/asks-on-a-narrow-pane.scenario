@@ -1,0 +1,40 @@
+# An agent stopped on the menu its question tool draws, at 24 columns, as
+# claude 2.1.259 draws it. The box's height is the agent's own choice, and two
+# one-sentence descriptions are enough to push its top past the rows a rule may
+# see: the marker on the first choice scrolls away while the whole bottom of
+# the box stays. The footer wraps in three at this width, which leaves
+# `Enter to select` on the row it opens and breaks `Esc to cancel` in half.
+print ────────────────────────
+print  ☐ Indentation
+print
+print Should this project be
+print indented with spaces or
+print tabs?
+print
+print ❯ 1. Spaces
+print      Fixed-width
+print      indentation that
+print      renders identically
+print      everywhere; the
+print      common default for
+print      most language style
+print      guides and
+print      formatters.
+print   2. Tabs
+print      One tab character
+print      per level, so each
+print      reader's editor
+print      controls the
+print      visible width;
+print      better for
+print      accessibility and
+print      smaller files.
+print   3. Type something.
+print ────────────────────────
+print   4. Chat about this
+print
+print Enter to select · ↑/↓ to
+print navigate · Esc to
+print cancel
+# The menu waits for an answer, and nothing else ends it.
+sleep 600000
