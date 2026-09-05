@@ -257,6 +257,31 @@ fn clibatch_delete_still_asks_before_it_takes_a_worktree() {
 }
 
 #[test]
+fn clibatch_delete_takes_the_record_off_when_the_worktree_is_gone() {
+    // Somebody has already deleted the directory. Everything that names the
+    // repository is asked from inside that directory, so the whole of `stop`
+    // used to abort on it and the record had to come off by hand.
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let worktree = with_a_worktree(&amx, "fix-login-a1b", &repo, "happy-turn");
+    amx.until_state("fix-login-a1b", "idle");
+    std::fs::remove_dir_all(&worktree).unwrap();
+
+    let out = said(&stop(
+        &amx,
+        &["fix-login-a1b", "--force", "--branch", "delete", "--delete"],
+    ));
+    assert!(
+        !amx.agent_dir("fix-login-a1b").exists(),
+        "the row goes, whatever became of the tree: {out}"
+    );
+    assert!(
+        !branches(&repo).contains("amx/fix-login-a1b"),
+        "and the repository it was cut under was found without it: {out}"
+    );
+}
+
+#[test]
 fn stop_says_so_when_there_is_no_such_agent() {
     let amx = Harness::new();
     let out = amx.amx(&["stop", "never-made-abc"]);

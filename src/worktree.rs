@@ -60,6 +60,19 @@ pub fn main_repo(worktree: &Path) -> Result<PathBuf> {
         .with_context(|| format!("{common} is not inside a repository"))
 }
 
+/// The same question as [`main_repo`], answered off the path alone.
+///
+/// [`main_repo`] asks git, from inside the tree — which answers nothing once
+/// somebody has deleted the directory, and that is exactly when the repository
+/// still has to be named: a tree git is holding a record of, and a branch, both
+/// outlive it. The layout [`path_for`] lays down is the other way to the same
+/// answer, and it needs nothing on disk. Only for a tree amx cut, since the
+/// layout is the whole of the reasoning.
+pub fn repo_of(worktree: &Path) -> Option<PathBuf> {
+    // <repo>/.amx/worktrees/<id>: three steps back up from the id.
+    is_amx_tree(worktree).then(|| worktree.ancestors().nth(3).map(Path::to_path_buf))?
+}
+
 /// The branch amx gives an agent's tree.
 pub fn branch_for(id: &str) -> String {
     format!("amx/{id}")
@@ -446,6 +459,27 @@ mod tests {
             std::fs::canonicalize(&tree.path).unwrap(),
             "which is not what the tree itself answers"
         );
+    }
+
+    #[test]
+    fn worktree_names_its_repository_after_the_directory_has_gone() {
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+        std::fs::remove_dir_all(&tree.path).unwrap();
+
+        assert!(
+            main_repo(&tree.path).is_err(),
+            "git has nowhere to be asked from"
+        );
+        assert_eq!(
+            repo_of(&tree.path).unwrap(),
+            repo.path(),
+            "and the layout answers without it"
+        );
+
+        // The same refusal is_amx_tree makes: amx speaks for the trees it cut.
+        assert_eq!(repo_of(Path::new("/src/app/worktrees/fix-a1b")), None);
+        assert_eq!(repo_of(Path::new(".amx/worktrees/fix-a1b")), None);
     }
 
     #[test]

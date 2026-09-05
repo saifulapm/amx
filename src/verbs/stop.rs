@@ -125,8 +125,13 @@ fn dispositions(
         return Ok(());
     };
     // Asked before anything is removed, and asked of the repository rather
-    // than of the tree: the tree is what may be about to go.
-    let repo = worktree::main_repo(tree).unwrap_or_else(|_| tree.clone());
+    // than of the tree: the tree is what may be about to go. When it has gone
+    // already, git has nothing to answer from inside it — and a tree amx cut
+    // says where its repository is by where it sits.
+    let repo = worktree::main_repo(tree)
+        .ok()
+        .or_else(|| worktree::repo_of(tree))
+        .unwrap_or_else(|| tree.clone());
 
     // Work nobody has committed is not amx's to delete, and saying so is part
     // of the answer: somebody has to know it is still there.
@@ -146,8 +151,13 @@ fn dispositions(
     )?
     .is_keep()
     {
-        worktree::remove(&repo, tree)?;
-        writeln!(out, "removed {}", tree.display())?;
+        // Saying so beats failing, for the same reason the branch below says
+        // so: the agent is already stopped, and the lines still to be printed
+        // are the record's — including, under `--delete`, its removal.
+        match worktree::remove(&repo, tree) {
+            Ok(()) => writeln!(out, "removed {}", tree.display())?,
+            Err(why) => writeln!(out, "kept {}: {why:#}", tree.display())?,
+        }
     } else {
         writeln!(out, "kept {}", tree.display())?;
     }
