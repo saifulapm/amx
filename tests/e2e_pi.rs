@@ -29,6 +29,7 @@ mod common;
 use common::Harness;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// The task every agent here is started on.
 const TASK: &str = "fix the login bug";
@@ -60,16 +61,40 @@ fn path_to_pi() -> String {
 /// they reach the pane: a spawn snapshots the environment it was run with, and
 /// the pane is started from that snapshot.
 fn amx_with_pi(amx: &Harness, scenario_name: &str, args: &[&str]) -> std::process::Output {
+    amx_playing(amx, &scenario(scenario_name), args)
+}
+
+/// The same, against a timeline written somewhere other than beside the
+/// stand-in — see [`timeline`].
+fn amx_playing(amx: &Harness, scenario: &Path, args: &[&str]) -> std::process::Output {
     amx.amx_command(args)
         .env("PATH", path_to_pi())
-        .env("MOCK_PI_SCENARIO", scenario(scenario_name))
+        .env("MOCK_PI_SCENARIO", scenario)
         .output()
         .expect("running amx")
 }
 
+/// A timeline of pi's own screens, written for the one test that drives it.
+///
+/// The scenarios beside the stand-in each walk to the screen a test is reading
+/// and hold there, which is what a test of a reader wants. A message is about
+/// the moment between two screens instead — the pi is at its prompt when the
+/// text goes in, and the turn begins while the send is still waiting to hear
+/// that it did — so the test that drives one places that moment itself.
+fn timeline(amx: &Harness, name: &str, steps: &str) -> PathBuf {
+    let path = amx.home().join(format!("{name}.scenario"));
+    std::fs::write(&path, steps).expect("writing a scenario");
+    path
+}
+
 /// Start an agent the way a person starts one, on the vendor amx knows as pi.
-fn start(amx: &Harness, id: &str, scenario: &str) {
-    let out = amx_with_pi(
+fn start(amx: &Harness, id: &str, scenario_name: &str) {
+    start_playing(amx, id, &scenario(scenario_name));
+}
+
+/// The same, on a timeline of one test's own.
+fn start_playing(amx: &Harness, id: &str, scenario: &Path) {
+    let out = amx_playing(
         amx,
         scenario,
         &[
@@ -227,6 +252,11 @@ const SETTLED: u64 = 30;
 /// its own events would agree with whatever anybody renamed them to.
 const READ_PROMPT: &str = "read.prompt";
 const READ_TURN_END: &str = "read.turn-end";
+
+/// How long a send waits for the word that its message was taken, in seconds,
+/// which is `send::CONFIRM`. Spelled here for the same reason the two names
+/// above are: what a caller is promised is a wait that ends.
+const CONFIRM: u64 = 5;
 
 /// The vendor's own words for the same two moments. claude sends both and pi
 /// sends neither, and a reading that wrote one of these in pi's place would
@@ -2046,6 +2076,117 @@ fn a_turn_that_answered_nothing_leaves_the_record_the_answer_it_had() {
         kinds.iter().filter(|kind| *kind == READ_TURN_END).count(),
         1,
         "written on the one edge that ties a screen to a turn: {kinds:?}"
+    );
+}
+
+#[test]
+fn a_message_a_pi_takes_is_confirmed_by_the_reading_that_watched_the_turn_begin() {
+    // The first of the four hooks-gap findings at the end of `docs/vendors.md`:
+    // send waited five seconds for a `UserPromptSubmit`, pi sends none, and
+    // every message to a pi exited failure over text that had landed and a turn
+    // that had run. The word a send waits for is a reader's on this vendor, and
+    // the reading that writes it down is the send's own — nothing else is
+    // looking at a pane while a caller waits on one.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let picks_it_up = timeline(
+        &amx,
+        "picks-a-message-up",
+        // Long enough at the prompt that the message goes in front of a pi that
+        // is sitting at it, and the turn begins while the send is waiting.
+        "screen idle\nsleep 3000\nscreen working\nsleep 600000\n",
+    );
+    start_playing(&amx, id, &picks_it_up);
+    let pane = amx.pane_of(id);
+
+    // The prompt the last turn left, stopped on the row no earlier screen in
+    // this timeline carries.
+    amx.until("the pi to be at its prompt", || {
+        row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
+    });
+
+    // A record nothing has moved for an hour, which is every pi record that has
+    // not been looked at: no hook will ever move one.
+    amx.set_state(id, json!({ "state": "idle", "since": 1, "last_event": 1 }));
+
+    let out = amx.amx(&["send", id, "and now the linter"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the message landed and the turn ran: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "and it went in front of a pi at its prompt rather than behind a turn \
+         that was already running: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let kinds = amx.event_kinds(id);
+    assert_eq!(
+        kinds.iter().filter(|kind| *kind == READ_PROMPT).count(),
+        1,
+        "the turn a reading watched begin, which is the whole of the word there \
+         is on this vendor: {kinds:?}"
+    );
+    for word in VENDORS_WORDS {
+        assert!(
+            !kinds.iter().any(|kind| kind == word),
+            "and never in the vendor's words, which pi has never said: {kinds:?}"
+        );
+    }
+
+    let state = amx.state(id);
+    assert_eq!(state["seq"], 1, "the send is on the record: {state}");
+    assert_eq!(
+        state["last_event"], 1,
+        "and the record is no fresher for a message amx typed into it — a send \
+         is amx doing the talking, and a document that says otherwise is one \
+         the reading this send waits on would believe over the pane: {state}"
+    );
+}
+
+#[test]
+fn a_message_that_starts_no_turn_on_a_pi_is_a_send_that_says_so() {
+    // The other half of the same word. A reading that watches no turn begin is
+    // a message amx cannot say arrived, and a caller told that it did would go
+    // on to wait out its own deadline on a turn nobody is taking. The pane here
+    // never leaves the prompt the last turn left it at.
+    let amx = Harness::new();
+    let id = "fix-login-c3d";
+    start(&amx, id, "takes-a-turn");
+    let pane = amx.pane_of(id);
+
+    amx.until("the pi to be at its prompt", || {
+        row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
+    });
+    amx.set_state(id, json!({ "state": "idle", "since": 1, "last_event": 1 }));
+
+    let waited = Instant::now();
+    let out = amx.amx(&["send", id, "and now the linter"]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a success here is a caller waiting on a turn that never started: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        waited.elapsed() < Duration::from_secs(CONFIRM * 3),
+        "and it says so on its own patience rather than sitting there: {:?}",
+        waited.elapsed()
+    );
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("did not start working"), "{said}");
+
+    assert!(
+        amx.capture(&pane).contains("and now the linter"),
+        "the text reached the pane; what did not happen is a turn starting"
+    );
+    let kinds = amx.event_kinds(id);
+    assert!(
+        !kinds.iter().any(|kind| kind == READ_PROMPT),
+        "a turn nothing watched begin is an edge nothing crossed: {kinds:?}"
     );
 }
 

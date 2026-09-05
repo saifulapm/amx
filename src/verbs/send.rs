@@ -18,10 +18,15 @@
 //!   record — the event log and the sequence number — before a byte reaches the
 //!   pane.
 //!
-//! Then it waits for the vendor's own word that the text arrived: a
-//! `UserPromptSubmit`. Without one within [`CONFIRM`] the text went nowhere
-//! that amx can see, and saying so beats reporting a success the caller would
-//! then wait on.
+//! Then it waits for the word that the text arrived. On a vendor that reports,
+//! that word is the vendor's own — a `UserPromptSubmit`. On one that reports
+//! nothing it is a reader's: the turn a look at the pane watched begin, which
+//! nothing but a look will ever write down. Without either within [`CONFIRM`]
+//! the text went nowhere that amx can see, and saying so beats reporting a
+//! success the caller would then wait on. The other way round is what pi got
+//! for as long as the only word here was the vendor's, and `docs/vendors.md`
+//! has it measured four times: a failure reported over a message that had
+//! landed and a turn that had run.
 //!
 //! The refusals here are shared: `result` and `answer` speak the same three
 //! sentences, and a caller reading amx's stderr should not find three ways of
@@ -33,8 +38,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::derive::{self, View};
-use crate::store::{Agent, Ask, Event, Kind, Phase, State};
+use crate::store::{Agent, Ask, Event, Kind, Meta, Phase, State};
 use crate::tmux::{PaneId, Server};
+use crate::vendor::Capability;
 use crate::{complain, exit, paths, store, warn};
 
 /// The event amx records for a message it sent.
@@ -50,6 +56,14 @@ const CONFIRM: Duration = Duration::from_secs(5);
 
 /// How often the event log is read while waiting for that word.
 const POLL: Duration = Duration::from_millis(50);
+
+/// How often the *pane* is read, on the vendor where that word can only come
+/// off one. Reading two small files twenty times a second is free and asking
+/// tmux for a screen twenty times a second is not, so a look gets a clock of
+/// its own — which is what `result` does with its own wait. Still often enough
+/// that a turn short enough to be over between two looks is a turn nothing
+/// could have seen at all.
+const LOOK: Duration = Duration::from_millis(250);
 
 /// Run the verb against the machine.
 pub fn from_env(id: &str, text: &str) -> Result<i32> {
@@ -88,7 +102,7 @@ pub fn run(
         return Ok(exit::OK);
     }
 
-    if took_it(&agent, taken, CONFIRM)? {
+    if took_it(root, &view.meta, &agent, taken, CONFIRM)? {
         return Ok(exit::OK);
     }
     complain!(
@@ -104,6 +118,13 @@ pub fn run(
 /// reader in another process that the answer it can see belongs to the turn
 /// before this message. The view acts through this too: what is shared is the
 /// order, which is the part that must not be got wrong twice.
+///
+/// Written with the observing hand, like everything else amx puts on a record
+/// without having heard it from the agent. The record's freshness says when the
+/// agent was last heard from, and a message is amx doing the talking: moving it
+/// would have every reader for the next [`derive::FRESH`] seconds believe a
+/// document written before the message over the pane that has since taken it —
+/// including the reading this send is about to wait on.
 pub fn deliver(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Result<()> {
     if ends_its_own_paste(text) {
         bail!(
@@ -115,7 +136,7 @@ pub fn deliver(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Res
 
     let writer = agent.writer()?;
     writer.append(&Event::new(SEND, serde_json::json!({ "text": text })))?;
-    writer.update_state(|state| state.seq += 1)?;
+    writer.observe(|state| state.seq += 1)?;
     drop(writer);
 
     server.paste(pane, text)?;
@@ -142,28 +163,75 @@ fn ends_its_own_paste(text: &str) -> bool {
         .any(|csi| text.contains(&format!("{csi}200~")) || text.contains(&format!("{csi}201~")))
 }
 
-/// Wait for the vendor to say it took the message.
-fn took_it(agent: &Agent, before: usize, patience: Duration) -> Result<bool> {
+/// Wait for the word that the message was taken.
+///
+/// A vendor that reports says it itself, and this reads the log until it
+/// arrives. A vendor that reports nothing never says anything: the only account
+/// of the turn beginning is a reader's, nothing reads a pane unless somebody
+/// asks it to, and while a send waits nobody is asking. So the wait asks, and
+/// what the reading writes down is what it then finds in the log — one word,
+/// read the one way, whoever said it.
+fn took_it(
+    root: &Path,
+    meta: &Meta,
+    agent: &Agent,
+    before: usize,
+    patience: Duration,
+) -> Result<bool> {
     let deadline = Instant::now() + patience;
+    let looking = only_a_reader_will_say(meta);
     loop {
+        if looking {
+            // A reading that cannot be taken is a look this wait did not get,
+            // and the deadline below is what answers for that.
+            let _ = derive::view(root, agent.id(), store::now());
+        }
         if submissions(&agent.events()?) > before {
             return Ok(true);
         }
         if Instant::now() >= deadline {
             return Ok(false);
         }
-        std::thread::sleep(POLL);
+        std::thread::sleep(match looking {
+            true => LOOK,
+            false => POLL,
+        });
     }
 }
 
-/// How many prompts this agent has submitted.
+/// Whether the only word that will ever say this message was taken is a
+/// reader's.
+///
+/// A vendor with hooks says [`SUBMITTED`] itself, at the moment it takes the
+/// text. One with none says nothing ever, so the turn beginning is on the pane
+/// and nowhere else and the only account of it there will ever be is a reading
+/// that watched it happen — see [`derive::READ_PROMPT`].
+///
+/// A command amx has no entry for is judged as a vendor that reports, the way
+/// `doctor` judges one: nothing measured is not a measurement, and a wrapper
+/// somebody wrote around a vendor reports through it.
+fn only_a_reader_will_say(meta: &Meta) -> bool {
+    crate::registry::entry(meta.agent.as_deref().unwrap_or_default())
+        .is_some_and(|vendor| !vendor.can(Capability::Hooks))
+}
+
+/// How many prompts this agent has submitted, in whichever words the record has
+/// them.
+///
+/// The vendor's own where there was a vendor to say it, and amx's own name for
+/// the same moment where a reading of the pane is the only thing that will ever
+/// place it. Both say a prompt went in; a send that waited only for the first
+/// was a send that could never be confirmed on half the table.
 ///
 /// A subagent's events ride the same log and are not the agent's doing, so
 /// they do not confirm anybody's send.
 fn submissions(events: &[Event]) -> usize {
     events
         .iter()
-        .filter(|event| event.kind == SUBMITTED && event.payload["agent_id"].is_null())
+        .filter(|event| {
+            (event.kind == SUBMITTED || event.kind == derive::READ_PROMPT)
+                && event.payload["agent_id"].is_null()
+        })
         .count()
 }
 
@@ -319,7 +387,7 @@ pub fn rendered(text: &str, to_terminal: bool) -> String {
 mod tests {
     use super::*;
     use crate::derive::{Evidence, Verdict};
-    use crate::store::{Choice, Meta};
+    use crate::store::Choice;
     use crate::tmux::Socket;
     use serde_json::json;
 
@@ -417,12 +485,36 @@ mod tests {
             2
         );
 
+        // A turn a reader watched begin is the same moment, on the vendor whose
+        // pane is the only place it was ever written.
+        assert_eq!(
+            submissions(&events(&[derive::READ_TURN_END, derive::READ_PROMPT])),
+            1,
+            "and the other edge of a turn is not a prompt"
+        );
+
         // A subagent's prompt rides the same log and is not this agent's.
         let mixed = vec![
             Event::new(SUBMITTED, json!({})),
             Event::new(SUBMITTED, json!({ "agent_id": "sub-1" })),
         ];
         assert_eq!(submissions(&mixed), 1);
+    }
+
+    #[test]
+    fn send_asks_the_vendor_whether_anything_else_will_ever_say_so() {
+        let asked = |agent: Option<&str>| {
+            let mut meta = asking(None, &[], None).meta;
+            meta.agent = agent.map(str::to_string);
+            only_a_reader_will_say(&meta)
+        };
+
+        assert!(asked(Some("pi")), "pi has no hook to say it with");
+        assert!(!asked(Some("claude")), "claude says it itself");
+        // Neither a command amx has no entry for nor a record from before amx
+        // kept the field is measured either way.
+        assert!(!asked(Some("some-tool --flag")));
+        assert!(!asked(None));
     }
 
     #[test]
