@@ -177,6 +177,34 @@ fn status(amx: &Harness, id: &str) -> Value {
     serde_json::from_slice(&out.stdout).expect("the status is json")
 }
 
+/// The same agent as a listing has it, which is one look taken by a process
+/// that prints its table and exits.
+fn listed(amx: &Harness, id: &str) -> Value {
+    let out = amx.amx(&["ls", "--json"]);
+    assert!(
+        out.status.success(),
+        "amx ls: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rows: Vec<Value> = serde_json::from_slice(&out.stdout).expect("the listing is json");
+    rows.into_iter()
+        .find(|row| row["id"] == id)
+        .unwrap_or_else(|| panic!("a row for {id}"))
+}
+
+/// How long a screen must hold still before a quiescent rule may end a turn
+/// that is on the record as running: `rules::SETTLED_LOOKS` seconds, which is
+/// what that many looks at a look a second always meant.
+const SETTLED: u64 = 30;
+
+/// The clock every stamp on a record is kept in.
+fn epoch() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock set after 1970")
+        .as_secs()
+}
+
 /// Everything the stand-in has said in this pane, including what has scrolled
 /// off it.
 ///
@@ -1396,6 +1424,103 @@ fn a_quiet_pi_is_read_against_pis_own_document() {
     assert_eq!(
         agent["rule"], "prompt",
         "pi's own rule, out of pi's own document: {agent}"
+    );
+}
+
+#[test]
+fn a_pi_that_has_held_still_settles_for_whichever_process_looks_next() {
+    // How long a screen had held still was a run of consecutive looks counted
+    // in one process's memory, and every verb but the view is a process that
+    // prints a line and exits. So `amx ls` and `amx status` counted one look,
+    // every time, and pi's quiescent `prompt` rule could never end a turn for
+    // either of them: a pi whose turn ended, on a vendor that sends no hook to
+    // say so, read `working` for as long as anybody cared to ask.
+    //
+    // What a look found and when it first found it goes on the record now, so
+    // the stillness one process watched is there for the next one to read.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "takes-a-turn");
+    let pane = amx.pane_of(id);
+
+    // The prompt a finished turn leaves, stopped on the row no earlier screen
+    // in this scenario carries.
+    amx.until("the turn to be over", || {
+        row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
+    });
+
+    // A turn on the record as running, with nothing heard for an hour: the
+    // state the `prompt` rule may not decide from until the screen has held
+    // still.
+    amx.set_state(
+        id,
+        json!({ "state": "working", "since": 1, "last_event": 1 }),
+    );
+
+    let looked = epoch();
+    let out = amx.amx(&["result", id, "--timeout", "1"]);
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a screen amx has only just laid eyes on ends no turn: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // What that wait wrote down: the screen it was reading, and when it first
+    // saw it.
+    let state = amx.state(id);
+    let seen = state["still"]["screen"].clone();
+    assert!(seen.is_u64(), "the screen it saw, hashed: {state}");
+    let since = state["still"]["since"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("when it first saw that screen: {state}"));
+    assert!(since >= looked, "stamped at the look that saw it: {state}");
+    assert_eq!(
+        state["last_event"], 1,
+        "and the record is no fresher for having been looked at: {state}"
+    );
+
+    // The same screen, first seen `SETTLED` seconds ago — aged on the record
+    // the way everything about a clock is aged here, rather than waited for.
+    let mut aged = state.clone();
+    aged["still"]["since"] = json!(since - SETTLED);
+    amx.set_state(id, aged);
+
+    // One look, in a process of its own, and it is the look that ends the
+    // turn: what the wait before it watched is on the record to be read.
+    let row = listed(&amx, id);
+    assert_eq!(row["state"], "idle", "{row}");
+    assert_eq!(row["evidence"], "screen", "{row}");
+    assert_eq!(
+        row["rule"], "prompt",
+        "pi's own rule, out of pi's own document: {row}"
+    );
+
+    // And a screen that changes starts the clock again. The record remembers a
+    // screen that is not the one on the pane, so the one on the pane has been
+    // there no time at all whatever the stamp beside it says.
+    amx.set_state(
+        id,
+        json!({
+            "state": "working",
+            "since": 1,
+            "last_event": 1,
+            "still": { "screen": 0, "since": 1 },
+        }),
+    );
+
+    let agent = status(&amx, id);
+    assert_eq!(
+        agent["state"], "working",
+        "the record stands over a screen amx is seeing for the first time: {agent}"
+    );
+    let state = amx.state(id);
+    assert_eq!(state["still"]["screen"], seen, "the screen on the pane now");
+    assert!(
+        state["still"]["since"]
+            .as_u64()
+            .is_some_and(|at| at >= looked),
+        "stamped at this look rather than at the one it replaced: {state}"
     );
 }
 

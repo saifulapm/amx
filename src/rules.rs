@@ -31,14 +31,20 @@ use crate::store::{Phase, Question};
 /// which is not evidence about the vendor's state.
 pub const FLOOR_LINES: usize = 24;
 
-/// How many consecutive unchanged looks a quiescent rule needs before it may
-/// end a turn that is on the record as running.
+/// How long a screen must have held still, in seconds, before a quiescent rule
+/// may end a turn that is on the record as running.
 ///
 /// The idle screen and a mid-turn pause are the same bytes, so only time tells
 /// them apart. The longest mid-turn stillness measured at one look a second is
 /// ten seconds, at the tail of a turn after the answer stopped streaming and
 /// before the Stop hook arrived; this is three times that.
-pub const SETTLED_LOOKS: usize = 30;
+///
+/// Named for the looks it was counted in, and worth the same patience it
+/// always was: a reader looks once a second while a pane is the only witness,
+/// so this many looks and this many seconds are the same wait. Seconds are
+/// what a reader that prints a line and exits can measure at all — see
+/// [`crate::store::Still`].
+pub const SETTLED_LOOKS: u64 = 30;
 
 /// Everything amx knows how to read on one vendor's screens: the rules, in
 /// the order they are asked, and the chrome underneath them.
@@ -219,10 +225,10 @@ impl Ruleset {
 
     /// Ask the screen what it is.
     ///
-    /// `recorded` is the state amx has on file and `still_looks` is how many
-    /// consecutive looks have found this same screen — together they decide
-    /// whether a quiescent rule is allowed to end a turn.
-    pub fn claim(&self, capture: &str, recorded: Phase, still_looks: usize) -> Claim<'_> {
+    /// `recorded` is the state amx has on file and `held` is how many seconds
+    /// this same screen has been on the pane — together they decide whether a
+    /// quiescent rule is allowed to end a turn.
+    pub fn claim(&self, capture: &str, recorded: Phase, held: u64) -> Claim<'_> {
         let screen = Screen::new(capture);
         // Ordered: the first rule that holds decides, and the rest are not
         // asked. A screen the specific rules have named is not also the
@@ -230,7 +236,7 @@ impl Ruleset {
         let Some(rule) = self.rules.iter().find(|rule| rule.holds(&screen)) else {
             return Claim::Unclaimed;
         };
-        if rule.may_decide(recorded, still_looks) {
+        if rule.may_decide(recorded, held) {
             Claim::Ruled(rule)
         } else {
             Claim::Unsettled(rule)
@@ -324,17 +330,17 @@ impl Rule {
     /// Whether this rule may speak, given what amx already believes.
     ///
     /// A rule that is not quiescent always may. A quiescent one may end a turn
-    /// only once the screen has held still; from a state with nothing
-    /// outstanding it decides at once, which is what gets a parked agent named
-    /// rather than left at `starting`.
-    fn may_decide(&self, recorded: Phase, still_looks: usize) -> bool {
+    /// only once the screen has held still for [`SETTLED_LOOKS`] seconds; from
+    /// a state with nothing outstanding it decides at once, which is what gets
+    /// a parked agent named rather than left at `starting`.
+    fn may_decide(&self, recorded: Phase, held: u64) -> bool {
         if !self.quiescent {
             return true;
         }
         match recorded {
             // Nothing is outstanding, so there is no turn to end.
             Phase::Starting | Phase::Unknown => true,
-            _ => still_looks >= SETTLED_LOOKS,
+            _ => held >= SETTLED_LOOKS,
         }
     }
 }
@@ -2516,15 +2522,15 @@ Only showing models from configured providers. Use /login to add providers.
         // Mid-turn and idle are the same bytes, so a turn on the record is not
         // ended by the screen until it has held still.
         assert_eq!(
-            rules.claim(STREAMING_SCREEN, Phase::Working, 1).rule_name(),
+            rules.claim(STREAMING_SCREEN, Phase::Working, 0).rule_name(),
             Some("idle_prompt")
         );
         assert!(
             rules
-                .claim(STREAMING_SCREEN, Phase::Working, 1)
+                .claim(STREAMING_SCREEN, Phase::Working, 0)
                 .phase()
                 .is_none(),
-            "one look at a screen that looks idle must not end a turn"
+            "a screen that looks idle and has only just gone up ends no turn"
         );
         assert!(
             rules
@@ -2543,7 +2549,7 @@ Only showing models from configured providers. Use /login to add providers.
         // once — which is what gets a parked agent out of `starting`.
         for recorded in [Phase::Starting, Phase::Unknown] {
             assert_eq!(
-                rules.claim(PARKED_SCREEN, recorded, 1).phase(),
+                rules.claim(PARKED_SCREEN, recorded, 0).phase(),
                 Some(Phase::Idle),
                 "{recorded} has nothing to wait for"
             );
@@ -2551,7 +2557,7 @@ Only showing models from configured providers. Use /login to add providers.
 
         // A rule that is not quiescent never waits.
         assert_eq!(
-            rules.claim(WORKING_SCREEN, Phase::Idle, 1).phase(),
+            rules.claim(WORKING_SCREEN, Phase::Idle, 0).phase(),
             Some(Phase::Working)
         );
     }

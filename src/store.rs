@@ -15,9 +15,11 @@
 //! be a poor trade. They see whole documents anyway: a document is written to
 //! a neighbouring temporary file and renamed over its target, and a rename is
 //! atomic. A reader gets the old document or the new one, never a half of
-//! either. A reader that finds a question on a pane does take the lock, to put
-//! it where the next reader will find it — see [`Writer::observe`] — but only
-//! on the look that finds one.
+//! either. A reader does take the lock to put what it read off a pane where
+//! the next reader will find it — see [`Writer::observe`] — but only on a look
+//! that found something the record has not got: the question a screen is
+//! asking, the answer a finished turn left, and which screen is up with the
+//! moment it went up.
 //!
 //! A crash can therefore lose the last write, since the rename is not followed
 //! by an fsync. That is the trade the hook path is worth: state on disk is a
@@ -324,6 +326,29 @@ pub struct State {
     /// amx is told about; what a span is worth is settled once, at the write
     /// that ends it, and never worked out again from stamps that have moved on.
     pub worked: u64,
+    /// The screen the last reader found on the pane, and when a reader first
+    /// found it. `None` until something has looked.
+    pub still: Option<Still>,
+}
+
+/// A screen a reader saw, and the moment it went up.
+///
+/// The one thing on this record that is about the pane rather than about the
+/// agent, and it is here rather than in the reader's memory because a reader
+/// is usually a process that prints a line and exits. How long a screen has
+/// held still is what a quiescent rule waits on — see
+/// [`crate::rules::SETTLED_LOOKS`] — and a run of looks counted inside one
+/// process is a run that starts over at one for every `amx ls` anybody types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Still {
+    /// The screen above the vendor's chrome, hashed. A look only ever asks
+    /// whether it is the screen the look before it saw, never what it said, so
+    /// a fleet of long-lived agents costs one small number apiece.
+    pub screen: u64,
+    /// Epoch seconds when a reader first saw that screen. It stays where it is
+    /// for as long as the screen does, which is what makes the seconds since
+    /// an answer about the pane rather than about the last look at it.
+    pub since: u64,
 }
 
 impl State {
@@ -461,6 +486,7 @@ struct Wire {
     ended: u64,
     seen: u64,
     worked: u64,
+    still: Option<Still>,
 }
 
 /// A phase this build knows, or [`Phase::Unknown`] for one it does not.
@@ -542,6 +568,7 @@ impl From<State> for Wire {
             ended,
             seen,
             worked,
+            still,
         } = state;
 
         Wire {
@@ -585,6 +612,7 @@ impl From<State> for Wire {
             ended,
             seen,
             worked,
+            still,
         }
     }
 }
@@ -614,6 +642,7 @@ impl From<Wire> for State {
             ended: wire.ended,
             seen: wire.seen,
             worked: wire.worked,
+            still: wire.still,
         }
     }
 }

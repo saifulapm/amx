@@ -19,19 +19,26 @@
 //!    `unknown` — with how long it has been since anything was heard, because
 //!    "I can't tell" is only useful with that beside it.
 //!
-//! A reader concludes and forgets, with two exceptions, and both are things
-//! the pane is the only place to read. When the screen it read was a screen
-//! asking a question, the question and the choices under it go on the record:
-//! they are the one thing on a pane that somebody has to act on rather than
-//! merely read, and the pane is the only place the choices are ever written.
-//! Nothing a hook reported is corrected by them.
+//! A reader concludes and forgets, with three exceptions, and all of them are
+//! things the pane is the only place to read. When the screen it read was a
+//! screen asking a question, the question and the choices under it go on the
+//! record: they are the one thing on a pane that somebody has to act on rather
+//! than merely read, and the pane is the only place the choices are ever
+//! written. Nothing a hook reported is corrected by them.
 //!
-//! The other is what a turn answered, on the one kind of vendor that reports
+//! The second is what a turn answered, on the one kind of vendor that reports
 //! it nowhere else: no hooks to send it and no conversation to read it back
 //! out of — see [`answers_on_the_pane`]. There the screen a rule read as a
 //! finished turn is the whole of the account there will ever be, and a pane is
 //! a picture the next repaint takes away, so what was on it is written down
 //! rather than left for the next reader to find gone.
+//!
+//! The third is which screen was up and when it went up. A quiescent rule may
+//! not end a turn that is on the record as running until the screen has held
+//! still, and how long it has held still is not something a reader can know by
+//! itself: most of them read once and exit. So a look writes down the screen
+//! it found and the moment it first found it, and every look after it, in
+//! whatever process, reads how long that has been true — see [`held_still`].
 //!
 //! A screen with a turn running on it carries one more thing worth handing on
 //! and nothing worth recording: the vendor's own spinner line, which says what
@@ -62,7 +69,7 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::rules::{Claim, Ruleset};
-use crate::store::{Agent, Meta, Phase, Question, Source, State};
+use crate::store::{Agent, Meta, Phase, Question, Source, State, Still};
 use crate::tmux::Server;
 use crate::vendor::Capability;
 
@@ -635,6 +642,9 @@ pub fn in_words(seconds: u64) -> String {
 /// no spans of work on it is measured from. It is the one thing here that is
 /// not on the state document: how long a run was alive is a fact about the
 /// whole agent.
+///
+/// `held` is how long the screen has been the screen it is, which is what a
+/// quiescent rule waits on — see [`held_still`].
 pub fn read(
     state: &State,
     created: u64,
@@ -642,7 +652,7 @@ pub fn read(
     capture: impl FnOnce() -> Option<String>,
     rules: &Ruleset,
     now: u64,
-    looks: usize,
+    held: u64,
 ) -> Reading {
     // How stale the record is, which is what decides whether a reader believes
     // it over the pane. What a row shows beside the agent is a different
@@ -690,7 +700,7 @@ pub fn read(
         return told(Phase::Unknown, Evidence::Unknown, None);
     };
 
-    match rules.claim(&screen, state.state, looks) {
+    match rules.claim(&screen, state.state, held) {
         Claim::Ruled(rule) => Reading {
             verdict: Verdict {
                 phase: rule.state,
@@ -719,68 +729,90 @@ pub fn read(
     }
 }
 
-/// One agent's last look, kept only long enough to compare it to the next.
-#[derive(Clone, Copy)]
-struct Settled {
-    /// The screen the look found, cut to the rows above the vendor's chrome
-    /// and hashed: [`still_looks`] only ever asks whether it changed, never
-    /// what it said.
-    hash: u64,
-    /// The phase the record held on that look.
-    recorded: Phase,
-    /// How many consecutive looks, this one included, found the same hash
-    /// under the same recorded phase.
-    looks: usize,
-}
-
-/// One agent's last look, for every agent this process has read, so the next
-/// look at the same one has something to compare against.
-static SETTLED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Settled>>> =
-    std::sync::OnceLock::new();
-
-/// How many consecutive looks at `id`, this one included, have found the same
-/// screen above the vendor's chrome with `recorded` the phase on file.
+/// How long the screen this look found has been the screen on the pane, in
+/// seconds, and the record of it kept for whoever looks next.
 ///
-/// The chrome is cut off before anything is compared — see
-/// [`Furniture::cut`] — because a statusline that ticks off elapsed time or a
-/// spinner's own clock changes every second, and neither is the screen a
-/// quiescent rule is waiting to see hold still. What survives the cut is
-/// hashed rather than kept whole, so a fleet of long-lived agents costs this
-/// process one small number apiece and not their transcripts.
+/// A run of consecutive looks is what this used to count, in a map this
+/// process kept. Every verb but the view is a process that reads once and
+/// exits, so that count was one for all of them however long a pane had stood
+/// there: `amx ls` and `amx status` could never end a turn on a quiescent rule
+/// at all. So the look writes down what it saw and when, and the seconds since
+/// are the same patience measured against a clock every process shares.
 ///
-/// The count starts over at one — the answer every look gave before anything
-/// was counted — the moment either half of what it is a count of stops being
-/// true: the screen reads different from the look before it, or the record
-/// has moved to a different phase since, which is a hook's news arriving
-/// between two looks at a pane that has not visibly changed. Either way, a
-/// streak counted before that moment is not a streak about the screen this
-/// look is asking a quiescent rule to trust.
-fn still_looks(id: &str, screen: Option<&str>, recorded: Phase, rules: &Ruleset) -> usize {
-    let Some(screen) = screen else { return 1 };
+/// The chrome is cut off before anything is compared — see [`Furniture::cut`]
+/// — because a statusline that ticks off elapsed time or a spinner's own clock
+/// changes every second, and neither is the screen a quiescent rule is waiting
+/// to see hold still. What survives the cut is hashed rather than kept whole,
+/// so a fleet of long-lived agents costs one small number apiece on their
+/// records and not their transcripts.
+///
+/// A screen that reads different from the one on the record is a screen that
+/// has been there no time at all, and the clock starts again at this look —
+/// which is the whole of what the record is for.
+fn held_still(
+    agent: &Agent,
+    state: &mut State,
+    screen: Option<&str>,
+    rules: &Ruleset,
+    now: u64,
+) -> u64 {
+    let Some(screen) = screen else { return 0 };
     let rows: Vec<&str> = screen.lines().collect();
-    let hash = hashed(rules.furniture().cut(&rows));
+    let seen = hashed(rules.furniture().cut(&rows));
 
-    let map = SETTLED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-    let Ok(mut settled) = map.lock() else {
-        return 1;
-    };
-    let looks = match settled.get(id) {
-        Some(prior) if prior.hash == hash && prior.recorded == recorded => prior.looks + 1,
-        _ => 1,
-    };
-    settled.insert(
-        id.to_string(),
-        Settled {
-            hash,
-            recorded,
-            looks,
+    let still = match state.still {
+        Some(still) if still.screen == seen => still,
+        _ => Still {
+            screen: seen,
+            since: now,
         },
-    );
-    looks
+    };
+    if state.still != Some(still) {
+        write_the_screen(agent, state, still);
+    }
+    now.saturating_sub(still.since)
 }
 
-/// A cheap stand-in for a slice of rows too large to keep one of for every
-/// agent a long-lived process has read.
+/// Write down the screen a look found, and when it went up.
+///
+/// With the observing hand, like the question and the answer beside it: amx
+/// heard nothing from the agent by looking at a picture of it, and moving the
+/// record's freshness would have the next reader believe this document over
+/// the pane it is meant to be checking.
+///
+/// Only when the screen is one the record has not got. A wall redrawn once a
+/// second on a pane nobody is touching writes nothing and takes no lock, which
+/// is what makes a stamp somebody else can read cost no more than the count it
+/// replaced.
+fn write_the_screen(agent: &Agent, state: &mut State, still: Still) {
+    let heard = state.last_event;
+    let noted = agent.writer().and_then(|writer| {
+        writer.observe(|current| {
+            // A hook that arrived while the pane was being read is the vendor's
+            // own account of a moment this picture is already behind, and the
+            // screen it was drawn from is not the screen that answers to it.
+            if current.last_event == heard {
+                current.still = Some(still);
+            }
+        })
+    });
+
+    match noted {
+        Ok(current) => *state = current,
+        // A record that cannot be written is still a screen this reading has
+        // in hand, and the next look will try again.
+        Err(_) => state.still = Some(still),
+    }
+}
+
+/// A cheap stand-in for a slice of rows too large to write on a record every
+/// look rewrites.
+///
+/// Only ever compared against another of these, and only against one this
+/// build wrote: what the standard library hashes to is its own business and
+/// may move between releases. A build that hashes the same screen differently
+/// from the one before it starts the clock again, once, on the first look
+/// after an upgrade.
 fn hashed(rows: &[&str]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -1232,13 +1264,13 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
 
     let alive = state.state.is_terminal() || server.pane_alive(&meta.pane);
     // Taken here rather than left to the closure below, so there is a screen
-    // in hand to weigh against the last one this process saw of this id
-    // before `read` is asked to trust a count of anything.
+    // in hand to weigh against the one the record says was there before `read`
+    // is asked to trust that anything has held still.
     let screen = wants_the_screen(rules, &state, alive, now)
         .then(|| server.capture(&meta.pane).ok())
         .flatten();
-    let looks = still_looks(id, screen.as_deref(), state.state, rules);
-    let reading = read(&state, meta.created, alive, || screen, rules, now, looks);
+    let held = held_still(&agent, &mut state, screen.as_deref(), rules, now);
+    let reading = read(&state, meta.created, alive, || screen, rules, now, held);
     if let Some(asking) = &reading.asking {
         note(&agent, rules, &mut state, asking);
     }
@@ -1349,9 +1381,9 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
         // there is one reading it belongs to.
         let screen = screens[at].take();
         let rules = own_screens(&meta);
-        let looks = still_looks(&meta.id, screen.as_deref(), state.state, rules);
+        let held = held_still(&agent, &mut state, screen.as_deref(), rules, now);
 
-        let reading = read(&state, meta.created, alive, || screen, rules, now, looks);
+        let reading = read(&state, meta.created, alive, || screen, rules, now, held);
         if let Some(asking) = &reading.asking {
             note(&agent, rules, &mut state, asking);
         }
@@ -2461,66 +2493,126 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         )
     }
 
+    /// An agent whose record says a turn is running, for the readings that
+    /// write to one.
+    fn a_quiet_agent(root: &Path, id: &str) -> Agent {
+        a_record(
+            root,
+            &Meta {
+                id: id.to_string(),
+                ..meta()
+            },
+            &state(Phase::Working, 1_000),
+        );
+        Agent::open(root, id).expect("the record just written")
+    }
+
     #[test]
-    fn still_looks_settles_after_settled_looks_even_while_the_chrome_ticks() {
+    fn held_still_measures_the_screen_and_not_the_chrome_ticking_over_it() {
+        let root = TempDir::new().unwrap();
+        let agent = a_quiet_agent(root.path(), "ticking-t4a");
         let rules = rules::of("claude");
-        let id = "ticking-t4a";
-        let mut looks = 0;
-        for tick in 0..rules::SETTLED_LOOKS as u64 {
-            looks = still_looks(id, Some(&a_ticking_screen(tick)), Phase::Working, rules);
-        }
+        let mut state = agent.state().unwrap();
+
         assert_eq!(
-            looks,
+            held_still(&agent, &mut state, Some(&a_ticking_screen(0)), rules, 1_000),
+            0,
+            "a screen amx has just laid eyes on has held still for no time at all"
+        );
+        assert_eq!(
+            held_still(
+                &agent,
+                &mut state,
+                Some(&a_ticking_screen(rules::SETTLED_LOOKS)),
+                rules,
+                1_000 + rules::SETTLED_LOOKS
+            ),
             rules::SETTLED_LOOKS,
-            "the statusline ticked on every look, and none of it is the screen"
+            "the statusline ticked the whole way, and none of it is the screen"
         );
     }
 
     #[test]
-    fn still_looks_resets_the_moment_the_transcript_itself_changes() {
+    fn held_still_leaves_the_stamp_on_the_record_for_whoever_looks_next() {
+        let root = TempDir::new().unwrap();
+        let agent = a_quiet_agent(root.path(), "settles-t4b");
         let rules = rules::of("claude");
-        let id = "resets-t4b";
+        let screen = a_ticking_screen(1);
+
+        let mut looking = agent.state().unwrap();
+        assert_eq!(
+            held_still(&agent, &mut looking, Some(&screen), rules, 1_000),
+            0
+        );
+
+        let written = agent.state().unwrap();
+        assert_eq!(
+            written.still.map(|still| still.since),
+            Some(1_000),
+            "when the screen went up, not when it was last looked at"
+        );
+        assert_eq!(
+            written.last_event, 1_000,
+            "and a look is not something the agent said"
+        );
+
+        // A process of its own, opening the record cold: what the look before
+        // it watched is there to be read, so the screen has held still for as
+        // long as the stamp says rather than for as long as this process has
+        // been looking.
+        let mut next = agent.state().unwrap();
+        assert_eq!(
+            held_still(
+                &agent,
+                &mut next,
+                Some(&screen),
+                rules,
+                1_000 + rules::SETTLED_LOOKS
+            ),
+            rules::SETTLED_LOOKS,
+            "the stillness one reader watched is the stillness the next one reads"
+        );
+    }
+
+    #[test]
+    fn held_still_starts_the_clock_again_the_moment_the_transcript_changes() {
+        let root = TempDir::new().unwrap();
+        let agent = a_quiet_agent(root.path(), "changes-t4c");
+        let rules = rules::of("claude");
         let first = a_ticking_screen(1);
-        assert_eq!(still_looks(id, Some(&first), Phase::Working, rules), 1);
-        assert_eq!(still_looks(id, Some(&first), Phase::Working, rules), 2);
-        assert_eq!(still_looks(id, Some(&first), Phase::Working, rules), 3);
+
+        let mut state = agent.state().unwrap();
+        held_still(&agent, &mut state, Some(&first), rules, 1_000);
+        assert_eq!(
+            held_still(&agent, &mut state, Some(&first), rules, 1_020),
+            20
+        );
 
         let changed = a_ticking_screen(1).replace("Done building", "Ran the migration and");
         assert_eq!(
-            still_looks(id, Some(&changed), Phase::Working, rules),
-            1,
+            held_still(&agent, &mut state, Some(&changed), rules, 1_020),
+            0,
             "a mid-turn change is not the screen holding still"
         );
-    }
-
-    #[test]
-    fn still_looks_resets_when_the_record_moves_to_another_phase() {
-        let rules = rules::of("claude");
-        let id = "moves-t4c";
-        let screen = a_ticking_screen(1);
-        assert_eq!(still_looks(id, Some(&screen), Phase::Working, rules), 1);
-        assert_eq!(still_looks(id, Some(&screen), Phase::Working, rules), 2);
-
         assert_eq!(
-            still_looks(id, Some(&screen), Phase::Waiting, rules),
-            1,
-            "a hook's own news between two looks is not the screen holding still either"
+            agent.state().unwrap().still.map(|still| still.since),
+            Some(1_020),
+            "and the screen on the pane now is the one the next look compares against"
         );
     }
 
     #[test]
-    fn still_looks_reads_a_first_look_the_way_a_one_shot_verb_always_has() {
-        let rules = rules::of("claude");
+    fn held_still_says_nothing_about_a_pane_nobody_read() {
+        let root = TempDir::new().unwrap();
+        let agent = a_quiet_agent(root.path(), "unread-t4d");
+        let mut state = agent.state().unwrap();
+
         assert_eq!(
-            still_looks(
-                "fresh-t4d",
-                Some(&a_ticking_screen(1)),
-                Phase::Working,
-                rules
-            ),
-            1,
-            "status, send and the rest read one look at a time, same as before this counted anything"
+            held_still(&agent, &mut state, None, rules::of("claude"), 9_000),
+            0,
+            "a reading that wanted no screen leaves the record where it was"
         );
+        assert_eq!(agent.state().unwrap().still, None);
     }
 
     #[test]
