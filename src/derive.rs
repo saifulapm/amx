@@ -19,11 +19,19 @@
 //!    `unknown` — with how long it has been since anything was heard, because
 //!    "I can't tell" is only useful with that beside it.
 //!
-//! A reader concludes and forgets, with one exception. When the screen it read
-//! was a screen asking a question, the question and the choices under it go on
-//! the record: they are the one thing on a pane that somebody has to act on
-//! rather than merely read, and the pane is the only place the choices are
-//! ever written. Nothing a hook reported is corrected by them.
+//! A reader concludes and forgets, with two exceptions, and both are things
+//! the pane is the only place to read. When the screen it read was a screen
+//! asking a question, the question and the choices under it go on the record:
+//! they are the one thing on a pane that somebody has to act on rather than
+//! merely read, and the pane is the only place the choices are ever written.
+//! Nothing a hook reported is corrected by them.
+//!
+//! The other is what a turn answered, on the one kind of vendor that reports
+//! it nowhere else: no hooks to send it and no conversation to read it back
+//! out of — see [`answers_on_the_pane`]. There the screen a rule read as a
+//! finished turn is the whole of the account there will ever be, and a pane is
+//! a picture the next repaint takes away, so what was on it is written down
+//! rather than left for the next reader to find gone.
 //!
 //! A screen with a turn running on it carries one more thing worth handing on
 //! and nothing worth recording: the vendor's own spinner line, which says what
@@ -56,6 +64,7 @@ use std::path::Path;
 use crate::rules::{Claim, Ruleset};
 use crate::store::{Agent, Meta, Phase, Question, Source, State};
 use crate::tmux::Server;
+use crate::vendor::Capability;
 
 /// How long the vendor's own events are taken at their word.
 ///
@@ -298,6 +307,15 @@ pub struct Reading {
     /// while a turn runs. Only where a rule read the screen as a turn running,
     /// and never written down: it is about the second it was read in.
     pub doing: Option<String>,
+    /// What the screen said the agent last said, off the pane with the
+    /// vendor's own furniture cut off it. Only where a rule read the screen as
+    /// a turn that has ended — see [`said`].
+    ///
+    /// A reading of a picture, and whether it is worth keeping is not this
+    /// reading's question: on a vendor that reports its answers, the vendor's
+    /// own words are on the record already and a picture of them is not wanted
+    /// beside them. Where the record write asks that is [`answers_on_the_pane`].
+    pub said: Option<String>,
 }
 
 /// Whether a question on the record says nothing about what is being asked:
@@ -360,6 +378,46 @@ fn doing(screens: &Ruleset, capture: &str) -> Option<String> {
         .rev()
         .find(|row| screens.furniture().spinning(row))?;
     Some(unglyphed(line))
+}
+
+/// What a screen a rule read as a finished turn says the agent last said.
+///
+/// The pane with the vendor's own furniture cut off the bottom of it, which is
+/// the walk the card takes over an agent and `amx logs` prints through — so
+/// what a reader writes down is what those two already show. What is left is
+/// the rows the agent earned: the answer it ended on, and however much of the
+/// turn above it the vendor has not repainted over.
+///
+/// The blank rows at either end go with the chrome. A screen is padded out to
+/// the height of its pane and a vendor puts a gap above its box, and a row of
+/// nothing is a row on the wall that says nothing.
+fn said(screens: &Ruleset, capture: &str) -> Option<String> {
+    let rows: Vec<&str> = capture.lines().collect();
+    let mut said = crate::furniture::cut(screens.furniture(), &rows);
+    while said.first().is_some_and(|row| row.trim().is_empty()) {
+        said = &said[1..];
+    }
+    while said.last().is_some_and(|row| row.trim().is_empty()) {
+        said = &said[..said.len() - 1];
+    }
+    (!said.is_empty()).then(|| said.join("\n"))
+}
+
+/// Whether the pane is the only place this agent's answer will ever be.
+///
+/// A vendor that reports through hooks sends what a turn answered in its own
+/// Stop payload, and one that keeps a conversation leaves the same words in a
+/// file amx can read back afterwards. Either way the record has the vendor's
+/// own words, and a picture of a screen is not something to write beside them.
+/// A vendor with neither has said it on the pane and nowhere else, and a pane
+/// is a picture the next repaint takes away.
+///
+/// A command amx has no entry for is measured neither way, which is the reading
+/// `logs` gives one too: nothing measured is not a measurement, and the rows of
+/// a screen amx can account for nothing on are not an agent's answer.
+fn answers_on_the_pane(meta: &Meta) -> bool {
+    crate::registry::entry(meta.agent.as_deref().unwrap_or_default())
+        .is_some_and(|vendor| !vendor.can(Capability::Hooks) && !vendor.can(Capability::Transcript))
 }
 
 /// The spinner line without the glyph the vendor pulses in front of it.
@@ -550,6 +608,7 @@ pub fn read(
         },
         asking: None,
         doing: None,
+        said: None,
     };
 
     if state.state.is_terminal() {
@@ -596,6 +655,11 @@ pub fn read(
             // anything the record can say about the same turn.
             doing: (rule.state == Phase::Working)
                 .then(|| doing(rules, &screen))
+                .flatten(),
+            // And a screen read as a turn that has ended is the agent at its
+            // prompt with what it answered above it.
+            said: (rule.state == Phase::Idle)
+                .then(|| said(rules, &screen))
                 .flatten(),
         },
         // A rule claims the screen but may not end a turn that is on the
@@ -714,6 +778,51 @@ fn note(agent: &Agent, screens: &Ruleset, state: &mut State, asking: &Question) 
         // A record that cannot be written is still a question that can be
         // reported, and the next look will try again.
         Err(_) => state.learn(asking),
+    }
+}
+
+/// Write down what a finished turn left on the pane.
+///
+/// The other thing a reader records rather than concludes and forgets, and for
+/// the same reason the question is: on this vendor nothing else is ever going
+/// to write it. The pane holds one screen until the next repaint, so
+/// a reading nobody kept is an answer gone — which is what `amx result` and
+/// every blank summary column on a wall of pi agents were reading.
+///
+/// Written with the observing hand, like the summary command's line: amx heard
+/// nothing from the agent by looking at a picture of it, and moving the
+/// record's freshness would have the next reader believe this document over the
+/// pane it is meant to be checking.
+///
+/// Against what is on the record rather than against the clock. A look that
+/// reads the screen the last look read has nothing to say, which is every look
+/// after the first for as long as the agent stands at its prompt, and a screen
+/// that has changed is a later turn than the one the record answered for.
+fn write_the_answer(agent: &Agent, state: &mut State, said: &str) {
+    if state.result.as_deref() == Some(said) {
+        return;
+    }
+
+    let heard = state.last_event;
+    let noted = agent.writer().and_then(|writer| {
+        writer.observe(|current| {
+            // Anything that reached the record while the pane was being read is
+            // about a moment this picture is already behind.
+            if current.last_event == heard {
+                current.result = Some(said.to_string());
+                current.source = Some(Source::Screen);
+            }
+        })
+    });
+
+    match noted {
+        Ok(current) => *state = current,
+        // A record that cannot be written is still an answer this reading can
+        // hand back, and the next look will try again.
+        Err(_) => {
+            state.result = Some(said.to_string());
+            state.source = Some(Source::Screen);
+        }
     }
 }
 
@@ -1083,6 +1192,11 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
     if let Some(asking) = &reading.asking {
         note(&agent, rules, &mut state, asking);
     }
+    if answers_on_the_pane(&meta)
+        && let Some(said) = &reading.said
+    {
+        write_the_answer(&agent, &mut state, said);
+    }
     if let Some(command) = crate::config::current().summary_command.as_deref()
         && wants_a_line(&state)
     {
@@ -1190,6 +1304,11 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
         let reading = read(&state, meta.created, alive, || screen, rules, now, looks);
         if let Some(asking) = &reading.asking {
             note(&agent, rules, &mut state, asking);
+        }
+        if answers_on_the_pane(&meta)
+            && let Some(said) = &reading.said
+        {
+            write_the_answer(&agent, &mut state, said);
         }
         if let Some(command) = crate::config::current().summary_command.as_deref()
             && wants_a_line(&state)
@@ -1341,6 +1460,23 @@ Which license should the LICENSE file contain?
   4. Chat about this
 
 Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
+    /// The prompt pi leaves when a turn is over: the rows the agent earned,
+    /// the vendor's own composer box, and under it the working directory and
+    /// the stats line it keeps beneath every screen. Not one anchor on it is
+    /// claude's — the shape is `assets/screen-rules-pi.toml`'s, measured off a
+    /// live 0.84.4. It opens on the row itself rather than on a continued
+    /// line, because pi indents what it draws by a column and `\` would eat it.
+    const A_PI_PROMPT: &str = " ran the migration
+
+ Took 15.2s
+
+────────────────────────────
+
+────────────────────────────
+~/srv/app
+↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)
 ";
 
     /// A permission box, which is a screen with a question on it.
@@ -1728,6 +1864,72 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(seen(meta(), told, reading).line(), Some("Running Bash"));
     }
 
+    #[test]
+    fn reader_reads_what_a_finished_turn_left_on_the_pane() {
+        // pi's own prompt, against pi's own document: what comes back is the
+        // rows the agent earned, and none of the box, working directory or
+        // stats line the vendor drew under them.
+        let ended = read(
+            &state(Phase::Starting, 1_000),
+            0,
+            true,
+            || Some(A_PI_PROMPT.to_string()),
+            rules::of("pi"),
+            1_100,
+            1,
+        );
+        assert_eq!(ended.verdict.phase, Phase::Idle);
+        assert_eq!(
+            ended.said.as_deref(),
+            Some(" ran the migration\n\n Took 15.2s")
+        );
+
+        // A turn still running has not answered anything, a screen with a
+        // question on it is asking rather than answering, and a screen no rule
+        // claims is not a reading at all.
+        for screen in [A_WORKING_SCREEN, A_BLOCKING_SCREEN, A_SHELL] {
+            let reading = reading(&state(Phase::Starting, 1_000), true, Some(screen), 1_100);
+            assert_eq!(reading.said, None, "{screen}");
+        }
+
+        // The reading is about the screen and says nothing about whether it is
+        // worth keeping: whose pane is worth writing down is
+        // `answers_on_the_pane`'s question, and the record write is where it is
+        // asked.
+        let claude = reading(
+            &state(Phase::Starting, 1_000),
+            true,
+            Some(IDLE_SCREEN),
+            1_100,
+        );
+        assert_eq!(claude.verdict.phase, Phase::Idle);
+        assert!(
+            claude.said.is_some(),
+            "the same reading of a screen, on a vendor whose own words are \
+             somewhere amx can read them"
+        );
+    }
+
+    #[test]
+    fn reader_writes_a_pane_down_only_where_nothing_else_will_ever_say_it() {
+        // pi reports through no hooks and keeps no conversation, so its pane is
+        // the only account of a turn there will ever be. claude says what it
+        // answered itself, twice over, and a picture of those words is not
+        // something to write beside them. A command amx has no entry for is
+        // measured neither way, which is the reading `logs` gives one too.
+        let ran = |agent: Option<&str>| {
+            answers_on_the_pane(&Meta {
+                agent: agent.map(str::to_string),
+                ..meta()
+            })
+        };
+
+        assert!(ran(Some("pi")));
+        assert!(!ran(Some("claude")));
+        assert!(!ran(Some("mock-claude")), "an unregistered command");
+        assert!(!ran(None), "and a record naming no command at all");
+    }
+
     /// Whether a reading of this record went to the pane at all, which is the
     /// question [`wants_the_screen`] has to answer without going there.
     fn looked_at_the_pane(state: &State, alive: bool, now: u64) -> bool {
@@ -1797,6 +1999,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     /// A pane with a screen on it and nothing running but a sleep, on a
     /// server nothing else is using.
+    ///
+    /// Waited for on the last row the screen has anything on it, which is a
+    /// row of its vendor's own chrome on every screen here: a capture carrying
+    /// that row is a capture of the whole screen, and half a screen is a pane
+    /// no vendor ever drew.
     fn a_pane_showing(server: &Server, screen: &str) -> crate::tmux::PaneId {
         let showing = [
             "sh",
@@ -1810,9 +2017,18 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
                 ..crate::tmux::Spawn::default()
             })
             .expect("a pane to read");
+        let last = screen
+            .lines()
+            .rev()
+            .find(|row| !row.trim().is_empty())
+            .expect("a screen with something on it")
+            .trim();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
-            if server.capture(&pane).is_ok_and(|drawn| drawn.contains('❯')) {
+            if server
+                .capture(&pane)
+                .is_ok_and(|drawn| drawn.contains(last))
+            {
                 return pane;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1877,6 +2093,79 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(
             read("idles-b2c").verdict.rule.as_deref(),
             Some("idle_prompt")
+        );
+    }
+
+    #[test]
+    fn reader_keeps_the_answer_of_a_turn_nothing_else_will_ever_report() {
+        let root = TempDir::new().unwrap();
+        let server = Own(
+            Server::named(format!("amx-derive-said-{}", std::process::id())).with_conf("/dev/null"),
+        );
+        let socket = server.0.socket().clone();
+
+        // Two agents that have both gone quiet at a finished turn, each on the
+        // vendor whose prompt is on its pane. pi's answer is on that pane and
+        // nowhere else, and the next repaint takes it away; claude's is in its
+        // own Stop payload and its own transcript, and a picture of those words
+        // is not something to write down beside them.
+        let pi = a_pane_showing(&server.0, A_PI_PROMPT);
+        let claude = a_pane_showing(&server.0, IDLE_SCREEN);
+        for (id, agent, pane) in [("pi-a1b", "pi", &pi), ("claude-b2c", "claude", &claude)] {
+            a_record(
+                root.path(),
+                &Meta {
+                    id: id.to_string(),
+                    agent: Some(agent.to_string()),
+                    socket: socket.clone(),
+                    pane: pane.clone(),
+                    ..meta()
+                },
+                &state(Phase::Starting, 1_000),
+            );
+        }
+
+        let views = views(root.path(), 1_100).expect("a reading");
+        let read = |id: &str| {
+            views
+                .iter()
+                .find(|view| view.id() == id)
+                .unwrap_or_else(|| panic!("{id} was read"))
+        };
+        let kept = |id: &str| {
+            Agent::open(root.path(), id)
+                .expect("the record")
+                .state()
+                .expect("the record")
+        };
+
+        assert_eq!(read("pi-a1b").phase(), Phase::Idle);
+        assert_eq!(
+            read("pi-a1b").state.result.as_deref(),
+            Some(" ran the migration\n\n Took 15.2s")
+        );
+        assert_eq!(
+            kept("pi-a1b").result,
+            read("pi-a1b").state.result,
+            "and written down, rather than worked out again by whoever asks next"
+        );
+        assert_eq!(
+            kept("pi-a1b").source,
+            Some(Source::Screen),
+            "with the record saying it is amx's reading of a picture"
+        );
+        assert_eq!(
+            kept("pi-a1b").last_event,
+            1_000,
+            "and heard nothing by looking at a screen"
+        );
+
+        assert_eq!(read("claude-b2c").phase(), Phase::Idle);
+        assert_eq!(read("claude-b2c").state.result, None);
+        assert_eq!(
+            kept("claude-b2c").result,
+            None,
+            "a vendor that says what it answered is left to say it"
         );
     }
 

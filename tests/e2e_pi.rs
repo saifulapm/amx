@@ -169,6 +169,12 @@ fn drawn(amx: &Harness, pane: &str) -> Vec<String> {
     rows
 }
 
+/// The rows of a text amx printed, with the trailing spaces a capture keeps
+/// taken off each of them, so it can be held against what [`drawn`] read.
+fn rows_of(text: &str) -> Vec<String> {
+    text.lines().map(|row| row.trim_end().to_string()).collect()
+}
+
 /// The rows pi's composer border is drawn on, topmost first.
 ///
 /// A row of nothing but the glyph the box is drawn with, twenty columns of it
@@ -1329,6 +1335,92 @@ fn a_quiet_pi_is_read_against_pis_own_document() {
     assert_eq!(
         agent["rule"], "prompt",
         "pi's own rule, out of pi's own document: {agent}"
+    );
+}
+
+#[test]
+fn a_turn_that_ends_on_a_pi_leaves_what_the_pane_said_on_the_record() {
+    // pi reports through no hooks and keeps no conversation amx can read back,
+    // so nothing was ever going to write down what one of its turns answered:
+    // `amx result` said it had captured none and every pi row on the wall
+    // carried a blank column, while the answer sat on the pane in front of
+    // everybody. The reader that has just read that screen as a finished turn
+    // is the only thing that will ever be looking at it, so what it read goes
+    // on the record — the rows the agent earned, with the vendor's own
+    // furniture cut off the bottom the way `amx logs` and the card cut it.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "takes-a-turn");
+    let pane = amx.pane_of(id);
+
+    // The row a finished turn leaves and no earlier screen in this scenario
+    // carries, waited for on its own, with the rest of the screen read off that
+    // same capture.
+    let rows = amx.until("the turn to be over", || {
+        let rows = drawn(&amx, &pane);
+        row_of(&rows, "Took").is_some().then_some(rows)
+    });
+
+    // Everything above pi's own box, which is the whole of what the agent
+    // earned on this screen and the whole of what a reading of it is worth.
+    let top = *borders(&rows)
+        .first()
+        .unwrap_or_else(|| panic!("pi's composer box: {rows:?}"));
+    let mut work: Vec<String> = rows[..top].to_vec();
+    while work.last().is_some_and(String::is_empty) {
+        work.pop();
+    }
+
+    // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
+    // nothing outstanding, which is where the screen is the only witness there
+    // is on this vendor.
+    amx.set_state(
+        id,
+        json!({ "state": "starting", "since": 1, "last_event": 1 }),
+    );
+
+    let agent = status(&amx, id);
+    assert_eq!(agent["state"], "idle", "{agent}");
+    let said = agent["result"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the answer the turn left: {agent}"));
+    assert_eq!(
+        rows_of(said),
+        work,
+        "the rows the agent earned, and none of the box, working directory or \
+         stats line pi drew under them"
+    );
+    assert_eq!(
+        agent["source"], "screen",
+        "amx's reading of a picture, and the record says which: {agent}"
+    );
+    assert_eq!(
+        amx.state(id)["result"],
+        agent["result"],
+        "written down, rather than worked out again by whoever asks next"
+    );
+
+    // Which is what writing it down is for: the verb a caller waits at hands
+    // back the answer instead of saying it captured none.
+    let out = amx.amx(&["result", id, "--timeout", "30"]);
+    assert!(
+        out.status.success(),
+        "amx result: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(rows_of(&String::from_utf8_lossy(&out.stdout)), work);
+
+    // And the row on the wall carries the first line of it, where a pi row
+    // carried nothing at all.
+    let out = amx.amx(&["ls"]);
+    let printed = String::from_utf8_lossy(&out.stdout);
+    let row = printed
+        .lines()
+        .find(|row| row.contains(id))
+        .unwrap_or_else(|| panic!("a row for {id}: {printed}"));
+    assert!(
+        row.contains(work[0].trim()),
+        "the first line of what the turn left: {row}"
     );
 }
 

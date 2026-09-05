@@ -163,6 +163,14 @@ fn ended_past_the_last_message(events: &[Event]) -> bool {
 /// nothing behind — and this call, which is standing at the end of the turn
 /// anyway, is the right place to look again.
 ///
+/// A vendor that has neither — no hooks to send an answer and no conversation
+/// to read one out of — reaches the record another way, and this reads it the
+/// same: what a reader read off the pane when it read the screen as a finished
+/// turn is written down there like anything else, with `screen` recorded beside
+/// it as where it came from. That is `crate::derive`'s reading of a picture
+/// rather than the vendor's own words, and a caller that cares which asks the
+/// source; nothing here knows one vendor from another.
+///
 /// A turn that ends with nothing captured is a failure to answer, never an
 /// empty success: exit 0 means there is an answer on stdout, and a caller that
 /// cannot trust that has nothing to branch on.
