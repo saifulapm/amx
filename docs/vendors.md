@@ -110,12 +110,52 @@ arrives with — `session_id`, `hook_event_name`, `tool_name`, and the rest
 vendor in the table with hooks to read. The lines inside a transcript are
 claude's too: `logs::conversation` and `hook::transcript_answer` both walk one
 by `type`, `user`, `assistant`, `message.content` and `text`, a shape measured
-from a live claude 2.1.240 transcript, and `logs` reads `tool_use` blocks
-besides. `Transcript` is a capability only claude claims. `trust`'s store,
-`$CLAUDE_CONFIG_DIR/.claude.json`, is a literal in `trust.rs` for the same
-reason, with a test tying that file to whichever vendors the table says can
-answer the screen — `[claude]`, today. Each waits on a second vendor claiming
-the capability that reads it, and pi claims none of the three.
+from a live claude 2.1.240 transcript and not re-driven since, and `logs` reads
+`tool_use` blocks besides. `Transcript` is a capability only claude claims.
+`trust`'s store, `$CLAUDE_CONFIG_DIR/.claude.json`, is a literal in `trust.rs`
+for the same reason, with a test tying that file to whichever vendors the table
+says can answer the screen — `[claude]`, today. Each waits on a second vendor
+claiming the capability that reads it, and pi claims none of the three.
+
+## claude
+
+claude is the first entry, in `src/vendor/claude.rs`, and every value in it
+carries the version and the date it was read at. The dials come off 2.1.237's
+`--help`; the hooks, the question tool and the two notification types were
+measured against 2.1.240's own event list on 2026-08-25; the transcript shape
+above is 2.1.240's too. The screens were driven again against **2.1.259 on
+2026-09-05**, at 220, 54, 40, 30 and 24 columns, and `docs/claude-screens.md`
+is that pass: the capture for each screen, the verdict
+`assets/screen-rules.toml` gives it, and what every anchor read.
+
+Three of the six rules moved, and every one of them broke narrow: two went
+quiet and one went confidently wrong. A claude on its own folder-trust gate
+read `unknown` at 24 columns, and an unclaimed screen is not a gate, so
+`doctor` had nothing to report about an agent that would sit there until
+somebody attached. A menu somebody was standing at read `unknown` there too,
+its box taller than the rows a rule may see. And a claude with a turn running
+read `idle` at 30 and at 24 — not the honest answer but the confident wrong
+one, on the failure the spinner rule's own comment calls the worst available,
+since naming a screen non-blocking also clears a pending question off the row.
+Four agents tiled on a 160-column terminal is 40 columns each and a fifth takes
+them under it, so these are widths amx reaches by itself.
+
+The rest of what the bump cost was above the screens. 2.1.259 draws the
+folder-trust gate as two rows with no number on either and the cursor on the
+one that ends the agent, so the question read back as an answer, every key
+`answer` was allowed to type there was inert or fatal, and the offer a waiting
+row printed named keys the screen would not take. `answer` has the cursor moves
+now and reads a walk and the take at the end of it as one line; the offer is
+worked out from what was read off the screen rather than from the kind of
+question; and a key whose effect amx cannot check leaves the record `waiting`,
+so the same screen can be answered again instead of being refused while it is
+still on the pane.
+
+The pass drove screens and nothing else. `--help`, the hook list and the
+transcript shape were not re-driven and still carry their 2.1.237 and 2.1.240
+dates. Nor was `[furniture] spinner`, which walks over the two punctuation
+fragments the `spinner` rule was moved off, and which is the last finding that
+document leaves open.
 
 ## pi
 
@@ -135,22 +175,30 @@ answer a trust screen for it. `hooks` is `None` because pi's extension events
 are JS callbacks inside its own process, not command entries a settings file
 can name: there is nothing for `install` to write and nothing for `hook` to
 read, so `Hooks` is off. `Transcript` is off with it, and for that plumbing
-rather than for want of a transcript — the only path that ever reaches a record
-arrives on a hook payload, and pi sends none. pi does keep the conversation on
-disk: a session jsonl at `~/.pi/agent/sessions/<encoded-cwd>/<ts>_<id>.jsonl`,
-measured at 0.84.4. Finding one means replicating pi's own encoding of the
-working directory, which is a pass nobody has made. `logs` is the verb that
-puts that gap to the entry, and it names pi in the sentence it prints when a pi
-pane has gone and nothing was recorded off it. `Trust` is off too: `--help`
-shows `--approve, -a` trusting project-local files for a run, but nothing
-measured yet says amx can answer that screen unattended the way it answers
-claude's. Only `Hooks` is a shape pi lacks; `Transcript` and `Trust` are doors
-amx has not built.
+rather than for want of a transcript — the only path that ever reaches
+`meta.transcript` arrives on a hook payload, and pi sends none. pi does keep
+the conversation on disk: a session jsonl at
+`~/.pi/agent/sessions/<encoded-cwd>/<ts>_<id>.jsonl`, measured at 0.84.4.
+Finding one means replicating pi's own encoding of the working directory, which
+is a pass nobody has made. `logs` is the verb that puts that gap to the entry,
+and it names pi in the sentence it prints when a pi pane has gone and nothing
+was recorded off it. `Trust` is off too: `--help` shows `--approve, -a`
+trusting project-local files for a run, but nothing measured yet says amx can
+answer that screen unattended the way it answers claude's. Only `Hooks` is a
+shape pi lacks; `Transcript` and `Trust` are doors amx has not built.
 
 Reporting nothing costs pi none of the three it does claim. It resumes, forks
 and is adopted with no hooks at all, because a session flag amx can hand it
 directly stands in for the id a Started hook would otherwise have had to
 report.
+
+What a turn answered does reach the record, and by the one route left. A
+reading that ends a turn on a vendor with neither `Hooks` nor `Transcript`
+writes what was on the pane to `state.result` with `screen` beside it as the
+source, so `amx result` has an answer to hand back and a pi row on the wall
+carries a summary. It is a reading of a picture and the record says so, which
+is the difference between it and the two the entry does not claim: pi has not
+told amx what it said, amx has looked.
 
 `screens` is where what amx can read off a pi pane is written down: eight
 rules — the first-run setup gate, the folder-trust question, a dialog, an
@@ -227,8 +275,11 @@ capability list does not obviously cover, and none of them is answered here:
 - **`result` never returns to a pi agent that was sent a message.** It waits
   for a turn that ended after the last `send`, and only a `Stop` event says one
   did. With no `--timeout` it waits forever; with one it exits on the deadline
-  and says nothing. On an agent nobody has sent anything to it does what this
-  file describes below, and says it captured no answer.
+  and says nothing. On an agent nobody has sent anything to it said it had
+  captured none, and that half has been answered since: such an agent gets back
+  what the last reading saw on the pane, the way this file describes below.
+  After a message it still exits on the deadline, with that same answer on the
+  record it will not serve.
 - **An adopted pi whose first reading was `working` stays there.** Nothing ever
   writes a pi record's phase again, and the `prompt` rule is quiescent: from a
   record that says a turn is running it may not decide until the screen has
@@ -316,13 +367,27 @@ vocabulary and screens but no hooks still resumes, forks and is adopted, and
 carries everything the floor already carries. `logs` is what asks the table
 whether such a vendor keeps a conversation to read back, and it names the gap
 rather than opening a path that was never going to be one. `result` asks the
-table nothing: it reads whatever a hook already wrote to the record, or
-failing that the transcript path a hook already named, and a vendor with
-neither leaves both empty, so `result` says plainly that it captured no answer
-instead of naming a capability. What it does not do is get that far on a turn
-somebody sent, which the dogfood measured: the turn it waits for is the one
-after the last message, only a hook says a turn ended, and a vendor that sends
-none leaves it waiting. The capabilities list is what keeps a partial entry
-truthful: nothing is promised that is not there, and where an unclaimed
-capability costs a verb more than an empty answer, the place to write that down
-is the pass above.
+table nothing: it reads whatever is on the record, which is what a hook wrote
+there, or failing that the transcript path a hook named.
+
+On a vendor with neither, what reaches the record is a reading. The screen a
+rule read as a finished turn is the only account of that turn there will ever
+be, and a pane is a picture the next repaint takes away, so the reader writes
+down what it saw — the rows the agent earned, with the vendor's own furniture
+cut off the bottom the way the card and `logs` cut it — and puts `screen` on
+the record beside it as the source. That word is the whole of the honesty here:
+an answer that arrived that way is amx's reading of a picture and not the
+vendor's word for what it said, it is worth exactly what the screens document
+that claimed the screen is worth, and a caller who needs to know which of the
+two it is holding asks the record. A vendor that does report is written down no
+such way: its own words are already there, and a photograph of them is not
+something to put beside them.
+
+What none of that does is get `result` to the end of a turn somebody sent,
+which the dogfood measured and `tests/e2e_pi.rs` holds: the turn it waits for
+is the one after the last message, only a hook says a turn ended, and a vendor
+that sends none leaves the wait sitting on its deadline with the answer on the
+record beside it. The capabilities list is what keeps a partial entry truthful:
+nothing is promised that is not there, and where an unclaimed capability costs
+a verb more than an empty answer, the place to write that down is the pass
+above.

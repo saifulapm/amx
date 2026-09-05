@@ -1425,6 +1425,66 @@ fn a_turn_that_ends_on_a_pi_leaves_what_the_pane_said_on_the_record() {
 }
 
 #[test]
+fn a_message_leaves_result_waiting_beside_the_answer_it_will_not_serve() {
+    // What the pane keeps is an answer to the turn amx watched end, and the
+    // turn `result` waits for after a message is the one after it. Only a Stop
+    // event says a turn ended, pi sends none, so the wait runs to its deadline
+    // with the earlier answer on the record beside it. That is the hooks gap
+    // costing a verb more than an empty answer, which is the one thing
+    // docs/vendors.md says a partial entry has to write down.
+    let amx = Harness::new();
+    let id = "fix-login-c3d";
+    start(&amx, id, "takes-a-turn");
+    let pane = amx.pane_of(id);
+
+    amx.until("the turn to be over", || {
+        row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
+    });
+    amx.set_state(
+        id,
+        json!({ "state": "starting", "since": 1, "last_event": 1 }),
+    );
+
+    // Before the message, the reading is the answer and the verb hands it back.
+    let said = status(&amx, id)["result"].clone();
+    assert!(said.is_string(), "the answer the turn left: {said}");
+    let out = amx.amx(&["result", id, "--timeout", "30"]);
+    assert!(
+        out.status.success(),
+        "amx result: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The message goes in front of the agent and is recorded before it is
+    // typed. pi takes it and says nothing, which is the send this vendor
+    // always gets.
+    amx.amx(&["send", id, "and the tests?"]);
+
+    // Now the wait has a turn in front of it that nothing will ever report the
+    // end of.
+    let out = amx.amx(&["result", id, "--timeout", "1"]);
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "the caller's own deadline: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "and nothing on stdout, since exit 0 is the only thing that means there \
+         is an answer on it: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // While the answer the reading wrote is still where it was put. The verb
+    // will not serve it as this turn's, which is the whole of why it is
+    // refusing: an answer from before the message belongs to the turn before
+    // it.
+    assert_eq!(amx.state(id)["result"], said);
+    assert_eq!(amx.state(id)["source"], "screen");
+}
+
+#[test]
 fn logs_cut_the_furniture_pi_drew_and_print_the_work_above_it() {
     // The walk that takes a vendor's chrome off a reading held claude's
     // anchors against whatever pane it was handed, and pi's box, working
