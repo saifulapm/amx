@@ -19,7 +19,7 @@
 //!    `unknown` — with how long it has been since anything was heard, because
 //!    "I can't tell" is only useful with that beside it.
 //!
-//! A reader concludes and forgets, with three exceptions, and all of them are
+//! A reader concludes and forgets, with four exceptions, and all of them are
 //! things the pane is the only place to read. When the screen it read was a
 //! screen asking a question, the question and the choices under it go on the
 //! record: they are the one thing on a pane that somebody has to act on rather
@@ -39,6 +39,15 @@
 //! itself: most of them read once and exit. So a look writes down the screen
 //! it found and the moment it first found it, and every look after it, in
 //! whatever process, reads how long that has been true — see [`held_still`].
+//!
+//! The fourth is the conclusion itself, and only on a vendor that reports
+//! nothing — see [`reads_its_own_record`]. There no hook will ever move the
+//! record off the phase a spawn or an adoption wrote there, so a reader that
+//! forgot what it read left an agent reading `working` for as long as the
+//! record lasted, and left the turn it was on with edges nothing could find.
+//! The phase goes down, and where the reading crossed the beginning or the end
+//! of a turn that goes in the log too — under amx's own name for it, never the
+//! vendor's. See [`write_the_phase`].
 //!
 //! A screen with a turn running on it carries one more thing worth handing on
 //! and nothing worth recording: the vendor's own spinner line, which says what
@@ -69,7 +78,7 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::rules::{Claim, Ruleset};
-use crate::store::{Agent, Meta, Phase, Question, Source, State, Still};
+use crate::store::{Agent, Event, Meta, Phase, Question, Source, State, Still};
 use crate::tmux::Server;
 use crate::vendor::Capability;
 
@@ -79,6 +88,23 @@ use crate::vendor::Capability;
 /// enough that an agent somebody interrupted stops reading as working while
 /// they watch it.
 pub const FRESH: u64 = 8;
+
+/// amx's own word for a turn a reader watched begin.
+///
+/// On a vendor that reports, the vendor says this itself and says it at the
+/// moment it happened. On one that reports nothing there is no such word, and
+/// a reading of the pane is the only thing that will ever place the edge of a
+/// turn — so the edge is recorded under a name of amx's own. Writing the
+/// vendor's name over it would put a sentence in the log that reads as the
+/// agent's account of itself, and every verb that waits for the vendor to
+/// speak would be waiting on amx agreeing with amx.
+///
+/// The record's freshness is the other half of the same promise, and
+/// [`write_the_phase`] is where it is kept.
+pub const READ_PROMPT: &str = "read.prompt";
+
+/// And for a turn a reader watched end — see [`READ_PROMPT`].
+pub const READ_TURN_END: &str = "read.turn-end";
 
 /// Which signal the answer came from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -475,6 +501,29 @@ fn last_said(said: &str) -> &str {
 fn answers_on_the_pane(meta: &Meta) -> bool {
     crate::registry::entry(meta.agent.as_deref().unwrap_or_default())
         .is_some_and(|vendor| !vendor.can(Capability::Hooks) && !vendor.can(Capability::Transcript))
+}
+
+/// Whether a reading of this agent's pane is the only account of it there will
+/// ever be.
+///
+/// A vendor that reports through hooks keeps its own record: what it is doing,
+/// where a turn began and where it ended, in its own words and at the moment
+/// each happened. A reader of one of those panes is checking a document that
+/// exists, and writing its conclusion into it would put amx's reading of a
+/// picture where the vendor's own account was.
+///
+/// A vendor with no hooks has no such document. Nothing has ever moved one of
+/// its records off the phase a spawn or an adoption wrote there, so an agent
+/// read as working once was working for as long as the record lasted, and the
+/// turn it was on had no edges anything could find. There the reading is the
+/// record.
+///
+/// A command amx has no entry for is neither, the way it is for the answer on
+/// its pane: nothing measured is not a measurement — see
+/// [`answers_on_the_pane`].
+fn reads_its_own_record(meta: &Meta) -> bool {
+    crate::registry::entry(meta.agent.as_deref().unwrap_or_default())
+        .is_some_and(|vendor| !vendor.can(Capability::Hooks))
 }
 
 /// The spinner line without the glyph the vendor pulses in front of it.
@@ -908,6 +957,100 @@ fn write_the_answer(agent: &Agent, state: &mut State, said: &str) {
     }
 }
 
+/// Write down what a reading concluded, on the vendor where nothing else ever
+/// will — see [`reads_its_own_record`].
+///
+/// Only a settled reading gets here: a rule claimed the screen and was allowed
+/// to speak, which is what [`Evidence::Screen`] says. A rule that claims a
+/// screen it may not yet decide from hands back the record's own phase, and
+/// writing that back would be a look agreeing with itself.
+///
+/// Written with the observing hand, like the question and the answer beside
+/// it. amx heard nothing from the agent by looking at a picture of it, and a
+/// record that came back fresher from being looked at would have the next
+/// reader believe this document over the pane it is meant to be checking —
+/// `amx status` would answer `hooks` about a vendor that has none.
+///
+/// So the phase moves and no stamp beside it does. Not `last_event`, and not
+/// `since` either: freshness is the later of the two — see [`heard`] — and a
+/// phase dated now is a record claiming it was just spoken to. That leaves
+/// `since` saying when the phase amx was *told* about began, which is what
+/// every clock here already reads it as, and it is why the span of work a turn
+/// ending would close is left alone as well: a span closed against a stamp that
+/// cannot move would be counted again by the next turn that opens one.
+///
+/// Only live phases are ever written: the three a rule can name are working,
+/// waiting and idle, so nothing here ends a run.
+///
+/// The boundary goes in the log inside the same lock that moved the phase, so
+/// the two cannot disagree and the edge is recorded once however many readers
+/// arrive at it together. Whoever gets the lock second finds the phase already
+/// moved and writes nothing at all.
+fn write_the_phase(agent: &Agent, state: &mut State, verdict: &Verdict) {
+    if state.state == verdict.phase {
+        return;
+    }
+
+    let heard = state.last_event;
+    let noted = agent.writer().and_then(|writer| {
+        let mut crossed = None;
+        let current = writer.observe(|current| {
+            // A hook that arrived while the pane was being read is the vendor's
+            // own account of a moment this picture is already behind — and a
+            // phase another reader has just written is an edge already crossed.
+            if current.last_event != heard || current.state == verdict.phase {
+                return;
+            }
+            crossed = boundary(current.state, verdict.phase);
+            current.state = verdict.phase;
+        })?;
+        if let Some(kind) = crossed {
+            // The rule that claimed the screen goes with it: this is amx's
+            // reading rather than the agent's word, and which screen it was
+            // read off is the whole of the evidence for it.
+            writer.append(&Event::new(
+                kind,
+                serde_json::json!({ "rule": verdict.rule }),
+            ))?;
+        }
+        Ok(current)
+    });
+
+    // A record that cannot be written leaves the reading exactly as it was.
+    // Unlike the question and the answer there is nothing here to fall back to:
+    // the phase this reader concluded is on the verdict already, which is what
+    // every surface prints.
+    if let Ok(current) = noted {
+        *state = current;
+    }
+}
+
+/// Which edge of a turn a phase moving from one to the other crosses, when it
+/// crosses one. Never asked about a phase moving to itself: the caller has
+/// already looked.
+///
+/// **A turn ends where the agent arrives at its prompt**, wherever it came
+/// from. One that ran to the end and one that stopped on a question somebody
+/// answered both end there, and a record still sitting at the word a spawn
+/// wrote is a first turn ending like any other.
+///
+/// **A turn begins where an agent with nothing outstanding starts working.** An
+/// agent that was stopped on a question is not one of those: answering it puts
+/// the agent back on the turn it was already on, which is what the vendor that
+/// does report says with the same silence — nothing it fires when a box is
+/// answered claims a prompt was submitted.
+///
+/// Stopping on a question is no edge at all. It is a turn under way with
+/// somebody in front of it, and the record says so in the phase.
+fn boundary(from: Phase, to: Phase) -> Option<&'static str> {
+    match (from, to) {
+        (_, Phase::Idle) => Some(READ_TURN_END),
+        (Phase::Waiting, Phase::Working) => None,
+        (_, Phase::Working) => Some(READ_PROMPT),
+        _ => None,
+    }
+}
+
 /// One agent as one answer, with the screen where the screen is fresher.
 ///
 /// What a reader read off the pane about a turn in progress stands in front of
@@ -1279,6 +1422,9 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
     {
         write_the_answer(&agent, &mut state, said);
     }
+    if reads_its_own_record(&meta) && reading.verdict.evidence == Evidence::Screen {
+        write_the_phase(&agent, &mut state, &reading.verdict);
+    }
     if let Some(command) = crate::config::current().summary_command.as_deref()
         && wants_a_line(&state)
     {
@@ -1391,6 +1537,9 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
             && let Some(said) = &reading.said
         {
             write_the_answer(&agent, &mut state, said);
+        }
+        if reads_its_own_record(&meta) && reading.verdict.evidence == Evidence::Screen {
+            write_the_phase(&agent, &mut state, &reading.verdict);
         }
         if let Some(command) = crate::config::current().summary_command.as_deref()
             && wants_a_line(&state)
