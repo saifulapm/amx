@@ -532,6 +532,32 @@ fn surfaces_the_key_that_takes_the_highlighted_row_is_refused_where_none_is_numb
 }
 
 #[test]
+fn surfaces_a_walk_leaves_the_screen_it_walked_answerable_again() {
+    // The row a walk lands on carries no number, so nothing amx holds says
+    // what the take took — and there are no hooks under this screen to say it
+    // afterwards. A record moved to `working` off the keystroke alone would
+    // have `answer` refuse the next caller while the gate is still on the pane,
+    // and `status` read that same pane moments later and say `waiting` again.
+    let amx = Harness::new();
+    let pane = parked_on_the_gate(&amx, "trusts-b2c");
+
+    let out = amx.amx(&["answer", "trusts-b2c", "down enter"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        amx.capture(&pane).contains("Enter to confirm"),
+        "the gate is still up, and nothing amx heard says otherwise"
+    );
+
+    let said = stdout(&amx.amx(&["status", "trusts-b2c"]));
+    assert!(said.contains("trusts-b2c  waiting"), "{said:?}");
+
+    // And what status says is pending is what answer takes: the same screen,
+    // answered again, rather than a caller told there is nothing to answer.
+    let out = amx.amx(&["answer", "trusts-b2c", "down enter"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+}
+
+#[test]
 fn surfaces_a_row_waiting_on_a_screen_that_numbers_nothing_is_offered_the_walk() {
     // The same gate, from the other side: what a person is told to type at it.
     // `1`, `2` and `y` do nothing there and `enter` ends the agent, so an offer
@@ -597,6 +623,39 @@ fn surfaces_answer_refuses_words_at_a_prompt_that_takes_a_key() {
             .contains("neither, keep both"),
         "a permission box takes one key, and words typed at it answer it by accident"
     );
+}
+
+#[test]
+fn surfaces_a_key_amx_cannot_see_the_effect_of_leaves_the_question_standing() {
+    // `y` at a box is a key amx types and cannot check: this vendor says
+    // nothing when a prompt is dismissed, and the screens it draws where the
+    // key does nothing at all look exactly the same from here. So the record
+    // keeps what amx typed and says nothing about what it did.
+    let amx = Harness::new();
+    parked_on_the_box(&amx, "ask-a1b");
+
+    let out = amx.amx(&["answer", "ask-a1b", "y"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(
+        amx.state("ask-a1b")["state"],
+        "waiting",
+        "the box amx last saw is the box the record still says is up"
+    );
+    let typed = amx
+        .events("ask-a1b")
+        .pop()
+        .expect("the answer on the record");
+    assert_eq!(typed["payload"]["key"], "y", "{typed}");
+
+    // So the same screen is answered again rather than refused.
+    let out = amx.amx(&["answer", "ask-a1b", "1"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // And a choice is the other half of it: amx knows what that answered, so
+    // the question comes off the record and the agent is back at work.
+    let recorded = amx.state("ask-a1b");
+    assert_eq!(recorded["state"], "working", "{recorded}");
+    assert_eq!(recorded["question"], json!(null), "{recorded}");
 }
 
 #[test]

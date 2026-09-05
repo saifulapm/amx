@@ -14,11 +14,22 @@
 //! is typed, because what may be sent back depends on what is being asked; a
 //! command line amx cannot make an answer of never reaches the pane.
 //!
-//! Answering also clears the question from the record. The vendor says nothing
-//! when a prompt is dismissed: the next hook comes when the agent gets to it,
-//! which can be a while. Until then a caller reading the record would find the
-//! same question still pending and answer it a second time, with the second key
-//! landing somewhere nobody chose.
+//! An answer amx can name also clears the question from the record. The vendor
+//! says nothing when a prompt is dismissed: the next hook comes when the agent
+//! gets to it, which can be a while. Until then a caller reading the record
+//! would find the same question still pending and answer it a second time, with
+//! the second key landing somewhere nobody chose.
+//!
+//! An answer amx cannot name clears nothing, because a keystroke is not news
+//! about the screen it was typed at. This vendor draws screens where `y`,
+//! `enter`, `esc` and the take at the end of a walk do nothing whatever — its
+//! folder-trust gate is one — and from here a key that did nothing looks
+//! exactly like a key that took a prompt away. So a record moved to `working`
+//! off one of them says a question is over on no evidence but amx's own
+//! typing, and says it only until the record goes stale: the reader after that
+//! looks at the pane, finds the prompt standing, and says `waiting` again. The
+//! caller in between is the one who pays, refused at a screen `status` is
+//! about to offer them.
 //!
 //! A question the vendor asked itself is not one screen, and the keys that
 //! finish one shape of it leave another standing. `docs/question-shapes.md`
@@ -220,6 +231,10 @@ impl Answer {
     /// next hook's business and the screen's after that. A walk is the same:
     /// the row it lands on carries no number, so there is nothing on the
     /// record for amx to say it took.
+    ///
+    /// It is also what decides whether the answer settles the question — see
+    /// [`answered`]. A key amx cannot name the answer of is one it cannot say
+    /// was answered.
     fn chose(&self) -> bool {
         match self {
             Answer::Key(key) => one_choice(key).is_some(),
@@ -782,8 +797,7 @@ fn drive(keyboard: &impl Keyboard, steps: &[Step]) -> Result<()> {
     Ok(())
 }
 
-/// Write down that the question was answered, and what is left of the call it
-/// belonged to.
+/// Write down what was typed, and what is left of the call it belonged to.
 ///
 /// A call of several questions does not end when one of them is answered: the
 /// vendor records it, moves to the tab after it, and the prompt is still up.
@@ -794,6 +808,14 @@ fn drive(keyboard: &impl Keyboard, steps: &[Step]) -> Result<()> {
 /// The question goes with its choices and its kind: they were the choices
 /// under *this* question, and a row still offering them after it has been
 /// answered is a row inviting somebody to answer it again.
+///
+/// An answer amx cannot name leaves the record exactly where it found it, and
+/// the event is the whole of what it writes. Nothing came back from the agent
+/// — amx typed at it — so the record is no fresher for this and knows no more
+/// about the screen than it did: the question stands, the wait goes on being
+/// timed from when it began, and the caller who typed a key that may have done
+/// nothing can type at the same screen again. The next hook, or the next
+/// reader at the pane, is what settles it.
 fn answered(agent: &Agent, answer: &Answer, note: Option<&str>) -> Result<()> {
     let writer = agent.writer()?;
     let said = answer.said(writer.state()?.pending());
@@ -802,15 +824,14 @@ fn answered(agent: &Agent, answer: &Answer, note: Option<&str>) -> Result<()> {
         what["note"] = serde_json::json!(note);
     }
     writer.append(&Event::new("answer", what))?;
+    if !answer.chose() {
+        return Ok(());
+    }
     writer.update_state(|state| {
-        match answer.chose() && !state.asking.is_empty() {
-            // The answer goes on the question it answered, and the tab after
-            // it takes the screen.
-            true => state.answered(said),
-            // Any other key is one whose effect amx does not model, so it
-            // stops claiming to know what is on the screen at all.
-            false => state.asks(None),
-        }
+        // The answer goes on the question it answered, and the tab after it
+        // takes the screen. A prompt amx holds no call for has no question to
+        // put it on, and the clearing under this is the whole of what it needs.
+        state.answered(said);
         // Nothing of it is outstanding: the agent is getting on with it. What
         // it is really doing is the next hook's business, and the screen's
         // after that.
@@ -1480,16 +1501,19 @@ mod tests {
     fn surfaces_a_walk_leaves_no_answer_amx_cannot_name_behind_it() {
         // The row a walk lands on carries no number, and the record carries no
         // choices for that screen either, so what amx writes down is the keys
-        // it typed and nothing it would be inventing.
+        // it typed and nothing it would be inventing — the gate included,
+        // which is still the gate until something other than amx's own typing
+        // says otherwise.
         let root = tempfile::TempDir::new().unwrap();
-        let agent = recorded(root.path(), &a_trust_gate());
+        let gate = a_trust_gate();
+        let agent = recorded(root.path(), &gate);
         let walked = Answer::Walk(vec!["Down".to_string(), "Enter".to_string()]);
         answered(&agent, &walked, None).unwrap();
 
         let state = agent.state().unwrap();
-        assert_eq!(state.state, Phase::Working);
-        assert_eq!(state.question, None);
-        assert_eq!(state.kind, None);
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(state.question, gate.question);
+        assert_eq!(state.kind, Some(Kind::Trust));
         assert_eq!(agent.events().unwrap()[0].payload["key"], "Down Enter");
     }
 
@@ -1644,10 +1668,12 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_key_amx_cannot_name_the_answer_of_leaves_no_question_behind() {
+    fn surfaces_a_key_amx_cannot_name_the_answer_of_settles_nothing() {
         // `esc` takes the whole prompt away, tabs and all, and `enter` takes
-        // whatever the cursor was on. Neither is a choice amx can write down,
-        // so it stops claiming to know what is on the screen.
+        // whatever the cursor was on — where they do anything. Neither is a
+        // choice amx can write down, and neither is news about the screen: a
+        // record moved to `working` here would refuse the next caller at a
+        // prompt that may be standing exactly where it was.
         for key in ["Escape", "Enter", "y"] {
             let root = tempfile::TempDir::new().unwrap();
             let call = asking(vec![
@@ -1658,10 +1684,12 @@ mod tests {
             answered(&agent, &Answer::Key(key.to_string()), None).unwrap();
 
             let state = agent.state().unwrap();
-            assert_eq!(state.state, Phase::Working, "{key}");
-            assert_eq!(state.question, None, "{key}");
-            assert!(state.asking.is_empty(), "{key}");
-            assert_eq!(state.kind, None, "{key}");
+            assert_eq!(state.state, Phase::Waiting, "{key}");
+            assert_eq!(state.question, call.question, "{key}");
+            assert_eq!(state.asking, call.asking, "{key}");
+            assert_eq!(state.kind, Some(Kind::Question), "{key}");
+            // What was typed is on the record; what it did is not amx's to say.
+            assert_eq!(agent.events().unwrap()[0].payload["key"], key, "{key}");
         }
     }
 }
