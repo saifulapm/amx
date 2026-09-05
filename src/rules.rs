@@ -659,6 +659,71 @@ mod tests {
  Enter to confirm · Esc to cancel
 ";
 
+    /// The same screen as v2.1.259 draws it, at 54 columns on 2026-09-05. The
+    /// wording is the 2.1.240 wording to the letter; the choices are what
+    /// moved. They have lost their numbers and swapped places, so the only `❯`
+    /// left is the cursor on the exit and the confirm footer is the whole of
+    /// the affordance.
+    const TRUST_SCREEN_259_54: &str = "\
+──────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /home/saiful/.claude/jobs/dfc82656/tmp/scratch2
+
+ Quick safety check: Is this a project you created or
+ one you trust? (Like your own code, a well-known
+ open source project, or work from your team). If
+ not, take a moment to review what's in this folder
+ first.
+
+ Claude Code'll be able to read, edit, and execute
+ files here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+";
+
+    /// The same screen at 24 columns, the narrowest driven, on a pane of 30
+    /// rows. The box is taller than the pane, so the top border has scrolled
+    /// off and the floor begins on the question's own first row. Nineteen rows
+    /// separate the topmost `trust` from the confirm footer, which is what
+    /// `within` on this rule is counted off. A raw string because the capture
+    /// opens with a blank row.
+    const TRUST_SCREEN_259_24: &str = r"
+ /home/saiful/.claude/j
+ obs/dfc82656/tmp/scrat
+ ch2
+
+ Quick safety check: Is
+ this a project you
+ created or one you
+ trust? (Like your own
+ code, a well-known
+ open source project,
+ or work from your
+ team). If not, take a
+ moment to review
+ what's in this folder
+ first.
+
+ Claude Code'll be able
+ to read, edit, and
+ execute files here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this
+   folder
+
+ Enter to confirm · Esc
+ to cancel
+";
+
     /// The plan-mode approval screen claude's ExitPlanMode tool draws once a
     /// plan is ready, at 220 columns. v2.1.237, 2026-08-21, seen live by
     /// entering plan mode and asking for a plan.
@@ -2033,6 +2098,8 @@ Only showing models from configured providers. Use /login to add providers.
         for (what, screen) in [
             ("trust at 220 columns", TRUST_SCREEN_220),
             ("trust at 54 columns", TRUST_SCREEN_54),
+            ("2.1.259 trust at 54 columns", TRUST_SCREEN_259_54),
+            ("2.1.259 trust at 24 columns", TRUST_SCREEN_259_24),
             ("a live permission box", PERMISSION_BOX),
             ("the ask menu at 80 columns", ASK_MENU_80),
             ("the ask menu at 24 columns", ASK_MENU_24),
@@ -2111,7 +2178,9 @@ Only showing models from configured providers. Use /login to add providers.
         );
         assert_eq!(
             asks("folder_trust"),
-            Some(Asks::Sentence("trust".to_string()))
+            Some(Asks::Sentence("quick".to_string())),
+            "the word the question opens with, since the word the rule stands \
+             on is on one of the choices too"
         );
         assert_eq!(
             asks("ask_menu"),
@@ -2153,22 +2222,30 @@ Only showing models from configured providers. Use /login to add providers.
     }
 
     #[test]
-    fn rules_the_trust_screen_asks_one_question_at_both_widths() {
+    fn rules_the_trust_screen_asks_one_question_at_every_width() {
         // The vendor wraps this sentence across five rows at 54 columns and
-        // breaks it between `you` and `trust`. Both widths are the same
-        // question, and the record must not be able to tell which one was read.
+        // breaks it between `you` and `trust`; at 24 columns it takes eleven
+        // rows and the floor opens on the first of them. Every width is the
+        // same question, and the record must not be able to tell which one was
+        // read — least of all the two versions, where the later one has no
+        // numbered choice for the reading to stop above.
         let whole = "Quick safety check: Is this a project you created or one you \
              trust? (Like your own code, a well-known open source project, or work \
              from your team). If not, take a moment to review what's in this folder \
              first.";
-        for (width, screen) in [("220", TRUST_SCREEN_220), ("54", TRUST_SCREEN_54)] {
+        let numbered: &[&str] = &["Yes, I trust this folder", "No, exit"];
+        // 2.1.259 numbers nothing on this screen, and `options` is the
+        // numbered choices: there is no list left to read off it.
+        let unnumbered: &[&str] = &[];
+        for (what, screen, options) in [
+            ("2.1.226 at 220 columns", TRUST_SCREEN_220, numbered),
+            ("2.1.226 at 54 columns", TRUST_SCREEN_54, numbered),
+            ("2.1.259 at 54 columns", TRUST_SCREEN_259_54, unnumbered),
+            ("2.1.259 at 24 columns", TRUST_SCREEN_259_24, unnumbered),
+        ] {
             let asked = asked(claude(), screen);
-            assert_eq!(asked.text, whole, "at {width} columns");
-            assert_eq!(
-                asked.options,
-                ["Yes, I trust this folder", "No, exit"],
-                "at {width} columns"
-            );
+            assert_eq!(asked.text, whole, "{what}");
+            assert_eq!(asked.options, options, "{what}");
         }
     }
 

@@ -126,19 +126,50 @@ bottom = 2
 # `you` and `trust`, so the two-word anchor this used to carry would have gone
 # silent exactly where amx tiles its own wall.
 #
+# Re-driven against v2.1.259 on 2026-09-05 at 220, 54, 40, 30 and 24 columns,
+# capture by capture in docs/claude-screens.md. The wording is the 2.1.240
+# wording to the letter; what moved is under it:
+#
+#   Quick safety check: Is this a project you created or one you trust? (Like
+#   your own code, …). If not, take a moment to review what's in this folder
+#   first.
+#   Security guide
+#   ❯ No, exit
+#     Yes, I trust this folder
+#   Enter to confirm · Esc to cancel
+#
+# The choices have lost their numbers and swapped places, with the cursor on
+# the exit. `❯ 1.` is off this screen at all five widths, so it is off this
+# rule: an anchor the vendor has stopped drawing holds nothing up, and all it
+# can still match is a numbered list somewhere else on the pane.
+#
 # The word alone is not a prompt: an agent discussing a registry it trusts
-# writes it every day. What makes it a prompt is the widget — `❯ 1.`, the
-# selection marker in front of the first option, which claude draws only in a
-# choice box — or the box's own confirm footer. `within` says the two have to
-# be in the same box rather than merely on the same screen: 16 rows is the
-# widest one measured, the trust screen at 54 columns, where eleven rows of
-# wrapped guidance sit between the word and the marker.
+# writes it every day. What makes it a prompt is the box's own confirm footer,
+# which is the fragment its row OPENS with and whole at all five widths — at 24
+# columns the footer wraps as `Enter to confirm · Esc` / `to cancel`. `within`
+# says the word and the footer have to be in the same box rather than merely on
+# the same screen: 19 rows is the widest one measured, the screen at 24
+# columns, where the guidance takes eleven rows and the choices three. Sized at
+# 16 — the span to the marker at 54 columns, back when the marker was the
+# affordance — this rule walked past its own gate at 24 columns, and a gate no
+# rule claims is one `doctor` reports nothing about.
 #
 # `asks` is where the question itself is, once the rule has claimed the screen.
 # Under this one's question sit a sentence about what claude will be able to do
 # and a link to the security guide, and neither of those is being asked, so the
-# question is the sentence the rule's own anchor is on and not the one above
-# the choices.
+# question is the sentence an anchor of its own is on and not the one above the
+# choices. That anchor is `quick` rather than the word the rule stands on: the
+# reading takes the lowest row carrying it above the first numbered choice, and
+# with nothing numbered left to stop at, `trust` is last found on `Yes, I trust
+# this folder` — which is an answer handed back where the question goes, at
+# every width. `quick` is on the question's own first row and nowhere else on
+# the screen, and it is one word, so no width can break it. Should the vendor
+# drop the `Quick safety check:` prefix it drifted in on, the question goes
+# quiet rather than wrong.
+#
+# The choices read back empty here, and that is the reading rather than a gap:
+# they are the numbered ones, and this screen numbers nothing. Neither row is
+# reachable with a key `amx answer` has anyway — see docs/claude-screens.md.
 #
 # `setup` says this screen stands in front of the work rather than inside it:
 # the vendor draws it before there is a session to speak of and will do nothing
@@ -155,10 +186,10 @@ state = "waiting"
 kind = "trust"
 setup = true
 all = ["trust"]
-any = ["❯ 1.", "enter to confirm"]
-within = 16
+any = ["enter to confirm"]
+within = 19
 not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
-asks = { sentence = "trust" }
+asks = { sentence = "quick" }
 
 # claude's permission box, measured live against v2.1.226 on 2026-08-12 at 220
 # columns. It takes forcing: a machine whose claude runs in auto mode approves
