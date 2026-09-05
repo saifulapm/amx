@@ -316,6 +316,19 @@ pub const DEFAULT: &str = "default";
 /// shaped around the first.
 static TABLE: [Vendor; 2] = [claude::VENDOR, pi::VENDOR];
 
+/// The moment a vendor's event is, whichever vendor in the table names it.
+///
+/// A payload arrives under the vendor's own word for the moment and nothing
+/// else says whose word it is, so every entry that reports is asked. The
+/// names do not collide — each vendor spells its events its own way — and an
+/// event no entry names is one amx has no business acting on.
+pub fn moment_of(event: &str) -> Option<Moment> {
+    table()
+        .iter()
+        .filter_map(|vendor| vendor.hooks)
+        .find_map(|hooks| hooks.moment(event))
+}
+
 impl Vendor {
     /// Whether amx may ask this vendor for `what`.
     pub fn can(&self, what: Capability) -> bool {
@@ -599,6 +612,26 @@ mod tests {
             assert_eq!(hooks.moment("nothing wired this"), None, "{}", vendor.name);
             assert_eq!(hooks.moment(""), None, "{}", vendor.name);
         }
+    }
+
+    #[test]
+    fn the_table_finds_a_moment_under_whichever_vendors_word_for_it() {
+        // Every event an entry in the table wires is found again from the
+        // table alone, which is how a payload is read without knowing whose
+        // it is; a word no entry uses is nobody's moment.
+        for vendor in table() {
+            let Some(hooks) = vendor.hooks else { continue };
+            for wiring in hooks.events {
+                assert_eq!(
+                    moment_of(wiring.event),
+                    Some(wiring.moment),
+                    "{}",
+                    vendor.name
+                );
+            }
+        }
+        assert_eq!(moment_of("NobodysEvent"), None);
+        assert_eq!(moment_of(""), None);
     }
 
     #[test]

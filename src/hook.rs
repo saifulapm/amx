@@ -215,10 +215,11 @@ fn kind(payload: &Value) -> Option<&str> {
     payload["hook_event_name"].as_str()
 }
 
-/// The moment a payload is about, when it is one amx listens for. The vendor's
-/// entry is the only thing that knows which name is which moment.
+/// The moment a payload is about, when it is one amx listens for. A vendor's
+/// entry is the only thing that knows which name is which moment, and nothing
+/// on the payload says whose it is, so the whole table is asked.
 fn moment(payload: &Value) -> Option<Moment> {
-    claude::HOOKS.moment(kind(payload)?)
+    crate::vendor::moment_of(kind(payload)?)
 }
 
 /// Whether a payload is about the one tool call that is not work: it draws a

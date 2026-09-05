@@ -53,6 +53,12 @@ pub const BOOT_ENV: &str = "boot-env.json";
 /// Where a pane is told to find the directory that is its own to write in.
 pub const AGENT_DIR_ENV: &str = "AMX_AGENT_DIR";
 
+/// Where a pane is told the directory its record is kept in. Not the agent's
+/// to write in — that is the scratch directory above — but where amx's own
+/// reporting inside the pane, a vendor's extension amx wrote, streams what the
+/// agent is saying for the record's readers to find: see `store::LIVE`.
+pub const RECORD_DIR_ENV: &str = "AMX_DIR";
+
 /// What that directory is called, inside the one the agent's record is kept
 /// in.
 const SCRATCH: &str = "scratch";
@@ -465,7 +471,7 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
         command.env_remove(marker);
     }
 
-    for (name, value) in pane_env(&env, &std::env::current_exe()?, id, &scratch(&dir)?) {
+    for (name, value) in pane_env(&env, &std::env::current_exe()?, id, &dir, &scratch(&dir)?) {
         command.env(name, value);
     }
 
@@ -474,7 +480,7 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
 }
 
 /// The environment the pane runs in: the one the spawn snapshotted, and the
-/// three variables amx puts in over the top of it.
+/// four variables amx puts in over the top of it.
 ///
 /// Over the top, because those three are about this pane and this pane only.
 /// The snapshot is whatever environment `new` was typed in, and that is often
@@ -484,11 +490,16 @@ fn pane_env(
     snapshot: &BTreeMap<String, String>,
     bin: &Path,
     id: &str,
+    record: &Path,
     scratch: &Path,
 ) -> BTreeMap<String, String> {
     let mut env = snapshot.clone();
     env.insert("AMX_BIN".to_string(), bin.to_string_lossy().into_owned());
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
+    env.insert(
+        RECORD_DIR_ENV.to_string(),
+        record.to_string_lossy().into_owned(),
+    );
     env.insert(
         AGENT_DIR_ENV.to_string(),
         scratch.to_string_lossy().into_owned(),
@@ -1217,6 +1228,7 @@ mod tests {
         let inherited = env_snapshot(vars(&[
             ("PATH", "/usr/bin"),
             ("AMX_ID", "fix-login-a1b"),
+            ("AMX_DIR", "/state/agents/fix-login-a1b"),
             ("AMX_AGENT_DIR", "/state/agents/fix-login-a1b/scratch"),
         ]));
 
@@ -1224,12 +1236,18 @@ mod tests {
             &inherited,
             Path::new("/usr/local/bin/amx"),
             "port-it-b2c",
+            Path::new("/state/agents/port-it-b2c"),
             Path::new("/state/agents/port-it-b2c/scratch"),
         );
 
         assert_eq!(
             env.get(AGENT_DIR_ENV).unwrap(),
             "/state/agents/port-it-b2c/scratch"
+        );
+        assert_eq!(
+            env.get(RECORD_DIR_ENV).unwrap(),
+            "/state/agents/port-it-b2c",
+            "the record's own directory, for what amx's reporting streams beside it"
         );
         assert_eq!(env.get(crate::hook::ID_ENV).unwrap(), "port-it-b2c");
         assert_eq!(env.get("AMX_BIN").unwrap(), "/usr/local/bin/amx");
