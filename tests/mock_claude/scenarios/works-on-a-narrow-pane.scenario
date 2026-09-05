@@ -1,0 +1,18 @@
+# A turn still running on a pane 30 columns wide, as claude 2.1.259 draws it.
+# The vendor composes its spinner row as a glyph, a gerund, an ellipsis, and
+# then a parenthesis holding the elapsed time and a detail after it. That
+# parenthesis is a tail it drops from the right as the pane narrows, and at
+# this width the whole of it is gone.
+#
+# There are no hooks under this on purpose. A reader is at the screen because
+# the hooks have stopped -- an agent interrupted with Escape, or one nobody has
+# heard from -- and the mode footer claude draws while it works is on this
+# screen too, so the row alone has to tell a turn that is running from one that
+# is over.
+print ● Finagling… thinking
+print ──────────────────────────────
+print ❯
+print ──────────────────────────────
+print   ⏵⏵ auto mode on
+# The turn runs until whoever is driving this scenario ends it.
+sleep 600000

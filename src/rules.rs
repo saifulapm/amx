@@ -613,6 +613,45 @@ mod tests {
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 ";
 
+    /// A turn running at 30 columns, v2.1.259 on 2026-09-05. The vendor
+    /// truncates its spinner row from the right, and at this width the whole
+    /// parenthesis — the elapsed time and the detail after it — is gone. The
+    /// mode footer is under it, as it is under every running turn, which is
+    /// what read this screen as idle eight samples out of eight.
+    const NARROW_TURN_30: &str = "\
+● Finagling… thinking
+──────────────────────────────
+❯
+──────────────────────────────
+  ⏵⏵ auto mode on
+";
+
+    /// The same turn at 24 columns, where the parenthesis is back and what was
+    /// inside it after the elapsed time is gone. Half of the old anchor
+    /// survives at each of these two widths, and never the same half.
+    const NARROW_TURN_24: &str = "\
+● Finagling… (2s)
+────────────────────────
+❯
+────────────────────────
+  ⏵⏵ auto mode on
+";
+
+    /// The idle screen at 40 columns, v2.1.259 on 2026-09-05: the line the
+    /// finished turn left behind, the composer box, the statusline elided from
+    /// the right, and the footer. This is the screen that says why the spinner
+    /// is not recognised by an ellipsis on its own or by a `s · ` on its own —
+    /// this one carries both, and nothing is running on it.
+    const IDLE_SCREEN_259_40: &str = "\
+✻ Cogitated for 2m 6s · done 10:09 AM
+
+───────────────────── execute t1 brief ─
+❯
+────────────────────────────────────────
+  Opus 5 (1M context) (1M context) │ …
+  ⏵⏵ auto mode on (shift+tab to cycle)
+";
+
     /// The folder-trust screen as v2.1.226 renders it on a 220-column pane,
     /// captured 2026-08-12.
     const TRUST_SCREEN_220: &str = "\
@@ -2347,6 +2386,8 @@ Only showing models from configured providers. Use /login to add providers.
         for (what, screen) in [
             ("a tool call", WORKING_SCREEN),
             ("thinking", THINKING_SCREEN),
+            ("a turn at 30 columns", NARROW_TURN_30),
+            ("a turn at 24 columns", NARROW_TURN_24),
         ] {
             assert_eq!(
                 claim(rules, screen, Phase::Idle).phase(),
@@ -2356,12 +2397,20 @@ Only showing models from configured providers. Use /login to add providers.
         }
 
         // The line claude leaves behind when the turn is over is the same
-        // glyph without the ellipsis and the parenthesis.
-        assert_ne!(
-            claim(rules, IDLE_SCREEN, Phase::Idle).phase(),
-            Some(Phase::Working),
-            "`✻ Worked for 2m 26s` is not a spinner"
-        );
+        // glyph and the gerund in the past tense, with no ellipsis on it.
+        for (what, screen) in [
+            ("`✻ Worked for 2m 26s`", IDLE_SCREEN),
+            (
+                "`✻ Cogitated for 2m 6s · done 10:09 AM`",
+                IDLE_SCREEN_259_40,
+            ),
+        ] {
+            assert_eq!(
+                claim(rules, screen, Phase::Idle).phase(),
+                Some(Phase::Idle),
+                "{what} is not a spinner"
+            );
+        }
     }
 
     #[test]

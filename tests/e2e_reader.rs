@@ -173,6 +173,30 @@ fn a_trust_gate_records_the_question_and_not_one_of_its_answers() {
 }
 
 #[test]
+fn a_running_turn_on_a_narrow_pane_is_not_a_finished_one() {
+    // The vendor drops the tail of its spinner row from the right as the pane
+    // narrows, and the mode footer it draws while it works stays where it is.
+    // docs/claude-screens.md read a live turn as idle eight samples out of
+    // eight at each of these two widths, which is worse than reading nothing:
+    // a screen named non-blocking is a turn somebody is told has finished.
+    for (id, scenario, width) in [
+        ("ports-a1b", "works-on-a-narrow-pane", 30),
+        ("ports-c3d", "works-on-a-narrower-pane", 24),
+    ] {
+        let amx = Harness::new();
+        let pane = amx.play(id, scenario);
+        amx.until("the spinner to be drawn", || {
+            amx.capture(&pane).contains("Finagling").then_some(())
+        });
+
+        let agent = status(&amx, id);
+        assert_eq!(agent["state"], "working", "at {width} columns: {agent}");
+        assert_eq!(agent["evidence"], "screen", "at {width} columns");
+        assert_eq!(agent["rule"], "spinner", "at {width} columns");
+    }
+}
+
+#[test]
 fn a_fresh_record_is_read_from_the_hooks() {
     let amx = Harness::new();
     amx.play("fix-login-a1b", "happy-turn");

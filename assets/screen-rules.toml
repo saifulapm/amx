@@ -82,11 +82,15 @@ placeholders = [
 # measurement the rules below anchor on, and it is written out under
 # `permission_prompt`.
 #
-# `spinner` is the two punctuation fragments the turn spinner always carries,
-# the ellipsis before its elapsed time and the separator after it, both on the
-# one row. Punctuation rather than any word, so the vendor renaming its gerunds
-# does not move the anchor, and neither fragment is on the line it leaves
-# behind when the turn is over — see the `spinner` rule below for the samples.
+# `spinner` is two punctuation fragments off the turn spinner, the ellipsis
+# before its elapsed time and the separator after it, both on the one row.
+# Both of them sit in the tail 2.1.259 truncates from the right, so this walk
+# has no spinner row to find on a narrow pane and steps over the vendor's
+# chrome as though it were the agent's own output. The separator is also on the
+# line a finished turn leaves behind now — `✻ Cogitated for 2m 6s · done
+# 10:09 AM`, at every width — which the walk survives only because it wants
+# both. The `spinner` rule below was re-measured against 2.1.259 and this was
+# not; driving it is the next thing owed here.
 #
 # `rule` is the glyph the composer's box is drawn with. `statusline` is how
 # many rows of it the walk will step over to reach that box's bottom border: a
@@ -434,33 +438,77 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 #   ✽ Nesting… (15s · still thinking with xhigh effort)
 #   · Infusing… (2m 2s · ↓ 6.9k tokens)          (during a 40s Bash call)
 #
-# — a cycling glyph (`✻ ✽ ✢ ✶ · *`), a rotating gerund, and always `…` + ` (`
-# + an elapsed `<n>s` + ` · `. Anchoring on the two punctuation fragments
-# rather than on any word is what survives the vendor renaming the gerund,
-# changing the glyph set, or swapping the detail after the `·`.
-#
-# What this must not match is the line claude leaves behind when the turn is
-# over — `✻ Brewed for 1m 22s`, same glyph, no ellipsis and no parenthesis.
-# That line sits on the idle screen, so a rule that matched it would report a
-# finished agent as working forever.
-#
-# This is the weakest rule in the file: two punctuation fragments, no `within`,
-# no `not_below`. The floor reads the bottom rows, so an agent's own output can
-# in principle carry both fragments, and a wrong match here does not only
-# mislabel a row — naming a screen as non-blocking also clears a pending
-# question off it. It is the first rule to re-measure on a vendor bump.
+# — a cycling glyph (`✻ ✽ ✢ ✶ · *`), a rotating gerund, and then `…` + ` (` +
+# an elapsed `<n>s` + ` · ` + a detail. This rule stood on the last two of
+# those punctuation fragments until 2.1.259 was driven at five widths.
 #
 # Re-measured against v2.1.237 on 2026-08-21, live across a thinking turn, a
 # Bash call and an AskUserQuestion round: `✢ Forging…`, `✶ Forging… (9s ·
 # thinking with xhigh effort)`, `· Forging… (22s · ↓ 1.3k tokens)`, `*
 # Smooshing… (7s · thinking with xhigh effort)`, `✢ Smooshing… (31s · ↓ 1.8k
-# tokens · thought for 1s)`. New gerunds, same glyph set, same two punctuation
-# fragments in every sample; the finished line `✻ Sautéed for 1m 2s` still
-# carries neither.
+# tokens · thought for 1s)`. New gerunds, same glyph set, same punctuation.
+#
+# ── What the vendor truncates, and what it does not ──────────────────────────
+# Everything after the ellipsis is a tail the vendor drops from the RIGHT as
+# the pane narrows, and both of those fragments were in it. One turn, one pane
+# with nothing else on it, read at each width on 2026-09-05 — the captures are
+# in docs/claude-screens.md:
+#
+#   220  ● Finagling… (6s · thinking with xhigh effort)
+#    54  ● Finagling… (5s · thinking with xhigh effort)
+#    40  ● Finagling… (4s · thinking)
+#    30  ● Finagling… thinking
+#    24  ● Finagling… (2s)
+#
+# `s · ` is gone at 30 and at 24, `… (` is gone at 30, and `all` wanted both,
+# so at those two widths this rule did not hold. The mode footer is under the
+# spinner the whole time a turn runs, which is the trap `idle_prompt` names in
+# capitals below, so that rule claimed the screen instead: eight samples out of
+# eight at 30 columns and eight out of eight at 24, across one live turn. Four
+# agents on a 160-column terminal is 40 columns each and a fifth takes them
+# under it, which is a wall amx tiles by itself.
+#
+# Nor is the row steady at a width. The same turn at 30 columns read
+# `● Finagling… thinking` for four samples and `● Finagling… (33s)` for the
+# next three, because what fits depends on how long the gerund is and the
+# gerund changes while the turn runs. So the anchor is the part of the row the
+# truncation cannot reach: the end of the gerund and the ellipsis after it, on
+# the left. One fragment, and not a list of the tails the vendor sometimes
+# keeps — a list goes quiet at whatever width drops the next of them.
+#
+# ── Why the gerund's own ending, and not the ellipsis alone ──────────────────
+# `…` by itself is not this vendor's spinner. It is how claude elides anything
+# too long for the room it has, and what it elides is under every idle pane:
+# the statusline reads `Opus 5 (1M context) (1M context) │ …` at 40 columns,
+# and the welcome box reads `Opus 5 (1M context) with xhig… · Claude` over
+# `/…/repo/.amx/worktrees/agent-ivu`. An agent parked at its prompt on a narrow
+# pane would read `working` for as long as it sat there.
+#
+# The spinner's word is a present participle in every sample this file records
+# across three vendor versions — Nesting, Infusing, Forging, Smooshing,
+# Finagling — and the line the turn leaves behind is a past one: `✻ Brewed for
+# 1m 22s`, `✻ Sautéed for 1m 2s`, `✻ Cogitated for 2m 6s · done 10:09 AM`. That
+# is the vendor's own grammar telling a turn that is running from one that is
+# over, it is inside a word so no wrap or truncation can break it, and it holds
+# at all five widths. Should the vendor start spinning a word that is not a
+# gerund, this rule goes quiet rather than wrong.
+#
+# The finished line is what this must not match: it sits on the idle screen, so
+# a rule that reached it would report a finished agent as working forever. It
+# carries no ellipsis at any width. It does now carry `s · `, which is half of
+# what this rule used to stand on — a margin spent rather than a rule broken,
+# and the reason the `[furniture] spinner` walk above wants driving next.
+#
+# This is still the weakest rule in the file: one fragment, no `within`, no
+# `not_below`. The floor reads the bottom rows, so an agent's own output can
+# carry `ing…` on one of them — a paste of another agent's pane, or prose that
+# ends a word in an ellipsis — and a wrong match here does not only mislabel a
+# row: naming a screen as non-blocking also clears a pending question off it.
+# It is the first rule to re-measure on a vendor bump.
 [[rule]]
 name = "spinner"
 state = "working"
-all = ["… (", "s · "]
+all = ["ing…"]
 
 # claude is drawn and waiting for a human to type. This is the mode footer
 # under the input box, and the glyph it opens with is what every mode and every
