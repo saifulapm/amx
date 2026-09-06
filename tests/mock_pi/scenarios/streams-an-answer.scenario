@@ -1,0 +1,30 @@
+# A pi somebody started themselves and `amx adopt` took over mid-life. Its
+# pane carries no AMX_DIR, so where the record is comes back from the hook:
+# it reports its session a few times while the adoption happens - a report
+# made before there is a record is answered with nothing - then takes a turn
+# and streams the answer it is writing to the directory the last answer
+# named, and takes the stream away before the turn settles.
+screen idle
+hook session_start {}
+sleep 1000
+hook session_start {}
+sleep 1000
+hook session_start {}
+sleep 1000
+hook session_start {}
+sleep 1000
+hook session_start {}
+sleep 1000
+hook session_start {}
+hook agent_start {}
+screen working
+live the login bug is in the redirect
+sleep 400
+live the login bug is in the redirect, and the fixture hides it
+sleep 4000
+live
+transcript {"type":"message","id":"u1","parentId":null,"message":{"role":"user","content":"where is the login bug","timestamp":1}}
+transcript {"type":"message","id":"a1","parentId":"u1","message":{"role":"assistant","content":[{"type":"text","text":"the login bug is in the redirect, and the fixture hides it"}],"stopReason":"stop"}}
+screen idle
+hook agent_settled {"last_assistant_message":"the login bug is in the redirect, and the fixture hides it"}
+sleep 600000

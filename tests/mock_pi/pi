@@ -62,6 +62,11 @@
 #   transcript <json>
 #                   append a line to that session file, which is what pi does
 #                   as a turn runs and what amx reads the conversation from.
+#   live <text>     stream what pi is saying, the way the extension does:
+#                   written whole to `live` in the record directory the last
+#                   report was answered with, and renamed in. Bare `live`
+#                   takes it away, as the extension does when a message ends.
+#                   Before any report was answered there is nowhere to write.
 #
 # Environment:
 #   MOCK_PI_SCENARIO   the scenario to replay (required)
@@ -472,6 +477,18 @@ deliver() {
 	[ -z "$answer" ] || record=$answer
 }
 
+# What pi is saying at this moment, beside the record the hook named. Whole
+# and renamed in, so a reader never sees half of it; nothing to say takes it
+# away.
+say() {
+	[ -n "$record" ] || return 0
+	if [ -z "$1" ]; then
+		rm -f "$record/live"
+		return 0
+	fi
+	printf '%s' "$1" >"$record/live.tmp" && mv "$record/live.tmp" "$record/live"
+}
+
 # One line of the session file, which is what pi appends to as a turn runs.
 transcribe() {
 	[ -n "$session" ] || return 0
@@ -492,6 +509,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 	sleep) nap "$rest" ;;
 	hook) deliver "$rest" ;;
 	transcript) transcribe "$rest" ;;
+	live) say "$rest" ;;
 	*)
 		echo "mock pi: $scenario: no step called \`$verb\`" >&2
 		exit 65

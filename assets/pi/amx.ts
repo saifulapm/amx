@@ -14,8 +14,14 @@ import { existsSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-// Where the record is, for the stream. Only a pane amx started says so.
-const AMX_DIR = process.env.AMX_DIR;
+// Where the record is, for the stream. A pane amx started says so in its
+// environment. A pi somebody started by hand and `amx adopt` took over carries
+// nothing, so the hook says: it answers every report about this session with
+// the record's directory, and the last answer is where the stream goes.
+let answered: string | undefined;
+function recordDir(): string | undefined {
+  return process.env.AMX_DIR || answered;
+}
 // How often the stream is written, at most.
 const STREAM_EVERY_MS = 100;
 // How much of a tool's arguments a report carries: the argument worth a row,
@@ -74,13 +80,22 @@ export default function (pi: ExtensionAPI) {
     return new Promise((resolve) => {
       let child;
       try {
-        child = spawn(amx, ["_hook"], { stdio: ["pipe", "ignore", "ignore"] });
+        child = spawn(amx, ["_hook"], { stdio: ["pipe", "pipe", "ignore"] });
       } catch {
         resolve();
         return;
       }
+      let heard = "";
       child.on("error", () => resolve());
-      child.on("close", () => resolve());
+      child.on("close", () => {
+        const line = heard.trim().split("\n").pop();
+        if (line) answered = line;
+        resolve();
+      });
+      child.stdout.on("data", (chunk) => {
+        heard += chunk;
+      });
+      child.stdout.on("error", () => {});
       child.stdin.on("error", () => {});
       child.stdin.end(payload);
     });
@@ -133,7 +148,7 @@ export default function (pi: ExtensionAPI) {
   let timer;
   function stream(text: string): void {
     // Nothing said yet — a message still thinking — is nothing to stream.
-    if (!AMX_DIR || !text.trim()) return;
+    if (!recordDir() || !text.trim()) return;
     pending = text;
     if (timer) return;
     timer = setTimeout(() => {
@@ -144,7 +159,9 @@ export default function (pi: ExtensionAPI) {
   }
   function flush(): void {
     if (pending === undefined || pending === streamed) return;
-    const path = join(AMX_DIR, "live");
+    const dir = recordDir();
+    if (!dir) return;
+    const path = join(dir, "live");
     try {
       writeFileSync(`${path}.tmp`, pending);
       renameSync(`${path}.tmp`, path);
@@ -161,9 +178,10 @@ export default function (pi: ExtensionAPI) {
     }
     pending = undefined;
     streamed = undefined;
-    if (!AMX_DIR) return;
+    const dir = recordDir();
+    if (!dir) return;
     try {
-      unlinkSync(join(AMX_DIR, "live"));
+      unlinkSync(join(dir, "live"));
     } catch {
       // Nothing streamed is nothing to take away.
     }

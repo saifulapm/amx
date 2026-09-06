@@ -60,7 +60,8 @@ both back out, puts the backed-up bytes back, and removes amx's records. It
 refuses while any agent is still running: those records are the only place
 their answers are kept. It also rewrites any handoff still carrying the
 environment inline, which needs no asking — amx wrote every one of those files
-itself.
+itself. Upgrading amx wants `doctor --fix` again: the extension it ships for pi
+changes with it, and `doctor` says so until the file is rewritten.
 
 Without the hooks amx falls back to reading panes, which is enough to say what
 an agent is doing but not enough to hand you what it said. Answers come from
@@ -615,7 +616,9 @@ its own `AMX_ID` in a pane it did not open, so the events of a vendor that
 reports through hooks arrive with nothing on them saying whose they are, and
 the session is what carries them home: amx finds the record whose session
 matches the payload's. pi's reports carry its session the same way, so an
-adopted pi comes home through the extension like any other, and one whose
+adopted pi comes home through the extension like any other, and the hook
+answers each report with where the record is, so what an adopted pi is saying
+streams to its card the same as one amx started. One whose
 extension is not installed is read off its pane the way any quiet pi is. The
 first report about that session also names the conversation the vendor keeps,
 which `adopt` itself could not: from then on the card and `logs` read it the

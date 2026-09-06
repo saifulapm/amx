@@ -186,7 +186,12 @@ with it: a report names the session jsonl pi appends to as a turn runs,
 `~/.pi/agent/sessions/<encoded-cwd>/<ts>_<id>.jsonl`, and `Vendor.transcript`
 names the shape `crate::conversation` reads it by. While a turn runs the
 extension also streams the words of the answer being written to the record's
-`live` file, which the card shows under the conversation. `Trust` is the one
+`live` file, which the card shows under the conversation. It finds that record
+by `AMX_DIR` in a pane amx started, and otherwise by what the hook answers:
+`amx _hook` prints the record's directory on every report about a vendor wired
+through `Wire::File` (`Wire::listens`), which is how a pi `adopt` took over
+streams too. A settings-wired vendor is never answered, because its hook
+runner shows what a hook prints. `Trust` is the one
 amx sends rather than writes: `--approve, -a` on the argv of a pane amx was
 starting anyway.
 

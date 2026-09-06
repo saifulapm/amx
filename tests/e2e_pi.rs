@@ -28,7 +28,7 @@
 
 mod common;
 
-use common::Harness;
+use common::{AMX, Harness};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -110,19 +110,34 @@ fn start_playing(amx: &Harness, id: &str, scenario: &Path) {
 const A_CLAUDE: &str = "4c1e8b73-2f60-4a15-9d38-7e2b6c0f9a54";
 const THEIR_PI: &str = "9f3c1d20-5a44-4e7b-8c19-6d0a2b5f7e31";
 
-/// A pi somebody started themselves, in a pane amx never opened, stopped on
-/// the dialog it raises. Answers with that pane.
+/// A pi somebody started themselves, in a pane amx never opened, playing
+/// `scenario_name` on the session `session`. Answers with that pane once the
+/// screen the scenario stops on is up — `up` is a row only that screen has: a
+/// capture taken before it is painted is a different screen, and adoption
+/// reads the pane once.
 ///
 /// Started under the name that makes it pi: tmux answers for a pane with the
 /// program its process was started as, and a script's is the shell named on
 /// its shebang line, so the shell that reads the stand-in is reached through a
 /// link called `pi`. Nothing here goes through the PATH the way `amx new
 /// --agent pi` has to, because what is in a pane amx did not open is whatever
-/// somebody ran.
-fn a_pi_started_by_hand(amx: &Harness) -> String {
+/// somebody ran. What the pane does carry is what a real one would: amx on it
+/// for the extension to report to, and this harness's state and home, and
+/// nothing naming an agent — `AMX_ID` and `AMX_DIR` are a spawn's to set, and
+/// are taken out in case this suite is itself running inside one.
+fn a_pi_started_by_hand(amx: &Harness, scenario_name: &str, session: &str, up: &str) -> String {
     let named_pi = amx.home().join("pi");
     std::os::unix::fs::symlink("/bin/sh", &named_pi).expect("a shell called pi");
-    let scenario = format!("MOCK_PI_SCENARIO={}", scenario("asks-a-question").display());
+    let scenario = format!("MOCK_PI_SCENARIO={}", scenario(scenario_name).display());
+    let bin = format!("AMX_BIN={AMX}");
+    let state = format!(
+        "AMX_STATE_DIR={}",
+        amx.state_root()
+            .parent()
+            .expect("the state directory")
+            .display()
+    );
+    let home = format!("HOME={}", amx.home().display());
     let (named_pi, stand_in) = (
         named_pi.to_string_lossy().into_owned(),
         fixtures().join("pi").to_string_lossy().into_owned(),
@@ -135,16 +150,22 @@ fn a_pi_started_by_hand(amx: &Harness) -> String {
         "#{pane_id}",
         "--",
         "env",
+        "-u",
+        "AMX_ID",
+        "-u",
+        "AMX_DIR",
         &scenario,
+        &bin,
+        &state,
+        &home,
         &named_pi,
         &stand_in,
+        "--session-id",
+        session,
     ]);
 
-    // The hint row pi draws under every dialog, which is the anchor its own
-    // document reads that screen by. A capture taken before it is painted is a
-    // different screen, and adoption reads the pane once.
-    amx.until("pi's dialog on the pane", || {
-        amx.capture(&pane).contains("↑↓ navigate").then_some(())
+    amx.until("the screen pi stops on", || {
+        amx.capture(&pane).contains(up).then_some(())
     });
     pane
 }
@@ -1636,7 +1657,9 @@ fn adopt_takes_the_pi_in_the_pane_over_and_not_the_claude_in_the_terminal() {
     // record no pi will ever report under, and claude's document reading a
     // pane pi drew.
     let amx = Harness::new();
-    let pane = a_pi_started_by_hand(&amx);
+    // The hint row pi draws under every dialog, which is the anchor its own
+    // document reads that screen by.
+    let pane = a_pi_started_by_hand(&amx, "asks-a-question", THEIR_PI, "↑↓ navigate");
 
     // Claude's variable alone first, which is the terminal's own and says
     // nothing about what is running in this pane.
@@ -1700,6 +1723,51 @@ fn adopt_takes_the_pi_in_the_pane_over_and_not_the_claude_in_the_terminal() {
         amx.state(id)["question"],
         "Run echo hi?",
         "the sentence the caller passed, off the pane it is drawn on"
+    );
+}
+
+#[test]
+fn an_adopted_pi_streams_what_it_is_saying_to_the_record_the_hook_named() {
+    // A pane amx did not start carries no `AMX_DIR`, so the extension had
+    // nowhere to stream to and a working adopted pi's row was blank for the
+    // whole turn. The hook answers every report with the record's directory
+    // now; the stand-in keeps the answer the way the extension does and
+    // streams there.
+    let amx = Harness::new();
+    // The stats line under the box, which the idle screen ends on.
+    let pane = a_pi_started_by_hand(&amx, "streams-an-answer", THEIR_PI, "(auto)");
+    let id = "their-own-pi-a1b";
+    let out = adopt(&amx, id, &pane, &[("PI_SESSION_ID", THEIR_PI)]);
+    assert!(
+        out.status.success(),
+        "amx adopt: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let agent = amx.until("the words being written, on the row", || {
+        let agent = status(&amx, id);
+        agent["summary"]
+            .as_str()
+            .is_some_and(|line| line.starts_with("the login bug is in the redirect"))
+            .then_some(agent)
+    });
+    assert_eq!(agent["state"], "working", "{agent}");
+    assert!(
+        amx.agent_dir(id).join("live").exists(),
+        "streamed to the record the hook named"
+    );
+
+    let agent = amx.until("the turn to settle", || {
+        let agent = status(&amx, id);
+        (agent["state"] == json!("idle")).then_some(agent)
+    });
+    assert_eq!(
+        agent["result"], "the login bug is in the redirect, and the fixture hides it",
+        "{agent}"
+    );
+    assert!(
+        !amx.agent_dir(id).join("live").exists(),
+        "and the stream is taken away before the turn settles"
     );
 }
 
