@@ -28,9 +28,9 @@ stopped numbering its choices, which takes `❯ 1.` off it, put an answer where
 the question should be on the row, and left every key `amx answer` was allowed
 to type at that screen doing nothing or ending the agent. And the line claude
 leaves behind when a turn is over now carries one of the two fragments the
-spinner rule used to stand on. The rule has been moved off both; the walk in
-`[furniture] spinner` still stands on the pair, and it was not driven this
-round.
+spinner rule used to stand on. The rule has been moved off both, and on
+2026-09-06 the walk in `[furniture] spinner` followed it, driven at 80 columns
+with `--effort low` — see the spinner section.
 
 ## How this was read
 
@@ -512,12 +512,13 @@ spinner spins, which is the difference the anchor is now reading. That screen
 reads `idle` at 40 columns, on `idle_prompt`, with the finished line above the
 box.
 
-The two old fragments are still `[furniture] spinner`, which is what
-`src/furniture.rs` walks over to find the rows an agent earned, and that walk
-wants both of them on the row. It was not driven this round and is the obvious
-next thing to drive: a spinner row the walk cannot recognise is a row of the
-vendor's chrome printed as the agent's own output, and the 30- and 24-column
-rows in the table above are two of them.
+`[furniture] spinner`, which is what `src/furniture.rs` walks over to find the
+rows an agent earned, stood on the two old fragments until 2026-09-06, when it
+was driven at 80 columns with `--effort low`. claude spun `● Actioning…` with
+nothing after it for the 65 seconds before the first token — no parenthesis at
+all, a shape the table above never reached — and the walk printed that row at
+the foot of the view's card as the agent's own output. The walk now stands on
+`ing…` as the rule does, and that row is cut.
 
 ## `idle_prompt`
 
@@ -597,14 +598,13 @@ what it was before, which is the only way to check the answers.
    2m 6s · done 10:09 AM`, at all five widths. The rule wanted both of its
    fragments and `… (` was absent, so nothing read wrong; what was gone was the
    margin, on the rule its own comment calls the first one to re-measure at a
-   vendor bump. *Answered for the rule and not for the walk:* the rule is off
-   both fragments, and `[furniture] spinner` still stands on the pair.
+   vendor bump. *Answered for the rule on 2026-09-05 and for the walk on
+   2026-09-06:* both stand on `ing…`.
 
-Two things were not driven and should not be read as measured here: the
+One thing was not driven and should not be read as measured here: the
 review-answers screen that both multi-part shapes of `AskUserQuestion` end on,
-which the document already records as claimed by nothing; and
-`[furniture] spinner`, which still carries the two fragments findings 1 and 6
-are about, so both of those findings hold against the walk unchanged.
+which the document already records as claimed by nothing. `[furniture]
+spinner` was the other, and was driven on 2026-09-06 — see the spinner section.
 
 And one thing the re-run turned up that nothing answers yet. At 24 columns
 `ask_menu` is claimed off the bottom of the box while the question above it is

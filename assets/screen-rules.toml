@@ -103,9 +103,17 @@ placeholders = [
 # Measured against a live claude 2.1.237 on 2026-08-21 at 100, 30, 24, 23, 22,
 # 21 and 20 columns and at pane heights 30, 12, 10, 9 and 8, with the composer
 # empty and with three and ten rows staged in it.
+#
+# `spinner` is the one fragment the row claude spins while a turn runs carries
+# at every width — the end of the gerund and the ellipsis — for the reasons
+# the `spinner` rule below gives for standing on the same one. The walk stood
+# on the two punctuation fragments after it until 2026-09-06, when it was
+# driven at 80 columns with `--effort low`: claude spun `● Actioning…` with
+# nothing after it for the 65 seconds before the first token, and the walk
+# printed that row at the foot of the view's card as the agent's own output.
 [furniture]
 mode = ["⏵⏵", "⏸"]
-spinner = ["… (", "s · "]
+spinner = ["ing…"]
 rule = "─"
 statusline = 2
 bottom = 2

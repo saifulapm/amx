@@ -295,10 +295,10 @@ row naming the tool and the command or path it was given. Nothing the vendor
 draws under its pane is in it. One whose turn is over — idle at its prompt,
 done, failed or stopped alike — opens on its last answer, with the question it
 answers on the row above and every earlier turn a page up. One that is working
-ends on a live tail under a dim `live` rule: what pi is saying at this moment,
-streamed by the extension `doctor --fix` installs, or, for claude, the last
-rows of its pane with the composer and statusline cut, tracking output as it
-lands. An agent with no conversation to read — a command row, a claude adopted
+ends on a live tail under a dim `live` rule: the last few rows of what pi is
+saying at this moment, streamed by the extension `doctor --fix` installs, or,
+for claude, of its pane with the composer and statusline cut, tracking output
+as it lands. An agent with no conversation to read — a command row, a claude adopted
 mid-session — keeps the older card: its live screen, chrome cut, while it
 works, and the recorded answer once its turn is over. A waiting agent's card is
 the question block alone.

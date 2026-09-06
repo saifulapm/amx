@@ -153,6 +153,16 @@ const PROMPT: &str = "❯ ";
 const TOOL: &str = "⚒ ";
 /// What the rule over the live tail says.
 const LIVE: &str = " live ";
+/// How much of the tail the card keeps under that rule: the last rows of what
+/// is landing, and few enough that the rule and a row of the record above it
+/// stay on the card — at its tallest, and on a card half a small screen tall.
+/// A body is built before the frame that draws it says how tall the card is,
+/// which is why this is a number rather than a share of the card. Driven on
+/// 2026-09-06 against claude on an 80×24 pane: a tail that was the whole
+/// chrome-cut pane put the rule twenty rows above the card's window, and the
+/// card read as the pane it came off rather than as the record with the live
+/// under it.
+const TAIL: usize = 8;
 
 impl Body {
     /// Nothing under everything else, which is what a card holding a question
@@ -226,6 +236,8 @@ impl Body {
             rows.extend(drawn);
         }
 
+        let blank =
+            |row: &Line<'static>| row.spans.iter().all(|span| span.content.trim().is_empty());
         if let Some(live) = live {
             if !rows.is_empty() {
                 rows.push(Line::raw(String::new()));
@@ -233,19 +245,22 @@ impl Body {
             let dashes = (width as usize).saturating_sub(2 + width_of(LIVE));
             let rule = format!("{RULE}{RULE}{LIVE}{}", RULE.repeat(dashes));
             rows.push(Line::from(Span::styled(rule, dim())));
-            match live {
-                Live::Text(text) => rows.extend(prose::render(&text, width, theme)),
+            let mut tail = match live {
+                Live::Text(text) => prose::render(&text, width, theme),
                 Live::Screen(chrome, capture) => {
                     let walked = Body::walk(&capture, Some(chrome));
-                    rows.extend(walked.rows.into_iter().take(walked.kept));
+                    walked.rows.into_iter().take(walked.kept).collect()
                 }
+            };
+            // The end of it, where what is landing is — see [`TAIL`].
+            while tail.last().is_some_and(&blank) {
+                tail.pop();
             }
+            let skipped = tail.len().saturating_sub(TAIL);
+            rows.extend(tail.into_iter().skip(skipped));
         }
 
-        while rows
-            .last()
-            .is_some_and(|row| row.spans.iter().all(|span| span.content.trim().is_empty()))
-        {
+        while rows.last().is_some_and(&blank) {
             rows.pop();
         }
         Body {
@@ -1361,6 +1376,56 @@ mod tests {
     }
 
     #[test]
+    fn card_keeps_the_live_rule_on_the_card_over_a_long_tail() {
+        let told = a_talk("port it", "on it");
+        let rule = format!("{RULE}{RULE}{LIVE}{}", RULE.repeat(30 - 2 - width_of(LIVE)));
+        let after_the_rule = |body: &Body| -> Vec<String> {
+            let said = body.says();
+            let (_, tail) = said.split_once(&rule).expect("a rule on the card");
+            tail.lines().skip(1).map(str::to_string).collect()
+        };
+
+        // A stream longer than the card: the last rows of it, under the rule.
+        let streamed = (1..=20)
+            .map(|n| format!("{n}. reason {n}\n"))
+            .collect::<String>();
+        let long = Body::conversation(&told, Some(Live::Text(streamed)), 30, theme());
+        let tail = after_the_rule(&long);
+        assert_eq!(tail.len(), TAIL, "{tail:?}");
+        assert!(tail[TAIL - 1].ends_with("reason 20"), "{tail:?}");
+        assert!(tail[0].ends_with("reason 13"), "{tail:?}");
+
+        // A pane taller than the card, in claude's chrome, with the vendor's
+        // padding under its last row: the same last rows, furniture and
+        // padding off, and the spinner above the box gone with them.
+        let mut pane: String = (1..=20).map(|n| format!("  {n}. a reason\n")).collect();
+        pane.push_str("\n● Actioning…\n\n────\n❯ \n────\n  statusline\n  ⏵⏵ accept edits on\n\n\n");
+        let pictured = Body::conversation(
+            &told,
+            Some(Live::Screen(crate::rules::of("claude").furniture(), pane)),
+            30,
+            theme(),
+        );
+        let tail = after_the_rule(&pictured);
+        assert_eq!(tail.len(), TAIL, "{tail:?}");
+        assert_eq!(tail.last().map(String::as_str), Some("  20. a reason"));
+        assert!(
+            !pictured.says().contains("Actioning"),
+            "{:?}",
+            pictured.says()
+        );
+
+        // A short one is whole.
+        let short = Body::conversation(
+            &told,
+            Some(Live::Text("one\n\ntwo".to_string())),
+            30,
+            theme(),
+        );
+        assert_eq!(after_the_rule(&short), ["one", "", "two"]);
+    }
+
+    #[test]
     fn card_hangs_a_spine_off_the_row_it_was_opened_from() {
         let screen = drawn(
             a_fleet(),
@@ -2086,6 +2151,47 @@ mod tests {
         // with no blank row between them stays: it is above the box, and a
         // walk that ran upward until a blank row would have eaten it.
         assert_eq!(cut(chrome(), &screen), &CAPTURED[..2]);
+    }
+
+    #[test]
+    fn view_tail_cuts_the_spinner_however_much_of_it_the_vendor_drew() {
+        // The row claude spins while a turn runs, as it read for the 65
+        // seconds before the first token at `--effort low` on 2026-09-06:
+        // glyph, gerund, ellipsis and nothing after them. And as it reads on
+        // a wide pane mid-turn, with the elapsed time and a detail behind.
+        for spinner in [
+            "● Actioning…",
+            "✶ Forging… (9s · thinking with xhigh effort)",
+        ] {
+            let screen = [
+                "what the agent said",
+                "",
+                spinner,
+                "",
+                "────────────────────────────────",
+                "❯\u{a0}",
+                "────────────────────────────────",
+                "  Opus 5 (1M context) │ ◖ low",
+                "  ⏵⏵ auto mode on (shift+tab to cycle)",
+            ];
+            // The blank row over the spinner is left, as the blank rows a
+            // pane is padded out with are: the walk trims both.
+            assert_eq!(cut(chrome(), &screen), &screen[..2], "{spinner}");
+        }
+
+        // The line a finished turn leaves behind is the agent's, and stays.
+        let screen = [
+            "what the agent said",
+            "",
+            "✻ Cogitated for 1m 5s · done 9:33 AM",
+            "",
+            "────────────────────────────────",
+            "❯\u{a0}",
+            "────────────────────────────────",
+            "  Opus 5 (1M context) │ ◖ low",
+            "  ⏵⏵ auto mode on (shift+tab to cycle)",
+        ];
+        assert_eq!(cut(chrome(), &screen), &screen[..4]);
     }
 
     /// What a card's body says, with the paint it says it in set aside.
