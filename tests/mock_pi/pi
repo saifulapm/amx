@@ -36,7 +36,10 @@
 # Steps, one per line. Blank lines and `#` comments are ignored.
 #
 #   screen <name>   repaint the pane with one of pi's screens: `boot`, the pane
-#                   of a pi nobody has typed into yet; `working`, with the line
+#                   of a pi nobody has typed into yet; `notice`, the same pane
+#                   with the Update Available box pi draws above its composer
+#                   when a newer pi exists, and `notice-working`, a turn
+#                   running under that box; `working`, with the line
 #                   pi spins above its box; `compacting`, `retrying` and
 #                   `renamed`, the same row with each of the other three things
 #                   pi says on it; `dialog`, blocked on a question with the
@@ -221,6 +224,45 @@ boot() {
 	printf ' escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more\n'
 	printf ' Press ctrl+o to show full startup help and loaded resources.\n\n'
 	printf ' Pi can explain its own features and look up its docs.\n\n\n'
+	box "$FRESH"
+}
+
+# The box pi draws above its composer when a newer pi exists — measured
+# 2026-09-06 on 0.84.4 with 0.85.1 out, at 120x40, 100x30, 80x24 and 40x24:
+# a border, the title, the instruction, the changelog line, a border, then one
+# blank row and the composer. Its borders are the composer's own, which is
+# what took every windowed rule off the pane until a rule learned to stand on
+# the rows that fit. A release note, when a release ships one, goes between
+# the instruction and the changelog with a blank row either side.
+update_box() {
+	printf '%s\n' "$border"
+	printf ' Update Available\n'
+	printf ' New version 0.85.1 is available. Run pi update\n'
+	printf ' Changelog: https://pi.dev/changelog\n'
+	printf '%s\n\n' "$border"
+}
+
+# A fresh pi with the update box up: the boot screen's own rows, then the box,
+# then the composer.
+notice() {
+	printf ' pi v0.84.4\n'
+	printf ' escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more\n'
+	printf ' Press ctrl+o to show full startup help and loaded resources.\n\n'
+	printf ' Pi can explain its own features and look up its docs.\n\n\n'
+	update_box
+	box "$FRESH"
+}
+
+# A turn running under the update box, as measured at 100x30: the prompt
+# echoed two rows under the box, the spinner two rows above the composer.
+notice_working() {
+	printf ' pi v0.84.4\n'
+	printf ' escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more\n'
+	printf ' Press ctrl+o to show full startup help and loaded resources.\n\n'
+	printf ' Pi can explain its own features and look up its docs.\n\n\n'
+	update_box
+	printf '\n Run this exact bash command and nothing else: echo hi\n\n\n'
+	printf ' ⠦ Working...\n\n'
 	box "$FRESH"
 }
 
@@ -416,6 +458,8 @@ scrolled() {
 draw() {
 	case $1 in
 	boot) screen=$(boot) ;;
+	notice) screen=$(notice) ;;
+	notice-working) screen=$(notice_working) ;;
 	working) screen=$(working) ;;
 	compacting) screen=$(compacting) ;;
 	retrying) screen=$(retrying) ;;

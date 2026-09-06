@@ -47,6 +47,14 @@
 # the selectors in front of it to a provider that wants a key, and nothing was
 # typed into it.
 #
+# The update notice pi draws above its composer when a newer pi exists was
+# measured on 2026-09-06 at 120x40, 100x30, 80x24 and 40x24 with no --offline
+# on the argv, which is how `amx new` starts a pi. Nothing here changed for it:
+# its borders are the composer's own, so no string tells them apart, and what
+# changed is the matcher — a rule stands on the rows that fit its window rather
+# than the topmost row carrying each string (src/rules.rs `Rule::holds`).
+# docs/pi-screens.md holds the capture.
+#
 # ── Whose screens these are ──────────────────────────────────────────────────
 # pi's, and nobody else's. Which document a reader uses is not written here —
 # `src/vendor/pi.rs` points at this file, and the program an agent command runs

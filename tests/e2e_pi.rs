@@ -1553,6 +1553,47 @@ fn a_quiet_pi_is_read_against_pis_own_document() {
 }
 
 #[test]
+fn a_fresh_pi_under_its_update_notice_still_reads_idle_and_working() {
+    // pi draws an Update Available box above its composer whenever a newer pi
+    // exists. Its borders are the composer's own, and a rule that read its
+    // rows from the topmost border anchored on the notice and lost its
+    // window, so a fresh pi read `unknown` idle and mid-turn until the
+    // transcript pushed the box off. A rule stands on the rows that fit now.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "boots-under-the-notice");
+    let pane = amx.pane_of(id);
+
+    amx.until("the notice on the pane", || {
+        row_of(&drawn(&amx, &pane), "Update Available")
+            .is_some()
+            .then_some(())
+    });
+    // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
+    // nothing outstanding, so the screen is the witness.
+    amx.set_state(
+        id,
+        json!({ "state": "starting", "since": 1, "last_event": 1 }),
+    );
+    let agent = status(&amx, id);
+    assert_eq!(agent["state"], "idle", "{agent}");
+    assert_eq!(
+        agent["rule"], "prompt",
+        "the composer under the box: {agent}"
+    );
+
+    // The same box with a turn running under it.
+    amx.until("the turn under the notice", || {
+        let rows = drawn(&amx, &pane);
+        (row_of(&rows, "Update Available").is_some() && rows.iter().any(|row| spins(row)))
+            .then_some(())
+    });
+    let agent = status(&amx, id);
+    assert_eq!(agent["state"], "working", "{agent}");
+    assert_eq!(agent["rule"], "spinner", "the frame under the box: {agent}");
+}
+
+#[test]
 fn a_pi_that_has_held_still_settles_for_whichever_process_looks_next() {
     // How long a screen had held still was a run of consecutive looks counted
     // in one process's memory, and every verb but the view is a process that

@@ -79,8 +79,10 @@ found the trim in the first place.
 
 `--offline` earns its place in that command line. With the update check on, pi
 0.84.4 draws an Update Available box above the composer, and its border lands
-inside the floor. That is not a quirk of a test rig, and what it costs is worse
-than the first pass recorded — see the last section.
+inside the floor on any pane short enough to hold it there. That cost every
+windowed rule its window until 2026-09-06, when a rule learned to stand on the
+rows that fit rather than the topmost border it could see — see the last
+section, and the table under the status lines.
 
 Two screens were not driven, and the table says so on each row. `/share`
 uploads a gist. The branch summary status line wants a branch worth
@@ -252,6 +254,51 @@ message is not; the second takes the frame off the pane with the row, and a
 running turn under it reads whatever else is on the screen. Neither was driven
 against a live turn on a provider that answers; both are one call away in any
 extension pi loads.
+
+## The update notice
+
+Drawn by `interactive-mode.js` itself, not a component: a `DynamicBorder`, a
+`Text` holding `Update Available` and the instruction, the changelog line, and
+a border under it, added to the chat container above the composer whenever
+the update check finds a newer pi — which is most of the time. Measured
+2026-09-06 on 0.84.4 with 0.85.1 out, at 120x40, 100x30, 80x24 and 40x24, with
+no `--offline` on the argv, the way `amx new` starts one:
+
+    ────────────────────────────────────────────────────────────────────────────────
+     Update Available
+     New version 0.85.1 is available. Run pi update
+     Changelog: https://pi.dev/changelog
+    ────────────────────────────────────────────────────────────────────────────────
+
+    ────────────────────────────────────────────────────────────────────────────────
+
+    ────────────────────────────────────────────────────────────────────────────────
+    ~/Sites/tries/2026-09-04-dogfood (main)
+    0.0%/1.0M (auto)               (opencode) muse-spark-1.3-contributor-free • high
+
+Five rows at every width but 40, where the instruction wraps and it is six; a
+release that ships a note adds the note's rows with a blank row either side.
+`showPackageUpdateNotification` draws the same box for extension packages,
+with `Package updates are available. Run pi update --extensions` where the
+version line is; it was not driven, and nothing below turns on the words.
+The box's borders are the composer's own, so from the notice's top border the
+stats line is 10 rows off (11 at 40), and mid-turn the spinner sits two rows
+above the composer as it does on any other screen.
+
+| Component | What raises it | The row it ends in | Reads |
+| --- | --- | --- | --- |
+| `interactive-mode.js` — update notice, idle | a newer pi published, on every start without `--offline` | the box, a blank row, then the composer | **`prompt`**, idle (span 4 from the composer's own border; 10 from the notice's, which is the one a rule used to stand on) |
+| `interactive-mode.js` — update notice, mid-turn | the same, with a turn running | `⠦ Working...` two rows above the composer, under the box | **`spinner`**, working (span 2) |
+
+Both read `unknown` until 2026-09-06. `row_of` found the topmost row carrying
+a string, the notice's own top border was that row, and `prompt` (within 4),
+`spinner` (4), `login` (6) and `project_trust` (7) all lost their windows at
+once — on a spawn, a resume and a fork, at 80x24 and 100x30, for as long as
+the box stayed inside the 24 rows a rule reads. `Rule::holds` tries every row
+each anchor is on now and holds when some choice of rows fits the window; the
+floor `apart` still refuses a lone bottom border, since no choice of rows on
+that screen spans enough. `tests/mock_pi/pi` draws both screens as `notice`
+and `notice-working`, and `tests/e2e_pi.rs` reads them.
 
 ## What is not a screen
 
@@ -651,8 +698,9 @@ measurement and which were inherited.
 3. **The prompt rule's `within = 8` is doing work nobody measured it for.**
    Closed: `within` is 4 and `apart` is 4, which is the box and the two footer
    rows and nothing else, so a widget is not a prompt at any height.
-4. **A boot screen with pi's own update notice on it reads `unknown`.** Open,
-   and worse than it was written — see below.
+4. **A boot screen with pi's own update notice on it reads `unknown`.** Closed
+   2026-09-06 in the matcher rather than the document — see below, and the
+   update notice's own section above.
 
 ## What this pass found
 
@@ -714,3 +762,12 @@ both about where a box sits on the pane rather than about what is in it.
    looks like until the transcript pushes the box off — measured on a spawn, on
    a resume and on a fork, at 80x24 and at 100x30. `assets/screen-rules-pi.toml`
    is measured `--offline` throughout and the box is on no capture in it.
+
+   Closed 2026-09-06, and not with a rule: the box's borders are pi's own and
+   identical to the composer's, so nothing textual tells them apart. The
+   matcher changed instead — `Rule::holds` tries every row each anchor is on
+   and holds when some choice of rows fits the window, so the composer's own
+   border is found four rows above the stats line whatever sits above it. The
+   box is measured at four sizes in its own section above, the stand-in draws
+   it, and a fresh pi under it reads `idle` and `working` by `prompt` and
+   `spinner`, at every size.
