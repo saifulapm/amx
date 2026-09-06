@@ -739,7 +739,10 @@ A screen with a turn running on it says more than which state the agent is in.
 claude spins one line above its composer for as long as the turn lasts, and
 that line — `Forging… (22s · ↓ 1.3k tokens)` — is what the row shows the agent
 doing, in place of the tool call the record last wrote down. It is read and not
-recorded: it is true for a second, and the next reading takes it again.
+recorded: it is true for a second, and the next reading takes it again. pi
+streams the words of the answer it is writing to its record instead, and a
+working row shows the first line of them; while a tool runs there is no
+stream, and the row says `Running Bash`.
 
 ## Vendors
 

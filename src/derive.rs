@@ -1122,11 +1122,35 @@ fn boundary(from: Phase, to: Phase) -> Option<&'static str> {
 /// answer this reader hands back. The record is the vendor's own account and
 /// this is a picture of it; the picture wins here because the record is stale
 /// by the time anything looks at a pane at all.
-fn seen(meta: Meta, mut state: State, reading: Reading) -> View {
+///
+/// The vendor's own stream stands in front of both — `saying` is asked for
+/// [`Agent::live`], and only about a turn that is running. A working row says
+/// the first line of what the agent is saying now; a tool running has no
+/// stream, because the vendor takes it down as the message ends, so the
+/// `Running <tool>` the record wrote is what that row says. A finished turn is
+/// answered off the record, and a stream a vendor left behind it is not that
+/// answer.
+fn seen(
+    meta: Meta,
+    mut state: State,
+    reading: Reading,
+    saying: impl FnOnce() -> Option<String>,
+) -> View {
     if let Some(doing) = reading.doing {
         state.summary = Some(doing);
     }
+    if reading.verdict.phase == Phase::Working
+        && let Some(line) = saying().as_deref().and_then(first_said)
+    {
+        state.summary = Some(line.to_string());
+    }
     View::new(meta, state, reading.verdict)
+}
+
+/// The line a row has room for of what an agent is saying: the first with
+/// anything on it.
+fn first_said(said: &str) -> Option<&str> {
+    said.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
 /// Whether this record is a turn that has ended with something to boil down.
@@ -1489,7 +1513,7 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
         have_a_line_written(root, &agent, &meta, &state, command, now);
     }
 
-    Ok(seen(meta, state, reading))
+    Ok(seen(meta, state, reading, || agent.live()))
 }
 
 /// One agent's record, read off the disk.
@@ -1599,7 +1623,7 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
             have_a_line_written(root, &agent, &meta, &state, command, now);
         }
 
-        views.push(seen(meta, state, reading));
+        views.push(seen(meta, state, reading, || agent.live()));
     }
 
     views.sort_by_key(|view| (view.meta.created, view.meta.id.clone()));
@@ -2140,7 +2164,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             "the glyph is the vendor's pulse rather than a word about the turn"
         );
 
-        let view = seen(meta(), told, reading);
+        let view = seen(meta(), told, reading, || None);
         assert_eq!(view.line(), Some("Forging… (22s · ↓ 1.3k tokens)"));
         assert_eq!(view.json()["summary"], "Forging… (22s · ↓ 1.3k tokens)");
     }
@@ -2208,7 +2232,79 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         let mut told = state(Phase::Working, 1_000);
         told.summary = Some("Running Bash".to_string());
         let reading = reading(&told, true, Some(A_SHELL), 1_500);
-        assert_eq!(seen(meta(), told, reading).line(), Some("Running Bash"));
+        assert_eq!(
+            seen(meta(), told, reading, || None).line(),
+            Some("Running Bash")
+        );
+    }
+
+    #[test]
+    fn reader_says_what_a_working_agent_is_saying_off_its_stream() {
+        // pi is writing prose with no tool running. The record's summary is
+        // the tool that finished — pi reports no end to a tool call — and the
+        // stream is what is happening now, so the stream is what the row says.
+        let mut told = state(Phase::Working, 1_000);
+        told.summary = Some("Running Bash".to_string());
+        let stream = || Some("\nThe redirect drops the query.\n\nFixing it.".to_string());
+        let view = seen(
+            meta(),
+            told.clone(),
+            reading(&told, true, None, 1_000),
+            stream,
+        );
+        assert_eq!(view.line(), Some("The redirect drops the query."));
+        assert_eq!(view.json()["summary"], "The redirect drops the query.");
+
+        // A tool running has no stream: the vendor takes it down as the
+        // message ends. The record's word stands.
+        let quiet = seen(
+            meta(),
+            told.clone(),
+            reading(&told, true, None, 1_000),
+            || None,
+        );
+        assert_eq!(quiet.line(), Some("Running Bash"));
+
+        // A stream a vendor left behind a finished turn is not its answer.
+        let mut ended = state(Phase::Idle, 1_000);
+        ended.result = Some("the redirect keeps the query now".to_string());
+        let done = seen(
+            meta(),
+            ended.clone(),
+            reading(&ended, true, None, 1_000),
+            stream,
+        );
+        assert_eq!(done.line(), Some("the redirect keeps the query now"));
+    }
+
+    #[test]
+    fn reader_reads_the_stream_beside_the_record() {
+        // The whole way through: a working agent whose vendor is streaming to
+        // its record reads, on the wall, as saying the stream's first line.
+        let root = TempDir::new().unwrap();
+        let server = Own(
+            Server::named(format!("amx-derive-live-{}", std::process::id())).with_conf("/dev/null"),
+        );
+        let pane = a_pane_showing(&server.0, A_SHELL);
+        let meta = Meta {
+            socket: server.0.socket().clone(),
+            pane,
+            ..meta()
+        };
+        a_record(root.path(), &meta, &state(Phase::Working, 1_000));
+        let agent = Agent::open(root.path(), &meta.id).unwrap();
+        std::fs::write(
+            agent.dir().join(crate::store::LIVE),
+            "Reading the failing test first.\nThen the fix.",
+        )
+        .unwrap();
+
+        let view = view(root.path(), &meta.id, 1_002).expect("a reading");
+        assert_eq!(view.phase(), Phase::Working);
+        assert_eq!(view.line(), Some("Reading the failing test first."));
+
+        let wall = views(root.path(), 1_002).expect("a reading");
+        assert_eq!(wall[0].line(), Some("Reading the failing test first."));
     }
 
     #[test]
