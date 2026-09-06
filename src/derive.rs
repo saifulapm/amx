@@ -11,7 +11,9 @@
 //!    events are the best account there is — of what the agent is doing. They
 //!    can say it has stopped on a question without saying which, and that part
 //!    is on the pane and nowhere else, so it is read from there at once rather
-//!    than waited for.
+//!    than waited for. They can say a turn is running without saying what it
+//!    is running — before its first tool call — and the line the vendor spins
+//!    is read the same way, see [`wants_the_doing`].
 //! 4. **The screen, against the rules.** Older than that, the pane is captured
 //!    and matched against the screens of the vendor the record says was started
 //!    in it — see [`own_screens`]. A rule that claims it decides.
@@ -616,9 +618,29 @@ fn wants_the_screen(screens: &Ruleset, state: &State, alive: bool, now: u64) -> 
         return false;
     }
     if now.saturating_sub(heard(state)) <= FRESH {
-        return wants_the_question(screens, state);
+        return wants_the_question(screens, state) || wants_the_doing(screens, state);
     }
     true
+}
+
+/// Whether a record of a turn running says nothing about what is being run.
+///
+/// The record's account of a turn is what the last tool call wrote, and
+/// between the prompt and the first call there is none: the vendor is
+/// thinking. For as long as the hooks stayed fresh nothing looked at the pane,
+/// so the row sat empty for the first [`FRESH`] seconds of every turn that
+/// opened that way. The vendor's spinner line is up the whole time and says
+/// what it is doing, so it is read from there at once — on a vendor whose
+/// document names a spinner. One that names none has no line to find, and is
+/// not charged a capture for it.
+///
+/// A record that names a tool stands, fresh or not: `Running Bash` is the
+/// answer the row wants while a tool runs, and the quiet after one is inside
+/// the window [`FRESH`] was measured to cover.
+fn wants_the_doing(screens: &Ruleset, state: &State) -> bool {
+    state.state == Phase::Working
+        && state.summary.is_none()
+        && !screens.furniture().spinner.is_empty()
 }
 
 /// When anything was last heard from the agent, as the record has it.
@@ -766,19 +788,21 @@ pub fn read(
     }
 
     if quiet <= FRESH {
-        // A record that says waiting and cannot say what for is half an
-        // answer, and the half it is missing is the half somebody has to act
-        // on. The hooks still decide the phase — this is the same conclusion
-        // with the question beside it, on the first look rather than on the
-        // one after the freshness runs out.
-        let asking = wants_the_question(rules, state)
-            .then(capture)
-            .flatten()
-            .and_then(|screen| rules.asking(&screen));
-        return Reading {
-            asking,
-            ..told(state.state, Evidence::Hooks, None)
-        };
+        // The hooks decide the phase. Two things the record cannot carry are
+        // read off the pane on the first look rather than on the one after
+        // the freshness runs out. A record that says waiting and cannot say
+        // what for is half an answer, and the half it is missing is the half
+        // somebody has to act on. And a record that says a turn is running
+        // and names nothing it is running is a turn before its first tool
+        // call: the vendor's spinner line says what it is doing there, and
+        // the record never will — see [`wants_the_doing`].
+        let mut reading = told(state.state, Evidence::Hooks, None);
+        if wants_the_question(rules, state) {
+            reading.asking = capture().and_then(|screen| rules.asking(&screen));
+        } else if wants_the_doing(rules, state) {
+            reading.doing = capture().and_then(|screen| doing(rules, &screen));
+        }
+        return reading;
     }
 
     let Some(screen) = capture() else {
@@ -2170,6 +2194,41 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     }
 
     #[test]
+    fn reader_reads_the_spinner_line_while_the_hooks_are_fresh_and_name_no_tool() {
+        // The prompt went in a second ago: the hooks are fresh, the record
+        // says working, and nothing on it says what is being run because no
+        // tool has been called yet. The row sat empty for the whole of that
+        // window; the vendor's line is up the whole time, so it is read now.
+        let told = state(Phase::Working, 1_000);
+        let fresh = reading(&told, true, Some(A_WORKING_SCREEN), 1_001);
+        assert_eq!(fresh.verdict.phase, Phase::Working);
+        assert_eq!(
+            fresh.verdict.evidence,
+            Evidence::Hooks,
+            "the hooks still decide the phase"
+        );
+        assert_eq!(
+            fresh.doing.as_deref(),
+            Some("Forging… (22s · ↓ 1.3k tokens)")
+        );
+        assert_eq!(
+            seen(meta(), told.clone(), fresh, || None).line(),
+            Some("Forging… (22s · ↓ 1.3k tokens)")
+        );
+
+        // A pane the vendor has not drawn its line on yet says nothing, and
+        // the row stays as empty as the record left it.
+        let blank = reading(&told, true, Some(IDLE_SCREEN), 1_001);
+        assert_eq!(blank.verdict.phase, Phase::Working);
+        assert_eq!(blank.doing, None);
+
+        // A vendor whose document names no spinner has no line to find, and
+        // is not charged a capture for it.
+        assert!(wants_the_screen(rules::of("claude"), &told, true, 1_001));
+        assert!(!wants_the_screen(rules::of("pi"), &told, true, 1_001));
+    }
+
+    #[test]
     fn reader_reads_the_spinner_line_through_whichever_glyph_is_on_it() {
         // The glyph cycles through six shapes and a vendor bump may bring a
         // seventh. What they have in common is that they are one character and
@@ -2210,14 +2269,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn reader_says_what_an_agent_is_doing_only_where_it_read_it() {
-        // Fresh hooks, so no screen is captured at all and the record's own
-        // account of the turn stands.
-        let fresh = reading(
-            &state(Phase::Working, 1_000),
-            true,
-            Some(A_WORKING_SCREEN),
-            1_000,
-        );
+        // Fresh hooks and a record that names what is being run, so no screen
+        // is captured at all and the record's own account of the turn stands.
+        let mut running = state(Phase::Working, 1_000);
+        running.summary = Some("Running Bash".to_string());
+        let fresh = reading(&running, true, Some(A_WORKING_SCREEN), 1_000);
         assert_eq!(fresh.verdict.evidence, Evidence::Hooks);
         assert_eq!(fresh.doing, None);
 
@@ -2408,10 +2464,13 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         asked.question = Some("Do you want to proceed?".to_string());
         let mut placeheld = state(Phase::Waiting, 1_000);
         placeheld.question = Some(A_PLACEHOLDER.to_string());
+        let mut running = state(Phase::Working, 1_000);
+        running.summary = Some("Running Bash".to_string());
 
         let records = [
             state(Phase::Starting, 1_000),
             state(Phase::Working, 1_000),
+            running,
             state(Phase::Waiting, 1_000),
             asked,
             placeheld,
