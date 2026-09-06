@@ -737,7 +737,12 @@ date. A reader works it out at the moment you ask, in this order:
    matched against a ruleset of what the agent's screens actually look like.
 5. Neither says anything. No rule claims the screen, so the answer is
    `unknown`, with how long it has been since anything was heard, because "I
-   can't tell" is only useful with that beside it.
+   can't tell" is only useful with that beside it. One exception: on a vendor
+   that reports through hooks, a record the hooks left at `idle` or `waiting`
+   keeps that word. Such a vendor says itself when a turn ends and names the
+   question it stops on, so a screen amx cannot read — pi's prompt under its
+   update notice — takes neither back. A record mid-turn still reads
+   `unknown`: nothing has said that turn is over.
 
 `amx status` says which of these it used. `evidence` in the JSON is the same
 answer for a program.

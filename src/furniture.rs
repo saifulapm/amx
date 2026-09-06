@@ -203,6 +203,13 @@ impl Furniture {
         fragments || self.framed(row)
     }
 
+    /// Whether this vendor's document names a spinning row at all: fragments
+    /// the row carries, or frames it opens with. A vendor measured for neither
+    /// has no line to find, and a reader should not pay for a screen to look.
+    pub fn spins(&self) -> bool {
+        !self.spinner.is_empty() || !self.frames.is_empty()
+    }
+
     /// A row one of the vendor's spinner frames opens. Read from what the row
     /// opens with, the same way the mode footer is: a frame the vendor indents
     /// still opens the row, and the same glyph mid-sentence opens nothing.

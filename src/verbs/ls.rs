@@ -243,8 +243,17 @@ mod tests {
     /// written by hand: the last column is the reader's number, and this is
     /// the surface a person reads it off.
     fn reading(id: &str, state: State, created: u64, now: u64) -> View {
-        let verdict =
-            derive::read(&state, created, true, || None, rules::of("claude"), now, 1).verdict;
+        let verdict = derive::read(
+            &state,
+            created,
+            true,
+            || None,
+            rules::of("claude"),
+            true,
+            now,
+            1,
+        )
+        .verdict;
         View::new(meta(id, created), state, verdict)
     }
 

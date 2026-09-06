@@ -19,7 +19,13 @@
 //!    in it — see [`own_screens`]. A rule that claims it decides.
 //! 5. **Neither.** The screen is claimed by nothing, so the answer is
 //!    `unknown` — with how long it has been since anything was heard, because
-//!    "I can't tell" is only useful with that beside it.
+//!    "I can't tell" is only useful with that beside it. One exception, on a
+//!    vendor that reports: a record its hooks left at idle or waiting keeps
+//!    that word, because such a vendor announces a question and the end of a
+//!    turn itself, and a screen amx cannot read hides neither from a record
+//!    that already carries them — see [`reports`]. A record mid-turn is
+//!    still `unknown`: nothing has said the turn ended, and a screen nobody
+//!    measured is where a question amx missed would be.
 //!
 //! A reader concludes and forgets, with four exceptions, and all of them are
 //! things the pane is the only place to read. When the screen it read was a
@@ -515,6 +521,18 @@ fn vendor_of(meta: &Meta) -> Option<&'static Vendor> {
     crate::registry::entry(meta.agent.as_deref().unwrap_or_default())
 }
 
+/// Whether this vendor announces its own turns and questions through hooks.
+///
+/// What that buys a reader is trust in a settled record when the screen says
+/// nothing: a turn such a vendor ended it said it ended, and a question it
+/// stopped on it named, so a screen no rule claims — pi's prompt under its
+/// update notice, measured 2026-09-06 — is not hiding either from a record
+/// that carries them. A command amx has no entry for reports nothing amx can
+/// vouch for, and reads as before.
+fn reports(vendor: Option<&Vendor>) -> bool {
+    vendor.is_some_and(|vendor| vendor.can(Capability::Hooks))
+}
+
 /// Whether a reading of this agent's pane is the only account of it there will
 /// ever be.
 ///
@@ -631,16 +649,15 @@ fn wants_the_screen(screens: &Ruleset, state: &State, alive: bool, now: u64) -> 
 /// so the row sat empty for the first [`FRESH`] seconds of every turn that
 /// opened that way. The vendor's spinner line is up the whole time and says
 /// what it is doing, so it is read from there at once — on a vendor whose
-/// document names a spinner. One that names none has no line to find, and is
-/// not charged a capture for it.
+/// document names a spinning row, by the fragments it carries or the frames it
+/// opens with. One that names neither has no line to find, and is not charged
+/// a capture for it.
 ///
 /// A record that names a tool stands, fresh or not: `Running Bash` is the
 /// answer the row wants while a tool runs, and the quiet after one is inside
 /// the window [`FRESH`] was measured to cover.
 fn wants_the_doing(screens: &Ruleset, state: &State) -> bool {
-    state.state == Phase::Working
-        && state.summary.is_none()
-        && !screens.furniture().spinner.is_empty()
+    state.state == Phase::Working && state.summary.is_none() && screens.furniture().spins()
 }
 
 /// When anything was last heard from the agent, as the record has it.
@@ -752,12 +769,18 @@ pub fn in_words(seconds: u64) -> String {
 ///
 /// `held` is how long the screen has been the screen it is, which is what a
 /// quiescent rule waits on — see [`held_still`].
+///
+/// `reports` is whether the vendor announces its turns and questions itself —
+/// see [`reports`] — which is what lets a settled record outlast a screen no
+/// rule claims.
+#[allow(clippy::too_many_arguments)]
 pub fn read(
     state: &State,
     created: u64,
     alive: bool,
     capture: impl FnOnce() -> Option<String>,
     rules: &Ruleset,
+    reports: bool,
     now: u64,
     held: u64,
 ) -> Reading {
@@ -834,6 +857,14 @@ pub fn read(
         // A rule claims the screen but may not end a turn that is on the
         // record as running. The record stands, with its age beside it.
         Claim::Unsettled(rule) => told(state.state, Evidence::Hooks, Some(&rule.name)),
+        // A settled record on a vendor that reports stands, at its age: the
+        // vendor said the turn ended, or named the question it stopped on,
+        // and a screen amx cannot read takes neither back. A record mid-turn
+        // does not: nothing has said that turn is over, and a screen nobody
+        // measured is exactly where a question amx missed would be.
+        Claim::Unclaimed if reports && matches!(state.state, Phase::Idle | Phase::Waiting) => {
+            told(state.state, Evidence::Hooks, None)
+        }
         Claim::Unclaimed => told(Phase::Unknown, Evidence::Unknown, None),
     }
 }
@@ -1525,7 +1556,16 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
         .then(|| server.capture(&meta.pane).ok())
         .flatten();
     let held = held_still(&agent, &mut state, screen.as_deref(), rules, now);
-    let reading = read(&state, meta.created, alive, || screen, rules, now, held);
+    let reading = read(
+        &state,
+        meta.created,
+        alive,
+        || screen,
+        rules,
+        reports(vendor_of(&meta)),
+        now,
+        held,
+    );
     note(&agent, rules, &meta, &mut state, &reading);
     if is_the_record(&meta, &reading) {
         let said = worth_writing_down(&meta, &reading);
@@ -1635,7 +1675,16 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
         let rules = own_screens(&meta);
         let held = held_still(&agent, &mut state, screen.as_deref(), rules, now);
 
-        let reading = read(&state, meta.created, alive, || screen, rules, now, held);
+        let reading = read(
+            &state,
+            meta.created,
+            alive,
+            || screen,
+            rules,
+            reports(vendor_of(&meta)),
+            now,
+            held,
+        );
         note(&agent, rules, &meta, &mut state, &reading);
         if is_the_record(&meta, &reading) {
             let said = worth_writing_down(&meta, &reading);
@@ -1935,12 +1984,26 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         screen: Option<&str>,
         now: u64,
     ) -> Reading {
+        heard_from(true, created, state, alive, screen, now)
+    }
+
+    /// The same reading, on a vendor that does or does not report through
+    /// hooks — see [`reports`].
+    fn heard_from(
+        reports: bool,
+        created: u64,
+        state: &State,
+        alive: bool,
+        screen: Option<&str>,
+        now: u64,
+    ) -> Reading {
         read(
             state,
             created,
             alive,
             || screen.map(str::to_string),
             rules::of("claude"),
+            reports,
             now,
             1,
         )
@@ -2222,10 +2285,10 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(blank.verdict.phase, Phase::Working);
         assert_eq!(blank.doing, None);
 
-        // A vendor whose document names no spinner has no line to find, and
-        // is not charged a capture for it.
+        // Both measured vendors spin a row — claude by the fragments on it,
+        // pi by the braille frame it opens with — so both are asked.
         assert!(wants_the_screen(rules::of("claude"), &told, true, 1_001));
-        assert!(!wants_the_screen(rules::of("pi"), &told, true, 1_001));
+        assert!(wants_the_screen(rules::of("pi"), &told, true, 1_001));
     }
 
     #[test]
@@ -2374,6 +2437,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             true,
             || Some(A_PI_PROMPT.to_string()),
             rules::of("pi"),
+            true,
             1_100,
             1,
         );
@@ -2446,6 +2510,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
                 Some(A_BLOCKING_SCREEN.to_string())
             },
             rules::of("claude"),
+            true,
             now,
             1,
         );
@@ -2985,6 +3050,51 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // A pane that cannot be captured is the same answer.
         let unreadable = decided(&state(Phase::Working, 1_000), true, None, 1_500);
         assert_eq!(unreadable.phase, Phase::Unknown);
+    }
+
+    #[test]
+    fn reader_keeps_a_reporting_vendors_settled_word_on_a_screen_nobody_claims() {
+        // pi's hooks said the turn ended a minute ago, and the pane has pi's
+        // update notice drawn over the prompt, which no rule claims. The
+        // vendor said the turn is over and nothing has said otherwise, so the
+        // record stands, at its age.
+        let idle = heard_from(
+            true,
+            0,
+            &state(Phase::Idle, 1_000),
+            true,
+            Some(A_SHELL),
+            1_060,
+        );
+        assert_eq!(idle.verdict.phase, Phase::Idle);
+        assert_eq!(idle.verdict.evidence, Evidence::Hooks);
+        assert_eq!(idle.verdict.age, 60);
+
+        // A question the vendor named stays a question for the same reason.
+        let mut asked = state(Phase::Waiting, 1_000);
+        asked.question = Some("Run echo hi?".to_string());
+        let waiting = heard_from(true, 0, &asked, true, Some(A_SHELL), 1_060);
+        assert_eq!(waiting.verdict.phase, Phase::Waiting);
+        assert_eq!(waiting.verdict.evidence, Evidence::Hooks);
+
+        // A turn on the record as running is still unknown: nothing has said
+        // it ended, and a screen nobody measured is where a question amx
+        // missed would be. So is a record nothing has reported about yet.
+        for phase in [Phase::Working, Phase::Starting] {
+            let mid = heard_from(true, 0, &state(phase, 1_000), true, Some(A_SHELL), 1_060);
+            assert_eq!(mid.verdict.phase, Phase::Unknown, "{phase}");
+        }
+
+        // And a vendor that reports nothing has no word to keep.
+        let silent = heard_from(
+            false,
+            0,
+            &state(Phase::Idle, 1_000),
+            true,
+            Some(A_SHELL),
+            1_060,
+        );
+        assert_eq!(silent.verdict.phase, Phase::Unknown);
     }
 
     #[test]
