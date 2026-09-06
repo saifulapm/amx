@@ -56,7 +56,9 @@
 #                   report a moment the way amx's pi extension reports one:
 #                   the payload on `amx _hook`'s stdin under pi's own event
 #                   name, with the session this run opened and the file it is
-#                   kept in added unless the json names them.
+#                   kept in added unless the json names them. What the hook
+#                   answers — the record's directory — is kept, the way the
+#                   extension keeps it, and never reaches the pane.
 #   transcript <json>
 #                   append a line to that session file, which is what pi does
 #                   as a turn runs and what amx reads the conversation from.
@@ -92,6 +94,8 @@ printf 'argv: %s\n' "$*"
 # them that way and nothing in pi reads a `=` spelling of either, so neither is
 # read here.
 session=
+# Where amx keeps this agent's record, as the last report was answered.
+record=
 origin=
 clash=
 in_memory=
@@ -464,7 +468,8 @@ deliver() {
 	[ -z "$interior" ] || fields="$fields,$interior"
 
 	[ -n "${AMX_BIN:-}" ] || return 0
-	printf '%s' "{$fields}" | "$AMX_BIN" _hook
+	answer=$(printf '%s' "{$fields}" | "$AMX_BIN" _hook)
+	[ -z "$answer" ] || record=$answer
 }
 
 # One line of the session file, which is what pi appends to as a turn runs.

@@ -16,12 +16,17 @@
 //! tmux calls: this runs on every prompt and every tool call, and the pane it
 //! would ask about is the one waiting for it to return.
 //!
+//! It says one thing back, and only to a wire that listens: the record's
+//! directory, one line on stdout, for a vendor whose wire is amx's own
+//! extension — see [`hears_the_answer`]. That is how an adopted pi, whose pane
+//! carries no `AMX_DIR`, learns where to stream what it is saying.
+//!
 //! `_exit` runs after the vendor's command in the same pane, and records how
 //! it ended before the pane closes.
 
 use anyhow::Result;
 use serde_json::Value;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 
 use crate::config::Config;
@@ -41,11 +46,23 @@ pub fn from_env(stdin: &mut impl Read, config: &Config) -> i32 {
     let Ok(root) = crate::paths::state_root() else {
         return exit::OK;
     };
-    run(id.as_deref(), &root, stdin, config)
+    run(
+        id.as_deref(),
+        &root,
+        stdin,
+        &mut std::io::stdout().lock(),
+        config,
+    )
 }
 
 /// The same, with everything it touches named.
-pub fn run(id: Option<&str>, root: &Path, stdin: &mut impl Read, config: &Config) -> i32 {
+pub fn run(
+    id: Option<&str>,
+    root: &Path,
+    stdin: &mut impl Read,
+    out: &mut impl Write,
+    config: &Config,
+) -> i32 {
     // Every early return here is a hook that is not amx's business, or a
     // record amx cannot reach. Both end quietly: this process is standing
     // between the vendor and its next token.
@@ -61,7 +78,28 @@ pub fn run(id: Option<&str>, root: &Path, stdin: &mut impl Read, config: &Config
     };
 
     let _ = record(&agent, &payload, config);
+    if hears_the_answer(&agent) {
+        let _ = writeln!(out, "{}", agent.dir().display());
+    }
     exit::OK
+}
+
+/// Whether whatever ran the hook is listening for an answer.
+///
+/// pi's extension is amx's own code on the other end of a file wire, and an
+/// adopted pi has no `AMX_DIR` in its pane to stream to: the record's
+/// directory, printed by [`run`], is how it learns where. A vendor wired
+/// through its settings runs the hook itself and treats what it prints as its
+/// own — claude puts a `UserPromptSubmit` hook's stdout into the conversation
+/// — so nothing is printed for one. Which wire it is the record's vendor says;
+/// a record naming no vendor amx knows is answered like claude's.
+fn hears_the_answer(agent: &Agent) -> bool {
+    agent
+        .meta()
+        .ok()
+        .and_then(|meta| crate::registry::entry(meta.agent.as_deref()?))
+        .and_then(|vendor| vendor.hooks.as_ref())
+        .is_some_and(|hooks| hooks.wire.listens())
 }
 
 /// Which agent a payload belongs to.
@@ -1943,7 +1981,13 @@ mod tests {
     }
 
     fn hook(root: &Path, id: &str, payload: &str) -> i32 {
-        run(Some(id), root, &mut payload.as_bytes(), &quiet())
+        run(
+            Some(id),
+            root,
+            &mut payload.as_bytes(),
+            &mut std::io::sink(),
+            &quiet(),
+        )
     }
 
     /// The document on disk, as a caller that is not amx would find it.
@@ -2031,6 +2075,7 @@ mod tests {
                 root.path(),
                 &mut r#"{"session_id":"abc-123","hook_event_name":"PreToolUse","tool_name":"Bash"}"#
                     .as_bytes(),
+                &mut std::io::sink(),
                 &quiet(),
             ),
             exit::OK
@@ -2047,6 +2092,7 @@ mod tests {
                 root.path(),
                 &mut r#"{"session_id":"def-456","hook_event_name":"Stop","last_assistant_message":"done"}"#
                     .as_bytes(),
+                &mut std::io::sink(),
                 &quiet(),
             ),
             exit::OK
@@ -2089,6 +2135,7 @@ mod tests {
             None,
             root.path(),
             &mut r#"{"session_id":"abc-123","hook_event_name":"UserPromptSubmit"}"#.as_bytes(),
+            &mut std::io::sink(),
             &quiet(),
         );
 
@@ -2098,6 +2145,83 @@ mod tests {
             Phase::Stopped,
             "and a record that has ended stays where it was"
         );
+    }
+
+    #[test]
+    fn hook_tells_a_listening_wire_where_the_record_is() {
+        // pi's extension hears what `_hook` prints, and an adopted pi has no
+        // `AMX_DIR` in its pane to stream to. The answer is the record's
+        // directory, one line, on every report about a record whose wire is
+        // amx's own file.
+        let root = TempDir::new().unwrap();
+        let pi = Agent::create(
+            root.path(),
+            &Meta {
+                id: "their-pi-a1b".to_string(),
+                agent: Some("pi".to_string()),
+                session: Some("pi-session".to_string()),
+                ..meta()
+            },
+        )
+        .unwrap();
+        let where_it_is = format!("{}\n", pi.dir().display());
+
+        let mut out = Vec::new();
+        run(
+            None,
+            root.path(),
+            &mut r#"{"session_id":"pi-session","hook_event_name":"agent_start"}"#.as_bytes(),
+            &mut out,
+            &quiet(),
+        );
+        assert_eq!(String::from_utf8(out).unwrap(), where_it_is);
+
+        // A pane amx started is answered the same way: one law, and the
+        // extension has the variable to prefer.
+        let mut out = Vec::new();
+        run(
+            Some("their-pi-a1b"),
+            root.path(),
+            &mut r#"{"hook_event_name":"tool_execution_start","tool_name":"bash"}"#.as_bytes(),
+            &mut out,
+            &quiet(),
+        );
+        assert_eq!(String::from_utf8(out).unwrap(), where_it_is);
+
+        // claude runs the hook itself and shows what it prints to the person
+        // — a UserPromptSubmit hook's stdout goes into the conversation — so
+        // a claude record is answered with nothing.
+        Agent::create(
+            root.path(),
+            &Meta {
+                id: "their-claude-b2c".to_string(),
+                agent: Some("claude".to_string()),
+                session: Some("claude-session".to_string()),
+                ..meta()
+            },
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        run(
+            None,
+            root.path(),
+            &mut r#"{"session_id":"claude-session","hook_event_name":"UserPromptSubmit"}"#
+                .as_bytes(),
+            &mut out,
+            &quiet(),
+        );
+        assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
+
+        // And a report that is nobody's gets nothing either.
+        let mut out = Vec::new();
+        run(
+            None,
+            root.path(),
+            &mut r#"{"session_id":"nobodys","hook_event_name":"agent_start"}"#.as_bytes(),
+            &mut out,
+            &quiet(),
+        );
+        assert!(out.is_empty());
     }
 
     #[test]
@@ -2209,7 +2333,13 @@ mod tests {
 
         // No agent named at all: this claude is not one of amx's.
         assert_eq!(
-            run(None, root.path(), &mut "{}".as_bytes(), &quiet()),
+            run(
+                None,
+                root.path(),
+                &mut "{}".as_bytes(),
+                &mut std::io::sink(),
+                &quiet(),
+            ),
             exit::OK
         );
         // An id with no record behind it.

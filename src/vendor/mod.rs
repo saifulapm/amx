@@ -117,7 +117,8 @@ pub struct Hooks {
 ///
 /// Two shapes, both measured off the vendor that takes them. Which a vendor
 /// takes is its own business and `install`'s to honour; nothing that reads a
-/// payload afterwards can tell the two apart, which is the point.
+/// payload afterwards can tell the two apart. The one thing the wire decides
+/// past that is whether the hook may answer — see [`Wire::listens`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wire {
     /// One entry per event, merged into the vendor's own JSON settings file
@@ -134,6 +135,18 @@ pub enum Wire {
 }
 
 impl Wire {
+    /// Whether the other end of this wire hears what the hook command prints.
+    ///
+    /// A file wire is amx's own code running inside the vendor, and it reads
+    /// the answer: the record's directory, which a pane amx did not start has
+    /// no other way of learning. A settings wire is the vendor's own hook
+    /// runner, and what a hook prints is the vendor's to show — claude puts a
+    /// `UserPromptSubmit` hook's stdout into the conversation — so a hook run
+    /// over one says nothing.
+    pub fn listens(self) -> bool {
+        matches!(self, Wire::File { .. })
+    }
+
     /// Where the wiring goes, under the home directory.
     pub fn path(&self) -> &'static str {
         match self {
