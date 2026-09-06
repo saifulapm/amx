@@ -298,9 +298,10 @@ answers on the row above and every earlier turn a page up. One that is working
 ends on a live tail under a dim `live` rule: the last few rows of what pi is
 saying at this moment, streamed by the extension `doctor --fix` installs, or,
 for claude, of its pane with the composer and statusline cut, tracking output
-as it lands. An agent with no conversation to read — a command row, a claude adopted
-mid-session — keeps the older card: its live screen, chrome cut, while it
-works, and the recorded answer once its turn is over. A waiting agent's card is
+as it lands. An agent with no conversation to read — a command row, or an
+adopted agent before its first report has named one — keeps the older card: its
+live screen, chrome cut, while it works, and the recorded answer once its turn
+is over. A waiting agent's card is
 the question block alone.
 
 `pgup` and `pgdn` page inside the card's body when it holds more than the card
@@ -537,10 +538,10 @@ inside that field answers with no choice at all.
 the last hundred lines of it, or however many `--lines` asks for. Where the
 vendor keeps a conversation, that is what it reads — every prompt, answer and
 tool call of the recent history, whole, where a pane could only ever hold one
-screen of it. An agent with no conversation to read — a command row, a claude
-adopted mid-session — gets the pane's picture instead, with the vendor's own
-composer, statusline and mode footer cut off the bottom the way the card cuts
-them. Once the pane is gone the record is what is left, and `logs` prints the
+screen of it. An agent with no conversation to read — a command row, or an
+adopted agent before its first report has named one — gets the pane's picture
+instead, with the vendor's own composer, statusline and mode footer cut off the
+bottom the way the card cuts them. Once the pane is gone the record is what is left, and `logs` prints the
 answer amx captured from it, so the same command line says something about an
 agent whether or not it is still running. `amx result` is still the one that
 hands back a turn's answer alone, and blocks for it.
@@ -615,7 +616,10 @@ reports through hooks arrive with nothing on them saying whose they are, and
 the session is what carries them home: amx finds the record whose session
 matches the payload's. pi's reports carry its session the same way, so an
 adopted pi comes home through the extension like any other, and one whose
-extension is not installed is read off its pane the way any quiet pi is.
+extension is not installed is read off its pane the way any quiet pi is. The
+first report about that session also names the conversation the vendor keeps,
+which `adopt` itself could not: from then on the card and `logs` read it the
+way they read any agent's.
 The id is worth writing down either way: a conversation amx still has an agent
 going on is one it refuses to adopt a second time. An agent whose record has
 ended is not in the way.

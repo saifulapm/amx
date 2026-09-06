@@ -61,12 +61,18 @@ pub fn run(
     let meta = agent.meta()?;
     let server = Server::from_socket(meta.socket.clone());
 
-    // Which vendor this agent runs, out of what it was started with. An agent
-    // amx never started has no recorded command, and a command amx has no
-    // entry for is one amx has measured nothing about: both come back as no
-    // vendor, and neither is a reason to hold a reading back.
+    // Which vendor this agent runs: the record's own word first, which is the
+    // one an adopted agent has — adopt wrote down the program tmux found in
+    // the pane, and there is no recorded command to read it off. A record
+    // with no word for it is read off what it was started with, and a command
+    // amx has no entry for is one amx has measured nothing about: both come
+    // back as no vendor, and neither is a reason to hold a reading back.
     let started = spawn::read_handoff(agent.dir()).ok();
-    let vendor = started.as_ref().and_then(spawn::vendor_of);
+    let vendor = meta
+        .agent
+        .as_deref()
+        .and_then(crate::vendor::find)
+        .or_else(|| started.as_ref().and_then(spawn::vendor_of));
     let told = keeps_a_conversation(vendor)
         .then(|| {
             meta.transcript
@@ -382,6 +388,51 @@ mod tests {
         // A shorter reading is the last of it and not the first of it.
         let (_, said) = printed(root.path(), "fix-login-a1b", 1);
         assert_eq!(said, "line 3\n");
+    }
+
+    #[test]
+    fn logs_cut_the_chrome_of_the_vendor_the_record_names() {
+        // An adopted agent has no recorded command: adopt wrote down the
+        // program tmux found in the pane. Driven on 2026-09-06 against a pi
+        // adopted mid-session, whose logs came back with pi's box, working
+        // directory and stats line on them.
+        let box_rule = "─".repeat(40);
+        let screen = format!(
+            "the work\n\n{box_rule}\n\n{box_rule}\n~/srv/app (main)\n↑1.9k ↓1.7k R1.9k 0.3%/1.0M (auto)\n"
+        );
+        let server = TestServer::new();
+        let (_, pane) = server
+            .new_session(&Spawn {
+                command: &[
+                    "sh",
+                    "-c",
+                    "printf '%s' \"$0\"; while :; do sleep 0.05; done",
+                    &screen,
+                ],
+                ..Spawn::default()
+            })
+            .unwrap();
+        let root = TempDir::new().unwrap();
+        let agent = record(
+            root.path(),
+            "adopted-a1b",
+            server.socket().clone(),
+            pane.clone(),
+        );
+        agent
+            .writer()
+            .unwrap()
+            .update_meta(|meta| meta.agent = Some("pi".to_string()))
+            .unwrap();
+        until("the pane to draw pi's chrome", || {
+            server
+                .capture(&pane)
+                .is_ok_and(|drawn| drawn.contains("0.3%/1.0M"))
+        });
+
+        let (code, said) = printed(root.path(), "adopted-a1b", LINES);
+        assert_eq!(code, exit::OK);
+        assert_eq!(said, "the work\n", "pi's chrome is pi's, not the agent's");
     }
 
     #[test]

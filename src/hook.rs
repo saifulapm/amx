@@ -306,6 +306,20 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
     if !payload["agent_id"].is_null() || state.state.is_terminal() {
         return None;
     }
+    // An adopted agent's record was written with its session and nothing
+    // about the transcript: the vendor announced that session's start before
+    // there was a record to hear it, and does not announce it again. Every
+    // report carries the path beside the session it is about, so a record
+    // with no transcript takes it from the first report about its own session
+    // — its own, because a report about another session names a conversation
+    // that is not this agent's.
+    if meta.transcript.is_none()
+        && let Some(session) = meta.session.as_deref()
+        && payload["session_id"].as_str() == Some(session)
+        && let Some(transcript) = payload["transcript_path"].as_str()
+    {
+        meta.transcript = Some(transcript.into());
+    }
     let was_waiting = state.state == Phase::Waiting;
 
     let screen = match moment(payload)? {
@@ -1809,6 +1823,63 @@ mod tests {
             &mut meta,
         );
         assert_eq!(meta.session.as_deref(), Some("def-456"));
+    }
+
+    #[test]
+    fn hook_an_adopted_agent_learns_its_transcript_from_its_own_reports() {
+        // adopt wrote the session off the pane's environment and nothing
+        // about the transcript: the vendor announced that session's start
+        // before there was a record to hear it, and does not announce it
+        // again. Driven on 2026-09-06 against a pi adopted mid-session, whose
+        // record never learned its conversation.
+        let mut meta = meta();
+        meta.session = Some("01a0-adopted".to_string());
+        meta.transcript = None;
+        let mut state = State::default();
+
+        // A report about another session names a conversation that is not
+        // this agent's.
+        apply(
+            &json!({
+                "session_id": "another",
+                "transcript_path": "/t/another.jsonl",
+                "hook_event_name": "UserPromptSubmit"
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(meta.transcript, None);
+
+        // The first report about its own session names the one it keeps.
+        apply(
+            &json!({
+                "session_id": "01a0-adopted",
+                "transcript_path": "/t/01a0-adopted.jsonl",
+                "hook_event_name": "Stop",
+                "last_assistant_message": "done"
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(
+            meta.transcript,
+            Some(PathBuf::from("/t/01a0-adopted.jsonl"))
+        );
+
+        // And a later report does not move it.
+        apply(
+            &json!({
+                "session_id": "01a0-adopted",
+                "transcript_path": "/t/elsewhere.jsonl",
+                "hook_event_name": "UserPromptSubmit"
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(
+            meta.transcript,
+            Some(PathBuf::from("/t/01a0-adopted.jsonl"))
+        );
     }
 
     #[test]

@@ -142,9 +142,11 @@ pub fn run(
             pane: pane.clone(),
             bg: false,
             session: Some(session.clone()),
-            // The transcript arrives with the next SessionStart, if one ever
-            // comes. What the agent says at the end of a turn is on the Stop
-            // payload, which is the fresher of the two anyway.
+            // The transcript arrives with the first report the vendor makes
+            // about this session, which every report names — the session's
+            // own start was announced before there was a record to hear it.
+            // What the agent says at the end of a turn is on the Stop payload,
+            // which is the fresher of the two anyway.
             transcript: None,
             created: now(),
         },
