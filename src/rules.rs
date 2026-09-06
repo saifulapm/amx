@@ -79,11 +79,11 @@ pub struct Rule {
     /// How few rows they may span: the floor that `within` is the ceiling of.
     ///
     /// A vendor's chrome is as tall as it is, and anchors that come out nearer
-    /// than that have not found the whole of it. The rows are read from the
-    /// TOPMOST one carrying each string, so a box too tall for the rows a rule
-    /// may see has its own top out of reach and the topmost border left to
-    /// find is the bottom one — which is a widget with the vendor's footer
-    /// under it wearing the chrome's own numbers.
+    /// than that have not found the whole of it. A box too tall for the rows a
+    /// rule may see has its own top out of reach, and the only border left to
+    /// find is its bottom one — which is a widget with the vendor's footer
+    /// under it wearing the chrome's own numbers. No choice of rows on that
+    /// screen spans enough, so the floor refuses it whichever border is tried.
     #[serde(default)]
     pub apart: Option<usize>,
     /// None of these may appear below the match. claude draws no composer
@@ -261,43 +261,64 @@ impl Ruleset {
 
 impl Rule {
     /// Whether this rule's conditions hold on the screen.
+    /// Whether this rule's box is on the screen.
+    ///
+    /// Every row each anchor is on is a candidate, and the rule holds when
+    /// some choice of one row per anchor fits its window. Not the topmost row
+    /// carrying each string, which is what this read until 2026-09-06: pi
+    /// draws an Update Available box above its composer whenever a newer pi
+    /// exists, its borders are the composer's own, and every rule that says
+    /// how far its anchor may sit from the border anchored on the notice and
+    /// lost its window — a fresh pi read `unknown` idle and mid-turn until
+    /// the transcript pushed the box off. Trying every row can only make a
+    /// rule hold where it failed; the floor `apart` still refuses a lone
+    /// bottom border, because no choice of rows on that screen spans enough.
     fn holds(&self, screen: &Screen) -> bool {
-        let mut matched = Vec::with_capacity(self.all.len() + 1);
+        let mut anchors: Vec<Vec<usize>> = Vec::with_capacity(self.all.len() + 1);
         for needle in &self.all {
-            match screen.row_of(needle) {
-                Some(row) => matched.push(row),
-                None => return false,
+            let rows = screen.rows_of(needle);
+            if rows.is_empty() {
+                return false;
             }
+            anchors.push(rows);
         }
 
         if !self.any.is_empty() {
-            // The affordance: the highest row any of them is on. Everything
-            // below it is the rest of the box — or, on a quotation, the
+            // The affordance, wherever any of them is. Everything below the
+            // one chosen is the rest of the box — or, on a quotation, the
             // vendor's own chrome, which is what gives the guard something to
             // find.
-            match self.any.iter().filter_map(|n| screen.row_of(n)).min() {
-                Some(row) => matched.push(row),
-                None => return false,
+            let rows: Vec<usize> = self.any.iter().flat_map(|n| screen.rows_of(n)).collect();
+            if rows.is_empty() {
+                return false;
             }
+            anchors.push(rows);
         }
 
-        let (Some(&first), Some(&last)) = (matched.iter().min(), matched.iter().max()) else {
-            // A rule with no conditions at all claims nothing.
+        // A rule with no conditions at all claims nothing.
+        !anchors.is_empty()
+            && one_from_each(&anchors)
+                .iter()
+                .any(|rows| self.fits(rows, screen))
+    }
+
+    /// Whether these rows, one per anchor, are the box this rule describes:
+    /// spanning no more than `within`, no less than `apart`, with nothing of
+    /// `not_below` under the lowest of them.
+    fn fits(&self, rows: &[usize], screen: &Screen) -> bool {
+        let (Some(&first), Some(&last)) = (rows.iter().min(), rows.iter().max()) else {
             return false;
         };
-
         if let Some(within) = self.within
             && last - first > within
         {
             return false;
         }
-
         if let Some(apart) = self.apart
             && last - first < apart
         {
             return false;
         }
-
         !screen.any_below(last, &self.not_below)
     }
 
@@ -375,6 +396,25 @@ pub enum Asks {
 /// The part of a capture a rule is allowed to look at: the bottom rows, twice
 /// over — case folded for the anchors to match against, and as the pane drew
 /// it for a question to be read out of.
+/// Every way of taking one row from each list, in order.
+///
+/// Small by construction: a rule has at most three anchors, and a screen has
+/// at most [`FLOOR_LINES`] rows for any of them to be on.
+fn one_from_each(lists: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    lists.iter().fold(vec![Vec::new()], |chosen, rows| {
+        chosen
+            .iter()
+            .flat_map(|prefix| {
+                rows.iter().map(move |&row| {
+                    let mut next = prefix.clone();
+                    next.push(row);
+                    next
+                })
+            })
+            .collect()
+    })
+}
+
 struct Screen {
     folded: Vec<String>,
     shown: Vec<String>,
@@ -393,6 +433,16 @@ impl Screen {
     /// The topmost row carrying `needle`.
     fn row_of(&self, needle: &str) -> Option<usize> {
         self.folded.iter().position(|row| row.contains(needle))
+    }
+
+    /// Every row carrying `needle`, top to bottom.
+    fn rows_of(&self, needle: &str) -> Vec<usize> {
+        self.folded
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.contains(needle))
+            .map(|(at, _)| at)
+            .collect()
     }
 
     /// Whether any of `needles` appears below `row`.
@@ -1631,7 +1681,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
     /// `settings.json` in it. Its own startup screen rather than the pane a
     /// session runs in: the box is the whole of it, and the rows under it are
     /// the empty pane. Six of those rows are why there is no `within` on this
-    /// rule — they push the box's top border above the floor, and the topmost
+    /// rule — they push the box's top border above the floor, and the only
     /// border left to find is the box's own bottom.
     const A_PI_SETUP: &str = r"
 ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1875,11 +1925,13 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
     /// The same selector on a pane with a transcript above it, raised the same
     /// way after `!seq 1 60`. The widget did not move and its box is the same
     /// three rows; what changed is that `!cmd` leaves the bottom border of its
-    /// own box on the pane, and a rule reads the TOPMOST border it can see, so
-    /// the span from there to the stats line is 7 rather than 5.
+    /// own box on the pane, two rows above the widget's. From that border the
+    /// stats line is 7 rows off, from the widget's own it is 5, and neither
+    /// is the composer's 4.
     ///
-    /// Which is what this pair is here for: the verdict was turning on what
-    /// had scrolled by rather than on the screen.
+    /// Which is what this pair is here for: a rule once read the topmost
+    /// border it could see, so the verdict was turning on what had scrolled
+    /// by rather than on the screen.
     const A_PI_SELECTOR_UNDER_A_TRANSCRIPT: &str = r" 42
  43
  44
@@ -1914,7 +1966,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
     /// pi's model selector, raised with `/model` on the same pane the same day.
     /// The other end of the same reading: this box is taller than the rows a
-    /// rule may see, so its own top border is above the floor and the topmost
+    /// rule may see, so its own top border is above the floor and the only
     /// border left to find is the bottom one. Three rows of screen, a span of
     /// 2, and it read as a prompt on that alone.
     const A_PI_MODEL_SELECTOR: &str = r"
@@ -2617,11 +2669,10 @@ Only showing models from configured providers. Use /login to add providers.
     #[test]
     fn rules_a_lone_border_is_the_bottom_of_a_box_and_not_a_box() {
         // `apart` is the floor `within` is the ceiling of, and what it is for
-        // is the reading being taken from the TOPMOST row carrying a string. A
-        // box too tall for the rows a rule may see has its own top out of
+        // is a box too tall for the rows a rule may see: its own top is out of
         // reach, so what is left to find is its bottom border and the chrome
         // under it — which is the same handful of rows every screen this
-        // vendor draws ends in.
+        // vendor draws ends in. No choice of rows there spans enough.
         let ruleset = Ruleset::parse(
             r#"
             [[rule]]
@@ -2645,6 +2696,43 @@ Only showing models from configured providers. Use /login to add providers.
             ruleset.claim(bottom_of_one, Phase::Starting, 1),
             Claim::Unclaimed,
             "one border with a footer under it is not the box it is the end of"
+        );
+    }
+
+    #[test]
+    fn rules_a_box_under_another_box_is_still_the_box() {
+        // pi draws an Update Available box above its composer whenever a newer
+        // pi exists — measured 2026-09-06 on 0.84.4 with 0.85.1 out: five rows,
+        // a blank one, then the composer. Its borders are the composer's own.
+        // A walk that read its rows from the topmost border anchored on the
+        // notice and lost every window; the rows that fit are the rows a rule
+        // stands on.
+        let ruleset = Ruleset::parse(
+            r#"
+            [[rule]]
+            name = "boxed"
+            state = "idle"
+            all = ["---"]
+            any = ["mode:"]
+            within = 4
+            apart = 4
+            "#,
+        )
+        .unwrap();
+
+        let under_a_notice = "---\nUpdate Available\nNew version 0.85.1 is available. Run pi update\n\
+                              Changelog: https://pi.dev/changelog\n---\n\n---\n\n---\nhere\nmode: careful\n";
+        assert_eq!(
+            ruleset.claim(under_a_notice, Phase::Starting, 1).phase(),
+            Some(Phase::Idle),
+            "the composer's own border is four rows from the footer"
+        );
+
+        // A lone bottom border is still not a box: no choice of rows on that
+        // screen spans enough.
+        assert_eq!(
+            ruleset.claim("---\nhere\nmode: careful\n", Phase::Starting, 1),
+            Claim::Unclaimed
         );
     }
 
