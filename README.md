@@ -37,14 +37,14 @@ cargo install --path .
 amx doctor --fix
 ```
 
-`doctor` checks the seven things that have to be true before an agent can run:
-tmux, the agent command, the config file, the hooks, a state directory amx can
-keep records in, no handoff still carrying the spawner's environment from
-before that moved to a file of its own, and no agent already stopped at a
-screen the vendor puts in front of the work. Every check that fails says what
-to do about it.
+`doctor` checks the eight things that have to be true before an agent can run:
+tmux, the agent command, the config file, the hooks, one amx on the PATH and
+the one running the check, a state directory amx can keep records in, no
+handoff still carrying the spawner's environment from before that moved to a
+file of its own, and no agent already stopped at a screen the vendor puts in
+front of the work. Every check that fails says what to do about it.
 
-Where a tmux server is already running, it checks an eighth: that the directory
+Where a tmux server is already running, it checks a ninth: that the directory
 that server is standing in still exists. A server keeps the directory it was
 started in for as long as it lives, and once that directory is deleted every
 pane it starts lands somewhere that is not there and dies immediately — which

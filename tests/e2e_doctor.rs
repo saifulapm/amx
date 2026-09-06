@@ -240,6 +240,45 @@ fn an_agent_stopped_at_its_own_vendors_setup_gate_is_named() {
     }
 }
 
+/// Doctor run with `dirs`, and only those, on the PATH.
+fn doctor_on(amx: &Harness, dirs: &[&Path]) -> String {
+    let out = amx
+        .amx_command(&["doctor"])
+        .env("PATH", std::env::join_paths(dirs).unwrap())
+        .output()
+        .expect("running amx doctor");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn doctor_names_the_amx_the_path_finds_when_it_is_not_this_one() {
+    // Two installed amx, and `amx doctor --fix` run under the stale one
+    // judged the stale extension against its own body, said ok, and the
+    // build carrying the fix never ran. What a pi started by hand reports to
+    // is whichever amx the PATH finds, so doctor says which that is.
+    let amx = Harness::new();
+    let ours = tempfile::TempDir::new().unwrap();
+    std::os::unix::fs::symlink(common::AMX, ours.path().join("amx")).unwrap();
+    let theirs = tempfile::TempDir::new().unwrap();
+    let other = theirs.path().join("amx");
+    std::fs::write(&other, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&other, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    // The PATH reaches this amx by another name, and nothing else by it.
+    let printed = doctor_on(&amx, &[ours.path()]);
+    let (ok, line) = check_line(&printed, "amx");
+    assert!(ok, "one install, under two names: {line}");
+
+    // The PATH reaches another program of the name first.
+    let printed = doctor_on(&amx, &[theirs.path(), ours.path()]);
+    let (ok, line) = check_line(&printed, "amx");
+    assert!(!ok, "{printed}");
+    assert!(
+        line.contains(&other.canonicalize().unwrap().display().to_string()),
+        "the one the PATH finds is named: {line}"
+    );
+}
+
 #[test]
 fn a_machine_with_no_server_yet_has_nothing_to_report() {
     // Never having started a server is not a fault, and the next one amx

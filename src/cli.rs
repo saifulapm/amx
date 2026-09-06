@@ -212,13 +212,14 @@ pub enum Command {
 
     /// Check what amx needs from this machine, and what is missing.
     ///
-    /// Seven things have to be true before an agent can run: tmux, the agent
-    /// command, the config, amx's hooks in the vendor's settings, a state
-    /// directory to keep records in, no handoff still carrying the spawner's
-    /// environment from before that moved to a file of its own, and no agent
-    /// already stopped at a screen the vendor puts in front of the work.
+    /// Eight things have to be true before an agent can run: tmux, the agent
+    /// command, the config, amx's hooks in the vendor's settings, one amx on
+    /// the PATH and this the one, a state directory to keep records in, no
+    /// handoff still carrying the spawner's environment from before that
+    /// moved to a file of its own, and no agent already stopped at a screen
+    /// the vendor puts in front of the work.
     ///
-    /// Where a tmux server is already running, an eighth: that the directory
+    /// Where a tmux server is already running, a ninth: that the directory
     /// the server itself is standing in still exists. One that outlived its
     /// own working directory kills every pane it starts.
     Doctor {
@@ -1048,6 +1049,8 @@ mod tests {
             wire: PathBuf::new(),
             wired: crate::install::Wired::Nothing,
             command: String::new(),
+            exe: PathBuf::new(),
+            on_path: Vec::new(),
             state_root: PathBuf::new(),
             state_error: None,
             dirty_handoffs: Vec::new(),
@@ -1057,9 +1060,11 @@ mod tests {
             // so it is deliberately absent here.
             server: None,
         });
-        let counted = ["no", "one", "two", "three", "four", "five", "six", "seven"]
-            .get(checks.len())
-            .expect("a count these have a word for");
+        let counted = [
+            "no", "one", "two", "three", "four", "five", "six", "seven", "eight",
+        ]
+        .get(checks.len())
+        .expect("a count these have a word for");
 
         use clap::CommandFactory;
         let long = Cli::command()

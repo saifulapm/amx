@@ -1,13 +1,13 @@
 //! `amx doctor` — what amx needs from this machine, and what is missing.
 //!
-//! Seven things have to be true before an agent can run: a tmux new enough to
+//! Eight things have to be true before an agent can run: a tmux new enough to
 //! address panes by id, a vendor command to run, a config amx can read, amx's
-//! hooks wired into the vendor's settings, a state root amx can keep an agent
-//! in, no handoff still carrying the spawner's environment from before that
-//! moved to a file of its own, and no agent already stopped at a screen the
-//! vendor puts in front of the work. Each check that fails says what to do
-//! about it, because a check that only says "no" leaves somebody guessing at
-//! a machine they thought was fine.
+//! hooks wired into the vendor's settings, one amx on the PATH and this the
+//! one, a state root amx can keep an agent in, no handoff still carrying the
+//! spawner's environment from before that moved to a file of its own, and no
+//! agent already stopped at a screen the vendor puts in front of the work.
+//! Each check that fails says what to do about it, because a check that only
+//! says "no" leaves somebody guessing at a machine they thought was fine.
 //!
 //! What two of them are worth depends on the vendor, and the vendor is what
 //! says. The table answers the first: one that reports nothing has no wiring to
@@ -18,7 +18,7 @@
 //! offered. A check that asked for a repair nobody can make would send somebody
 //! looking for a fault in their own machine.
 //!
-//! An eighth is asked only where there is something to ask it of. When a tmux
+//! A ninth is asked only where there is something to ask it of. When a tmux
 //! server is already running, and the machine can say where a process is
 //! standing, doctor checks that the directory that server is standing in still
 //! exists. A server holds the directory it was started in for as long as it
@@ -95,6 +95,10 @@ pub struct Findings {
     pub wired: install::Wired,
     /// The hook command this amx would install.
     pub command: String,
+    /// This amx, and every amx the PATH finds in the order it looks — each
+    /// a file, named once however many names it goes by.
+    pub exe: PathBuf,
+    pub on_path: Vec<PathBuf>,
     /// Where every agent's record is kept, and why amx cannot use it when it
     /// cannot.
     pub state_root: PathBuf,
@@ -156,7 +160,7 @@ impl Setup {
 
 /// Judge what was found.
 ///
-/// Seven of these are asked on every machine. The eighth is asked only where
+/// Eight of these are asked on every machine. The ninth is asked only where
 /// there is something to ask it of: a tmux server already running, on a
 /// platform that can say where a process is standing.
 pub fn report(found: &Findings) -> Vec<Check> {
@@ -165,6 +169,7 @@ pub fn report(found: &Findings) -> Vec<Check> {
         vendor_check(found),
         config_check(found),
         wiring_check(found, registry::entry(&found.vendor)),
+        amx_check(found),
         state_check(found),
         env_check(found),
     ];
@@ -293,6 +298,53 @@ fn hooks_of(vendor: Option<&'static Vendor>) -> Option<&'static Hooks> {
     vendor
         .or_else(|| registry::entries().first())
         .and_then(|vendor| vendor.hooks.as_ref())
+}
+
+/// Whether the amx the PATH finds is this one, and the only one.
+///
+/// Two installed amx diverge quietly. A pi somebody started by hand reports
+/// to whichever amx the PATH finds first, and `--fix` judges the wiring on
+/// disk against what the amx running it ships: so the one on the PATH takes
+/// the reports and passes its own wiring, the one that was rebuilt never
+/// runs, and a doctor run under the first says the machine is fine. It was,
+/// for an amx nobody meant to be using. Every amx on the PATH is named here
+/// so that the one this is not becomes the fault it is.
+fn amx_check(found: &Findings) -> Check {
+    let exe = found.exe.display();
+    let Some(first) = found.on_path.first() else {
+        let dir = found.exe.parent().unwrap_or(&found.exe).display();
+        return Check::wrong(
+            "amx",
+            format!("{exe} is not on the PATH"),
+            format!("a pi started by hand reports to the amx the PATH finds; put {dir} on it"),
+        );
+    };
+    let others: Vec<String> = found
+        .on_path
+        .iter()
+        .filter(|amx| **amx != found.exe)
+        .map(|amx| amx.display().to_string())
+        .collect();
+    if others.is_empty() {
+        return Check::ok("amx", format!("{exe}, the only amx on the PATH"));
+    }
+    let what = if *first == found.exe {
+        format!(
+            "{exe} is first on the PATH, which also finds {}",
+            others.join(", ")
+        )
+    } else {
+        format!(
+            "this amx is {exe}, but the PATH finds {} first",
+            first.display()
+        )
+    };
+    Check::wrong(
+        "amx",
+        what,
+        "the hooks report to the amx the PATH finds, and each amx judges its own wiring; \
+         install once, and make the other a symlink to it or take it off the PATH",
+    )
 }
 
 /// Whether the server amx would use is still standing somewhere that exists.
@@ -487,7 +539,8 @@ fn fixable(checks: &[Check]) -> bool {
 /// Look at the machine.
 pub fn gather(config: &Config) -> Result<Findings> {
     let home = install::home()?;
-    let command = install::hook_command(&std::env::current_exe()?);
+    let exe = std::env::current_exe()?;
+    let command = install::hook_command(&exe);
     let hooks = hooks_of(registry::entry(&config.agent));
     let wire = hooks.map_or_else(|| home.clone(), |hooks| install::wire_path(hooks, &home));
     let wired = install::wired(hooks, &home, &command);
@@ -504,6 +557,8 @@ pub fn gather(config: &Config) -> Result<Findings> {
         wire,
         wired,
         command,
+        on_path: every_on_path("amx", std::env::var_os("PATH").as_deref()),
+        exe: exe.canonicalize().unwrap_or(exe),
         state_error: usable(&state_root),
         dirty_handoffs: dirty_handoffs(&state_root),
         parked: parked(
@@ -711,6 +766,24 @@ fn on_path(program: &str, path: Option<&OsStr>) -> Option<PathBuf> {
         .find(|candidate| runnable(candidate))
 }
 
+/// Every program called `program` a `PATH` would run, in the order it looks,
+/// each file once: a file reached by two names is one install, and one
+/// install answering to two names is how the fault above is mended.
+fn every_on_path(program: &str, path: Option<&OsStr>) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = Vec::new();
+    for dir in path.map(std::env::split_paths).into_iter().flatten() {
+        let candidate = dir.join(program);
+        if !runnable(&candidate) {
+            continue;
+        }
+        let file = candidate.canonicalize().unwrap_or(candidate);
+        if !found.contains(&file) {
+            found.push(file);
+        }
+    }
+    found
+}
+
 /// Whether this is a file that could be run.
 fn runnable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -798,6 +871,8 @@ mod tests {
             wire: PathBuf::from("/home/dev/.claude/settings.json"),
             wired: all_wired(),
             command: COMMAND.to_string(),
+            exe: PathBuf::from("/home/dev/.cargo/bin/amx"),
+            on_path: vec![PathBuf::from("/home/dev/.cargo/bin/amx")],
             state_root: PathBuf::from("/home/dev/.local/state/amx/agents"),
             state_error: None,
             dirty_handoffs: Vec::new(),
@@ -875,8 +950,8 @@ mod tests {
         assert!(checks.iter().all(Check::is_ok), "{checks:#?}");
         assert_eq!(
             checks.len(),
-            7,
-            "tmux, the vendor, the config, the hooks, the state root, env, setup"
+            8,
+            "tmux, the vendor, the config, the hooks, amx, the state root, env, setup"
         );
 
         let (code, printed) = said(&healthy(), false);
@@ -1261,6 +1336,99 @@ mod tests {
 
         let path = std::ffi::OsString::from(dir.path().to_string_lossy().to_string());
         assert_eq!(on_path("claude", Some(&path)), None);
+    }
+
+    #[test]
+    fn doctor_names_a_second_amx_on_the_path() {
+        // The machine this check exists for: two installs, and `amx doctor
+        // --fix` run under the stale one judged the stale extension against
+        // its own body, said ok, and the build carrying the fix never ran.
+        let stale = PathBuf::from("/home/dev/.cargo/bin/amx");
+        let fresh = PathBuf::from("/home/dev/.local/bin/amx");
+
+        let mut found = healthy();
+        found.exe = stale.clone();
+        found.on_path = vec![stale.clone(), fresh.clone()];
+        let amx = check(&found, "amx");
+        assert!(!amx.is_ok(), "{amx:?}");
+        assert!(
+            amx.found.contains("/home/dev/.local/bin/amx"),
+            "the other one is named: {}",
+            amx.found
+        );
+        assert!(
+            amx.remedy.as_deref().unwrap().contains("symlink"),
+            "and one install answering to both names is the way out: {amx:?}"
+        );
+        assert_eq!(said(&found, false).0, exit::FAILURE);
+
+        // Run under the fresh one instead, the PATH still reaches the stale
+        // one first, and that is the one a pi started by hand reports to.
+        found.exe = fresh;
+        let amx = check(&found, "amx");
+        assert!(!amx.is_ok(), "{amx:?}");
+        assert!(
+            amx.found.contains("/home/dev/.cargo/bin/amx"),
+            "{}",
+            amx.found
+        );
+        assert!(amx.found.contains("first"), "{}", amx.found);
+    }
+
+    #[test]
+    fn doctor_passes_the_one_amx_the_path_finds_and_names_one_it_cannot() {
+        let amx = check(&healthy(), "amx");
+        assert!(amx.is_ok(), "{amx:?}");
+        assert!(
+            amx.found.contains("/home/dev/.cargo/bin/amx"),
+            "{}",
+            amx.found
+        );
+
+        // Started by its path, with nothing on the PATH by that name: a pi
+        // somebody started by hand has no amx to report to.
+        let mut found = healthy();
+        found.on_path = Vec::new();
+        let amx = check(&found, "amx");
+        assert!(!amx.is_ok(), "{amx:?}");
+        assert!(
+            amx.remedy
+                .as_deref()
+                .unwrap()
+                .contains("/home/dev/.cargo/bin"),
+            "the directory to put on the PATH: {amx:?}"
+        );
+    }
+
+    #[test]
+    fn every_amx_on_the_path_is_one_file_however_it_is_named() {
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        let third = TempDir::new().unwrap();
+        let fourth = TempDir::new().unwrap();
+        let program = |dir: &TempDir, mode: u32| {
+            let amx = dir.path().join("amx");
+            std::fs::write(&amx, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&amx, std::fs::Permissions::from_mode(mode)).unwrap();
+            amx
+        };
+        let real = program(&first, 0o755);
+        // The same file under a second name, which is how one install is
+        // meant to answer both.
+        std::os::unix::fs::symlink(&real, second.path().join("amx")).unwrap();
+        // A file that happens to be called amx and that no shell would run.
+        program(&third, 0o644);
+        // And another program of the name, which is the fault.
+        let other = program(&fourth, 0o755);
+
+        let path = std::env::join_paths([second.path(), first.path(), third.path(), fourth.path()])
+            .unwrap();
+        assert_eq!(
+            every_on_path("amx", Some(&path)),
+            vec![real.canonicalize().unwrap(), other.canonicalize().unwrap()],
+            "in the PATH's order, each once"
+        );
+        assert_eq!(every_on_path("amx", None), Vec::<PathBuf>::new());
     }
 
     #[test]
