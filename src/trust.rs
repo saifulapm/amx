@@ -84,11 +84,12 @@ const PI: &str = "pi";
 /// The flag pi answers it with, and every spelling that already settles the
 /// question for a run.
 ///
-/// Measured at pi 0.84.4 on 2026-09-05, in the vendor's own words. `--help`
+/// Measured at pi 0.84.4 on 2026-09-05, in the vendor's own words, and read
+/// again at 0.85.1 on 2026-09-06 where only a line number moved. `--help`
 /// documents `--approve, -a` as "Trust project-local files for this run" and
 /// `--no-approve, -na` as ignoring them; `dist/cli/args.js:205-209` reads all
-/// four into `projectTrustOverride`, and `dist/main.js:574` takes an override
-/// as the whole answer, so the screen is never drawn. Nothing is written for
+/// four into `projectTrustOverride`, and `dist/main.js:575` (574 at 0.84.4)
+/// takes an override as the whole answer, so the screen is never drawn. Nothing is written for
 /// it: pi keeps its saved decisions in `~/.pi/agent/trust.json`, which
 /// docs/security.md names and an override never reaches.
 ///

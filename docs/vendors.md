@@ -160,7 +160,8 @@ document leaves open.
 ## pi
 
 pi is the second real entry, in `src/vendor/pi.rs`, every value in it measured
-against 0.84.4 on the date it carries.
+against 0.84.4 on the date it carries and read again against 0.85.1 on
+2026-09-06 — `docs/pi-screens.md` says what that re-read moved.
 
 It can be resumed, forked and adopted. `--session-id <id>` is mint-or-open —
 it opens the session already under that id, or creates one if none exists —
@@ -205,8 +206,8 @@ account of itself, and the test-only second vendor keeps it proven.
 `screens` is where what amx can read off a pi pane is written down: eight
 rules — the first-run setup gate, the folder-trust question, a dialog, an
 editor, an input, the spinner, the login box and the prompt — plus the chrome
-that comes off a capture before anybody reads it, driven live against 0.84.4
-and checked in as `assets/screen-rules-pi.toml`. The entry declares it with
+that comes off a capture before anybody reads it, driven live against 0.84.4,
+re-driven against 0.85.1, and checked in as `assets/screen-rules-pi.toml`. The entry declares it with
 `include_str!`, so it is in the binary; `rules::of("pi")` finds it, parses it
 and hands it back, and `rules.rs`'s own tests read pi's screens exactly that
 way. Which screen each rule was measured on, and what the rest of pi's screens

@@ -280,7 +280,8 @@ mod tests {
 
     /// pi's own rule for a session id it will accept, hand-rolled because
     /// `regex` is not a dependency here: `/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/`,
-    /// measured from `dist/core/session-manager.js:15` at pi 0.84.4.
+    /// measured from `dist/core/session-manager.js:16` at pi 0.84.4 and the
+    /// same line at 0.85.1.
     fn matches_pis_session_id_pattern(s: &str) -> bool {
         s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
             && s.chars()

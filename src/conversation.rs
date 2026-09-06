@@ -76,7 +76,8 @@ fn spoken(format: Transcript, jsonl: &str) -> Vec<Value> {
 /// The branch a pi session is on: from its last entry up through `parentId`
 /// to a root, read back down.
 ///
-/// pi's own reader (`buildSessionPath`, session-manager.js at 0.84.4) takes
+/// pi's own reader (`buildSessionPath`, session-manager.js at 0.84.4, and
+/// unchanged at 0.85.1) takes
 /// the last entry in the file as the leaf and walks to the root, and that is
 /// the whole of what the file says about which branch is live. Branching
 /// writes nothing by itself — the leaf pi keeps in memory moves, and the next
@@ -318,6 +319,7 @@ mod tests {
 
     /// Shapes measured from a live pi 0.84.4 session on 2026-09-05: the
     /// header, two bookkeeping entries, and messages in the three voices.
+    /// 0.85.1 still writes session version 3.
     const PI: &str = concat!(
         "{\"type\":\"session\",\"version\":3,\"id\":\"hi-c4g\",\"cwd\":\"/srv/app\"}\n",
         "{\"type\":\"model_change\",\"id\":\"0a\",\"parentId\":null,\"provider\":\"opencode\",\"modelId\":\"m\"}\n",

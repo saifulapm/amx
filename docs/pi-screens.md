@@ -1,4 +1,4 @@
-# Every screen pi 0.84.4 draws
+# Every screen pi 0.85.1 draws
 
 Since 2026-09-05 pi reports through the extension `amx doctor --fix` writes
 (`assets/pi/amx.ts`), so what a pi is doing, and what a turn answered, come
@@ -7,6 +7,15 @@ screens are still what a reader holds against the pane where the report has
 gone quiet: every gate pi draws before a turn, and every pi whose extension is
 not installed. Nothing below has changed for that; it is the inventory the
 rules were measured against.
+
+Measured on 0.84.4 across 2026-09-04 and 05, and read again against 0.85.1 on
+2026-09-06, the day it went on this machine. Three things moved, and each is
+written where it landed: the working indicator sits in the composer's top
+border (the status lines), the model and thinking selectors spell their cancel
+key the way the login dialog does (the blocking widgets, and the login rule's
+anchor), and the trust selector's mark for the saved decision moved in front
+of the label. The last section says how the re-read was done and what it
+found.
 
 `assets/screen-rules-pi.toml` has eight rules in it, and each one was written
 from a screen somebody sat in front of. This file is the other half of that
@@ -60,15 +69,31 @@ is the first way and the one that decides: the state and the rule name amx put
 on the row, which is the reading a person gets. The second is the same capture
 put back through the document by hand, the way `Rule::holds` puts one through —
 the last 24 rows (`FLOOR_LINES`) of the capture with its trailing blank rows
-trimmed off, case folded, the topmost row carrying each `all` string, the
-topmost row carrying any `any` string, and the span between the first and last
-of those against `within` and `apart`. The two agreed on every screen in this
-table, which is what the second one is for: a span in the Reads column is a
-number somebody can check, and the rule beside it is what amx really said. The
-agent was opencode's muse-spark-1.3-contributor-free; the readings do not depend
-on which model, only on the rows pi draws. `screens.js` is a six-command
-extension that does nothing but raise `ctx.ui.select`, `confirm`, `input`,
-`editor` and `custom`, which is the only way to reach four of these screens.
+trimmed off, case folded, every row carrying each `all` string and any `any`
+string, and whether some choice of one row per anchor spans at least `apart`
+and at most `within` (until 2026-09-06 it was the topmost row carrying each,
+and the notice section below is why that changed). The two agreed on every
+screen in this table, which is what the second one is for: a span in the
+Reads column is a number somebody can check, and the rule beside it is what
+amx really said. The agent was opencode's muse-spark-1.3-contributor-free; the
+readings do not depend on which model, only on the rows pi draws. `screens.js`
+is a six-command extension that does nothing but raise `ctx.ui.select`,
+`confirm`, `input`, `editor` and `custom`, which is the only way to reach four
+of these screens.
+
+The 0.85.1 re-read of 2026-09-06 was the same rig with three differences. The
+agent was spawned `--no-extensions` beside `-e screens.js`, so amx's own
+extension stayed out of the pane and the screen was the only witness, which
+is the reading these rules exist for; it ran on a state directory and a tmux
+socket of its own, so nothing landed on the wall; and every screen was read
+at 100, 54, 40, 30, 24 and 20 columns rather than at 100 alone, since what
+had moved was measured by width. Before the rig, the package on disk was
+diffed against 0.84.4's: nine of the forty-three components had changed, and
+the changelog named the one that mattered — the working indicator moved into
+the editor's border in 0.85.0. A tree says what moved; the rig says what it
+reads as. A mid-turn dialog was driven with a second extension gating the
+bash tool with `ctx.ui.select`, which is the one screen where the two had to
+be seen together.
 
 Trailing blank rows are worth one sentence, because they move every span in the
 table. `Server::run` ends on `trim_end`, so the rows a pane has left empty
@@ -124,8 +149,8 @@ Eight rules, in the order the document holds them.
   draw that hint row: `extension-selector.js`, `trust-selector.js` and
   `first-time-setup.js`, and the two rules above take the last two off it first.
   Everything else pi draws spells its keys some other way, and `enter submit`,
-  `Enter to select · Esc to cancel` and `Enter to select · Esc to go back` are
-  three separate other ways.
+  `Enter to select · … · Escape/Ctrl+C to cancel` and `Enter to select · Esc
+  to go back` are three separate other ways.
 - **`editor`** wants `enter submit`, `shift+enter/ctrl+j` and twenty columns of
   rule. One component draws both terms: `extension-editor.js`.
 - **`input`** wants `enter submit` and twenty columns of rule, which is
@@ -134,29 +159,30 @@ Eight rules, in the order the document holds them.
 - **`spinner`** wants twenty columns of rule and one of the ten braille frames
   within four rows of it. `status-indicator.js` opens every one of its four
   kinds on that frame, and so does the box `bash-execution.js` puts in the
-  transcript. The message after it is not part of the rule, which is why the
-  kinds that do not say `Working...` are claimed too — two of them driven, and
-  the fourth is the same row with a fourth message on it.
-- **`login`** wants `escape/ctrl+c to` — the `to` is what tells it from the
-  three hint rows that spell the same key `escape/ctrl+c cancel` — twenty
-  columns of rule, and no more than six rows between them. `login-dialog.js` is
-  what reaches it.
+  transcript. On 0.85.1 the working kind is handed to `custom-editor.js`, which
+  draws it inside the composer's top border, and the other three keep their row
+  above the box. The message after the frame is not part of the rule, which is
+  why the kinds that do not say `Working` are claimed too — two of them driven,
+  and the fourth is the same row with a fourth message on it.
+- **`login`** wants `(escape/ctrl+c to` — the `to` is what tells it from the
+  three hint rows that spell the same key `escape/ctrl+c cancel`, and the
+  parenthesis from the two selectors whose 0.85.1 hint row ends `Escape/Ctrl+C
+  to cancel` — twenty columns of rule, and no more than six rows between them.
+  `login-dialog.js` is what reaches it.
 - **`prompt`** wants twenty columns of rule and one of `↑`, `$0.` or `%/`
   exactly four rows from it: `within` and `apart` are both 4, so the span is
   the box, the two footer rows, and nothing wider or narrower. That is the
   composer and only the composer.
 
 The last one is what most of the table below comes down to, and it is worth
-saying why the window is shut that tight. `row_of` finds the topmost row
-carrying a string, so the span runs from the widget's own **top** border — if
-that border is inside the floor — down to the stats line. A tall widget puts
-its top border in reach and the span blows past 4. A widget taller than the
-floor has that border out of reach entirely, and then the topmost border left
-to find is the bottom one: three rows of screen and a span of 2. Both are now
-`unknown`, which is the same answer, and that is the point: the window used to
-be 8 with no floor under it, so the same widget read `idle` at one span and
-`unknown` at the other, and which one a pane gave you depended on how much
-output happened to be above it rather than on the widget.
+saying why the window is shut that tight. A rule tries every row carrying an
+anchor, so a widget's own **top** border is tried when it is inside the floor
+and its bottom border is tried always. A tall widget's top border spans past 4
+to the stats line, and its bottom border spans 2 — three rows of screen — which
+`apart` refuses. Both are `unknown`, which is the same answer, and that is the
+point: the window used to be 8 with no floor under it, so the same widget read
+`idle` at one span and `unknown` at the other, and which one a pane gave you
+depended on how much output happened to be above it rather than on the widget.
 
 `/thinking` is the example the first pass wrote down. On a fresh boot it spans
 17 and on a few turns of scrollback it spans 2, and both readings are
@@ -166,15 +192,16 @@ output happened to be above it rather than on the widget.
 
 Nineteen components. `Reads` is the measured verdict at 100x30 on a fresh
 `--offline` boot, with the span the rule computed. Read again on 2026-09-05,
-against the eight rules the document carries today.
+against the eight rules the document carries today, and again on 2026-09-06
+against 0.85.1: the rows that moved say so.
 
 | Component | What raises it | The row it ends in | Reads |
 | --- | --- | --- | --- |
-| `extension-selector.js` | `ctx.ui.select`, `ctx.ui.confirm`, pi's own `/login` method chooser, and pi's own startup trust question | `↑↓ navigate  enter select  escape/ctrl+c cancel`, then a border | **`dialog`**, waiting (span 8; 7 on the `/login` chooser) |
-| `trust-selector.js` | `/trust` | `↑↓ navigate  enter save  escape/ctrl+c cancel`, then a border | **`project_trust`**, waiting (span 5) |
+| `extension-selector.js` | `ctx.ui.select`, `ctx.ui.confirm`, pi's own `/login` method chooser, and pi's own startup trust question | `↑↓ navigate  enter select  escape/ctrl+c cancel`, then a border | **`dialog`**, waiting (span 8; 7 on the `/login` chooser). On 0.85.1 a dialog raised mid-turn has no frame anywhere above it: the working indicator is in the editor the dialog replaced |
+| `trust-selector.js` | `/trust` | `↑↓ navigate  enter save  escape/ctrl+c cancel`, then a border | **`project_trust`**, waiting (span 5). 0.85.1 draws the saved decision's `✓` in front of the label, so an unsaved folder's rows read `→   Trust`; the anchors are the title and the two rows under it, which did not move |
 | `first-time-setup.js` | first interactive run, with `PI_EXPERIMENTAL=1` and no `settings.json` | `↑↓ navigate`, then `enter continue` on the theme step and `enter finish` on the next, then `escape/ctrl+c skip setup`, then a border | **`first_time_setup`**, waiting (span 7 on both steps) |
-| `model-selector.js` | `/model`, or `ctrl+l` | `  Enter to select · Ctrl+S to set as default · Esc to cancel`, then a border | nothing, unknown (span 2) |
-| `thinking-selector.js` | `/thinking` with no argument | the same hint row, then a border | nothing, unknown (span 17) |
+| `model-selector.js` | `/model`, or `ctrl+l` | `  Enter to select · Ctrl+S to set as default · Escape/Ctrl+C to cancel`, then a border — 0.85.1 builds the row from the person's keybindings; 0.84.4 wrote `Esc to cancel` | nothing, unknown (span 2). It read **`login`** on 0.85.1 until the login rule's anchor gained its parenthesis — see finding 2 of the 0.85.1 pass |
+| `thinking-selector.js` | `/thinking` with no argument | the same hint row, then a border | nothing, unknown (span 17); the same false `login` on 0.85.1, closed the same way |
 | `scoped-models-selector.js` | `/scoped-models` | `enter toggle · ctrl+a all · ctrl+x clear · ...`, wrapped, then a border | nothing, unknown (span 2) |
 | `session-selector.js` | `/resume`, or `app.session.resume` | the session list, then a border | nothing, unknown (span 14) |
 | `tree-selector.js` | `/tree`, or `app.session.tree` | the tree, then a border | nothing, unknown (span 2) |
@@ -187,7 +214,7 @@ against the eight rules the document carries today.
 | `extension-editor.js` | `ctx.ui.editor` | ` enter submit  shift+enter/ctrl+j newline  escape/ctrl+c cancel  ctrl+g external editor`, then a border | **`editor`**, waiting (span 8) |
 | `theme-selector.js` | an extension only: exported from the package, shown through `ctx.ui.custom` | the theme list, then a border | nothing, unknown (span 6) |
 | `show-images-selector.js` | an extension only, the same way | the two choices, then a border | nothing, unknown (span 5) |
-| `custom-editor.js` | always — it is the composer; also `ctx.ui.setEditorComponent` | the box's bottom border, with the footer under it | **`prompt`**, idle (span 4) |
+| `custom-editor.js` | always — it is the composer; also `ctx.ui.setEditorComponent` | the box's bottom border, with the footer under it; on 0.85.1 its top border carries the working indicator while a turn runs | **`prompt`**, idle (span 4) |
 | `config-selector.js` | the `pi config` command, in its own TUI | its bottom border, and nothing under it | nothing, unknown — the screen carries no `↑`, `$0.` or `%/` for any rule to find |
 
 Four notes the table has no column for.
@@ -223,10 +250,10 @@ draws nothing.
 
 | Component | What raises it | The row it ends in | Reads |
 | --- | --- | --- | --- |
-| `status-indicator.js` — working | every turn, for the whole of it | `⠦ Working...`, two rows above the composer's top border | **`spinner`**, working (span 2) |
-| `status-indicator.js` — retry | a provider call that failed and will be retried | `Retrying (1/3) in 5s... (escape to cancel)` | **`spinner`**, working — driven 2026-09-05 against a server that answers 503, at six widths, and written down at the spinner rule |
-| `status-indicator.js` — compaction | `/compact`, and automatic compaction | `Compacting context... (escape to cancel)`, or `Auto-compacting...` | **`spinner`**, working — driven the same day and the same way, against a request held open |
-| `status-indicator.js` — branch summary | summarising a branch | `Summarizing branch... (escape to cancel)` | not driven; it is the fourth kind of the same row, so the frame the rule anchors on is on it |
+| `status-indicator.js` — working | every turn, for the whole of it | on 0.85.1, `── ⠼ Working ───…`: the frame and the word inside the composer's own top border, and no row above the box (`custom-editor.js` draws it; 0.85.0 moved it there and dropped the ellipsis). On 0.84.4, `⠦ Working...` two rows above that border | **`spinner`**, working (span 2 on both — border to border on 0.85.1, driven 2026-09-06 at 100, 54, 40, 30, 24 and 20 columns; at 20 the rule after the word is seven wide and the twenty the rule asks for are on the bottom border) |
+| `status-indicator.js` — retry | a provider call that failed and will be retried | `Retrying (1/3) in 5s... (escape to cancel)`, still a row of its own above the box on 0.85.1 | **`spinner`**, working — driven 2026-09-05 against a server that answers 503, at six widths, and written down at the spinner rule; not re-driven, its class is byte-identical in 0.85.1 and `interactive-mode.js` embeds only the working kind |
+| `status-indicator.js` — compaction | `/compact`, and automatic compaction | `Compacting context... (escape to cancel)`, or `Auto-compacting...`, a row of its own as above | **`spinner`**, working — driven the same day and the same way, against a request held open; the same source reading at 0.85.1 |
+| `status-indicator.js` — branch summary | summarising a branch | `Summarizing branch... (escape to cancel)`, a row of its own as above | not driven; it is the fourth kind of the same row, so the frame the rule anchors on is on it |
 | `status-indicator.js` — idle | between turns, on a pane whose `clearOnShrink` setting is on | two blank rows where the spinner was; with the setting off, which is the default, the rows simply go | whatever the rest of the screen says |
 | `footer.js` | always | the working directory, then the stats line, then one row per extension status | not a screen — it is the furniture every rule reads through, and `assets/screen-rules-pi.toml` measures it |
 | `bash-execution.js` | `!cmd` and `!!cmd` | `⠧ Running... (escape/ctrl+c to cancel)` inside its own box in the transcript, with the composer still under it | **`spinner`**, working (span 3) |
@@ -247,13 +274,15 @@ not a turn the agent is taking, and `working` is still the better of the two
 answers available — the pane is busy, and what it read before was `unknown`.
 
 Two extension calls belong here rather than in a rule. `ctx.ui.setWorkingMessage`
-rewrites `Working...` to anything the extension likes, and
-`ctx.ui.setWorkingVisible(false)` takes the row off the pane entirely. The first
-was driven and is claimed, because the frame is what the rule reads and the
-message is not; the second takes the frame off the pane with the row, and a
-running turn under it reads whatever else is on the screen. Neither was driven
-against a live turn on a provider that answers; both are one call away in any
-extension pi loads.
+rewrites `Working` to anything the extension likes — inside the border on
+0.85.1, since it is the working kind's message — and
+`ctx.ui.setWorkingVisible(false)` takes the indicator off the pane entirely,
+leaving a plain border. The first was driven on 0.84.4 and is claimed, because
+the frame is what the rule reads and the message is not; the second takes the
+frame off the pane, and a running turn under it reads whatever else is on the
+screen. Neither was driven against a live turn on a provider that answers, and
+neither was re-driven on 0.85.1; both are one call away in any extension pi
+loads.
 
 ## The update notice
 
@@ -282,13 +311,17 @@ release that ships a note adds the note's rows with a blank row either side.
 with `Package updates are available. Run pi update --extensions` where the
 version line is; it was not driven, and nothing below turns on the words.
 The box's borders are the composer's own, so from the notice's top border the
-stats line is 10 rows off (11 at 40), and mid-turn the spinner sits two rows
-above the composer as it does on any other screen.
+stats line is 10 rows off (11 at 40), and mid-turn the spinner sat two rows
+above the composer as it did on any other 0.84.4 screen. Not re-driven on
+0.85.1: it is the newest pi, so there is no notice to draw. What 0.85.1 changed
+is under the box rather than in it — the frame is in the composer's top border
+— and `tests/mock_pi/pi` draws `notice-working` that way, 0.84.4's box over
+0.85.1's composer.
 
 | Component | What raises it | The row it ends in | Reads |
 | --- | --- | --- | --- |
 | `interactive-mode.js` — update notice, idle | a newer pi published, on every start without `--offline` | the box, a blank row, then the composer | **`prompt`**, idle (span 4 from the composer's own border; 10 from the notice's, which is the one a rule used to stand on) |
-| `interactive-mode.js` — update notice, mid-turn | the same, with a turn running | `⠦ Working...` two rows above the composer, under the box | **`spinner`**, working (span 2) |
+| `interactive-mode.js` — update notice, mid-turn | the same, with a turn running | `⠦ Working...` two rows above the composer, under the box, on 0.84.4 | **`spinner`**, working (span 2) |
 
 Both read `unknown` until 2026-09-06. `row_of` found the topmost row carrying
 a string, the notice's own top border was that row, and `prompt` (within 4),
@@ -771,3 +804,46 @@ both about where a box sits on the pane rather than about what is in it.
    box is measured at four sizes in its own section above, the stand-in draws
    it, and a fresh pi under it reads `idle` and `working` by `prompt` and
    `spinner`, at every size.
+
+## What the 0.85.1 pass found
+
+Driven on 2026-09-06 against real pi 0.85.1, the day it went on this machine,
+with the rig the *How this was read* section describes. Three findings about
+pi and one about amx.
+
+1. **The working indicator is in the composer's top border.** 0.85.0 moved it
+   there and dropped the ellipsis: `── ⠼ Working ───…`, with no row above the
+   box. The spinner rule held at every width without a change — the frame is
+   on the border row and the bottom border is the twenty columns of rule, two
+   rows under it — and the furniture walk takes the border by the rule it ends
+   in, word and all. What the change reaches is everything measured on the old
+   shape: the stand-in's `working`, `notice-working`, `renamed` and `dialog`
+   screens, and the spinner and furniture comments in
+   `assets/screen-rules-pi.toml`. Compaction, retry and branch summary keep a
+   row of their own above the box, by 0.85.1's own source and not re-driven.
+   A dialog raised mid-turn carries no frame at all, driven at 100 and 20
+   columns: the indicator is in the editor the dialog replaced. Closed in the
+   stand-in and the comments.
+2. **`/model` and `/thinking` read as the login gate.** 0.85.1 builds those two
+   selectors' hint row from the person's keybindings and spells the cancel key
+   out in full, `Escape/Ctrl+C to cancel`, where 0.84.4 wrote `Esc to cancel`.
+   That row carries `escape/ctrl+c to`, the login rule's anchor, so a person
+   picking a model was an agent stopped at a setup gate: `doctor` named it and
+   `send` refused. `/settings` and `/scoped-models` spell their keys some other
+   way and read `unknown` as before. Closed in the anchor: the login dialog
+   wraps its whole hint in parentheses on every shape it draws and no other
+   hint row pi draws opens with one, so the rule stands on `(escape/ctrl+c to`,
+   whole at all six widths. The 0.85.1 model selector and login dialog are
+   captures in `src/rules.rs`.
+3. **The trust selector's mark moved.** The saved decision's `✓` is drawn in
+   front of the label rather than after it, so a folder with no decision reads
+   `→   Trust`. The title and the two rows under it are the anchors, and none
+   of them moved; `project_trust` still claims the screen at a span of 5.
+4. **A hookless pi's later waiting screens do not replace the recorded
+   question.** Every waiting screen after the startup gate — `/sel`, `/input`,
+   `/editor`, `/trust`, `/login` — kept the gate's sentence in `amx status
+   --json` while state and rule moved with each screen; a fresh record whose
+   first waiting screen was the mid-turn dialog showed the right one.
+   `derive::write_the_reading` writes a reading on a phase edge only, and
+   waiting to waiting is not an edge. This is amx's and not pi's, 0.84.4
+   behaved the same, and it is open as finding #SX6QK58A.
