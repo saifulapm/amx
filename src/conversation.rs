@@ -16,11 +16,12 @@
 //!
 //! Both files are one JSON document a line. pi's is a tree — entries carry an
 //! `id` and a `parentId`, and a session can branch in place — and it is read
-//! here in the order the lines were written, which is the branch every
-//! session that was never forked or navigated has. A line that is not JSON is
-//! skipped rather than fatal: a transcript is appended to while it is read.
+//! here along the branch its last entry is on, which is the one pi itself
+//! shows on a reload — see [`branch`]. A line that is not JSON is skipped
+//! rather than fatal: a transcript is appended to while it is read.
 
 use serde_json::Value;
+use std::collections::HashMap;
 
 use crate::vendor::Transcript;
 
@@ -54,13 +55,61 @@ pub fn format_of(agent: &str) -> Option<Transcript> {
 /// Everything said in the conversation, in order.
 pub fn read(format: Transcript, jsonl: &str) -> Vec<Said> {
     let mut said = Vec::new();
-    for entry in entries(jsonl) {
+    for entry in &spoken(format, jsonl) {
         match format {
-            Transcript::Claude => claude(&entry, &mut said),
-            Transcript::Pi => pi(&entry, &mut said),
+            Transcript::Claude => claude(entry, &mut said),
+            Transcript::Pi => pi(entry, &mut said),
         }
     }
     said
+}
+
+/// The entries a reading walks, in order: every line of a claude transcript,
+/// and of a pi session the branch its last entry is on.
+fn spoken(format: Transcript, jsonl: &str) -> Vec<Value> {
+    match format {
+        Transcript::Claude => entries(jsonl).collect(),
+        Transcript::Pi => branch(entries(jsonl).collect()),
+    }
+}
+
+/// The branch a pi session is on: from its last entry up through `parentId`
+/// to a root, read back down.
+///
+/// pi's own reader (`buildSessionPath`, session-manager.js at 0.84.4) takes
+/// the last entry in the file as the leaf and walks to the root, and that is
+/// the whole of what the file says about which branch is live. Branching
+/// writes nothing by itself — the leaf pi keeps in memory moves, and the next
+/// entry appended is the first the file knows of the new branch — so a
+/// session navigated back to an earlier prompt and continued reads as that
+/// continuation, with the path it left behind out of the reading, exactly as
+/// pi would show it on a reload. A session that was never branched is one
+/// path, and reads as it always did.
+///
+/// An entry with no `id` — the header — is on no path. A parent the file
+/// does not hold ends the walk where it is, and a walk longer than the file
+/// is a cycle somebody edited in, and ends too.
+fn branch(entries: Vec<Value>) -> Vec<Value> {
+    let index: HashMap<&str, usize> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(at, entry)| entry["id"].as_str().map(|id| (id, at)))
+        .collect();
+    let mut path = Vec::new();
+    let mut at = entries.iter().rposition(|entry| entry["id"].is_string());
+    while let Some(here) = at
+        && path.len() <= entries.len()
+    {
+        path.push(here);
+        at = entries[here]["parentId"]
+            .as_str()
+            .and_then(|parent| index.get(parent).copied());
+    }
+    path.reverse();
+    let mut entries: Vec<Option<Value>> = entries.into_iter().map(Some).collect();
+    path.into_iter()
+        .filter_map(|at| entries[at].take())
+        .collect()
 }
 
 /// The answer at the end of the conversation, if the turn has ended.
@@ -72,7 +121,8 @@ pub fn read(format: Transcript, jsonl: &str) -> Vec<Said> {
 /// so it answers with nothing instead. The vendor's bookkeeping lines are not
 /// the end of anything and are read past.
 pub fn answer(format: Transcript, jsonl: &str) -> Option<String> {
-    let entries: Vec<Value> = entries(jsonl)
+    let entries: Vec<Value> = spoken(format, jsonl)
+        .into_iter()
         .filter(|entry| voice(format, entry).is_some())
         .collect();
     let last = entries.last()?;
@@ -314,12 +364,66 @@ mod tests {
         // blocks, and a call spelling none of the arguments worth a row is a
         // name on its own.
         let bare = concat!(
-            "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"  go  \"}}\n",
-            "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"name\":\"ls\",\"arguments\":{}}]}}\n",
+            "{\"type\":\"message\",\"id\":\"a1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"  go  \"}}\n",
+            "{\"type\":\"message\",\"id\":\"a2\",\"parentId\":\"a1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"name\":\"ls\",\"arguments\":{}}]}}\n",
         );
         assert_eq!(
             read(Transcript::Pi, bare),
             vec![Said::Prompt("go".to_string()), tool("ls", None)]
+        );
+    }
+
+    #[test]
+    fn conversation_follows_the_branch_a_pi_session_is_on() {
+        // The session above, navigated back to its first prompt and answered
+        // again: pi moves its leaf to `0b`, writes the summary of the path it
+        // left behind as a child of it, and the new answer as a child of that.
+        // The reading is the prompt and the new answer; the tool call and
+        // the first answer are on the branch left behind.
+        let branched = format!(
+            "{PI}{}\n{}\n",
+            "{\"type\":\"branch_summary\",\"id\":\"e1\",\"parentId\":\"0b\",\"fromId\":\"c9\",\"summary\":\"was in /srv/app\"}",
+            "{\"type\":\"message\",\"id\":\"e2\",\"parentId\":\"e1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hello again.\"}],\"stopReason\":\"stop\"}}",
+        );
+        assert_eq!(
+            read(Transcript::Pi, &branched),
+            vec![
+                Said::Prompt("Hi".to_string()),
+                Said::Text("Hello again.".to_string()),
+            ]
+        );
+        assert_eq!(
+            answer(Transcript::Pi, &branched).as_deref(),
+            Some("Hello again."),
+            "and the answer is the branch's, not the file's last assistant line"
+        );
+
+        // Navigated to before the first prompt and asked something else: a
+        // second root, and nothing of the first tree is on its path.
+        let rerooted = format!(
+            "{PI}{}\n",
+            "{\"type\":\"message\",\"id\":\"f1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"start over\"}}",
+        );
+        assert_eq!(
+            read(Transcript::Pi, &rerooted),
+            vec![Said::Prompt("start over".to_string())]
+        );
+
+        // A parent the file does not hold ends the walk where it is, and a
+        // cycle somebody edited in ends it too.
+        let orphaned = "{\"type\":\"message\",\"id\":\"g1\",\"parentId\":\"gone\",\"message\":{\"role\":\"user\",\"content\":\"hm\"}}\n";
+        assert_eq!(
+            read(Transcript::Pi, orphaned),
+            vec![Said::Prompt("hm".to_string())]
+        );
+        let cyclic = concat!(
+            "{\"type\":\"message\",\"id\":\"h1\",\"parentId\":\"h2\",\"message\":{\"role\":\"user\",\"content\":\"one\"}}\n",
+            "{\"type\":\"message\",\"id\":\"h2\",\"parentId\":\"h1\",\"message\":{\"role\":\"user\",\"content\":\"two\"}}\n",
+        );
+        assert_eq!(
+            read(Transcript::Pi, cyclic).len(),
+            2,
+            "each entry once, and the walk ends"
         );
     }
 
@@ -348,12 +452,12 @@ mod tests {
 
         let pi_running = format!(
             "{PI}{}\n",
-            "{\"type\":\"message\",\"message\":{\"role\":\"toolResult\",\"content\":[]}}"
+            "{\"type\":\"message\",\"id\":\"d1\",\"parentId\":\"c9\",\"message\":{\"role\":\"toolResult\",\"content\":[]}}"
         );
         assert_eq!(answer(Transcript::Pi, &pi_running), None);
 
         // And so is one ending on the prompt itself.
-        let asked = "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n";
+        let asked = "{\"type\":\"message\",\"id\":\"d2\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n";
         assert_eq!(answer(Transcript::Pi, asked), None);
     }
 
@@ -370,7 +474,7 @@ mod tests {
         );
         let pi_noise = format!(
             "{PI}{}\n",
-            "{\"type\":\"custom\",\"customType\":\"amx\",\"data\":{}}"
+            "{\"type\":\"custom\",\"id\":\"d3\",\"parentId\":\"c9\",\"customType\":\"amx\",\"data\":{}}"
         );
         assert_eq!(
             answer(Transcript::Pi, &pi_noise).as_deref(),
