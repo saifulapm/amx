@@ -1132,6 +1132,8 @@ $
     //
     // These are checked in so the suite runs on a machine with no pi on it.
     // Re-measure at every vendor bump — see `assets/screen-rules-pi.toml`.
+    // The captures marked 0.85.1 are that document's re-measurement of
+    // 2026-09-06; the rest are 0.84.4's and still read as they did.
 
     /// A pi nobody has typed into yet: the banner, the box, and a footer whose
     /// stats line has nothing but the context window to say. 100 columns, and
@@ -1809,6 +1811,50 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/0 (auto)  unkno
 ";
 
+    /// The login dialog on pi 0.85.1, driven 2026-09-06 at 100 columns on a
+    /// pi that has models, so the warning is not above the box. The dialog
+    /// itself did not move: the same title, the same question, and the same
+    /// hint row in its parentheses, 5 rows under the box's top border.
+    const A_PI_LOGIN_0851: &str = r"
+ (no output)
+
+ Took 75.0s
+
+
+ done
+
+ Refreshing model catalogs…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Login to Cerebras
+
+ Enter Cerebras API key
+>
+ (escape/ctrl+c to cancel, enter to submit)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/tmp/rig/work
+↑41k ↓847 R24k CH0.6% 1.9%/1.0M (auto)             (opencode) muse-spark-1.3-contributor-free • high
+";
+
+    /// The same screen at 20 columns: the hint row breaks after each `to` and
+    /// the span is 6 again, and `(escape/ctrl+c to` is whole on its first row.
+    const A_PI_LOGIN_0851_20: &str = r"
+ catalogs…
+
+────────────────────
+ Login to Cerebras
+
+ Enter Cerebras API
+ key
+>
+ (escape/ctrl+c to
+ cancel, enter to
+ submit)
+────────────────────
+/tmp/rig/work
+↑41k ↓847 R24k CH...
+";
+
     /// The turn is over and the prompt is waiting for a person. The line pi
     /// spins is off the screen; the box, the working directory and the stats
     /// line are where they were.
@@ -1999,6 +2045,43 @@ Only showing models from configured providers. Use /login to add providers.
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ~/.claude/jobs/3bd43671/tmp/measure
 0.0%/1.0M (auto)                                   (opencode) muse-spark-1.3-contributor-free • high
+";
+
+    /// The same selector on pi 0.85.1, driven 2026-09-06 at 100 columns. The
+    /// hint row is built from the person's keybindings now and spells the
+    /// cancel key out in full — `Escape/Ctrl+C to cancel` where 0.84.4 wrote
+    /// `Esc to cancel` — which is the login rule's anchor, on a screen that is
+    /// not the login dialog. The current model wears its mark in front of its
+    /// name rather than after it.
+    const A_PI_MODEL_SELECTOR_0851: &str = r"
+ Error: Failed to save API key for Cerebras: This operation was aborted
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Only showing models from configured providers. Use /login to add providers.
+
+>
+
+→ ✓ muse-spark-1.3-contributor-free [opencode] · default
+    claude-haiku-4.5 [github-copilot]
+    claude-sonnet-4.6 [github-copilot]
+    gemini-3.5-flash [github-copilot]
+    gpt-5-mini [github-copilot]
+    gpt-5.3-codex [github-copilot]
+    gpt-5.4 [github-copilot]
+    gpt-5.4-mini [github-copilot]
+    mai-code-1-flash-picker [github-copilot]
+    mai-code-1.1-flash [github-copilot]
+  (1/477)
+
+  Model Name: Muse Spark 1.3 Free
+
+  Model catalogs refreshed.
+
+  Enter to select · Ctrl+S to set as default · Escape/Ctrl+C to cancel
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/tmp/rig/work
+↑41k ↓847 R24k CH0.6% 2.0%/1.0M (auto)             (opencode) muse-spark-1.3-contributor-free • high
 ";
 
     fn claim<'a>(rules: &'a Ruleset, screen: &str, recorded: Phase) -> Claim<'a> {
@@ -2940,6 +3023,18 @@ Only showing models from configured providers. Use /login to add providers.
                 "login",
                 "Enter Cerebras API key",
             ),
+            (
+                "the login dialog on 0.85.1",
+                A_PI_LOGIN_0851,
+                "login",
+                "Enter Cerebras API key",
+            ),
+            (
+                "the login dialog on 0.85.1 at 20 columns",
+                A_PI_LOGIN_0851_20,
+                "login",
+                "Enter Cerebras API key",
+            ),
         ] {
             let Claim::Ruled(rule) = claim(pi(), screen, Phase::Starting) else {
                 panic!("{what} is claimed by a rule");
@@ -3095,6 +3190,14 @@ Only showing models from configured providers. Use /login to add providers.
             (
                 "a selector taller than the rows a rule may see",
                 A_PI_MODEL_SELECTOR,
+            ),
+            // 0.85.1 spells this selector's cancel key out in full, and the
+            // login rule read `escape/ctrl+c to` on it: a false gate that
+            // doctor names and `send` refuses. The dialog's own parentheses
+            // are what the selector's row does not have.
+            (
+                "the same selector on 0.85.1, its hint row naming both keys",
+                A_PI_MODEL_SELECTOR_0851,
             ),
         ] {
             assert_eq!(

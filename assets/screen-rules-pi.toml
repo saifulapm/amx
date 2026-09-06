@@ -55,6 +55,14 @@
 # than the topmost row carrying each string (src/rules.rs `Rule::holds`).
 # docs/pi-screens.md holds the capture.
 #
+# Re-measured against pi 0.85.1 on 2026-09-06, the same day it went on this
+# machine: every screen above driven again at 100, 54, 40, 30, 24 and 20
+# columns and a pane height of 30, on an opencode run. Two things moved and
+# each is written down at the rule it touched — the working indicator sits in
+# the composer's top border now (the spinner rule), and the model and thinking
+# selectors spell their cancel key the way the login dialog does (the login
+# rule). docs/pi-screens.md holds the captures.
+#
 # ── Whose screens these are ──────────────────────────────────────────────────
 # pi's, and nobody else's. Which document a reader uses is not written here —
 # `src/vendor/pi.rs` points at this file, and the program an agent command runs
@@ -643,11 +651,21 @@ within = 4
 #   ~/.claude/jobs/6bbcd928/tmp/rig/work
 #   0.0%/0 (auto)                                    unknown
 #
-# `escape/ctrl+c to` is the anchor, and it is what tells this screen from the
-# three a caller raises: their hint rows spell the same key `escape/ctrl+c
-# cancel`, with no `to` in it. Sixteen columns, whole at all six widths. The
-# whole row is not — `(escape/ctrl+c to cancel, enter to submit)` breaks after
-# `to` at 40 columns, after `cancel,` at 30, and twice at 24 and 20.
+# `(escape/ctrl+c to` is the anchor, parenthesis and all. The key alone,
+# `escape/ctrl+c to`, was the anchor until pi 0.85.1 and told this screen from
+# the three a caller raises, whose hint rows spell the same key `escape/ctrl+c
+# cancel` with no `to` in it. 0.85.1 builds the model and thinking selectors'
+# hint row out of the person's keybindings and spells the cancel key out in
+# full — `Enter to select · Ctrl+S to set as default · Escape/Ctrl+C to
+# cancel`, where 0.84.4 wrote `Esc to cancel` — and on that row the key alone
+# read `/model` as a pi waiting for a provider's key: a gate `doctor` names and
+# `send` refuses, over a person picking a model. Driven 2026-09-06 at 100
+# columns on both selectors. The parenthesis is what those rows do not have:
+# this dialog wraps its whole hint in one, on every shape it draws, and no
+# other hint row pi draws opens with one. Seventeen columns, whole at all six
+# widths, re-driven on 0.85.1 at all six on the same day — the row breaks
+# after `to` at 40 columns, after `cancel,` at 30, and after each `to` at 24
+# and 20, and the parenthesis and its key are never parted.
 #
 # ── Why this rule sits here, under the spinner ───────────────────────────────
 # One other screen pi draws carries that row: `!cmd` puts `⠧ Running...
@@ -663,14 +681,14 @@ within = 4
 # no provider to call has no turn to be in the middle of — and a screen amx has
 # not seen is not a screen to reorder a document around.
 #
-# The vendor's own title is what this rule cannot use, and the capture above is
-# the reason. `Login to ` would be the better anchor by every other measure —
-# it is fixed, the provider's name is what follows it, and it is on no other
-# screen — but a pi nobody has logged in draws `Use /login to log into a
-# provider` two rows above its own box, `row_of` takes the topmost row carrying
-# a string, and the span from that row to the hint would put this rule out of
-# its own window. The screen that anchor was for is exactly the screen that row
-# is on.
+# The vendor's own title is still not the anchor. `Login to ` is fixed, the
+# provider's name is what follows it, and a rule stands on whichever row fits
+# its window now, so the `Use /login to log into a provider` warning two rows
+# above the box no longer puts the title out of reach. What keeps it out is the
+# model selector: its first row is `Only showing models from configured
+# providers. Use /login to add providers.`, on the screen this rule was just
+# caught claiming, and a title held off that row by nothing but a span is a
+# weaker claim than a fragment the selector does not carry at all.
 #
 # `within` is 6, the widest span measured, and it is what ties the hint row to
 # pi's own box rather than to a rule somewhere above it. The rows between are
@@ -706,7 +724,7 @@ name = "login"
 state = "waiting"
 kind = "question"
 setup = true
-all = ["escape/ctrl+c to", "────────────────────"]
+all = ["(escape/ctrl+c to", "────────────────────"]
 within = 6
 asks = { above = ">" }
 
