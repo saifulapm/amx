@@ -147,15 +147,20 @@
 # frame the vendor indents still opens the row and the same glyph inside a
 # sentence opens nothing.
 #
+# Since 0.85.1 the working kind — and the message an extension writes on it —
+# is drawn in the composer's top border rather than on a row of its own, and
+# the walk takes it with that border, by the rule the border ends in. What the
+# frames still find is the row a compaction or a retry keeps above the box.
+#
 # Two costs, both measured. A row of the agent's own output that opens with one
 # of the ten and sits directly above the box with one blank row between would
 # be taken for the status line and cut. And a message long enough to wrap keeps
 # its frame on the FIRST row of the wrap while this walk reads the LAST row
 # above the box, so at the narrow widths where compaction and a retry wrap —
 # 40 columns and below, which is where the spinner rule below counts a span of
-# 3 rather than 2 — the whole status line stays on the card. `Working...` is
-# short enough to hold one row at every width measured and is cut at all of
-# them. Cutting the rest of a wrap means taking rows by position
+# 3 rather than 2 — the whole status line stays on the card. `Working` is in
+# the border and goes with it at every width measured. Cutting the rest of a
+# wrap means taking rows by position
 # with nothing under them to stop on, and furniture left on the screen is the
 # direction this walk is built to be wrong in; a row of work taken off it is
 # not.
@@ -447,11 +452,14 @@ within = 7
 # columns on 2026-09-05. The title alone is not what a person is being asked
 # there, and the vendor draws no blank row between the two.
 #
-# The screen also carries pi's spinner: a dialog raised from a tool call goes
-# up while the turn is running, so `Working...` is on the pane above the box.
-# That is why this rule sits above the spinner — order, and not the anchors, is
-# what keeps the spinner rule off a screen that is blocked, the same way order
-# is what keeps this rule off the trust screen above.
+# On 0.84.4 the screen also carried pi's spinner: a dialog raised from a tool
+# call goes up while the turn is running, and `Working...` was on the pane
+# above the box. 0.85.1 keeps the working indicator in the editor the dialog
+# replaced, so no frame is on that pane at all — driven 2026-09-06 at 100 and
+# 20 columns. A compaction row above a dialog would still be, and that is why
+# this rule sits above the spinner — order, and not the anchors, is what keeps
+# the spinner rule off a screen that is blocked, the same way order is what
+# keeps this rule off the trust screen above.
 [[rule]]
 name = "dialog"
 state = "waiting"
@@ -554,13 +562,23 @@ kind = "question"
 all = ["enter submit", "────────────────────"]
 asks = { above = ">" }
 
-# A turn is running. pi spins one line just above the composer box, with a
-# blank row between them:
+# A turn is running. pi 0.85.1 draws its working indicator in the composer's
+# own top border — `── `, the frame, the word, a space, and the rule out to
+# the pane's edge:
 #
-#    ⠼ Working...
+#   ── ⠼ Working ───────────────────────────────────────────
 #
 #   ⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏ — all ten seen across the captures. The frame cycles,
-#   the message does not.
+#   the message does not. Until 0.85.0 it was a line of its own two rows above
+#   the box, `⠼ Working...`, with a blank row between; the other three
+#   messages below still are.
+#
+# Driven 2026-09-06 at 100, 54, 40, 30, 24 and 20 columns: the frame is on the
+# border row, the word never wraps, and the rule after it is 87 wide at 100
+# columns and 7 at 20 — so at the narrow end the twenty this rule asks for are
+# on the bottom border alone, two rows under the frame and inside the window.
+# The furniture walk takes that border the way it takes any top border, by the
+# rule it ends in, and the word goes with it.
 #
 # What this buys over claude, which drops its spinner line entirely while an
 # answer streams: on pi the line stays up for the whole turn. There is no
@@ -598,8 +616,8 @@ asks = { above = ">" }
 # consecutive captures at eight a second.
 #
 # `within` is 4, and it is the widest span measured rather than a margin. With
-# `Working...` on the row it is 2 at every width — the message, one blank row
-# and the box's top border. The other three messages are long enough to wrap
+# the word in the top border it is 2 at every width — that border, the row
+# staged in the box, and the bottom border. The other three messages are long enough to wrap
 # and the frame stays on the FIRST row of the wrap, which pushes the box
 # further down: compaction and a retry measured 2 at 100 and 54 columns, 3 at
 # 40 and 30, and 4 at 24 and 20. A message longer than those wraps further and
@@ -617,9 +635,11 @@ asks = { above = ">" }
 # better of the two answers available: the pane is busy, and what it read
 # before was `unknown`.
 #
-# One measured floor: the spinner is the first row a short pane loses. At eight
-# rows it is still on the screen; at six the box, the working directory and the
-# stats line are all that fit, and a running pi reads idle.
+# One measured floor, on 0.84.4: the spinner was the first row a short pane
+# lost. At eight rows it was still on the screen; at six the box, the working
+# directory and the stats line were all that fit, and a running pi read idle.
+# On 0.85.1 the frame is on a row a six-row pane keeps, and short panes were
+# not re-driven.
 [[rule]]
 name = "spinner"
 state = "working"

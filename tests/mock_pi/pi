@@ -39,10 +39,11 @@
 #                   of a pi nobody has typed into yet; `notice`, the same pane
 #                   with the Update Available box pi draws above its composer
 #                   when a newer pi exists, and `notice-working`, a turn
-#                   running under that box; `working`, with the line
-#                   pi spins above its box; `compacting`, `retrying` and
-#                   `renamed`, the same row with each of the other three things
-#                   pi says on it; `dialog`, blocked on a question with the
+#                   running under that box; `working`, with the frame and
+#                   the word in its box's top border; `compacting` and
+#                   `retrying`, the row pi keeps above the box for those
+#                   two, and `renamed`, an extension's message where the
+#                   word was; `dialog`, blocked on a question with the
 #                   composer replaced; `input` and `editor`, blocked the same
 #                   way on a line and on a block of text; `trust`, blocked on
 #                   whether this folder is one to trust; `setup`, the gate a
@@ -253,8 +254,9 @@ notice() {
 	box "$FRESH"
 }
 
-# A turn running under the update box, as measured at 100x30: the prompt
-# echoed two rows under the box, the spinner two rows above the composer.
+# A turn running under the update box, as measured at 100x30 on 0.84.4: the
+# prompt echoed two rows under the box, and then the composer with the frame
+# and the word in its top border, which is where 0.85.1 draws them.
 notice_working() {
 	printf ' pi v0.84.4\n'
 	printf ' escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more\n'
@@ -262,29 +264,47 @@ notice_working() {
 	printf ' Pi can explain its own features and look up its docs.\n\n\n'
 	update_box
 	printf '\n Run this exact bash command and nothing else: echo hi\n\n\n'
-	printf ' ⠦ Working...\n\n'
-	box "$FRESH"
+	working_box '⠦' 'Working' "$FRESH"
 }
 
-# The line pi spins sits two rows above the box's top border, with one blank
-# row between them, and stays up for the whole turn.
+# The composer with the working indicator in its top border, which is where
+# pi 0.85.1 draws it: `── `, the frame, the message, a space, and the rule out
+# to the pane's edge, with no status row above the box. Measured 2026-09-06 at
+# 100, 54, 40, 30, 24 and 20 columns; at 20 the rule after the message is
+# seven wide, and the bottom border is the twenty the spinner rule asks for.
+# `$1` is the frame, `$2` the message, `$3` the stats line.
+working_box() {
+	lead="── $1 $2 "
+	rule=
+	column=$((${#2} + 6))
+	while [ "$column" -lt "$width" ]; do
+		rule=$rule─
+		column=$((column + 1))
+	done
+	printf '%s%s\n\n%s\n%s\n%s\n' "$lead" "$rule" "$border" "$here" "$3"
+}
+
+# A turn running: the prompt echoed, and the frame and the word in the box's
+# top border for the whole of it.
 working() {
 	printf ' Run this exact bash command and nothing else: echo hi\n\n\n'
-	printf ' ⠼ Working...\n\n'
-	box "$TURNED"
+	working_box '⠼' 'Working' "$TURNED"
 }
 
-# The other three things pi puts on that row, drawn where `working` draws its
-# own. pi has one status line and swaps out which of its four kinds is on it:
-# `/compact` and a retry each take the working indicator down and put their own
-# where it was, so `Working...` is off the pane for the whole of either, and
-# `ctx.ui.setWorkingMessage` rewrites the message on the kind that is left.
-# What none of them changes is the frame in front of the message or the row it
-# is on. The frame is a different one of the ten on each screen below, because
-# the vendor cycles them and no capture can say which one a pane is on.
-# Measured at 100 columns on 2026-09-05 — the first two against a provider that
-# never answered and one that answered 503 to everything, the third against an
-# extension that set its own message on session start.
+# The other three things pi says while a turn runs. pi has one status
+# indicator and swaps out which of its four kinds is up. Only the working one
+# is drawn in the border: `/compact` and a retry each take it down and put
+# their own on the row above the box, with a blank row between, which is where
+# every kind was drawn before 0.85.1 — so `Working` is off the pane for the
+# whole of either. `ctx.ui.setWorkingMessage` rewrites the message on the
+# working kind, and the message goes where the word went. What none of them
+# changes is the frame in front of the message. The frame is a different one
+# of the ten on each screen below, because the vendor cycles them and no
+# capture can say which one a pane is on. Measured at 100 columns on
+# 2026-09-05 — the first two against a provider that never answered and one
+# that answered 503 to everything, the third against an extension that set its
+# own message on session start; the rows the first two keep and the border the
+# third moved into are 0.85.1's own source, read 2026-09-06 and not driven.
 compacting() {
 	printf ' Run this exact bash command and nothing else: echo hi\n\n\n'
 	printf ' ⠴ Compacting context... (escape to cancel)\n\n'
@@ -299,8 +319,7 @@ retrying() {
 
 renamed() {
 	printf ' Run this exact bash command and nothing else: echo hi\n\n\n'
-	printf ' ⠧ Reviewing the diff\n\n'
-	box "$FRESH"
+	working_box '⠧' 'Reviewing the diff' "$FRESH"
 }
 
 idle() {
@@ -331,14 +350,15 @@ wordless() {
 }
 
 # pi blocked on a dialog raised while gating a tool call: the turn is still
-# running, so the line pi spins is up above the box exactly as it is on
-# `working`, and inside the box the editor is replaced by the question and its
-# choices. The two borders stay where they were, with the working directory
-# and the stats line under them exactly as on any other screen. Measured at
-# 100 columns with an extension gating the bash tool with `ctx.ui.select`.
+# running, and nothing on the pane spins. 0.85.1 keeps the working indicator
+# in the editor, and the dialog has replaced the editor with the question and
+# its choices, so the frame is off the screen for as long as the question is
+# on it. The two borders stay where they were, with the working directory and
+# the stats line under them exactly as on any other screen. Measured at 100
+# and 20 columns on 2026-09-06 with an extension gating the bash tool with
+# `ctx.ui.select`.
 dialog() {
 	printf ' Run this exact bash command and nothing else: echo hi\n\n\n'
-	printf ' ⠼ Working...\n\n'
 	printf '%s\n\n Run echo hi?\n\n → Allow once\n   Allow always\n   Deny\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel\n\n%s\n%s\n%s\n' \
 		"$border" "$border" "$here" "$TURNED"
 }

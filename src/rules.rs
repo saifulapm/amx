@@ -1205,6 +1205,61 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
 ";
 
+    /// A turn running on pi 0.85.1, driven 2026-09-06 at 100 columns. The
+    /// working indicator is in the composer's top border now — `── `, the
+    /// frame, the message with no ellipsis, and the rule out to the edge —
+    /// and no status row sits above the box. The bottom border is a full row
+    /// of rule as it always was.
+    const A_PI_WORKING_0851: &str = r"
+ $ uname -a 2>&1 | head -n 5; echo ---; echo $XDG_SESSION_TYPE $WAYLAND_DISPLAY $DISPLAY; echo ---;
+ ls /sys/class/drm 2>&1 | head -n 20; echo ---; cat /sys/class/drm/*/modes 2>&1 | head -n 20
+
+ ... (10 earlier lines, ctrl+o to expand)
+ renderD128
+ version
+ ---
+ 60x2008
+ 2560x1600
+
+ Took 0.0s
+
+
+
+ Run sleep 75 with the bash tool, then reply with the single word done.
+
+
+── ⠼ Working ───────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/tmp/rig/work
+↑20k ↓682 R3.8k CH9.6% 1.9%/1.0M (auto)            (opencode) muse-spark-1.3-contributor-free • high
+";
+
+    /// The same turn at 20 columns, where the top border has room for seven
+    /// rules after the message and the twenty the rule asks for are on the
+    /// bottom border alone. The frame is two rows above it.
+    const A_PI_WORKING_0851_20: &str = r"
+ Run sleep 75 with
+ the bash tool,
+ then reply with
+ the single word
+ done.
+
+
+
+ $ sleep 75
+ (timeout 90s)
+
+ Elapsed 13.0s
+
+
+── ⠇ Working ───────
+
+────────────────────
+/tmp/rig/work
+↑20k ↓823 R23k CH...
+";
+
     /// pi compacting the context at 100 columns, raised with `/compact`.
     /// `Working...` is off the pane while this is up: the vendor takes the
     /// working indicator down and puts this one where it was, on the same row
@@ -2863,6 +2918,18 @@ Only showing models from configured providers. Use /login to add providers.
                 Phase::Waiting,
             ),
             ("a turn running", A_PI_WORKING, Phase::Idle, Phase::Working),
+            (
+                "a turn running on 0.85.1, the frame in the box's top border",
+                A_PI_WORKING_0851,
+                Phase::Idle,
+                Phase::Working,
+            ),
+            (
+                "the same at 20 columns, where only the bottom border is twenty rules",
+                A_PI_WORKING_0851_20,
+                Phase::Idle,
+                Phase::Working,
+            ),
             ("a finished turn", A_PI_IDLE, Phase::Starting, Phase::Idle),
             (
                 "the same at 24 columns, the context indicator truncated away",
@@ -2909,6 +2976,10 @@ Only showing models from configured providers. Use /login to add providers.
         // spins in front of the message is on all four.
         for (what, screen) in [
             ("a turn under the vendor's own word", A_PI_WORKING),
+            (
+                "the same on 0.85.1, the word and its frame in the top border",
+                A_PI_WORKING_0851,
+            ),
             ("a compacting turn", A_PI_COMPACTING),
             (
                 "the same at 20 columns, the message wrapped across three rows",
@@ -3294,6 +3365,17 @@ Only showing models from configured providers. Use /login to add providers.
             "the rows the agent earned are not"
         );
 
+        // 0.85.1 puts the word in the top border, and the border step takes
+        // that row the way it takes any top border: it ends in the rule.
+        let working = cut(A_PI_WORKING_0851);
+        assert!(
+            !working.iter().any(|row| row.contains("Working")),
+            "the top border goes with the word in it: {working:?}"
+        );
+        assert!(
+            working.iter().any(|row| row.contains("single word done")),
+            "and the prompt above it stays: {working:?}"
+        );
         assert!(
             !cut(A_PI_WORKING)
                 .iter()

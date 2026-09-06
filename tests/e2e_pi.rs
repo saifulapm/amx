@@ -352,19 +352,31 @@ fn spins(row: &str) -> bool {
         .starts_with(|glyph: char| ('\u{2800}'..='\u{28ff}').contains(&glyph))
 }
 
-/// The three status lines pi draws that do not say `Working...`, and the
-/// scenario that puts each on a pane.
-const OTHER_STATUS_LINES: [(&str, &str, &str); 3] = [
+/// Whether a row is the composer's top border with the working indicator in
+/// it, the way pi 0.85.1 draws one: `── `, a frame, the message, and the rule
+/// out to the pane's edge.
+fn framed_border(row: &str) -> bool {
+    row.strip_prefix("── ")
+        .is_some_and(|rest| spins(rest) && row.trim_end().ends_with('─'))
+}
+
+/// The three status lines pi draws that do not say `Working`, the scenario
+/// that puts each on a pane, and whether 0.85.1 draws it in the composer's top
+/// border. Compaction and a retry keep the row above the box; an extension's
+/// own message replaces the vendor's word, and goes where the word went.
+const OTHER_STATUS_LINES: [(&str, &str, &str, bool); 3] = [
     (
         "a compacting turn",
         "compacts-the-context",
         "Compacting context...",
+        false,
     ),
-    ("a retrying turn", "retries-a-turn", "Retrying (1/3)"),
+    ("a retrying turn", "retries-a-turn", "Retrying (1/3)", false),
     (
         "a turn under an extension's own working message",
         "renames-the-working-line",
         "Reviewing the diff",
+        true,
     ),
 ];
 
@@ -858,11 +870,12 @@ fn fork_asks_pi_for_the_origin_id_and_a_new_one_in_the_same_argv() {
 }
 
 #[test]
-fn the_stand_in_spins_pis_line_two_rows_above_pis_own_box() {
+fn the_stand_in_spins_pis_line_in_pis_own_top_border() {
     // The screen `assets/screen-rules-pi.toml` names `spinner`, drawn the way
-    // it was measured: the line, one blank row, and the top of the composer
-    // box. Two rows is the whole of what separates the word half the build
-    // tools print from the word on the row above this vendor's own chrome.
+    // pi 0.85.1 draws it: the frame and the word in the composer's top border
+    // — `── `, the frame, `Working`, and the rule out to the edge — with no
+    // status row above the box. Two rows under it is the bottom border, the
+    // one row of rule twenty columns wide that the rule stands on.
     let amx = Harness::new();
     let id = "watch-log-c3d";
     start(&amx, id, "works-without-end");
@@ -876,29 +889,36 @@ fn the_stand_in_spins_pis_line_two_rows_above_pis_own_box() {
     // one that was, which is the reading this whole file exists to rule out.
     let rows = amx.until("the turn to be under way", || {
         let rows = drawn(&amx, &pane);
-        row_of(&rows, "Working...").is_some().then_some(rows)
+        row_of(&rows, "Working").is_some().then_some(rows)
     });
-    let spinner = row_of(&rows, "Working...").expect("the line pi spins");
-    let top = *borders(&rows)
+    let working = row_of(&rows, "Working").expect("the line pi spins");
+    assert!(
+        framed_border(&rows[working]),
+        "the frame and the word are in the box's top border: {rows:?}"
+    );
+    let bottom = *borders(&rows)
         .first()
         .unwrap_or_else(|| panic!("pi's composer box: {rows:?}"));
     assert_eq!(
-        top - spinner,
+        bottom - working,
         2,
-        "the line, one blank row, and the top of the box: {rows:?}"
+        "the top border, one blank row, and the bottom border: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("Working...")),
+        "0.85.1 dropped the ellipsis: {rows:?}"
     );
 }
 
 #[test]
 fn the_stand_in_spins_the_status_lines_that_do_not_say_working() {
-    // pi has one status line and swaps out which of its four kinds is on it.
-    // Compaction and a retry each take the working indicator down and put
-    // their own where it was, so `Working...` is off the pane for the whole of
-    // either, and `ctx.ui.setWorkingMessage` rewrites the message on the kind
-    // that is left. What all three keep is the frame and the row: two above
-    // the box's top border with a blank row between, exactly where the working
-    // line sits, which is the shape the spinner rule was measured against.
-    for (what, scenario, message) in OTHER_STATUS_LINES {
+    // pi has one status indicator and swaps out which of its four kinds is
+    // up. Compaction and a retry each take the working indicator down and put
+    // their own on the row above the box, so `Working` is off the pane for
+    // the whole of either; `ctx.ui.setWorkingMessage` rewrites the message on
+    // the kind that is left, which 0.85.1 draws in the composer's top border.
+    // What all three keep is the frame, which is what the spinner rule reads.
+    for (what, scenario, message, embedded) in OTHER_STATUS_LINES {
         let amx = Harness::new();
         let id = "watch-log-c3d";
         start(&amx, id, scenario);
@@ -910,25 +930,39 @@ fn the_stand_in_spins_the_status_lines_that_do_not_say_working() {
         });
 
         let line = row_of(&rows, message).expect("the status line");
-        let top = *borders(&rows)
-            .first()
+        let bottom = *borders(&rows)
+            .last()
             .unwrap_or_else(|| panic!("pi's composer box: {rows:?}"));
-        assert_eq!(
-            top - line,
-            2,
-            "{what}: the line, one blank row, and the top of the box: {rows:?}"
-        );
+        if embedded {
+            assert!(
+                framed_border(&rows[line]),
+                "{what}: the message is in the box's top border, where the \
+                 vendor's own word goes: {rows:?}"
+            );
+            assert_eq!(
+                bottom - line,
+                2,
+                "{what}: the top border, one blank row, and the bottom border: {rows:?}"
+            );
+        } else {
+            let top = borders(&rows)[0];
+            assert_eq!(
+                top - line,
+                2,
+                "{what}: the line, one blank row, and the top of the box: {rows:?}"
+            );
+            assert!(
+                spins(&rows[line]),
+                "{what}: the row opens with the frame pi spins: {rows:?}"
+            );
+        }
         assert!(
-            spins(&rows[line]),
-            "{what}: the row opens with the frame pi spins: {rows:?}"
-        );
-        assert!(
-            !rows.iter().any(|row| row.contains("Working...")),
+            !rows.iter().any(|row| row.contains("Working")),
             "{what}: the word the spinner rule used to stand on is nowhere on \
              the pane: {rows:?}"
         );
         assert_eq!(
-            rows.len() - borders(&rows)[1],
+            rows.len() - bottom,
             3,
             "{what}: the working directory and the stats line under the box, \
              same as any other screen: {rows:?}"
@@ -938,13 +972,13 @@ fn the_stand_in_spins_the_status_lines_that_do_not_say_working() {
 
 #[test]
 fn a_pi_whose_status_line_stopped_saying_working_is_still_working() {
-    // Three ways a turn can be under way with the word `Working...` nowhere on
+    // Three ways a turn can be under way with the word `Working` nowhere on
     // the pane, and all three read `unknown` under a rule that stands on that
     // word: a compacting pi is doing work nobody can interrupt usefully, a
     // retrying one is between two provider calls, and a turn under an
     // extension's own message is an ordinary turn with the message rewritten.
     // The frame is what says a turn is running on all three.
-    for (what, scenario, message) in OTHER_STATUS_LINES {
+    for (what, scenario, message, _) in OTHER_STATUS_LINES {
         let amx = Harness::new();
         let id = "watch-log-c3d";
         start(&amx, id, scenario);
@@ -991,7 +1025,7 @@ fn the_stand_in_draws_the_box_and_the_footer_pi_keeps_under_every_screen() {
     });
 
     assert!(
-        row_of(&rows, "Working...").is_none(),
+        row_of(&rows, "Working").is_none(),
         "the spinner went with the turn: {rows:?}"
     );
     assert_eq!(borders(&rows).len(), 2, "the box is drawn whole: {rows:?}");
@@ -1035,18 +1069,14 @@ fn the_stand_in_draws_the_dialog_in_pis_box_with_the_turn_still_over_it() {
         top < hint && hint < bottom,
         "the hint row sits inside the box, where the editor usually is: {rows:?}"
     );
-    // And the spinner is still up above the box, because pi raises this dialog
-    // from a tool call while the turn is running. Both documented anchors are
-    // on this one pane — the hint row the dialog rule stands on and the
-    // spinner two rows over the border the spinner rule stands on — which is
-    // why the document's order, and not its anchors, is what keeps the spinner
-    // rule off a screen that is blocked.
-    let spinner =
-        row_of(&rows, "Working...").unwrap_or_else(|| panic!("the line pi spins: {rows:?}"));
-    assert_eq!(
-        top - spinner,
-        2,
-        "the line, one blank row, and the top of the box: {rows:?}"
+    // And nothing spins over it. pi raises this dialog from a tool call while
+    // the turn is running, and 0.85.1 keeps the working indicator in the
+    // editor the dialog replaced, so a turn is under way on this pane with no
+    // frame on it anywhere. Order still keeps the spinner rule off the screen
+    // a compaction row would share with it; the anchors alone never did.
+    assert!(
+        !rows.iter().any(|row| spins(row) || framed_border(row)),
+        "no frame anywhere on a dialog raised mid-turn: {rows:?}"
     );
     assert_eq!(
         rows.len() - bottom,
@@ -1110,7 +1140,7 @@ fn the_stand_in_draws_the_two_screens_a_caller_asks_for_words_on() {
         // a turn or between two of them; the fixture draws them the way they
         // were measured, which was with no turn under way.
         assert!(
-            row_of(&rows, "Working...").is_none(),
+            row_of(&rows, "Working").is_none(),
             "no turn is under way behind this question: {rows:?}"
         );
         assert_eq!(
@@ -1224,7 +1254,7 @@ fn a_pi_on_the_folder_trust_question_reads_trust_and_not_a_tool_call() {
     // turn rather than a tool call raising it inside one, so the line pi spins
     // is not on the pane the way it is over a dialog.
     assert!(
-        row_of(&rows, "Working...").is_none(),
+        row_of(&rows, "Working").is_none(),
         "no turn is under way behind this question: {rows:?}"
     );
     assert_eq!(
@@ -1582,10 +1612,11 @@ fn a_fresh_pi_under_its_update_notice_still_reads_idle_and_working() {
         "the composer under the box: {agent}"
     );
 
-    // The same box with a turn running under it.
+    // The same box with a turn running under it, the frame in the composer's
+    // top border where 0.85.1 draws it.
     amx.until("the turn under the notice", || {
         let rows = drawn(&amx, &pane);
-        (row_of(&rows, "Update Available").is_some() && rows.iter().any(|row| spins(row)))
+        (row_of(&rows, "Update Available").is_some() && rows.iter().any(|row| framed_border(row)))
             .then_some(())
     });
     let agent = status(&amx, id);
@@ -2169,8 +2200,9 @@ fn logs_cut_the_status_line_pi_spins_whatever_it_says_on_it() {
     // it is not the agent's business either. The walk held the one message,
     // so it cut that row while `Working...` was on it and printed it back at
     // somebody the other three times: `amx logs` on a compacting turn opened
-    // with the vendor telling them it was compacting.
-    for (what, scenario, message) in OTHER_STATUS_LINES {
+    // with the vendor telling them it was compacting. On 0.85.1 an extension's
+    // message is in the top border, and goes with the box.
+    for (what, scenario, message, _) in OTHER_STATUS_LINES {
         let amx = Harness::new();
         let id = "fix-login-a1b";
         start(&amx, id, scenario);

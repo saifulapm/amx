@@ -152,7 +152,10 @@ impl Furniture {
         at -= 1;
 
         // And the line the vendor spins while a turn runs, which sits above
-        // the box with a blank row between them.
+        // the box with a blank row between them. A vendor that draws its
+        // working indicator in the top border itself — pi since 0.85.1 —
+        // has already lost it with that border; what this step finds on
+        // such a vendor is the row it keeps up there for a compaction.
         let mut above = at;
         while above > 0 && blank(rows[above - 1]) {
             above -= 1;
