@@ -907,6 +907,46 @@ fn the_composer_takes_a_newline_from_ctrl_j_where_alt_enter_puts_one() {
 }
 
 #[test]
+fn the_composer_takes_a_newline_from_shift_enter_where_the_terminal_sends_one() {
+    let amx = Harness::new();
+
+    // A terminal that can say the shift on an enter. tmux answers the
+    // modifyOtherKeys request rather than the kitty one the view makes, so the
+    // pane is told to send modified keys whatever the program in it asked for,
+    // in the format crossterm reads them in. Both are settled when the pane is
+    // made, and an option wants a server to stand on, so a session of nothing
+    // goes first and the view opens after them.
+    amx.tmux(&["new-session", "-d", "--", "sh", "-c", "sleep 600"]);
+    amx.tmux(&["set", "-s", "extended-keys", "always"]);
+    amx.tmux(&["set", "-s", "extended-keys-format", "csi-u"]);
+
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "port the importer");
+    amx.until("the first row of the task", || {
+        screen(&amx, &view)
+            .contains("❯ port the importer")
+            .then_some(())
+    });
+
+    press(&amx, &view, "S-Enter");
+    types(&amx, &view, "and its tests");
+    let drawn = amx.until("the second row of the task", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("and its tests").then_some(drawn)
+    });
+    assert!(
+        !drawn.contains("importerand"),
+        "shift+enter breaks the line rather than landing on the end of it:\n{drawn}"
+    );
+    assert!(
+        agents(&amx).is_empty(),
+        "and it grows the line rather than sending it:\n{drawn}"
+    );
+}
+
+#[test]
 fn the_composer_types_where_the_cursor_stands_rather_than_at_the_end() {
     let amx = Harness::new();
     let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");

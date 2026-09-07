@@ -34,7 +34,8 @@ use anyhow::{Context, Result};
 use crossterm::cursor::Show;
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
+    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::style::Print;
@@ -492,6 +493,13 @@ struct Screen {
 /// lines queued up to dispatch themselves after it. It is the same law amx has
 /// always sent text to an agent under, facing the other way.
 ///
+/// It is asked for one thing more: to tell apart the keys it otherwise sends
+/// the same bytes for, which is what a terminal that speaks the kitty
+/// keyboard protocol does when the disambiguation is pushed at it. That is
+/// what makes shift+enter a key of its own rather than an enter. A terminal
+/// that does not speak it ignores the asking and goes on sending enter, so
+/// nothing is owed to it and nothing is lost.
+///
 /// `cap` is what the counts on the header are read against, which the front
 /// door decides: see [`Profile::cap`].
 pub fn run(root: &Path, config: &Config, scope: &Scope, cap: Option<usize>) -> Result<i32> {
@@ -502,6 +510,10 @@ pub fn run(root: &Path, config: &Config, scope: &Scope, cap: Option<usize>) -> R
     // And the mouse, for as long as the view holds the screen: the list
     // takes it, and shift is the terminal's own selection the whole time.
     let moused = execute!(std::io::stdout(), EnableMouseCapture).is_ok();
+
+    // And the shift on an enter, which a terminal has no way of sending until
+    // it is asked to tell the modified keys apart.
+    let _ = execute!(std::io::stdout(), TELL_THE_KEYS_APART);
 
     // The title the terminal came with, kept while the view has its own to
     // say, and put back below. A view that renamed somebody's window and left
@@ -529,6 +541,7 @@ pub fn run(root: &Path, config: &Config, scope: &Scope, cap: Option<usize>) -> R
     if bracketed {
         let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     }
+    let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     let _ = execute!(std::io::stdout(), Print(PUT_THE_TITLE_BACK));
     ratatui::restore();
 
@@ -584,6 +597,17 @@ impl Painting {
 /// nothing, and the worst of it is a window left called `amx`.
 const KEEP_THE_TITLE: &str = "\x1b[22;2t";
 const PUT_THE_TITLE_BACK: &str = "\x1b[23;2t";
+
+/// What a terminal is asked with to tell apart the keys it otherwise sends the
+/// same bytes for.
+///
+/// The least of the kitty keyboard protocol: enough for shift+enter to arrive
+/// as an enter with a shift on it, and not the event kinds or the released
+/// keys, which would be a second event for every press the view already reads
+/// one of. Asked for by pushing it and given back by popping it, so a terminal
+/// somebody had already set up for something else is left the way it was.
+const TELL_THE_KEYS_APART: PushKeyboardEnhancementFlags =
+    PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES);
 
 /// The line somebody pastes, which is the verb amx already has with a clock
 /// beside it.
@@ -905,6 +929,11 @@ where
     // decides for itself whether it wants one.
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+    // The disambiguation goes back with them, for the same reason: whatever
+    // borrows the terminal reads keys off it and says for itself how it wants
+    // them. An editor left inside a protocol the view asked for is an editor
+    // reading keys in a shape it never agreed to.
+    let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     // And so does the cursor. The view draws its own and keeps the terminal's
     // put away, but an editor is a program that expects to find one there: it
     // never asks for a cursor, it just writes where the cursor is. Nothing
@@ -919,6 +948,7 @@ where
     execute!(std::io::stdout(), EnterAlternateScreen).context("taking the terminal back")?;
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
     let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    let _ = execute!(std::io::stdout(), TELL_THE_KEYS_APART);
     terminal.clear()?;
     Ok(outcome)
 }
@@ -1598,18 +1628,27 @@ impl Screen {
                 }
                 return Ok(Doing::Carry);
             }
-            // A newline in the line rather than the end of it. The one key
-            // that grows the composer by hand, and the one enter that does not
-            // dispatch: a composer where the plain one did not would be a
-            // composer nobody could send from.
+            // A newline in the line rather than the end of it. The enters that
+            // grow the composer by hand rather than dispatching: a composer
+            // where the plain one did not would be a composer nobody could
+            // send from.
             //
-            // And the same newline under the chord a terminal that will not
-            // send alt+enter has instead. It arrives as 0x0A, which raw mode
-            // no longer turns into a carriage return, so what crossterm hands
-            // over is the letter that byte is the control code of.
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+            // Shift is the one everybody reaches for, and it only arrives at
+            // all on a terminal that took [`TELL_THE_KEYS_APART`]: everywhere
+            // else shift+enter is an enter, and the line it was pressed on is
+            // sent. Alt is what the terminals that cannot say the shift have,
+            // and is read whether or not the shift came with it.
+            KeyCode::Enter
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+            {
                 composer.insert("\n");
             }
+            // And the same newline under the chord a terminal that will not
+            // send either of those has instead. It arrives as 0x0A, which raw
+            // mode no longer turns into a carriage return, so what crossterm
+            // hands over is the letter that byte is the control code of.
             KeyCode::Char('j') if chord(key) == KeyModifiers::CONTROL => composer.insert("\n"),
             // The word the choice is standing on, put where the word being
             // typed is. Enter as well as tab, because a line with a list open
