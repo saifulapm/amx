@@ -269,6 +269,7 @@ impl Harness {
             &json!({
                 "id": id,
                 "task": "fix the login bug",
+                "agent": "claude",
                 "dir": self.home.path(),
                 "socket": { "name": self.socket },
                 "pane": pane,
