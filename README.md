@@ -297,8 +297,9 @@ the whole table.
 | `ctrl+s` | gather them by state or by project |
 | `ctrl+t` | pin it over the wall, and again to let it go |
 | `shift+↑` `shift+↓` | move it up or down its group |
-| `alt+enter` | a newline in the line, without sending it |
-| `ctrl+j` | the same newline, where `alt+enter` does not arrive |
+| `shift+enter` | a newline in the line, without sending it |
+| `alt+enter` | the same newline, where `shift+enter` does not arrive |
+| `ctrl+j` | the same again, where neither of those arrives |
 | `tab` | the word offered under the line, or on nothing the agents |
 | `←` `→` `ctrl+←` `ctrl+→` | the cursor along the line, by a character or by a word |
 | `home` `end` `ctrl+a` `ctrl+e` | the front of the line, and the end of it |
@@ -594,8 +595,12 @@ The keys that edit any of these lines are a shell prompt's. `←` and `→` walk
 character and `ctrl+←` and `ctrl+→` a word; `home` and `end`, or `ctrl+a` and
 `ctrl+e`, go to the ends. `backspace` takes the character behind the cursor and
 `delete` the one under it, and `ctrl+w` or `alt+backspace` takes the whole word
-behind it. `alt+enter` puts a newline in the line without sending it, and
-`ctrl+j` does the same where your terminal will not send `alt+enter`.
+behind it. `shift+enter` puts a newline in the line without sending it, on a
+terminal that can tell that chord from a plain `enter` — amx asks for the kitty
+keyboard protocol's disambiguation while it holds the screen, and a terminal
+that does not speak it sends `enter` and sends the line. `alt+enter` does the
+same newline everywhere, and `ctrl+j` where your terminal will not send
+`alt+enter` either.
 
 A paste is one edit, every newline in it included, and it lands where the
 cursor is standing — pasted at the list it opens a task line rather than being
