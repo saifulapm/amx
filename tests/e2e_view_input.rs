@@ -697,7 +697,7 @@ fn the_composer_starts_an_agent_in_the_project_the_cursor_is_under() {
 }
 
 #[test]
-fn the_composer_takes_a_paste_as_one_edit_and_grows_to_its_cap() {
+fn the_composer_folds_a_long_paste_and_starts_the_task_it_stands_for() {
     let amx = Harness::new();
     let view = a_view_that_dispatches(&amx, "happy-turn");
 
@@ -706,23 +706,62 @@ fn the_composer_takes_a_paste_as_one_edit_and_grows_to_its_cap() {
     let pasted = format!("{}\n", twenty_rows());
     pastes(&amx, &view, &pasted);
 
-    let drawn = amx.until("the pasted task", || {
+    let drawn = amx.until("the marker the paste folded into", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("row-20").then_some(drawn)
+        drawn.contains("[Pasted text #1]").then_some(drawn)
     });
+    assert!(
+        drawn.contains("❯ [Pasted text #1]"),
+        "twenty rows stand on the line as the one row that names them:\n{drawn}"
+    );
+    assert!(
+        !drawn.contains("row-01") && !drawn.contains("row-20"),
+        "and none of what the marker is holding is on the screen:\n{drawn}"
+    );
     assert!(
         agents(&amx).is_empty(),
         "a paste is one edit, its own last newline included:\n{drawn}"
     );
 
-    // Ten rows, or a third of the terminal where that is less. The paste's own
-    // last newline leaves an empty row at the bottom, where the cursor is, so
-    // the line at the top of the composer is one further back than the count.
+    // And the enter afterwards is what dispatches, once, with what the marker
+    // stands for rather than the marker.
+    press(&amx, &view, "Enter");
+    let id = composed(&amx);
+    assert_eq!(
+        amx.meta(&id)["task"].as_str(),
+        Some(pasted.as_str()),
+        "one task, with every line of the paste in it"
+    );
+}
+
+#[test]
+fn the_composer_grows_to_its_cap_as_a_line_is_broken() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+
+    // Twenty rows made a newline at a time, which is the way a line grows past
+    // what the composer can show without a paste to fold.
+    types(&amx, &view, "n");
+    for (n, row) in twenty_rows().lines().enumerate() {
+        if n > 0 {
+            press(&amx, &view, "C-j");
+        }
+        types(&amx, &view, row);
+    }
+    let drawn = amx.until("the last row of the line", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("row-20").then_some(drawn)
+    });
+
+    // Ten rows, or a third of the terminal where that is less. The cursor is
+    // at the end of the last row, so the rows above the cap are the ones that
+    // scrolled.
     let height: usize = pane_field(&amx, &view, "#{pane_height}")
         .parse()
         .expect("a pane height");
     let cap = 10.min(height / 3);
-    let top = format!("❯ row-{:02}", 22 - cap);
+    let top = format!("❯ row-{:02}", 21 - cap);
     assert!(
         drawn.contains(&top),
         "the composer stops at {cap} rows and scrolls to {top}:\n{drawn}"
@@ -730,15 +769,6 @@ fn the_composer_takes_a_paste_as_one_edit_and_grows_to_its_cap() {
     assert!(
         !drawn.contains("row-01"),
         "and what scrolled past is off the screen:\n{drawn}"
-    );
-
-    // And the enter afterwards is what dispatches, once, with the whole of it.
-    press(&amx, &view, "Enter");
-    let id = composed(&amx);
-    assert_eq!(
-        amx.meta(&id)["task"].as_str(),
-        Some(pasted.as_str()),
-        "one task, with every line of the paste in it"
     );
 }
 

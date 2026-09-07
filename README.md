@@ -549,10 +549,11 @@ question a task of three letters is asked included, so the answer to that
 question is what carries you there.
 
 `ctrl+g` writes that line in your own editor. It opens `$VISUAL`, or `$EDITOR`,
-or `vi`, on a file holding whatever is on the line, hands it the terminal, and
-puts back what you wrote when you close it — pressed on the list it opens a
-task line first, so a task worth a paragraph is one keystroke away. An editor
-that exits unhappily, which is `:cq` in vim, leaves the line exactly as it was.
+or `vi`, on a file holding whatever is on the line with any folded paste
+written out in full, hands it the terminal, and puts back what you wrote when
+you close it — pressed on the list it opens a task line first, so a task worth
+a paragraph is one keystroke away. An editor that exits unhappily, which is
+`:cq` in vim, leaves the line exactly as it was.
 
 A task of fewer than four characters is asked about once before anything is
 started: `y` starts it and any other key hands the line back with what you
@@ -577,6 +578,16 @@ character and `ctrl+←` and `ctrl+→` a word; `home` and `end`, or `ctrl+a` an
 `delete` the one under it, and `ctrl+w` or `alt+backspace` takes the whole word
 behind it. `alt+enter` puts a newline in the line without sending it, and
 `ctrl+j` does the same where your terminal will not send `alt+enter`.
+
+A paste is one edit, every newline in it included, and it lands where the
+cursor is standing — pasted at the list it opens a task line rather than being
+read as the keys it is made of. A long one folds: over 800 characters, or more
+than three rows, and it stands on the line as `[Pasted text #1]`, numbered from
+one on each line you open. That is what you read your sentence around, not what
+is sent — the task, the message and the editor `ctrl+g` opens all get every
+character you pasted. A shorter paste is left on the line as it is, and a name
+or a find line takes whatever you paste at it whole, since neither is a line
+you write a paragraph on.
 
 ## Pull requests
 

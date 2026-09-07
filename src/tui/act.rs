@@ -70,6 +70,13 @@ pub struct Composer {
     /// line says it instead — a directory named in words is somebody saying
     /// where, and the cursor is only where they were.
     pub under: Option<PathBuf>,
+    /// What each marker on the line stands for, in the order they were
+    /// numbered: the first is `[Pasted text #1]`.
+    ///
+    /// Kept beside the line rather than in it, which is the whole of the fold:
+    /// what is drawn is one row a person can read the rest of their task
+    /// around, and what is sent is every character they pasted.
+    pub pastes: Vec<String>,
 }
 
 /// The words a vendor would answer to where the cursor is standing, as they
@@ -137,6 +144,7 @@ impl Composer {
             suggest: None,
             listed: RefCell::new(None),
             under: None,
+            pastes: Vec::new(),
         }
     }
 
@@ -149,6 +157,43 @@ impl Composer {
         let at = self.byte();
         self.text.insert_str(at, text);
         self.at += text.chars().count();
+    }
+
+    /// Put a paste in where the cursor is, folded behind a marker where it is
+    /// long enough to bury the line it landed on.
+    ///
+    /// A clipboard holds whole files, and a task typed around one of them is a
+    /// task nobody can read: the log somebody pasted scrolls the sentence
+    /// asking about it off the top of the composer. So a long paste stands as
+    /// `[Pasted text #N]` — one row, in the place on the line where it landed,
+    /// and the text itself waiting beside the line until it is sent.
+    ///
+    /// Anything shorter goes in as it is. A folded phrase would be a line
+    /// somebody could not read back, and the marker is only worth its
+    /// awkwardness where what it hides was going to be unreadable anyway.
+    pub fn paste(&mut self, text: &str) {
+        if text.chars().count() <= PASTED_CHARACTERS && text.lines().count() <= PASTED_ROWS {
+            self.insert(text);
+            return;
+        }
+        self.pastes.push(text.to_string());
+        self.insert(&marker(self.pastes.len()));
+    }
+
+    /// The line as whatever it is sent to will be given it: every marker on it
+    /// back to the paste it stands for.
+    ///
+    /// The line itself is what is drawn and what the cursor walks, so nothing
+    /// here writes to it. A marker somebody has edited into something that is
+    /// no longer one stands as the characters they left, which is what
+    /// deleting half of it asked for.
+    pub fn whole(&self) -> String {
+        self.pastes
+            .iter()
+            .enumerate()
+            .fold(self.text.clone(), |line, (at, pasted)| {
+                line.replace(&marker(at + 1), pasted)
+            })
     }
 
     /// Take the character behind the cursor, and the one under it.
@@ -374,8 +419,13 @@ impl Composer {
     /// A task line only: every other line goes to an agent that is already
     /// running or narrows the wall, and a bang typed on one of those is the
     /// character it is.
+    ///
+    /// Read off the whole of it, because that is what enter is handed: a
+    /// pasted script folded into a marker still opens with the bang it was
+    /// copied with, and a rule saying TASK over a line about to run a shell
+    /// would be the one thing the rule is there to say, said wrong.
     pub fn commanding(&self) -> bool {
-        matches!(self.asking, Asking::Task) && self.text.starts_with(BANG)
+        matches!(self.asking, Asking::Task) && self.whole().starts_with(BANG)
     }
 
     /// What the rule over the line calls the mode, in the one word a band's
@@ -426,6 +476,24 @@ impl Composer {
             Asking::Name { id } => Some(id.clone()),
         }
     }
+}
+
+/// How much of a paste is too much to leave on the line: the characters a
+/// composer can show at its widest, and the rows it can show at its tallest.
+///
+/// Either of them, because a paste is long in one of two ways and both of them
+/// bury the line: a thousand characters of one paragraph wrap into rows, and
+/// four short rows are four rows.
+const PASTED_CHARACTERS: usize = 800;
+const PASTED_ROWS: usize = 3;
+
+/// What a folded paste stands as, numbered from one for the line it was
+/// pasted onto.
+///
+/// Per line rather than across the view: the number is read on the row it is
+/// drawn on, and a second paste onto a fresh line is that line's first.
+fn marker(nth: usize) -> String {
+    format!("[Pasted text #{nth}]")
 }
 
 /// A find line of nothing but `s:` tokens narrows the list by state; anything
@@ -1729,6 +1797,50 @@ mod tests {
         line.left();
         line.insert("b");
         assert_eq!(line.text, "a éb c");
+    }
+
+    #[test]
+    fn composer_folds_a_long_paste_behind_a_marker_and_sends_what_it_holds() {
+        // Short enough to read on the line, so it lands as the characters it
+        // is and the line has nothing standing for anything.
+        let mut line = Composer::new(Asking::Task);
+        line.insert("port ");
+        line.paste("the importer\nand its tests");
+        assert_eq!(line.text, "port the importer\nand its tests");
+        assert!(line.pastes.is_empty());
+        assert_eq!(line.whole(), line.text);
+
+        // A row more than the line will hold is a row on the line instead,
+        // with the cursor after it and the paste itself waiting beside.
+        let mut line = Composer::new(Asking::Task);
+        line.insert("what went wrong here: ");
+        let log = "one\ntwo\nthree\nfour";
+        line.paste(log);
+        assert_eq!(line.text, "what went wrong here: [Pasted text #1]");
+        assert_eq!(line.at, line.text.chars().count());
+        assert_eq!(line.whole(), format!("what went wrong here: {log}"));
+
+        // And so is one paragraph of more characters than a composer can show.
+        // The second paste on the line is that line's second, and what is
+        // typed between them is typed between them.
+        line.insert(" and ");
+        let dump = "x".repeat(801);
+        line.paste(&dump);
+        assert_eq!(
+            line.text,
+            "what went wrong here: [Pasted text #1] and [Pasted text #2]"
+        );
+        assert_eq!(
+            line.whole(),
+            format!("what went wrong here: {log} and {dump}")
+        );
+
+        // The bang is read off the whole of it, so a script pasted onto the
+        // line is the command row it opens with.
+        let mut line = Composer::new(Asking::Task);
+        line.paste("!set -e\ncargo build\ncargo test\ncargo clippy");
+        assert_eq!(line.text, "[Pasted text #1]");
+        assert_eq!(line.label(), "COMMAND");
     }
 
     #[test]

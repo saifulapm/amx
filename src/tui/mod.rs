@@ -852,6 +852,11 @@ where
 /// A line that was being typed and a line the editor filled are the same line:
 /// what comes back is the text and nothing else, so enter still does what the
 /// prompt in front of it says it will do.
+///
+/// The editor is opened on the whole of it, pastes and all: a marker is a row
+/// for reading a line around, and an editor is where somebody has gone to read
+/// the whole thing. What they close it on is the line, so the markers are
+/// spent — the text they stood for is in front of the cursor now.
 fn edit_the_line<B>(terminal: &mut Terminal<B>, screen: &mut Screen, config: &Config) -> Result<()>
 where
     B: Backend,
@@ -860,7 +865,7 @@ where
     let Mode::Typing(composer) = &screen.mode else {
         return Ok(());
     };
-    let text = composer.text.clone();
+    let text = composer.whole();
     let written = borrowed(terminal, || act::edited(&text))?;
 
     screen.notice = match written {
@@ -870,6 +875,7 @@ where
                 // leaves somebody who has just closed one.
                 composer.at = text.chars().count();
                 composer.text = text;
+                composer.pastes.clear();
             }
             // The line is a line somebody else wrote, so what could stand
             // under its cursor is looked up again rather than carried over.
@@ -1497,9 +1503,15 @@ impl Screen {
 
     /// Text arriving in one piece, which is a paste.
     ///
-    /// It goes into the line verbatim, every newline in it included, and waits
-    /// there: a paste is one edit, and what dispatches it is the enter pressed
-    /// afterwards. Its own trailing newline is text like any other.
+    /// It waits on the line, every newline in it included: a paste is one
+    /// edit, and what dispatches it is the enter pressed afterwards. Its own
+    /// trailing newline is text like any other.
+    ///
+    /// A long one waits behind a marker instead, on the two lines long enough
+    /// to be pasted into — the task and the reply, which are what somebody
+    /// writes a paragraph around. A name is a name and a find line is a word,
+    /// so a paste at either of those is the characters it is: a marker on a
+    /// line with nowhere to send it would be a line nobody could read back.
     ///
     /// Pasted at the list it opens a task line rather than being read as keys.
     /// A wall of agents whose keys stop things and forget things is no place to
@@ -1513,10 +1525,13 @@ impl Screen {
         // A terminal that ends its lines the other way is still ending lines.
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         match &mut self.mode {
-            Mode::Typing(composer) => composer.insert(&text),
+            Mode::Typing(composer) => match composer.asking {
+                Asking::Task | Asking::Reply { .. } => composer.paste(&text),
+                Asking::Name { .. } | Asking::Find => composer.insert(&text),
+            },
             _ => {
                 let mut composer = self.task_line();
-                composer.insert(&text);
+                composer.paste(&text);
                 self.mode = Mode::Typing(composer);
             }
         }
@@ -1638,7 +1653,7 @@ impl Screen {
                     return Ok(Doing::Carry);
                 }
                 if let Asking::Reply { id, .. } = &composer.asking {
-                    let said = act::reply(root, id, &composer.text);
+                    let said = act::reply(root, id, &composer.whole());
                     self.replied(said, composer);
                     return Ok(Doing::Carry);
                 }
@@ -1896,7 +1911,7 @@ impl Screen {
         follow: bool,
         here: Option<&Here>,
     ) -> Result<Doing> {
-        if let Some(task) = act::slight(config, &composer.text) {
+        if let Some(task) = act::slight(config, &composer.whole()) {
             self.mode = Mode::Confirming(Asked::Slight {
                 task,
                 line: composer,
@@ -1918,7 +1933,12 @@ impl Screen {
         here: Option<&Here>,
     ) -> Result<Doing> {
         let launching = self.profile.launching(config);
-        match act::start(root, &launching, &composer.text, composer.under.as_deref()) {
+        match act::start(
+            root,
+            &launching,
+            &composer.whole(),
+            composer.under.as_deref(),
+        ) {
             Ok(Started::Yes { id, said }) => {
                 self.notice = Some(Notice::Advice(said));
                 self.acted();
@@ -5567,6 +5587,56 @@ mod tests {
             crate::store::list(root.path()).unwrap().is_empty(),
             "and the newlines in it are text, not enters"
         );
+    }
+
+    #[test]
+    fn composer_folds_a_long_paste_on_the_lines_a_paragraph_is_written_on() {
+        let config = Config::default();
+        let long = (1..=20)
+            .map(|n| format!("row-{n:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let line = |screen: &Screen| match &screen.mode {
+            Mode::Typing(composer) => (composer.text.clone(), composer.whole()),
+            _ => panic!("the line is not open"),
+        };
+        let typing = |asking| Screen {
+            mode: Mode::Typing(Composer::new(asking)),
+            ..Screen::default()
+        };
+
+        // At the list, which opens a task line: twenty rows stand as one, and
+        // what the line will be sent as is every one of them.
+        let mut screen = Screen::default();
+        screen.pasted(&long, &config);
+        assert_eq!(
+            line(&screen),
+            ("[Pasted text #1]".to_string(), long.clone())
+        );
+
+        // A reply is the other line somebody writes a paragraph around.
+        let mut screen = typing(Asking::Reply {
+            id: "ask-a1b".to_string(),
+            question: false,
+        });
+        screen.pasted(&long, &config);
+        assert_eq!(
+            line(&screen),
+            ("[Pasted text #1]".to_string(), long.clone())
+        );
+
+        // A name and a find line are each one word, and a marker on either
+        // would stand for nothing they do.
+        for asking in [
+            Asking::Name {
+                id: "ask-a1b".to_string(),
+            },
+            Asking::Find,
+        ] {
+            let mut screen = typing(asking);
+            screen.pasted(&long, &config);
+            assert_eq!(line(&screen), (long.clone(), long.clone()));
+        }
     }
 
     #[test]
