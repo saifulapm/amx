@@ -453,9 +453,15 @@ enter past.
 
 The line itself begins with a `❯` in the column the rule's own label starts in,
 whichever of the four it is holding, so moving between them does not move the
-words you are reading. It is bold under a block cursor, and everything above
-the rule goes dim for as long as the mode is on — rows, headings, counts and
-dials in the one pass — so the band below the rule is the only thing on the
+words you are reading. It is bold, and the cursor on it is a cell turned over
+rather than a glyph put in one: the character you are standing on keeps its
+place and is read through the block, and past the end of the line the cell
+turned over is a space, which is a whole block. It is the only cursor there
+is. The terminal's own is hidden for as long as the view has the screen, so
+nothing of the terminal's blinks over the cell amx is painting, and the find
+line and a card's answer line draw the same block the same way. Everything
+above the rule goes dim for as long as the mode is on — rows, headings, counts
+and dials in the one pass — so the band below the rule is the only thing on the
 screen still carrying weight.
 
 ```

@@ -131,9 +131,10 @@ pub(super) fn composer_lines(text: &str, room: usize) -> Vec<String> {
 /// first of them is on that row and nowhere else.
 ///
 /// A row filled to the width has no cell of its own for the end of it, so the
-/// cursor stands one past where the row was drawn — the band clips the block
-/// there and puts the terminal's cursor on the last cell, which is what a line
-/// that has just filled its row has always done.
+/// cursor stands one past where the row was drawn, and the band puts the block
+/// on the last cell it has instead — the cell the next character will push
+/// onto the row below is off the screen, and a cursor nobody can see is worse
+/// than one standing a cell short.
 pub(super) fn cursor_cell(composer: &Composer, room: usize) -> (u16, u16) {
     let room = room.max(1);
     let mut left = composer.at.min(composer.text.chars().count());
@@ -244,9 +245,11 @@ const TAIL: usize = 2;
 ///
 /// The line is drawn bold with a block for the cursor, because it is the one
 /// thing on the screen that has not happened yet and the only thing left
-/// carrying weight — everything behind is dimmed by the same call. The
-/// terminal's own cursor is put where the block is as well: a screen being
-/// typed into should be one a terminal agrees is being typed into.
+/// carrying weight — everything behind is dimmed by the same call. The block
+/// is the only cursor there is: nothing is asked of the terminal's own, which
+/// is hidden for as long as the view holds the screen, so what somebody is
+/// looking at is a cell amx painted rather than one a terminal blinks on and
+/// off under it.
 ///
 /// Past the cap it is the rows around the cursor that are drawn, because the
 /// cursor is where somebody is typing — but the chevron stays on the top row
@@ -261,7 +264,6 @@ pub(super) fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect,
     );
 
     let prompt = GUTTER.to_string();
-    let width = band.width as usize;
     let room = composer_room(band.width);
     let rows = composer_lines(&composer.text, room);
     let (row, column) = cursor_cell(composer, room);
@@ -284,53 +286,58 @@ pub(super) fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect,
             let mut spans = vec![head];
             match placeholder(composer).filter(|_| down == 0) {
                 // An empty line holds its prefixes as ghost text, cut where the
-                // screen ends. It has the cell the block would have taken: a
-                // cursor drawn over the first letter of what the line is
-                // teaching would cost the lesson to say nothing the terminal's
-                // own cursor is not already saying there.
-                Some(hint) => spans.push(Span::styled(fit(hint, room), dim())),
-                None if from + down == row => {
-                    spans.extend(under_the_block(text, column, Style::new().fg(theme.accent)));
+                // screen ends, with the block on the first of them: the letter
+                // under it is read straight through the reverse video, so the
+                // lesson costs nothing and the line still says where the next
+                // character lands.
+                Some(hint) => {
+                    spans.extend(under_the_block(&fit(hint, room), 0, dim(), Style::new()));
                 }
+                None if from + down == row => spans.extend(under_the_block(
+                    text,
+                    column.min(room.saturating_sub(1)),
+                    bold(),
+                    bold().fg(theme.accent),
+                )),
                 None => spans.push(Span::styled(text.clone(), bold())),
             }
             Line::from(spans)
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), band);
-
-    let at = prompt.chars().count() + column;
-    frame.set_cursor_position((
-        band.x + at.min(width.saturating_sub(1)) as u16,
-        band.y + (row - from) as u16,
-    ));
 }
 
-/// A row of the line with the block on the cell the cursor stands in.
+/// A row of the line, drawn in `paint`, with the block on the cell the cursor
+/// stands in: that one cell in `block` reversed.
 ///
-/// Over a character the block is set behind it rather than in place of it: a
-/// cursor that hid the letter it was on would have somebody moving it to read
-/// what they had typed. Past the last character there is nothing to stand on
-/// and the block is the glyph itself, which is where a line being typed
-/// usually is.
-fn under_the_block(text: &str, column: usize, block: Style) -> Vec<Span<'static>> {
+/// The cell is turned over rather than drawn on. Over a character that leaves
+/// the character where it was — a cursor that hid the letter it was on would
+/// have somebody moving it to read what they had typed — and past the last
+/// character it turns over a space, which is a whole block, which is what the
+/// end of a line being typed has always looked like. Both of them are one
+/// cell wide and neither is a glyph, so the block never has to be told apart
+/// from something typed.
+pub(super) fn under_the_block(
+    text: &str,
+    column: usize,
+    paint: Style,
+    block: Style,
+) -> Vec<Span<'static>> {
     let line: Vec<char> = text.chars().collect();
     let before: String = line.iter().take(column).collect();
-    let Some(on) = line.get(column) else {
-        return vec![Span::styled(before, bold()), Span::styled(CURSOR, block)];
-    };
+    let on = line
+        .get(column)
+        .map_or_else(|| PAST_THE_END.to_string(), char::to_string);
     vec![
-        Span::styled(before, bold()),
-        Span::styled(
-            on.to_string(),
-            block.add_modifier(Modifier::REVERSED | Modifier::BOLD),
-        ),
-        Span::styled(line[column + 1..].iter().collect::<String>(), bold()),
+        Span::styled(before, paint),
+        Span::styled(on, block.add_modifier(Modifier::REVERSED)),
+        Span::styled(line.iter().skip(column + 1).collect::<String>(), paint),
     ]
 }
 
-/// The block that stands where the next character will land.
-const CURSOR: &str = "█";
+/// What the block turns over past the last character, where the row has no
+/// character of its own for it to stand on.
+const PAST_THE_END: &str = " ";
 
 /// Everything above the rule, dimmed for as long as the mode is on.
 ///
@@ -560,17 +567,10 @@ fn find_row(line: &Composer, width: usize) -> Line<'static> {
             &fit(&line.text, width.saturating_sub(FIND.len() + 1)),
             line.at,
             Style::new(),
+            bold(),
         )),
     }
     Line::from(spans)
-}
-
-/// Where the terminal's own cursor goes on that row, counted from its left
-/// edge: after the key that opened the line and as far into what has been
-/// typed since as the block stands.
-pub(super) fn find_caret(line: &Composer, width: usize) -> u16 {
-    let at = FIND.len() + line.at.min(line.text.chars().count());
-    at.min(width.saturating_sub(1)) as u16
 }
 
 /// The keys, or whatever the view has to say for itself instead.
@@ -801,11 +801,11 @@ mod tests {
         );
 
         let typed = painted(&seeking("port"), TALL);
-        assert_eq!(typed[29], "/port█");
+        assert_eq!(typed[29], "/port");
         assert_eq!(
-            caret(&seeking("port"), TALL),
-            (5, 29),
-            "with the terminal's own cursor where the block is"
+            block(&seeking("port"), TALL, 29),
+            Some(5),
+            "with the block turning over the cell the next character lands in"
         );
 
         // No rule, and no band: the list is what somebody typing here is
@@ -871,13 +871,12 @@ mod tests {
         screen
     }
 
-    /// Where the terminal's own cursor was left, which is where the next
-    /// character somebody types will land.
-    fn caret(screen: &Screen, size: (u16, u16)) -> (u16, u16) {
-        let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
-        terminal.draw(|frame| draw(frame, screen)).unwrap();
-        let at = terminal.get_cursor_position().unwrap();
-        (at.x, at.y)
+    /// Which cell of this row the block is standing in: the one drawn in
+    /// reverse video, which is where the next character somebody types will
+    /// land and the only thing on the screen that says so.
+    fn block(screen: &Screen, size: (u16, u16), row: u16) -> Option<u16> {
+        let cells = cells(screen, size);
+        (0..size.0).find(|column| cells[(*column, row)].modifier.contains(Modifier::REVERSED))
     }
 
     /// A line long enough to need more rows than any screen will give it.
@@ -983,7 +982,7 @@ mod tests {
             "the rule over it says the same thing its edge does: {:?}",
             painted[3]
         );
-        assert_eq!(painted[4], "❯ s:waiting█");
+        assert_eq!(painted[4], "❯ s:waiting");
         assert!(painted[5].contains("enter starts it"), "{:?}", painted[5]);
         assert!(
             !painted[5].contains("narrows it"),
@@ -1198,10 +1197,10 @@ mod tests {
         assert!(clipped.trim_end().ends_with('…'), "{clipped}");
 
         // The next keystroke lands where the prompt ends, over the
-        // placeholder, the way a browser draws a field's ghost text. The block
-        // that stands there on a line with something on it gives way to what
-        // the line is teaching.
-        assert_eq!(caret(&typing(""), TALL), (2, 28));
+        // placeholder, the way a browser draws a field's ghost text — and the
+        // block says so by turning that cell over rather than by standing in
+        // it, so the first letter of the lesson is still there to read.
+        assert_eq!(block(&typing(""), TALL, 28), Some(2));
         assert!(!clipped.contains('█'), "{clipped}");
 
         // The first character typed takes the placeholder away: whoever is
@@ -1245,7 +1244,7 @@ mod tests {
     #[test]
     fn composer_grows_a_row_at_a_time_as_the_line_it_holds_does() {
         let one = painted(&typing("port the importer"), TALL);
-        assert_eq!(one[28], "❯ port the importer█");
+        assert_eq!(one[28], "❯ port the importer");
         assert_eq!(
             one[26], "",
             "one line takes one row, at the foot of it all, with the rule over it"
@@ -1261,11 +1260,11 @@ mod tests {
             "a row under the first is indented to it, so a task reads as one \
              thing"
         );
-        assert_eq!(three[28], "  and the docs█");
+        assert_eq!(three[28], "  and the docs");
         assert_eq!(
-            caret(&typing("port it\nand test it"), TALL),
-            (13, 28),
-            "and the cursor is at the end of the last of them"
+            block(&typing("port it\nand test it"), TALL, 28),
+            Some(13),
+            "and the block is at the end of the last of them"
         );
     }
 
@@ -1304,22 +1303,17 @@ mod tests {
             theme().accent,
             "in the colour the block has at the end of a line"
         );
-        assert_eq!(
-            caret(&screen, TALL),
-            (15, 28),
-            "with the terminal's own cursor on the same cell"
-        );
 
         // And a line that wrapped is walked back a row at a time: the block
         // goes where the character it is on was drawn, which is the row above.
         assert_eq!(
-            caret(&typing_at(&"x".repeat(116), 58), TALL),
-            (2, 28),
+            block(&typing_at(&"x".repeat(116), 58), TALL, 28),
+            Some(2),
             "the first character of the second row"
         );
         assert_eq!(
-            caret(&typing_at(&"x".repeat(116), 59), TALL),
-            (59, 27),
+            block(&typing_at(&"x".repeat(116), 59), TALL, 27),
+            Some(59),
             "and the one before it is the last of the first row"
         );
     }
@@ -1330,6 +1324,11 @@ mod tests {
         let painted = painted(&typing(&"x".repeat(116)), TALL);
         assert_eq!(painted[27], format!("❯ {}", "x".repeat(58)));
         assert_eq!(painted[28], format!("  {}", "x".repeat(58)));
+
+        // A row filled to the width leaves the block no cell of its own past
+        // the end of it, so it stands on the last cell the row has rather than
+        // off the screen where nobody can see it.
+        assert_eq!(block(&typing(&"x".repeat(58)), TALL, 28), Some(59));
     }
 
     #[test]
@@ -1342,12 +1341,12 @@ mod tests {
             "the prompt is on the top row however far the rest has scrolled: \
              {painted:?}"
         );
-        assert_eq!(painted[28], "  row-20█", "{painted:?}");
+        assert_eq!(painted[28], "  row-20", "{painted:?}");
         assert!(
             !painted.iter().any(|line| line.contains("row-10")),
             "and what scrolled past is off the screen: {painted:?}"
         );
-        assert_eq!(caret(&screen, TALL), (8, 28));
+        assert_eq!(block(&screen, TALL, 28), Some(8));
     }
 
     #[test]
@@ -1356,7 +1355,7 @@ mod tests {
         // agents are what the view is for.
         let painted = painted(&typing(&twenty_rows()), (60, 8));
         assert_eq!(painted[5], "❯ row-19");
-        assert_eq!(painted[6], "  row-20█");
+        assert_eq!(painted[6], "  row-20");
         assert_eq!(
             painted[1], WELCOME,
             "the list is still there above it: {painted:?}"
@@ -1371,7 +1370,7 @@ mod tests {
         screen.mode = Mode::Typing(composer);
 
         let painted = painted(&screen, (60, 6));
-        assert_eq!(painted[4], "❯ port the importer█");
+        assert_eq!(painted[4], "❯ port the importer");
         assert!(painted[5].contains("enter starts it"), "{:?}", painted[5]);
         assert!(painted[5].contains("alt+enter newline"), "{:?}", painted[5]);
     }
@@ -1440,7 +1439,7 @@ mod tests {
             "the rule names what enter is about to do: {:?}",
             drawn[5]
         );
-        assert_eq!(drawn[6], "❯ !cargo test█");
+        assert_eq!(drawn[6], "❯ !cargo test");
         assert!(
             drawn[7].contains("enter runs it"),
             "and so does the row under it: {:?}",

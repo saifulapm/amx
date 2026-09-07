@@ -56,16 +56,36 @@ fn coloured(amx: &Harness, pane: &str) -> String {
     amx.tmux(&["capture-pane", "-p", "-e", "-J", "-t", pane])
 }
 
-/// The SGR attributes in force where `word` starts on this captured line:
-/// every escape before it walked, resets honoured, and the colour
-/// introducers' arguments consumed — the `2` of `38;2;r;g;b` is a
-/// colourspace, never the dim attribute.
+/// The SGR attributes in force where `word` starts on this captured line.
 fn sgr_at(line: &str, word: &str) -> Vec<u16> {
-    let at = line
-        .find(word)
-        .unwrap_or_else(|| panic!("{word:?} is not on {line:?}"));
+    in_force(&line[..starts_at(line, word)])
+}
+
+/// The same, on the cell after `word` ends, which is where the block stands at
+/// the end of a line being typed. The escapes the view wrote between the two
+/// are what paint that cell, so they are walked with the rest.
+fn sgr_past(line: &str, word: &str) -> Vec<u16> {
+    let mut end = starts_at(line, word) + word.len();
+    while let Some(rest) = line[end..].strip_prefix("\u{1b}[") {
+        let Some(over) = rest.find('m') else { break };
+        end += "\u{1b}[".len() + over + 1;
+    }
+    in_force(&line[..end])
+}
+
+/// Where a word begins on a captured line, escapes and all.
+fn starts_at(line: &str, word: &str) -> usize {
+    line.find(word)
+        .unwrap_or_else(|| panic!("{word:?} is not on {line:?}"))
+}
+
+/// The SGR attributes in force at the end of this much of a capture: every
+/// escape in it walked, resets honoured, and the colour introducers' arguments
+/// consumed — the `2` of `38;2;r;g;b` is a colourspace, never the dim
+/// attribute.
+fn in_force(walked: &str) -> Vec<u16> {
     let mut on: Vec<u16> = Vec::new();
-    let mut rest = &line[..at];
+    let mut rest = walked;
     while let Some(start) = rest.find("\u{1b}[") {
         let after = &rest[start + 2..];
         let Some(end) = after.find('m') else { break };
@@ -886,9 +906,10 @@ fn the_composer_types_where_the_cursor_stands_rather_than_at_the_end() {
     for _ in 0..4 {
         press(&amx, &view, "Left");
     }
-    let drawn = amx.until("the cursor to walk back into the line", || {
-        let drawn = screen(&amx, &view);
-        (pane_field(&amx, &view, "#{cursor_x}") == "14").then_some(drawn)
+    let drawn = amx.until("the block to walk back into the line", || {
+        sgr_past(&coloured(&amx, &view), "port the imp")
+            .contains(&7)
+            .then(|| screen(&amx, &view))
     });
     assert!(
         drawn.contains("❯ port the imprter"),
@@ -1559,8 +1580,14 @@ fn input_mode_hangs_the_line_off_a_labelled_rule_over_a_wall_gone_dim() {
         "with what the next agent may do without asking at the far end of it:\n{drawn}"
     );
     assert!(
-        drawn.contains("❯ port the importer█"),
-        "under it the line itself, with a block where the next letter lands:\n{drawn}"
+        drawn.contains("❯ port the importer"),
+        "under it the line itself:\n{drawn}"
+    );
+    assert_eq!(
+        pane_field(&amx, &view, "#{cursor_flag}"),
+        "0",
+        "with the terminal's own cursor put away, so nothing of the \
+         terminal's blinks in the cell amx is painting:\n{drawn}"
     );
 
     // The attributes are read from the top of the capture, because a terminal
@@ -1577,6 +1604,11 @@ fn input_mode_hangs_the_line_off_a_labelled_rule_over_a_wall_gone_dim() {
     assert!(
         sgr_at(&painted, "port the importer").contains(&1),
         "the line somebody is typing is the one bold thing left:\n{painted:?}"
+    );
+    assert!(
+        sgr_past(&painted, "port the importer").contains(&7),
+        "and the cell the next letter lands in is that cell reversed, which is \
+         the whole of the block:\n{painted:?}"
     );
 
     // And the wall it was opened from is still there, saying so quietly.

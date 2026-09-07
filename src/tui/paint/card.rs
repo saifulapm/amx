@@ -25,7 +25,7 @@ use ratatui::widgets::{Clear, Paragraph, Wrap};
 use std::cell::Cell;
 use std::ops::Range;
 
-use super::input::composer_lines;
+use super::input::{composer_lines, under_the_block};
 use super::prose;
 use super::style::{bold, colour, dim, request_colour};
 use super::text::{RULE, SEPARATOR, fit, inert, width_of};
@@ -1003,12 +1003,14 @@ const BETWEEN: &str = "   ";
 /// What the row an answer is typed on begins with.
 const ANSWER: &str = "❯ ";
 
-/// The line the answer is being typed on, with the terminal's own cursor at
-/// the end of it.
+/// The line the answer is being typed on, with the block at the end of it.
 ///
-/// Empty, it says what this question will take instead — which is the one
-/// thing somebody looking at a prompt they did not draw cannot work out for
-/// themselves, and it is said from the same place the refusal is written.
+/// The same block the line under the wall carries, drawn the same way, because
+/// it is the same thing: the cell the next character lands in, turned over.
+/// Empty, the line says what this question will take instead — which is the
+/// one thing somebody looking at a prompt they did not draw cannot work out
+/// for themselves, and it is said from the same place the refusal is written —
+/// and the block stands on the first cell of that, where the answer will begin.
 fn answer_row(
     frame: &mut Frame,
     card: &Card<Body>,
@@ -1025,25 +1027,23 @@ fn answer_row(
         .unwrap_or_default();
     let asked = showing.map(|showing| showing.ask);
     let said = match composer.text.is_empty() {
-        true => Span::styled(act::invitation(card.kind, &card.options, asked), dim()),
-        false => Span::raw(typed.clone()),
+        true => under_the_block(
+            &act::invitation(card.kind, &card.options, asked),
+            0,
+            dim(),
+            Style::new(),
+        ),
+        false => under_the_block(
+            &typed,
+            typed.chars().count().min(room.saturating_sub(1)),
+            Style::new(),
+            bold(),
+        ),
     };
 
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(ANSWER, Style::new().fg(theme.waiting)),
-            said,
-        ])),
-        area,
-    );
-    let at = match composer.text.is_empty() {
-        true => 0,
-        false => typed.chars().count(),
-    };
-    frame.set_cursor_position((
-        area.x + (ANSWER.chars().count() + at).min(width.saturating_sub(1)) as u16,
-        area.y,
-    ));
+    let mut spans = vec![Span::styled(ANSWER, Style::new().fg(theme.waiting))];
+    spans.extend(said);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// How many rows text takes when it is wrapped to a width.
@@ -1237,13 +1237,12 @@ mod tests {
         line.split('┈').next().unwrap_or_default().trim()
     }
 
-    /// Where the terminal's own cursor was left, which is where the next
-    /// character somebody types will land.
-    fn caret(screen: &Screen, size: (u16, u16)) -> (u16, u16) {
-        let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
-        terminal.draw(|frame| draw(frame, screen)).unwrap();
-        let at = terminal.get_cursor_position().unwrap();
-        (at.x, at.y)
+    /// Which cell of this row the block is standing in: the one drawn in
+    /// reverse video, which is where the next character somebody types will
+    /// land and the only thing on the screen that says so.
+    fn block(screen: &Screen, size: (u16, u16), row: u16) -> Option<u16> {
+        let cells = cells(screen, size);
+        (0..size.0).find(|column| cells[(*column, row)].modifier.contains(Modifier::REVERSED))
     }
 
     /// Which column of a drawn line a word starts in, counted in cells rather
@@ -1605,10 +1604,16 @@ mod tests {
              under it: {typed:?}"
         );
         assert_eq!(
-            caret(&answering(question(), "the docker one"), (60, 14)),
-            (20, 8),
-            "with the terminal's own cursor at the end of what was typed, on \
-             the answer row of a card that is the question block's own size"
+            block(&answering(question(), "the docker one"), (60, 14), 8),
+            Some(20),
+            "with the block at the end of what was typed, on the answer row of \
+             a card that is the question block's own size"
+        );
+        assert_eq!(
+            block(&answering(question(), ""), (60, 14), 8),
+            Some(6),
+            "and on the first cell of the invitation while the line is empty, \
+             which is where the answer will begin"
         );
     }
 
