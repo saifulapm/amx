@@ -1162,6 +1162,38 @@ impl Screen {
         }
     }
 
+    /// The agent to answer and the choice to answer it with, where the key
+    /// just pressed on the card is that choice rather than a character.
+    ///
+    /// A digit at a question whose numbered choices are the whole of what it
+    /// takes, which [`act::picks`] is the reading of. The line has to be
+    /// empty: a digit in the middle of words somebody is writing is a
+    /// character of them, and the answers that open with one are still typed
+    /// after any other character. And the number has to be a choice the card
+    /// is showing — a 7 at a question offering two is nothing to send, so it
+    /// falls through to the line like any other character.
+    ///
+    /// The question's own payload comes off the list rather than the card: the
+    /// card is a picture of one agent, and whether this question takes more
+    /// than one choice is on the record behind it.
+    fn picking(&self, composer: &Composer, key: KeyEvent) -> Option<(String, String)> {
+        let KeyCode::Char(digit @ '1'..='9') = key.code else {
+            return None;
+        };
+        if !chord(key).is_empty() || !composer.text.is_empty() || !self.on_the_card(composer) {
+            return None;
+        }
+        let card = self.card.as_ref()?;
+        let asked = self
+            .list
+            .agent_by_id(&card.id)
+            .and_then(rows::showing)
+            .map(|showing| showing.ask);
+        let at = digit.to_digit(10)? as usize;
+        (act::picks(card.kind, &card.options, asked) && at <= card.options.len())
+            .then(|| (card.id.clone(), digit.to_string()))
+    }
+
     /// Open the card on the agent under the cursor, with the line to answer it
     /// on where it is asking something.
     ///
@@ -1510,6 +1542,15 @@ impl Screen {
             return Ok(Doing::Carry);
         };
 
+        // Before the line takes the key at all: at a question whose numbered
+        // choices are the whole of what it takes, the number pressed is the
+        // answer and goes as it is pressed.
+        if let Some((id, choice)) = self.picking(&composer, key) {
+            let said = act::reply(root, &id, &choice);
+            self.replied(said, composer);
+            return Ok(Doing::Carry);
+        }
+
         match key.code {
             // The suggestions go before the line does: what somebody is
             // looking at when they press this is the list under the word they
@@ -1589,25 +1630,8 @@ impl Screen {
                     return Ok(Doing::Carry);
                 }
                 if let Asking::Reply { id, .. } = &composer.asking {
-                    let id = id.clone();
-                    match act::reply(root, &id, &composer.text) {
-                        Ok(Replied::Yes(said)) => {
-                            self.notice = Some(Notice::Advice(said));
-                            self.acted();
-                        }
-                        // A line the agent would not take is a line somebody
-                        // is still writing, the same as a task a dial refused:
-                        // an answer retyped is an answer, and one thrown away
-                        // is somebody typing it again from the start.
-                        Ok(Replied::No(why)) => {
-                            self.notice = Some(Notice::Advice(why));
-                            self.mode = Mode::Typing(composer);
-                        }
-                        Err(e) => {
-                            self.notice = Some(Notice::Failed(format!("{e:#}")));
-                            self.acted();
-                        }
-                    }
+                    let said = act::reply(root, id, &composer.text);
+                    self.replied(said, composer);
                     return Ok(Doing::Carry);
                 }
 
@@ -1689,6 +1713,30 @@ impl Screen {
             self.suggesting(config);
         }
         Ok(Doing::Carry)
+    }
+
+    /// What became of what the card sent, said out loud.
+    ///
+    /// A line the agent would not take is a line somebody is still writing,
+    /// the same as a task a dial refused: an answer retyped is an answer, and
+    /// one thrown away is somebody typing it again from the start. A digit
+    /// that was refused leaves the empty line it was pressed on, which is
+    /// where it was.
+    fn replied(&mut self, said: Result<Replied>, composer: Composer) {
+        match said {
+            Ok(Replied::Yes(said)) => {
+                self.notice = Some(Notice::Advice(said));
+                self.acted();
+            }
+            Ok(Replied::No(why)) => {
+                self.notice = Some(Notice::Advice(why));
+                self.mode = Mode::Typing(composer);
+            }
+            Err(e) => {
+                self.notice = Some(Notice::Failed(format!("{e:#}")));
+                self.acted();
+            }
+        }
     }
 
     /// A task line, opened where the cursor is standing.
@@ -2530,7 +2578,7 @@ fn reaching(server: Server, here: Option<&Here>, view: &View) -> Result<Reach> {
 mod tests {
     use super::*;
     use crate::derive::{Evidence, Verdict};
-    use crate::store::{Agent, Kind, Meta, Phase, State};
+    use crate::store::{Agent, Ask, Choice, Kind, Meta, Phase, State};
     use crate::tmux::Socket;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -3190,6 +3238,29 @@ mod tests {
         )
     }
 
+    /// The same question with the payload that says it takes more than one
+    /// choice, which is the one place that flag is ever written down.
+    fn stopped_on_a_checkbox_question(id: &str) -> View {
+        let mut view = stopped_on_a_question(id);
+        view.state.asking = vec![Ask {
+            header: Some("Fixtures".to_string()),
+            text: view.state.question.clone().unwrap_or_default(),
+            options: view
+                .state
+                .options
+                .iter()
+                .map(|label| Choice {
+                    label: label.clone(),
+                    description: None,
+                    preview: None,
+                })
+                .collect(),
+            multi: true,
+            answer: None,
+        }];
+        view
+    }
+
     /// The view showing these agents, with the cursor where it opens.
     fn watching(views: Vec<View>) -> Screen {
         let mut screen = Screen::default();
@@ -3239,9 +3310,11 @@ mod tests {
             "with the line to answer it on, and nothing typed at it yet"
         );
 
-        // A digit fills the line rather than answering with the first key
-        // pressed: the same card takes words, and a menu that pressed its own
-        // digits out from under an answer would answer somebody else's choice.
+        // A digit fills the line at a question that takes more than one
+        // choice: there a digit is one box being named, and the line waits for
+        // the rest of them and for the key that submits.
+        let mut screen = watching(vec![stopped_on_a_checkbox_question("ask-a1b")]);
+        press(&mut screen, KeyCode::Char(' '));
         press(&mut screen, KeyCode::Char('2'));
         assert_eq!(screen.answering().expect("still typing").text, "2");
 
@@ -3250,6 +3323,53 @@ mod tests {
         assert!(screen.card.is_none());
         assert!(screen.answering().is_none());
         assert!(matches!(screen.mode, Mode::List), "back on the agents");
+    }
+
+    #[test]
+    fn card_reads_a_digit_at_a_question_that_takes_one_choice_as_that_choice() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![stopped_on_a_question("ask-a1b")]);
+        let key = |code| KeyEvent::from(code);
+        screen
+            .act(key(KeyCode::Char(' ')), root.path(), &config, None)
+            .unwrap();
+
+        // Which key is which choice, and which keys are characters. The line
+        // has to be empty, because a digit among words somebody is writing is
+        // a character of them, and the number has to be one the card is
+        // showing: a 3 at a question offering two choices is nothing to send.
+        let line = screen.answering().expect("the line to answer on");
+        assert_eq!(
+            screen.picking(line, key(KeyCode::Char('2'))),
+            Some(("ask-a1b".to_string(), "2".to_string()))
+        );
+        assert_eq!(screen.picking(line, key(KeyCode::Char('3'))), None);
+        assert_eq!(
+            screen.picking(line, KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT)),
+            None,
+            "and alt+1 is the key that reaches the first agent on the wall"
+        );
+
+        // Pressed, it never reaches the line: it is the answer, and it goes as
+        // it is pressed. Nothing is listening behind a record written by hand,
+        // so what it comes to is a notice — the fact under test is that the
+        // key was spent on answering rather than typed.
+        screen
+            .act(key(KeyCode::Char('2')), root.path(), &config, None)
+            .unwrap();
+        assert!(
+            screen.answering().is_none(),
+            "the digit was the answer rather than a character on the line"
+        );
+        assert!(screen.notice.is_some(), "and what came of it is said");
+
+        // A line with something on it takes the digit as the character it is.
+        let mut screen = watching(vec![stopped_on_a_question("ask-a1b")]);
+        for code in [KeyCode::Char(' '), KeyCode::Char('k'), KeyCode::Char('2')] {
+            screen.act(key(code), root.path(), &config, None).unwrap();
+        }
+        assert_eq!(screen.answering().expect("still typing").text, "k2");
     }
 
     /// One that has finished, with the answer it left.
@@ -4157,12 +4277,11 @@ mod tests {
                 .unwrap();
         };
 
-        // The card opens with the line to answer on, and entering the answer
-        // consumes it: the record has no agent behind it here, so the reply
+        // The card opens with the line to answer on, and the choice pressed
+        // spends it: the record has no agent behind it here, so the reply
         // fails, which leaves the mode where a submitted answer leaves it.
         press(&mut screen, KeyCode::Char(' '));
         press(&mut screen, KeyCode::Char('1'));
-        press(&mut screen, KeyCode::Enter);
         assert!(screen.answering().is_none(), "the line was spent");
 
         // The call advances to its next tab while the card is still open, and
@@ -4197,7 +4316,6 @@ mod tests {
         // And when the last answer resolves the call, nothing reopens: a card
         // that is not asking has nothing to type at.
         press(&mut screen, KeyCode::Char('2'));
-        press(&mut screen, KeyCode::Enter);
         screen.list.show(vec![reading(
             "ask-a1b",
             Phase::Working,

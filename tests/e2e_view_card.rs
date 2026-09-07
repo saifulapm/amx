@@ -798,7 +798,6 @@ fn card_answers_the_tab_it_is_showing_and_leaves_the_one_behind_it_standing() {
     let carded = card_on(&amx, &view, "pick-a1b");
     assert!(carded.contains("Runtime · 1 of 3"), "{carded}");
     types(&amx, &view, "1");
-    press(&amx, &view, "Enter");
 
     assert_eq!(
         answered(&amx, "pick-a1b")["key"],
@@ -825,6 +824,47 @@ fn card_answers_the_tab_it_is_showing_and_leaves_the_one_behind_it_standing() {
         "waiting",
         "and the agent is still waiting on the rest of the call"
     );
+}
+
+#[test]
+fn card_answers_a_question_that_takes_one_choice_on_the_digit_alone() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+    parked_on_a_call(&amx, "pick-a1b", &a_call_of_three());
+
+    let carded = card_on(&amx, &view, "pick-a1b");
+    assert!(
+        carded.contains("1-2 picks, or type an answer"),
+        "the line says the numbers answer on the press:\n{carded}"
+    );
+
+    // No enter after it: one of these choices is the whole answer, and the
+    // number pressed is that choice.
+    types(&amx, &view, "2");
+    assert_eq!(answered(&amx, "pick-a1b")["key"], "2");
+    amx.until("the choice to reach the agent's pane", || {
+        amx.capture(&amx.pane_of("pick-a1b"))
+            .contains('2')
+            .then_some(())
+    });
+
+    // The tab behind it takes more than one choice, so a digit there is one
+    // box being named and the line waits for the rest of them.
+    let moved = amx.until("the card to move to the tab behind it", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("Rollout · 2 of 3").then_some(drawn)
+    });
+    assert_eq!(
+        amx.state("pick-a1b")["question"]["asking"][0]["answer"],
+        "Deno",
+        "with the choice that number stands for written down under it"
+    );
+    assert!(moved.contains("press 1-3, 1,3 for several"), "{moved}");
+    types(&amx, &view, "2");
+    amx.until("the digit on the line rather than at the pane", || {
+        screen(&amx, &view).contains("❯ 2").then_some(())
+    });
 }
 
 #[test]

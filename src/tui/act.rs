@@ -1207,6 +1207,31 @@ fn card_line(text: &str, asked: Option<&Ask>) -> AnswerArgs {
     }
 }
 
+/// Whether a digit on this card is the answer itself rather than a character
+/// on the line.
+///
+/// The vendor's own question, with its choices read and one of them all it
+/// takes. There the number pressed is the whole answer — it is what the
+/// vendor's own screen submits the moment it is typed — and an enter after it
+/// would be a card asking somebody to confirm a choice they had already made.
+/// What it costs is the answer that opens with a digit, which is typed after
+/// any other character of it.
+///
+/// The three prompts it is not true of keep the line. A question that takes
+/// more than one choice is answered by checking boxes, so a digit there is one
+/// box named and the rest of the line still to come. A question whose choices
+/// carry a preview takes a note after the key, and every note there begins
+/// with the key it rides beside, so a digit sent on the press would put the
+/// note out of reach altogether. And a permission box carries no payload:
+/// what its numbers stand for is amx's reading of a picture of a pane, an
+/// allowed tool call cannot be taken back, and a card that sent one on a
+/// keystroke would be answering a screen it guessed the shape of.
+pub fn picks(kind: Option<Kind>, options: &[String], asked: Option<&Ask>) -> bool {
+    kind == Some(Kind::Question)
+        && !options.is_empty()
+        && !asked.is_some_and(|ask| ask.multi || ask.takes_notes())
+}
+
 /// What this question will take, in the words the card invites it with — and
 /// the words it is refused in, which are the same words for the same reason.
 ///
@@ -1218,12 +1243,21 @@ fn card_line(text: &str, asked: Option<&Ask>) -> AnswerArgs {
 /// question whose choices amx has not read yet does not name numbers it cannot
 /// stand behind, and with no numbers there is nothing to check or to hang a
 /// note on.
+///
+/// Where the numbers answer on the press they are named as doing it, out of
+/// the same [`picks`] the keystroke is read by: a row that said `press 1-2`
+/// wherever the digits went straight to the pane would be inviting an enter
+/// that is never wanted.
 pub fn invitation(kind: Option<Kind>, options: &[String], asked: Option<&Ask>) -> String {
-    let choices = match options.len() {
+    let numbers = match options.len() {
         0 => None,
-        1 => Some("press 1".to_string()),
-        many => Some(format!("press 1-{}", many.min(9))),
+        1 => Some("1".to_string()),
+        many => Some(format!("1-{}", many.min(9))),
     };
+    let choices = numbers.map(|numbers| match picks(kind, options, asked) {
+        true => format!("{numbers} picks"),
+        false => format!("press {numbers}"),
+    });
     let Some(choices) = choices else {
         return match kind {
             Some(Kind::Question) => "type an answer".to_string(),
@@ -1736,10 +1770,16 @@ mod tests {
         let two = ["the sqlite one".to_string(), "the docker one".to_string()];
         let one = ["Yes".to_string()];
 
-        // A question of the vendor's own offers choices and a field.
+        // A question of the vendor's own offers choices and a field, and the
+        // choices answer it on the press.
         assert_eq!(
             invitation(Some(Kind::Question), &two, None),
-            "press 1-2, or type an answer"
+            "1-2 picks, or type an answer"
+        );
+        assert_eq!(
+            invitation(Some(Kind::Question), &one, None),
+            "1 picks, or type an answer",
+            "and one choice is one number"
         );
         assert_eq!(
             invitation(Some(Kind::Question), &[], None),
@@ -1805,6 +1845,32 @@ mod tests {
                 "press 1-2, 1,3 for several",
                 "{kind:?}"
             );
+        }
+    }
+
+    #[test]
+    fn card_reads_a_digit_as_the_answer_only_where_one_choice_is_the_answer() {
+        let two = ["the sqlite one".to_string(), "the docker one".to_string()];
+        let question = |asked: Option<&Ask>| picks(Some(Kind::Question), &two, asked);
+
+        // The vendor's own question with its choices read, whether the payload
+        // behind it was read or not: one of them is the whole answer.
+        assert!(question(None));
+        assert!(question(Some(&asked(false, false))));
+
+        // A question that takes several is answered by checking boxes, and one
+        // whose choices carry a preview takes a note after the key — a note
+        // begins with that key, so a digit that went on the press would be a
+        // note nobody could type.
+        assert!(!question(Some(&asked(true, false))));
+        assert!(!question(Some(&asked(false, true))));
+
+        // A menu whose choices amx has not read has no number to stand behind,
+        // and a permission box is answered in a grammar amx read off a pane.
+        assert!(!picks(Some(Kind::Question), &[], None));
+        for kind in [Some(Kind::Permission), Some(Kind::Trust), None] {
+            assert!(!picks(kind, &two, None), "{kind:?}");
+            assert!(!picks(kind, &two, Some(&asked(false, false))), "{kind:?}");
         }
     }
 

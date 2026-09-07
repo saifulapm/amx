@@ -1579,7 +1579,7 @@ mod tests {
 
         let empty = painted(&answering(question(), ""), (60, 14));
         assert!(
-            answer_row(&empty).contains("❯ press 1-2, or type an answer"),
+            answer_row(&empty).contains("❯ 1-2 picks, or type an answer"),
             "an empty row says what the question will take: {:?}",
             answer_row(&empty)
         );
