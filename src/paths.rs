@@ -5,6 +5,9 @@
 //!   land at `$AMX_STATE_DIR/agents/<id>/`.
 //! * **config** — `$XDG_CONFIG_HOME/amx/config.toml`, else
 //!   `~/.config/amx/config.toml`.
+//! * **a project's config** — `<project>/.amx/config.toml`, where the project
+//!   is the repository a directory belongs to rather than the tree of it
+//!   somebody happens to be standing in.
 //!
 //! The environment is read only by the wrappers; the layout rules themselves
 //! are pure functions over their inputs, and that is what the tests drive.
@@ -74,6 +77,32 @@ const VIEW: &str = "view.json";
 pub fn config_file() -> Result<PathBuf> {
     let xdg = env_path(std::env::var_os("XDG_CONFIG_HOME"));
     Ok(config_file_from(xdg.as_deref(), &home()?))
+}
+
+/// What a project's own config file is called, under the project's root.
+const PROJECT_CONFIG: &str = ".amx/config.toml";
+
+/// The config file the project holding `dir` keeps, whether or not it exists.
+///
+/// The project is the repository, not the tree of it somebody is working in,
+/// so several agents on one repository read one file. A tree amx cut answers
+/// with the repository it was cut from, off the layout alone — the answer holds
+/// once the tree has gone, and amx speaks for its own trees and no others. Any
+/// other linked worktree answers with the repository it belongs to, and a
+/// checkout with the toplevel that holds its own git directory, which are the
+/// same question and so the same call.
+///
+/// Unlike the layout above, this one asks git: which repository a directory
+/// belongs to is not something a path can be read for.
+pub fn project_config(dir: &Path) -> Option<PathBuf> {
+    let project = if crate::worktree::is_amx_tree(dir) {
+        crate::worktree::repo_of(dir)?
+    } else {
+        // Outside a repository there is nothing above the directory, and the
+        // directory is the whole of the project.
+        crate::worktree::main_repo(dir).unwrap_or_else(|_| dir.to_path_buf())
+    };
+    Some(project.join(PROJECT_CONFIG))
 }
 
 fn home() -> Result<PathBuf> {
@@ -155,6 +184,16 @@ mod tests {
             view_file(Path::new("agents")),
             None,
             "a root with nowhere above it is not a place to write"
+        );
+    }
+
+    #[test]
+    fn the_project_config_of_a_tree_amx_cut_is_the_repositorys_own() {
+        // Read off the layout, so it holds for a tree git can no longer be
+        // asked from, and never mistakes the tree for a project of its own.
+        assert_eq!(
+            project_config(Path::new("/src/app/.amx/worktrees/fix-login-a1b")),
+            Some(PathBuf::from("/src/app/.amx/config.toml"))
         );
     }
 

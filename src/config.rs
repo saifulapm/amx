@@ -1,18 +1,22 @@
-//! `~/.config/amx/config.toml` — ten keys and nothing else.
+//! `~/.config/amx/config.toml` — eleven keys and nothing else — with a
+//! project's own `<project>/.amx/config.toml` laid over it.
 //!
 //! Config is a convenience, never a gate: a file that cannot be read or
 //! parsed degrades to the defaults with a warning on stderr, because losing
 //! an agent to a stray comma is a worse outcome than running with defaults.
+//! A project's file is a layer rather than a replacement, so the same holds one
+//! file at a time: the keys of a file amx cannot use are all it costs.
 
 use crate::registry;
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Every key the file may carry. Anything else is warned about and ignored.
-pub const KNOWN_KEYS: [&str; 10] = [
+pub const KNOWN_KEYS: [&str; 11] = [
     "agent",
     "max_agents",
+    "max_total",
     "worktrees",
     "notifications",
     "trust",
@@ -30,6 +34,10 @@ pub struct Config {
     pub agent: String,
     /// How many live agents `new` will allow before it refuses.
     pub max_agents: usize,
+    /// How many live agents there may be on the machine, over every project at
+    /// once. Absent is no ceiling of its own: a machine is as busy as the
+    /// projects on it ask between them.
+    pub max_total: Option<usize>,
     /// Give new agents their own git worktree.
     pub worktrees: bool,
     /// Post desktop notifications on the transitions worth interrupting for.
@@ -75,6 +83,7 @@ impl Default for Config {
         Self {
             agent: "claude".to_string(),
             max_agents: 5,
+            max_total: None,
             worktrees: true,
             notifications: true,
             trust: false,
@@ -98,14 +107,19 @@ impl Default for Config {
 /// question the text can answer on its own.
 pub fn parse(text: &str) -> Result<(Config, Vec<String>)> {
     let table: toml::Table = text.parse().context("not valid TOML")?;
-    let mut warnings: Vec<String> = table
+    let mut warnings = unknown_keys(&table);
+    let mut config: Config = table.try_into()?;
+    warnings.extend(check_dials(&mut config));
+    Ok((config, warnings))
+}
+
+/// The keys of a file amx has never heard of, one warning each.
+fn unknown_keys(table: &toml::Table) -> Vec<String> {
+    table
         .keys()
         .filter(|key| !KNOWN_KEYS.contains(&key.as_str()))
         .map(|key| format!("ignoring unknown key `{key}`"))
-        .collect();
-    let mut config: Config = toml::from_str(text)?;
-    warnings.extend(check_dials(&mut config));
-    Ok((config, warnings))
+        .collect()
 }
 
 /// Drop any dial the configured agent would not take, saying which and why.
@@ -194,6 +208,89 @@ pub fn load() -> (Config, Vec<String>) {
     }
 }
 
+/// The config for work in `dir`: the person's file with that project's own
+/// file over it.
+///
+/// A project says the two or three keys the work there wants — the agent it is
+/// written for, the cap the machine can afford it — and every other key is
+/// still whatever the person chose. Which file is the project's is
+/// [`crate::paths::project_config`]'s question, and it is the repository's
+/// rather than any one tree of it.
+// The verbs that spawn an agent, and the view that counts them, read their
+// config through here next. Until they do, its only callers are its own tests.
+#[allow(dead_code)]
+pub fn for_dir(dir: &Path) -> (Config, Vec<String>) {
+    let mut files = Vec::new();
+    let mut warnings = Vec::new();
+    match crate::paths::config_file() {
+        Ok(path) => files.push(path),
+        Err(e) => warnings.push(format!("using defaults: {e}")),
+    }
+    files.extend(crate::paths::project_config(dir));
+
+    let (config, said) = layered(&files);
+    warnings.extend(said);
+    (config, warnings)
+}
+
+/// Read the files in order, every key one sets replacing that key from the
+/// files before it.
+///
+/// Key by key rather than file by file: a project file holding one line has
+/// changed its mind about one key, not thrown away everything the person set.
+///
+/// The dials are settled once, at the end, because which dials a vendor takes
+/// turns on the `agent` key and either file may be the one that named it.
+fn layered(files: &[PathBuf]) -> (Config, Vec<String>) {
+    let mut keys = toml::Table::new();
+    let mut warnings = Vec::new();
+    for path in files {
+        let (set, said) = keys_of(path);
+        keys.extend(set);
+        warnings.extend(said);
+    }
+
+    // Every file that got this far parses as a config on its own, and a key
+    // laid over another is that key entire, so what they make parses too.
+    let mut config: Config = keys.try_into().unwrap_or_default();
+    warnings.extend(check_dials(&mut config));
+    (config, warnings)
+}
+
+/// The keys `path` sets, with anything worth saying about it naming it.
+///
+/// A file amx cannot use is no keys and a warning: it is one layer of a
+/// config, and the layers under it stand whatever it says. Which is also why
+/// it is proved a config here rather than after the layering — a key of the
+/// wrong type belongs to the file that holds it, and that is the file to name.
+fn keys_of(path: &Path) -> (toml::Table, Vec<String>) {
+    match usable(path) {
+        Ok(Some(keys)) => {
+            let said = unknown_keys(&keys)
+                .into_iter()
+                .map(|warning| format!("{}: {warning}", path.display()))
+                .collect();
+            (keys, said)
+        }
+        Ok(None) => (toml::Table::new(), Vec::new()),
+        Err(e) => (
+            toml::Table::new(),
+            vec![format!("ignoring {}: {}", path.display(), e.root_cause())],
+        ),
+    }
+}
+
+/// The keys `path` sets, proved to describe a config on their own, or `None`
+/// when there is no such file.
+fn usable(path: &Path) -> Result<Option<toml::Table>> {
+    let Some(text) = read(path)? else {
+        return Ok(None);
+    };
+    let keys: toml::Table = text.parse()?;
+    let _: Config = keys.clone().try_into()?;
+    Ok(Some(keys))
+}
+
 /// Read a file, distinguishing "not there" (fine) from "unreadable" (worth
 /// saying out loud).
 fn read(path: &Path) -> Result<Option<String>> {
@@ -214,6 +311,8 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.agent, "claude");
         assert_eq!(c.max_agents, 5);
+        // No ceiling over the projects until somebody puts one there.
+        assert_eq!(c.max_total, None);
         assert!(c.worktrees);
         assert!(c.notifications);
         assert!(!c.trust, "the vendor's own file wants a yes before a write");
@@ -253,6 +352,10 @@ mod tests {
         let (c, _) = parse("max_agents = 12").unwrap();
         assert_eq!(c.max_agents, 12);
         assert_eq!(c.agent, Config::default().agent);
+
+        let (c, _) = parse("max_total = 12").unwrap();
+        assert_eq!(c.max_total, Some(12));
+        assert_eq!(c.max_agents, Config::default().max_agents);
 
         let (c, _) = parse("worktrees = false").unwrap();
         assert!(!c.worktrees);
@@ -299,6 +402,7 @@ mod tests {
             r#"
                 agent = "claude --dangerously-skip-permissions"
                 max_agents = 3
+                max_total = 8
                 worktrees = false
                 notifications = false
                 trust = true
@@ -312,6 +416,7 @@ mod tests {
         .unwrap();
         assert_eq!(c.agent, "claude --dangerously-skip-permissions");
         assert_eq!(c.max_agents, 3);
+        assert_eq!(c.max_total, Some(8));
         assert!(!c.worktrees);
         assert!(!c.notifications);
         assert!(c.trust);
@@ -323,7 +428,7 @@ mod tests {
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(
             KNOWN_KEYS.len(),
-            10,
+            11,
             "a key this file does not name is a key nothing here proves"
         );
     }
@@ -445,5 +550,202 @@ mod tests {
         assert!(read(&dir.path().join("absent")).unwrap().is_none());
         // A directory is present but is not a file amx can read.
         assert!(read(dir.path()).is_err());
+    }
+
+    /// A file with `text` in it, at `name` under `dir`.
+    fn wrote(dir: &Path, name: &str, text: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_project_file_replaces_the_keys_it_sets_and_leaves_the_rest_alone() {
+        let dir = TempDir::new().unwrap();
+        let person = wrote(
+            dir.path(),
+            "person.toml",
+            "agent = \"other\"\nmax_agents = 9\ntheme = \"terminal\"\n",
+        );
+        let project = wrote(dir.path(), "project.toml", "max_agents = 2\n");
+
+        let (c, w) = layered(&[person, project]);
+        assert_eq!(c.max_agents, 2, "the key the project sets is the project's");
+        assert_eq!(c.agent, "other", "and the rest is still the person's");
+        assert_eq!(c.theme, "terminal");
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn a_project_with_no_file_of_its_own_is_the_persons_config_unchanged() {
+        let dir = TempDir::new().unwrap();
+        let person = wrote(dir.path(), "person.toml", "max_agents = 9\n");
+
+        let (c, w) = layered(&[person, dir.path().join("nothing-here.toml")]);
+        assert_eq!(c.max_agents, 9);
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn an_unknown_key_in_a_project_file_names_that_file_and_the_rest_applies() {
+        let dir = TempDir::new().unwrap();
+        let person = wrote(dir.path(), "person.toml", "max_agents = 9\n");
+        let project = wrote(
+            dir.path(),
+            "project.toml",
+            "wardrobe = true\ntheme = \"terminal\"\n",
+        );
+
+        let (c, w) = layered(&[person, project.clone()]);
+        assert_eq!(c.theme, "terminal", "the key beside it still applies");
+        assert_eq!(c.max_agents, 9);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("wardrobe"), "{w:?}");
+        assert!(w[0].contains(&project.display().to_string()), "{w:?}");
+    }
+
+    #[test]
+    fn a_project_file_amx_cannot_use_names_that_file_and_the_person_stands() {
+        let dir = TempDir::new().unwrap();
+        let person = wrote(
+            dir.path(),
+            "person.toml",
+            "max_agents = 9\ntheme = \"terminal\"\n",
+        );
+
+        // A key of the wrong type is the file's own business: the file goes,
+        // and the one under it is untouched.
+        let project = wrote(dir.path(), "project.toml", "max_agents = \"two\"\n");
+        let (c, w) = layered(&[person.clone(), project.clone()]);
+        assert_eq!(c.max_agents, 9);
+        assert_eq!(c.theme, "terminal");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains(&project.display().to_string()), "{w:?}");
+
+        // And a file that cannot be read at all says which one it was.
+        let unreadable = dir.path().join("a-directory");
+        std::fs::create_dir(&unreadable).unwrap();
+        let (c, w) = layered(&[person, unreadable]);
+        assert_eq!(c.max_agents, 9);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("a-directory"), "{w:?}");
+    }
+
+    #[test]
+    fn the_dials_are_asked_of_the_agent_the_layering_settles_on() {
+        // The project names the agent and the person named the model, so which
+        // dials the vendor takes is a question neither file answers alone.
+        let dir = TempDir::new().unwrap();
+        let person = wrote(dir.path(), "person.toml", "model = \"opus\"\n");
+        let project = wrote(dir.path(), "project.toml", "agent = \"some-other-agent\"\n");
+
+        let (c, w) = layered(&[person, project]);
+        assert_eq!(c.model, None);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("some-other-agent"), "{w:?}");
+    }
+
+    /// git as the tests run it: none of the developer's own configuration, and
+    /// an identity of its own.
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "amx tests")
+            .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
+            .env("GIT_COMMITTER_NAME", "amx tests")
+            .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim_end().to_string()
+    }
+
+    /// The config file a project keeps, with one key in it.
+    fn project_file(root: &Path) -> PathBuf {
+        std::fs::create_dir_all(root.join(".amx")).unwrap();
+        wrote(&root.join(".amx"), "config.toml", "max_agents = 42\n")
+    }
+
+    /// A repository with one commit and a config file of its own. The file is
+    /// never committed: `.amx/` is kept out of the repository's status.
+    fn a_project() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        git(dir.path(), &["init", "-b", "main"]);
+        std::fs::write(dir.path().join("README.md"), "before\n").unwrap();
+        git(dir.path(), &["add", "README.md"]);
+        git(dir.path(), &["commit", "-m", "first"]);
+        project_file(dir.path());
+        dir
+    }
+
+    /// What `dir` reads its project config from, as the file it names.
+    fn config_of(dir: &Path) -> PathBuf {
+        let found = crate::paths::project_config(dir).expect("a project config");
+        std::fs::canonicalize(&found).unwrap_or(found)
+    }
+
+    fn same_file(got: PathBuf, expected: &Path) {
+        assert_eq!(
+            got,
+            std::fs::canonicalize(expected).unwrap(),
+            "{}",
+            got.display()
+        );
+    }
+
+    #[test]
+    fn a_checkout_reads_the_project_config_at_its_own_root() {
+        let repo = a_project();
+        let expected = repo.path().join(".amx/config.toml");
+        same_file(config_of(repo.path()), &expected);
+
+        let deep = repo.path().join("src/deep");
+        std::fs::create_dir_all(&deep).unwrap();
+        same_file(config_of(&deep), &expected);
+    }
+
+    #[test]
+    fn a_tree_amx_cut_reads_the_project_config_of_the_repository_behind_it() {
+        // Every agent on one repository reads one file, wherever amx put the
+        // tree it works in.
+        let repo = a_project();
+        let tree = crate::worktree::create(repo.path(), "fix-login-a1b").unwrap();
+        same_file(config_of(&tree.path), &repo.path().join(".amx/config.toml"));
+    }
+
+    #[test]
+    fn another_linked_worktree_reads_the_project_config_of_its_repository() {
+        // Not a tree amx cut and not a project of its own: it is a tree of the
+        // repository, wherever somebody put the directory.
+        let repo = a_project();
+        let elsewhere = TempDir::new().unwrap();
+        let tree = elsewhere.path().join("review");
+        git(
+            repo.path(),
+            &["worktree", "add", "-b", "review", &tree.to_string_lossy()],
+        );
+
+        same_file(config_of(&tree), &repo.path().join(".amx/config.toml"));
+    }
+
+    #[test]
+    fn a_directory_outside_git_is_the_whole_of_its_own_project() {
+        let dir = TempDir::new().unwrap();
+        let expected = project_file(dir.path());
+        same_file(config_of(dir.path()), &expected);
+    }
+
+    #[test]
+    fn the_config_for_a_directory_is_the_project_file_of_the_project_it_is_in() {
+        // The whole way through, from a directory to the key that file sets.
+        let repo = a_project();
+        assert_eq!(for_dir(repo.path()).0.max_agents, 42);
     }
 }
