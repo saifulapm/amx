@@ -609,9 +609,11 @@ than three rows, and it stands on the line as `[Pasted text #1]`, numbered from
 one on each line you open. That is what you read your sentence around, not what
 is sent — the task, the message and the editor `ctrl+g` opens all get every
 character you pasted. `backspace`, `delete` or `ctrl+w` against a marker takes
-the marker whole, and the paste with it. A shorter paste is left on the line as
-it is, and a name or a find line takes whatever you paste at it whole, since
-neither is a line you write a paragraph on.
+the marker whole, and the paste with it, and pasting the same text again while
+its marker still stands unfolds it: the text goes back where the marker was, so
+you can read what you pasted rather than take the row on trust. A shorter paste
+is left on the line as it is, and a name or a find line takes whatever you paste
+at it whole, since neither is a line you write a paragraph on.
 
 ## Pull requests
 
