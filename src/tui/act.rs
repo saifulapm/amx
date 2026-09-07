@@ -17,7 +17,7 @@
 //! still typing.
 
 use anyhow::{Context, Result, bail};
-use std::cell::Cell;
+use std::cell::{Cell, Ref, RefCell};
 use std::io::Write;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -57,6 +57,11 @@ pub struct Composer {
     pub allowed: Cell<Option<String>>,
     /// What the word under the cursor could be, where it could be something.
     pub suggest: Option<Suggest>,
+    /// The vendor's catalog as this line last read it, and who it was read
+    /// for. A cell for the reason `allowed` is one: the suggestions are taken
+    /// off a reading of the line, and what the reading finds out along the way
+    /// is left here for the next one.
+    pub listed: RefCell<Option<Listed>>,
     /// Where the line will run: the project the wall was showing when it was
     /// opened, and nothing where the wall was not showing one.
     ///
@@ -70,10 +75,10 @@ pub struct Composer {
 /// The words a vendor would answer to where the cursor is standing, as they
 /// stood at the last keystroke.
 ///
-/// Taken again on every keystroke rather than held: what answers to `/review`
-/// is whatever is in the vendor's own directories at the moment somebody types
-/// it, and a list read when the line opened would be a list of what was there
-/// then.
+/// Taken again on every keystroke rather than held, so that the list under the
+/// word is never a keystroke behind it. What it is narrowed from is the
+/// catalog the line read on the first keystroke that asked for one, which is
+/// [`Listed`]'s to keep.
 pub struct Suggest {
     /// Where the word stands on the line, counted in characters the way the
     /// cursor is, because it is what taking a suggestion writes over.
@@ -84,6 +89,27 @@ pub struct Suggest {
     pub entries: Vec<Entry>,
     /// Which of them the choice is standing on.
     pub chosen: usize,
+}
+
+/// Everything the vendor loads by name, as it stood when this line first
+/// asked, and who it was read for.
+///
+/// Read once for the life of the line rather than on every keystroke. The
+/// catalog is a walk of every place the vendor declares and a read of every
+/// file's frontmatter under them, and a line is typed a character at a time:
+/// thirty files is nothing, and a plugin cache of a few hundred is a line that
+/// lags behind the fingers typing it. What is narrowed on the keystroke is
+/// what was typed, and that costs nothing.
+///
+/// The vendor and the project because they are what the catalog is a function
+/// of: `agent:pi` typed onto a line that has been offering claude's skills is
+/// a different vendor's directories, and a `d:` aimed at another project is
+/// that project's own places. Either one changing is the reading gone, and
+/// the next keystroke takes it again.
+pub struct Listed {
+    agent: String,
+    project: PathBuf,
+    entries: Vec<Entry>,
 }
 
 /// What entering the line will do.
@@ -109,6 +135,7 @@ impl Composer {
             at: 0,
             allowed: Cell::new(None),
             suggest: None,
+            listed: RefCell::new(None),
             under: None,
         }
     }
@@ -286,6 +313,38 @@ impl Composer {
             .skip(suggest.word.start)
             .collect();
         typed != entry.spelled
+    }
+
+    /// The vendor's catalog for this line: the one already read for this
+    /// vendor and this project, and otherwise what `read` finds, kept for the
+    /// next keystroke.
+    ///
+    /// `read` is handed in rather than called here so that what fills the
+    /// reading and what decides whether to take it again are two things, and
+    /// the second can be proved without a disk.
+    fn catalog(
+        &self,
+        agent: &str,
+        project: &Path,
+        read: impl FnOnce() -> Vec<Entry>,
+    ) -> Ref<'_, [Entry]> {
+        let stale = self
+            .listed
+            .borrow()
+            .as_ref()
+            .is_none_or(|listed| listed.agent != agent || listed.project != project);
+        if stale {
+            *self.listed.borrow_mut() = Some(Listed {
+                agent: agent.to_string(),
+                project: project.to_path_buf(),
+                entries: read(),
+            });
+        }
+        Ref::map(self.listed.borrow(), |listed| {
+            listed
+                .as_ref()
+                .map_or(&[][..], |listed| listed.entries.as_slice())
+        })
     }
 
     /// Where the cursor stands as a byte of the line, which is what the string
@@ -630,9 +689,9 @@ fn pointed(
 ///
 /// Read on the keystroke, the way the find line narrows the wall on one: a
 /// suggestion arriving after the word it was about has been finished is no use
-/// to anybody. What it costs is a directory read, and only for a word that
-/// opens with one of the marks that ask for one — an ordinary sentence asks
-/// nothing of the disk.
+/// to anybody. What it costs is a directory read for a path, and the vendor's
+/// catalog once for the line — and only for a word that opens with one of the
+/// marks that ask for one. An ordinary sentence asks nothing of the disk.
 ///
 /// `wall` is the projects the view is showing agents in, which is what a `d:`
 /// is offered besides the directories under it.
@@ -653,7 +712,7 @@ pub fn suggest(
         .skip(word.start)
         .collect();
 
-    let entries = answering(&composer.text, &typed, config, project, wall);
+    let entries = answering(composer, &typed, config, project, wall);
     (!entries.is_empty()).then_some(Suggest {
         word,
         entries,
@@ -710,12 +769,13 @@ fn asked_of(config: &Config, line: &str) -> String {
 /// under the cursor are still there, since they are the project's rather than
 /// anybody's catalog.
 fn answering(
-    line: &str,
+    composer: &Composer,
     typed: &str,
     config: &Config,
     project: &Path,
     wall: &[PathBuf],
 ) -> Vec<Entry> {
+    let line = composer.text.as_str();
     let agent = asked_of(config, line);
     if typed.starts_with(AGENT) {
         return vendors(typed);
@@ -740,7 +800,8 @@ fn answering(
         Some('@') => &[catalog::Kind::Agent],
         _ => return Vec::new(),
     };
-    let named = catalogued(&agent, typed, kinds, project);
+    let listed = composer.catalog(&agent, project, || catalogued(&agent, project));
+    let named = named(&listed, typed, kinds);
     match named.is_empty() && typed.starts_with(AT) {
         true => paths(AT, typed, &running(line, project), false),
         false => named,
@@ -748,14 +809,20 @@ fn answering(
 }
 
 /// What the vendor loads by name, out of the places its entry declares.
-fn catalogued(agent: &str, typed: &str, kinds: &[catalog::Kind], project: &Path) -> Vec<Entry> {
+fn catalogued(agent: &str, project: &Path) -> Vec<Entry> {
     let places = registry::entry(agent).and_then(|vendor| vendor.catalog);
     let (Some(places), Some(home)) = (places, std::env::home_dir()) else {
         return Vec::new();
     };
     catalog::listing(&places, &home, project)
-        .into_iter()
+}
+
+/// The entries of these kinds that answer to what has been typed of the word.
+fn named(entries: &[Entry], typed: &str, kinds: &[catalog::Kind]) -> Vec<Entry> {
+    entries
+        .iter()
         .filter(|entry| kinds.contains(&entry.kind) && entry.spelled.starts_with(typed))
+        .cloned()
         .collect()
 }
 
@@ -1097,9 +1164,9 @@ fn as_agent(agent: &str, task: &str, project: &Path) -> (Vec<String>, String) {
     let Some(name) = word.strip_prefix(AT).filter(|name| !name.is_empty()) else {
         return whole();
     };
-    if !catalogued(agent, word, &[catalog::Kind::Agent], project)
+    if !catalogued(agent, project)
         .iter()
-        .any(|entry| entry.spelled == word)
+        .any(|entry| entry.kind == catalog::Kind::Agent && entry.spelled == word)
     {
         return whole();
     }
@@ -2511,6 +2578,91 @@ mod tests {
             !line.finishing(),
             "and a word with nothing under it is finished"
         );
+    }
+
+    #[test]
+    fn composer_reads_the_catalog_once_for_the_life_of_the_line() {
+        // What fills the reading is counted rather than walked: the disk is
+        // not what this is about.
+        let reads = Cell::new(0);
+        let read = || {
+            reads.set(reads.get() + 1);
+            vec![worded("/review".to_string())]
+        };
+        let line = Composer::new(Asking::Task);
+
+        assert_eq!(
+            offered_by(&line.catalog("claude", a_project(), read)),
+            ["/review"]
+        );
+        assert_eq!(
+            offered_by(&line.catalog("claude", a_project(), read)),
+            ["/review"]
+        );
+        assert_eq!(
+            reads.get(),
+            1,
+            "the second keystroke on the same line reads nothing"
+        );
+
+        line.catalog("claude", Path::new("/srv/other"), read);
+        assert_eq!(reads.get(), 2, "another project is another catalog");
+        line.catalog("pi", Path::new("/srv/other"), read);
+        assert_eq!(reads.get(), 3, "and so is another vendor");
+        line.catalog("pi", Path::new("/srv/other"), read);
+        assert_eq!(reads.get(), 3);
+
+        assert_eq!(
+            offered_by(&Composer::new(Asking::Task).catalog("pi", a_project(), Vec::new)),
+            Vec::<&str>::new(),
+            "a new line has read nothing yet"
+        );
+    }
+
+    #[test]
+    fn composer_narrows_the_next_keystroke_out_of_the_catalog_the_last_one_read() {
+        // A catalog put into the line by hand, naming a word no disk has:
+        // what the keystrokes after it offer is read out of the line, not the
+        // vendor's directories.
+        let mut line = Composer::new(Asking::Task);
+        *line.listed.borrow_mut() = Some(Listed {
+            agent: "claude".to_string(),
+            project: a_project().to_path_buf(),
+            entries: vec![
+                worded("/quenched".to_string()),
+                worded("/quiet".to_string()),
+            ],
+        });
+
+        line.insert("/qu");
+        let found = suggest(&line, &as_claude(), a_project(), &[]).expect("the reading");
+        assert_eq!(offered(&found), ["/quenched", "/quiet"]);
+        line.insert("e");
+        let found = suggest(&line, &as_claude(), a_project(), &[]).expect("narrowed");
+        assert_eq!(
+            offered(&found),
+            ["/quenched"],
+            "narrowed by what was typed, out of the same reading"
+        );
+
+        // The line aimed at another vendor is another vendor's catalog, and
+        // the reading goes with the first one.
+        line.home();
+        line.insert("agent:pi ");
+        suggest(&line, &as_claude(), a_project(), &[]);
+        assert_eq!(
+            line.listed
+                .borrow()
+                .as_ref()
+                .map(|listed| listed.agent.as_str()),
+            Some("pi"),
+            "the reading is the vendor the line names"
+        );
+    }
+
+    /// The words a reading holds, in the order it holds them.
+    fn offered_by(entries: &[Entry]) -> Vec<&str> {
+        entries.iter().map(|entry| entry.spelled.as_str()).collect()
     }
 
     #[test]
