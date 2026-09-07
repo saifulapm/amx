@@ -11,7 +11,7 @@ pub const FAILURE: i32 = 1;
 
 /// Blocked: `result` on a waiting agent (its question goes to stdout), `send`
 /// refused because the agent is waiting, `answer` with nothing pending, `new`
-/// at `max_agents`.
+/// at a project's `max_agents` or the machine's `max_total`.
 pub const BLOCKED: i32 = 2;
 
 /// `result --timeout` expired.

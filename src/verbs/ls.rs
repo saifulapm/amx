@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use crate::derive::{self, View};
 use crate::store::{Meta, now};
 use crate::verbs::send;
-use crate::{exit, gc, paths, worktree};
+use crate::{exit, gc, paths, spawn};
 
 /// Run the verb against the machine.
 pub fn from_env(json: bool, dir: Option<&Path>) -> Result<i32> {
@@ -77,7 +77,7 @@ impl Scope {
         let Some(under) = self.under.as_deref() else {
             return true;
         };
-        sits_under(&meta.dir, under) || cut_from(meta).is_some_and(|repo| sits_under(&repo, under))
+        sits_under(&meta.dir, under) || sits_under(&spawn::project_dir(meta), under)
     }
 
     /// A reading with only the agents the scope is about left in it.
@@ -117,21 +117,6 @@ fn named(dir: &Path) -> Result<PathBuf> {
 fn sits_under(dir: &Path, under: &Path) -> bool {
     dir.starts_with(under)
         || std::fs::canonicalize(dir).is_ok_and(|reached| reached.starts_with(under))
-}
-
-/// The repository an agent's worktree was cut from, if it is in one amx cut.
-///
-/// A worktree of amx's own shape is `<repo>/.amx/worktrees/<id>`, so the
-/// repository is three components back up the path: string work, no disk, and
-/// the same law `stop` and the view read a tree by. It is what a person means
-/// by the project an agent belongs to — a worktree agent of `~/code/amx` is an
-/// agent of `~/code/amx`, whatever directory it happens to run in.
-fn cut_from(meta: &Meta) -> Option<PathBuf> {
-    let tree = meta.worktree.as_deref().unwrap_or(&meta.dir);
-    worktree::is_amx_tree(tree)
-        .then(|| tree.ancestors().nth(3))
-        .flatten()
-        .map(Path::to_path_buf)
 }
 
 /// The table a person reads.

@@ -455,6 +455,115 @@ fn new_refuses_once_the_cap_is_reached() {
     assert!(said.contains("max_agents") || said.contains('1'), "{said}");
 }
 
+/// A directory with a config file of its own, which outside a repository is
+/// the whole of a project.
+fn a_project(amx: &Harness, name: &str, config: &str) -> std::path::PathBuf {
+    let dir = amx.home().join(name);
+    std::fs::create_dir_all(dir.join(".amx")).expect("the project's own directory");
+    std::fs::write(dir.join(".amx/config.toml"), config).expect("the project's config");
+    dir
+}
+
+#[test]
+fn new_counts_the_cap_against_the_project_the_agent_will_run_in() {
+    // Two projects, each of them allowed one agent at a time. What one is
+    // running is nothing the other answers for, and the refusal names the
+    // project it counted so that a person knows which file said so.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let alpha = a_project(&amx, "alpha", "max_agents = 1\n");
+    let beta = a_project(&amx, "beta", "max_agents = 1\n");
+
+    let first = id_of(&new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &alpha.to_string_lossy(),
+            "--agent",
+            &mock,
+            "the first",
+        ],
+    ));
+    amx.until_state(&first, "idle");
+
+    let refused = new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &alpha.to_string_lossy(),
+            "--agent",
+            &mock,
+            "the second",
+        ],
+    );
+    assert_eq!(refused.status.code(), Some(2), "blocked, not failed");
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("max_agents is 1"), "{said}");
+    assert!(
+        said.contains(&alpha.display().to_string()),
+        "the project it counted: {said}"
+    );
+
+    let elsewhere = new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &beta.to_string_lossy(),
+            "--agent",
+            &mock,
+            "in the other project",
+        ],
+    );
+    assert!(
+        elsewhere.status.success(),
+        "the next project has a cap of its own: {}",
+        String::from_utf8_lossy(&elsewhere.stderr)
+    );
+}
+
+#[test]
+fn new_refuses_at_the_ceiling_over_every_project() {
+    // The ceiling is the machine's rather than any project's: two projects
+    // with room to spare between them still stop at what the person allowed
+    // in total.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    amx.config("max_total = 1\n");
+    let alpha = a_project(&amx, "alpha", "max_agents = 5\n");
+    let beta = a_project(&amx, "beta", "max_agents = 5\n");
+
+    let first = id_of(&new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &alpha.to_string_lossy(),
+            "--agent",
+            &mock,
+            "the first",
+        ],
+    ));
+    amx.until_state(&first, "idle");
+
+    let refused = new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &beta.to_string_lossy(),
+            "--agent",
+            &mock,
+            "the second",
+        ],
+    );
+    assert_eq!(refused.status.code(), Some(2), "blocked, not failed");
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("max_total is 1"), "{said}");
+}
+
 #[test]
 fn an_agent_that_has_ended_does_not_hold_a_place() {
     let amx = Harness::new();

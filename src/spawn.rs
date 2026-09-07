@@ -524,14 +524,33 @@ fn wait_for(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The agents that are still going: their record says they have not finished,
-/// and their pane is still there on the server it was recorded on.
+/// The agents that are still going, on the whole machine.
+pub fn live(root: &Path) -> Result<Vec<String>> {
+    Ok(named(going(root)?))
+}
+
+/// The agents of one project that are still going.
+///
+/// A cap is a key some file sets, so the agents counted against it are the
+/// agents that read that file: whichever directory one was started in, it
+/// belongs to the project [`project_of`] finds behind that directory.
+pub fn live_under(root: &Path, project: &Path) -> Result<Vec<String>> {
+    let theirs = going(root)?
+        .into_iter()
+        .filter(|meta| project_of(&meta.dir) == project)
+        .collect();
+    Ok(named(theirs))
+}
+
+/// The records of the agents that are still going: the record says they have
+/// not finished, and the pane it names is still there on the server it was
+/// recorded on.
 ///
 /// An agent whose state amx cannot read is skipped rather than failing the
 /// whole walk: one bad document should cost that agent, not everyone listed
 /// after it.
-pub fn live(root: &Path) -> Result<Vec<String>> {
-    let mut live = Vec::new();
+fn going(root: &Path) -> Result<Vec<Meta>> {
+    let mut going = Vec::new();
     for id in crate::store::list(root)? {
         let agent = Agent::open(root, &id)?;
         let Ok(state) = agent.state() else { continue };
@@ -539,12 +558,88 @@ pub fn live(root: &Path) -> Result<Vec<String>> {
             continue;
         }
         let Ok(meta) = agent.meta() else { continue };
-        if Server::from_socket(meta.socket).pane_alive(&meta.pane) {
-            live.push(id);
+        if Server::from_socket(meta.socket.clone()).pane_alive(&meta.pane) {
+            going.push(meta);
         }
     }
-    live.sort();
-    Ok(live)
+    Ok(going)
+}
+
+/// What those agents are called, in order.
+fn named(agents: Vec<Meta>) -> Vec<String> {
+    let mut ids: Vec<String> = agents.into_iter().map(|meta| meta.id).collect();
+    ids.sort();
+    ids
+}
+
+/// The project an agent belongs to: the repository its worktree was cut from,
+/// and the directory it runs in otherwise.
+///
+/// A worktree of amx's own shape is `<repo>/.amx/worktrees/<id>`, so the
+/// repository is three components back up the path: string work, no disk, and
+/// the same law `stop` and the view read a tree by. It is what a person means
+/// by the project an agent belongs to — a worktree agent of `~/code/amx` is an
+/// agent of `~/code/amx`, whatever directory it happens to run in.
+pub fn project_dir(meta: &Meta) -> PathBuf {
+    let tree = meta.worktree.as_deref().unwrap_or(&meta.dir);
+    crate::worktree::is_amx_tree(tree)
+        .then(|| tree.ancestors().nth(3))
+        .flatten()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| meta.dir.clone())
+}
+
+/// The project a directory works in: the repository behind it, or the
+/// directory itself where there is no repository.
+///
+/// Read off the file that project keeps rather than worked out again here, so
+/// that the agents a cap counts are exactly the agents that read the file
+/// setting it. [`crate::paths::project_config`] is where that layout lives,
+/// and it answers for a checkout, for either kind of worktree of one, and for
+/// a directory git has never heard of.
+pub fn project_of(dir: &Path) -> PathBuf {
+    crate::paths::project_config(dir)
+        .as_deref()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dir.to_path_buf())
+}
+
+/// Whether the project a spawn is for, or the machine under it, is already
+/// running as many agents as it will — and the sentence saying which, for the
+/// verb about to refuse in its own words.
+///
+/// Two numbers and two counts. `max_agents` is the project's own key, counted
+/// over that project's agents alone: what one repository can afford to run at
+/// once says nothing about what the next one can, and an afternoon is spread
+/// over several of them. `max_total` is the ceiling over all of it, counted
+/// over every agent there is, and where nobody has set one there is none: a
+/// machine is as busy as the projects on it ask between them.
+///
+/// Both counts are of agents that are still going. One that has finished is a
+/// record, not a running program.
+pub fn at_capacity(
+    root: &Path,
+    project: &Path,
+    max_agents: usize,
+    max_total: Option<usize>,
+) -> Result<Option<String>> {
+    let here = live_under(root, project)?.len();
+    if here >= max_agents {
+        return Ok(Some(format!(
+            "{here} agents already running in {}, and max_agents is {max_agents}",
+            project.display()
+        )));
+    }
+
+    let Some(ceiling) = max_total else {
+        return Ok(None);
+    };
+    let everywhere = live(root)?.len();
+    Ok((everywhere >= ceiling).then(|| {
+        format!("{everywhere} agents already running on this machine, and max_total is {ceiling}")
+    }))
 }
 
 /// The record `new` writes once the pane exists.
@@ -1159,6 +1254,106 @@ mod tests {
         fn drop(&mut self) {
             let _ = self.0.kill();
         }
+    }
+
+    #[test]
+    fn spawn_an_agent_of_a_tree_amx_cut_belongs_to_the_repository_behind_it() {
+        let tree = PathBuf::from("/srv/app/.amx/worktrees/fix-login-a1b");
+        let socket = crate::tmux::Socket::Name("amx".to_string());
+        let pane = PaneId::new("%1").unwrap();
+
+        let cut = Meta {
+            dir: tree.clone(),
+            worktree: Some(tree),
+            ..meta("fix-login-a1b", socket.clone(), pane.clone())
+        };
+        assert_eq!(project_dir(&cut), Path::new("/srv/app"));
+
+        // Anywhere else is the directory the agent runs in, whatever is above
+        // it: nothing here asks the disk, and a record outlives the tree it
+        // names.
+        let plain = meta("port-it-b2c", socket, pane);
+        assert_eq!(project_dir(&plain), plain.dir);
+    }
+
+    #[test]
+    fn spawn_the_project_behind_a_directory_is_where_its_config_file_is() {
+        // A tree amx cut is read off the layout alone, so this holds for one
+        // git can no longer be asked about.
+        assert_eq!(
+            project_of(Path::new("/srv/app/.amx/worktrees/fix-login-a1b")),
+            Path::new("/srv/app")
+        );
+
+        // Outside a repository there is nothing above the directory, and the
+        // directory is the whole of the project.
+        let dir = TempDir::new().unwrap();
+        assert_eq!(project_of(dir.path()), dir.path());
+    }
+
+    #[test]
+    fn live_counts_a_project_on_its_own_and_the_machine_over_all_of_them() {
+        let root = TempDir::new().unwrap();
+        let (alpha, beta) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let server =
+            Own(Server::named(format!("amx-count-{}", std::process::id())).with_conf("/dev/null"));
+        let (_, pane) = server
+            .0
+            .new_session(&Spawn {
+                command: &["sh", "-c", "while :; do sleep 0.05; done"],
+                ..Spawn::default()
+            })
+            .expect("a pane");
+        let socket = server.0.socket().clone();
+
+        for (id, dir) in [
+            ("first-a1b", alpha.path()),
+            ("second-b2c", alpha.path()),
+            ("third-c3d", beta.path()),
+        ] {
+            let of_theirs = Meta {
+                dir: dir.to_path_buf(),
+                ..meta(id, socket.clone(), pane.clone())
+            };
+            Agent::create(root.path(), &of_theirs).expect("a record");
+        }
+
+        assert_eq!(
+            live_under(root.path(), alpha.path()).unwrap(),
+            ["first-a1b", "second-b2c"]
+        );
+        assert_eq!(live_under(root.path(), beta.path()).unwrap(), ["third-c3d"]);
+        assert_eq!(
+            live(root.path()).unwrap().len(),
+            3,
+            "and the machine is all"
+        );
+
+        // The cap is the project's own, so one project is full where the next
+        // one has room, at the same number.
+        let full = at_capacity(root.path(), alpha.path(), 2, None)
+            .unwrap()
+            .expect("alpha is at its cap");
+        assert!(full.contains("max_agents is 2"), "{full}");
+        assert!(
+            full.contains(&alpha.path().display().to_string()),
+            "the project it counted: {full}"
+        );
+        assert_eq!(
+            at_capacity(root.path(), beta.path(), 2, None).unwrap(),
+            None
+        );
+
+        // The ceiling is the machine's, counted over both of them.
+        let over = at_capacity(root.path(), beta.path(), 2, Some(3))
+            .unwrap()
+            .expect("the machine is at its ceiling");
+        assert!(over.contains("max_total is 3"), "{over}");
+        assert_eq!(
+            at_capacity(root.path(), beta.path(), 2, Some(4)).unwrap(),
+            None,
+            "and a ceiling nothing has reached refuses nothing"
+        );
     }
 
     #[test]

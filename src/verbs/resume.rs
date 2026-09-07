@@ -56,18 +56,19 @@ pub enum Comeback {
 /// raised.
 pub fn again(
     root: &Path,
-    config: &Config,
+    _config: &Config,
     id: &str,
     env: &BTreeMap<String, String>,
 ) -> Result<Comeback> {
     let agent = Agent::open(root, id)?;
-    if let Err(why) = to_continue(&agent.meta()?) {
+    let meta = agent.meta()?;
+    if let Err(why) = to_continue(&meta) {
         return Ok(Comeback::No(why));
     }
     if let Err(why) = to_start(agent.dir(), id) {
         return Ok(Comeback::No(why));
     }
-    if let Some(full) = at_capacity(root, config)? {
+    if let Some(full) = at_capacity(root, &meta.dir)? {
         return Ok(Comeback::No(full));
     }
     bring_back(root, id, env)?;
@@ -75,36 +76,33 @@ pub fn again(
 }
 
 /// Run the verb against the machine.
-pub fn from_env(config: &Config, id: Option<&str>, all: bool) -> Result<i32> {
+///
+/// The config the caller holds is the person's file, and nothing here reads
+/// it: an agent comes back where it ran, and the cap it answers to is that
+/// project's.
+pub fn from_env(_config: &Config, id: Option<&str>, all: bool) -> Result<i32> {
     let root = paths::state_root()?;
     let env = spawn::env_snapshot(std::env::vars());
     let mut out = std::io::stdout().lock();
-    run(&root, config, id, all, &env, &mut out)
+    run(&root, id, all, &env, &mut out)
 }
 
 /// The verb, with everything it reads named.
 pub fn run(
     root: &Path,
-    config: &Config,
     id: Option<&str>,
     all: bool,
     env: &BTreeMap<String, String>,
     out: &mut impl Write,
 ) -> Result<i32> {
     match id {
-        Some(id) if !all => one(root, config, id, env, out),
-        _ => sweep(root, config, env, out),
+        Some(id) if !all => one(root, id, env, out),
+        _ => sweep(root, env, out),
     }
 }
 
 /// One agent, named.
-fn one(
-    root: &Path,
-    config: &Config,
-    id: &str,
-    env: &BTreeMap<String, String>,
-    out: &mut impl Write,
-) -> Result<i32> {
+fn one(root: &Path, id: &str, env: &BTreeMap<String, String>, out: &mut impl Write) -> Result<i32> {
     let view = derive::view(root, id, store::now())?;
     // Anything that has not ended is already doing what a resume would start.
     // Starting a second command over the top of it is the one outcome nobody
@@ -116,7 +114,7 @@ fn one(
         );
         return Ok(exit::BLOCKED);
     }
-    if let Some(full) = at_capacity(root, config)? {
+    if let Some(full) = at_capacity(root, &view.meta.dir)? {
         warn!("amx resume: {full}");
         return Ok(exit::BLOCKED);
     }
@@ -131,12 +129,7 @@ fn one(
 /// Only the stopped ones: an agent that ran to the end of its command has
 /// nothing outstanding, and a sweep that started every finished agent on the
 /// machine would be a way to lose an afternoon.
-fn sweep(
-    root: &Path,
-    config: &Config,
-    env: &BTreeMap<String, String>,
-    out: &mut impl Write,
-) -> Result<i32> {
+fn sweep(root: &Path, env: &BTreeMap<String, String>, out: &mut impl Write) -> Result<i32> {
     let stopped: Vec<_> = derive::views(root, store::now())?
         .into_iter()
         .filter(|view| view.phase() == Phase::Stopped)
@@ -147,9 +140,13 @@ fn sweep(
     }
 
     for view in stopped {
-        if let Some(full) = at_capacity(root, config)? {
-            warn!("amx resume: {full}");
-            return Ok(exit::BLOCKED);
+        // Each agent against the cap of its own project, and a project that is
+        // full is not the sweep's ending either: a server takes every project
+        // on the machine with it when it dies, and the agents of the ones with
+        // room still come back.
+        if let Some(full) = at_capacity(root, &view.meta.dir)? {
+            warn!("amx resume: {}: {full}", view.id());
+            continue;
         }
         // One agent that cannot come back is not the sweep's ending. The
         // others still can, and this is the command somebody runs when the
@@ -162,15 +159,21 @@ fn sweep(
     Ok(exit::OK)
 }
 
-/// Whether the machine is already running as many agents as it will.
-fn at_capacity(root: &Path, config: &Config) -> Result<Option<String>> {
-    let live = spawn::live(root)?.len();
-    Ok((live >= config.max_agents).then(|| {
-        format!(
-            "{live} agents already running, and max_agents is {}",
-            config.max_agents
-        )
-    }))
+/// Whether the project an agent came from, or the machine over it, is already
+/// running as many agents as it will.
+///
+/// The cap is read from the project the agent ran in rather than from the
+/// config this command was started with: an agent comes back where it was, and
+/// the machine's afternoon is spread over projects that each say for
+/// themselves what they can afford.
+fn at_capacity(root: &Path, dir: &Path) -> Result<Option<String>> {
+    let (theirs, _) = crate::config::for_dir(dir);
+    spawn::at_capacity(
+        root,
+        &spawn::project_of(dir),
+        theirs.max_agents,
+        theirs.max_total,
+    )
 }
 
 /// Put the agent back in a pane, continuing what it was doing.

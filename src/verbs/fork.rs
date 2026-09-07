@@ -45,29 +45,23 @@ const FORKED: &str = "fork";
 const MAX_CLAIMS: usize = 8;
 
 /// Run the verb against the machine.
-pub fn from_env(config: &Config, id: &str, task: Option<&str>) -> Result<i32> {
+///
+/// The config the caller holds is the person's file, and nothing here reads
+/// it: a copy runs where the agent it copies ran, and the cap it answers to is
+/// that project's.
+pub fn from_env(_config: &Config, id: &str, task: Option<&str>) -> Result<i32> {
     let root = paths::state_root()?;
     let env = spawn::env_snapshot(std::env::vars());
     let mut out = std::io::stdout().lock();
     let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());
     let mut problems = std::io::stderr().lock();
-    run(
-        &root,
-        config,
-        id,
-        task,
-        &env,
-        &mut out,
-        &mut problems,
-        to_terminal,
-    )
+    run(&root, id, task, &env, &mut out, &mut problems, to_terminal)
 }
 
 /// The verb, with everything it reads named.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     root: &Path,
-    config: &Config,
     id: &str,
     prompt: Option<&str>,
     env: &BTreeMap<String, String>,
@@ -97,20 +91,16 @@ pub fn run(
     }
 
     // The cap counts agents that are still going, and a fork is another one.
-    let live = spawn::live(root)?;
-    if live.len() >= config.max_agents {
+    // It is the cap of the project the copy will run in, which is the one the
+    // agent it copies ran in: the config the caller holds is the person's file
+    // and says nothing about that project.
+    let (theirs, _) = crate::config::for_dir(&meta.dir);
+    let project = spawn::project_of(&meta.dir);
+    if let Some(full) = spawn::at_capacity(root, &project, theirs.max_agents, theirs.max_total)? {
         writeln!(
             problems,
             "{}",
-            said(
-                Severity::Warned,
-                &format!(
-                    "amx fork: {} agents already running, and max_agents is {}",
-                    live.len(),
-                    config.max_agents
-                ),
-                to_terminal
-            )
+            said(Severity::Warned, &format!("amx fork: {full}"), to_terminal)
         )?;
         return Ok(exit::BLOCKED);
     }
@@ -862,20 +852,14 @@ mod tests {
 
     /// The verb, with nowhere for its output to go but a buffer.
     fn fork(root: &Path, id: &str) -> Result<(i32, String, String)> {
-        forked(root, id, &Config::default(), false)
+        forked(root, id, false)
     }
 
-    /// The same, with the config and the kind of stderr named.
-    fn forked(
-        root: &Path,
-        id: &str,
-        config: &Config,
-        to_terminal: bool,
-    ) -> Result<(i32, String, String)> {
+    /// The same, with the kind of stderr named.
+    fn forked(root: &Path, id: &str, to_terminal: bool) -> Result<(i32, String, String)> {
         let (mut out, mut problems) = (Vec::new(), Vec::new());
         let code = run(
             root,
-            config,
             id,
             None,
             &BTreeMap::new(),
@@ -936,6 +920,10 @@ mod tests {
     fn fork_refuses_at_the_cap_in_yellow_on_a_terminal_and_plain_down_a_pipe() {
         // The cap is a refusal and not a failure: nothing went wrong, and amx
         // is saying what it will not do. Yellow says which of the two it is.
+        //
+        // The key is written where the copy will run, because that is the
+        // project a fork is counted against — and a project's own file beats
+        // whatever the person put in theirs, so this holds on any machine.
         let here = TempDir::new().unwrap();
         let (root, _) = a_record(Some("abc-123"), here.path());
         let origin = Agent::open(root.path(), "fix-login-a1b").unwrap();
@@ -944,17 +932,16 @@ mod tests {
             &handoff(&["claude", "fix the login bug"], "fix the login bug"),
         )
         .unwrap();
-        let full = Config {
-            max_agents: 0,
-            ..Config::default()
-        };
+        std::fs::create_dir(here.path().join(".amx")).unwrap();
+        std::fs::write(here.path().join(".amx/config.toml"), "max_agents = 0\n").unwrap();
 
-        let (code, _, plain) = forked(root.path(), "fix-login-a1b", &full, false).unwrap();
+        let (code, _, plain) = forked(root.path(), "fix-login-a1b", false).unwrap();
         assert_eq!(code, exit::BLOCKED);
         assert!(plain.starts_with("amx fork: "), "{plain:?}");
+        assert!(plain.contains("max_agents is 0"), "{plain:?}");
         assert!(!plain.contains('\u{1b}'), "{plain:?}");
 
-        let (_, _, painted) = forked(root.path(), "fix-login-a1b", &full, true).unwrap();
+        let (_, _, painted) = forked(root.path(), "fix-login-a1b", true).unwrap();
         assert!(painted.starts_with("\u{1b}[33mamx fork: "), "{painted:?}");
         assert!(painted.trim_end().ends_with("\u{1b}[39m"), "{painted:?}");
     }

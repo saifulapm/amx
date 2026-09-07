@@ -173,22 +173,19 @@ fn run_aloud(
 
     std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
 
-    // The cap is about agents that are still going. One that has finished is a
-    // record, not a running program.
-    let live = spawn::live(root)?;
-    if live.len() >= config.max_agents {
+    // The cap is the project's own, and the project is the one the agent will
+    // run in rather than the one the command was typed in: `--dir` sends an
+    // agent into another repository, and what that one runs at once is its own
+    // file to answer. What is wrong with that file is not this spawn's to say —
+    // one key of it is being asked about, and the answer to that is a pane or a
+    // refusal.
+    let (theirs, _) = crate::config::for_dir(dir);
+    let project = spawn::project_of(dir);
+    if let Some(full) = spawn::at_capacity(root, &project, theirs.max_agents, theirs.max_total)? {
         writeln!(
             problems,
             "{}",
-            said(
-                Severity::Warned,
-                &format!(
-                    "amx new: {} agents already running, and max_agents is {}",
-                    live.len(),
-                    config.max_agents
-                ),
-                to_terminal
-            )
+            said(Severity::Warned, &format!("amx new: {full}"), to_terminal)
         )?;
         return Ok(exit::BLOCKED);
     }

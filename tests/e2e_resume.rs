@@ -707,6 +707,79 @@ fn resume_will_not_take_the_machine_past_max_agents() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("max_agents"));
 }
 
+/// A directory with a config file of its own, which outside a repository is
+/// the whole of a project.
+fn a_project(amx: &Harness, name: &str, config: &str) -> PathBuf {
+    let dir = amx.home().join(name);
+    std::fs::create_dir_all(dir.join(".amx")).expect("the project's own directory");
+    std::fs::write(dir.join(".amx/config.toml"), config).expect("the project's config");
+    dir
+}
+
+/// An agent of `project` that ran and stopped, with its place given up.
+fn stopped_in(amx: &Harness, id: &str, project: &Path) {
+    start(amx, id, project, "happy-turn");
+    amx.until_state(id, "idle");
+    amx.amx(&["stop", id, "--force"]);
+    assert_eq!(amx.state(id)["state"], "stopped");
+}
+
+#[test]
+fn resume_counts_the_cap_against_the_project_the_agent_ran_in() {
+    // An agent comes back where it was, so the cap it answers to is the one
+    // that project's own file sets. Two projects allowed one agent each: what
+    // one of them is running is nothing the other answers for.
+    let amx = Harness::new();
+    let alpha = a_project(&amx, "alpha", "max_agents = 1\n");
+    let beta = a_project(&amx, "beta", "max_agents = 1\n");
+
+    let id = "fix-login-a1b";
+    stopped_in(&amx, id, &alpha);
+    start(&amx, "watch-log-c3d", &alpha, "works-without-end");
+    amx.until_state("watch-log-c3d", "working");
+
+    let refused = resume(&amx, &[id]);
+    assert_eq!(refused.status.code(), Some(2), "blocked, not failed");
+    let why = String::from_utf8_lossy(&refused.stderr);
+    assert!(why.contains("max_agents is 1"), "{why}");
+    assert!(
+        why.contains(&alpha.display().to_string()),
+        "the project it counted: {why}"
+    );
+
+    // The same agent, recorded in the other project: alpha's afternoon is
+    // nothing beta is asked about.
+    amx.set_meta(id, json!({ "dir": beta.to_string_lossy() }));
+    let out = resume(&amx, &[id]);
+    assert!(
+        out.status.success(),
+        "amx resume: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    until_continued(&amx, id);
+}
+
+#[test]
+fn resume_will_not_take_the_machine_past_max_total() {
+    // The ceiling is the machine's rather than any project's: an agent of one
+    // project holds the last place on it, and another project's cannot come
+    // back under it however much room that project has.
+    let amx = Harness::new();
+    amx.config("max_total = 1\n");
+    let alpha = a_project(&amx, "alpha", "max_agents = 5\n");
+    let beta = a_project(&amx, "beta", "max_agents = 5\n");
+
+    let id = "fix-login-a1b";
+    stopped_in(&amx, id, &beta);
+    start(&amx, "watch-log-c3d", &alpha, "works-without-end");
+    amx.until_state("watch-log-c3d", "working");
+
+    let refused = resume(&amx, &[id]);
+    assert_eq!(refused.status.code(), Some(2), "blocked, not failed");
+    let why = String::from_utf8_lossy(&refused.stderr);
+    assert!(why.contains("max_total is 1"), "{why}");
+}
+
 #[test]
 fn resume_says_so_when_there_is_no_such_agent() {
     let amx = Harness::new();
