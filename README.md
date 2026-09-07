@@ -153,21 +153,27 @@ The screen is four things: two rows above the list, the list, the line you are
 typing when you are typing one, and a row of keys at the foot.
 
 ```
-AMX                                  1 idle   1 done   2/5 running    1 WAITING
+AMX         1 pinned   1 review   1 working   1 done   3/5 running    1 WAITING
 └ next  claude   model  default   permission  default   worktree  new
 
+ PINNED ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
+  ✻ bump-deps-e5f          Running Bash                                      12s
+
+ READY FOR REVIEW ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
+  ∙ fix-login-a1b     #12  the login bug is fixed                             4m
+
  NEEDS INPUT ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
-  ? port-import-b2c   Which fixture should the port keep?                    29s
+  ✻ port-import-b2c        Which fixture should the port keep?               29s
   │ Which fixture should the port keep?
   ╰ 1. the old one   2. the new one   3. both
 
- IDLE ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
-  ○ fix-login-a1b     the login bug is fixed                                  4m
+ WORKING ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
+  ✻ ship-docs-a7d          Running cargo test                                 3s
 
  COMPLETED ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
-  ● tidy-imports-d4e  did what it was asked                                   2m
+  ∙ tidy-imports-d4e       did what it was asked                              2m
 
-space closes it   enter attach   ctrl+x stop   ctrl+s axis   q quit   ? keys
+space closes it   enter attach   ctrl+x stop   ctrl+t pin   ctrl+s axis   ? keys
 ```
 
 The first row is what there is: `AMX`, the directory the view was opened on
@@ -181,29 +187,57 @@ under ten rows the second row goes and the first stays. The row at the foot is
 whatever keys the line under the cursor makes true, cut to what the terminal
 holds, with `?` pinned to the end of it.
 
-The list answers one question, so it is gathered under the answer: the agents
-stopped on a question come first, then the ones mid-turn, then the ones sitting
-at their prompt, then the ones whose command has ended. A heading is a line like
-the rows under it: the group's name in caps, a dim rule run out to its count,
-and the count right-aligned in the column the ages under it are right-aligned
-in, so the right margin is one line of numbers rather than two. The rule is
-drawn in `┈`, the lightest dash there is, and every rule on the screen is —
-dim is the weight a summary wears too, but a terminal inks a box-drawing glyph
-across the whole cell, so a solid rule reads brighter than the words beside it
-at the same colour. Half the cells left blank is what puts the two level. A
-group holding a failure says so in front of the rule, because a failed agent is
-why somebody came to the screen. The cursor stops on a heading, and shutting it
-puts its agents away behind the count that was already there.
+The list answers one question, so it is gathered under the answer: whatever you
+pinned there yourself comes first, then the work standing in front of a
+reviewer, then the agents stopped on a question, then the ones mid-turn, then
+the turns that are over. Pinned is `ctrl+t` and nothing else. Ready for review
+is a turn that is over whose branch still has a pull request asking somebody
+for something, which is work that has left the machine and is waiting on a
+reader rather than on amx. Completed takes every ending alike — an agent
+sitting at its prompt, one whose command exited, one amx has lost track of —
+because a turn at a prompt has ended as surely as a turn that exited, and
+reading down two headings to find that out is one heading too many.
+
+A heading is a line like the rows under it: the group's name in caps, a dim
+rule run out to its count, and the count right-aligned in the column the ages
+under it are right-aligned in, so the right margin is one line of numbers
+rather than two. The rule is drawn in `┈`, the lightest dash there is, and
+every rule on the screen is — dim is the weight a summary wears too, but a
+terminal inks a box-drawing glyph across the whole cell, so a solid rule reads
+brighter than the words beside it at the same colour. Half the cells left blank
+is what puts the two level. A group holding a failure says so in front of the
+rule, because a failed agent is why somebody came to the screen. The cursor
+stops on a heading, and shutting it puts its agents away behind the count that
+was already there.
 
 A row is one line, always, on columns the screen fixes rather than the fleet:
-two marks, the state glyph, the name, what the agent last said, and the seconds
-at the end. They stand where they stood when the last agent ended, so the row
-you learned wide is the row you get narrow — under 100 columns the name column
-is the one that gives way. The marks cost the row no width and line up into
-columns of their own: the first is on a row nobody has been to read, the second
-on one you are holding at the top of its group. A wall with nothing on it keeps
+two cells of indent, the state glyph, the name, what the agent last said, and
+the seconds at the end. They stand where they stood when the last agent ended,
+so the row you learned wide is the row you get narrow — under 100 columns the
+name column is the one that gives way. A wall with nothing on it keeps
 everything above the list and offers, where a name would be, the only two keys
 that lead anywhere from there: `n` and `?`.
+
+The glyph is two shapes, and the shape answers what a colour cannot: whether
+there is still an agent there. `✻` is a process you can attach to, answer or
+stop; `∙` is the dot it leaves behind, which is a record to read. While a turn
+is running the `✻` breathes — the vendor's own mark, growing and shrinking a
+frame at a time — so the rows in motion are the rows mid-turn, and a row that
+stops settles onto the shape it was already breathing through.
+
+The colour on it says which state that process is in: amber for an agent
+stopped on a question, green for one that finished, red for one that failed,
+grey for one you stopped by hand, dim for one sitting idle at its prompt, and
+your terminal's own colour while it is coming up or working, or when amx cannot
+account for it. The name takes that amber or that red as well, so a row that is
+asking and a row that failed can be found down a column of names without the
+glyph being read; every other name is your terminal's own. What those colours
+are is the theme's to say, under [Themes](#themes).
+
+The one thing the wall says with weight is that nobody has been to read a row.
+An unread name is bold until you open its card, and comes back bold if the
+agent says something after that — what state a row is in is on the row already,
+and whether you have caught up with it is nowhere else.
 
 The seconds at the end of a row are the time the agent has worked: ticking
 while it works, standing still while it waits or sits idle — an agent left at
@@ -222,11 +256,11 @@ what state the row is in:
 
 ```
  ~/code/amx ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     2
-  ? port-import-b2c   waiting   Which fixture should the port keep?          29s
-  ● tidy-imports-d4e  done      did what it was asked                         2m
+  ✻ port-import-b2c   waiting   Which fixture should the port keep?          29s
+  ∙ tidy-imports-d4e  done      did what it was asked                         2m
 
  /srv/app ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
-  ○ fix-login-a1b     idle      the login bug is fixed                        4m
+  ✻ fix-login-a1b     idle      the login bug is fixed                        4m
 ```
 
 Eight cells, which is what `starting` needs and what the shorter words are
@@ -256,7 +290,7 @@ the whole table.
 | `alt+1..9` | reach the agent at that place on the wall |
 | `/` | find by name, task or `#12`, as you type; `esc` clears it |
 | `ctrl+s` | gather them by state or by project |
-| `ctrl+t` | hold it at the top of its group |
+| `ctrl+t` | pin it over the wall, and again to let it go |
 | `shift+↑` `shift+↓` | move it up or down its group |
 | `alt+enter` | a newline in the line, without sending it |
 | `alt+v` | which vendor the next agent runs |
@@ -367,14 +401,16 @@ agent that does not exist yet: they change what the next `n` starts and nothing
 about what is already running, and the header says where they point.
 
 The order the list puts agents in is amx's until you say otherwise. `ctrl+t`
-holds the one under the cursor at the top of its group, so the agent you are
-watching stays where you are looking, and its row carries a `▲` beside the `•`
-of a row nobody has read. `shift+↑` and `shift+↓` move an agent a row at a time
-past the others in its group; an agent that starts after you have put a group
-in order joins the bottom of it, because a group you arranged by hand is not
-one amx goes on sorting under you. Both of those and whichever way `ctrl+s`
-last gathered the fleet are written to `~/.local/state/amx/view.json` as you
-go, so the next view opens on the wall you left.
+pins the one under the cursor over the wall: it leaves whatever group amx had
+it in, stands under `PINNED` at the top of the list, and stays there whether it
+is asking, working or finished, so the agent you are watching is where you are
+looking. The same key lets it go, and it drops back into the group its state
+puts it in. `shift+↑` and `shift+↓` move an agent a row at a time past the
+others in its group; an agent that starts after you have put a group in order
+joins the bottom of it, because a group you arranged by hand is not one amx
+goes on sorting under you. Both of those and whichever way `ctrl+s` last
+gathered the fleet are written to `~/.local/state/amx/view.json` as you go, so
+the next view opens on the wall you left.
 
 A line being typed hangs off a rule, and the rule is where the whole mode is
 said. Its near end names which of the five lines this is — a task, a narrowing,
@@ -439,7 +475,7 @@ one thing the rest of a row cannot say. Where the branch has a pull request,
 the row carries its number:
 
 ```
-  ● fix-login-a1b     #12  the login bug is fixed                             4m
+  ∙ fix-login-a1b     #12  the login bug is fixed                             4m
   ✻ port-import-b2c   #40  Running Bash                                       4s
 ```
 
