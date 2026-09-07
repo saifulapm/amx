@@ -16,9 +16,10 @@ use crate::tui::rows::List;
 /// the good one.
 pub(super) const WELCOME: &str = "nothing running, nothing broken, nobody asking. enjoy it";
 
-/// What stands before an agent's name on a row: the two marks, the state glyph
-/// and the space after it. The offers stand where a name would, so the empty
-/// wall is the wall with its rows taken out rather than a screen of its own.
+/// What stands before an agent's name on a row: the two cells it is indented
+/// by, the state glyph and the space after it. The offers stand where a name
+/// would, so the empty wall is the wall with its rows taken out rather than a
+/// screen of its own.
 const NAME: usize = 4;
 
 /// The key column those offers stand in, which is one key and the air that

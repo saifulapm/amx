@@ -5,9 +5,10 @@
 //! on the widths the grid fixes rather than on what this fleet happens to
 //! hold, so the columns are where they were when the last agent ended.
 //!
-//! The weight goes where the work is. A row that is asking carries the one
-//! colour and the one bold name on the wall, and every other row says its
-//! state on the glyph alone.
+//! A row says its state on the glyph, and it says one thing with weight:
+//! nobody has been to read what it is holding. That is the one bold name on
+//! the wall, so a person coming back to a screenful of endings sees which of
+//! them they have already been through.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -152,16 +153,7 @@ fn line(
         },
         Item::Fold(hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
         Item::Agent(_) => match list.agent(item) {
-            Some(view) => row(
-                view,
-                list.requests(view),
-                list.holding(view),
-                at,
-                widths,
-                requests,
-                moment,
-                theme,
-            ),
+            Some(view) => row(view, list.requests(view), at, widths, requests, moment, theme),
             None => Line::raw(""),
         },
         Item::Blank => Line::raw(""),
@@ -294,33 +286,32 @@ fn path_heading(
 /// An agent's row: what state it is in, what it is called, what its work is
 /// waiting on out in the world, what it is up to, and how long it has worked.
 ///
-/// Four cells before the name — the two marks, the state glyph and the space
+/// Four cells before the name — two of indent, the state glyph and the space
 /// after it — then the name, the summary, and the age right-aligned at the
 /// edge, all on the widths the grid fixes for the screen. Fixed rather than
 /// measured off the fleet, so the columns stand where they stood when the last
 /// agent ended and the row a person learned wide is the row they get narrow.
 ///
-/// The weight goes where the work is. A row that is asking carries the one
-/// colour and the one bold name on the wall, and its question is at full
-/// strength because that is the sentence somebody opened the view to read.
-/// Every other row is its name in the terminal's own and what it said dim
-/// under it, with the state on the glyph alone. The exceptions earn their
-/// colour: a failed name says so without its glyph being read, the pull
-/// request's number answers how the work went, and under a project heading
-/// the state word keeps what the phase has to say because it replaces the
-/// glyph's job there — see [`state_colour`]. What the cursor is on is said by
-/// the bar under it, not by the row changing its tones.
+/// The one weight on the wall is on the name of a row nobody has been to read,
+/// which is the only fact on the screen a person cannot work out by looking at
+/// it. Everything else is the name in the terminal's own and what the agent
+/// said dim under it, with the state on the glyph alone. A row that is asking
+/// puts its question at full strength, because that is the sentence somebody
+/// opened the view to read. The exceptions earn their colour: a waiting name
+/// and a failed one say so without their glyph being read, the pull request's
+/// number answers how the work went, and under a project heading the state
+/// word keeps what the phase has to say because it replaces the glyph's job
+/// there — see [`state_colour`]. What the cursor is on is said by the bar
+/// under it, not by the row changing its tones.
 ///
 /// A row a press has armed says that instead of what the agent said, in the
 /// colour of a thing waiting on a person. The summary is the one part of a row
 /// amx is free to speak over: the state, the name and the age are what the row
 /// is for, and a warning that took a column of its own would move every row
 /// under it for as long as it was up.
-#[allow(clippy::too_many_arguments)]
 fn row(
     view: &View,
     prs: &[Pr],
-    held: bool,
     at: At,
     widths: Widths,
     requests: usize,
@@ -351,25 +342,18 @@ fn row(
     };
 
     let asking = phase == Phase::Waiting;
-    let [read, top] = marks(view, held, theme);
     let mut spans = vec![
-        read,
-        top,
+        Span::raw(GUTTER),
         Span::styled(
             format!("{} ", icon(phase, moment.beat)),
-            match asking {
-                true => colour(theme, phase).add_modifier(Modifier::BOLD),
-                false => colour(theme, phase),
-            },
+            colour(theme, phase),
         ),
         Span::styled(
             format!("{name}{}", " ".repeat(GAP)),
-            // The pointer resting on a row gives its name weight without the
-            // bar or the cursor, which is the whole of what a hover is.
-            match at.hovered {
-                true => name_colour(theme, phase).add_modifier(Modifier::BOLD),
-                false => name_colour(theme, phase),
-            },
+            // The pointer resting on a row borrows the weight an unread row
+            // wears, without the bar or the cursor, which is the whole of what
+            // a hover is.
+            name_colour(theme, phase, rows::unread(view) || at.hovered),
         ),
     ];
     if widths.state > 0 {
@@ -429,47 +413,6 @@ fn state_colour(theme: Theme, phase: Phase) -> Style {
 /// person who has met one of these screens should not have to learn the other.
 const AGAIN: &str = "ctrl+x again forgets";
 
-/// The two columns every row is already indented by, and what each of them is
-/// for: a row nobody has been to read is marked in the first, and one somebody
-/// is holding at the top of its group in the second.
-///
-/// They cost the list no width, and down a wall of rows each lines up into a
-/// column of its own — which is the thing worth reading here: not what this
-/// agent is, but which of them somebody has not caught up with, and which of
-/// them they said to keep in front of them. The first takes the colour of a
-/// thing waiting on a person only on a row that is waiting on one, and is dim
-/// on the rest: at forty rows, a column of amber dots against finished work
-/// would be competing with the one thing that colour is for. The second is not
-/// about the agent at all but about how somebody laid the wall out, so it is
-/// drawn in the terminal's own.
-fn marks(view: &View, held: bool, theme: Theme) -> [Span<'static>; MARKS] {
-    [
-        match rows::unread(view) {
-            true => Span::styled(
-                UNREAD,
-                match view.phase() {
-                    Phase::Waiting => Style::new().fg(theme.waiting),
-                    _ => dim(),
-                },
-            ),
-            false => Span::raw(" "),
-        },
-        match held {
-            true => Span::raw(HELD),
-            false => Span::raw(" "),
-        },
-    ]
-}
-
-/// What those marks are drawn with. One column each, and neither a frame of
-/// the pulse nor a resting glyph: they sit beside both, and a wall where two
-/// things are told apart by size would be a wall nobody reads either off.
-const UNREAD: &str = "•";
-const HELD: &str = "▲";
-
-/// How many of them a row carries, which is what the gutter is wide.
-const MARKS: usize = 2;
-
 /// How wide the pull request column has to be, which is the one column of a
 /// row the design does not fix: the widest label anybody on the screen is
 /// wearing, and no column at all where nobody is wearing one — which is every
@@ -494,10 +437,10 @@ fn first_line(text: &str) -> &str {
 }
 
 /// What a row is indented by, so an agent reads as sitting under the heading
-/// it belongs to rather than beside it. One column for each mark a row can
-/// carry, which is what lets the marks cost the list no width at all.
+/// it belongs to rather than beside it. Two blank cells, which is what the
+/// vendor's own view spends them on: a wall that put a mark in either would be
+/// a column a person has to learn before the one they came to read.
 const GUTTER: &str = "  ";
-const _: () = assert!(GUTTER.len() == MARKS);
 
 /// The vendor's glyph set for a terminal. Ghostty draws the eight-spoked
 /// asterisk where everything else gets a plain one, and that is the only thing
@@ -645,6 +588,14 @@ mod tests {
         screen.list.show(views);
         screen.card = card.map(Card::read);
         screen
+    }
+
+    /// The same reading, with somebody having been to look at what it is
+    /// holding: what a row wears while nobody has is the weight on its name,
+    /// and most of these tests are about something else.
+    fn read(mut view: View) -> View {
+        view.state.seen = view.state.last_event.max(view.state.since);
+        view
     }
 
     /// The same reading, running somewhere else.
@@ -858,12 +809,9 @@ mod tests {
         };
         let plain = Modifier::empty();
 
-        // The one glyph with weight on it, which is the one the view is
-        // opened to find.
-        assert_eq!(
-            painted(Phase::Waiting),
-            ("?".into(), theme().waiting, Modifier::BOLD)
-        );
+        // The colour is the whole of what the glyph says, weight and all: the
+        // one weight on a row is the name's, and it says nobody has read it.
+        assert_eq!(painted(Phase::Waiting), ("?".into(), theme().waiting, plain));
         assert_eq!(
             painted(Phase::Unknown),
             ("~".into(), theme().waiting, plain)
@@ -926,8 +874,8 @@ mod tests {
         );
         assert_eq!(heading_of(&screen[2]), "NEEDS INPUT");
         assert!(
-            screen[3].starts_with("• ? ask-a1b"),
-            "a question nobody has been to read carries the mark that says so: \
+            screen[3].starts_with("  ? ask-a1b"),
+            "two cells of indent, the glyph and a space, and then the name: \
              {:?}",
             screen[3]
         );
@@ -1288,8 +1236,8 @@ mod tests {
         let size = (60, 10);
         let screen = showing(
             vec![
-                view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
-                view("port-import-b2c", Phase::Done, Some("wrote the tests"), 300),
+                read(view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60)),
+                read(view("port-import-b2c", Phase::Done, Some("wrote the tests"), 300)),
             ],
             None,
         );
@@ -1321,12 +1269,46 @@ mod tests {
     }
 
     #[test]
+    fn rows_carry_the_weight_on_a_name_nobody_has_been_to_read() {
+        let size = (60, 10);
+        let screen = showing(
+            vec![
+                view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
+                read(view("port-import-b2c", Phase::Done, Some("wrote the tests"), 300)),
+                read(view("ask-c3d", Phase::Waiting, Some("Proceed?"), 30)),
+            ],
+            None,
+        );
+
+        // The one weight on the wall, and it says nobody has been to read what
+        // this row is holding rather than anything about the agent. So the row
+        // somebody has already been through reads quieter than the one they
+        // have not, whatever state either of them is in.
+        assert!(
+            word_modifier(&screen, size, 6, "fix-login-a1b").contains(Modifier::BOLD),
+            "the ending nobody has read"
+        );
+        assert!(
+            !word_modifier(&screen, size, 7, "port-import-b2c").contains(Modifier::BOLD),
+            "and the one somebody has"
+        );
+
+        // A row that is asking keeps its colour either way: the weight says
+        // whether it has been read, and the colour says what it wants.
+        assert_eq!(word_colour(&screen, size, 3, "ask-c3d"), theme().waiting);
+        assert!(
+            !word_modifier(&screen, size, 3, "ask-c3d").contains(Modifier::BOLD),
+            "a question somebody has been to read is a question they know about"
+        );
+    }
+
+    #[test]
     fn rows_hovered_name_takes_the_weight_and_nothing_else_does() {
         let size = (60, 10);
         let mut screen = showing(
             vec![
-                view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
-                view("port-import-b2c", Phase::Done, Some("wrote the tests"), 300),
+                read(view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60)),
+                read(view("port-import-b2c", Phase::Done, Some("wrote the tests"), 300)),
             ],
             None,
         );

@@ -11,18 +11,28 @@ use crate::pr::Standing;
 use crate::store::Phase;
 use crate::theme::Theme;
 
-/// What a row's name is painted in: the colour of a thing waiting on a person,
-/// and the weight to go with it, where that is what the row is; the colour of a
-/// failure where the work ended in one; and the terminal's own everywhere else.
+/// What a row's name is painted in, and at what weight: the colour of a thing
+/// waiting on a person where that is what the row is, the colour of a failure
+/// where the work ended in one, the terminal's own everywhere else — and the
+/// weight where nobody has been to read what the row is holding.
 ///
-/// Two states out of eight, because a column of names in eight colours is a
-/// column nobody reads. Those two are the ones a person scanning the wall is
-/// looking for, and the rest have said all they have to say on the glyph.
-pub(super) fn name_colour(theme: Theme, phase: Phase) -> Style {
-    match phase {
-        Phase::Waiting => Style::new().fg(theme.waiting).add_modifier(Modifier::BOLD),
+/// Two states out of eight take a colour, because a column of names in eight
+/// colours is a column nobody reads. Those two are the ones a person scanning
+/// the wall is looking for, and the rest have said all they have to say on the
+/// glyph.
+///
+/// The weight is about the reader rather than the agent, which is why it is
+/// the one weight the wall spends: what state a row is in is on the row
+/// already, and whether somebody has caught up with it is nowhere else.
+pub(super) fn name_colour(theme: Theme, phase: Phase, unread: bool) -> Style {
+    let paint = match phase {
+        Phase::Waiting => Style::new().fg(theme.waiting),
         Phase::Failed => Style::new().fg(theme.failed),
         _ => Style::new(),
+    };
+    match unread {
+        true => paint.add_modifier(Modifier::BOLD),
+        false => paint,
     }
 }
 
@@ -107,6 +117,51 @@ mod tests {
         Standing::Ready,
         Standing::Open,
     ];
+
+    #[test]
+    fn rows_a_name_takes_two_colours_and_one_weight() {
+        // The colour is the state's and only two states have one; the weight
+        // is the reader's, and it says the same thing on every one of them.
+        for phase in [Phase::Waiting, Phase::Failed] {
+            assert!(
+                name_colour(theme(), phase, false).fg.is_some(),
+                "{phase} is a name worth finding down a column of them"
+            );
+        }
+        assert_eq!(
+            name_colour(theme(), Phase::Waiting, false).fg,
+            Some(theme().waiting),
+            "a question somebody has read is still a question"
+        );
+        for phase in [
+            Phase::Starting,
+            Phase::Working,
+            Phase::Idle,
+            Phase::Done,
+            Phase::Stopped,
+            Phase::Unknown,
+        ] {
+            assert_eq!(
+                name_colour(theme(), phase, false).fg,
+                None,
+                "{phase} has said what it has to say on the glyph"
+            );
+        }
+        for phase in [Phase::Waiting, Phase::Done, Phase::Failed] {
+            assert!(
+                name_colour(theme(), phase, true)
+                    .add_modifier
+                    .contains(Modifier::BOLD),
+                "{phase}, unread, carries the weight"
+            );
+            assert!(
+                !name_colour(theme(), phase, false)
+                    .add_modifier
+                    .contains(Modifier::BOLD),
+                "{phase}, read, does not"
+            );
+        }
+    }
 
     #[test]
     fn pr_every_standing_has_a_word_and_a_colour() {

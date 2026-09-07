@@ -1247,7 +1247,7 @@ mod tests {
     }
 
     /// Which column of a drawn line a word starts in, counted in cells rather
-    /// than bytes: the marks and the glyph a row wears are not one byte each.
+    /// than bytes: the glyph a row wears is not one byte.
     fn column_of(line: &str, word: &str) -> usize {
         let at = line
             .find(word)

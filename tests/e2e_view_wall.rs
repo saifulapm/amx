@@ -44,16 +44,27 @@ fn screen(amx: &Harness, pane: &str) -> String {
     amx.capture(pane)
 }
 
-/// The mark on an agent's row, as the view has it drawn now: past the gutter
-/// its rows are indented by, which is where the unread mark goes.
+/// The glyph on an agent's row, as the view has it drawn now: past the two
+/// blank cells its rows are indented by.
 fn mark(amx: &Harness, view: &str, id: &str) -> Option<char> {
     row_of(amx, view, id)?.chars().nth(2)
 }
 
-/// Whether the view is saying nobody has read this row, which is the first
-/// column of the gutter.
+/// Whether the view is saying nobody has read this row, which it says in the
+/// weight on the name.
 fn unread(amx: &Harness, view: &str, id: &str) -> bool {
-    row_of(amx, view, id).is_some_and(|row| row.starts_with('•'))
+    coloured(amx, view)
+        .lines()
+        .rfind(|line| line.contains(id))
+        .is_some_and(|line| sgr_at(line, id).contains(&1))
+}
+
+/// Somebody having been to read what an agent is holding, written where a look
+/// writes it: the row is the same row, without the weight.
+fn read(amx: &Harness, id: &str) {
+    let mut state = amx.state(id);
+    state["seen"] = json!(now());
+    amx.set_state(id, state);
 }
 
 /// The line of the list an agent is drawn on.
@@ -763,11 +774,12 @@ fn completed_agents_fold_into_a_count_when_the_screen_runs_out_of_rows() {
 }
 
 #[test]
-fn a_row_keeps_the_weight_for_what_is_asking_and_dims_what_it_said() {
+fn a_row_keeps_the_weight_for_what_nobody_has_read_and_dims_what_it_said() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
     amx.until_state("ask-a1b", "waiting");
     finished(&amx, "fix-login-b2c", "done", 60);
+    read(&amx, "fix-login-b2c");
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("both rows", || {
@@ -775,8 +787,9 @@ fn a_row_keeps_the_weight_for_what_is_asking_and_dims_what_it_said() {
         (drawn.contains("ask-a1b") && drawn.contains("fix-login-b2c")).then_some(())
     });
 
-    // A row that wants nobody: its name at the terminal's own strength, what
-    // it said dim under the name of the next one, and no weight anywhere.
+    // A row somebody has already been through: its name at the terminal's own
+    // strength, what it said dim under the name of the next one, and no weight
+    // anywhere.
     let quiet = coloured_line(&amx, &view, "fix-login-b2c");
     let name = sgr_at(&quiet, "fix-login-b2c");
     assert!(
@@ -792,14 +805,14 @@ fn a_row_keeps_the_weight_for_what_is_asking_and_dims_what_it_said() {
         "the glyph alone carries the state's colour:\n{quiet:?}"
     );
 
-    // A row that is asking is the one that stands out, wherever the cursor
-    // happens to be: the name bold and in the colour of a thing waiting on a
-    // person, and the question at full strength because it is the sentence
-    // somebody came to read.
+    // A row that is asking and has not been read is the one that stands out,
+    // wherever the cursor happens to be: the name bold and in the colour of a
+    // thing waiting on a person, and the question at full strength because it
+    // is the sentence somebody came to read.
     let asking = coloured_line(&amx, &view, "ask-a1b");
     assert!(
         sgr_at(&asking, "ask-a1b").contains(&1),
-        "the waiting name is the bold one:\n{asking:?}"
+        "the name nobody has read is the bold one:\n{asking:?}"
     );
     assert!(
         asking.contains(&foreground("waiting")),
@@ -823,8 +836,8 @@ fn a_row_lands_its_name_summary_and_age_in_the_columns_the_grid_fixes() {
     let cells: Vec<char> = row.chars().collect();
     assert_eq!(cells.len(), 80, "a row is drawn to the edge:\n{row:?}");
 
-    // Two cells of gutter for the marks, the state glyph and the space after
-    // it, and then the name column: sixteen cells of it below a hundred.
+    // Two blank cells of indent, the state glyph and the space after it, and
+    // then the name column: sixteen cells of it below a hundred.
     let column = |from: usize, to: usize| cells[from..to].iter().collect::<String>();
     assert_eq!(column(4, 20), "fix-login-a1b   ", "{row:?}");
     assert_eq!(column(20, 22), "  ", "two cells stand the columns apart");
@@ -1225,6 +1238,9 @@ fn hovering_a_row_tints_its_name_and_moves_no_cursor() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
     finished(&amx, "port-import-b2c", "done", 120);
+    // Both read, so the weight the pointer puts on a name is the pointer's.
+    read(&amx, "fix-login-a1b");
+    read(&amx, "port-import-b2c");
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("both rows", || {
@@ -1789,13 +1805,13 @@ fn acts_ctrl_x_on_a_heading_stops_the_live_and_arms_rows_in_every_state() {
 }
 
 #[test]
-fn acts_space_takes_the_unread_mark_off_the_row_it_opened() {
+fn acts_space_takes_the_weight_off_the_row_it_opened() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
     finished(&amx, "port-import-b2c", "done", 120);
 
     let view = amx.in_a_terminal(&[], &[]);
-    amx.until("both rows to be marked unread", || {
+    amx.until("both names to carry the weight", || {
         (unread(&amx, &view, "fix-login-a1b") && unread(&amx, &view, "port-import-b2c"))
             .then_some(())
     });
@@ -1803,12 +1819,12 @@ fn acts_space_takes_the_unread_mark_off_the_row_it_opened() {
     // The cursor opens on the newest ending, which is the row the card opens
     // over.
     press(&amx, &view, "Space");
-    amx.until("the mark to go with the look", || {
+    amx.until("the weight to go with the look", || {
         (!unread(&amx, &view, "fix-login-a1b")).then_some(())
     });
     assert!(
         unread(&amx, &view, "port-import-b2c"),
-        "and the row nobody opened keeps its mark:\n{}",
+        "and the row nobody opened keeps its weight:\n{}",
         screen(&amx, &view)
     );
     assert!(
