@@ -3,6 +3,7 @@
 mod common;
 
 use common::{AMX, Harness};
+use serde_json::Value;
 use std::path::Path;
 use std::process::Output;
 
@@ -75,6 +76,18 @@ fn pane_environ(pid: &str) -> std::collections::BTreeMap<String, String> {
             (name.to_string(), value.to_string())
         })
         .collect()
+}
+
+/// The row `amx ls --json` prints for this agent, where it has one.
+fn listed(amx: &Harness, id: &str) -> Option<Value> {
+    let out = amx.amx(&["ls", "--json"]);
+    assert!(
+        out.status.success(),
+        "amx ls: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rows: Vec<Value> = serde_json::from_slice(&out.stdout).expect("the listing is json");
+    rows.into_iter().find(|row| row["id"] == id)
 }
 
 fn id_of(out: &Output) -> String {
@@ -161,6 +174,68 @@ fn new_records_the_command_it_launched_the_agent_with() {
         "{}",
         amx.meta(&ran)["agent"]
     );
+}
+
+#[test]
+fn a_running_command_says_what_it_last_printed() {
+    // A command has no vendor: nothing reports on it, and no document amx
+    // holds describes a screen of somebody else's program. What is true of it
+    // is what tmux can say -- the pane is still there, so the command is still
+    // running -- and the line the row shows is the last one it printed.
+    let amx = Harness::new();
+    let id = "print-two-a1b";
+    let out = amx
+        .amx_command(&[
+            "new",
+            "--name",
+            id,
+            "--exec",
+            r#"printf "one\ntwo\n"; sleep 30"#,
+        ])
+        .output()
+        .expect("running amx new --exec");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let row = amx.until("the row to say what the command printed", || {
+        listed(&amx, id).filter(|row| !row["summary"].is_null())
+    });
+    assert_eq!(row["state"], "working", "{row}");
+    assert_eq!(row["evidence"], "screen", "{row}");
+    assert_eq!(
+        row["summary"], "two",
+        "the last line it printed rather than the first: {row}"
+    );
+}
+
+#[test]
+fn a_command_that_has_exited_ends_by_its_exit_code() {
+    // The pane is where a command is read from only while it is in it. How the
+    // command ended is the record's, and nothing read off a screen stands in
+    // front of that.
+    let amx = Harness::new();
+    let id = "run-tests-a1b";
+    let out = amx
+        .amx_command(&["new", "--name", id, "--exec", "exit 3"])
+        .output()
+        .expect("running amx new --exec");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let ended = amx.until_state(id, "failed");
+    assert_eq!(ended["exit"], 3);
+
+    let row = amx.until("the row to say how the command ended", || {
+        listed(&amx, id).filter(|row| row["state"] == "failed")
+    });
+    assert_eq!(row["exit"], 3, "{row}");
+    assert_eq!(row["evidence"], "record", "{row}");
 }
 
 #[test]

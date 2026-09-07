@@ -7,17 +7,23 @@
 //!    is not a guess and nothing overrules it.
 //! 2. **The pane is gone.** No pane, no agent: it is stopped, whatever the
 //!    last hook said.
-//! 3. **The hooks are fresh.** Inside [`FRESH`] seconds the vendor's own
+//! 3. **It is nobody's agent.** A record that names no vendor is a command
+//!    somebody ran — see [`runs_a_command`] — and every question below this
+//!    one is about a vendor: its events, its screens, its words. A command has
+//!    none of them, so a pane still there is the whole of the answer — the
+//!    command is running — and the line beside it is the last one it printed.
+//!    See [`read_a_command`].
+//! 4. **The hooks are fresh.** Inside [`FRESH`] seconds the vendor's own
 //!    events are the best account there is — of what the agent is doing. They
 //!    can say it has stopped on a question without saying which, and that part
 //!    is on the pane and nowhere else, so it is read from there at once rather
 //!    than waited for. They can say a turn is running without saying what it
 //!    is running — before its first tool call — and the line the vendor spins
 //!    is read the same way, see [`wants_the_doing`].
-//! 4. **The screen, against the rules.** Older than that, the pane is captured
+//! 5. **The screen, against the rules.** Older than that, the pane is captured
 //!    and matched against the screens of the vendor the record says was started
 //!    in it — see [`own_screens`]. A rule that claims it decides.
-//! 5. **Neither.** The screen is claimed by nothing, so the answer is
+//! 6. **Neither.** The screen is claimed by nothing, so the answer is
 //!    `unknown` — with how long it has been since anything was heard, because
 //!    "I can't tell" is only useful with that beside it. One exception, on a
 //!    vendor that reports: a record its hooks left at idle or waiting keeps
@@ -128,7 +134,8 @@ pub enum Evidence {
     Gone,
     /// The vendor's own events, recently enough to trust.
     Hooks,
-    /// The screen, and the rule that claimed it.
+    /// The screen: the rule that claimed it, or a command's own output, which
+    /// no rule ever speaks for.
     Screen,
     /// Nothing accounts for the screen.
     Unknown,
@@ -365,6 +372,10 @@ pub struct Reading {
     /// What the screen said the agent was doing, off the line the vendor spins
     /// while a turn runs. Only where a rule read the screen as a turn running,
     /// and never written down: it is about the second it was read in.
+    ///
+    /// A command's is the last line it printed — see [`read_a_command`] — which
+    /// is the same kind of thing said the same way: what the pane had on it in
+    /// the second somebody looked.
     pub doing: Option<String>,
     /// What the screen said the agent last said, off the pane with the
     /// vendor's own furniture cut off it. Only where a rule read the screen as
@@ -555,6 +566,23 @@ fn reads_its_own_record(vendor: Option<&Vendor>) -> bool {
     vendor.is_some_and(|vendor| !vendor.can(Capability::Hooks))
 }
 
+/// Whether this record is a command somebody ran rather than an agent.
+///
+/// A command spawn writes no vendor on the record — see
+/// [`crate::verbs::new`] — because it runs none, and that absence is the whole
+/// of what tells the two apart afterwards.
+///
+/// The phase is the other half, and it is what keeps this off a record older
+/// than the field itself. Nothing ever reports about a command: no hook is
+/// sent for it, no rule is held against its pane, and the one thing that moves
+/// its record is the exit its pane records on the way out. So a command sits
+/// at the phase its spawn wrote for the whole of its life, and a record naming
+/// no vendor that has moved off it was written for an agent by an amx from
+/// before the name was kept — see [`own_screens`].
+fn runs_a_command(meta: &Meta, state: &State) -> bool {
+    meta.agent.is_none() && state.state == Phase::Starting
+}
+
 /// Whether this reading stands where the record does, rather than beside it: a
 /// vendor with no account of its own — see [`reads_its_own_record`] — read off
 /// a screen a rule could name.
@@ -637,9 +665,23 @@ fn wants_the_question(screens: &Ruleset, state: &State) -> bool {
 /// The two have to agree, and a test says so rather than a comment: a reading
 /// wanting a screen nobody asked for concludes `unknown` off a capture that
 /// was never taken.
-fn wants_the_screen(screens: &Ruleset, state: &State, alive: bool, now: u64) -> bool {
+///
+/// A command's pane is wanted from the first second and for as long as the
+/// command is in it. There is no record of what it is doing to go stale —
+/// nothing writes one — so the pane is not the second account of a command but
+/// the only one.
+fn wants_the_screen(
+    screens: &Ruleset,
+    state: &State,
+    command: bool,
+    alive: bool,
+    now: u64,
+) -> bool {
     if state.state.is_terminal() || !alive {
         return false;
+    }
+    if command {
+        return true;
     }
     if now.saturating_sub(heard(state)) <= FRESH {
         return wants_the_question(screens, state) || wants_the_doing(screens, state);
@@ -872,6 +914,71 @@ pub fn read(
             told(state.state, Evidence::Hooks, None)
         }
         Claim::Unclaimed => told(Phase::Unknown, Evidence::Unknown, None),
+    }
+}
+
+/// What a reader makes of one record, however it was started.
+///
+/// Two kinds of record reach a reader and they are not weighed the same way.
+/// An agent is weighed against the vendor's own account of itself and the
+/// screens that vendor draws — see [`read`]. A command has neither, and is
+/// weighed against the one thing there is to weigh — see [`read_a_command`].
+///
+/// A command that has ended, and one whose pane has gone, go the way an agent
+/// does. Those are the two questions [`read`] asks before it asks anything
+/// about a vendor, and the answer to both is the same whatever was in the pane:
+/// an exit code is not a guess, and no pane is no command.
+#[allow(clippy::too_many_arguments)]
+fn conclude(
+    meta: &Meta,
+    state: &State,
+    alive: bool,
+    capture: impl FnOnce() -> Option<String>,
+    rules: &Ruleset,
+    now: u64,
+    held: u64,
+) -> Reading {
+    if alive && runs_a_command(meta, state) {
+        return read_a_command(state, meta.created, capture().as_deref(), now);
+    }
+    read(
+        state,
+        meta.created,
+        alive,
+        capture,
+        rules,
+        reports(vendor_of(meta)),
+        now,
+        held,
+    )
+}
+
+/// Work out what a command is doing, which is a shorter question than the one
+/// [`read`] answers.
+///
+/// Nothing amx has a document for is in the pane. A command draws whatever it
+/// draws, no rule was ever written against it, and no hook will ever be sent
+/// about it — so the ladder of evidence a vendor's record is read down has no
+/// rung a command stands on. What is left is what tmux can say, and it says
+/// the pane is still there: the command is still running.
+///
+/// The line beside it is the last one the command printed, off the screen and
+/// nowhere else. It is read and never written down, like the vendor's spinner
+/// line the other kind of row carries: the last row of a build is true for a
+/// second, and a record holding one would have every reader after this repeat
+/// it as news.
+fn read_a_command(state: &State, created: u64, screen: Option<&str>, now: u64) -> Reading {
+    Reading {
+        verdict: Verdict {
+            phase: Phase::Working,
+            evidence: Evidence::Screen,
+            rule: None,
+            age: clock(Phase::Working, state, created, now),
+            worked: worked(Phase::Working, state, created, now),
+        },
+        asking: None,
+        doing: screen.and_then(last_printed).map(str::to_string),
+        said: None,
     }
 }
 
@@ -1252,6 +1359,24 @@ fn first_said(said: &str) -> Option<&str> {
     said.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
+/// The line a row has room for of what a command has printed: the last with
+/// anything on it.
+///
+/// Read from the other end from [`first_said`], because the two are reading
+/// different things. What an agent is saying is a sentence, and the opening of
+/// a sentence is the part of it a row is worth giving up to. What a command
+/// prints is a log, and the row of a log worth reading is the one it has just
+/// printed.
+///
+/// The blank rows go with the chrome, the way they do in [`said`]: a screen is
+/// padded out to the height of its pane, and a row of nothing says nothing.
+fn last_printed(printed: &str) -> Option<&str> {
+    printed
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+}
+
 /// Whether this record is a turn that has ended with something to boil down.
 ///
 /// What a row says about an agent that has finished is the first line of what
@@ -1612,20 +1737,11 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
     // Taken here rather than left to the closure below, so there is a screen
     // in hand to weigh against the one the record says was there before `read`
     // is asked to trust that anything has held still.
-    let screen = wants_the_screen(rules, &state, alive, now)
+    let screen = wants_the_screen(rules, &state, runs_a_command(&meta, &state), alive, now)
         .then(|| server.capture(&meta.pane).ok())
         .flatten();
     let held = held_still(&agent, &mut state, screen.as_deref(), rules, now);
-    let reading = read(
-        &state,
-        meta.created,
-        alive,
-        || screen,
-        rules,
-        reports(vendor_of(&meta)),
-        now,
-        held,
-    );
+    let reading = conclude(&meta, &state, alive, || screen, rules, now, held);
     note(&agent, rules, &mut state, &reading);
     if is_the_record(&meta, &reading) {
         let said = worth_writing_down(&meta, &reading);
@@ -1735,16 +1851,7 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
         let rules = own_screens(&meta);
         let held = held_still(&agent, &mut state, screen.as_deref(), rules, now);
 
-        let reading = read(
-            &state,
-            meta.created,
-            alive,
-            || screen,
-            rules,
-            reports(vendor_of(&meta)),
-            now,
-            held,
-        );
+        let reading = conclude(&meta, &state, alive, || screen, rules, now, held);
         note(&agent, rules, &mut state, &reading);
         if is_the_record(&meta, &reading) {
             let said = worth_writing_down(&meta, &reading);
@@ -1777,8 +1884,14 @@ fn screens_of(pending: &[Pending], now: u64) -> Vec<Option<String>> {
     let mut wanted: Vec<(crate::tmux::Socket, Vec<usize>)> = Vec::new();
 
     for (at, item) in pending.iter().enumerate() {
-        let rules = own_screens(&item.record.meta);
-        if !wants_the_screen(rules, &item.record.state, item.alive, now) {
+        let (meta, state) = (&item.record.meta, &item.record.state);
+        if !wants_the_screen(
+            own_screens(meta),
+            state,
+            runs_a_command(meta, state),
+            item.alive,
+            now,
+        ) {
             continue;
         }
         match wanted
@@ -1865,6 +1978,15 @@ mod tests {
 ";
 
     const A_SHELL: &str = "$ ls\nCargo.toml  src\n$\n";
+
+    /// A command's pane part way through: what it has printed so far, and the
+    /// blank rows a capture of a screen taller than its output ends on.
+    const A_COMMAND: &str = "\
+running 2 tests
+test reads_the_row ... ok
+test reads_the_line ... ok
+
+";
 
     /// A turn running, as claude 2.1.240 draws it: the agent's own output, the
     /// vendor's spinner line over the composer, and the mode footer that is on
@@ -2405,8 +2527,14 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
         // Both measured vendors spin a row — claude by the fragments on it,
         // pi by the braille frame it opens with — so both are asked.
-        assert!(wants_the_screen(rules::of("claude"), &told, true, 1_001));
-        assert!(wants_the_screen(rules::of("pi"), &told, true, 1_001));
+        assert!(wants_the_screen(
+            rules::of("claude"),
+            &told,
+            false,
+            true,
+            1_001
+        ));
+        assert!(wants_the_screen(rules::of("pi"), &told, false, true, 1_001));
     }
 
     #[test]
@@ -2617,18 +2745,17 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     /// Whether a reading of this record went to the pane at all, which is the
     /// question [`wants_the_screen`] has to answer without going there.
-    fn looked_at_the_pane(state: &State, alive: bool, now: u64) -> bool {
+    fn looked_at_the_pane(meta: &Meta, state: &State, alive: bool, now: u64) -> bool {
         let asked = std::cell::Cell::new(false);
-        read(
+        conclude(
+            meta,
             state,
-            0,
             alive,
             || {
                 asked.set(true);
                 Some(A_BLOCKING_SCREEN.to_string())
             },
             rules::of("claude"),
-            true,
             now,
             1,
         );
@@ -2662,16 +2789,34 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             state(Phase::Failed, 1_000),
             state(Phase::Stopped, 1_000),
         ];
-        for record in records {
-            for alive in [true, false] {
-                // Fresh, on the last second of freshness, and stale.
-                for now in [1_000, 1_000 + FRESH, 1_100] {
-                    assert_eq!(
-                        wants_the_screen(rules::of("claude"), &record, alive, now),
-                        looked_at_the_pane(&record, alive, now),
-                        "{} alive={alive} at {now}",
-                        record.state
-                    );
+        // A command is the other half of it: the two have to agree about a
+        // record that names no vendor as well as about one that does.
+        let started_by = [
+            Meta {
+                agent: Some("claude".to_string()),
+                ..meta()
+            },
+            meta(),
+        ];
+        for meta in &started_by {
+            for record in &records {
+                for alive in [true, false] {
+                    // Fresh, on the last second of freshness, and stale.
+                    for now in [1_000, 1_000 + FRESH, 1_100] {
+                        assert_eq!(
+                            wants_the_screen(
+                                own_screens(meta),
+                                record,
+                                runs_a_command(meta, record),
+                                alive,
+                                now
+                            ),
+                            looked_at_the_pane(meta, record, alive, now),
+                            "{} under {:?} alive={alive} at {now}",
+                            record.state,
+                            meta.agent
+                        );
+                    }
                 }
             }
         }
@@ -2758,6 +2903,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
                 root.path(),
                 &Meta {
                     id: id.to_string(),
+                    // Both are claude agents: a record naming no vendor is a
+                    // command, and a command's row is its own output.
+                    agent: Some("claude".to_string()),
                     socket: socket.clone(),
                     pane: pane.clone(),
                     ..meta()
@@ -3168,6 +3316,64 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // A pane that cannot be captured is the same answer.
         let unreadable = decided(&state(Phase::Working, 1_000), true, None, 1_500);
         assert_eq!(unreadable.phase, Phase::Unknown);
+    }
+
+    #[test]
+    fn reader_reads_a_running_command_off_the_line_it_last_printed() {
+        // No vendor on the record, so there is nothing to go stale and no
+        // document to hold against the pane. That the pane is still there is
+        // the whole of what says the command is running, and the last row it
+        // printed is the whole of what the row can say about it.
+        let ran = meta();
+        let starting = state(Phase::Starting, 1_000);
+        let printed = || Some(A_COMMAND.to_string());
+        let reading = conclude(&ran, &starting, true, printed, own_screens(&ran), 1_500, 1);
+        assert_eq!(reading.verdict.phase, Phase::Working);
+        assert_eq!(reading.verdict.evidence, Evidence::Screen);
+        assert_eq!(reading.verdict.age, 500, "and how long it has been running");
+
+        let view = seen(ran, starting.clone(), reading, || None);
+        assert_eq!(view.line(), Some("test reads_the_line ... ok"));
+        assert_eq!(view.json()["state"], "working");
+        assert_eq!(view.json()["summary"], "test reads_the_line ... ok");
+
+        // A pane the command has left is not a command still running, and an
+        // exit code is not something read off a screen.
+        let gone = conclude(&meta(), &starting, false, printed, rules::of(""), 1_500, 1);
+        assert_eq!(gone.verdict.phase, Phase::Stopped);
+
+        let mut failed = state(Phase::Failed, 1_000);
+        failed.exit = Some(3);
+        let ended = conclude(&meta(), &failed, true, printed, rules::of(""), 1_500, 1);
+        assert_eq!(ended.verdict.phase, Phase::Failed);
+        assert_eq!(ended.verdict.evidence, Evidence::Record);
+
+        // A record that names a vendor is read against that vendor's screens,
+        // whatever its pane happens to have on it.
+        let agent = Meta {
+            agent: Some("claude".to_string()),
+            ..meta()
+        };
+        let claude = conclude(
+            &agent,
+            &starting,
+            true,
+            printed,
+            rules::of("claude"),
+            1_500,
+            1,
+        );
+        assert_eq!(claude.verdict.phase, Phase::Unknown);
+    }
+
+    #[test]
+    fn reader_takes_a_commands_line_off_the_bottom_of_the_screen() {
+        assert_eq!(last_printed(A_COMMAND), Some("test reads_the_line ... ok"));
+        assert_eq!(
+            last_printed("  \n\n"),
+            None,
+            "a screen with nothing on it says nothing"
+        );
     }
 
     #[test]

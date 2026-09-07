@@ -135,10 +135,11 @@ worth reading afterwards is output to redirect somewhere:
 `amx new --exec 'make release > build.log 2>&1'`.
 
 Like every pane amx starts, it is told where its own scratch directory is in
-`$AMX_AGENT_DIR`. While it runs there are no hook events to hear from, so after
-the first few seconds the row reads `unknown` — amx saying it cannot account
-for what is on that screen, which it cannot: the screen belongs to somebody
-else's program.
+`$AMX_AGENT_DIR`. While it runs there are no hook events to hear from and no
+rules to hold against the screen, because the screen belongs to somebody else's
+program. What there is is the pane, so the row reads `working` for as long as
+the command is in it, and the line beside it is the last one the command
+printed.
 
 ## The view
 
