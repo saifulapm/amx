@@ -23,7 +23,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use super::paint::Card;
-use super::rows::Narrow;
+use super::rows::{Narrow, shorten};
 use crate::catalog::{self, Entry};
 use crate::cli::{AgentArgs, AnswerArgs, NewArgs, StopArgs};
 use crate::config::Config;
@@ -57,6 +57,14 @@ pub struct Composer {
     pub allowed: Cell<Option<String>>,
     /// What the word under the cursor could be, where it could be something.
     pub suggest: Option<Suggest>,
+    /// Where the line will run: the project the wall was showing when it was
+    /// opened, and nothing where the wall was not showing one.
+    ///
+    /// Taken when the line opens rather than read again when it is entered,
+    /// because it is where somebody was looking as they typed. A `d:` on the
+    /// line says it instead — a directory named in words is somebody saying
+    /// where, and the cursor is only where they were.
+    pub under: Option<PathBuf>,
 }
 
 /// The words a vendor would answer to where the cursor is standing, as they
@@ -101,6 +109,7 @@ impl Composer {
             at: 0,
             allowed: Cell::new(None),
             suggest: None,
+            under: None,
         }
     }
 
@@ -301,16 +310,27 @@ impl Composer {
         }
     }
 
-    /// Which agent the line is aimed at, where it is aimed at one.
+    /// What the line is aimed at, where it is aimed at anything.
     ///
     /// The label alone does not say it, and it is what somebody about to press
     /// enter has to be sure of: a message goes to one agent and a rename
-    /// renames one. It stands on the rule beside the label rather than in
-    /// front of the line, so every line the band draws begins in the same
-    /// column. A task is aimed at nobody yet and says nothing here.
+    /// renames one. A task is aimed at nobody yet, so what it says instead is
+    /// the project it will run in — the one thing about a spawn that the rule
+    /// can say before there is an agent to name — and nothing where that is
+    /// the directory the view was opened in, which is where a task runs unless
+    /// something says otherwise.
+    ///
+    /// It stands on the rule beside the label rather than in front of the
+    /// line, so every line the band draws begins in the same column. The path
+    /// is written the way the heading it was read off writes it, because it is
+    /// the same place said twice on one screen.
     pub fn about(&self) -> Option<String> {
         match &self.asking {
-            Asking::Task | Asking::Find => None,
+            Asking::Task => self
+                .under
+                .as_deref()
+                .map(|dir| format!("in {}", shorten(dir, std::env::home_dir().as_deref()))),
+            Asking::Find => None,
             Asking::Reply { id, .. } => Some(format!("to {id}")),
             Asking::Name { id } => Some(id.clone()),
         }
@@ -948,7 +968,11 @@ pub fn slight(config: &Config, line: &str) -> Option<String> {
 
 /// Start an agent on what was typed, where the view is — or run it, where the
 /// line is a command row.
-pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
+///
+/// `under` is the project the line was opened in, where the wall was showing
+/// one. It stands in for the view's own directory and gives way to a `d:`: the
+/// cursor says where somebody was looking and the line says where they mean.
+pub fn start(root: &Path, config: &Config, line: &str, under: Option<&Path>) -> Result<Started> {
     let (turned, task) = match turned(config, line) {
         Ok(read) => read,
         Err(refusal) => return Ok(Started::No(refusal)),
@@ -961,15 +985,19 @@ pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
     }
 
     let here = std::env::current_dir().context("no working directory")?;
-    // Where this one runs, which is where the view is unless the line named
-    // somewhere else. Answered before anything is made: a directory nothing is
-    // at is a line somebody is still writing, not a spawn to clean up after.
+    // Where this one runs: what the line named, then the project it was opened
+    // in, then where the view is. A relative path is still read against the
+    // view's own directory whichever of them it lands in — what a name means at
+    // a prompt is where the prompt is standing, and this line was typed at one.
+    //
+    // Answered before anything is made: a directory nothing is at is a line
+    // somebody is still writing, not a spawn to clean up after.
     let dir = match &turned.dir {
         Some(said) => match aimed(said, &here) {
             Ok(dir) => dir,
             Err(refusal) => return Ok(Started::No(refusal)),
         },
-        None => here,
+        None => under.map_or(here, Path::to_path_buf),
     };
     // Who the vendor is asked to be, read against the directory this one runs
     // in: an agent it loads out of the project is an agent of the project the
@@ -1515,10 +1543,16 @@ mod tests {
     }
 
     #[test]
-    fn a_line_says_which_agent_it_is_aimed_at_before_anybody_types_into_it() {
-        // A task is aimed at nobody yet, so the rule over it has only its own
-        // word to say.
+    fn a_line_says_what_it_is_aimed_at_before_anybody_types_into_it() {
+        // A task is aimed at nobody yet, and it was opened where a task runs
+        // anyway, so the rule over it has only its own word to say.
         assert_eq!(Composer::new(Asking::Task).about(), None);
+
+        // Opened on the project axis it says where it will run, in the words
+        // the heading it was read off is written in.
+        let mut under = Composer::new(Asking::Task);
+        under.under = Some(PathBuf::from("/src/api"));
+        assert_eq!(under.about().as_deref(), Some("in /src/api"));
 
         let asking = Composer::new(Asking::Reply {
             id: "ask-a1b".to_string(),
@@ -2126,6 +2160,7 @@ mod tests {
             root.path(),
             &Config::default(),
             "d:nowhere/at/all port the importer",
+            None,
         )
         .unwrap() else {
             panic!("a spawn was aimed at a directory that is not there");

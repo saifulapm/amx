@@ -645,6 +645,58 @@ fn the_composer_starts_an_agent_where_the_view_is() {
 }
 
 #[test]
+fn the_composer_starts_an_agent_in_the_project_the_cursor_is_under() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches(&amx, "happy-turn");
+
+    // Two projects on the wall: the directory the view was opened in, and a
+    // second one an agent of its own is running in.
+    let api = amx.home().join("api");
+    std::fs::create_dir_all(&api).expect("the second project");
+    finished(&amx, "here-a1b", "done", 30);
+    finished(&amx, "api-b2c", "done", 60);
+    amx.set_meta("api-b2c", json!({ "dir": api }));
+    amx.until("both agents", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("here-a1b") && drawn.contains("api-b2c")).then_some(())
+    });
+
+    // Gathered by project, with the cursor on the second heading: the last row
+    // of the list is that project's own agent, and the heading is one step
+    // back up from it.
+    press(&amx, &view, "C-s");
+    amx.until("the project headings", || {
+        screen(&amx, &view).contains("~/api").then_some(())
+    });
+    press(&amx, &view, "G");
+    press(&amx, &view, "k");
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "port the importer");
+    let drawn = amx.until("the task on the screen", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("port the importer").then_some(drawn)
+    });
+    assert!(
+        drawn.contains("TASK · in ~/api"),
+        "the rule says where the line will run:\n{drawn}"
+    );
+    press(&amx, &view, "Enter");
+
+    let id = amx.until("the agent to be started", || {
+        let id = agents(&amx)
+            .into_iter()
+            .find(|id| id.starts_with("port-the-importer"))?;
+        amx.meta(&id)["pane"].as_str().map(|_| id)
+    });
+    assert_eq!(
+        amx.meta(&id)["dir"],
+        api.to_string_lossy().as_ref(),
+        "an agent starts in the project its line was opened under"
+    );
+}
+
+#[test]
 fn the_composer_takes_a_paste_as_one_edit_and_grows_to_its_cap() {
     let amx = Harness::new();
     let view = a_view_that_dispatches(&amx, "happy-turn");

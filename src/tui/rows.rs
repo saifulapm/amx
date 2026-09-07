@@ -621,6 +621,26 @@ impl List {
         }
     }
 
+    /// The project the cursor is standing in, where the list is gathered by
+    /// them.
+    ///
+    /// A heading names one and every row under it runs in it, so the whole
+    /// group answers the same path: somebody reading a project's agents is
+    /// looking at that project, wherever in it their cursor stopped.
+    ///
+    /// Nothing on the state axis, where the row above one is somebody else's
+    /// repository and a heading is a word rather than a place.
+    pub fn project_under_cursor(&self) -> Option<PathBuf> {
+        if self.axis != Axis::Project {
+            return None;
+        }
+        match self.items.get(self.cursor)? {
+            Item::Heading(Under::Project(at), _) => self.projects.get(*at).cloned(),
+            Item::Agent(n) => Some(self.root_of(*n)),
+            _ => None,
+        }
+    }
+
     /// The agents a heading answers for, in the order they are drawn.
     ///
     /// Whether or not they are on the screen: a group somebody shut is still
@@ -1940,6 +1960,41 @@ mod tests {
             "a subdirectory belongs to the repository over it, and a directory \
              under no repository at all is its own project"
         );
+    }
+
+    #[test]
+    fn axis_says_which_project_the_cursor_is_standing_in() {
+        // What a line opened here is about. A heading names a project and the
+        // rows under it run in it, so where in the group somebody stopped
+        // makes no difference to the answer.
+        let mut list = over_the_disk(vec![
+            at(view("ask-a1b", Phase::Waiting, 10), "/src/api"),
+            at(view("done-b2c", Phase::Done, 20), "/src/api/cmd/serve"),
+            at(view("loose-c3d", Phase::Idle, 30), "/tmp/scratch"),
+        ]);
+
+        list.top();
+        assert!(list.on_heading());
+        assert_eq!(list.project_under_cursor(), Some(PathBuf::from("/src/api")));
+        list.down();
+        assert_eq!(list.project_under_cursor(), Some(PathBuf::from("/src/api")));
+        list.down();
+        assert_eq!(
+            list.project_under_cursor(),
+            Some(PathBuf::from("/src/api")),
+            "the row of an agent started in a subdirectory answers with the \
+             repository its heading stands for"
+        );
+        list.bottom();
+        assert_eq!(
+            list.project_under_cursor(),
+            Some(PathBuf::from("/tmp/scratch"))
+        );
+
+        // Gathered by state there is no project over the cursor for it to be
+        // standing in: the row above one belongs to whoever started it.
+        list.turn();
+        assert_eq!(list.project_under_cursor(), None);
     }
 
     #[test]

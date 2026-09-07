@@ -1409,6 +1409,25 @@ mod tests {
     }
 
     #[test]
+    fn composer_a_task_line_says_on_its_rule_which_project_it_will_run_in() {
+        // Beside the label, where a reply says which agent it is going to: a
+        // line opened under a project heading starts its agent there, and the
+        // one thing to be sure of before pressing enter is where that is.
+        let mut screen = launching(Vec::new());
+        let mut composer = Composer::new(Asking::Task);
+        composer.under = Some(std::path::PathBuf::from("/src/api"));
+        composer.insert("port the importer");
+        screen.mode = Mode::Typing(composer);
+
+        let drawn = painted(&screen, (80, 8));
+        assert!(
+            drawn[5].starts_with("TASK · in /src/api · letters are text until esc"),
+            "the rule says where the line will run: {:?}",
+            drawn[5]
+        );
+    }
+
+    #[test]
     fn composer_a_command_row_says_so_on_its_rule_and_in_the_keys_under_it() {
         let mut screen = launching(Vec::new());
         let mut composer = Composer::new(Asking::Task);

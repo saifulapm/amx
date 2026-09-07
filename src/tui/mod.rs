@@ -1376,7 +1376,7 @@ impl Screen {
                 self.page.set(0);
                 self.mode = Mode::Keys;
             }
-            KeyCode::Char('n') if plain => self.mode = Mode::Typing(Composer::new(Asking::Task)),
+            KeyCode::Char('n') if plain => self.mode = Mode::Typing(self.task_line()),
             // The list narrowed by what somebody is looking for, read on every
             // keystroke rather than on the enter at the end of them. Narrowing
             // was reachable before this only by opening a task line and
@@ -1389,7 +1389,7 @@ impl Screen {
             // fingers in. A task worth a paragraph is a task worth writing
             // where writing is what the keys are for.
             KeyCode::Char('g') if ctrl => {
-                self.mode = Mode::Typing(Composer::new(Asking::Task));
+                self.mode = Mode::Typing(self.task_line());
                 return Ok(Doing::Edit);
             }
             // A name for the agent under the cursor, opened on the one it is
@@ -1483,7 +1483,7 @@ impl Screen {
         match &mut self.mode {
             Mode::Typing(composer) => composer.insert(&text),
             _ => {
-                let mut composer = Composer::new(Asking::Task);
+                let mut composer = self.task_line();
                 composer.insert(&text);
                 self.mode = Mode::Typing(composer);
             }
@@ -1691,6 +1691,18 @@ impl Screen {
         Ok(Doing::Carry)
     }
 
+    /// A task line, opened where the cursor is standing.
+    ///
+    /// The wall gathered by project is somebody reading one project, so a line
+    /// opened there is a line about it: the agent it starts runs where the rows
+    /// around the cursor are running. Anywhere else the line carries nothing
+    /// and the agent starts where the view was opened.
+    fn task_line(&self) -> Composer {
+        let mut composer = Composer::new(Asking::Task);
+        composer.under = self.list.project_under_cursor();
+        composer
+    }
+
     /// Look the word under the cursor up again, and hold what could stand
     /// there.
     ///
@@ -1844,7 +1856,7 @@ impl Screen {
         here: Option<&Here>,
     ) -> Result<Doing> {
         let launching = self.profile.launching(config);
-        match act::start(root, &launching, &composer.text) {
+        match act::start(root, &launching, &composer.text, composer.under.as_deref()) {
             Ok(Started::Yes { id, said }) => {
                 self.notice = Some(Notice::Advice(said));
                 self.acted();
