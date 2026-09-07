@@ -1146,6 +1146,106 @@ fn the_composer_runs_the_session_as_the_agent_the_line_is_led_with() {
 }
 
 #[test]
+fn the_composer_runs_a_line_led_with_a_bang_as_a_command() {
+    let amx = Harness::new();
+    a_repo_at(amx.home());
+    // The file leaves worktrees on, which is what it falls back to: a command
+    // is not a conversation to keep apart from the next one, so it runs in the
+    // checkout it was typed in whatever the file says.
+    let view = a_view_that_dispatches_as_claude(&amx, "");
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "!echo one two");
+    let drawn = amx.until("the command on the screen", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("❯ !echo one two").then_some(drawn)
+    });
+    assert!(
+        drawn.contains("COMMAND ·") && !drawn.contains("TASK ·"),
+        "the rule over the line says what enter is about to do:\n{drawn}"
+    );
+    assert!(
+        !drawn.contains("vendor default"),
+        "and the dial the rule carries for an agent is off a row that runs \
+         none:\n{drawn}"
+    );
+
+    press(&amx, &view, "Enter");
+    let id = composed(&amx);
+    assert_eq!(
+        command_of(&amx, &id),
+        ["sh", "-c", "echo one two"],
+        "the rest of the line is the command, handed to a shell whole"
+    );
+
+    let meta = amx.meta(&id);
+    assert!(
+        meta["agent"].is_null(),
+        "a command row runs no vendor: {meta}"
+    );
+    assert!(
+        meta["worktree"].is_null(),
+        "and never in a tree of its own: {meta}"
+    );
+    assert_eq!(
+        meta["dir"],
+        amx.home().to_string_lossy().as_ref(),
+        "it runs where the view is: {meta}"
+    );
+    amx.until_state(&id, "done");
+
+    // The one dial it does take, which is the other place it can run.
+    let elsewhere = amx.home().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("somewhere else to run");
+    types(&amx, &view, "n");
+    types(
+        &amx,
+        &view,
+        &format!("!d:{} echo there", elsewhere.display()),
+    );
+    press(&amx, &view, "Enter");
+
+    let next = composed_after(&amx, &id);
+    assert_eq!(
+        command_of(&amx, &next),
+        ["sh", "-c", "echo there"],
+        "with the token off the command: {:?}",
+        command_of(&amx, &next)
+    );
+    assert_eq!(
+        amx.meta(&next)["dir"],
+        elsewhere.to_string_lossy().as_ref(),
+        "{}",
+        amx.meta(&next)
+    );
+}
+
+#[test]
+fn the_composer_refuses_a_dial_beside_the_bang_and_keeps_the_line() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "!m:opus cargo test");
+    press(&amx, &view, "Enter");
+
+    let drawn = amx.until("the refusal", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("m:opus:").then_some(drawn)
+    });
+    assert!(
+        drawn.contains("d:"),
+        "said in the words of the line, and naming the one dial the row does \
+         take:\n{drawn}"
+    );
+    assert!(
+        drawn.contains("❯ !m:opus cargo test"),
+        "the line is still there to be fixed:\n{drawn}"
+    );
+    assert!(agents(&amx).is_empty(), "and nothing was made:\n{drawn}");
+}
+
+#[test]
 fn header_puts_what_the_next_agent_may_do_over_the_line_that_starts_it() {
     let amx = Harness::new();
     amx.config("agent = \"claude\"\n");

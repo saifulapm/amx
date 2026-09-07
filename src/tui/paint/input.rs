@@ -355,8 +355,9 @@ fn behind(frame: &mut Frame, until: u16) {
 /// over it to carry.
 ///
 /// It belongs to a line that will start an agent: not to a reply, which goes to
-/// one already running under whatever it was started with, and not to a find
-/// line. At the sentinel it names the layer rather than a
+/// one already running under whatever it was started with, not to a find
+/// line, and not to a command row, which runs a shell and has no agent to
+/// permit anything. At the sentinel it names the layer rather than a
 /// mode, because amx does not know which mode the vendor is configured for and
 /// a guess at it is the same lie the model dial refuses. A vendor whose entry
 /// declares no permission dial has nothing to say and nothing to turn, so the
@@ -373,11 +374,13 @@ pub(super) fn permission(screen: &Screen) -> Option<Line<'static>> {
         return None;
     };
     composer.allowed.set(
-        (matches!(composer.asking, Asking::Task) && screen.profile.permission_dial().is_some())
-            .then(|| match screen.profile.permission.as_str() {
-                DEFAULT => "vendor default".to_string(),
-                mode => mode.to_string(),
-            }),
+        (matches!(composer.asking, Asking::Task)
+            && !composer.commanding()
+            && screen.profile.permission_dial().is_some())
+        .then(|| match screen.profile.permission.as_str() {
+            DEFAULT => "vendor default".to_string(),
+            mode => mode.to_string(),
+        }),
     );
     None
 }
@@ -392,11 +395,14 @@ pub(super) fn permission(screen: &Screen) -> Option<Line<'static>> {
 /// because whoever is typing has stopped reading it. A reply and a rename
 /// read no prefixes, so their lines teach none — and neither does this line
 /// teach `s:`, which narrows the wall from `/` and starts an agent from here.
+///
+/// The bang leads the sentence because it leads the line: it is the one mark
+/// here that changes what enter does rather than what the agent is given.
 fn placeholder(composer: &Composer) -> Option<&'static str> {
     if !matches!(composer.asking, Asking::Task) || !composer.text.is_empty() {
         return None;
     }
-    Some("m:model · p:permission · w:on|off · d:directory · agent:command")
+    Some("!command · m:model · p:permission · w:on|off · d:directory · agent:command")
 }
 
 /// The keys with nowhere else to be said, as the line under the cursor makes
@@ -610,12 +616,20 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
         Mode::Confirming(_) => fitted(&hints(screen), MORE, width),
         Mode::Typing(composer) => match composer.asking {
             Asking::Task => {
-                let mut said = vec![("enter", "starts it"), ("alt+enter", "newline")];
+                // What enter does, which is not the same thing on a line led
+                // with a bang: that one runs a command where this one starts
+                // an agent.
+                let enter = match composer.commanding() {
+                    true => ("enter", "runs it"),
+                    false => ("enter", "starts it"),
+                };
+                let mut said = vec![enter, ("alt+enter", "newline")];
                 // The dial on the rule above wears no label and says nothing
                 // about the key that turns it, so this row does: a setting
                 // nobody can find the key for is a setting nobody can change.
-                // A vendor that declares no dial has none to name.
-                if screen.profile.permission_dial().is_some() {
+                // A vendor that declares no dial has none to name, and neither
+                // has a command row, which runs no vendor at all.
+                if !composer.commanding() && screen.profile.permission_dial().is_some() {
                     said.push(("shift+tab", "permission"));
                 }
                 // And the way out of the line for anybody whose task wants
@@ -1151,11 +1165,12 @@ mod tests {
             .find(|row| row.contains("m:model"))
             .expect("the empty line teaches its prefixes");
         assert!(
-            hint.starts_with("❯ m:model"),
+            hint.starts_with("❯ !command"),
             "the hint is a placeholder on the line itself, not a row of its \
-             own: {hint}"
+             own, and the mark that leads the line leads it: {hint}"
         );
         for named in [
+            "!command",
             "m:model",
             "p:permission",
             "w:on|off",
@@ -1179,7 +1194,7 @@ mod tests {
             .iter()
             .find(|row| row.contains("m:model"))
             .expect("a narrow screen still teaches what fits");
-        assert!(clipped.starts_with("❯ m:model"), "{clipped}");
+        assert!(clipped.starts_with("❯ !command"), "{clipped}");
         assert!(clipped.trim_end().ends_with('…'), "{clipped}");
 
         // The next keystroke lands where the prompt ends, over the
@@ -1379,7 +1394,7 @@ mod tests {
             drawn[5]
         );
         assert!(
-            drawn[6].starts_with("❯ m:model"),
+            drawn[6].starts_with("❯ !command"),
             "the empty line under it carries its placeholder: {:?}",
             drawn[6]
         );
@@ -1390,6 +1405,32 @@ mod tests {
             painted(&screen, (60, 8))[5].ends_with(" acceptEdits ┈┈"),
             "and a mode in the vendor's own word for it: {:?}",
             painted(&screen, (60, 8))[5]
+        );
+    }
+
+    #[test]
+    fn composer_a_command_row_says_so_on_its_rule_and_in_the_keys_under_it() {
+        let mut screen = launching(Vec::new());
+        let mut composer = Composer::new(Asking::Task);
+        composer.insert("!cargo test");
+        screen.mode = Mode::Typing(composer);
+
+        let drawn = painted(&screen, (60, 8));
+        assert!(
+            drawn[5].starts_with("COMMAND · letters are text until esc"),
+            "the rule names what enter is about to do: {:?}",
+            drawn[5]
+        );
+        assert_eq!(drawn[6], "❯ !cargo test█");
+        assert!(
+            drawn[7].contains("enter runs it"),
+            "and so does the row under it: {:?}",
+            drawn[7]
+        );
+        assert!(
+            !drawn[7].contains("shift+tab"),
+            "which names no key for a dial this row has nothing to turn: {:?}",
+            drawn[7]
         );
     }
 
@@ -1415,6 +1456,13 @@ mod tests {
 
         // Nor about a find line, which sends nothing anywhere.
         screen.mode = Mode::Typing(Composer::new(Asking::Find));
+        assert!(!turned(&screen));
+
+        // Nor about a command row: it runs a shell, and there is no agent on
+        // it for a permission to be about.
+        let mut commanding = Composer::new(Asking::Task);
+        commanding.insert("!cargo test");
+        screen.mode = Mode::Typing(commanding);
         assert!(!turned(&screen));
 
         // A vendor amx has no entry for declares no permission dial: there is

@@ -268,14 +268,28 @@ impl Composer {
         self.text.chars().count()
     }
 
+    /// Whether this line runs a command rather than starting an agent, which
+    /// is what the bang it opens with says.
+    ///
+    /// A task line only: every other line goes to an agent that is already
+    /// running or narrows the wall, and a bang typed on one of those is the
+    /// character it is.
+    pub fn commanding(&self) -> bool {
+        matches!(self.asking, Asking::Task) && self.text.starts_with(BANG)
+    }
+
     /// What the rule over the line calls the mode, in the one word a band's
     /// edge has room for.
     ///
     /// Uppercase, the way every heading on the wall is: a label on a border is
-    /// read at a glance or not at all. Each line has the one word for the
-    /// whole time it is open, because the one thing a person needs to know
-    /// before pressing enter is what enter is about to do.
+    /// read at a glance or not at all. The one thing a person needs to know
+    /// before pressing enter is what enter is about to do, which is why the
+    /// word changes under the bang as it is typed and as it is taken back:
+    /// what a line starts is what the label is about.
     pub fn label(&self) -> &'static str {
+        if self.commanding() {
+            return "COMMAND";
+        }
         match &self.asking {
             Asking::Task => "TASK",
             Asking::Reply { question: true, .. } => "ANSWER",
@@ -375,10 +389,17 @@ const TREE: [&str; 2] = ["on", "off"];
 /// agent is named by.
 const AT: &str = "@";
 
+/// The mark a command row is led with, which is the shell's own: a line that
+/// opens with it runs what is after it instead of asking an agent to.
+const BANG: char = '!';
+
 /// What a line's leading tokens turn, for the one spawn they lead. Empty is
 /// the ordinary line, which leaves every dial where the config put it.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Turned {
+    /// Whether the line runs a command rather than starting an agent, which is
+    /// what the bang it opens with says.
+    pub exec: bool,
     pub agent: Option<String>,
     pub model: Option<String>,
     pub permission: Option<String>,
@@ -437,7 +458,13 @@ fn tokens(line: &str) -> (Vec<(&'static str, &str)>, &str) {
 /// may be launched, and an agent it has never heard of has always been allowed
 /// to spawn; what it costs is its dials, which `m:` and `p:` beside it say by
 /// name.
+///
+/// A line led with the bang is not a task at all and is read by [`commanded`]:
+/// what is left of it is a command, and the dials it may lead are its own.
 pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
+    if let Some(rest) = line.strip_prefix(BANG) {
+        return commanded(rest);
+    }
     let (tokens, task) = tokens(line);
     let mut turned = Turned::default();
 
@@ -486,6 +513,36 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
     Ok((turned, task.to_string()))
 }
 
+/// The one dial a command row takes and the command that is left, or the word
+/// that is a dial it has nothing to turn.
+///
+/// `d:` alone, because it is the only one of the five that is about the row
+/// rather than about an agent: where the command runs. A row that runs `sh -c`
+/// launches no vendor, so the vendor's own two and the word that names one have
+/// nothing here to be about — which is why `--exec` refuses those flags at a
+/// shell prompt too. `w:` goes with them: a command is not a conversation to
+/// keep apart from the next one, so it runs in the checkout it was typed in
+/// whatever any line says.
+fn commanded(rest: &str) -> Result<(Turned, String), String> {
+    let (tokens, command) = tokens(rest);
+    let mut turned = Turned {
+        exec: true,
+        ..Turned::default()
+    };
+    for (dial, value) in &tokens {
+        if *dial != DIR {
+            return Err(format!(
+                "{dial}{value}: a command row takes d: and no other dial"
+            ));
+        }
+        if value.is_empty() {
+            return Err("d: takes a directory".to_string());
+        }
+        turned.dir = Some((*value).to_string());
+    }
+    Ok((turned, command.trim_start().to_string()))
+}
+
 /// A value for one of the vendor's own dials, or why it is not one.
 fn pointed(
     agent: &str,
@@ -515,7 +572,9 @@ fn pointed(
 /// What the word under the cursor could be, where it could be something.
 ///
 /// A task line only. The other lines go to an agent that is already running,
-/// and what a vendor loads by name is what a task line asks it for.
+/// and what a vendor loads by name is what a task line asks it for. A command
+/// row asks it for nothing either: it runs a shell, where `/etc` is a directory
+/// rather than the front of a skill's name.
 ///
 /// Read on the keystroke, the way the find line narrows the wall on one: a
 /// suggestion arriving after the word it was about has been finished is no use
@@ -531,7 +590,7 @@ pub fn suggest(
     project: &Path,
     wall: &[PathBuf],
 ) -> Option<Suggest> {
-    if !matches!(composer.asking, Asking::Task) {
+    if !matches!(composer.asking, Asking::Task) || composer.commanding() {
         return None;
     }
     let word = under_the_cursor(&composer.text, composer.at)?;
@@ -872,24 +931,33 @@ const ENOUGH: usize = 4;
 /// The task rather than the whole line: `m:opus fix` is three characters of
 /// instruction behind seven of dials, and the instruction is what the agent is
 /// given.
+///
+/// A command row is never asked about. The bang is not a keystroke anybody
+/// leans on by accident, and `ls` is a command somebody means every bit as
+/// much as a longer one.
 pub fn slight(config: &Config, line: &str) -> Option<String> {
-    let (_, task) = turned(config, line).ok()?;
+    let (turned, task) = turned(config, line).ok()?;
+    if turned.exec {
+        return None;
+    }
     // Said back on one row, whatever it was typed on: the question quotes it,
     // and a newline in a line of prose is a row the footer does not have.
     let task = task.split_whitespace().collect::<Vec<_>>().join(" ");
     (!task.is_empty() && task.chars().count() < ENOUGH).then_some(task)
 }
 
-/// Start an agent on what was typed, where the view is.
+/// Start an agent on what was typed, where the view is — or run it, where the
+/// line is a command row.
 pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
     let (turned, task) = match turned(config, line) {
         Ok(read) => read,
         Err(refusal) => return Ok(Started::No(refusal)),
     };
     if task.trim().is_empty() {
-        return Ok(Started::No(
-            "the dials are turned; now say what to do".to_string(),
-        ));
+        return Ok(Started::No(match turned.exec {
+            true => "the row is a command; now say what to run".to_string(),
+            false => "the dials are turned; now say what to do".to_string(),
+        }));
     }
 
     let here = std::env::current_dir().context("no working directory")?;
@@ -905,9 +973,15 @@ pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
     };
     // Who the vendor is asked to be, read against the directory this one runs
     // in: an agent it loads out of the project is an agent of the project the
-    // line names, not of the one the view was opened in.
-    let agent = turned.agent.clone().unwrap_or_else(|| config.agent.clone());
-    let (vendor_args, task) = as_agent(&agent, &task, &dir);
+    // line names, not of the one the view was opened in. A command row asks for
+    // nobody — it runs a shell, and the mark is the shell's own to read.
+    let (vendor_args, task) = match turned.exec {
+        true => (Vec::new(), task),
+        false => {
+            let agent = turned.agent.clone().unwrap_or_else(|| config.agent.clone());
+            as_agent(&agent, &task, &dir)
+        }
+    };
 
     // A `w:` is a decision about this agent, so it is made where the config's
     // own answer is made rather than argued with downstream: `new` has a flag
@@ -929,7 +1003,7 @@ pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
         name: None,
         dir: None,
         no_worktree: false,
-        exec: false,
+        exec: turned.exec,
         agent: named.then_some(dials),
         vendor_args,
     };
@@ -1828,11 +1902,6 @@ mod tests {
             assert_eq!(slight(line), None, "{line:?} stands on its own");
         }
         assert_eq!(
-            slight("!ls"),
-            Some("!ls".to_string()),
-            "a bang is a character in a task, so a short one is asked about"
-        );
-        assert_eq!(
             slight("s:"),
             Some("s:".to_string()),
             "and the tokens that narrowed the wall from here once are two \
@@ -1884,16 +1953,98 @@ mod tests {
     }
 
     #[test]
-    fn composer_a_leading_bang_is_a_character_in_a_task() {
-        // Shell rows are `amx new --exec`'s; the line dispatches none, so a
-        // task may open with a bang the way it may end with one.
+    fn composer_a_leading_bang_makes_the_line_a_command_row() {
+        // The mark leads the line and the rest of it is the command: what
+        // `amx new --exec` is at a shell prompt, typed where the wall is.
         let mut composer = Composer::new(Asking::Task);
         composer.text = "!cargo test".to_string();
+        assert_eq!(
+            composer.label(),
+            "COMMAND",
+            "and the rule says so while the bang stands"
+        );
+        composer.text = "cargo test".to_string();
         assert_eq!(composer.label(), "TASK");
 
-        let (dials, task) = turned(&as_claude(), "!cargo test").unwrap();
-        assert_eq!(dials, Turned::default());
-        assert_eq!(task, "!cargo test");
+        let (dials, command) = turned(&as_claude(), "!cargo test").unwrap();
+        assert_eq!(
+            dials,
+            Turned {
+                exec: true,
+                ..Turned::default()
+            },
+            "no vendor and no dials: a command row runs a shell"
+        );
+        assert_eq!(command, "cargo test");
+
+        // The one dial it takes is where it runs, and the command is what is
+        // left of the line.
+        let (dials, command) = turned(&as_claude(), "!d:/srv/app  cargo test").unwrap();
+        assert_eq!(
+            dials,
+            Turned {
+                exec: true,
+                dir: Some("/srv/app".to_string()),
+                ..Turned::default()
+            }
+        );
+        assert_eq!(command, "cargo test");
+    }
+
+    #[test]
+    fn composer_refuses_the_dials_a_command_row_has_nothing_to_turn() {
+        // Said in the words of the line and naming the one it does take. The
+        // vendor's two and the vendor itself have no vendor here to be read
+        // against, which is why `--exec` refuses them at a shell prompt; the
+        // tree goes with them, because a command runs where it was typed.
+        let refused = |line: &str| turned(&as_claude(), line).expect_err(line);
+
+        for line in [
+            "!m:opus cargo test",
+            "!p:plan ls",
+            "!agent:codex ls",
+            "!w:on ls",
+        ] {
+            let said = refused(line);
+            assert!(
+                said.ends_with("a command row takes d: and no other dial"),
+                "{line:?}: {said}"
+            );
+            assert!(
+                line.contains(said.split(':').next().expect("the token it names")),
+                "and names the token as it was typed: {said}"
+            );
+        }
+        assert_eq!(refused("!d: cargo test"), "d: takes a directory");
+
+        // A word that is one of those anywhere but the front is the command's
+        // own, the same law that keeps `port the m:opus importer` a task.
+        let (dials, command) = turned(&as_claude(), "!echo m:opus").unwrap();
+        assert!(dials.exec);
+        assert_eq!(command, "echo m:opus");
+    }
+
+    #[test]
+    fn composer_never_asks_about_a_command_row_however_short_it_is() {
+        // The question is about a stray keystroke behind the key that opens
+        // the line, and a bang is not one. `ls` is a command somebody means.
+        assert_eq!(slight(&as_claude(), "!ls"), None);
+        assert_eq!(slight(&as_claude(), "!d:/srv/app ls"), None);
+    }
+
+    #[test]
+    fn composer_offers_a_command_row_none_of_the_words_a_vendor_answers_to() {
+        // A shell reads `/etc` as a directory rather than as the front of a
+        // skill's name, and `@src` there is a word it hands to `cat` rather
+        // than one of the vendor's agents.
+        for line in ["!ls /", "!cat @src"] {
+            let mut composer = Composer::new(Asking::Task);
+            composer.insert(line);
+            assert!(
+                suggest(&composer, &as_claude(), a_project(), &[]).is_none(),
+                "{line:?}"
+            );
+        }
     }
 
     #[test]
@@ -1902,6 +2053,7 @@ mod tests {
         assert_eq!(
             dials,
             Turned {
+                exec: false,
                 agent: None,
                 model: Some("opus".to_string()),
                 permission: Some("plan".to_string()),
