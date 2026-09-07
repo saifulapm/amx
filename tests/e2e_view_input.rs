@@ -525,6 +525,52 @@ fn a_filter_line_narrows_the_axis_instead_of_starting_an_agent() {
 }
 
 #[test]
+fn a_filter_line_of_two_words_keeps_the_groups_both_of_them_name() {
+    let amx = Harness::new();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.play("busy-b2c", "works-without-end");
+    amx.play("fix-login-c3d", "happy-turn");
+    amx.until_state("ask-a1b", "waiting");
+    amx.until_state("busy-b2c", "working");
+    amx.until_state("fix-login-c3d", "idle");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("all three agents", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("ask-a1b") && drawn.contains("busy-b2c") && drawn.contains("fix-login-c3d"))
+            .then_some(())
+    });
+
+    // What somebody watching a fleet asks for: what needs them and what is
+    // still running, on the one screen, with everything finished out of the
+    // way.
+    types(&amx, &view, "/");
+    types(&amx, &view, "s:waiting s:working");
+    let drawn = amx.until("the narrowed list", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("ask-a1b")
+            && drawn.contains("busy-b2c")
+            && !drawn.contains("fix-login-c3d"))
+        .then_some(drawn)
+    });
+    assert!(
+        drawn.contains("NEEDS INPUT") && drawn.contains("WORKING"),
+        "with both groups still headed over their agents:\n{drawn}"
+    );
+
+    // Enter closes the line, and the header says the whole of what was typed.
+    press(&amx, &view, "Enter");
+    let kept = amx.until("the line to go", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("space card").then_some(drawn)
+    });
+    assert!(
+        kept.contains("s:waiting s:working") && !kept.contains("fix-login-c3d"),
+        "read back word for word as it was typed:\n{kept}"
+    );
+}
+
+#[test]
 fn the_composer_starts_an_agent_on_a_line_of_state_tokens() {
     let amx = Harness::new();
     let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");

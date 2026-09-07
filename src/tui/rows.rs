@@ -220,7 +220,8 @@ impl On {
 
 /// One narrowing, as the change it makes. A line only changes what it names,
 /// so `a:port` on its own leaves the state narrowing where it was, and `s:`
-/// with nothing after it drops that one and leaves the rest.
+/// with nothing after it drops the states. What a line of state words does to
+/// the name is `List::narrow`'s to say.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Narrow {
     State(Option<String>),
@@ -229,9 +230,14 @@ pub enum Narrow {
 
 /// What the list is narrowed to. Every one that is set has to match, and
 /// nothing set keeps everything.
+///
+/// The states are a list because a line may name several of them, and any one
+/// of them keeps a row: `s:waiting s:working` is somebody asking for what needs
+/// them beside what is still running, and states that all had to match at once
+/// would be a line that always emptied the wall.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Filters {
-    state: Option<String>,
+    state: Vec<String>,
     name: Option<String>,
 }
 
@@ -252,13 +258,14 @@ impl Filters {
         // put a pinned agent under `s:working` and a row under review under
         // `s:done`, which is the list no longer holding what the counter
         // counted.
-        let state = self.state.as_ref().is_none_or(|want| {
-            if Group::ALL.iter().any(|group| group.state() == want) {
-                group.state() == want
-            } else {
-                view.phase().as_str() == want
-            }
-        });
+        let state = self.state.is_empty()
+            || self.state.iter().any(|want| {
+                if Group::ALL.iter().any(|group| group.state() == want) {
+                    group.state() == want
+                } else {
+                    view.phase().as_str() == want
+                }
+            });
         // Every word for the agent that somebody might have in front of them:
         // the id every other surface uses, the name a person gave it because
         // the id was not what they call it, the `#12` its branch wears — which
@@ -287,13 +294,12 @@ impl Filters {
     /// name came off a find line, so it reads as one: a header naming a token
     /// nobody can type any more is a header that cannot be acted on.
     fn label(&self) -> Option<String> {
-        let said: Vec<String> = [
-            self.state.as_ref().map(|want| format!("s:{want}")),
-            self.name.as_ref().map(|want| format!("/{want}")),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let said: Vec<String> = self
+            .state
+            .iter()
+            .map(|want| format!("s:{want}"))
+            .chain(self.name.as_ref().map(|want| format!("/{want}")))
+            .collect();
         (!said.is_empty()).then(|| said.join(" "))
     }
 }
@@ -570,12 +576,38 @@ impl List {
     }
 
     /// Narrow the list to part of the fleet, changing only what was named.
+    ///
+    /// One batch is one reading of the line, so the states it names are the
+    /// states there now: a line read again on every keystroke that added its
+    /// words to the reading before it could never be widened by deleting one.
+    /// A batch naming no state at all leaves the states where they were, and
+    /// `s:` on its own names none, which is how the last word deleted back to
+    /// the token gives the fleet back.
+    ///
+    /// A batch that names states and no name drops the name with them, because
+    /// a line of state words is not a line with a name on it. Half of typing
+    /// `s:waiting s:working` reads as a name — `s:waiting s` is a sentence
+    /// until the colon lands — and a name left standing from the keystroke
+    /// before would narrow the wall to nothing under a header saying states.
     pub fn narrow(&mut self, changes: Vec<Narrow>) {
         let on = self.on();
+        let mut states: Option<Vec<String>> = None;
+        let mut name: Option<Option<String>> = None;
         for change in changes {
             match change {
-                Narrow::State(state) => self.filters.state = state,
-                Narrow::Name(name) => self.filters.name = name,
+                Narrow::State(state) => states.get_or_insert_default().extend(state),
+                Narrow::Name(named) => name = Some(named),
+            }
+        }
+        match states {
+            Some(states) => {
+                self.filters.state = states;
+                self.filters.name = name.flatten();
+            }
+            None => {
+                if let Some(name) = name {
+                    self.filters.name = name;
+                }
             }
         }
         self.rebuild(on.agent());
@@ -2159,6 +2191,7 @@ mod tests {
             view("ask-a1b", Phase::Waiting, 10),
             view("busy-b2c", Phase::Working, 20),
             view("busy-c3d", Phase::Working, 30),
+            view("done-d4e", Phase::Done, 40),
         ]);
 
         list.narrow(vec![Narrow::State(Some("working".to_string()))]);
@@ -2169,6 +2202,38 @@ mod tests {
         );
         assert_eq!(list.counts(), [(Group::Working, 2)]);
         assert_eq!(list.narrowing().as_deref(), Some("s:working"));
+
+        // Two words are two states to keep rather than the second word winning:
+        // somebody watching a fleet wants what needs them and what is still
+        // running on the one screen, and the third group goes.
+        list.narrow(vec![
+            Narrow::State(Some("waiting".to_string())),
+            Narrow::State(Some("working".to_string())),
+        ]);
+        assert_eq!(
+            lines(&list),
+            [
+                "needs input (1)",
+                "ask-a1b",
+                "",
+                "working (2)",
+                "busy-b2c",
+                "busy-c3d",
+            ],
+            "both words keep their group and everything else is gone"
+        );
+        assert_eq!(
+            list.narrowing().as_deref(),
+            Some("s:waiting s:working"),
+            "and the header reads the whole line back as it was typed"
+        );
+
+        list.narrow(vec![Narrow::State(Some("working".to_string()))]);
+        assert_eq!(
+            lines(&list),
+            ["working (2)", "busy-b2c", "busy-c3d"],
+            "a shorter line replaces the states rather than adding to them"
+        );
 
         list.narrow(vec![Narrow::Name(Some("c3d".to_string()))]);
         assert_eq!(
@@ -2182,8 +2247,20 @@ mod tests {
             "the name reads back as the find line it came off"
         );
 
+        // Half of `s:waiting s:working` reads as a name on the way through, so
+        // a line of state words has to take the name with it.
+        list.narrow(vec![
+            Narrow::State(Some("waiting".to_string())),
+            Narrow::State(Some("working".to_string())),
+        ]);
+        assert_eq!(
+            list.narrowing().as_deref(),
+            Some("s:waiting s:working"),
+            "a line of state words is not a line with a name on it"
+        );
+
         list.narrow(vec![Narrow::State(None), Narrow::Name(None)]);
-        assert_eq!(lines(&list).len(), 6);
+        assert_eq!(lines(&list).len(), 9);
         assert_eq!(list.narrowing(), None);
     }
 
