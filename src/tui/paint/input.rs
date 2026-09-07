@@ -371,12 +371,19 @@ fn hints(screen: &Screen) -> Vec<Hint> {
                 true => ("space", "closes it"),
                 false => ("space", "card"),
             };
+            // What the key does to this row rather than what it is for: on a
+            // row already over the wall the press is the one that puts it back
+            // in the group amx had it in.
+            let pin = match list.selected().is_some_and(|view| list.holding(view)) {
+                true => ("ctrl+t", "unpin"),
+                false => ("ctrl+t", "pin"),
+            };
             match list
                 .selected()
                 .is_some_and(|view| view.phase().is_terminal())
             {
-                true => vec![card, ("ctrl+x", "forget")],
-                false => vec![card, ("enter", "attach"), ("ctrl+x", "stop")],
+                true => vec![card, ("ctrl+x", "forget"), pin],
+                false => vec![card, ("enter", "attach"), ("ctrl+x", "stop"), pin],
             }
         }
         // A wall with nothing on it has no line under the cursor, and the one
@@ -925,7 +932,7 @@ mod tests {
         // The view opens on an agent's row, where those keys reach the agent.
         assert_eq!(
             hint_row(&screen, wide),
-            "space card   enter attach   ctrl+x stop   ctrl+s axis   q quit   ? keys"
+            "space card   enter attach   ctrl+x stop   ctrl+t pin   ctrl+s axis   ? keys"
         );
 
         // One line up is the heading over it, where the same two keys do
@@ -977,6 +984,13 @@ mod tests {
             "{:?}",
             hint_row(&screen, wide)
         );
+
+        // A row already over the wall is one that key puts back, so that is
+        // what it offers there.
+        let mut screen = showing(a_fleet(), None);
+        assert!(screen.list.hold_or_let_go());
+        let row = hint_row(&screen, wide);
+        assert!(row.contains("ctrl+t unpin"), "{row:?}");
 
         // And a wall with nothing on it has no line under the cursor at all.
         let screen = showing(Vec::new(), None);

@@ -66,7 +66,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 33] = [
     ("ctrl+g", "write the line in $EDITOR"),
     // arrange
     ("ctrl+s", "gather them by state or by project"),
-    ("ctrl+t", "hold it at the top of its group"),
+    ("ctrl+t", "pin it over the wall · again lets it go"),
     ("shift+↑", "move it up its group"),
     ("shift+↓", "move it down its group"),
     ("ctrl+r", "call it something else"),

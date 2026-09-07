@@ -107,6 +107,9 @@ fn keymap_the_hint_row_says_what_the_line_under_the_cursor_answers_to() {
     let row = hints("space card");
     assert!(row.contains("enter attach"), "{row}");
     assert!(row.contains("ctrl+x stop"), "{row}");
+    // And the key that puts a row over the wall says what it would do to this
+    // one: the row is in a group amx put it in, so the press pins it.
+    assert!(row.contains("ctrl+t pin"), "{row}");
 
     // One line up is the heading over it, where the same two keys are about
     // the group rather than about any one agent.
@@ -167,6 +170,7 @@ fn the_keys_are_on_the_screen_for_the_asking() {
         "what it has changed",
         "stop it",
         "call it something else",
+        "pin it over the wall",
         "ctrl+x",
     ] {
         assert!(keys.contains(does), "{does} is not among the keys:\n{keys}");
