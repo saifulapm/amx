@@ -1,4 +1,9 @@
 mod ansi;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "read by the tests until the line asks")
+)]
+mod catalog;
 mod cli;
 mod cockpit;
 mod config;
