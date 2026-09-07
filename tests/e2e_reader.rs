@@ -167,9 +167,10 @@ fn a_trust_gate_records_the_question_and_not_one_of_its_answers() {
          numbers none of these"
     );
 
-    // The words alone, which is how the record writes a question with no
-    // choices under it.
-    assert_eq!(amx.state("trusts-b2c")["question"], text);
+    // Written whole, even with no choices to write under it: the words alone
+    // are how the record says a hook carried a question, and nothing was ever
+    // heard from this one.
+    assert_eq!(amx.state("trusts-b2c")["question"]["text"], text);
 }
 
 #[test]

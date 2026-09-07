@@ -1792,9 +1792,12 @@ fn adopt_takes_the_pi_in_the_pane_over_and_not_the_claude_in_the_terminal() {
          screen"
     );
     assert_eq!(
-        amx.state(id)["question"],
+        amx.state(id)["question"]["text"],
         "Run echo hi?",
-        "the sentence the caller passed, off the pane it is drawn on"
+        "the sentence the caller passed, off the pane it is drawn on — and \
+         written whole rather than as its words alone, because the words alone \
+         are how the document says a hook carried a question and an adoption \
+         read this one off the screen"
     );
 }
 

@@ -300,6 +300,21 @@ pub struct State {
     /// be known when the words are not: a menu whose payload amx could not
     /// read is still a menu somebody has to answer.
     pub kind: Option<Kind>,
+    /// Whether the question above is the vendor's own word, carried by one of
+    /// its hooks, rather than amx's reading of a picture of its pane.
+    ///
+    /// It decides which of the two laws the next reading of that pane is
+    /// under — see [`learn`](State::learn) and [`correct`](State::correct) —
+    /// and it is written here, beside the question, because that is what the
+    /// law is about. Asking the vendor instead is what put this record wrong:
+    /// pi has reported through an extension since fa96854, so every question
+    /// on a pi was treated as pi's own word, and the ones pi draws itself and
+    /// says nothing about — `/login`, `/trust`, `/model`, the startup trust
+    /// gate — stood on the record while the pane moved on to the next of them.
+    ///
+    /// It goes wherever the question goes, and a record with nothing
+    /// outstanding claims nothing about where the nothing came from.
+    pub reported: bool,
     /// The answer from the last turn that ended.
     pub result: Option<String>,
     /// Where that answer came from.
@@ -365,10 +380,14 @@ impl State {
     /// question already outstanding are just words: the hook that carries them
     /// is describing the same screen something else already named, and it
     /// names nothing itself.
+    ///
+    /// This is a hook's hand, so what it leaves is the vendor's own word — see
+    /// [`reported`](State::reported).
     pub fn asks(&mut self, question: Option<String>) {
         self.question = question;
         self.options.clear();
         self.asking.clear();
+        self.reported = self.question.is_some();
         if self.question.is_none() {
             self.kind = None;
         }
@@ -413,6 +432,10 @@ impl State {
     }
 
     /// Put the question the call is showing where the question goes.
+    ///
+    /// Reached from the two writers a hook drives — [`asks_all`](State::asks_all)
+    /// and [`answered`](State::answered) — and from nowhere else, so what it
+    /// leaves is the vendor's own word the same way [`asks`](State::asks)'s is.
     fn shows_the_pending_one(&mut self) {
         let (text, options) = self
             .pending()
@@ -420,6 +443,7 @@ impl State {
             .unzip();
         self.question = text;
         self.options = options.unwrap_or_default();
+        self.reported = self.question.is_some();
     }
 
     /// The seconds worked as of a stated moment, counting a span still open.
@@ -450,13 +474,19 @@ impl State {
 
     /// Take what a screen said, and overwrite nothing.
     ///
-    /// A hook is the vendor's own words about its own state; a screen is amx's
-    /// reading of a picture of it. So the screen fills what the hooks left
-    /// empty — the options, which no hook has ever carried, and the text when
-    /// no hook reported one — and never corrects them.
+    /// The law for a question the vendor reported. A hook is its own words
+    /// about its own state; a screen is amx's reading of a picture of it. So
+    /// the screen fills what the hooks left empty — the options, which no hook
+    /// has ever carried, and the text when no hook reported one — and never
+    /// corrects them.
+    ///
+    /// Filling the choices under a question does not make it anybody else's
+    /// word, so the mark stands. Taking the text is this reading being the
+    /// first account of the question there is, and the mark says so.
     pub fn learn(&mut self, seen: &Question) {
         if self.question.is_none() && !seen.text.is_empty() {
             self.question = Some(seen.text.clone());
+            self.reported = false;
         }
         if self.options.is_empty() {
             self.options.clone_from(&seen.options);
@@ -477,18 +507,24 @@ impl State {
 
     /// Take what a screen said over what a screen said before it.
     ///
-    /// The other law, for the vendor that fires no hooks — see
-    /// [`crate::vendor::Capability::Hooks`], which is what decides which of the
-    /// two a reader is under. There is no vendor's word here for a picture to
-    /// be put in front of: the question on the record is what some earlier look
-    /// read off the same pane, and a pane holds one screen at a time. So a
-    /// later reading replaces an earlier one whole — the question and the
-    /// choices drawn under it together — and a screen with nothing on it to
-    /// answer leaves nothing outstanding.
+    /// The other law, for a question no hook ever reported — see
+    /// [`reported`](State::reported), which is what decides which of the two a
+    /// reader is under. There is no vendor's word here for a picture to be put
+    /// in front of: the question on the record is what some earlier look read
+    /// off the same pane, and a pane holds one screen at a time. So a later
+    /// reading replaces an earlier one whole — the question and the choices
+    /// drawn under it together — and a screen with nothing on it to answer
+    /// leaves nothing outstanding.
+    ///
+    /// Replacing it whole is also what keeps a screen's choices off another
+    /// screen's question: filling one field at a time, which is what
+    /// [`learn`](State::learn) does, grafted the trust selector's answers under
+    /// the sentence the login box had left behind.
     pub fn correct(&mut self, seen: Option<&Question>) {
         let seen = asked(seen);
         self.question = seen.map(|seen| seen.text.clone());
         self.options = seen.map(|seen| seen.options.clone()).unwrap_or_default();
+        self.reported = false;
     }
 }
 
@@ -558,6 +594,13 @@ where
 /// screen, and the screen is only read once the hooks have gone quiet — so a
 /// question that has only just been asked is its words and nothing else. That
 /// is what amx has always written there, and it still means the same thing.
+///
+/// Which is why the words alone are also how a document says the vendor
+/// reported this question. Nothing but a hook has ever left a question in this
+/// shape: a reading of a pane arrives with the choices under it, and one that
+/// arrives with none is written whole below, so it can say where it came from.
+/// A document from before that field existed reads the same way, and reads
+/// right — the words alone were a hook's then too.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 enum Asked {
@@ -583,6 +626,17 @@ struct Known {
     /// than moving one.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     asking: Vec<Ask>,
+    /// Whether the vendor reported this question — see
+    /// [`State::reported`]. Written only where it is true, because a document
+    /// that does not say is a reading: the only shape a hook leaves that says
+    /// nothing else is the words alone above.
+    #[serde(skip_serializing_if = "is_not")]
+    reported: bool,
+}
+
+/// A `false` a document has no reason to carry.
+fn is_not(said: &bool) -> bool {
+    !said
 }
 
 impl From<State> for Wire {
@@ -600,6 +654,7 @@ impl From<State> for Wire {
             options,
             asking,
             kind,
+            reported,
             result,
             source,
             exit,
@@ -633,8 +688,11 @@ impl From<State> for Wire {
                     ..Known::default()
                 })),
                 // The words alone, as amx has always written a question a hook
-                // has only just carried.
-                (Some(text), None) if options.is_empty() && asking.is_empty() => {
+                // has only just carried — and only for one, now that the shape
+                // is also what says so. A reading with nothing but words is
+                // written whole below, where it has a field to say it is a
+                // reading.
+                (Some(text), None) if reported && options.is_empty() && asking.is_empty() => {
                     Some(Asked::Words(text))
                 }
                 (text, kind) => Some(Asked::Whole(Known {
@@ -642,6 +700,7 @@ impl From<State> for Wire {
                     options,
                     kind,
                     asking,
+                    reported,
                 })),
             },
             result,
@@ -658,10 +717,16 @@ impl From<State> for Wire {
 
 impl From<Wire> for State {
     fn from(wire: Wire) -> State {
-        let (question, options, kind, asking) = match wire.question {
-            Some(Asked::Words(text)) => (Some(text), Vec::new(), None, Vec::new()),
-            Some(Asked::Whole(asked)) => (asked.text, asked.options, asked.kind, asked.asking),
-            None => (None, Vec::new(), None, Vec::new()),
+        let (question, options, kind, asking, reported) = match wire.question {
+            Some(Asked::Words(text)) => (Some(text), Vec::new(), None, Vec::new(), true),
+            Some(Asked::Whole(asked)) => (
+                asked.text,
+                asked.options,
+                asked.kind,
+                asked.asking,
+                asked.reported,
+            ),
+            None => (None, Vec::new(), None, Vec::new(), false),
         };
 
         State {
@@ -674,6 +739,7 @@ impl From<Wire> for State {
             options,
             asking,
             kind,
+            reported,
             result: wire.result,
             source: wire.source,
             exit: wire.exit,
@@ -1652,10 +1718,100 @@ mod tests {
     }
 
     #[test]
+    fn store_says_whether_a_question_was_reported_or_read() {
+        // The mark travels with the question and with nothing else, because it
+        // is what decides whether the next reading of the pane may replace it.
+        let seen = Question {
+            text: "Run echo hi?".to_string(),
+            options: vec!["Allow once".to_string(), "Deny".to_string()],
+        };
+
+        let mut heard = State::default();
+        heard.asks(Some("Claude needs your permission to use Bash".to_string()));
+        assert!(heard.reported, "a hook carried it");
+        heard.learn(&seen);
+        assert!(
+            heard.reported,
+            "and a screen filling the choices under it does not make it \
+             anybody else's word"
+        );
+
+        let mut read = State::default();
+        read.learn(&seen);
+        assert!(!read.reported, "the screen said it, with nothing to fill");
+        read.correct(Some(&seen));
+        assert!(!read.reported, "and a later screen still is not the vendor");
+
+        // A question that goes takes the mark with it, whichever hand clears
+        // it: a record with nothing outstanding claims nothing about where the
+        // nothing came from.
+        for mut state in [heard, read] {
+            state.asks(None);
+            assert!(!state.reported, "nothing outstanding is nobody's word");
+        }
+
+        // The whole of a call is the vendor's own words the same way one
+        // question of it is, and answering one moves to the next tab of the
+        // same call.
+        let mut call = State::default();
+        call.asks_all(vec![Ask {
+            header: None,
+            text: "Which fixture should the port keep?".to_string(),
+            options: vec![Choice {
+                label: "the sqlite one".to_string(),
+                description: None,
+                preview: None,
+            }],
+            multi: false,
+            answer: None,
+        }]);
+        assert!(call.reported);
+        call.correct(Some(&seen));
+        assert!(!call.reported);
+    }
+
+    #[test]
+    fn store_round_trips_where_a_question_came_from() {
+        // A question amx knows nothing else about is written as its words
+        // alone, and that shape has only ever been written for one a hook has
+        // just carried — so that is how one is read back, including from a
+        // document written before this mark existed.
+        let mut heard = State::default();
+        heard.asks(Some("Claude needs your permission".to_string()));
+        let document = serde_json::to_value(heard.clone()).unwrap();
+        assert_eq!(document["question"], "Claude needs your permission");
+        assert!(
+            serde_json::from_value::<State>(document).unwrap().reported,
+            "the words alone are the vendor's own"
+        );
+
+        // Everything else says so in the open, and a document that does not
+        // say is a reading: the options on one could only ever have come off a
+        // screen.
+        let mut read = State::default();
+        read.correct(Some(&Question {
+            text: "Do you want to proceed?".to_string(),
+            options: vec!["Yes".to_string(), "No".to_string()],
+        }));
+        let document = serde_json::to_value(read.clone()).unwrap();
+        assert_eq!(document["question"]["reported"], serde_json::Value::Null);
+        assert_eq!(serde_json::from_value::<State>(document).unwrap(), read);
+
+        let mut heard_with_choices = read.clone();
+        heard_with_choices.reported = true;
+        let document = serde_json::to_value(heard_with_choices.clone()).unwrap();
+        assert_eq!(document["question"]["reported"], true);
+        assert_eq!(
+            serde_json::from_value::<State>(document).unwrap(),
+            heard_with_choices
+        );
+    }
+
+    #[test]
     fn store_lets_a_later_screen_correct_what_an_earlier_screen_said() {
-        // The other law, for the vendor that fires no hooks: there is no
-        // vendor's word on the record to be careful of, only what some earlier
-        // look read off the same pane, and a pane holds one screen at a time.
+        // The law for a question a screen read: there is no vendor's word on
+        // the record to be careful of, only what some earlier look read off
+        // the same pane, and a pane holds one screen at a time.
         let mut state = State {
             question: Some("Run echo hi?".to_string()),
             options: vec!["Allow once".to_string(), "Deny".to_string()],
@@ -1689,6 +1845,23 @@ mod tests {
         assert_eq!(state.question, None);
         assert!(state.options.is_empty());
         assert!(!state.corrected_by(None), "with nothing left to clear");
+
+        // And a screen's choices never end up under another screen's question,
+        // which is what filling one field at a time did to a pi driven from
+        // the login box to the trust selector: the box asks for a key and
+        // offers nothing to press, the selector offers three, and the record
+        // ended up asking for a key with the selector's answers under it.
+        let mut typed_at = State::default();
+        typed_at.correct(Some(&Question {
+            text: "Enter Cerebras API key".to_string(),
+            options: Vec::new(),
+        }));
+        typed_at.correct(Some(&Question {
+            text: "Project trust".to_string(),
+            options: vec!["Trust".to_string(), "Do not trust".to_string()],
+        }));
+        assert_eq!(typed_at.question.as_deref(), Some("Project trust"));
+        assert_eq!(typed_at.options, ["Trust", "Do not trust"]);
     }
 
     #[test]
