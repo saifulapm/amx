@@ -903,6 +903,12 @@ pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
         },
         None => here,
     };
+    // Who the vendor is asked to be, read against the directory this one runs
+    // in: an agent it loads out of the project is an agent of the project the
+    // line names, not of the one the view was opened in.
+    let agent = turned.agent.clone().unwrap_or_else(|| config.agent.clone());
+    let (vendor_args, task) = as_agent(&agent, &task, &dir);
+
     // A `w:` is a decision about this agent, so it is made where the config's
     // own answer is made rather than argued with downstream: `new` has a flag
     // for going without a tree and none for insisting on one.
@@ -925,10 +931,49 @@ pub fn start(root: &Path, config: &Config, line: &str) -> Result<Started> {
         no_worktree: false,
         exec: false,
         agent: named.then_some(dials),
-        vendor_args: Vec::new(),
+        vendor_args,
     };
 
     spawned(root, &dir, &config, &args, "started")
+}
+
+/// The vendor's own agent a task line is led with, as the argv that asks for
+/// it, and the task with the word taken off.
+///
+/// The front of the line and nowhere else, the way the dials are read: a task
+/// is aimed at one agent, and `@scout` in the middle of a sentence is the file
+/// or the word it was typed as. One of the agents in the vendor's own places
+/// and no other name, because the flag is handed to the vendor: a name it has
+/// never heard of is a spawn that dies in its pane.
+///
+/// Nothing from a vendor that cannot be told to be one of its agents, which is
+/// the same silence a word naming none of them gets. Both leave the line
+/// whole, and the mark keeps whatever the vendor reads it as.
+fn as_agent(agent: &str, task: &str, project: &Path) -> (Vec<String>, String) {
+    let whole = || (Vec::new(), task.to_string());
+    let Some(flag) = registry::entry(agent)
+        .and_then(|vendor| vendor.catalog)
+        .and_then(|catalog| catalog.agent_flag)
+    else {
+        return whole();
+    };
+
+    let rest = task.trim_start();
+    let word = rest.split_whitespace().next().unwrap_or_default();
+    let Some(name) = word.strip_prefix(AT).filter(|name| !name.is_empty()) else {
+        return whole();
+    };
+    if !catalogued(agent, word, &[catalog::Kind::Agent], project)
+        .iter()
+        .any(|entry| entry.spelled == word)
+    {
+        return whole();
+    }
+
+    (
+        vec![flag.to_string(), name.to_string()],
+        rest[word.len()..].trim_start().to_string(),
+    )
 }
 
 /// Where a `d:` points, read the way a shell prompt in `here` would read it,
@@ -1991,6 +2036,57 @@ mod tests {
             (Some(false), "port it"),
             "the tree is amx's own dial, and every agent gets one"
         );
+    }
+
+    #[test]
+    fn composer_hands_the_agent_a_line_is_led_with_to_the_vendor_and_not_the_task() {
+        // One of the agents in the vendor's own places, read in the project
+        // this line's agent will run in: the word comes off the task and goes
+        // to the vendor under the flag it declares for one.
+        let project = TempDir::new().unwrap();
+        let agents = project.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("scout.md"),
+            "---\ndescription: Goes and looks.\n---\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            as_agent("claude", "@scout port the importer", project.path()),
+            (
+                vec!["--agent".to_string(), "scout".to_string()],
+                "port the importer".to_string()
+            )
+        );
+
+        // The front of the line and nowhere else, and one of the vendor's own
+        // agents and no other name. Everything else is the sentence it was
+        // typed in, mark and all.
+        for line in [
+            "port the importer @scout",
+            "@notes.md port the importer",
+            "@ port the importer",
+            "port the importer",
+        ] {
+            assert_eq!(
+                as_agent("claude", line, project.path()),
+                (Vec::new(), line.to_string()),
+                "{line:?}"
+            );
+        }
+
+        // A vendor that cannot be told to be one of its agents leaves the word
+        // where it was typed, whatever is in anybody's directories: the flag is
+        // the vendor's own, and pi has none.
+        for agent in ["pi", "mock-claude"] {
+            assert_eq!(
+                as_agent(agent, "@scout port the importer", project.path()),
+                (Vec::new(), "@scout port the importer".to_string()),
+                "{agent}, which is the same answer as a command amx has no \
+                 entry for at all"
+            );
+        }
     }
 
     /// The words a suggestion offers, in the order it offers them.
