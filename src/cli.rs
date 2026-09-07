@@ -1149,6 +1149,7 @@ mod tests {
             "--timeout",
             "stdout",
             "max_agents",
+            "max_total",
         ] {
             assert!(SKILL.contains(taught), "the skill never mentions {taught}");
         }

@@ -180,9 +180,12 @@ when one is in a state you did not expect.
 
 ## Guardrails
 
-- **Respect the cap.** `max_agents` in `~/.config/amx/config.toml` defaults to
-  5, and `amx new` refuses past it with exit `2`. Collect some results and let
-  the finished agents go rather than working around it.
+- **Respect the cap.** `max_agents` is the project's, not the machine's: set in
+  the project's `.amx/config.toml` or the person's `~/.config/amx/config.toml`,
+  it counts the live agents in the project the new one will run in and defaults
+  to 5. `max_total`, where somebody sets it, is the ceiling over every project
+  on the machine. `amx new` refuses past either with exit `2`. Collect some
+  results and let the finished agents go rather than working around it.
 - **Only touch agents you spawned.** `amx ls` shows every agent on the machine,
   the user's own included. Never send to, answer or stop an id you did not
   create.
