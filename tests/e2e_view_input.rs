@@ -491,41 +491,69 @@ fn a_filter_line_narrows_the_axis_instead_of_starting_an_agent() {
         (drawn.contains("ask-a1b") && drawn.contains("fix-login-b2c")).then_some(())
     });
 
-    // The same line a task is typed on, which is where somebody's hands
-    // already are.
-    types(&amx, &view, "n");
+    // The find line, which is the one line that narrows anything: the tokens
+    // are read on the keystroke rather than on an enter after them.
+    types(&amx, &view, "/");
     types(&amx, &view, "s:waiting");
-    amx.until(
-        "the line to say it will narrow rather than start anything",
-        || screen(&amx, &view).contains("NARROW").then_some(()),
-    );
-    press(&amx, &view, "Enter");
-
-    // The line goes in the same frame the narrowing lands in, and it goes
-    // last: waiting on the words alone would match the screen that is already
-    // there, where they are still on the line somebody typed them on.
     let drawn = amx.until("the narrowed list", || {
         let drawn = screen(&amx, &view);
-        (!drawn.contains("❯") && drawn.contains("s:waiting")).then_some(drawn)
+        (drawn.contains("ask-a1b") && !drawn.contains("fix-login-b2c")).then_some(drawn)
     });
-    assert!(drawn.contains("ask-a1b"), "{drawn}");
-    assert!(
-        !drawn.contains("fix-login-b2c"),
-        "the rest of the fleet is held back:\n{drawn}"
-    );
     assert_eq!(
         agents(&amx).len(),
         2,
-        "and nothing was started with the line"
+        "and nothing was started with the line:\n{drawn}"
     );
 
-    // A token with nothing after it gives them back.
-    types(&amx, &view, "n");
-    types(&amx, &view, "s:");
+    // Enter closes the line and leaves the narrowing standing.
     press(&amx, &view, "Enter");
+    let kept = amx.until("the line to go", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("space card").then_some(drawn)
+    });
+    assert!(
+        kept.contains("s:waiting") && !kept.contains("fix-login-b2c"),
+        "with the header saying what the wall is narrowed to:\n{kept}"
+    );
+
+    // And esc gives the fleet back, the way it does for any narrowing that
+    // has outlived the line it was typed on.
+    press(&amx, &view, "Escape");
     amx.until("the whole fleet again", || {
         screen(&amx, &view).contains("fix-login-b2c").then_some(())
     });
+}
+
+#[test]
+fn the_composer_starts_an_agent_on_a_line_of_state_tokens() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+
+    // The words that narrowed the wall from here once. `/` reads them now, so
+    // on this line they are a task with a colon in it like any other.
+    types(&amx, &view, "n");
+    types(&amx, &view, "s:waiting");
+    let drawn = amx.until("the task on the screen", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("❯ s:waiting").then_some(drawn)
+    });
+    assert!(
+        drawn.contains("TASK ·") && !drawn.contains("NARROW"),
+        "the rule over the line says what enter is about to do:\n{drawn}"
+    );
+    assert!(
+        drawn.contains("enter starts it"),
+        "and so does the row under it:\n{drawn}"
+    );
+
+    press(&amx, &view, "Enter");
+    let id = composed(&amx);
+    assert_eq!(
+        command_of(&amx, &id).last().map(String::as_str),
+        Some("s:waiting"),
+        "and the vendor is handed the line whole: {:?}",
+        command_of(&amx, &id)
+    );
 }
 
 #[test]

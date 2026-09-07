@@ -195,13 +195,11 @@ impl Composer {
     /// edge has room for.
     ///
     /// Uppercase, the way every heading on the wall is: a label on a border is
-    /// read at a glance or not at all. A task line renames itself the moment
-    /// what is typed into it would narrow the list instead, because the one
-    /// thing a person needs to know before pressing enter is what enter is
-    /// about to do.
+    /// read at a glance or not at all. Each line has the one word for the
+    /// whole time it is open, because the one thing a person needs to know
+    /// before pressing enter is what enter is about to do.
     pub fn label(&self) -> &'static str {
         match &self.asking {
-            Asking::Task if self.narrows() => "NARROW",
             Asking::Task => "TASK",
             Asking::Reply { question: true, .. } => "ANSWER",
             Asking::Reply { .. } => "MESSAGE",
@@ -226,25 +224,19 @@ impl Composer {
             Asking::Name { id } => Some(id.clone()),
         }
     }
-
-    /// Whether entering this line narrows the list rather than starting
-    /// anything with it.
-    pub fn narrows(&self) -> bool {
-        matches!(self.asking, Asking::Task) && narrowing(&self.text).is_some()
-    }
 }
 
-/// A line of nothing but `s:` tokens narrows the list by state; anything else
-/// is a task, colons and all.
+/// A find line of nothing but `s:` tokens narrows the list by state; anything
+/// else is the name to look for.
 ///
 /// Nothing but: "s:waiting is what to check" is a sentence somebody may well
-/// want an agent to act on, and a surface that guessed otherwise would be one
-/// nobody could type into.
+/// be looking for an agent by, and a surface that guessed otherwise would be
+/// one nobody could type into.
 ///
-/// There was an `a:` beside it that narrowed by name. `/` does that now, on
-/// every keystroke and without a grammar to learn, so the token was a second
-/// way to do one thing — and the worse one, because it needed a line opened
-/// and a prefix remembered before it narrowed anything.
+/// The task line read these once, and an `a:` beside them that narrowed by
+/// name. `/` does the whole of it now, on every keystroke and without a line
+/// to open first — so the tokens live on the one line that narrows anything,
+/// and the line a task is typed on starts an agent and nothing else.
 pub fn narrowing(line: &str) -> Option<Vec<Narrow>> {
     let tokens: Vec<&str> = line.split_whitespace().collect();
     if tokens.is_empty() || !tokens.iter().all(|token| token.starts_with(STATE)) {
@@ -268,10 +260,10 @@ pub const STATE: &str = "s:";
 
 /// What a find line narrows the list to, which is anything somebody types.
 ///
-/// A line of nothing but `s:` tokens narrows by state, the way the task line's
-/// do. Anything else is the name to look for, whole and untokenised: `/` is a
-/// search box before it is a grammar, and somebody typing `port the` means an
-/// agent called that rather than two filters.
+/// A line of nothing but `s:` tokens narrows by state. Anything else is the
+/// name to look for, whole and untokenised: `/` is a search box before it is a
+/// grammar, and somebody typing `port the` means an agent called that rather
+/// than two filters.
 ///
 /// An empty line narrows to nothing, which is what puts the fleet back as the
 /// last character is deleted.
@@ -514,11 +506,8 @@ const ENOUGH: usize = 4;
 ///
 /// The task rather than the whole line: `m:opus fix` is three characters of
 /// instruction behind seven of dials, and the instruction is what the agent is
-/// given. A narrowing is not a task, so it is never asked about.
+/// given.
 pub fn slight(config: &Config, line: &str) -> Option<String> {
-    if narrowing(line).is_some() {
-        return None;
-    }
     let (_, task) = turned(config, line).ok()?;
     // Said back on one row, whatever it was typed on: the question quotes it,
     // and a newline in a line of prose is a row the footer does not have.
@@ -1175,7 +1164,7 @@ mod tests {
 
     #[test]
     fn a_line_names_itself_in_one_word_on_the_rule_over_it() {
-        // Which of the five this is, in one word, with the agent it is aimed
+        // Which of the four this is, in one word, with the agent it is aimed
         // at said beside it rather than in it.
         assert_eq!(Composer::new(Asking::Task).label(), "TASK");
         assert_eq!(
@@ -1201,12 +1190,6 @@ mod tests {
             .label(),
             "RENAME"
         );
-
-        // And a task line renames its edge the moment what is typed on it
-        // would narrow the list instead, the way the prompt does.
-        let mut composer = Composer::new(Asking::Task);
-        composer.text = "s:waiting".to_string();
-        assert_eq!(composer.label(), "NARROW");
     }
 
     /// One question of a call, as the payload records one: `multi` is whether
@@ -1370,8 +1353,8 @@ mod tests {
         assert_eq!(
             narrowing("a:port"),
             None,
-            "`a:` narrowed by name once and does not now: `/` does that, so a \
-             line beginning `a:` is a task with a colon in it"
+            "`a:` narrowed by name once and does not now: `/` does that \
+             untokenised, so a line beginning `a:` is a name with a colon in it"
         );
         assert_eq!(
             narrowing("s:"),
@@ -1381,7 +1364,7 @@ mod tests {
     }
 
     #[test]
-    fn axis_takes_a_line_with_a_colon_in_it_for_the_task_it_is() {
+    fn axis_takes_a_line_with_a_colon_in_it_for_the_name_it_is() {
         for line in [
             "s:waiting is what to check",
             "port the importer",
@@ -1389,18 +1372,22 @@ mod tests {
             "",
             "   ",
         ] {
-            assert_eq!(narrowing(line), None, "{line:?} is a task, colons and all");
+            assert_eq!(narrowing(line), None, "{line:?} is a name, colons and all");
         }
     }
 
     #[test]
-    fn axis_says_a_line_that_narrows_is_not_a_task() {
+    fn axis_leaves_the_state_tokens_on_the_task_line_alone() {
+        // The one line that narrows is `/`. What the tokens are here is a task
+        // with a colon in it, which the rule over the line says in the one
+        // word it says about every task.
         let mut composer = Composer::new(Asking::Task);
         composer.text = "s:waiting".to_string();
-        assert_eq!(composer.label(), "NARROW");
+        assert_eq!(composer.label(), "TASK");
 
-        composer.text = "s:waiting is what to check".to_string();
-        assert_eq!(composer.label(), "TASK", "and a task still is one");
+        let (dials, task) = turned(&as_claude(), "s:waiting").unwrap();
+        assert_eq!(dials, Turned::default());
+        assert_eq!(task, "s:waiting", "and the whole of it is what is started");
     }
 
     /// A config whose vendor is the one the registry declares dials for.
@@ -1435,7 +1422,12 @@ mod tests {
             Some("!ls".to_string()),
             "a bang is a character in a task, so a short one is asked about"
         );
-        assert_eq!(slight("s:"), None, "a narrowing starts nothing anyway");
+        assert_eq!(
+            slight("s:"),
+            Some("s:".to_string()),
+            "and the tokens that narrowed the wall from here once are two \
+             characters of task like any other"
+        );
     }
 
     #[test]

@@ -418,16 +418,16 @@ gathered the fleet are written to `~/.local/state/amx/view.json` as you go, so
 the next view opens on the wall you left.
 
 A line being typed hangs off a rule, and the rule is where the whole mode is
-said. Its near end names which of the five lines this is — a task, a narrowing,
-a message, an answer, a rename — with the agent it is aimed at beside it where
-it is aimed at one, and after that the one thing true of all five: while the
+said. Its near end names which of the four lines this is — a task, a message,
+an answer, a rename — with the agent it is aimed at beside it where
+it is aimed at one, and after that the one thing true of all four: while the
 line is open a letter is a letter and not the key it is bound to, and `esc` is
 the way out. Its far end carries what the next agent may do without asking, in
 reverse video, set into the edge: it is the one dial somebody is about to press
 enter past.
 
 The line itself begins with a `❯` in the column the rule's own label starts in,
-whichever of the five it is holding, so moving between them does not move the
+whichever of the four it is holding, so moving between them does not move the
 words you are reading. It is bold under a block cursor, and everything above
 the rule goes dim for as long as the mode is on — rows, headings, counts and
 dials in the one pass — so the band below the rule is the only thing on the
@@ -447,14 +447,13 @@ the terminal narrows — the eighty columns above have already dropped
 goes.
 
 The line a task is typed on reads a few words of its own, at the front of it
-and nowhere else. `s:` narrows the list by state rather than starting
-anything: `s:waiting`. Narrowing by name is `/`, which does it as you type and
-needs no prefix at all. `m:`, `p:`, `w:`,
-`d:` and `agent:` turn the dials for the one agent that line starts, as in
-`m:opus w:off port the importer`. `d:` is where that one runs:
-`d:/srv/app port it`, `d:~/code/importer port it`, or a name read against the
-directory you opened the view in, the way a shell prompt standing there would
-read it.
+and nowhere else. `m:`, `p:`, `w:`, `d:` and `agent:` turn the dials for the
+one agent that line starts, as in `m:opus w:off port the importer`. `d:` is
+where that one runs: `d:/srv/app port it`, `d:~/code/importer port it`, or a
+name read against the directory you opened the view in, the way a shell prompt
+standing there would read it. Nothing else on it is a word amx reads: the line
+starts agents and does nothing else, so `s:waiting` typed here is the task, and
+`enter` starts one on it.
 
 `alt+n` enters that line and takes you with it: the agent is started and your
 terminal lands in its session, by the same two roads `enter` on a row takes.
@@ -472,6 +471,22 @@ A task of fewer than four characters is asked about once before anything is
 started: `y` starts it and any other key hands the line back with what you
 typed still on it. `n` opens the line and the letter after a stray `n` is a
 task nobody meant, where `wip` is one somebody does.
+
+Narrowing the wall is `/`, and its line is the only one that does it. It
+narrows as you type, on a name, a piece of a task, or `#12` for the pull
+request the branch carries — whole and untokenised, so `port the` looks for an
+agent called that rather than for two things. A line of nothing but `s:` tokens
+narrows by state instead: `s:waiting`, or `s:waiting s:working` for either of
+them, and a token with nothing after it drops that narrowing. `enter` closes
+the line and leaves the wall as it is; `esc` gives the fleet back, with or
+without a line open.
+
+The keys that edit any of these lines are a shell prompt's. `←` and `→` walk a
+character and `ctrl+←` and `ctrl+→` a word; `home` and `end`, or `ctrl+a` and
+`ctrl+e`, go to the ends. `backspace` takes the character behind the cursor and
+`delete` the one under it, and `ctrl+w` or `alt+backspace` takes the whole word
+behind it. `alt+enter` puts a newline in the line without sending it, and
+`ctrl+j` does the same where your terminal will not send `alt+enter`.
 
 ## Pull requests
 

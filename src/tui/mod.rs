@@ -1516,17 +1516,6 @@ impl Screen {
                 if let Asking::Find = composer.asking {
                     return Ok(Doing::Carry);
                 }
-                // A line of nothing but filter tokens narrows the list, and
-                // starts nothing: the composer is where a person is already
-                // typing, so it is where they say which agents they want to
-                // see.
-                if let Asking::Task = composer.asking
-                    && let Some(narrowing) = act::narrowing(&composer.text)
-                {
-                    self.list.narrow(narrowing);
-                    self.follow_the_cursor();
-                    return Ok(Doing::Carry);
-                }
                 // A name is refused rather than dropped, empty or not: the
                 // line was opened on a name somebody meant to edit, and a
                 // keystroke that quietly threw it away would look like a
@@ -1580,13 +1569,12 @@ impl Screen {
             // The same line entered, with whoever pressed it going along: the
             // agent is started and the terminal is put in front of it.
             //
-            // On a task and nothing else. A narrowing has nothing to go to,
-            // and a reply goes to an agent already on the wall, which is a row
-            // away from a key that reaches one.
+            // On a task and nothing else. A reply goes to an agent already on
+            // the wall, which is a row away from a key that reaches one, and a
+            // find line has nothing to go to.
             KeyCode::Char('n')
                 if chord(key) == KeyModifiers::ALT
                     && matches!(composer.asking, Asking::Task)
-                    && !composer.narrows()
                     && !composer.text.trim().is_empty() =>
             {
                 return self.entering(root, config, composer, true, here);
@@ -3541,7 +3529,7 @@ mod tests {
     }
 
     #[test]
-    fn find_reads_the_state_tokens_the_task_line_reads() {
+    fn find_reads_the_state_tokens_the_task_line_read_once() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
         let mut screen = watching(a_fleet_to_search());
@@ -3556,8 +3544,8 @@ mod tests {
         assert_eq!(
             showing_ids(&screen),
             ["ask-a1b"],
-            "a line of nothing but filter tokens narrows the way the task \
-             line's do"
+            "a line of nothing but filter tokens narrows by state, which is \
+             the one thing `/` does that a name does not"
         );
     }
 
@@ -5126,15 +5114,14 @@ mod tests {
     }
 
     #[test]
-    fn axis_narrows_the_list_by_state_from_the_line_a_task_is_typed_on() {
+    fn axis_narrows_the_list_by_state_from_the_find_line() {
         let root = TempDir::new().unwrap();
         finished(root.path(), "first-a1b", "wrote the parser", 60);
         finished(root.path(), "second-b2c", "wrote the tests", 120);
 
-        // The one token the task line still reads. Narrowing by name left it
-        // for `/`, which narrows as the word is typed rather than waiting for
-        // an enter.
-        let mut keys = vec![KeyCode::Char('n')];
+        // The tokens are the find line's now, and it narrows as they are typed
+        // rather than waiting for an enter.
+        let mut keys = vec![KeyCode::Char('/')];
         keys.extend(word("s:working"));
         keys.push(KeyCode::Enter);
         keys.push(KeyCode::Char('q'));

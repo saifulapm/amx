@@ -2,7 +2,7 @@
 //! under it.
 //!
 //! A rule, a composer and the slot under them. The rule is the edge the whole
-//! mode hangs off: it names which of the five lines this is, says the one thing
+//! mode hangs off: it names which of the four lines this is, says the one thing
 //! that is true of all of them — every letter is text until esc — and carries
 //! at its far end the one dial that is not on the header's row, what the next
 //! agent may do without asking, in reverse video where somebody about to press
@@ -85,7 +85,7 @@ const COMPOSER_CAP: usize = 10;
 /// the same width of nothing under it, so a line that wrapped reads as one
 /// line.
 ///
-/// The same two cells whichever of the five lines this is. Which one it is, and
+/// The same two cells whichever of the four lines this is. Which one it is, and
 /// which agent it is aimed at, are on the rule above — so the line starts in
 /// the column the rule's own label starts in, and moving between lines does not
 /// move the words somebody is reading.
@@ -173,7 +173,7 @@ pub(super) fn composer_height(composer: &Composer, area: Rect, chrome: u16) -> u
 ///
 /// Its front is what this line is — the mode's own word, in the accent and
 /// carrying weight, and after it which agent the line is aimed at where it is
-/// aimed at one. Then the one thing true of every one of the five: while the
+/// aimed at one. Then the one thing true of every one of the four: while the
 /// mode is on, a letter is a letter and not the key it is bound to, and esc is
 /// the way out. Then the rule itself to the far end, where what the next agent
 /// may do without asking is set in reverse video: the one dial that is not on
@@ -350,8 +350,8 @@ fn behind(frame: &mut Frame, until: u16) {
 /// over it to carry.
 ///
 /// It belongs to a line that will start an agent: not to a reply, which goes to
-/// one already running under whatever it was started with, and not to a line
-/// that narrows the list. At the sentinel it names the layer rather than a
+/// one already running under whatever it was started with, and not to a find
+/// line. At the sentinel it names the layer rather than a
 /// mode, because amx does not know which mode the vendor is configured for and
 /// a guess at it is the same lie the model dial refuses. A vendor whose entry
 /// declares no permission dial has nothing to say and nothing to turn, so the
@@ -368,13 +368,11 @@ pub(super) fn permission(screen: &Screen) -> Option<Line<'static>> {
         return None;
     };
     composer.allowed.set(
-        (matches!(composer.asking, Asking::Task)
-            && !composer.narrows()
-            && screen.profile.permission_dial().is_some())
-        .then(|| match screen.profile.permission.as_str() {
-            DEFAULT => "vendor default".to_string(),
-            mode => mode.to_string(),
-        }),
+        (matches!(composer.asking, Asking::Task) && screen.profile.permission_dial().is_some())
+            .then(|| match screen.profile.permission.as_str() {
+                DEFAULT => "vendor default".to_string(),
+                mode => mode.to_string(),
+            }),
     );
     None
 }
@@ -387,15 +385,13 @@ pub(super) fn permission(screen: &Screen) -> Option<Line<'static>> {
 /// with one. So the empty line holds them the way a form field holds its
 /// ghost text — dim, after the prompt, and gone at the first character typed,
 /// because whoever is typing has stopped reading it. A reply and a rename
-/// read no prefixes, so their lines teach none.
+/// read no prefixes, so their lines teach none — and neither does this line
+/// teach `s:`, which narrows the wall from `/` and starts an agent from here.
 fn placeholder(composer: &Composer) -> Option<&'static str> {
     if !matches!(composer.asking, Asking::Task) || !composer.text.is_empty() {
         return None;
     }
-    Some(
-        "m:model · p:permission · w:on|off · d:directory · agent:command \
-         · s:state",
-    )
+    Some("m:model · p:permission · w:on|off · d:directory · agent:command")
 }
 
 /// The keys with nowhere else to be said, as the line under the cursor makes
@@ -607,11 +603,6 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
         Mode::Keys => row(&[("any key", "goes back"), ("q", "quits")]),
         // A question up is the whole of this row, and is drawn above.
         Mode::Confirming(_) => fitted(&hints(screen), MORE, width),
-        Mode::Typing(composer) if composer.narrows() => fitted(
-            &[("enter", "narrows it"), ("s: or a:", "alone clears")],
-            ("esc", "cancels"),
-            width,
-        ),
         Mode::Typing(composer) => match composer.asking {
             Asking::Task => {
                 let mut said = vec![("enter", "starts it"), ("alt+enter", "newline")];
@@ -882,7 +873,7 @@ mod tests {
     fn edge(screen: &Screen, size: (u16, u16)) -> String {
         painted(screen, size)
             .into_iter()
-            .find(|row| row.starts_with("TASK") || row.starts_with("NARROW"))
+            .find(|row| row.starts_with("TASK"))
             .expect("a rule over the line")
     }
 
@@ -958,22 +949,25 @@ mod tests {
     }
 
     #[test]
-    fn axis_says_a_line_that_narrows_will_narrow_rather_than_start_anything() {
+    fn axis_says_a_line_of_state_tokens_will_start_an_agent_like_any_other() {
         let mut screen = showing(Vec::new(), None);
         let mut composer = Composer::new(Asking::Task);
         composer.insert("s:waiting");
         screen.mode = Mode::Typing(composer);
 
+        // The tokens narrow the wall from `/` and nowhere else now, so this
+        // line is a task with a colon in it and both the rule and the row
+        // under it say the one thing enter is about to do.
         let painted = painted(&screen, (60, 6));
         assert!(
-            painted[3].starts_with("NARROW ·"),
+            painted[3].starts_with("TASK ·"),
             "the rule over it says the same thing its edge does: {:?}",
             painted[3]
         );
         assert_eq!(painted[4], "❯ s:waiting█");
-        assert!(painted[5].contains("enter narrows it"), "{:?}", painted[5]);
+        assert!(painted[5].contains("enter starts it"), "{:?}", painted[5]);
         assert!(
-            !painted[5].contains("starts it"),
+            !painted[5].contains("narrows it"),
             "a hint that says the other thing is a hint that lies: {:?}",
             painted[5]
         );
@@ -1162,10 +1156,13 @@ mod tests {
             "w:on|off",
             "d:directory",
             "agent:command",
-            "s:state",
         ] {
             assert!(hint.contains(named), "{named} is not taught: {hint}");
         }
+        assert!(
+            !hint.contains("s:state"),
+            "and not the one token this line no longer reads: {hint}"
+        );
         assert_eq!(
             empty.iter().filter(|row| row.contains("m:model")).count(),
             1,
@@ -1411,10 +1408,8 @@ mod tests {
         }));
         assert!(!turned(&screen), "a reply is not a spawn");
 
-        // Nor has it anything to say about a line that narrows the list.
-        let mut composer = Composer::new(Asking::Task);
-        composer.insert("s:waiting");
-        screen.mode = Mode::Typing(composer);
+        // Nor about a find line, which sends nothing anywhere.
+        screen.mode = Mode::Typing(Composer::new(Asking::Find));
         assert!(!turned(&screen));
 
         // A vendor amx has no entry for declares no permission dial: there is
