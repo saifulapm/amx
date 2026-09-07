@@ -91,6 +91,40 @@ impl Composer {
         self.at += text.chars().count();
     }
 
+    /// Take the character behind the cursor, and the one under it.
+    ///
+    /// Neither reaches past the end it is standing at: a backspace at the front
+    /// of the line and a delete at the back of it are one press more than
+    /// somebody meant, not a character taken from the other end.
+    pub fn delete_back(&mut self) {
+        if self.at == 0 {
+            return;
+        }
+        self.at -= 1;
+        let at = self.byte();
+        self.text.remove(at);
+    }
+
+    pub fn delete_forward(&mut self) {
+        if self.at >= self.length() {
+            return;
+        }
+        let at = self.byte();
+        self.text.remove(at);
+    }
+
+    /// Take the word behind the cursor, in one edit.
+    ///
+    /// The word the cursor would have walked back over, because a chord that
+    /// deleted by one rule while the arrow beside it moved by another would be
+    /// two words to keep in mind for one word on the line.
+    pub fn delete_word_back(&mut self) {
+        let to = self.byte();
+        self.word_left();
+        let from = self.byte();
+        self.text.replace_range(from..to, "");
+    }
+
     /// One character back, and one on. Neither walks off the line: the ends of
     /// it are where a cursor stops.
     pub fn left(&mut self) {
@@ -1085,6 +1119,58 @@ mod tests {
         line.word_right();
         line.word_right();
         assert_eq!(line.at, 17, "and the end of the line is where those stop");
+    }
+
+    #[test]
+    fn composer_takes_back_the_character_and_the_word_the_cursor_stands_after() {
+        let mut line = Composer::new(Asking::Task);
+        line.insert("port the importer");
+
+        // The character behind the cursor and the one under it, wherever on
+        // the line the cursor is standing.
+        line.word_left();
+        line.delete_back();
+        assert_eq!((line.text.as_str(), line.at), ("port theimporter", 8));
+        line.delete_forward();
+        assert_eq!(
+            (line.text.as_str(), line.at),
+            ("port themporter", 8),
+            "the one under it goes and the cursor stays where it was"
+        );
+
+        // Neither end of the line loses a character to a key pressed at it.
+        line.home();
+        line.delete_back();
+        assert_eq!((line.text.as_str(), line.at), ("port themporter", 0));
+        line.end();
+        line.delete_forward();
+        assert_eq!((line.text.as_str(), line.at), ("port themporter", 15));
+
+        // A word is the one the cursor walks over a word at a time: the
+        // whitespace behind it and the run of characters behind that, taken in
+        // one edit.
+        let mut line = Composer::new(Asking::Task);
+        line.insert("port the importer");
+        line.word_left();
+        line.delete_word_back();
+        assert_eq!((line.text.as_str(), line.at), ("port importer", 5));
+        line.delete_word_back();
+        assert_eq!((line.text.as_str(), line.at), ("importer", 0));
+        line.delete_word_back();
+        assert_eq!(
+            (line.text.as_str(), line.at),
+            ("importer", 0),
+            "and the front of the line is where it stops too"
+        );
+
+        // Characters and not bytes, the same as everything else the cursor
+        // does.
+        let mut line = Composer::new(Asking::Task);
+        line.insert("a é c");
+        line.left();
+        line.left();
+        line.delete_back();
+        assert_eq!((line.text.as_str(), line.at), ("a  c", 2));
     }
 
     #[test]

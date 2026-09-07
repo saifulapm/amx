@@ -1591,11 +1591,15 @@ impl Screen {
                 self.mode = Mode::Typing(composer);
                 return Ok(Doing::Edit);
             }
-            KeyCode::Backspace => {
-                composer.text.pop();
-                // A cursor cannot stand past a line that has just got shorter.
-                composer.at = composer.at.min(composer.text.chars().count());
+            // What is taken back is taken from where the cursor is: the
+            // character behind it, the one under it, and the word behind it by
+            // either of the two chords a terminal has for that.
+            KeyCode::Backspace if chord(key) == KeyModifiers::ALT => composer.delete_word_back(),
+            KeyCode::Char('w') if chord(key) == KeyModifiers::CONTROL => {
+                composer.delete_word_back()
             }
+            KeyCode::Backspace => composer.delete_back(),
+            KeyCode::Delete => composer.delete_forward(),
             // Where the next character lands, moved by hand: one character
             // with an arrow, a word with control held, and both ends of the
             // line by the keys a terminal has had for them since before it had
@@ -5384,6 +5388,76 @@ mod tests {
         // And what is typed lands where the cursor was left standing.
         press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
         assert_eq!(line(&screen), ("port then importer".to_string(), 9));
+    }
+
+    #[test]
+    fn composer_takes_back_what_the_cursor_is_standing_after() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = Screen::default();
+        let press = |screen: &mut Screen, key| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+        let line = |screen: &Screen| match &screen.mode {
+            Mode::Typing(composer) => (composer.text.clone(), composer.at),
+            _ => panic!("the line is not open"),
+        };
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
+        for key in word("port thee importer") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+
+        // Backspace takes the character behind the cursor rather than the last
+        // one on the line, and delete the one under it.
+        press(
+            &mut screen,
+            KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL),
+        );
+        press(&mut screen, KeyEvent::from(KeyCode::Left));
+        press(&mut screen, KeyEvent::from(KeyCode::Backspace));
+        assert_eq!(line(&screen), ("port the importer".to_string(), 8));
+        press(&mut screen, KeyEvent::from(KeyCode::Delete));
+        assert_eq!(line(&screen), ("port theimporter".to_string(), 8));
+
+        // And the word behind it goes whole, by either of the two chords a
+        // terminal offers for it.
+        press(&mut screen, ctrl('w'));
+        assert_eq!(line(&screen), ("port importer".to_string(), 5));
+        press(
+            &mut screen,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
+        );
+        assert_eq!(line(&screen), ("importer".to_string(), 0));
+
+        press(&mut screen, KeyEvent::from(KeyCode::Backspace));
+        assert_eq!(
+            line(&screen),
+            ("importer".to_string(), 0),
+            "a key pressed at the front of the line takes nothing"
+        );
+    }
+
+    #[test]
+    fn composer_lands_a_paste_where_the_cursor_stands() {
+        let root = TempDir::new().unwrap();
+        let mut script = vec![Typed::Key(KeyEvent::from(KeyCode::Char('n')))];
+        script.extend(
+            word("port importer")
+                .into_iter()
+                .map(|code| Typed::Key(KeyEvent::from(code))),
+        );
+        script.push(Typed::Key(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::CONTROL,
+        )));
+        script.push(Typed::Paste("the ".to_string()));
+
+        let (_, screen) = driving(root.path(), script);
+        assert!(
+            screen.contains("❯ port the importer"),
+            "a paste is one edit, and it lands where the block is: {screen}"
+        );
     }
 
     #[test]

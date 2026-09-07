@@ -713,6 +713,65 @@ fn the_composer_types_where_the_cursor_stands_rather_than_at_the_end() {
 }
 
 #[test]
+fn the_composer_takes_back_a_character_and_a_word_where_the_cursor_stands() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+
+    // A letter typed twice in the middle of the line and a word in it that
+    // does not belong: both are mended where they are, with the end of the
+    // line left alone.
+    types(&amx, &view, "n");
+    types(&amx, &view, "port thee legacy importer");
+    amx.until("the task on the screen", || {
+        screen(&amx, &view)
+            .contains("❯ port thee legacy importer")
+            .then_some(())
+    });
+
+    // Sixteen presses back, which stands the cursor on the space after the
+    // doubled letter, and one backspace to take the letter behind it.
+    let mut keys = vec!["send-keys", "-t", &view];
+    keys.extend(std::iter::repeat_n("Left", 16));
+    amx.tmux(&keys);
+    press(&amx, &view, "BSpace");
+    let drawn = amx.until("the doubled letter to go", || {
+        let drawn = screen(&amx, &view);
+        drawn
+            .contains("❯ port the legacy importer")
+            .then_some(drawn)
+    });
+    assert!(
+        !drawn.contains("importe "),
+        "backspace takes the character behind the cursor and not the last one \
+         on the line:\n{drawn}"
+    );
+
+    // Then forward to the front of the last word, where ctrl+w takes the whole
+    // of the word behind it in one press.
+    let mut keys = vec!["send-keys", "-t", &view];
+    keys.extend(std::iter::repeat_n("Right", 8));
+    amx.tmux(&keys);
+    press(&amx, &view, "C-w");
+    let drawn = amx.until("the word to go", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("❯ port the importer").then_some(drawn)
+    });
+    assert!(
+        !drawn.contains("legacy"),
+        "the word behind the cursor goes whole:\n{drawn}"
+    );
+
+    press(&amx, &view, "Enter");
+    let id = composed(&amx);
+    assert_eq!(
+        command_of(&amx, &id).last().map(String::as_str),
+        Some("port the importer"),
+        "and the task the vendor is handed is the line as it was mended: {:?}",
+        command_of(&amx, &id)
+    );
+}
+
+#[test]
 fn the_composer_turns_the_dials_for_the_one_spawn_its_tokens_lead() {
     let amx = Harness::new();
     a_repo_at(amx.home());
