@@ -9,7 +9,8 @@
 //! [`mod@header`] draws the two bands above the list, [`wall`] the agents
 //! themselves, [`empty`] what stands there when there are none, [`card`] the
 //! closer look hung off one of them, [`input`] the line being typed and the
-//! keys under it, and [`mod@help`] the screen of every key. Under all of those,
+//! keys under it, [`complete`] what the word under its cursor could be, and
+//! [`mod@help`] the screen of every key. Under all of those,
 //! [`text`] measures and cuts what a row says, [`prose`] draws an agent's
 //! markdown into rows, and [`style`] turns what a thing means into the paint
 //! that says so.
@@ -32,6 +33,7 @@
 //! the colour says nothing.
 
 mod card;
+mod complete;
 mod empty;
 mod header;
 mod help;
@@ -49,6 +51,7 @@ use std::cell::Cell;
 use super::rows;
 use super::{Mode, Screen};
 use card::{card_height, card_rows, float, under};
+use complete::{band, rows_wanted};
 use header::{header, header_rows, space_rows};
 use help::help;
 use input::{composer_height, composing_line, find_caret, finding, footer, permission};
@@ -147,12 +150,19 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         Some(composer) => composer_height(composer, area, chrome),
         None => 0,
     };
+    // And what the word under the cursor could be, under the line it would be
+    // written on. It takes its rows off the list as the composer does and
+    // stops where the composer stops: whatever else is open, the list keeps a
+    // row, because the list is what the view is for.
+    let suggest = banded.and_then(|composer| composer.suggest.as_ref());
+    let offering = rows_wanted(suggest).min(area.height.saturating_sub(chrome + composing + 1));
 
-    let [top, _, middle, line, allowed, keys] = Layout::vertical([
+    let [top, _, middle, line, offered, allowed, keys] = Layout::vertical([
         Constraint::Length(head),
         Constraint::Length(space),
         Constraint::Min(1),
         Constraint::Length(composing),
+        Constraint::Length(offering),
         Constraint::Length(allowing),
         Constraint::Length(1),
     ])
@@ -239,6 +249,12 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     }
     if let Some(composer) = banded {
         composing_line(frame, composer, line, theme);
+    }
+    if let Some(suggest) = suggest.filter(|_| offering > 0) {
+        frame.render_widget(
+            Paragraph::new(band(suggest, offered.width as usize, theme)),
+            offered,
+        );
     }
     if let Some(row) = permission {
         frame.render_widget(Paragraph::new(row), allowed);

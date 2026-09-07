@@ -919,6 +919,62 @@ fn the_composer_completes_the_word_under_the_cursor_out_of_the_vendors_files() {
 }
 
 #[test]
+fn the_composer_stands_what_the_word_could_be_in_a_band_under_the_line() {
+    let amx = Harness::new();
+    // Two things `/rev` could mean, so the band is a list and one of them is
+    // the one the choice is standing on.
+    a_skill_called_review(&amx);
+    a_file_saying(
+        &amx.home().join(".claude/skills/revise/SKILL.md"),
+        "Say it again.",
+    );
+
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+    types(&amx, &view, "n");
+    types(&amx, &view, "/rev");
+    // The whole word, because the band answers to every letter of it: two
+    // suggestions stand under `/r` as well, and they are not what this is
+    // reading.
+    let drawn = amx.until("the band under the line", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("❯ /rev") && drawn.contains("Read the diff.")).then_some(drawn)
+    });
+
+    let rows: Vec<&str> = drawn.lines().collect();
+    let at = |what: &str| {
+        rows.iter()
+            .position(|row| row.contains(what))
+            .unwrap_or_else(|| panic!("{what} is on none of:\n{drawn}"))
+    };
+    assert!(
+        at("❯ /rev") < at("/review") && at("/review") < at("/revise"),
+        "the words stand under the line they would go on:\n{drawn}"
+    );
+    assert!(
+        at("/revise") < at("enter starts it"),
+        "and over the keys, which are the foot of the screen:\n{drawn}"
+    );
+    assert!(
+        rows[at("/review")].contains("Read the diff."),
+        "each of them saying what it is for:\n{drawn}"
+    );
+
+    let painted = coloured(&amx, &view);
+    assert!(
+        sgr_at(&painted, "/review").contains(&1),
+        "the one the choice is on carries the weight:\n{painted:?}"
+    );
+    assert!(
+        !sgr_at(&painted, "/revise").contains(&1),
+        "and the ones under it do not:\n{painted:?}"
+    );
+    assert!(
+        sgr_at(&painted, "Read the diff.").contains(&2),
+        "what a word is for stands behind the word:\n{painted:?}"
+    );
+}
+
+#[test]
 fn the_composer_drops_the_suggestions_before_the_line_they_stand_under() {
     let amx = Harness::new();
     a_skill_called_review(&amx);

@@ -8,7 +8,9 @@
 //! agent may do without asking, in reverse video where somebody about to press
 //! enter cannot miss it. Under the rule the composer grows a row at a time as
 //! the line does and stops before it takes the list, and under that go the
-//! keys, or whatever the view has to say for itself instead.
+//! keys, or whatever the view has to say for itself instead — with the words
+//! the cursor's own word could be, where there are any, standing between them
+//! in a band of [`super::complete`]'s.
 //!
 //! The wall the rule was drawn over goes dim for as long as the mode is on.
 //! Every row, heading, count and dial behind gives up its colour's weight in
@@ -89,7 +91,10 @@ const COMPOSER_CAP: usize = 10;
 /// which agent it is aimed at, are on the rule above — so the line starts in
 /// the column the rule's own label starts in, and moving between lines does not
 /// move the words somebody is reading.
-const GUTTER: &str = "❯ ";
+///
+/// The band under the line takes its indent from this, so a word it is
+/// offering stands in the column the word it would replace is in.
+pub(super) const GUTTER: &str = "❯ ";
 
 /// How wide the text itself is drawn, which is the same on every row of the
 /// composer whether the chevron or the indent is in front of it.
