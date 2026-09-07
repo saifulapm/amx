@@ -117,6 +117,9 @@ amx new --exec 'cargo test --all'
 amx new --exec 'ssh build01 make release && curl -fsS "$HOOK"'
 ```
 
+In the view the same row is a line led with `!`: typing `!cargo test --all` on
+the task line starts this and nothing else.
+
 The whole command goes to `sh -c`, so a pipeline, an `&&` or a redirect is one
 row and one exit code. It runs where you typed it rather than in a worktree of
 its own: a command has no conversation to keep apart from the next one, and a
@@ -278,6 +281,7 @@ the whole table.
 | `esc` `h` | put the card away, or leave a line alone |
 | `n` | start an agent |
 | `alt+n` | start the line and go to the agent it started |
+| `!` | leading the task line, run it as a command rather than give it to an agent |
 | `r` | reply: a message, or an answer on the card |
 | `d` | what it has changed |
 | `pgup` `ctrl+b` | page the card, when it holds more |
@@ -452,9 +456,17 @@ and nowhere else. `m:`, `p:`, `w:`, `d:` and `agent:` turn the dials for the
 one agent that line starts, as in `m:opus w:off port the importer`. `d:` is
 where that one runs: `d:/srv/app port it`, `d:~/code/importer port it`, or a
 name read against the directory you opened the view in, the way a shell prompt
-standing there would read it. Nothing else on it is a word amx reads: the line
-starts agents and does nothing else, so `s:waiting` typed here is the task, and
-`enter` starts one on it.
+standing there would read it. Nothing else on it is a word amx reads, so
+`s:waiting` typed here is the task and `enter` starts an agent on it.
+
+A line led with `!` runs rather than asks. `!cargo test --all` is the row
+`amx new --exec` starts at a prompt: the rest of the line is the command, it
+goes to `sh -c` whole, and the rule over the line reads `COMMAND` for as long
+as the bang stands. It runs where the view is, or in the directory a `d:`
+beside the bang names, and it is given no worktree and no dials — there is no
+vendor on that row for a dial to be about, so `!m:opus cargo test` is refused
+by name and the line comes back with what you typed still on it. The front of
+the line and nowhere else: a bang further along is a character of the task.
 
 A word on that line opening with `/` or `@` is the vendor's own, and a band
 under the line says what it could be: the skills and commands it runs by name,
