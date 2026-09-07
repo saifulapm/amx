@@ -861,6 +861,9 @@ where
     screen.notice = match written {
         Ok(Edited::Line(text)) => {
             if let Mode::Typing(composer) = &mut screen.mode {
+                // At the end of what was written, which is where an editor
+                // leaves somebody who has just closed one.
+                composer.at = text.chars().count();
                 composer.text = text;
             }
             None
@@ -1372,7 +1375,7 @@ impl Screen {
                     let mut composer = Composer::new(Asking::Name {
                         id: view.id().to_string(),
                     });
-                    composer.text = rows::called(view).to_string();
+                    composer.insert(rows::called(view));
                     self.mode = Mode::Typing(composer);
                 }
             }
@@ -1452,10 +1455,10 @@ impl Screen {
         // A terminal that ends its lines the other way is still ending lines.
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         match &mut self.mode {
-            Mode::Typing(composer) => composer.text.push_str(&text),
+            Mode::Typing(composer) => composer.insert(&text),
             _ => {
                 let mut composer = Composer::new(Asking::Task);
-                composer.text = text;
+                composer.insert(&text);
                 self.mode = Mode::Typing(composer);
             }
         }
@@ -1498,7 +1501,7 @@ impl Screen {
             // dispatch: a composer where the plain one did not would be a
             // composer nobody could send from.
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
-                composer.text.push('\n');
+                composer.insert("\n");
             }
             KeyCode::Enter => {
                 // A find line narrowed the list as it was typed, so enter has
@@ -1590,7 +1593,21 @@ impl Screen {
             }
             KeyCode::Backspace => {
                 composer.text.pop();
+                // A cursor cannot stand past a line that has just got shorter.
+                composer.at = composer.at.min(composer.text.chars().count());
             }
+            // Where the next character lands, moved by hand: one character
+            // with an arrow, a word with control held, and both ends of the
+            // line by the keys a terminal has had for them since before it had
+            // arrows.
+            KeyCode::Left if chord(key) == KeyModifiers::CONTROL => composer.word_left(),
+            KeyCode::Right if chord(key) == KeyModifiers::CONTROL => composer.word_right(),
+            KeyCode::Left => composer.left(),
+            KeyCode::Right => composer.right(),
+            KeyCode::Home => composer.home(),
+            KeyCode::End => composer.end(),
+            KeyCode::Char('a') if chord(key) == KeyModifiers::CONTROL => composer.home(),
+            KeyCode::Char('e') if chord(key) == KeyModifiers::CONTROL => composer.end(),
             // A key held down with control or alt is somebody reaching for
             // something else, not a character they meant to type.
             KeyCode::Char(typed)
@@ -1598,7 +1615,7 @@ impl Screen {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                composer.text.push(typed);
+                composer.insert(&typed.to_string());
             }
             _ => {}
         }
@@ -5328,6 +5345,48 @@ mod tests {
     }
 
     #[test]
+    fn composer_walks_its_cursor_and_types_where_it_is_left_standing() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = Screen::default();
+        let press = |screen: &mut Screen, key| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+        let line = |screen: &Screen| match &screen.mode {
+            Mode::Typing(composer) => (composer.text.clone(), composer.at),
+            _ => panic!("the line is not open"),
+        };
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
+        for key in word("port the importer") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        assert_eq!(line(&screen).1, 17, "typing leaves the cursor after it");
+
+        // A character at a time with the arrows, both ends with home and end
+        // and with the chords a terminal has always had for them, and a word
+        // at a time with control held.
+        for (key, at) in [
+            (KeyEvent::from(KeyCode::Left), 16),
+            (KeyEvent::from(KeyCode::Right), 17),
+            (KeyEvent::from(KeyCode::Home), 0),
+            (KeyEvent::from(KeyCode::End), 17),
+            (ctrl('a'), 0),
+            (ctrl('e'), 17),
+            (KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL), 9),
+            (KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL), 5),
+            (KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL), 8),
+        ] {
+            press(&mut screen, key);
+            assert_eq!(line(&screen).1, at, "{key:?}");
+        }
+
+        // And what is typed lands where the cursor was left standing.
+        press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
+        assert_eq!(line(&screen), ("port then importer".to_string(), 9));
+    }
+
+    #[test]
     fn composer_takes_a_newline_from_the_key_that_makes_one_and_stays_open() {
         let root = TempDir::new().unwrap();
         let mut keys = vec![KeyEvent::from(KeyCode::Char('n'))];
@@ -5462,7 +5521,7 @@ mod tests {
         let Mode::Typing(composer) = &mut screen.mode else {
             panic!("no line to edit")
         };
-        composer.text = "port the importer".to_string();
+        composer.insert("port the importer");
         let doing = screen.act(ctrl('g'), root.path(), &config, None).unwrap();
         assert!(matches!(doing, Doing::Edit));
         assert_eq!(

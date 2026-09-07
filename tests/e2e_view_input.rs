@@ -663,6 +663,56 @@ fn the_composer_takes_a_paste_as_one_edit_and_grows_to_its_cap() {
 }
 
 #[test]
+fn the_composer_types_where_the_cursor_stands_rather_than_at_the_end() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+
+    // A word with a letter missing in the middle of it, which is what a person
+    // finds by reading the line back rather than by typing the next character.
+    types(&amx, &view, "n");
+    types(&amx, &view, "port the imprter");
+    amx.until("the task on the screen", || {
+        screen(&amx, &view)
+            .contains("❯ port the imprter")
+            .then_some(())
+    });
+
+    // Four presses back, which lands on the r the o belongs in front of: the
+    // chevron and the space after it, and twelve characters of the line.
+    for _ in 0..4 {
+        press(&amx, &view, "Left");
+    }
+    let drawn = amx.until("the cursor to walk back into the line", || {
+        let drawn = screen(&amx, &view);
+        (pane_field(&amx, &view, "#{cursor_x}") == "14").then_some(drawn)
+    });
+    assert!(
+        drawn.contains("❯ port the imprter"),
+        "the character under the block keeps its cell rather than being hidden \
+         by it:\n{drawn}"
+    );
+
+    types(&amx, &view, "o");
+    let drawn = amx.until("the letter where the cursor was", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("❯ port the importer").then_some(drawn)
+    });
+    assert!(
+        !drawn.contains("imprtero"),
+        "a character typed mid-line lands where the block is:\n{drawn}"
+    );
+
+    press(&amx, &view, "Enter");
+    let id = composed(&amx);
+    assert_eq!(
+        command_of(&amx, &id).last().map(String::as_str),
+        Some("port the importer"),
+        "and the task the vendor is handed is the line as it was mended: {:?}",
+        command_of(&amx, &id)
+    );
+}
+
+#[test]
 fn the_composer_turns_the_dials_for_the_one_spawn_its_tokens_lead() {
     let amx = Harness::new();
     a_repo_at(amx.home());

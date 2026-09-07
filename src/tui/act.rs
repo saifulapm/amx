@@ -35,6 +35,14 @@ use crate::{derive, exit, registry, spawn, store, verbs, worktree};
 pub struct Composer {
     pub asking: Asking,
     pub text: String,
+    /// Where the next character lands, counted in characters of the line
+    /// rather than bytes: what somebody sees the block standing on is a
+    /// character, and a line takes whatever they can type into it.
+    ///
+    /// A line opens with it at the end — of nothing on a new line, and of the
+    /// name a rename is opened on, because a name is edited rather than typed
+    /// again from the start.
+    pub at: usize,
     /// What the next agent may do without asking, for the rule over the line
     /// to carry at the far end of itself.
     ///
@@ -67,8 +75,86 @@ impl Composer {
         Composer {
             asking,
             text: String::new(),
+            at: 0,
             allowed: Cell::new(None),
         }
+    }
+
+    /// Put text in where the cursor is, and leave the cursor after it.
+    ///
+    /// One character or a whole paste through the same door: both are text
+    /// arriving at the one place on the line that takes text, and what the
+    /// cursor was standing on is still in front of it afterwards.
+    pub fn insert(&mut self, text: &str) {
+        let at = self.byte();
+        self.text.insert_str(at, text);
+        self.at += text.chars().count();
+    }
+
+    /// One character back, and one on. Neither walks off the line: the ends of
+    /// it are where a cursor stops.
+    pub fn left(&mut self) {
+        self.at = self.at.saturating_sub(1);
+    }
+
+    pub fn right(&mut self) {
+        self.at = (self.at + 1).min(self.length());
+    }
+
+    /// Both ends of it, whatever it is holding. The whole line rather than the
+    /// row the cursor is on: a task pasted over four rows is one line, and the
+    /// end of it is where the line ends.
+    pub fn home(&mut self) {
+        self.at = 0;
+    }
+
+    pub fn end(&mut self) {
+        self.at = self.length();
+    }
+
+    /// A word at a time: whatever whitespace is in the way, and then the run
+    /// of characters behind or in front of it.
+    ///
+    /// Whitespace and not punctuation, because what is on this line is a
+    /// sentence somebody is writing: `m:opus` is one word of it, and a chord
+    /// that stopped inside the dial would be a chord nobody could aim.
+    pub fn word_left(&mut self) {
+        let line: Vec<char> = self.text.chars().collect();
+        let mut at = self.at.min(line.len());
+        while at > 0 && line[at - 1].is_whitespace() {
+            at -= 1;
+        }
+        while at > 0 && !line[at - 1].is_whitespace() {
+            at -= 1;
+        }
+        self.at = at;
+    }
+
+    pub fn word_right(&mut self) {
+        let line: Vec<char> = self.text.chars().collect();
+        let mut at = self.at.min(line.len());
+        while at < line.len() && line[at].is_whitespace() {
+            at += 1;
+        }
+        while at < line.len() && !line[at].is_whitespace() {
+            at += 1;
+        }
+        self.at = at;
+    }
+
+    /// Where the cursor stands as a byte of the line, which is what the string
+    /// under it is cut by. Past the last character it is the end of the line,
+    /// which is where a line being typed usually is.
+    fn byte(&self) -> usize {
+        self.text
+            .char_indices()
+            .nth(self.at)
+            .map_or(self.text.len(), |(byte, _)| byte)
+    }
+
+    /// How many characters the line is, which is where its end is.
+    fn length(&self) -> usize {
+        self.text.chars().count()
     }
 
     /// What the rule over the line calls the mode, in the one word a band's
@@ -943,6 +1029,62 @@ mod tests {
             id: "fix-login-b2c".to_string(),
         });
         assert_eq!(rename.about().as_deref(), Some("fix-login-b2c"));
+    }
+
+    #[test]
+    fn composer_puts_what_is_typed_where_the_cursor_stands() {
+        let mut line = Composer::new(Asking::Task);
+        line.insert("port the imprter");
+        assert_eq!(line.at, 16, "a line stands at the end of what is on it");
+
+        // Four characters back, which is the r the o belongs in front of.
+        for _ in 0..4 {
+            line.left();
+        }
+        line.insert("o");
+        assert_eq!(line.text, "port the importer");
+        assert_eq!(line.at, 13, "and the cursor is after what was typed");
+
+        // Counted in characters and not in bytes, because a character is what
+        // somebody sees the block standing on.
+        let mut line = Composer::new(Asking::Name {
+            id: "fix-login-a1b".to_string(),
+        });
+        line.insert("a é c");
+        line.left();
+        line.left();
+        line.insert("b");
+        assert_eq!(line.text, "a éb c");
+    }
+
+    #[test]
+    fn composer_walks_the_cursor_by_a_character_a_word_and_to_the_ends() {
+        let mut line = Composer::new(Asking::Task);
+        line.insert("port the importer");
+
+        line.home();
+        line.left();
+        assert_eq!(line.at, 0, "neither end walks off the line");
+        line.end();
+        line.right();
+        assert_eq!(line.at, 17);
+
+        // A word is whatever whitespace is in the way and the run of
+        // characters behind or in front of it.
+        line.word_left();
+        assert_eq!(line.at, 9, "the front of the word it was at the end of");
+        line.word_left();
+        assert_eq!(line.at, 5);
+        line.word_left();
+        line.word_left();
+        assert_eq!(line.at, 0, "and the front of the line is where they stop");
+
+        line.word_right();
+        assert_eq!(line.at, 4, "the end of the word in front of it");
+        line.word_right();
+        line.word_right();
+        line.word_right();
+        assert_eq!(line.at, 17, "and the end of the line is where those stop");
     }
 
     #[test]
