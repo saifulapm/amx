@@ -76,6 +76,19 @@ fn amx_playing(amx: &Harness, scenario: &Path, args: &[&str]) -> std::process::O
         .expect("running amx")
 }
 
+/// A timeline of pi's own screens, written for the one test that drives it.
+///
+/// The scenarios beside the stand-in each walk to the screen a test is reading
+/// and hold there, which is what a test of a reader wants. What a test of the
+/// question on a record wants is the walk itself — one pane going from one
+/// stop to the next with nothing said about either — so the test that drives
+/// one writes the order it drives.
+fn timeline(amx: &Harness, name: &str, steps: &str) -> PathBuf {
+    let path = amx.home().join(format!("{name}.scenario"));
+    std::fs::write(&path, steps).expect("writing a scenario");
+    path
+}
+
 /// Start an agent the way a person starts one, on the vendor amx knows as pi.
 fn start(amx: &Harness, id: &str, scenario_name: &str) {
     start_playing(amx, id, &scenario(scenario_name));
@@ -1953,6 +1966,137 @@ fn a_pi_stopped_on_a_question_it_asked_reads_waiting_by_its_own_word() {
         agent["question"],
         Value::Null,
         "and nothing is outstanding once it has: {agent}"
+    );
+}
+
+#[test]
+fn a_pi_driven_through_its_own_gates_offers_the_question_it_is_on() {
+    // #SX6QK58A. pi draws four screens it fires no event for — `/login`,
+    // `/trust`, `/model` and the startup trust gate — so what is on them
+    // reaches a record from the pane and from nowhere else. While which law a
+    // reading was under followed the vendor's `Hooks`, a reporting pi's every
+    // question counted as pi's own word, and the first of these to be read
+    // stood on the record for the rest of the run: driven live on 0.85.1, an
+    // agent stopped on the login box was still offering the startup gate's
+    // sentence, and `state` and `rule` moved under it with each screen.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let gates = timeline(
+        &amx,
+        "walks-its-own-gates",
+        // Three of pi's own screens, one pane, and not one word from the
+        // extension about any of them.
+        "screen login\nsleep 8000\nscreen trust\nsleep 8000\nscreen dialog\nsleep 600000\n",
+    );
+    start_playing(&amx, id, &gates);
+
+    // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, which is
+    // where the screen is the only witness there is. Nothing moves those
+    // stamps again — a reading writes with the observing hand — so every look
+    // below reads the pane.
+    amx.set_state(
+        id,
+        json!({ "state": "starting", "since": 1, "last_event": 1 }),
+    );
+
+    // The first question this agent was ever read on. Looked for rather than
+    // waited out, because a look is what puts a question on a record at all:
+    // the poll that finds it is the one that wrote it.
+    let agent = amx.until("the login box to reach the record", || {
+        let agent = status(&amx, id);
+        (agent["question"] == json!("Enter Cerebras API key")).then_some(agent)
+    });
+    assert_eq!(agent["state"], "waiting", "{agent}");
+    assert_eq!(
+        agent["rule"], "login",
+        "pi's own rule, out of pi's own document: {agent}"
+    );
+
+    // The trust selector asks about the tree amx cut rather than anything a
+    // caller passed, so `project_trust` reads no question off it — and a
+    // screen with nothing on it to answer is an agent with nothing
+    // outstanding. This is the finding: the login box's sentence stood here.
+    let agent = amx.until("the trust selector to take the pane", || {
+        let agent = status(&amx, id);
+        (agent["rule"] == json!("project_trust")).then_some(agent)
+    });
+    assert_eq!(agent["state"], "waiting", "{agent}");
+    assert_eq!(
+        agent["question"],
+        Value::Null,
+        "and nothing of the box before it is left to answer: {agent}"
+    );
+    assert_eq!(
+        amx.state(id)["question"],
+        Value::Null,
+        "written down, rather than concluded and forgotten"
+    );
+
+    // And a screen that does ask something puts what it asks where the
+    // question goes, however many screens this pane has held before it.
+    let agent = amx.until("the dialog to replace it", || {
+        let agent = status(&amx, id);
+        (agent["question"] == json!("Run echo hi?")).then_some(agent)
+    });
+    assert_eq!(agent["rule"], "dialog", "{agent}");
+    assert_eq!(
+        amx.state(id)["question"]["text"],
+        json!("Run echo hi?"),
+        "and the record is what a caller reads it from"
+    );
+}
+
+#[test]
+fn a_pi_that_reported_its_question_keeps_its_own_words_over_a_reading() {
+    // The other half of the same law, and the reason it is not simply that the
+    // screen wins: what pi reports through `ui_prompt_start` is the title the
+    // caller passed, and what the pane carries is whatever pi drew of it. A
+    // reader that corrected one from the other would put amx's reading of a
+    // picture where the vendor's own account of itself was.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let reported = timeline(
+        &amx,
+        "reports-then-holds",
+        // The dialog on the pane says `Run echo hi?`; the extension reports
+        // the sentence the caller wrote. One screen, two accounts of it, and
+        // only one of them is the vendor's.
+        "screen boot\nhook session_start {}\nsleep 50\nhook agent_start {}\nscreen dialog\n\
+         hook ui_prompt_start {\"kind\":\"confirm\",\"message\":\"Allow the bash tool?\"}\n\
+         sleep 600000\n",
+    );
+    start_playing(&amx, id, &reported);
+
+    let agent = amx.until("the reported question to reach the record", || {
+        let agent = status(&amx, id);
+        (agent["question"] == json!("Allow the bash tool?")).then_some(agent)
+    });
+    assert_eq!(agent["state"], "waiting", "{agent}");
+
+    // Aged past the freshness window with the vendor's words on it, which is
+    // when a reader goes to the pane at all. The question is left exactly as
+    // the hook wrote it — including how the document says a hook wrote it.
+    let mut aged = amx.state(id);
+    aged["since"] = json!(1);
+    aged["last_event"] = json!(1);
+    amx.set_state(id, aged);
+
+    let agent = amx.until("a reading to claim the dialog", || {
+        let agent = status(&amx, id);
+        (agent["rule"] == json!("dialog")).then_some(agent)
+    });
+    assert_eq!(agent["state"], "waiting", "{agent}");
+    assert_eq!(
+        agent["question"],
+        json!("Allow the bash tool?"),
+        "the vendor's own words, and not the reading of the pane that claimed \
+         the same screen: {agent}"
+    );
+    assert_eq!(
+        amx.state(id)["question"],
+        json!("Allow the bash tool?"),
+        "written down as the words alone, which is how the document says a \
+         hook carried them"
     );
 }
 
