@@ -459,10 +459,13 @@ place and is read through the block, and past the end of the line the cell
 turned over is a space, which is a whole block. It is the only cursor there
 is. The terminal's own is hidden for as long as the view has the screen, so
 nothing of the terminal's blinks over the cell amx is painting, and the find
-line and a card's answer line draw the same block the same way. Everything
-above the rule goes dim for as long as the mode is on — rows, headings, counts
-and dials in the one pass — so the band below the rule is the only thing on the
-screen still carrying weight.
+line and a card's answer line draw the same block the same way. It comes back
+when the view hands the screen over: the editor `ctrl+g` opens and the session
+`enter` attaches to are each given a terminal with a cursor in it, and the
+first frame the view draws on taking the screen back puts it away again.
+Everything above the rule goes dim for as long as the mode is on — rows,
+headings, counts and dials in the one pass — so the band below the rule is the
+only thing on the screen still carrying weight.
 
 ```
 TASK · letters are text until esc ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ vendor default ┈┈

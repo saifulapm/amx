@@ -31,6 +31,7 @@ mod paint;
 mod rows;
 
 use anyhow::{Context, Result};
+use crossterm::cursor::Show;
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -904,6 +905,12 @@ where
     // decides for itself whether it wants one.
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+    // And so does the cursor. The view draws its own and keeps the terminal's
+    // put away, but an editor is a program that expects to find one there: it
+    // never asks for a cursor, it just writes where the cursor is. Nothing
+    // undoes this on the way back because every frame the view draws hides
+    // the cursor again.
+    let _ = execute!(std::io::stdout(), Show);
     ratatui::try_restore().context("giving the terminal up")?;
 
     let outcome = doing();

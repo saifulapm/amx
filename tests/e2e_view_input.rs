@@ -320,6 +320,26 @@ fn pane_field(amx: &Harness, pane: &str, format: &str) -> String {
     amx.tmux(&["display-message", "-p", "-t", pane, format])
 }
 
+/// An `$EDITOR` that says it has the screen and holds it until the test drops
+/// `let-it-go` in the home it is running under.
+///
+/// It writes nothing to the file it is opened on and asks the terminal for
+/// nothing, which is the point: what it is sitting in front of is whatever
+/// state the view left the terminal in, the way `vi` or `less` would be.
+fn an_editor_that_waits(amx: &Harness) -> String {
+    let path = amx.home().join("editor");
+    std::fs::write(
+        &path,
+        "#!/bin/sh\n\
+         printf 'the editor has the screen\\n'\n\
+         while [ ! -e \"$HOME/let-it-go\" ]; do sleep 0.05; done\n",
+    )
+    .expect("an editor to lend the terminal to");
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("an editor that runs");
+    path.to_string_lossy().into_owned()
+}
+
 #[test]
 fn header_says_what_the_next_agent_will_be_started_with() {
     let amx = Harness::new();
@@ -1620,6 +1640,54 @@ fn input_mode_hangs_the_line_off_a_labelled_rule_over_a_wall_gone_dim() {
     assert!(
         !sgr_at(&painted, "WAITING").contains(&7),
         "the count that wants somebody gives up its badge with them:\n{painted:?}"
+    );
+}
+
+#[test]
+fn lending_the_line_to_an_editor_hands_the_terminal_its_cursor_back() {
+    let amx = Harness::new();
+    amx.config("agent = \"claude\"\n");
+    let editor = an_editor_that_waits(&amx);
+
+    // `$VISUAL` goes, because it is read first and whoever is running the
+    // tests has one of their own.
+    let view = amx.in_a_terminal(&[("VISUAL", ""), ("EDITOR", &editor)], &[]);
+    until_empty(&amx, &view);
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "port the importer");
+    amx.until("the line to be typed", || {
+        screen(&amx, &view)
+            .contains("❯ port the importer")
+            .then_some(())
+    });
+    assert_eq!(
+        pane_field(&amx, &view, "#{cursor_flag}"),
+        "0",
+        "the terminal's own cursor is away while the view has the screen"
+    );
+
+    press(&amx, &view, "C-g");
+    let drawn = amx.until("the editor to have the screen", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("the editor has the screen").then_some(drawn)
+    });
+    assert_eq!(
+        pane_field(&amx, &view, "#{cursor_flag}"),
+        "1",
+        "and it goes back with the screen, so somebody typing in the editor \
+         can see where they are:\n{drawn}"
+    );
+
+    std::fs::write(amx.home().join("let-it-go"), "").expect("the editor to be let go");
+    let drawn = amx.until("the view to take the screen back", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("❯ port the importer").then_some(drawn)
+    });
+    assert_eq!(
+        pane_field(&amx, &view, "#{cursor_flag}"),
+        "0",
+        "the draw that takes it back puts it away again:\n{drawn}"
     );
 }
 
