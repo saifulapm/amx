@@ -349,6 +349,20 @@ live screen, chrome cut, while it works, and the recorded answer once its turn
 is over. A waiting agent's card is
 the question block alone.
 
+The card's own line is where that question is answered, and while nothing has
+been typed on it the line says what the question will take. At a question of
+the vendor's own whose choices are all it takes, the line reads `1-2 picks` and
+the number pressed is the answer: it reaches the agent as it is pressed, with
+no enter behind it, which is what the vendor's own screen does with a number
+there. Three prompts read `press` instead and wait for the enter. A question
+that takes more than one choice, where a digit names one box and the rest are
+still to come. One whose choices carry a preview, where the note is typed after
+the key it rides beside. And a permission box, whose numbers are amx's reading
+of a picture of a pane rather than anything the vendor wrote down — an allowed
+tool call cannot be taken back. What picking costs is the answer of your own
+that opens with a digit: the numbers are read on an empty line only, so a
+number meant as a character is typed after some other one.
+
 `pgup` and `pgdn` page inside the card's body when it holds more than the card
 has room for: a patch or a finished conversation down from where it opened, a
 live one and a live screen up from their bottom. A paged card takes a row of
