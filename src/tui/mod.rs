@@ -3186,6 +3186,27 @@ mod tests {
     }
 
     #[test]
+    fn the_view_keeps_the_projects_its_agents_run_in_for_a_line_to_offer() {
+        // What a `d:` is offered besides the directories under the cursor,
+        // read off the same records the wall is drawn from: an agent in a tree
+        // amx cut belongs to the repository it was cut from, and a project two
+        // agents run in is one word rather than two.
+        let mut screen = Screen::default();
+        let mut cut = reading("port-a1b", Phase::Working, State::default());
+        cut.meta.worktree = Some(PathBuf::from("/srv/api/.amx/worktrees/port-a1b"));
+
+        screen.showing(vec![
+            reading("fix-login-b2c", Phase::Working, State::default()),
+            cut,
+            reading("port-c3d", Phase::Working, State::default()),
+        ]);
+        assert_eq!(
+            screen.projects,
+            [PathBuf::from("/srv/app"), PathBuf::from("/srv/api")]
+        );
+    }
+
+    #[test]
     fn card_opens_on_the_question_under_the_cursor_with_the_line_to_answer_it() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
