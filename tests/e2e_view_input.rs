@@ -1104,6 +1104,48 @@ fn the_composer_turns_the_dials_for_the_one_spawn_its_tokens_lead() {
 }
 
 #[test]
+fn the_composer_runs_the_session_as_the_agent_the_line_is_led_with() {
+    let amx = Harness::new();
+    // The one agent in the places claude reads on this machine, which is what
+    // decides whether a word at the front of a line is one of them.
+    an_agent_called_scout(&amx);
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "@scout port the importer");
+    press(&amx, &view, "Enter");
+
+    let id = composed(&amx);
+    let command = command_of(&amx, &id);
+    assert!(
+        command.windows(2).any(|pair| pair == ["--agent", "scout"]),
+        "the word the line is led with is who the vendor is asked to be: \
+         {command:?}"
+    );
+    assert_eq!(
+        command.last().map(String::as_str),
+        Some("port the importer"),
+        "and it is off the task the vendor is handed: {command:?}"
+    );
+
+    // The same word naming none of them is the sentence it was typed in: what
+    // the mark means past the vendor's own agents is a file, and the vendor
+    // reads that itself.
+    types(&amx, &view, "n");
+    types(&amx, &view, "@notes.md port the importer");
+    press(&amx, &view, "Enter");
+
+    let next = composed_after(&amx, &id);
+    let command = command_of(&amx, &next);
+    assert!(!command.iter().any(|arg| arg == "--agent"), "{command:?}");
+    assert_eq!(
+        command.last().map(String::as_str),
+        Some("@notes.md port the importer"),
+        "the whole line is the task: {command:?}"
+    );
+}
+
+#[test]
 fn header_puts_what_the_next_agent_may_do_over_the_line_that_starts_it() {
     let amx = Harness::new();
     amx.config("agent = \"claude\"\n");
