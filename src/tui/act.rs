@@ -223,8 +223,10 @@ impl Composer {
     /// one word of a sentence, and the next thing typed is the next word
     /// rather than more of this one. Never where the line already has one
     /// there, because a word mended in the middle of a sentence is not a word
-    /// that pushes the next one along. The suggestions go with it either way,
-    /// since the word they were about is now the word one of them named.
+    /// that pushes the next one along — and never after a directory, because a
+    /// path that has reached one is a word with more of itself to come. The
+    /// suggestions go with it either way, since the word they were about is now
+    /// the word one of them named.
     pub fn complete(&mut self) {
         let Some(suggest) = self.suggest.take() else {
             return;
@@ -233,6 +235,7 @@ impl Composer {
             return;
         };
         let word = match self.text.chars().nth(suggest.word.end) {
+            _ if entry.spelled.ends_with('/') => entry.spelled.clone(),
             Some(after) if after.is_whitespace() => entry.spelled.clone(),
             _ => format!("{} ", entry.spelled),
         };
@@ -350,11 +353,27 @@ pub fn finding(line: &str) -> Vec<Narrow> {
 }
 
 /// The tokens a task line may be led with, and what each of them turns.
-const DIALS: [&str; 5] = ["m:", "p:", "w:", "d:", AGENT];
+const DIALS: [&str; 5] = [MODEL, PERMISSION, WORKTREE, DIR, AGENT];
 
 /// The one of them that says which vendor the line is for, which is the vendor
 /// every other word on it is read against.
 const AGENT: &str = "agent:";
+
+/// The two the vendor declares, whose values are the vendor's own to name.
+const MODEL: &str = "m:";
+const PERMISSION: &str = "p:";
+
+/// And the two that are amx's: whether this agent is given a tree of its own,
+/// and where it runs.
+const WORKTREE: &str = "w:";
+const DIR: &str = "d:";
+
+/// What `w:` takes, which is amx's own answer and in no vendor's table.
+const TREE: [&str; 2] = ["on", "off"];
+
+/// The mark a file is named by, which is the vendor's own and the same one an
+/// agent is named by.
+const AT: &str = "@";
 
 /// What a line's leading tokens turn, for the one spawn they lead. Empty is
 /// the ordinary line, which leaves every dial where the config put it.
@@ -438,20 +457,20 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
     for (dial, value) in &tokens {
         match *dial {
             AGENT => {}
-            "w:" => {
+            WORKTREE => {
                 turned.worktree = Some(match *value {
                     "on" => true,
                     "off" => false,
                     _ => return Err(format!("w:{value}: on or off")),
                 });
             }
-            "d:" => {
+            DIR => {
                 if value.is_empty() {
                     return Err("d: takes a directory".to_string());
                 }
                 turned.dir = Some((*value).to_string());
             }
-            "m:" => {
+            MODEL => {
                 turned.model = Some(pointed(&agent, dial, entry.and_then(|e| e.model), value)?);
             }
             _ => {
@@ -500,10 +519,18 @@ fn pointed(
 ///
 /// Read on the keystroke, the way the find line narrows the wall on one: a
 /// suggestion arriving after the word it was about has been finished is no use
-/// to anybody. What it costs is the vendor's directories, and only for a word
-/// that opens with one of the marks that ask for them — an ordinary sentence
-/// asks nothing of the disk.
-pub fn suggest(composer: &Composer, config: &Config, project: &Path) -> Option<Suggest> {
+/// to anybody. What it costs is a directory read, and only for a word that
+/// opens with one of the marks that ask for one — an ordinary sentence asks
+/// nothing of the disk.
+///
+/// `wall` is the projects the view is showing agents in, which is what a `d:`
+/// is offered besides the directories under it.
+pub fn suggest(
+    composer: &Composer,
+    config: &Config,
+    project: &Path,
+    wall: &[PathBuf],
+) -> Option<Suggest> {
     if !matches!(composer.asking, Asking::Task) {
         return None;
     }
@@ -515,7 +542,7 @@ pub fn suggest(composer: &Composer, config: &Config, project: &Path) -> Option<S
         .skip(word.start)
         .collect();
 
-    let entries = answering(&asked_of(config, &composer.text), &typed, project);
+    let entries = answering(&composer.text, &typed, config, project, wall);
     (!entries.is_empty()).then_some(Suggest {
         word,
         entries,
@@ -558,19 +585,41 @@ fn asked_of(config: &Config, line: &str) -> String {
 
 /// What answers to the word being typed, narrowed to what is typed of it.
 ///
-/// The marks are the vendor's own: `/` runs a skill, a command or something
-/// the vendor answers out of itself, and `@` names one of its agents. `agent:`
-/// is amx's own dial and is answered out of the table rather than off anybody's
-/// disk.
+/// Three kinds of word, in the order a mark is read. The dials are amx's own
+/// and are answered out of the table and off the disk: `agent:` by the vendors
+/// there are entries for, `m:` and `p:` by the cycle the vendor declares, `w:`
+/// by amx's two words, and `d:` by the directories a path names. The marks past
+/// them are the vendor's own: `/` runs a skill, a command or something the
+/// vendor answers out of itself, and `@` names one of its agents. And a word
+/// naming none of those is the third kind — a path, which is the other thing
+/// the mark a vendor reads a file by is for.
 ///
-/// A vendor amx has measured no places for offers nothing, and so does a
-/// machine with no home directory for its places to hang off — the line is
-/// then only ever the words somebody typed, which is what it was before any of
-/// this.
-fn answering(agent: &str, typed: &str, project: &Path) -> Vec<Entry> {
+/// A vendor amx has measured no places for names nothing of its own, and so
+/// does a machine with no home directory for its places to hang off; the files
+/// under the cursor are still there, since they are the project's rather than
+/// anybody's catalog.
+fn answering(
+    line: &str,
+    typed: &str,
+    config: &Config,
+    project: &Path,
+    wall: &[PathBuf],
+) -> Vec<Entry> {
+    let agent = asked_of(config, line);
     if typed.starts_with(AGENT) {
         return vendors(typed);
     }
+    if let Some(values) = dialled(&agent, typed) {
+        return values;
+    }
+    // A `d:` being typed is the one path on the line that is not read against
+    // the `d:`: it is what the rest of them will be read against.
+    if typed.starts_with(DIR) {
+        let mut found = paths(DIR, typed, project, true);
+        found.extend(on_the_wall(wall, typed));
+        return found;
+    }
+
     let kinds: &[catalog::Kind] = match typed.chars().next() {
         Some('/') => &[
             catalog::Kind::Skill,
@@ -580,7 +629,15 @@ fn answering(agent: &str, typed: &str, project: &Path) -> Vec<Entry> {
         Some('@') => &[catalog::Kind::Agent],
         _ => return Vec::new(),
     };
+    let named = catalogued(&agent, typed, kinds, project);
+    match named.is_empty() && typed.starts_with(AT) {
+        true => paths(AT, typed, &running(line, project), false),
+        false => named,
+    }
+}
 
+/// What the vendor loads by name, out of the places its entry declares.
+fn catalogued(agent: &str, typed: &str, kinds: &[catalog::Kind], project: &Path) -> Vec<Entry> {
     let places = registry::entry(agent).and_then(|vendor| vendor.catalog);
     let (Some(places), Some(home)) = (places, std::env::home_dir()) else {
         return Vec::new();
@@ -593,18 +650,134 @@ fn answering(agent: &str, typed: &str, project: &Path) -> Vec<Entry> {
 
 /// The vendors amx has an entry for, as the words that aim a line at one.
 ///
-/// Out of the table, which is what the kind says about each of them: a vendor
-/// is in no file of anybody's for a sentence about it to be read from.
+/// Out of the table: a vendor is in no file of anybody's for a sentence about
+/// it to be read from.
 fn vendors(typed: &str) -> Vec<Entry> {
     registry::entries()
         .iter()
-        .map(|vendor| Entry {
-            spelled: format!("{AGENT}{}", vendor.name),
-            kind: catalog::Kind::Builtin,
-            about: String::new(),
-        })
+        .map(|vendor| worded(format!("{AGENT}{}", vendor.name)))
         .filter(|entry| entry.spelled.starts_with(typed))
         .collect()
+}
+
+/// What the dial a word is typed at takes, and nothing where the word is typed
+/// at no dial.
+///
+/// The vendor's own cycle for the vendor's own two, which is the list the key
+/// under the header offers and the list `turned` reads a value against: a line
+/// that suggested a word the spawn would refuse would be offering somebody a
+/// refusal. A dial this vendor does not declare has no values to offer, which
+/// is the same silence `turned` refuses the token in.
+fn dialled(agent: &str, typed: &str) -> Option<Vec<Entry>> {
+    let vendor = registry::entry(agent);
+    let (dial, cycle): (&str, &[&str]) = match typed {
+        _ if typed.starts_with(MODEL) => (MODEL, vendor?.model?.cycle),
+        _ if typed.starts_with(PERMISSION) => (PERMISSION, vendor?.permission?.cycle),
+        _ if typed.starts_with(WORKTREE) => (WORKTREE, &TREE),
+        _ => return None,
+    };
+    Some(
+        cycle
+            .iter()
+            .map(|value| worded(format!("{dial}{value}")))
+            .filter(|entry| entry.spelled.starts_with(typed))
+            .collect(),
+    )
+}
+
+/// What is in the directory a path names, as the words that would finish the
+/// one being typed.
+///
+/// The path is read the way a shell prompt standing in `here` would read it: a
+/// leading `~` is the home directory, and a name that is not absolute is under
+/// `here`. What comes back is spelled as it was typed, mark and all, because a
+/// suggestion goes in the place of the whole word.
+///
+/// A directory carries the separator that says the path may go on, which is
+/// also what keeps a space off the end of it when the word is taken. `.git` and
+/// `.amx` are left out: they are in every project a line is typed in and
+/// neither is anybody's next word.
+///
+/// `folders` is whether only directories answer, which is what a `d:` takes.
+fn paths(mark: &str, typed: &str, here: &Path, folders: bool) -> Vec<Entry> {
+    let said = typed.strip_prefix(mark).unwrap_or(typed);
+    // The directory it names and the part of a name that has been typed: what
+    // is being narrowed is the last segment, and everything in front of it is
+    // where to look.
+    let (dir, leaf) = match said.rfind('/') {
+        Some(at) => said.split_at(at + 1),
+        None => ("", said),
+    };
+    // A directory nothing is at, or one nobody may read, offers nothing and
+    // says nothing: somebody typing a task is owed suggestions or none.
+    let Ok(at) = aimed(dir, here) else {
+        return Vec::new();
+    };
+    let Ok(read) = std::fs::read_dir(at) else {
+        return Vec::new();
+    };
+
+    let mut found: Vec<Entry> = read
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let folder = entry.path().is_dir();
+            let offered = name.starts_with(leaf)
+                && !KEPT_BACK.contains(&name.as_str())
+                && (folder || !folders);
+            let slash = if folder { "/" } else { "" };
+            offered.then(|| worded(format!("{mark}{dir}{name}{slash}")))
+        })
+        .collect();
+    // By name, so what a machine offers does not depend on the order a
+    // filesystem happens to hand its entries back.
+    found.sort_by(|one, two| one.spelled.cmp(&two.spelled));
+    found
+}
+
+/// The directories in every project that no line names: git's own, and amx's.
+const KEPT_BACK: [&str; 2] = [".git", ".amx"];
+
+/// Every project an agent on the wall runs in, as the words that aim a line at
+/// one.
+///
+/// The wall's own answer rather than a walk of anybody's disk: where somebody
+/// starts an agent is nearly always where they already have one, and those
+/// directories are rarely under the one the view was opened in for a path to
+/// reach in a word.
+fn on_the_wall(wall: &[PathBuf], typed: &str) -> Vec<Entry> {
+    wall.iter()
+        .map(|project| worded(format!("{DIR}{}", project.display())))
+        .filter(|entry| entry.spelled.starts_with(typed))
+        .collect()
+}
+
+/// Where a path typed on this line is read from: the directory the line's own
+/// `d:` names, and the one the view is running in otherwise.
+///
+/// The `d:` because that is where the agent this line starts will run, and a
+/// file offered out of anywhere else is a file it would not find. A `d:`
+/// nothing is at yet is a word somebody is still typing, and the view's own
+/// directory is what a path is read against until it is a directory.
+fn running(line: &str, project: &Path) -> PathBuf {
+    let (tokens, _) = tokens(line);
+    tokens
+        .iter()
+        .find(|(dial, value)| *dial == DIR && !value.is_empty())
+        .and_then(|(_, value)| aimed(value, project).ok())
+        .unwrap_or_else(|| project.to_path_buf())
+}
+
+/// One word amx offers out of itself: a vendor, a dial's value, a file.
+///
+/// Nothing to say about any of them, because there is no file to read a
+/// sentence from — the word is the whole of what it says.
+fn worded(spelled: String) -> Entry {
+    Entry {
+        spelled,
+        kind: catalog::Kind::Builtin,
+        about: String::new(),
+    }
 }
 
 /// What editing a line in an editor came to.
@@ -1841,7 +2014,7 @@ mod tests {
         // has an entry for, narrowed as the word is typed.
         let mut line = Composer::new(Asking::Task);
         line.insert("agent:");
-        let found = suggest(&line, &as_claude(), a_project()).expect("the table");
+        let found = suggest(&line, &as_claude(), a_project(), &[]).expect("the table");
         assert_eq!(offered(&found), ["agent:claude", "agent:pi"]);
         assert_eq!(
             (found.word, found.chosen),
@@ -1850,12 +2023,12 @@ mod tests {
         );
 
         line.insert("p");
-        let found = suggest(&line, &as_claude(), a_project()).expect("the one left");
+        let found = suggest(&line, &as_claude(), a_project(), &[]).expect("the one left");
         assert_eq!(offered(&found), ["agent:pi"]);
 
         line.insert("q");
         assert!(
-            suggest(&line, &as_claude(), a_project()).is_none(),
+            suggest(&line, &as_claude(), a_project(), &[]).is_none(),
             "and a word nothing answers to is the word somebody typed"
         );
     }
@@ -1864,7 +2037,7 @@ mod tests {
     fn composer_puts_the_suggestion_the_choice_is_on_where_the_word_was() {
         let mut line = Composer::new(Asking::Task);
         line.insert("m:opus agent:");
-        line.suggest = suggest(&line, &as_claude(), a_project());
+        line.suggest = suggest(&line, &as_claude(), a_project(), &[]);
 
         // The two keys walk the list, and the ends of it are each other's
         // neighbours.
@@ -1901,7 +2074,7 @@ mod tests {
             line.left();
         }
 
-        line.suggest = suggest(&line, &as_claude(), a_project());
+        line.suggest = suggest(&line, &as_claude(), a_project(), &[]);
         line.complete();
         assert_eq!(line.text, "agent:claude port it");
         assert_eq!(
@@ -1916,16 +2089,167 @@ mod tests {
         let mut line = Composer::new(Asking::Task);
         line.insert("port the importer");
         assert!(
-            suggest(&line, &as_claude(), a_project()).is_none(),
+            suggest(&line, &as_claude(), a_project(), &[]).is_none(),
             "a sentence asks the vendor for nothing by name"
         );
 
         let mut line = Composer::new(Asking::Task);
         line.insert("agent:pi ");
         assert!(
-            suggest(&line, &as_claude(), a_project()).is_none(),
+            suggest(&line, &as_claude(), a_project(), &[]).is_none(),
             "and a cursor standing on whitespace is standing in no word"
         );
+    }
+
+    #[test]
+    fn composer_offers_the_values_the_dial_under_the_cursor_takes() {
+        // The vendor's own cycle, read out of the table rather than named
+        // here: what the line offers is what the spawn would take, and a value
+        // named twice is a value that stops being offered the day the vendor
+        // renames it.
+        let claude = registry::entry("claude").expect("claude is in the table");
+        let cycle = |dial: &str, spec: registry::DialSpec| -> Vec<String> {
+            spec.cycle
+                .iter()
+                .map(|value| format!("{dial}{value}"))
+                .collect()
+        };
+
+        let mut line = Composer::new(Asking::Task);
+        line.insert("m:");
+        let found = suggest(&line, &as_claude(), a_project(), &[]).expect("claude's models");
+        assert_eq!(
+            offered(&found),
+            cycle("m:", claude.model.expect("claude has a model dial"))
+        );
+
+        line.insert("o");
+        let found = suggest(&line, &as_claude(), a_project(), &[]).expect("the one left");
+        assert_eq!(offered(&found), ["m:opus"]);
+
+        let mut line = Composer::new(Asking::Task);
+        line.insert("p:pl");
+        let found = suggest(&line, &as_claude(), a_project(), &[]).expect("claude's modes");
+        assert_eq!(offered(&found), ["p:plan"]);
+
+        // The tree is amx's own dial, so its two words are amx's own answer
+        // and in no table.
+        let mut line = Composer::new(Asking::Task);
+        line.insert("w:");
+        let found = suggest(&line, &as_claude(), a_project(), &[]).expect("on or off");
+        assert_eq!(offered(&found), ["w:on", "w:off"]);
+
+        // A dial the agent on this line does not declare has no values to
+        // offer, which is the answer `turned` refuses the token with.
+        let config = Config {
+            agent: "mock-claude".to_string(),
+            ..Config::default()
+        };
+        let mut line = Composer::new(Asking::Task);
+        line.insert("m:");
+        assert!(suggest(&line, &config, a_project(), &[]).is_none());
+    }
+
+    #[test]
+    fn composer_offers_the_files_under_a_word_the_vendor_answers_to_with_none() {
+        // `@` names one of the vendor's agents, and where it names none of
+        // them it is the other thing the mark is for: a file of the project
+        // the agent will run in. A word with a separator in it is no agent's
+        // name, so this is that word every time.
+        let project = TempDir::new().unwrap();
+        std::fs::create_dir_all(project.path().join("src/tui")).unwrap();
+        std::fs::write(project.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        let mut line = Composer::new(Asking::Task);
+        line.insert("read @src/");
+        let found = suggest(&line, &as_claude(), project.path(), &[]).expect("what is in it");
+        assert_eq!(
+            offered(&found),
+            ["@src/main.rs", "@src/tui/"],
+            "spelled as the word would be, with the separator on the directory \
+             that says the path may go on"
+        );
+
+        // Narrowed by what has been typed of the name, the same as every other
+        // word the line offers.
+        line.insert("m");
+        let found = suggest(&line, &as_claude(), project.path(), &[]).expect("the one left");
+        assert_eq!(offered(&found), ["@src/main.rs"]);
+
+        line.insert("x");
+        assert!(
+            suggest(&line, &as_claude(), project.path(), &[]).is_none(),
+            "and a path nothing answers to is the path somebody typed"
+        );
+    }
+
+    #[test]
+    fn composer_leaves_a_path_that_has_reached_a_directory_open_for_the_rest() {
+        let project = TempDir::new().unwrap();
+        std::fs::create_dir_all(project.path().join("src/tui")).unwrap();
+
+        let mut line = Composer::new(Asking::Task);
+        line.insert("read @src/t");
+        line.suggest = suggest(&line, &as_claude(), project.path(), &[]);
+        line.complete();
+        assert_eq!(
+            (line.text.as_str(), line.at),
+            ("read @src/tui/", 14),
+            "a path that has reached a directory is a word with more of itself \
+             to come, so nothing is put between it and what is typed next"
+        );
+    }
+
+    #[test]
+    fn composer_reads_a_path_against_the_directory_the_line_aims_at() {
+        // Where the agent will run rather than where the view is: a file
+        // offered out of anywhere else is a file that agent would not find.
+        let here = TempDir::new().unwrap();
+        let there = TempDir::new().unwrap();
+        std::fs::create_dir_all(there.path().join("crates/importer")).unwrap();
+
+        let mut line = Composer::new(Asking::Task);
+        line.insert(&format!("d:{} port @crates/", there.path().display()));
+        let found = suggest(&line, &as_claude(), here.path(), &[]).expect("what is over there");
+        assert_eq!(offered(&found), ["@crates/importer/"]);
+    }
+
+    #[test]
+    fn composer_offers_a_d_the_directories_and_the_projects_on_the_wall() {
+        let here = TempDir::new().unwrap();
+        std::fs::create_dir(here.path().join("app")).unwrap();
+        std::fs::create_dir(here.path().join(".git")).unwrap();
+        std::fs::create_dir(here.path().join(".amx")).unwrap();
+        std::fs::write(here.path().join("README.md"), "words").unwrap();
+
+        let elsewhere = TempDir::new().unwrap();
+        let wall = [
+            elsewhere.path().join("importer"),
+            elsewhere.path().join("api"),
+        ];
+
+        let mut line = Composer::new(Asking::Task);
+        line.insert("d:");
+        let found = suggest(&line, &as_claude(), here.path(), &wall).expect("somewhere to run");
+        assert_eq!(
+            offered(&found),
+            [
+                "d:app/".to_string(),
+                format!("d:{}", wall[0].display()),
+                format!("d:{}", wall[1].display()),
+            ],
+            "what is under the view's own directory, which is where a name on \
+             this dial is read, and then the projects somebody already has \
+             agents in; a file is nowhere to run, and git's own directory and \
+             amx's are nobody's"
+        );
+
+        // Narrowed by what is typed of it, whichever of the two a word came
+        // from.
+        let mut line = Composer::new(Asking::Task);
+        line.insert(&format!("d:{}/i", elsewhere.path().display()));
+        let found = suggest(&line, &as_claude(), here.path(), &wall).expect("the one project");
+        assert_eq!(offered(&found), [format!("d:{}", wall[0].display())]);
     }
 
     #[test]
@@ -1946,7 +2270,7 @@ mod tests {
             let mut line = Composer::new(asking);
             line.insert("agent:");
             assert!(
-                suggest(&line, &as_claude(), a_project()).is_none(),
+                suggest(&line, &as_claude(), a_project(), &[]).is_none(),
                 "{}",
                 line.label()
             );

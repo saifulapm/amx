@@ -472,6 +472,11 @@ struct Screen {
     /// it, unlike the arm a `ctrl+x` leaves: that one is timed because the
     /// press inside it destroys something, and this one only moves a cursor.
     going: bool,
+    /// The projects the agents on the wall run in, once each and in order.
+    /// Kept with the reading rather than worked out where a line is typed: a
+    /// `d:` is offered them on every keystroke, and the wall behind the line is
+    /// a second old whatever the line is doing.
+    projects: Vec<PathBuf>,
     /// Which frame of the working pulse the rows are on.
     beat: usize,
     /// When that frame came up.
@@ -920,8 +925,26 @@ impl Screen {
     /// That is the reading's, and the reading is the next thing the view does:
     /// this leaves the clock unset, so the pass straight after takes one.
     fn recall(&mut self, root: &Path, scope: &Scope) -> Result<()> {
-        self.list.show(scope.narrow(derive::recorded(root, now())?));
+        self.showing(scope.narrow(derive::recorded(root, now())?));
         Ok(())
+    }
+
+    /// Show a reading, and keep the projects its agents run in.
+    ///
+    /// The projects are read off the records the wall is drawn from, which is
+    /// the same string work the wall's own headings are gathered by and no
+    /// second walk of a disk. One entry each, in the order the agents were
+    /// read: a word offered twice is a choice between two things that look
+    /// identical.
+    fn showing(&mut self, views: Vec<View>) {
+        self.projects.clear();
+        for view in &views {
+            let project = crate::spawn::project_dir(&view.meta);
+            if !self.projects.contains(&project) {
+                self.projects.push(project);
+            }
+        }
+        self.list.show(views);
     }
 
     /// Say what reading the theme had to say for itself, where the view says
@@ -946,7 +969,7 @@ impl Screen {
 
     /// Read the agents again, the ones the view was opened about.
     fn reread(&mut self, root: &Path, scope: &Scope) -> Result<()> {
-        self.list.show(scope.narrow(derive::views(root, now())?));
+        self.showing(scope.narrow(derive::views(root, now())?));
         self.read = Some(Instant::now());
         self.keep_the_sweep();
         self.follow_the_cursor();
@@ -1674,12 +1697,18 @@ impl Screen {
     /// Against the vendor the header is showing, because that is what this
     /// view says the next agent will be started with, and against the
     /// directory the view was opened in, because that is where the agent will
-    /// run: a project's own files are offered beside the person's.
+    /// run: a project's own files are offered beside the person's. The
+    /// projects go with them, so that a `d:` can be aimed at one of them
+    /// without a path being typed out.
     fn suggesting(&mut self, config: &Config) {
         let launching = self.profile.launching(config);
         let project = std::env::current_dir().unwrap_or_default();
+        let Mode::Typing(composer) = &self.mode else {
+            return;
+        };
+        let found = act::suggest(composer, &launching, &project, &self.projects);
         if let Mode::Typing(composer) = &mut self.mode {
-            composer.suggest = act::suggest(composer, &launching, &project);
+            composer.suggest = found;
         }
     }
 
