@@ -256,6 +256,38 @@ impl Composer {
         self.at = suggest.word.start + word.chars().count();
     }
 
+    /// Whether the word under the cursor is still being finished: there are
+    /// suggestions under it, and it is not yet spelled the way the choice
+    /// spells it.
+    ///
+    /// This is what tells enter which of its two jobs it has. A line with a
+    /// list open under it is a line somebody is still writing a word of, and
+    /// enter finishes the word — but a word already spelled the way the choice
+    /// spells it is a finished word, and enter on a finished word is enter on
+    /// the line. Without the distinction `/review` typed out to the end
+    /// leaves one suggestion, itself, and takes two enters to send: one to
+    /// put a space after a word that needed nothing, and one to mean it. Tab
+    /// asks nothing of this, because tab has the one job.
+    ///
+    /// The choice rather than any of the entries: a word spelled like one of
+    /// them while the choice was walked to another is somebody choosing the
+    /// other, and enter gives them what they walked to.
+    pub fn finishing(&self) -> bool {
+        let Some(suggest) = &self.suggest else {
+            return false;
+        };
+        let Some(entry) = suggest.entries.get(suggest.chosen) else {
+            return false;
+        };
+        let typed: String = self
+            .text
+            .chars()
+            .take(suggest.word.end)
+            .skip(suggest.word.start)
+            .collect();
+        typed != entry.spelled
+    }
+
     /// Where the cursor stands as a byte of the line, which is what the string
     /// under it is cut by. Past the last character it is the end of the line,
     /// which is where a line being typed usually is.
@@ -2430,6 +2462,54 @@ mod tests {
             line.at, 12,
             "and a word mended in the middle of a sentence does not push the \
              next one along"
+        );
+    }
+
+    #[test]
+    fn composer_is_finishing_a_word_until_it_is_spelled_the_way_the_choice_is() {
+        let mut line = Composer::new(Asking::Task);
+        line.insert("agent:cl");
+        line.suggest = suggest(&line, &as_claude(), a_project(), &[]);
+        assert!(
+            line.finishing(),
+            "a word short of the one offered is a word still being written"
+        );
+
+        line.insert("aude");
+        line.suggest = suggest(&line, &as_claude(), a_project(), &[]);
+        assert_eq!(
+            offered(line.suggest.as_ref().expect("itself")),
+            ["agent:claude"]
+        );
+        assert!(
+            !line.finishing(),
+            "the same word spelled out is finished, however many suggestions \
+             stand under it"
+        );
+
+        // Spelled like one of them while the choice stands on another is
+        // somebody choosing the other.
+        let mut line = Composer::new(Asking::Task);
+        line.insert("/review");
+        line.suggest = Some(Suggest {
+            word: 0..7,
+            entries: vec![
+                worded("/review".to_string()),
+                worded("/reviewer".to_string()),
+            ],
+            chosen: 0,
+        });
+        assert!(!line.finishing());
+        line.choose(1);
+        assert!(
+            line.finishing(),
+            "the word the choice is on is not the one typed"
+        );
+
+        line.suggest = None;
+        assert!(
+            !line.finishing(),
+            "and a word with nothing under it is finished"
         );
     }
 

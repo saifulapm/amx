@@ -1592,9 +1592,17 @@ impl Screen {
             // under it is a line somebody is still writing a word of: sending
             // it on the key that finishes the word would start an agent on a
             // spelling they were in the middle of correcting.
-            KeyCode::Tab | KeyCode::Enter
-                if composer.suggest.is_some() && chord(key).is_empty() =>
-            {
+            //
+            // Enter only while the word is still short of the choice, though.
+            // A word already spelled the way the choice spells it is finished,
+            // and enter on a finished word is enter on the line: `/review`
+            // typed out leaves one suggestion, itself, and a line that took
+            // two enters to send would be a line that punished spelling the
+            // word. Tab keeps the one job whatever the word says.
+            KeyCode::Tab if composer.suggest.is_some() && chord(key).is_empty() => {
+                composer.complete();
+            }
+            KeyCode::Enter if composer.finishing() && chord(key).is_empty() => {
                 composer.complete();
             }
             KeyCode::Enter => {
@@ -5613,6 +5621,76 @@ mod tests {
         // And what is typed lands where the cursor was left standing.
         press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
         assert_eq!(line(&screen), ("port then importer".to_string(), 9));
+    }
+
+    #[test]
+    fn composer_enters_a_word_already_spelled_the_way_the_choice_spells_it() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let press = |screen: &mut Screen, key| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+        let line = |screen: &Screen| match &screen.mode {
+            Mode::Typing(composer) => (composer.text.clone(), composer.at),
+            _ => panic!("the line is not open"),
+        };
+        // The band as the vendor's files would fill it. Put there by hand
+        // rather than read: the catalog hangs off the home directory, which
+        // is nobody's to write into from a test in this process, and what is
+        // being read here is what the key does with the band, not where the
+        // band came from.
+        let banded = |screen: &mut Screen, word: std::ops::Range<usize>, spelled: &[&str]| {
+            let Mode::Typing(composer) = &mut screen.mode else {
+                panic!("the line is not open");
+            };
+            composer.suggest = Some(act::Suggest {
+                word,
+                entries: spelled
+                    .iter()
+                    .map(|spelled| crate::catalog::Entry {
+                        spelled: spelled.to_string(),
+                        kind: crate::catalog::Kind::Skill,
+                        about: String::new(),
+                    })
+                    .collect(),
+                chosen: 0,
+            });
+        };
+
+        // A word short of the one the choice is on: enter finishes the word,
+        // the way tab does, and the line stays open.
+        let mut screen = Screen::default();
+        press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
+        for key in word("agent:claude /rev") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        banded(&mut screen, 13..17, &["/review", "/revise"]);
+        press(&mut screen, KeyEvent::from(KeyCode::Enter));
+        assert_eq!(
+            line(&screen),
+            ("agent:claude /review ".to_string(), 21),
+            "enter on a word still being written finishes the word"
+        );
+        assert!(
+            crate::store::list(root.path()).unwrap().is_empty(),
+            "and starts nothing"
+        );
+
+        // The same word spelled out, with itself the one thing under it: that
+        // word is finished, and enter does what enter does on the line. A
+        // task of three characters, so that what enter does is ask rather
+        // than start, which is what a test in this process can watch it do.
+        let mut screen = Screen::default();
+        press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
+        for key in word("agent:claude /go") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        banded(&mut screen, 13..16, &["/go"]);
+        press(&mut screen, KeyEvent::from(KeyCode::Enter));
+        match &screen.mode {
+            Mode::Confirming(Asked::Slight { task, .. }) => assert_eq!(task, "/go"),
+            _ => panic!("enter on a finished word is enter on the line"),
+        }
     }
 
     #[test]

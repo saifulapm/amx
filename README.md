@@ -524,10 +524,13 @@ enter starts it   alt+enter newline   shift+tab permission   esc cancels
 ```
 
 `↑` and `↓` walk the band, `tab` writes the word the choice is standing on in
-the place of the one you are typing, and `enter` does the same rather than
-starting the agent, because a line with a band open under it is a line you are
-still writing a word of. `esc` puts the band away and leaves the line where it
-was, so the way out of a suggestion is not the way out of the mode.
+the place of the one you are typing, and `enter` does the same while the word
+is still short of it, because a line with a band open under it is a line you
+are still writing a word of. A word already spelled the way the choice spells
+it is finished, and `enter` on it starts the agent as it would on any line:
+`/review` typed out goes on the first `enter`, not the second. `esc` puts the
+band away and leaves the line where it was, so the way out of a suggestion is
+not the way out of the mode.
 
 A line led with one of the vendor's own agents is a task for that agent:
 `@scout port the importer` starts the session as `scout` — `--agent scout` on
