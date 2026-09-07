@@ -105,14 +105,6 @@ fn fleet(screen: &Screen, width: usize) -> Vec<Span<'static>> {
     }
 }
 
-/// How many agents are waiting on somebody.
-fn waiting(list: &List) -> usize {
-    list.counts()
-        .iter()
-        .find(|(group, _)| *group == Group::NeedsInput)
-        .map_or(0, |&(_, count)| count)
-}
-
 /// The one number the view is opened to read, in the one treatment nothing
 /// else on the screen wears.
 ///
@@ -127,7 +119,7 @@ fn waiting(list: &List) -> usize {
 /// vanished when it was `no` would leave somebody reading the row to find out
 /// whether it had been drawn yet.
 fn badge(list: &List, theme: Theme) -> Vec<Span<'static>> {
-    match waiting(list) {
+    match list.waiting() {
         0 => vec![Span::styled(NOBODY, dim())],
         count => vec![Span::styled(
             format!(" {count} WAITING "),
@@ -355,7 +347,7 @@ fn counters(list: &List, max: usize) -> Vec<Span<'static>> {
 /// answering a wider one would be answering a question nobody on this screen
 /// asked.
 pub fn title(list: &List) -> String {
-    match waiting(list) {
+    match list.waiting() {
         0 => "amx".to_string(),
         count => format!("amx{SEPARATOR}{count} waiting"),
     }
@@ -713,6 +705,20 @@ mod tests {
             "{:?}",
             screen_line(&screen, WIDE, 0)
         );
+
+        // A group somebody put an agent in is counted like any other, in the
+        // word that finds it again: the counters name the groups the list is
+        // drawn in, whichever of them a person made.
+        screen.list.narrow(vec![Narrow::State(None)]);
+        for _ in 0..2 {
+            screen.list.down();
+        }
+        assert!(screen.list.hold_or_let_go());
+        assert!(
+            screen_line(&screen, WIDE, 0).ends_with("1 pinned   1/5 running    1 WAITING"),
+            "{:?}",
+            screen_line(&screen, WIDE, 0)
+        );
     }
 
     #[test]
@@ -796,7 +802,7 @@ mod tests {
         ]);
 
         assert!(
-            screen_line(&screen, (60, 12), 0).contains("1 working   1 idle   1 done   3/5 running"),
+            screen_line(&screen, (60, 12), 0).contains("1 working   2 done   3/5 running"),
             "{:?}",
             screen_line(&screen, (60, 12), 0)
         );

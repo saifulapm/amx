@@ -2,9 +2,9 @@
 //!
 //! A list of agents is not a table with a sort order. What somebody opens this
 //! for is one question — *is anything waiting on me?* — so the agents are
-//! gathered under the answer: the ones that have stopped on a question first,
-//! then the ones mid-turn, then the ones sitting at their prompt, then the ones
-//! whose command has ended.
+//! gathered under the answer: the ones somebody pinned there first, then the
+//! work standing in front of a reviewer, then the ones that have stopped on a
+//! question, then the ones mid-turn, then the turns that are over.
 //!
 //! Inside a group the order is the order agents were started in, which is the
 //! one order that does not move under a cursor while somebody is reading. The
@@ -31,13 +31,13 @@
 //! line four is somebody else's by then.
 //!
 //! An order the list works out is an order somebody may disagree with, so two
-//! things are theirs to say: which agent is held at the top of its group, and
-//! what order the rest of that group goes in. Both are said against the agents
-//! and the group rather than against the screen, which is what lets them
-//! outlive the view they were said in.
+//! things are theirs to say: which agent is pinned over the wall, and what
+//! order a group goes in. Both are said against the agents and the group
+//! rather than against the screen, which is what lets them outlive the view
+//! they were said in.
 
 use crate::derive::View;
-use crate::pr::{self, Pr};
+use crate::pr::{self, Pr, Standing};
 use crate::store::{Ask, Meta, Phase};
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
@@ -52,60 +52,76 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Group {
+    /// Held here by somebody, whatever it is doing: the one agent they want in
+    /// front of them outranks whatever amx would have made of it.
+    Pinned,
+    /// Its turn is over and its branch has a request still asking for
+    /// something. The agent has nothing left to do and a person has.
+    Review,
     /// Stopped on a question: nothing happens until somebody answers it.
     NeedsInput,
     /// Mid-turn. Nothing to do but let it work.
     Working,
-    /// Sitting at its prompt with the turn over — and, with it, the agent amx
-    /// cannot account for. Both are quiet, and only one of them is quiet for a
-    /// reason anybody has vouched for, which is why the row says which.
-    Idle,
-    /// The command ended, one way or another.
+    /// The turn is over: sitting at its prompt, ended one way or another, or
+    /// gone somewhere amx cannot account for. Whether there is still a process
+    /// behind it is the row's to say, and the glyph says it.
     Completed,
 }
 
 impl Group {
     /// Every group, in the order a person reads them.
-    pub const ALL: [Group; 4] = [
+    pub const ALL: [Group; 5] = [
+        Group::Pinned,
+        Group::Review,
         Group::NeedsInput,
         Group::Working,
-        Group::Idle,
         Group::Completed,
     ];
 
-    /// Which group a state belongs to.
-    pub fn of(phase: Phase) -> Group {
+    /// Which group an agent belongs to: what somebody said about it, then what
+    /// it is doing, then what its work is waiting on.
+    ///
+    /// Pinning wins over everything, because it is the one line of this table
+    /// a person wrote themselves. After it the states a person can do nothing
+    /// about, so a request standing open never takes an agent out of the group
+    /// that says it is asking or working.
+    pub fn of(phase: Phase, held: bool, reviewable: bool) -> Group {
+        if held {
+            return Group::Pinned;
+        }
         match phase {
             Phase::Waiting => Group::NeedsInput,
             Phase::Starting | Phase::Working => Group::Working,
-            Phase::Idle | Phase::Unknown => Group::Idle,
-            Phase::Done | Phase::Failed | Phase::Stopped => Group::Completed,
+            _ if reviewable => Group::Review,
+            _ => Group::Completed,
         }
     }
 
     pub fn title(self) -> &'static str {
         match self {
+            Group::Pinned => "pinned",
+            Group::Review => "ready for review",
             Group::NeedsInput => "needs input",
             Group::Working => "working",
-            Group::Idle => "idle",
             Group::Completed => "completed",
         }
     }
 
-    /// The state that stands for the group where a count of it is being read
-    /// rather than a heading over rows.
+    /// The word the group is counted and narrowed by, where a count of it is
+    /// being read rather than a heading over rows.
     ///
     /// Two words for one group, and the second earns its keep: a heading says
     /// what the group means to somebody scanning the list, and a counter says
     /// the word `s:` takes for it, so the header teaches the language the list
-    /// is narrowed in by existing. Every one of these is a state an agent can
-    /// actually be in — a counter naming a word nothing matches would send
-    /// somebody to an empty list.
+    /// is narrowed in by existing. One word per group and none for anything
+    /// else — a counter naming a word the list cannot be narrowed by would
+    /// send somebody to an empty list.
     pub fn state(self) -> &'static str {
         match self {
+            Group::Pinned => "pinned",
+            Group::Review => "review",
             Group::NeedsInput => "waiting",
             Group::Working => "working",
-            Group::Idle => "idle",
             Group::Completed => "done",
         }
     }
@@ -123,8 +139,8 @@ pub enum Axis {
 }
 
 /// How somebody has arranged the list, in terms that outlive the view they
-/// arranged it in: which way it is gathered, the agents held at the top of
-/// their group, and the order a group was put in.
+/// arranged it in: which way it is gathered, the agents pinned over the wall,
+/// and the order a group was put in.
 ///
 /// Agents by id and groups by name, because that is what a later view has to
 /// find them by. An id in here that no longer names an agent costs a lookup
@@ -220,11 +236,13 @@ struct Filters {
 }
 
 impl Filters {
-    fn keeps(&self, view: &View, prs: &[Pr]) -> bool {
-        let state = self
-            .state
-            .as_ref()
-            .is_none_or(|want| view.phase().as_str() == want);
+    fn keeps(&self, view: &View, group: Group, prs: &[Pr]) -> bool {
+        // The group the row is drawn under rather than the state on the
+        // record. The words a counter says are the words `s:` takes, so a wall
+        // gathered five ways is narrowed the same five ways, and what somebody
+        // typed leaves the list holding exactly the group they read the count
+        // of.
+        let state = self.state.as_ref().is_none_or(|want| group.state() == want);
         // Every word for the agent that somebody might have in front of them:
         // the id every other surface uses, the name a person gave it because
         // the id was not what they call it, the `#12` its branch wears — which
@@ -284,15 +302,18 @@ pub struct List {
     built: usize,
     /// The groups somebody has shut, by what they stand for.
     shut: HashSet<Key>,
-    /// The agents somebody is holding at the top of their group.
+    /// The agents somebody has pinned over the wall.
     held: BTreeSet<String>,
     /// The order somebody put a group in, as the ids of the agents that were
     /// under it when they said so.
     order: BTreeMap<Group, Vec<String>>,
     axis: Axis,
     filters: Filters,
-    /// How many agents each state has, worked out where the lines are.
+    /// How many agents each group has, worked out where the lines are.
     counts: Vec<(Group, usize)>,
+    /// And how many of them have stopped on a question, which is the one count
+    /// that is about a state rather than a group.
+    waiting: usize,
     /// The projects the headings name, in the order they are drawn.
     projects: Vec<PathBuf>,
     /// Which project each agent belongs to, worked out once per agent: the
@@ -334,6 +355,7 @@ impl Default for List {
             axis: Axis::default(),
             filters: Filters::default(),
             counts: Vec::new(),
+            waiting: 0,
             projects: Vec::new(),
             roots: HashMap::new(),
             probe: holds_a_repository,
@@ -431,16 +453,16 @@ impl List {
         self.follow(&on);
     }
 
-    /// Whether this agent is one somebody is holding at the top of its group.
+    /// Whether this agent is one somebody has pinned over the wall.
     pub fn holding(&self, view: &View) -> bool {
         self.held.contains(view.id())
     }
 
-    /// Hold the agent under the cursor at the top of its group, or let it go.
+    /// Pin the agent under the cursor to the top of the list, or let it go.
     ///
-    /// About the agent and not about the group: an agent that is held stays
-    /// held when it moves group, because what somebody said is that this agent
-    /// is the one they want in front of them.
+    /// About the agent and not about the state it is in: a pinned agent stays
+    /// pinned as its turn runs and ends, because what somebody said is that
+    /// this agent is the one they want in front of them.
     ///
     /// Answers whether there was an agent to do it to, which is what tells a
     /// key pressed on a heading from a key that changed something.
@@ -473,11 +495,11 @@ impl List {
             return false;
         };
         let id = view.id().to_string();
-        let group = Group::of(view.phase());
+        let group = self.group(view);
         let mut members: Vec<String> = self
             .ordered()
             .into_iter()
-            .filter(|&n| Group::of(self.views[n].phase()) == group)
+            .filter(|&n| self.group(&self.views[n]) == group)
             .map(|n| self.views[n].id().to_string())
             .collect();
 
@@ -487,13 +509,7 @@ impl List {
         let Some(to) = at.checked_add_signed(by).filter(|to| *to < members.len()) else {
             return false;
         };
-        // A held agent is above the rest by the holding, so a move across that
-        // line is one the list could not draw: it is refused rather than
-        // written down and then ignored.
-        if self.held.contains(&members[to]) != self.held.contains(&id) {
-            return false;
-        }
-        // And the rows a move can reach are the rows on the screen. A fold
+        // The rows a move can reach are the rows on the screen. A fold
         // holds history back, and an agent moved behind one would go where the
         // cursor could not follow it, leaving somebody's cursor on whoever
         // came up in its place.
@@ -517,12 +533,22 @@ impl List {
             .any(|item| self.agent(*item).is_some_and(|view| view.id() == id))
     }
 
+    /// Where an agent comes in the reading order, which is where its group
+    /// comes.
+    fn rank(&self, view: &View) -> usize {
+        let group = self.group(view);
+        Group::ALL
+            .iter()
+            .position(|other| *other == group)
+            .unwrap_or(Group::ALL.len())
+    }
+
     /// Where an agent sits in the order somebody put its group in, and past
     /// the end of it for one nobody has placed.
     fn seat(&self, n: usize) -> usize {
         let view = &self.views[n];
         self.order
-            .get(&Group::of(view.phase()))
+            .get(&self.group(view))
             .and_then(|ids| ids.iter().position(|id| id == view.id()))
             .unwrap_or(usize::MAX)
     }
@@ -619,13 +645,35 @@ impl List {
     /// Whether a narrowing left this agent on the screen, with everything on
     /// its row that a narrowing may be written against.
     fn keeps(&self, view: &View) -> bool {
-        self.filters.keeps(view, self.requests(view))
+        self.filters
+            .keeps(view, self.group(view), self.requests(view))
+    }
+
+    /// Which group an agent is drawn under: where somebody put it, what it is
+    /// doing, and what its work is waiting on out in the world.
+    fn group(&self, view: &View) -> Group {
+        Group::of(view.phase(), self.holding(view), self.reviewable(view))
+    }
+
+    /// Whether this agent's work is standing in front of a reviewer: its turn
+    /// is over, and its branch has a request that is still asking somebody for
+    /// something.
+    ///
+    /// An agent amx cannot account for is not among them. The group is a claim
+    /// that there is nothing left to do but read the work, and a reading that
+    /// cannot say what the agent is doing cannot make it.
+    pub fn reviewable(&self, view: &View) -> bool {
+        let over = matches!(
+            view.phase(),
+            Phase::Idle | Phase::Done | Phase::Failed | Phase::Stopped
+        );
+        over && self.requests(view).iter().any(|pr| asking(pr.standing))
     }
 
     /// Whether an agent is drawn under this heading.
     fn belongs(&self, n: usize, under: Under) -> bool {
         match under {
-            Under::Group(group) => Group::of(self.views[n].phase()) == group,
+            Under::Group(group) => self.group(&self.views[n]) == group,
             Under::Project(at) => self
                 .projects
                 .get(at)
@@ -689,7 +737,17 @@ impl List {
         self.follow(&on);
     }
 
-    /// How many agents are in each state that has any, whichever way they are
+    /// How many agents have stopped on a question, wherever their rows are.
+    ///
+    /// The one count that goes by the state rather than by the group: an agent
+    /// somebody pinned is drawn over the wall and is still waiting on them,
+    /// and the badge that number feeds is the whole of what the view is opened
+    /// to read.
+    pub fn waiting(&self) -> usize {
+        self.waiting
+    }
+
+    /// How many agents are in each group that has any, whichever way they are
     /// gathered: what there is does not depend on how it was laid out.
     ///
     /// Read back rather than worked out. The counters along the header and the
@@ -796,6 +854,10 @@ impl List {
         self.remember_the_roots();
         let order = self.ordered();
         self.counts = self.counted(&order);
+        self.waiting = order
+            .iter()
+            .filter(|&&n| self.views[n].phase() == Phase::Waiting)
+            .count();
         match self.axis {
             Axis::State => {
                 self.projects.clear();
@@ -826,10 +888,9 @@ impl List {
     }
 
     /// Every agent a narrowing left, in the one order both axes draw them in:
-    /// by what they need, and inside that whatever somebody said — the ones
-    /// they are holding at the top, then the order they put the rest in, then
-    /// the order the agents were started in, except the finished ones, where
-    /// the newest ending comes first because what just finished is what
+    /// by what they need, and inside that the order somebody put the group in,
+    /// then the order the agents were started in — except the finished ones,
+    /// where the newest ending comes first because what just finished is what
     /// somebody scanning them came for.
     ///
     /// One order for both axes is what keeps a row's neighbours its own: an
@@ -842,16 +903,10 @@ impl List {
             .filter(|&n| self.keeps(&self.views[n]))
             .collect();
         order.sort_by(|&a, &b| {
-            rank(&self.views[a])
-                .cmp(&rank(&self.views[b]))
-                // Held first, and held agents among themselves by everything
-                // that orders the rest.
-                .then_with(|| {
-                    self.holding(&self.views[b])
-                        .cmp(&self.holding(&self.views[a]))
-                })
+            self.rank(&self.views[a])
+                .cmp(&self.rank(&self.views[b]))
                 .then_with(|| self.seat(a).cmp(&self.seat(b)))
-                .then_with(|| match Group::of(self.views[a].phase()) {
+                .then_with(|| match self.group(&self.views[a]) {
                     Group::Completed => ended(&self.views[b])
                         .cmp(&ended(&self.views[a]))
                         .then_with(|| self.views[a].id().cmp(self.views[b].id())),
@@ -877,7 +932,7 @@ impl List {
             .filter_map(|group| {
                 let count = order
                     .iter()
-                    .filter(|&&n| Group::of(self.views[n].phase()) == group)
+                    .filter(|&&n| self.group(&self.views[n]) == group)
                     .count();
                 (count > 0).then_some((group, count))
             })
@@ -891,7 +946,7 @@ impl List {
             let members: Vec<usize> = order
                 .iter()
                 .copied()
-                .filter(|&n| Group::of(self.views[n].phase()) == group)
+                .filter(|&n| self.group(&self.views[n]) == group)
                 .collect();
             if members.is_empty() {
                 continue;
@@ -935,32 +990,35 @@ impl List {
 
     /// Which finished rows a cut this tight keeps: the ones a person came to
     /// scan for. A failure is news however old it is, a row carrying a pull
-    /// request is work still moving, and the row the cursor stands on is
+    /// request is work still moving, a row nobody has been to read is holding
+    /// something that has never been seen, and the row the cursor stands on is
     /// taken even over the room — folding it away would land the cursor on
-    /// whoever came up in its place, and the card with it. The plainly done
-    /// fill whatever is left, newest first, and everything kept is drawn in
-    /// the order the group already reads in.
+    /// whoever came up in its place, and the card with it. What is left over
+    /// fills whatever room is left, newest first, and everything kept is drawn
+    /// in the order the group already reads in.
     fn worth_the_room(&self, members: &[usize], room: usize, keeping: Option<&str>) -> Vec<usize> {
-        let pinned = |n: usize| keeping == Some(self.views[n].id());
+        let cursor = |n: usize| keeping == Some(self.views[n].id());
         let scanned = |n: usize| {
-            self.views[n].phase() == Phase::Failed || !self.requests(&self.views[n]).is_empty()
+            self.views[n].phase() == Phase::Failed
+                || !self.requests(&self.views[n]).is_empty()
+                || unread(&self.views[n])
         };
-        let room = room.max(members.iter().filter(|&&n| pinned(n)).count());
+        let room = room.max(members.iter().filter(|&&n| cursor(n)).count());
         let chosen: HashSet<usize> = members
             .iter()
             .copied()
-            .filter(|&n| pinned(n))
+            .filter(|&n| cursor(n))
             .chain(
                 members
                     .iter()
                     .copied()
-                    .filter(|&n| !pinned(n) && scanned(n)),
+                    .filter(|&n| !cursor(n) && scanned(n)),
             )
             .chain(
                 members
                     .iter()
                     .copied()
-                    .filter(|&n| !pinned(n) && !scanned(n)),
+                    .filter(|&n| !cursor(n) && !scanned(n)),
             )
             .take(room)
             .collect();
@@ -1006,8 +1064,8 @@ impl List {
         // `order` is already the reading order, so a project's first agent is
         // its most urgent one, and that is what the project sorts by.
         roots.sort_by(|(here, ours), (there, theirs)| {
-            rank(&self.views[ours[0]])
-                .cmp(&rank(&self.views[theirs[0]]))
+            self.rank(&self.views[ours[0]])
+                .cmp(&self.rank(&self.views[theirs[0]]))
                 .then_with(|| here.cmp(there))
         });
 
@@ -1147,7 +1205,7 @@ pub fn called(view: &View) -> &str {
 /// answer routinely lands after the exit is recorded, and a row holding one
 /// nobody has read is exactly what the mark is for.
 pub fn unread(view: &View) -> bool {
-    Group::of(view.phase()) != Group::Working && view.state.seen < said(view)
+    !matches!(view.phase(), Phase::Starting | Phase::Working) && view.state.seen < said(view)
 }
 
 /// When the agent last said anything, as well as the record can say.
@@ -1214,13 +1272,20 @@ pub fn showing(view: &View) -> Option<Showing<'_>> {
     })
 }
 
-/// Where an agent comes in the reading order.
-fn rank(view: &View) -> usize {
-    let group = Group::of(view.phase());
-    Group::ALL
-        .iter()
-        .position(|other| *other == group)
-        .unwrap_or(Group::ALL.len())
+/// Whether a request is still asking somebody for something.
+///
+/// One that was merged or shut is over, and a draft is not offered to anybody
+/// yet. Everything else is work standing between an agent and a person,
+/// whatever the checks on it are doing.
+fn asking(standing: Standing) -> bool {
+    match standing {
+        Standing::Merged | Standing::Closed | Standing::Draft => false,
+        Standing::Open
+        | Standing::Ready
+        | Standing::Running
+        | Standing::Changes
+        | Standing::Failing => true,
+    }
 }
 
 /// The shape `new` gives a worktree (`src/worktree.rs`).
@@ -1339,8 +1404,9 @@ mod tests {
         view
     }
 
-    /// A forge where two of the branches have a request open, so the number
-    /// on the row is read from something rather than made up here.
+    /// A forge where three of the branches have a request on them, so the
+    /// number on the row is read from something rather than made up here. Two
+    /// are still asking somebody for something and the third is in.
     fn a_forge(meta: &Meta) -> Vec<Pr> {
         match meta.branch.as_deref() {
             Some("amx/fix-login-a1b") => vec![Pr {
@@ -1351,8 +1417,32 @@ mod tests {
                 number: 3,
                 standing: Standing::Ready,
             }],
+            Some("amx/merged-f6g") => vec![Pr {
+                number: 7,
+                standing: Standing::Merged,
+            }],
             _ => Vec::new(),
         }
+    }
+
+    /// The same reading, with somebody having been to look at what it is
+    /// holding.
+    fn looked_at(mut view: View) -> View {
+        view.state.seen = said(&view);
+        view
+    }
+
+    /// The same list with one agent pinned, which is a cursor on its row and
+    /// the key.
+    fn pinning(mut list: List, id: &str) -> List {
+        list.top();
+        while list.selected().is_none_or(|view| view.id() != id) {
+            let at = list.cursor();
+            list.down();
+            assert_ne!(list.cursor(), at, "no row for {id} to put the cursor on");
+        }
+        assert!(list.hold_or_let_go());
+        list
     }
 
     /// A list reading that forge.
@@ -1451,10 +1541,8 @@ mod tests {
                 "busy-a1b",
                 "starting-e5f",
                 "",
-                "idle (1)",
+                "completed (2)",
                 "idle-d4e",
-                "",
-                "completed (1)",
                 "done-b2c",
             ],
             "and inside a group, the order they were started in"
@@ -1464,8 +1552,7 @@ mod tests {
             [
                 (Group::NeedsInput, 1),
                 (Group::Working, 2),
-                (Group::Idle, 1),
-                (Group::Completed, 1)
+                (Group::Completed, 2)
             ]
         );
     }
@@ -1516,13 +1603,47 @@ mod tests {
     }
 
     #[test]
-    fn view_puts_an_agent_it_cannot_account_for_among_the_quiet_ones() {
+    fn view_puts_an_agent_it_cannot_account_for_among_the_turns_that_are_over() {
         // `unknown` is not a claim that anything is happening, so it does not
-        // sit among the agents that are working. Its row says `unknown` and
-        // how long it has been out of touch; the group only says nobody is
-        // holding it up.
+        // sit among the agents that are working. How long it has been out of
+        // touch is on the row; the group only says nobody is waiting on it.
         let list = listed(vec![view("puzzling-a1b", Phase::Unknown, 10)]);
-        assert_eq!(lines(&list), ["idle (1)", "puzzling-a1b"]);
+        assert_eq!(lines(&list), ["completed (1)", "puzzling-a1b"]);
+    }
+
+    #[test]
+    fn view_puts_an_ended_turn_whose_request_is_open_in_front_of_a_reviewer() {
+        let list = over_the_forge(vec![
+            on_a_branch(view("fix-login-a1b", Phase::Done, 10), "amx/fix-login-a1b"),
+            on_a_branch(view("ask-b2c", Phase::Waiting, 20), "amx/port-importer-b2c"),
+            on_a_branch(
+                view("busy-c3d", Phase::Working, 30),
+                "amx/port-importer-b2c",
+            ),
+            on_a_branch(view("merged-d4e", Phase::Done, 40), "amx/merged-f6g"),
+            view("done-e5f", Phase::Done, 50),
+        ]);
+
+        assert_eq!(
+            lines(&list),
+            [
+                "ready for review (1)",
+                "fix-login-a1b",
+                "",
+                "needs input (1)",
+                "ask-b2c",
+                "",
+                "working (1)",
+                "busy-c3d",
+                "",
+                "completed (2)",
+                "done-e5f",
+                "merged-d4e",
+            ],
+            "an agent that is asking or working has something of its own left \
+             to do, whatever its branch has open, and a request that was \
+             merged is asking nobody for anything"
+        );
     }
 
     #[test]
@@ -1649,31 +1770,33 @@ mod tests {
     }
 
     #[test]
-    fn view_keeps_failures_and_open_requests_ahead_of_the_plainly_done() {
-        // Six endings and rows for three of them. The failure and the agent
-        // whose branch has a request open are what somebody scans this group
-        // for, so the cut keeps them over newer but plainly done rows — in
-        // the order the group already reads in.
+    fn view_keeps_failures_requests_and_unread_rows_ahead_of_the_plainly_done() {
+        // Six endings and rows for three of them. The failure, the row
+        // carrying a number, and the row nobody has been to read are what
+        // somebody scans this group for, so the cut keeps them over newer but
+        // plainly done rows that have been read — in the order the group
+        // already reads in.
         let mut list = List::default();
         list.asking(a_forge);
         list.fit(5);
-        let mut views: Vec<View> = (1..=4)
-            .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
+        let mut views: Vec<View> = (1..=3)
+            .map(|n| looked_at(view(&format!("done-{n}"), Phase::Done, 10 * n)))
             .collect();
-        views.push(view("broke-e5f", Phase::Failed, 2));
-        views.push(on_a_branch(
-            view("fix-login-a1b", Phase::Done, 1),
-            "amx/fix-login-a1b",
-        ));
+        views.push(looked_at(view("broke-e5f", Phase::Failed, 2)));
+        views.push(looked_at(on_a_branch(
+            view("merged-f6g", Phase::Done, 1),
+            "amx/merged-f6g",
+        )));
+        views.push(view("unread-g7h", Phase::Done, 3));
         list.show(views);
 
         assert_eq!(
             lines(&list),
             [
                 "completed (6)",
-                "done-4",
+                "unread-g7h",
                 "broke-e5f",
-                "fix-login-a1b",
+                "merged-f6g",
                 "… 3 more"
             ]
         );
@@ -2144,7 +2267,7 @@ mod tests {
             "and it answers for the same agents when they are behind it"
         );
 
-        list.narrow(vec![Narrow::State(Some("done".to_string()))]);
+        list.narrow(vec![Narrow::Name(Some("done-a1b".to_string()))]);
         assert_eq!(
             heading(&list).members,
             1,
@@ -2178,7 +2301,7 @@ mod tests {
     }
 
     #[test]
-    fn arranged_a_held_agent_comes_first_in_its_group_and_is_still_held_in_the_next_one() {
+    fn arranged_a_pinned_agent_stands_over_the_groups_whatever_it_is_doing() {
         let mut list = listed(vec![
             view("ask-a1b", Phase::Waiting, 10),
             view("busy-b2c", Phase::Working, 20),
@@ -2194,20 +2317,22 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
+                "pinned (1)",
+                "busy-c3d",
+                "",
                 "needs input (1)",
                 "ask-a1b",
                 "",
-                "working (3)",
-                "busy-c3d",
+                "working (2)",
                 "busy-b2c",
                 "busy-d4e",
             ]
         );
         assert!(list.holding(list.agent_by_id("busy-c3d").unwrap()));
 
-        // It stops on a question, and it is at the top of the group it lands
-        // in: what somebody said is that this agent is the one they want in
-        // front of them, not that the working group has a favourite.
+        // It stops on a question, and it has not moved: what somebody said is
+        // that this agent is the one they want in front of them, not that the
+        // group it happened to be in has a favourite.
         list.show(vec![
             view("ask-a1b", Phase::Waiting, 10),
             view("busy-b2c", Phase::Working, 20),
@@ -2217,9 +2342,26 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "needs input (2)",
+                "pinned (1)",
                 "busy-c3d",
+                "",
+                "needs input (1)",
                 "ask-a1b",
+                "",
+                "working (2)",
+                "busy-b2c",
+                "busy-d4e",
+            ]
+        );
+
+        // And the same key lets it go, back under what it is doing.
+        assert!(list.hold_or_let_go());
+        assert_eq!(
+            lines(&list),
+            [
+                "needs input (2)",
+                "ask-a1b",
+                "busy-c3d",
                 "",
                 "working (2)",
                 "busy-b2c",
@@ -2268,7 +2410,7 @@ mod tests {
     }
 
     #[test]
-    fn arranged_a_move_stops_at_the_ends_of_a_group_and_at_the_ones_being_held() {
+    fn arranged_a_move_stops_at_the_ends_of_a_group_and_at_the_pinned_rows() {
         let mut list = listed(vec![
             view("busy-a1b", Phase::Working, 10),
             view("busy-b2c", Phase::Working, 20),
@@ -2277,19 +2419,24 @@ mod tests {
         list.down();
         assert!(!list.move_by(1), "and nothing is under the last");
 
-        list.hold_or_let_go();
-        assert_eq!(lines(&list), ["working (2)", "busy-b2c", "busy-a1b"]);
-        list.down();
-        assert_eq!(list.selected().unwrap().id(), "busy-a1b");
-        assert!(
-            !list.move_by(-1),
-            "a held agent is above the rest by the holding, so the row it is \
-             on is not one to be moved into"
+        // A pinned agent has a group of its own, so the rows a move can reach
+        // are the ones left in the group it came out of.
+        assert!(list.hold_or_let_go());
+        assert_eq!(
+            lines(&list),
+            ["pinned (1)", "busy-b2c", "", "working (1)", "busy-a1b"]
         );
-        assert_eq!(lines(&list), ["working (2)", "busy-b2c", "busy-a1b"]);
+        for _ in 0..2 {
+            list.down();
+        }
+        assert_eq!(list.selected().unwrap().id(), "busy-a1b");
+        assert!(!list.move_by(-1), "and the pinned row is not one of them");
+        assert_eq!(
+            lines(&list),
+            ["pinned (1)", "busy-b2c", "", "working (1)", "busy-a1b"]
+        );
 
-        // And a heading is not an agent either to move or to hold.
-        list.up();
+        // And a heading is not an agent either to move or to pin.
         list.up();
         assert!(list.on_heading());
         assert!(!list.move_by(1));
@@ -2392,36 +2539,68 @@ mod tests {
         assert!(!list.unstarted(), "and one agent is a fleet");
     }
 
-    /// Every state there is, so a table over them cannot quietly miss one.
-    const EVERY: [Phase; 8] = [
-        Phase::Starting,
-        Phase::Working,
-        Phase::Waiting,
-        Phase::Idle,
-        Phase::Done,
-        Phase::Failed,
-        Phase::Stopped,
-        Phase::Unknown,
-    ];
-
     #[test]
     fn header_counts_a_group_in_a_word_the_list_can_be_narrowed_by() {
         // The heading over the rows says what the group means; the counter at
-        // the top says the state that stands for it, and every one of those is
+        // the top says the word that stands for it, and every one of those is
         // a word `s:` takes — so the header teaches the filter language by
         // existing rather than by documenting itself.
-        for group in Group::ALL {
-            let phase = EVERY
-                .into_iter()
-                .find(|phase| phase.as_str() == group.state())
-                .unwrap_or_else(|| panic!("nothing is ever {}", group.state()));
+        let fleet = || {
+            vec![
+                view("pinned-a1b", Phase::Working, 10),
+                on_a_branch(view("review-b2c", Phase::Done, 20), "amx/fix-login-a1b"),
+                view("ask-c3d", Phase::Waiting, 30),
+                view("busy-d4e", Phase::Working, 40),
+                view("done-e5f", Phase::Done, 50),
+            ]
+        };
+        let one_of_each = [
+            (Group::Pinned, "pinned-a1b"),
+            (Group::Review, "review-b2c"),
+            (Group::NeedsInput, "ask-c3d"),
+            (Group::Working, "busy-d4e"),
+            (Group::Completed, "done-e5f"),
+        ];
+        assert_eq!(
+            one_of_each.len(),
+            Group::ALL.len(),
+            "a group with nobody in it here is a group this proves nothing about"
+        );
+
+        for (group, id) in one_of_each {
+            let mut list = pinning(over_the_forge(fleet()), "pinned-a1b");
+            list.narrow(vec![Narrow::State(Some(group.state().to_string()))]);
             assert_eq!(
-                Group::of(phase),
-                group,
-                "narrowing to {} would empty the group its own counter names",
+                lines(&list),
+                [format!("{} (1)", group.title()), id.to_string()],
+                "narrowing to {} must leave the group its own counter names",
                 group.state()
             );
         }
+    }
+
+    #[test]
+    fn header_counts_a_pinned_agent_that_is_asking_among_the_ones_asking() {
+        let mut list = listed(vec![
+            view("ask-a1b", Phase::Waiting, 10),
+            view("busy-b2c", Phase::Working, 20),
+        ]);
+        assert_eq!(list.waiting(), 1);
+
+        // The view opens on the agent that is asking, so the key pins that
+        // one, and the badge is the one number on the screen that does not
+        // move for it.
+        assert!(list.hold_or_let_go());
+        assert_eq!(
+            lines(&list),
+            ["pinned (1)", "ask-a1b", "", "working (1)", "busy-b2c"]
+        );
+        assert_eq!(list.counts(), [(Group::Pinned, 1), (Group::Working, 1)]);
+        assert_eq!(
+            list.waiting(),
+            1,
+            "where a row is drawn is not what it is waiting for"
+        );
     }
 
     #[test]
@@ -2570,7 +2749,7 @@ mod tests {
         list.narrow(vec![Narrow::Name(Some("auth".to_string()))]);
         assert_eq!(
             lines(&list),
-            ["idle (1)", "fix-login-a1b"],
+            ["completed (1)", "fix-login-a1b"],
             "and a narrowing takes the name off the row as readily as the id"
         );
     }
@@ -2587,15 +2766,15 @@ mod tests {
         // task is the one string on the record that the person typed.
         let mut list = listed(vec![porting, logging]);
         list.narrow(vec![Narrow::Name(Some("importer".to_string()))]);
-        assert_eq!(lines(&list), ["idle (1)", "a1b"]);
+        assert_eq!(lines(&list), ["completed (1)", "a1b"]);
 
         // Ignoring case, because a task is a sentence somebody wrote and a
         // search that missed it over a capital is a search nobody trusts.
         list.narrow(vec![Narrow::Name(Some("PORT".to_string()))]);
-        assert_eq!(lines(&list), ["idle (1)", "a1b"]);
+        assert_eq!(lines(&list), ["completed (1)", "a1b"]);
 
         list.narrow(vec![Narrow::Name(Some("LOGIN".to_string()))]);
-        assert_eq!(lines(&list), ["idle (1)", "b2c"]);
+        assert_eq!(lines(&list), ["completed (1)", "b2c"]);
     }
 
     #[test]
@@ -2608,9 +2787,9 @@ mod tests {
             lines(&list)
         };
 
-        assert_eq!(list("AUTH"), ["idle (1)", "fix-login-a1b"]);
-        assert_eq!(list("auth"), ["idle (1)", "fix-login-a1b"]);
-        assert_eq!(list("FIX-LOGIN"), ["idle (1)", "fix-login-a1b"]);
+        assert_eq!(list("AUTH"), ["completed (1)", "fix-login-a1b"]);
+        assert_eq!(list("auth"), ["completed (1)", "fix-login-a1b"]);
+        assert_eq!(list("FIX-LOGIN"), ["completed (1)", "fix-login-a1b"]);
     }
 
     #[test]
@@ -2643,11 +2822,11 @@ mod tests {
         // Somebody has come to the wall from the request itself, and its
         // number is the only word for the agent they have in front of them.
         list.narrow(vec![Narrow::Name(Some("#12".to_string()))]);
-        assert_eq!(lines(&list), ["idle (1)", "fix-login-a1b"]);
-        assert_eq!(list.counts(), [(Group::Idle, 1)]);
+        assert_eq!(lines(&list), ["ready for review (1)", "fix-login-a1b"]);
+        assert_eq!(list.counts(), [(Group::Review, 1)]);
 
         list.narrow(vec![Narrow::Name(Some("#3".to_string()))]);
-        assert_eq!(lines(&list), ["idle (1)", "port-importer-b2c"]);
+        assert_eq!(lines(&list), ["ready for review (1)", "port-importer-b2c"]);
 
         list.narrow(vec![Narrow::Name(Some("#99".to_string()))]);
         assert!(

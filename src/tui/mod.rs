@@ -1395,8 +1395,8 @@ impl Screen {
                 self.follow_the_cursor();
                 self.keep(true);
             }
-            // The agent under the cursor held at the top of its group, so that
-            // the one somebody is watching stays where they are looking.
+            // The agent under the cursor pinned over the wall, so that the
+            // one somebody is watching stays where they are looking.
             KeyCode::Char('t') if ctrl => {
                 let held = self.list.hold_or_let_go();
                 self.keep(held);
@@ -2202,10 +2202,10 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> Card<Body> {
     // and a capture of it is a few chrome-cut lines of wherever that viewport
     // happens to stand. Only a working agent's card is the pane's picture,
     // and an idle one with nothing recorded falls back to it.
-    let answered = matches!(
-        rows::Group::of(view.phase()),
-        rows::Group::Idle | rows::Group::Completed
-    ) && view.state.result.is_some();
+    // Where its row is drawn is nobody's business here — a card is about the
+    // one agent, so the group is read off the state alone.
+    let answered = rows::Group::of(view.phase(), false, false) == rows::Group::Completed
+        && view.state.result.is_some();
     let screen = (!asks && !answered && !view.phase().is_terminal())
         .then(|| server.capture_painted(&view.meta.pane).ok())
         .flatten()
@@ -4220,12 +4220,15 @@ mod tests {
             "and back where it was"
         );
 
-        // One of them held at the top, and then the row it is on is not one
-        // the agents under it can be moved into.
+        // One of them pinned over the wall, and then a move reaches what is
+        // left of the group it came out of: the first row there has a heading
+        // above it and nothing to be moved into.
         press(&mut screen, KeyEvent::from(KeyCode::Down));
         press(&mut screen, ctrl('t'));
         assert_eq!(ordered(&screen), ["busy-b2c", "busy-a1b", "busy-c3d"]);
-        press(&mut screen, KeyEvent::from(KeyCode::Down));
+        for _ in 0..2 {
+            press(&mut screen, KeyEvent::from(KeyCode::Down));
+        }
         press(&mut screen, shift(KeyCode::Up));
         assert_eq!(ordered(&screen), ["busy-b2c", "busy-a1b", "busy-c3d"]);
         assert_eq!(
@@ -4234,7 +4237,9 @@ mod tests {
             "a move that was refused is not a cursor that moved"
         );
 
-        press(&mut screen, KeyEvent::from(KeyCode::Up));
+        for _ in 0..2 {
+            press(&mut screen, KeyEvent::from(KeyCode::Up));
+        }
         assert_eq!(
             screen.list.selected().unwrap().id(),
             "busy-b2c",
@@ -4272,7 +4277,7 @@ mod tests {
         );
         assert!(
             at(&screen, "second-b2c") < at(&screen, "first-a1b"),
-            "the one being held is at the top of its group:\n{screen}"
+            "the one being held is over the groups:\n{screen}"
         );
 
         let (_, again) = drawn_about(

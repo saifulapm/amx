@@ -39,9 +39,36 @@ fn finished(amx: &Harness, id: &str, state: &str, ago: u64) {
     );
 }
 
+/// What the last look at the forge wrote down beside the record, which is what
+/// a row's number is read from. Written as of now, so the view takes it at its
+/// word and no forge is asked at all.
+fn a_request(amx: &Harness, id: &str, number: u64, standing: &str) {
+    let branch = format!("amx/{id}");
+    amx.set_meta(id, json!({ "branch": branch }));
+    let written = json!({
+        "asked": now(),
+        "branch": branch,
+        "prs": [{ "number": number, "standing": standing }],
+    });
+    std::fs::write(
+        amx.agent_dir(id).join("pr.json"),
+        written.to_string().as_bytes(),
+    )
+    .expect("what the last look wrote");
+}
+
 /// What is on the view's screen now.
 fn screen(amx: &Harness, pane: &str) -> String {
     amx.capture(pane)
+}
+
+/// Which line of a drawn screen holds a word, for the tests about what stands
+/// over what.
+fn line_of(drawn: &str, text: &str) -> usize {
+    drawn
+        .lines()
+        .position(|line| line.contains(text))
+        .unwrap_or_else(|| panic!("no line holding {text} in:\n{drawn}"))
 }
 
 /// The glyph on an agent's row, as the view has it drawn now: past the two
@@ -403,7 +430,7 @@ fn the_view_gathers_the_agents_under_what_they_need() {
     let view = amx.in_a_terminal(&[], &[]);
     let drawn = amx.until("every group", || {
         let drawn = screen(&amx, &view);
-        ["NEEDS INPUT", "WORKING", "IDLE", "COMPLETED"]
+        ["NEEDS INPUT", "WORKING", "COMPLETED"]
             .iter()
             .all(|group| drawn.contains(group))
             .then_some(drawn)
@@ -412,6 +439,17 @@ fn the_view_gathers_the_agents_under_what_they_need() {
     for id in ["ask-a1b", "port-import-b2c", "fix-login-c3d", "old-job-d4e"] {
         assert!(drawn.contains(id), "{id} is missing from:\n{drawn}");
     }
+    // The agent sitting at its prompt is under the same heading as the one
+    // whose command exited: both turns are over, and whether the process is
+    // still there is the row's business rather than the group's.
+    assert!(
+        !drawn.contains("IDLE"),
+        "an ended turn is completed, so there is no group between:\n{drawn}"
+    );
+    assert!(
+        line_of(&drawn, "COMPLETED") < line_of(&drawn, "fix-login-c3d"),
+        "the idle agent stands under COMPLETED:\n{drawn}"
+    );
     // A row says what the agent is up to: what it is asking, else what it is
     // doing, else what it answered.
     assert!(drawn.contains("Claude needs your permission"), "{drawn}");
@@ -433,9 +471,97 @@ fn the_view_gathers_the_agents_under_what_they_need() {
         "the one group that wants a person is counted in the badge:\n{drawn}"
     );
     assert!(
-        drawn.contains("1 done"),
+        drawn.contains("2 done"),
         "and the rest are counted beside it:\n{drawn}"
     );
+}
+
+#[test]
+fn ctrl_t_pins_the_row_under_the_cursor_over_every_group_and_lets_it_go() {
+    let amx = Harness::new();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.play("port-import-b2c", "works-with-a-spinner");
+    amx.until_state("ask-a1b", "waiting");
+    amx.until_state("port-import-b2c", "working");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the two groups", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("NEEDS INPUT") && drawn.contains("WORKING")).then_some(())
+    });
+
+    // Onto the working agent: the view opens on the first row, and the walk
+    // down takes the heading between them.
+    press(&amx, &view, "Down");
+    press(&amx, &view, "Down");
+    press(&amx, &view, "C-t");
+    let drawn = amx.until("the pinned group", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("PINNED").then_some(drawn)
+    });
+
+    assert!(
+        line_of(&drawn, "PINNED") < line_of(&drawn, "NEEDS INPUT"),
+        "what somebody pinned stands over the agent that is asking:\n{drawn}"
+    );
+    assert_eq!(
+        line_of(&drawn, "port-import-b2c"),
+        line_of(&drawn, "PINNED") + 1,
+        "and it is the row under the heading, whatever it is doing:\n{drawn}"
+    );
+    assert!(
+        !drawn.contains("WORKING"),
+        "the group it came out of was the last of it:\n{drawn}"
+    );
+
+    // And the same key lets it go, back under what it is doing.
+    press(&amx, &view, "C-t");
+    let back = amx.until("the working group again", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("WORKING").then_some(drawn)
+    });
+    assert!(!back.contains("PINNED"), "{back}");
+    assert!(
+        line_of(&back, "WORKING") < line_of(&back, "port-import-b2c"),
+        "{back}"
+    );
+}
+
+#[test]
+fn ready_for_review_takes_an_ended_agent_whose_request_is_still_open() {
+    let amx = Harness::new();
+    finished(&amx, "fix-login-a1b", "done", 60);
+    a_request(&amx, "fix-login-a1b", 12, "open");
+    finished(&amx, "port-import-b2c", "done", 30);
+    a_request(&amx, "port-import-b2c", 9, "merged");
+    finished(&amx, "old-job-c3d", "done", 90);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let drawn = amx.until("both groups", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("READY FOR REVIEW") && drawn.contains("COMPLETED")).then_some(drawn)
+    });
+
+    assert!(
+        line_of(&drawn, "READY FOR REVIEW") < line_of(&drawn, "COMPLETED"),
+        "work waiting on a reviewer stands over the work that is over:\n{drawn}"
+    );
+    assert_eq!(
+        line_of(&drawn, "fix-login-a1b"),
+        line_of(&drawn, "READY FOR REVIEW") + 1,
+        "the agent whose request is still asking for something:\n{drawn}"
+    );
+    assert!(
+        row_of(&amx, &view, "fix-login-a1b").is_some_and(|row| row.contains("#12")),
+        "with the number the review is happening under:\n{drawn}"
+    );
+    for id in ["port-import-b2c", "old-job-c3d"] {
+        assert!(
+            line_of(&drawn, id) > line_of(&drawn, "COMPLETED"),
+            "a merged request and a branch nobody opened one for are both \
+             over, so {id} is completed:\n{drawn}"
+        );
+    }
 }
 
 #[test]
@@ -692,7 +818,13 @@ fn a_wall_with_nothing_on_it_says_so_in_one_line_of_amxs_own() {
     // No heading, because a heading stands over rows and there are none, and
     // amx's own line where the rows would be. How many rows the empty wall
     // comes to is the empty wall's own business.
-    for group in ["NEEDS INPUT", "WORKING", "IDLE", "COMPLETED"] {
+    for group in [
+        "PINNED",
+        "READY FOR REVIEW",
+        "NEEDS INPUT",
+        "WORKING",
+        "COMPLETED",
+    ] {
         assert!(
             !drawn.contains(group),
             "{group} is a heading over rows, and there are none:\n{drawn}"
