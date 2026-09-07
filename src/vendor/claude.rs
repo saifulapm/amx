@@ -6,8 +6,8 @@
 //! that fails.
 
 use super::{
-    Capability, DEFAULT, DialSpec, ForkSpec, Hooks, Moment, SessionSpec, TOOL, Transcript, Vendor,
-    Wire, Wiring,
+    Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Moment, Place, SessionSpec, TOOL,
+    Transcript, Vendor, Wire, Wiring,
 };
 
 /// claude's entry in the table.
@@ -106,6 +106,34 @@ pub const VENDOR: Vendor = Vendor {
     // The conversation it writes under `~/.claude/projects/`, in the shape
     // `crate::conversation` reads claude's by.
     transcript: Some(Transcript::Claude),
+    // Where claude loads what somebody can name on a line, measured at 2.1.263
+    // on 2026-09-07: the person's `.claude` and the project's for skills,
+    // commands and agents alike, and the plugin cache for the skills and
+    // commands a plugin brings, one directory deep in a market, a plugin and a
+    // version that are the plugin's to name and not amx's. A skill is run by
+    // its bare name, which is the empty prefix.
+    //
+    // No built-ins: the commands claude answers out of itself are drawn by its
+    // own input, `--help` lists none of them, and a list amx has not measured
+    // is a list amx does not offer.
+    catalog: Some(Catalog {
+        skills: &[
+            Place::Person(".claude/skills"),
+            Place::Project(".claude/skills"),
+            Place::Person(".claude/plugins/cache/*/*/*/skills"),
+        ],
+        commands: &[
+            Place::Person(".claude/commands"),
+            Place::Project(".claude/commands"),
+            Place::Person(".claude/plugins/cache/*/*/*/commands"),
+        ],
+        agents: &[
+            Place::Person(".claude/agents"),
+            Place::Project(".claude/agents"),
+        ],
+        builtins: &[],
+        skill_prefix: "",
+    }),
 };
 
 /// How claude reports what it is doing, and where amx asks it to.
@@ -385,6 +413,47 @@ mod tests {
         assert_ne!(
             hooks.idle_notice, hooks.permission_notice,
             "a nudge about a session nobody is using is not a question"
+        );
+    }
+
+    #[test]
+    fn claude_names_where_it_loads_skills_commands_and_agents_from() {
+        // Measured at 2.1.263 on 2026-09-07 off the directories claude reads
+        // on a machine it is installed on: the person's `.claude` and the
+        // project's for each of the three, and the plugin cache for the two it
+        // keeps there, whose market, plugin and version segments are nobody's
+        // to name in advance. Re-measure at every vendor bump the same way as
+        // the dials: a moved directory is a suggestion that never arrives.
+        let catalog = VENDOR.catalog.expect("claude loads files by name");
+        assert_eq!(
+            catalog.skills,
+            [
+                Place::Person(".claude/skills"),
+                Place::Project(".claude/skills"),
+                Place::Person(".claude/plugins/cache/*/*/*/skills"),
+            ]
+        );
+        assert_eq!(
+            catalog.commands,
+            [
+                Place::Person(".claude/commands"),
+                Place::Project(".claude/commands"),
+                Place::Person(".claude/plugins/cache/*/*/*/commands"),
+            ]
+        );
+        assert_eq!(
+            catalog.agents,
+            [
+                Place::Person(".claude/agents"),
+                Place::Project(".claude/agents"),
+            ]
+        );
+        assert_eq!(catalog.skill_prefix, "", "claude runs a skill by its name");
+        assert!(
+            catalog.builtins.is_empty(),
+            "claude's own commands are drawn by its own input and `--help` \
+             lists none of them, so amx offers what is in the places above \
+             and nothing it has not measured"
         );
     }
 

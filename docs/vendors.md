@@ -79,6 +79,16 @@ real entry happens to take.
   was read at. `None` from a vendor nobody has sat in front of yet, and then
   its pane is watched and never named. Screens are measured against a running
   program; a document written from anywhere else is a transcription.
+- **`catalog`** — what this vendor can be asked for by name: the directories
+  it loads skills, commands and agents from, the commands it answers out of
+  itself, and what stands in front of a skill's name in the word that runs
+  one, which is nothing for claude and `skill:` for pi. A directory is a
+  `Place` under the person's home or under the project the agent is running
+  in, and a `*` segment in one stands for every directory at that level —
+  claude keeps its plugins under a market, a plugin and a version, none of
+  which is amx's to name in advance. `None` from a vendor whose layout nobody
+  has measured, and then a word typed on a line for it is only ever the word
+  somebody typed.
 
 ## What the rest of amx asks
 

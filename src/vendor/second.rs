@@ -61,6 +61,10 @@ pub const SECOND: Vendor = Vendor {
     // And no conversation on disk to read, which is what a vendor that keeps
     // no transcript has to answer.
     transcript: None,
+    // Nothing anybody can name on a line either: nobody has measured where
+    // this vendor keeps its skills or what it answers itself, which is the
+    // shape a reader of those places has to leave alone.
+    catalog: None,
 };
 
 /// The second vendor's screens.

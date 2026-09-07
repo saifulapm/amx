@@ -266,6 +266,63 @@ pub struct Vendor {
     /// `None` from a vendor whose file amx has never sat down with. A shape
     /// is measured off a real session, the way a screen is off a real pane.
     pub transcript: Option<Transcript>,
+    /// What this vendor can be asked for by name: where it loads skills,
+    /// commands and agents from, and what it answers out of itself. A word
+    /// typed on a task line is completed against it.
+    ///
+    /// `None` from a vendor whose layout amx has not measured, and then a
+    /// word on a line for it is only ever the word somebody typed.
+    pub catalog: Option<Catalog>,
+}
+
+/// A directory a vendor loads something from, under the root it hangs off.
+///
+/// Two roots, because they are what every vendor measured so far reads: the
+/// person's own files, and the project the agent is running in. The path is
+/// relative to one of them, and a `*` segment stands for every directory at
+/// that level — claude keeps its plugins under a market, a plugin and a
+/// version, none of which is amx's to name in advance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    /// Under the person's home directory.
+    Person(&'static str),
+    /// Under the project the agent is running in.
+    Project(&'static str),
+}
+
+impl Place {
+    /// The directory itself, relative to the root it hangs off.
+    pub fn path(&self) -> &'static str {
+        match self {
+            Place::Person(path) | Place::Project(path) => path,
+        }
+    }
+}
+
+/// What a vendor can be asked for by name, as places to look and words it
+/// answers to.
+///
+/// Where to look and what to call what is found, and nothing past that: what a
+/// file in one of these says about itself is read out of the file, and where
+/// the word goes on a task line is the line's business.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Catalog {
+    /// Where this vendor loads skills from, in the order it reads them.
+    pub skills: &'static [Place],
+    /// Where its commands come from, whatever it calls them: pi's own word
+    /// for the same thing is prompts.
+    pub commands: &'static [Place],
+    /// Where its agents come from. Empty from a vendor that has no such
+    /// thing, and then nothing on a line for it names one.
+    pub agents: &'static [Place],
+    /// The commands the vendor answers out of itself, which are in no
+    /// directory and are named here or nowhere. Each without the mark that
+    /// runs it: writing that is the line's business. Empty from a vendor
+    /// whose own list amx has not measured.
+    pub builtins: &'static [&'static str],
+    /// What stands in front of a skill's name in the word that runs one: pi
+    /// spells a skill `/skill:name`, and claude spells it `/name`.
+    pub skill_prefix: &'static str,
 }
 
 /// The shape of a conversation on disk: one JSON document a line, and where
@@ -848,6 +905,62 @@ mod tests {
                 "{} hands {session} to the agents it spawns",
                 vendor.name
             );
+        }
+    }
+
+    #[test]
+    fn both_vendors_in_the_table_say_what_they_can_be_asked_for_by_name() {
+        // A word typed on a task line is completed out of the vendor's own
+        // files, and a vendor with no catalog is one with nowhere to look.
+        // Both entries in the table have had their layout measured; the
+        // fixture has not.
+        for vendor in table() {
+            assert!(
+                vendor.catalog.is_some(),
+                "{} says nothing it can be asked for by name",
+                vendor.name
+            );
+        }
+        assert!(
+            SECOND.catalog.is_none(),
+            "the vendor nobody has measured a layout for is the shape a \
+             reader of those places has to leave alone"
+        );
+    }
+
+    #[test]
+    fn a_vendor_loads_what_it_offers_from_under_a_root_rather_than_a_path_of_its_own() {
+        // amx joins a place onto a home directory or onto the project the
+        // agent is running in. An absolute path would throw the root away and
+        // read wherever the table said instead. A built-in is the vendor's own
+        // answer rather than a file, and it is named without the mark that
+        // runs it: writing that mark is the line's business.
+        for vendor in known() {
+            let Some(catalog) = vendor.catalog else {
+                continue;
+            };
+            for place in catalog
+                .skills
+                .iter()
+                .chain(catalog.commands)
+                .chain(catalog.agents)
+            {
+                let path = place.path();
+                assert!(!path.is_empty(), "{} looks in nowhere", vendor.name);
+                assert!(
+                    !std::path::Path::new(path).is_absolute(),
+                    "{}'s {path} hangs off no root",
+                    vendor.name
+                );
+            }
+            for builtin in catalog.builtins {
+                assert!(!builtin.is_empty(), "{} names nothing", vendor.name);
+                assert!(
+                    !builtin.starts_with('/'),
+                    "{} spells {builtin} with the mark that runs it",
+                    vendor.name
+                );
+            }
         }
     }
 

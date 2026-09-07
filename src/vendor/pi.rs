@@ -6,8 +6,8 @@
 //! choose, and a renamed flag turns a dial into a spawn that fails.
 
 use super::{
-    Capability, DEFAULT, DialSpec, ForkSpec, Hooks, Moment, SessionSpec, Transcript, Vendor, Wire,
-    Wiring,
+    Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Moment, Place, SessionSpec,
+    Transcript, Vendor, Wire, Wiring,
 };
 
 /// pi's entry in the table.
@@ -120,6 +120,54 @@ pub const VENDOR: Vendor = Vendor {
     // `crate::conversation` reads pi's by. The shape is measured; whether a
     // record ever names such a file is a question of the capabilities above.
     transcript: Some(Transcript::Pi),
+    // Where pi loads what somebody can name on a line, measured at 0.85.1 on
+    // 2026-09-07 against the README shipped beside it: four skill directories
+    // in the order pi reads them, and two for the prompt templates it expands
+    // with `/name`. A skill is run as `/skill:name`, which is the prefix.
+    //
+    // The built-ins are the 23 rows of that README's Commands table, in its
+    // order, `/login` to `/quit`; the first row names two, so 23 rows are 24
+    // words. pi ships no sub agents, so it has no agents places at all.
+    catalog: Some(Catalog {
+        skills: &[
+            Place::Person(".pi/agent/skills"),
+            Place::Person(".agents/skills"),
+            Place::Project(".pi/skills"),
+            Place::Project(".agents/skills"),
+        ],
+        commands: &[
+            Place::Person(".pi/agent/prompts"),
+            Place::Project(".pi/prompts"),
+        ],
+        agents: &[],
+        builtins: &[
+            "login",
+            "logout",
+            "llama",
+            "model",
+            "thinking",
+            "scoped-models",
+            "settings",
+            "resume",
+            "new",
+            "name",
+            "session",
+            "tree",
+            "trust",
+            "fork",
+            "clone",
+            "compact",
+            "copy",
+            "export",
+            "import",
+            "share",
+            "reload",
+            "hotkeys",
+            "changelog",
+            "quit",
+        ],
+        skill_prefix: "skill:",
+    }),
 };
 
 /// How pi reports what it is doing, and where amx asks it to.
@@ -310,6 +358,72 @@ mod tests {
                 "PI_REASONING_LEVEL",
                 "AI_AGENT",
                 "PI_CODING_AGENT",
+            ]
+        );
+    }
+
+    #[test]
+    fn pi_names_its_four_skill_places_its_two_prompt_places_and_its_own_commands() {
+        // Measured at 0.85.1 on 2026-09-07 against the README shipped beside
+        // the installed pi: four skill directories in the order it reads them,
+        // two for the prompt templates it calls up with `/name`, and the 23
+        // rows of the Commands table for what pi answers out of itself,
+        // `/login` to `/quit`. The first row names two commands, so 23 rows
+        // are 24 words. Re-measure at every vendor bump: a moved directory is
+        // a suggestion that never arrives, and a dropped command is one amx
+        // offers after pi has stopped answering it.
+        let catalog = VENDOR.catalog.expect("pi loads files by name");
+        assert_eq!(
+            catalog.skills,
+            [
+                Place::Person(".pi/agent/skills"),
+                Place::Person(".agents/skills"),
+                Place::Project(".pi/skills"),
+                Place::Project(".agents/skills"),
+            ]
+        );
+        assert_eq!(
+            catalog.commands,
+            [
+                Place::Person(".pi/agent/prompts"),
+                Place::Project(".pi/prompts"),
+            ]
+        );
+        assert!(
+            catalog.agents.is_empty(),
+            "pi ships no sub agents, so nothing typed with @ names one"
+        );
+        assert_eq!(
+            catalog.skill_prefix, "skill:",
+            "pi runs a skill as /skill:name, which claude does not"
+        );
+        assert_eq!(
+            catalog.builtins,
+            [
+                "login",
+                "logout",
+                "llama",
+                "model",
+                "thinking",
+                "scoped-models",
+                "settings",
+                "resume",
+                "new",
+                "name",
+                "session",
+                "tree",
+                "trust",
+                "fork",
+                "clone",
+                "compact",
+                "copy",
+                "export",
+                "import",
+                "share",
+                "reload",
+                "hotkeys",
+                "changelog",
+                "quit",
             ]
         );
     }
