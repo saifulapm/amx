@@ -835,11 +835,12 @@ the notice is handed over and never waited for.
 
 ## Configuration
 
-`~/.config/amx/config.toml`, ten keys and no more:
+`~/.config/amx/config.toml`, eleven keys and no more:
 
 ```toml
 agent = "claude"        # the command a new agent runs: claude, pi or your own
 max_agents = 5          # how many live agents before `new` refuses
+max_total = 10          # a ceiling over every project on the machine
 worktrees = true        # give each agent its own worktree in a repository
 notifications = true    # desktop notification when one needs you or finishes
 trust = false           # answer claude's folder-trust screen for trees amx cuts
