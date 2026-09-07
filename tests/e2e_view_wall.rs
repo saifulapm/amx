@@ -439,7 +439,7 @@ fn the_view_gathers_the_agents_under_what_they_need() {
 }
 
 #[test]
-fn glyphs_say_the_states_apart_and_the_working_one_breathes() {
+fn glyphs_say_a_live_agent_from_an_ended_one_and_the_working_one_breathes() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
     amx.play("port-import-b2c", "works-with-a-spinner");
@@ -449,16 +449,32 @@ fn glyphs_say_the_states_apart_and_the_working_one_breathes() {
     amx.until_state("fix-login-c3d", "idle");
     finished(&amx, "old-job-d4e", "done", 60);
 
+    // One shape while there is a process to go back to and another once there
+    // is not, whatever the row is doing with it.
     let view = amx.in_a_terminal(&[], &[]);
     for (id, want) in [
-        ("ask-a1b", '?'),
-        ("fix-login-c3d", '○'),
-        ("old-job-d4e", '●'),
+        ("ask-a1b", '✻'),
+        ("fix-login-c3d", '✻'),
+        ("old-job-d4e", '∙'),
     ] {
         amx.until(&format!("{id} to be marked {want}"), || {
             (mark(&amx, &view, id) == Some(want)).then_some(())
         });
     }
+
+    // What tells the two live ones apart is the colour on that one shape: the
+    // row that wants a person is painted for it, and the row sitting at its
+    // prompt is the quiet one.
+    let asking = coloured_line(&amx, &view, "ask-a1b");
+    assert!(
+        asking.contains(&foreground("waiting")),
+        "the waiting glyph is painted for what the row wants:\n{asking:?}"
+    );
+    let resting = coloured_line(&amx, &view, "fix-login-c3d");
+    assert!(
+        sgr_at(&resting, "✻").contains(&2),
+        "and the idle one is dim:\n{resting:?}"
+    );
 
     // The working row is drawn a frame at a time, so watching it for a moment
     // shows more than one of them — and every one is the vendor's own, from the

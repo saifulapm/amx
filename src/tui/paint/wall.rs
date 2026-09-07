@@ -5,10 +5,12 @@
 //! on the widths the grid fixes rather than on what this fleet happens to
 //! hold, so the columns are where they were when the last agent ended.
 //!
-//! A row says its state on the glyph, and it says one thing with weight:
-//! nobody has been to read what it is holding. That is the one bold name on
-//! the wall, so a person coming back to a screenful of endings sees which of
-//! them they have already been through.
+//! A row says its state on one glyph: the shape is whether there is still a
+//! process to go back to, the colour is which state that process is in, and
+//! the pulse is a turn running. It says one thing with weight, and that is not
+//! about the agent at all — nobody has been to read what this row is holding.
+//! So a person coming back to a screenful of endings sees which of them they
+//! have already been through.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -153,7 +155,15 @@ fn line(
         },
         Item::Fold(hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
         Item::Agent(_) => match list.agent(item) {
-            Some(view) => row(view, list.requests(view), at, widths, requests, moment, theme),
+            Some(view) => row(
+                view,
+                list.requests(view),
+                at,
+                widths,
+                requests,
+                moment,
+                theme,
+            ),
             None => Line::raw(""),
         },
         Item::Blank => Line::raw(""),
@@ -475,33 +485,42 @@ pub(super) fn pulse(beat: usize) -> &'static str {
     set[at.min(frames - 1 - at)]
 }
 
-/// The mark a state rests on: eight states and eight marks, so a row says
-/// which one it is in with the colour turned off.
+/// What a row whose process has gone is marked with: the dot it left behind,
+/// which is the one shape here the vendor's set does not hand out.
+const ENDED: &str = "∙";
+
+/// The mark a state rests on: the vendor's own asterisk while there is still a
+/// process to go back to, and that dot once there is not.
 ///
-/// The circle is drawn three ways — dotted while it is coming up, hollow while
-/// it is alive and quiet, filled once it is finished — and nothing at rest may
-/// borrow a frame of the pulse, because every one of those is in motion. The
-/// exception is working itself, which rests on the vendor's live glyph and is
-/// the thing the pulse moves off and back to.
+/// Two shapes over eight states, because the shape is not where a state is
+/// said — the colour is, and a wall of eight shapes is a wall somebody reads a
+/// legend for. What the shape carries is the one thing the colour cannot: an
+/// agent still there is one somebody can attach to, answer or stop, and an
+/// agent that has gone is a record to read. That is what a person walking the
+/// list is deciding on, and it survives a terminal with the colour turned off.
+///
+/// The live shape is read out of the pulse rather than spelled a second time
+/// here, so a row that stops working settles onto the glyph it was already
+/// breathing through rather than changing under the reader.
 pub(super) fn resting(phase: Phase) -> &'static str {
     match phase {
-        Phase::Waiting => "?",
-        Phase::Starting => "◌",
-        Phase::Working => set()[LIVE],
-        Phase::Idle => "○",
-        Phase::Done => "●",
-        Phase::Failed => "✗",
-        Phase::Stopped => "⏹",
-        // amx does not know what this agent is doing, and says so.
-        Phase::Unknown => "~",
+        Phase::Waiting | Phase::Starting | Phase::Working | Phase::Idle | Phase::Unknown => {
+            set()[LIVE]
+        }
+        Phase::Done | Phase::Failed | Phase::Stopped => ENDED,
     }
 }
 
-/// The mark on a row now: a working agent is drawn a frame at a time, and
-/// every other state rests.
+/// The mark on a row now: an agent whose turn is running is drawn a frame at a
+/// time, and every other state stands still.
+///
+/// Starting as well as working, because coming up is the first part of a turn
+/// and the pulse is what says a turn is under way. Which of the two it is, is
+/// on the row in words under a project heading and in the heading itself under
+/// a state one.
 fn icon(phase: Phase, beat: usize) -> &'static str {
     match phase {
-        Phase::Working => pulse(beat),
+        Phase::Starting | Phase::Working => pulse(beat),
         phase => resting(phase),
     }
 }
@@ -748,30 +767,34 @@ mod tests {
     const WALL: (u16, u16) = (80, 12);
 
     #[test]
-    fn glyphs_give_every_state_a_mark_of_its_own() {
-        let marks: Vec<&str> = EVERY.iter().map(|phase| resting(*phase)).collect();
+    fn glyphs_say_a_process_that_is_there_from_one_that_has_gone() {
+        // Two shapes over eight states, and the colour says which of the eight
+        // it is: a wall of eight shapes is a wall somebody reads a legend for.
+        let live = [
+            Phase::Waiting,
+            Phase::Starting,
+            Phase::Working,
+            Phase::Idle,
+            Phase::Unknown,
+        ];
+        let gone = [Phase::Done, Phase::Failed, Phase::Stopped];
         assert_eq!(
-            marks
-                .iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .len(),
+            live.len() + gone.len(),
             EVERY.len(),
-            "eight states, eight marks: {marks:?}"
+            "every state is one or the other"
         );
-        assert_eq!(resting(Phase::Waiting), "?");
-        assert_eq!(resting(Phase::Starting), "◌");
-        assert_eq!(resting(Phase::Idle), "○");
-        assert_eq!(resting(Phase::Done), "●");
-        assert_eq!(resting(Phase::Failed), "✗");
-        assert_eq!(resting(Phase::Stopped), "⏹");
-        assert_eq!(resting(Phase::Unknown), "~");
-
-        for phase in EVERY.iter().filter(|phase| **phase != Phase::Working) {
-            assert!(
-                !set().contains(&resting(*phase)),
-                "{phase} rests on a mark the pulse passes through"
-            );
+        for phase in live {
+            assert_eq!(resting(phase), "✻", "{phase} is still there");
         }
+        for phase in gone {
+            assert_eq!(resting(phase), "∙", "{phase} has ended");
+        }
+        assert_eq!(
+            resting(Phase::Working),
+            set()[LIVE],
+            "and the live shape is the vendor's own, which is the frame the \
+             pulse grows out of and falls back to"
+        );
     }
 
     #[test]
@@ -782,11 +805,17 @@ mod tests {
 
         assert_eq!(frames, want, "the set, and then the set backwards");
         assert_eq!(pulse(12), pulse(0), "and round again");
-        assert_eq!(
-            resting(Phase::Working),
-            set[LIVE],
-            "and it rests on the vendor's own live glyph"
-        );
+
+        // The pulse is a turn running, which starting is the first part of.
+        for phase in [Phase::Starting, Phase::Working] {
+            assert_eq!(icon(phase, 1), pulse(1), "{phase} is a turn under way");
+        }
+        for phase in EVERY
+            .iter()
+            .filter(|phase| !matches!(phase, Phase::Starting | Phase::Working))
+        {
+            assert_eq!(icon(*phase, 1), resting(*phase), "and {phase} stands still");
+        }
     }
 
     #[test]
@@ -811,30 +840,36 @@ mod tests {
 
         // The colour is the whole of what the glyph says, weight and all: the
         // one weight on a row is the name's, and it says nobody has read it.
-        assert_eq!(painted(Phase::Waiting), ("?".into(), theme().waiting, plain));
         assert_eq!(
-            painted(Phase::Unknown),
-            ("~".into(), theme().waiting, plain)
+            painted(Phase::Waiting),
+            ("✻".into(), theme().waiting, plain)
         );
-        assert_eq!(painted(Phase::Done), ("●".into(), theme().done, plain));
-        assert_eq!(painted(Phase::Failed), ("✗".into(), theme().failed, plain));
+        assert_eq!(painted(Phase::Done), ("∙".into(), theme().done, plain));
+        assert_eq!(painted(Phase::Failed), ("∙".into(), theme().failed, plain));
         assert_eq!(
             painted(Phase::Stopped),
-            ("⏹".into(), theme().stopped, plain)
+            ("∙".into(), theme().stopped, plain)
         );
 
         // An agent still at work has nothing to say about how it went, so it
         // takes the terminal's own colour and the pulse does the talking. An
-        // agent that has finished its turn and is sitting there is quiet.
-        assert_eq!(painted(Phase::Starting), ("◌".into(), Color::Reset, plain));
+        // agent that has finished its turn and is sitting there is quiet, and
+        // one amx cannot account for is neither: it stands still in the
+        // terminal's own, which is the one thing left to tell it from a row
+        // that is asking.
+        assert_eq!(
+            painted(Phase::Starting),
+            (pulse(0).into(), Color::Reset, plain)
+        );
         assert_eq!(
             painted(Phase::Working),
             (pulse(0).into(), Color::Reset, plain)
         );
         assert_eq!(
             painted(Phase::Idle),
-            ("○".into(), Color::Reset, Modifier::DIM)
+            ("✻".into(), Color::Reset, Modifier::DIM)
         );
+        assert_eq!(painted(Phase::Unknown), ("✻".into(), Color::Reset, plain));
     }
 
     #[test]
@@ -874,7 +909,7 @@ mod tests {
         );
         assert_eq!(heading_of(&screen[2]), "NEEDS INPUT");
         assert!(
-            screen[3].starts_with("  ? ask-a1b"),
+            screen[3].starts_with("  ✻ ask-a1b"),
             "two cells of indent, the glyph and a space, and then the name: \
              {:?}",
             screen[3]
@@ -1236,8 +1271,18 @@ mod tests {
         let size = (60, 10);
         let screen = showing(
             vec![
-                read(view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60)),
-                read(view("port-import-b2c", Phase::Done, Some("wrote the tests"), 300)),
+                read(view(
+                    "fix-login-a1b",
+                    Phase::Done,
+                    Some("wrote the parser"),
+                    60,
+                )),
+                read(view(
+                    "port-import-b2c",
+                    Phase::Done,
+                    Some("wrote the tests"),
+                    300,
+                )),
             ],
             None,
         );
@@ -1265,7 +1310,7 @@ mod tests {
 
         // The state is carried by the glyph's colour alone.
         let (glyph, painted, _) = mark(&screen, size, 4);
-        assert_eq!((glyph.as_str(), painted), ("●", theme().done));
+        assert_eq!((glyph.as_str(), painted), ("∙", theme().done));
     }
 
     #[test]
@@ -1274,7 +1319,12 @@ mod tests {
         let screen = showing(
             vec![
                 view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
-                read(view("port-import-b2c", Phase::Done, Some("wrote the tests"), 300)),
+                read(view(
+                    "port-import-b2c",
+                    Phase::Done,
+                    Some("wrote the tests"),
+                    300,
+                )),
                 read(view("ask-c3d", Phase::Waiting, Some("Proceed?"), 30)),
             ],
             None,
@@ -1307,8 +1357,18 @@ mod tests {
         let size = (60, 10);
         let mut screen = showing(
             vec![
-                read(view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60)),
-                read(view("port-import-b2c", Phase::Done, Some("wrote the tests"), 300)),
+                read(view(
+                    "fix-login-a1b",
+                    Phase::Done,
+                    Some("wrote the parser"),
+                    60,
+                )),
+                read(view(
+                    "port-import-b2c",
+                    Phase::Done,
+                    Some("wrote the tests"),
+                    300,
+                )),
             ],
             None,
         );

@@ -43,10 +43,13 @@ pub(super) fn name_colour(theme: Theme, phase: Phase, unread: bool) -> Style {
 /// yet, so it takes the terminal's own colour and earns one by ending.
 pub(super) fn colour(theme: Theme, phase: Phase) -> Style {
     match phase {
-        // What amx cannot account for wants a person as much as a question
-        // does, and the mark is what says which of the two it is.
-        Phase::Waiting | Phase::Unknown => Style::new().fg(theme.waiting),
-        Phase::Starting | Phase::Working => Style::new(),
+        Phase::Waiting => Style::new().fg(theme.waiting),
+        // What amx cannot account for is not a question, and there is one
+        // shape for both: an agent it has lost track of, painted for a thing
+        // waiting on a person, would be a row that says it is asking something
+        // amx has no idea about. It stands still in the terminal's own, which
+        // is what tells it from every other live row.
+        Phase::Starting | Phase::Working | Phase::Unknown => Style::new(),
         Phase::Idle => dim(),
         Phase::Done => Style::new().fg(theme.done),
         Phase::Failed => Style::new().fg(theme.failed),
