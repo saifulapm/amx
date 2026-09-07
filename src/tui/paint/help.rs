@@ -65,7 +65,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 38] = [
     ("r", "reply: a message, or an answer on the card"),
     ("alt+enter", "a newline in the line, without sending it"),
     ("ctrl+j", "the same, where alt+enter does not arrive"),
-    ("tab", "take the word offered under the line"),
+    ("tab", "the word offered · on nothing, the agents"),
     ("← → ctrl+←", "the cursor: a character, a word, home end"),
     ("backspace", "a character · delete ahead · ctrl+w a word"),
     ("ctrl+g", "write the line in $EDITOR"),

@@ -1617,6 +1617,22 @@ impl Screen {
             KeyCode::Tab if composer.suggest.is_some() && chord(key).is_empty() => {
                 composer.complete();
             }
+            // The same key on a line with nothing on it, where there is no
+            // word to take: it writes the mark that asks for one. What stands
+            // under it is what a typed `@` brings — the vendor's own agents,
+            // and the project's files where it has none — so somebody who
+            // does not know what to type is one press from what there is.
+            //
+            // The task line alone, because the band is: a reply, a name and a
+            // find line have nothing to open under them, and a mark written
+            // onto one of those would be a character to take back.
+            KeyCode::Tab
+                if composer.text.is_empty()
+                    && matches!(composer.asking, Asking::Task)
+                    && chord(key).is_empty() =>
+            {
+                composer.insert("@");
+            }
             KeyCode::Enter if composer.finishing() && chord(key).is_empty() => {
                 composer.complete();
             }
@@ -3218,7 +3234,11 @@ mod tests {
         let Mode::Typing(composer) = &screen.mode else {
             panic!("still typing")
         };
-        assert_eq!(composer.text, "m", "a letter without the chord is a letter");
+        assert_eq!(
+            composer.text, "@m",
+            "a letter without the chord is a letter, and tab without it is the \
+             mark the line opens its agents with"
+        );
         assert_eq!(
             screen.profile.permission, "auto",
             "and tab on its own is not the chord that turns the dial"
@@ -5766,6 +5786,57 @@ mod tests {
         match &screen.mode {
             Mode::Confirming(Asked::Slight { task, .. }) => assert_eq!(task, "/go"),
             _ => panic!("enter on a finished word is enter on the line"),
+        }
+    }
+
+    #[test]
+    fn composer_asks_for_the_agents_when_tab_is_pressed_on_an_empty_task_line() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let press = |screen: &mut Screen, key| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+        let line = |screen: &Screen| match &screen.mode {
+            Mode::Typing(composer) => composer.text.clone(),
+            _ => panic!("the line is not open"),
+        };
+        let typing = |asking| Screen {
+            mode: Mode::Typing(Composer::new(asking)),
+            ..Screen::default()
+        };
+
+        // Nothing on the line is nothing to take, so the key writes the mark
+        // that asks what there is.
+        let mut screen = Screen::default();
+        press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
+        press(&mut screen, KeyEvent::from(KeyCode::Tab));
+        assert_eq!(line(&screen), "@");
+
+        // A line with a word on it has one, and a word nothing answers to is
+        // left where it was typed.
+        let mut screen = Screen::default();
+        press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
+        for key in word("port") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        press(&mut screen, KeyEvent::from(KeyCode::Tab));
+        assert_eq!(line(&screen), "port");
+
+        // The other three are not lines a vendor reads a mark on, so the key
+        // does there what it did before.
+        for asking in [
+            Asking::Reply {
+                id: "ask-a1b".to_string(),
+                question: false,
+            },
+            Asking::Name {
+                id: "ask-a1b".to_string(),
+            },
+            Asking::Find,
+        ] {
+            let mut screen = typing(asking);
+            press(&mut screen, KeyEvent::from(KeyCode::Tab));
+            assert_eq!(line(&screen), "", "and puts nothing on them");
         }
     }
 

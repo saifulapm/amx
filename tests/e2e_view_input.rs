@@ -1001,6 +1001,63 @@ fn the_composer_completes_the_word_under_the_cursor_out_of_the_vendors_files() {
 }
 
 #[test]
+fn the_composer_offers_the_agents_when_tab_is_pressed_on_nothing() {
+    let amx = Harness::new();
+    // The one agent claude loads on this machine, which is what a line with
+    // the mark on it is answered with.
+    an_agent_called_scout(&amx);
+
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+    types(&amx, &view, "n");
+    amx.until("the line", || {
+        screen(&amx, &view).contains("TASK").then_some(())
+    });
+
+    // Nothing is typed, so there is no word for tab to take: it writes the
+    // mark that asks for one, and the band opens on what answers to it.
+    press(&amx, &view, "Tab");
+    let drawn = amx.until("the agents under the line", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("❯ @") && drawn.contains("@scout")).then_some(drawn)
+    });
+    assert!(
+        drawn.contains("Goes and looks."),
+        "each of them saying what it is for:\n{drawn}"
+    );
+    assert!(
+        agents(&amx).is_empty(),
+        "and the key that opened them started nothing:\n{drawn}"
+    );
+
+    // And the band is the one a typed mark opens, so the next tab takes the
+    // word the choice is standing on.
+    press(&amx, &view, "Tab");
+    amx.until("the agent on the line", || {
+        screen(&amx, &view).contains("❯ @scout").then_some(())
+    });
+}
+
+#[test]
+fn the_composer_offers_the_projects_files_where_the_vendor_has_no_agents() {
+    let amx = Harness::new();
+    // Nothing of the vendor's answers to the mark on this machine, and a path
+    // is the other thing it is for: what the band holds is what is in the
+    // directory the line will run in.
+    a_file_saying(&amx.home().join("notes/plan.md"), "What to do first.");
+
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+    types(&amx, &view, "n");
+    amx.until("the line", || {
+        screen(&amx, &view).contains("TASK").then_some(())
+    });
+
+    press(&amx, &view, "Tab");
+    amx.until("the files under the line", || {
+        screen(&amx, &view).contains("@notes/").then_some(())
+    });
+}
+
+#[test]
 fn the_composer_completes_a_file_of_the_project_the_agent_will_run_in() {
     let amx = Harness::new();
     // The view is opened in the project, so what `@not` could mean is what is

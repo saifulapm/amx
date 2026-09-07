@@ -299,7 +299,7 @@ the whole table.
 | `shift+↑` `shift+↓` | move it up or down its group |
 | `alt+enter` | a newline in the line, without sending it |
 | `ctrl+j` | the same newline, where `alt+enter` does not arrive |
-| `tab` | take the word offered under the line |
+| `tab` | the word offered under the line, or on nothing the agents |
 | `←` `→` `ctrl+←` `ctrl+→` | the cursor along the line, by a character or by a word |
 | `home` `end` `ctrl+a` `ctrl+e` | the front of the line, and the end of it |
 | `backspace` `delete` | the character behind the cursor, or the one under it |
@@ -533,6 +533,10 @@ it is finished, and `enter` on it starts the agent as it would on any line:
 `/review` typed out goes on the first `enter`, not the second. `esc` puts the
 band away and leaves the line where it was, so the way out of a suggestion is
 not the way out of the mode.
+
+On a task line with nothing on it there is no word to take, so `tab` writes the
+`@` itself and the band opens on what answers to it: the vendor's own agents,
+or the project's files where it has none.
 
 A line led with one of the vendor's own agents is a task for that agent:
 `@scout port the importer` starts the session as `scout` — `--agent scout` on
