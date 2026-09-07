@@ -13,7 +13,7 @@ colour: a row is painted for having failed, not for being red.
 
 | role | painted on |
 | ---- | ---------- |
-| `waiting` | anything waiting on a person: the waiting rows and their group, the unread mark, the card's question and its answer prompt, the composer's confirm line |
+| `waiting` | anything waiting on a person: the waiting rows and their group, the card's question and its answer prompt, the composer's confirm line |
 | `done` | what went as intended: finished rows, merged and ready pull requests |
 | `failed` | what was attempted and failed: failed rows, failing checks, the failure notice |
 | `stopped` | what was ended by hand and is over: stopped rows, closed requests, the completed group's count |
@@ -24,6 +24,28 @@ Most of the screen wears none of them. What a row is, where a group begins and
 what it holds are said in words, in bold and in the dim the terminal already
 renders, which is why a wall of forty rows has two or three colours on it and
 they are the two or three worth looking at.
+
+## The glyph
+
+The mark in front of a name says two things in one cell. The shape is whether
+there is still a process to go back to — `✻` while there is, `∙` once there is
+not — and no theme's business, for the reason under
+[what a theme cannot touch](#what-a-theme-cannot-touch-on-purpose). The colour
+is which state that process is in, and it comes from the roles above:
+
+| the row | its glyph is painted in |
+| ------- | ----------------------- |
+| stopped on a question | `waiting` |
+| finished | `done` |
+| failed | `failed` |
+| stopped by hand | `stopped` |
+| idle at its prompt | dim, which is a weight and not a role |
+| coming up, working, or one amx cannot account for | nothing: the terminal's own |
+
+The name beside it takes `waiting` and `failed` and nothing else. Those two are
+what somebody scanning a wall is looking for; a column of names in eight
+colours is a column nobody reads, and the rest have said what they have to say
+on the glyph.
 
 ## Six, where the design names eleven
 
@@ -107,10 +129,12 @@ whatever the terminal does, light or dark.
 - **An agent's own paint.** The card and `amx logs` replay what a pane drew,
   in the colours it drew them. Theming that would be repainting the agent's
   output.
-- **The glyphs.** `✻`, `●`, `✗` and the rest are the view's vocabulary, not
-  its palette.
+- **The glyphs.** `✻` and `∙` are the view's vocabulary, not its palette: the
+  shape is the one thing on a row that survives the colour being turned off,
+  and a file that could set it is a file that can say an agent is still there
+  when it has gone.
 - **amx's stderr.** Errors and warnings from the verbs land among git's and
   cargo's output and follow the terminal, not the view.
-- **Dim and bold.** Weight is meaning in the view — an unselected row is dim,
-  a selected name is bold — and a theme that could remove meaning is a theme
-  that can lie.
+- **Dim and bold.** Weight is meaning in the view — what an agent said is dim,
+  and the name of a row nobody has been to read is bold — and a theme that
+  could remove meaning is a theme that can lie.
