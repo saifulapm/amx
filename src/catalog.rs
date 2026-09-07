@@ -341,7 +341,7 @@ mod tests {
             project.path(),
         );
         assert_eq!(
-            spellings(&entries),
+            on_disk(&entries),
             [
                 "/deploy",
                 "/focus:focus",
@@ -358,6 +358,8 @@ mod tests {
              and a skills directory with no SKILL.md in it is no skill"
         );
 
+        // `/review` is a word claude answers out of itself too, and the skill
+        // of the person's own is the one offered under it.
         assert_eq!(found(&entries, "/review").kind, Kind::Skill);
         assert_eq!(found(&entries, "/review").about, "Read the diff.");
         assert_eq!(found(&entries, "/deploy").kind, Kind::Skill);
@@ -449,25 +451,19 @@ mod tests {
     fn a_place_that_is_not_there_offers_nothing_and_says_nothing() {
         // Nobody has to have any of these directories, and most people have
         // some of them. Two empty roots are the machine that ends up asking
-        // for the whole catalog and finding none of it.
+        // for the whole catalog and finding none of it on disk.
         let home = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
 
-        assert!(
-            listing(
-                &claude::VENDOR.catalog.unwrap(),
-                home.path(),
-                project.path()
-            )
-            .is_empty()
-        );
-        assert!(
-            listing(&pi::VENDOR.catalog.unwrap(), home.path(), project.path())
-                .iter()
-                .all(|entry| entry.kind == Kind::Builtin),
-            "except what the vendor answers out of itself, which is in no \
-             directory to be missing from"
-        );
+        for catalog in [claude::VENDOR.catalog.unwrap(), pi::VENDOR.catalog.unwrap()] {
+            assert!(
+                listing(&catalog, home.path(), project.path())
+                    .iter()
+                    .all(|entry| entry.kind == Kind::Builtin),
+                "nothing but what the vendor answers out of itself, which is \
+                 in no directory to be missing from"
+            );
+        }
     }
 
     #[test]
@@ -504,7 +500,7 @@ mod tests {
             project.path(),
         );
         assert_eq!(
-            spellings(&entries),
+            on_disk(&entries),
             ["/plain", "/quiet"],
             "the file that would not read is out, and the one with nothing to \
              say is in; a file that is not markdown was never a command"
@@ -602,6 +598,16 @@ mod tests {
     /// The words a listing offers, in the order it offers them.
     fn spellings(entries: &[Entry]) -> Vec<&str> {
         entries.iter().map(|entry| entry.spelled.as_str()).collect()
+    }
+
+    /// The words a listing read off somebody's directories, which is all of
+    /// it but what the vendor answers out of itself.
+    fn on_disk(entries: &[Entry]) -> Vec<&str> {
+        entries
+            .iter()
+            .filter(|entry| entry.kind != Kind::Builtin)
+            .map(|entry| entry.spelled.as_str())
+            .collect()
     }
 
     /// The one entry `spelled` asks for.
