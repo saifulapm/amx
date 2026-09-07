@@ -589,9 +589,10 @@ read as the keys it is made of. A long one folds: over 800 characters, or more
 than three rows, and it stands on the line as `[Pasted text #1]`, numbered from
 one on each line you open. That is what you read your sentence around, not what
 is sent — the task, the message and the editor `ctrl+g` opens all get every
-character you pasted. A shorter paste is left on the line as it is, and a name
-or a find line takes whatever you paste at it whole, since neither is a line
-you write a paragraph on.
+character you pasted. `backspace`, `delete` or `ctrl+w` against a marker takes
+the marker whole, and the paste with it. A shorter paste is left on the line as
+it is, and a name or a find line takes whatever you paste at it whole, since
+neither is a line you write a paragraph on.
 
 ## Pull requests
 

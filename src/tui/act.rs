@@ -201,33 +201,72 @@ impl Composer {
     /// Neither reaches past the end it is standing at: a backspace at the front
     /// of the line and a delete at the back of it are one press more than
     /// somebody meant, not a character taken from the other end.
+    ///
+    /// A marker standing against the cursor goes whole. It is one row for one
+    /// paste, and a press that took a character off it would leave a row that
+    /// is no longer a marker and no longer the paste either: what `whole`
+    /// sent then would be the broken bracket, and the text it stood for would
+    /// go nowhere without anybody being told. Taking the character is what
+    /// somebody meant by the press; taking the paste is what the marker means.
     pub fn delete_back(&mut self) {
         if self.at == 0 {
             return;
         }
-        self.at -= 1;
-        let at = self.byte();
-        self.text.remove(at);
+        let to = self.byte();
+        self.at -= self.marker_behind().unwrap_or(1);
+        let from = self.byte();
+        self.text.replace_range(from..to, "");
     }
 
     pub fn delete_forward(&mut self) {
         if self.at >= self.length() {
             return;
         }
-        let at = self.byte();
-        self.text.remove(at);
+        let from = self.byte();
+        let to = self.byte_at(self.at + self.marker_ahead().unwrap_or(1));
+        self.text.replace_range(from..to, "");
     }
 
     /// Take the word behind the cursor, in one edit.
     ///
     /// The word the cursor would have walked back over, because a chord that
     /// deleted by one rule while the arrow beside it moved by another would be
-    /// two words to keep in mind for one word on the line.
+    /// two words to keep in mind for one word on the line. A marker is the
+    /// word it stands as, spaces and all, for the reason `delete_back` gives.
     pub fn delete_word_back(&mut self) {
+        if self.marker_behind().is_some() {
+            return self.delete_back();
+        }
         let to = self.byte();
         self.word_left();
         let from = self.byte();
         self.text.replace_range(from..to, "");
+    }
+
+    /// The marker the cursor is standing at the end of, as the characters it
+    /// spans, and the one it is standing at the front of. Only a marker for a
+    /// paste this line holds: the bracket typed by hand is the characters it
+    /// is.
+    ///
+    /// A cursor walked into the middle of one is left to the edit it makes;
+    /// the two presses that mean "take that paste back" are the ones that
+    /// land against its ends.
+    fn marker_behind(&self) -> Option<usize> {
+        let before = &self.text[..self.byte()];
+        self.markers()
+            .find(|marker| before.ends_with(marker.as_str()))
+            .map(|marker| marker.chars().count())
+    }
+
+    fn marker_ahead(&self) -> Option<usize> {
+        let after = &self.text[self.byte()..];
+        self.markers()
+            .find(|marker| after.starts_with(marker.as_str()))
+            .map(|marker| marker.chars().count())
+    }
+
+    fn markers(&self) -> impl Iterator<Item = String> {
+        (1..=self.pastes.len()).map(marker)
     }
 
     /// One character back, and one on. Neither walks off the line: the ends of
@@ -1841,6 +1880,46 @@ mod tests {
         line.paste("!set -e\ncargo build\ncargo test\ncargo clippy");
         assert_eq!(line.text, "[Pasted text #1]");
         assert_eq!(line.label(), "COMMAND");
+    }
+
+    #[test]
+    fn composer_takes_a_marker_whole_from_either_side_of_it() {
+        let folded = || {
+            let mut line = Composer::new(Asking::Task);
+            line.insert("why: ");
+            line.paste("one\ntwo\nthree\nfour");
+            line.insert(" then");
+            assert_eq!(line.text, "why: [Pasted text #1] then");
+            line
+        };
+
+        // Backspace against the end of the marker takes the marker, so the
+        // line never holds a bracket `whole` cannot read and the paste is not
+        // sent behind somebody's back.
+        let mut line = folded();
+        line.at = "why: [Pasted text #1]".chars().count();
+        line.delete_back();
+        assert_eq!(line.text, "why:  then");
+        assert_eq!(line.whole(), "why:  then");
+
+        // Delete against its front does the same.
+        let mut line = folded();
+        line.at = "why: ".chars().count();
+        line.delete_forward();
+        assert_eq!(line.text, "why:  then");
+
+        // And ctrl+w, which would otherwise take the `#1]` and leave the rest.
+        let mut line = folded();
+        line.at = "why: [Pasted text #1]".chars().count();
+        line.delete_word_back();
+        assert_eq!(line.text, "why:  then");
+
+        // The same characters typed by hand are characters, on a line holding
+        // no paste for them to stand for.
+        let mut line = Composer::new(Asking::Task);
+        line.insert("[Pasted text #1]");
+        line.delete_back();
+        assert_eq!(line.text, "[Pasted text #1");
     }
 
     #[test]
