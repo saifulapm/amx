@@ -2398,7 +2398,7 @@ mod tests {
     use crate::tmux::Socket;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
-    use ratatui::style::Color;
+    use ratatui::style::{Color, Modifier};
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -4649,20 +4649,42 @@ mod tests {
         finished(root.path(), "second-b2c", "wrote the tests", 120);
 
         // The view opens on the newest ending, so the card opens on that one.
-        let (code, drawn) = held(root.path(), &[KeyCode::Char(' '), KeyCode::Char('q')]);
+        // A row nobody has read says so in the weight of its name rather than
+        // in a mark, so this is a question for the frame and not for its text.
+        let (code, painted) = buffered(
+            root.path(),
+            &Scope::default(),
+            vec![
+                Typed::Key(KeyEvent::from(KeyCode::Char(' '))),
+                Typed::Key(KeyEvent::from(KeyCode::Char('q'))),
+            ],
+            None,
+            Painting::default(),
+        );
         assert_eq!(code, exit::OK);
-        let row = |id: &str| {
-            drawn
-                .lines()
-                .find(|line| line.contains(id))
-                .unwrap_or_else(|| panic!("no row for {id}:\n{drawn}"))
+        let lines: Vec<String> = (0..painted.area().height)
+            .map(|row| {
+                (0..painted.area().width)
+                    .map(|column| painted[(column, row)].symbol())
+                    .collect()
+            })
+            .collect();
+        let drawn = lines.join("\n");
+        let unread = |id: &str| {
+            let (row, line) = lines
+                .iter()
+                .enumerate()
+                .find(|(_, line)| line.contains(id))
+                .unwrap_or_else(|| panic!("no row for {id}:\n{drawn}"));
+            let at = line[..line.find(id).unwrap()].chars().count() as u16;
+            painted[(at, row as u16)].modifier.contains(Modifier::BOLD)
         };
         assert!(
-            row("first-a1b").starts_with("  "),
+            !unread("first-a1b"),
             "the row somebody looked at has nothing left to say:\n{drawn}"
         );
         assert!(
-            row("second-b2c").starts_with('•'),
+            unread("second-b2c"),
             "and the one they did not is still holding something:\n{drawn}"
         );
 
@@ -5192,7 +5214,7 @@ mod tests {
             &[KeyCode::Down, KeyCode::Char(' '), KeyCode::Char('q')],
         );
         assert_eq!(code, exit::OK);
-        assert!(screen.contains("  ● second-b2c"), "{screen}");
+        assert!(screen.contains("  ∙ second-b2c"), "{screen}");
         assert!(
             screen.contains("╰ wrote the tests"),
             "an agent with no pane left is read from its record, onto a card \
