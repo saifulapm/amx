@@ -5,7 +5,7 @@
 //! which is what `--json` is for. Both answer from the same reading, so they
 //! can never disagree.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -101,9 +101,7 @@ impl Scope {
 /// cannot be is relative to nowhere, so the path is anchored on the working
 /// directory whether or not the disk knows it.
 fn named(dir: &Path) -> Result<PathBuf> {
-    let anchored = std::path::absolute(dir)
-        .with_context(|| format!("reading the directory `{}`", dir.display()))?;
-    Ok(std::fs::canonicalize(&anchored).unwrap_or(anchored))
+    paths::anchored(dir)
 }
 
 /// Whether a directory is the one named or inside it.

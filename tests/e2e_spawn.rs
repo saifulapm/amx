@@ -465,6 +465,50 @@ fn a_project(amx: &Harness, name: &str, config: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn new_counts_the_cap_however_the_directory_was_spelled() {
+    // `--dir` as somebody types it at a prompt: relative to where they are
+    // standing. The record holds where they meant, spelled out from the root,
+    // and the cap counts it against the same project the absolute spelling
+    // names — outside a repository, where the directory is the whole of the
+    // project and nothing above it would have answered in absolute terms.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let alpha = a_project(&amx, "alpha", "max_agents = 1\n");
+
+    let first = id_of(
+        &amx.amx_command(&["new", "--dir", "alpha", "--agent", &mock, "the first"])
+            .env("MOCK_CLAUDE_SCENARIO", amx.scenario("happy-turn"))
+            .current_dir(amx.home())
+            .output()
+            .expect("running amx new"),
+    );
+    amx.until_state(&first, "idle");
+    assert_eq!(
+        amx.meta(&first)["dir"],
+        std::fs::canonicalize(&alpha)
+            .unwrap()
+            .to_string_lossy()
+            .as_ref(),
+        "the record says where the agent runs from the root"
+    );
+
+    let refused = new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &alpha.to_string_lossy(),
+            "--agent",
+            &mock,
+            "the second",
+        ],
+    );
+    assert_eq!(refused.status.code(), Some(2), "blocked, not failed");
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("max_agents is 1"), "{said}");
+}
+
+#[test]
 fn new_counts_the_cap_against_the_project_the_agent_will_run_in() {
     // Two projects, each of them allowed one agent at a time. What one is
     // running is nothing the other answers for, and the refusal names the

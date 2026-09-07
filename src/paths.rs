@@ -95,14 +95,38 @@ const PROJECT_CONFIG: &str = ".amx/config.toml";
 /// Unlike the layout above, this one asks git: which repository a directory
 /// belongs to is not something a path can be read for.
 pub fn project_config(dir: &Path) -> Option<PathBuf> {
-    let project = if crate::worktree::is_amx_tree(dir) {
-        crate::worktree::repo_of(dir)?
+    // Anchored before anything is decided. Inside a repository git answers
+    // with a path spelled out from the root whatever it was asked with, but
+    // outside one the directory is the whole of the project, and a relative
+    // one would be a project no record names: every record holds its
+    // directory spelled out from the root, and a cap counted against
+    // `../scratch` would count nobody.
+    let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let project = if crate::worktree::is_amx_tree(&dir) {
+        crate::worktree::repo_of(&dir)?
     } else {
         // Outside a repository there is nothing above the directory, and the
         // directory is the whole of the project.
-        crate::worktree::main_repo(dir).unwrap_or_else(|_| dir.to_path_buf())
+        crate::worktree::main_repo(&dir).unwrap_or_else(|_| dir.clone())
     };
     Some(project.join(PROJECT_CONFIG))
+}
+
+/// `dir` spelled out from the root: anchored on the working directory where
+/// it was relative, and read off the disk where the disk knows it, so that two
+/// spellings of one directory are one path.
+///
+/// What every record holds, and so what a directory has to be before it is
+/// compared with one. `../scratch` is what somebody typed and
+/// `/home/dev/scratch` is where they meant; anchoring alone keeps the `..`,
+/// and a record started from inside the directory says the second. A
+/// directory that is not there is anchored and no more — whether that is an
+/// error is the caller's question, and `ls --dir` on a tree that has gone is a
+/// fair one.
+pub fn anchored(dir: &Path) -> Result<PathBuf> {
+    let anchored = std::path::absolute(dir)
+        .with_context(|| format!("reading the directory `{}`", dir.display()))?;
+    Ok(std::fs::canonicalize(&anchored).unwrap_or(anchored))
 }
 
 fn home() -> Result<PathBuf> {
@@ -194,6 +218,42 @@ mod tests {
         assert_eq!(
             project_config(Path::new("/src/app/.amx/worktrees/fix-login-a1b")),
             Some(PathBuf::from("/src/app/.amx/config.toml"))
+        );
+    }
+
+    #[test]
+    fn the_project_config_of_a_relative_directory_is_anchored_on_the_working_directory() {
+        // `amx new --dir ../scratch` hands the directory over as it was typed.
+        // Outside a repository that directory is the whole of the project, and
+        // the file it keeps has to be the one every record's absolute directory
+        // finds, or the cap counted against it counts nobody.
+        let found = project_config(Path::new("scratch")).expect("a project");
+        assert!(found.is_absolute(), "{}", found.display());
+        assert!(
+            found.starts_with(std::env::current_dir().unwrap()),
+            "under the working directory: {}",
+            found.display()
+        );
+        assert!(found.ends_with(PROJECT_CONFIG), "{}", found.display());
+    }
+
+    #[test]
+    fn a_directory_is_anchored_on_the_working_directory_and_read_off_the_disk() {
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(
+            anchored(Path::new("scratch")).unwrap(),
+            here.join("scratch"),
+            "a directory that is not there is anchored and no more"
+        );
+
+        // One the disk knows is spelled the way the disk spells it, whichever
+        // way it was reached: `..` and links go.
+        let dir = tempfile::TempDir::new().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        assert_eq!(anchored(dir.path()).unwrap(), real);
+        assert_eq!(
+            anchored(&dir.path().join("..").join(dir.path().file_name().unwrap())).unwrap(),
+            real
         );
     }
 

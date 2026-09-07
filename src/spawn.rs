@@ -1289,6 +1289,15 @@ mod tests {
         // directory is the whole of the project.
         let dir = TempDir::new().unwrap();
         assert_eq!(project_of(dir.path()), dir.path());
+
+        // However the directory was spelled: a record holds it from the root,
+        // and a project that was compared as typed would count nobody.
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(
+            project_of(Path::new("scratch")),
+            project_of(&here.join("scratch"))
+        );
+        assert!(project_of(Path::new("scratch")).is_absolute());
     }
 
     #[test]

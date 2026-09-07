@@ -100,8 +100,11 @@ impl Launch {
 /// Run the verb against the machine.
 pub fn from_env(config: &Config, args: &NewArgs) -> Result<i32> {
     let root = paths::state_root()?;
+    // Spelled out from the root before anything reads it: the record holds
+    // it, the cap is counted by it, and `--dir ../scratch` is a spelling no
+    // record started from inside that directory would ever match.
     let dir = match &args.dir {
-        Some(dir) => dir.clone(),
+        Some(dir) => paths::anchored(dir)?,
         None => std::env::current_dir().context("no working directory")?,
     };
     let env = spawn::env_snapshot(std::env::vars());
