@@ -919,6 +919,64 @@ fn the_composer_completes_the_word_under_the_cursor_out_of_the_vendors_files() {
 }
 
 #[test]
+fn the_composer_completes_a_file_of_the_project_the_agent_will_run_in() {
+    let amx = Harness::new();
+    // The view is opened in the project, so what `@not` could mean is what is
+    // on the disk under it at the moment somebody types the word. No agent of
+    // the vendor's answers to it, and a path is the other thing the mark is
+    // for.
+    a_file_saying(&amx.home().join("notes/plan.md"), "What to do first.");
+
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+    types(&amx, &view, "n");
+    types(&amx, &view, "read @not");
+    press(&amx, &view, "Tab");
+    // A directory carries the separator that says the path may go on, and
+    // nothing after it: the next thing typed is more of the same word.
+    amx.until("the directory completed", || {
+        screen(&amx, &view).contains("❯ read @notes/").then_some(())
+    });
+
+    types(&amx, &view, "pl");
+    press(&amx, &view, "Tab");
+    amx.until("the file completed", || {
+        screen(&amx, &view)
+            .contains("❯ read @notes/plan.md")
+            .then_some(())
+    });
+
+    press(&amx, &view, "Enter");
+    let id = composed(&amx);
+    assert_eq!(
+        command_of(&amx, &id).last().map(String::as_str),
+        Some("read @notes/plan.md "),
+        "and the vendor is handed the path the way it reads one: {:?}",
+        command_of(&amx, &id)
+    );
+
+    // The same path with a `~` in front of it, which is the home directory
+    // wherever the line is typed. Nothing is called `~`, so a word that
+    // completed under one was read as the directory it stands for.
+    types(&amx, &view, "n");
+    types(&amx, &view, "read @~/notes/pl");
+    press(&amx, &view, "Tab");
+    amx.until("the file under the home directory", || {
+        screen(&amx, &view)
+            .contains("❯ read @~/notes/plan.md")
+            .then_some(())
+    });
+
+    press(&amx, &view, "Enter");
+    let next = composed_after(&amx, &id);
+    assert_eq!(
+        command_of(&amx, &next).last().map(String::as_str),
+        Some("read @~/notes/plan.md "),
+        "{:?}",
+        command_of(&amx, &next)
+    );
+}
+
+#[test]
 fn the_composer_stands_what_the_word_could_be_in_a_band_under_the_line() {
     let amx = Harness::new();
     // Two things `/rev` could mean, so the band is a list and one of them is
