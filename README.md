@@ -153,7 +153,7 @@ The screen is four things: two rows above the list, the list, the line you are
 typing when you are typing one, and a row of keys at the foot.
 
 ```
-AMX         1 pinned   1 review   1 working   1 done   3/5 running    1 WAITING
+AMX           1 pinned   1 review   1 working   1 done   3 running    1 WAITING
 └ next  claude   model  default   permission  default   worktree  new
 
  PINNED ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
@@ -177,15 +177,15 @@ space closes it   enter attach   ctrl+x stop   ctrl+t pin   ctrl+s axis   ? keys
 ```
 
 The first row is what there is: `AMX`, the directory the view was opened on
-where one was named, a count per group, how many are running against the limit
-that would refuse the next one, and at the far end the number the view is
-opened to read — how many agents are waiting on you, in reverse video, or
-`nothing waiting` in the same place when none are. The second row hangs off it
-on a `└` and holds the dials, which are about the agent that does not exist
-yet, so nothing on it can be read as a fact about the fleet. On a terminal
-under ten rows the second row goes and the first stays. The row at the foot is
-whatever keys the line under the cursor makes true, cut to what the terminal
-holds, with `?` pinned to the end of it.
+where one was named, a count per group, how many are running — beside the cap
+they are counted against, where the view is about a fleet that has one — and at
+the far end the number the view is opened to read: how many agents are waiting
+on you, in reverse video, or `nothing waiting` in the same place when none are.
+The second row hangs off it on a `└` and holds the dials, which are about the
+agent that does not exist yet, so nothing on it can be read as a fact about the
+fleet. On a terminal under ten rows the second row goes and the first stays.
+The row at the foot is whatever keys the line under the cursor makes true, cut
+to what the terminal holds, with `?` pinned to the end of it.
 
 The list answers one question, so it is gathered under the answer: whatever you
 pinned there yourself comes first, then the work standing in front of a
@@ -839,7 +839,7 @@ the notice is handed over and never waited for.
 
 ```toml
 agent = "claude"        # the command a new agent runs: claude, pi or your own
-max_agents = 5          # how many live agents before `new` refuses
+max_agents = 5          # how many live agents in a project before `new` refuses
 max_total = 10          # a ceiling over every project on the machine
 worktrees = true        # give each agent its own worktree in a repository
 notifications = true    # desktop notification when one needs you or finishes
@@ -860,6 +860,32 @@ Config is a convenience, never a gate. A file amx cannot read or parse falls
 back to these defaults with a warning, because losing an agent to a stray
 comma is the worse outcome. An unknown key is a warning and the rest of the
 file still applies, and so is a dial the configured agent would not take.
+
+A project can keep the same file at `<repo>/.amx/config.toml`, and it is laid
+over yours a key at a time. A project file holding one line has changed its
+mind about one key: everything else is still what you set. Whatever amx cannot
+use in it — an unknown key, a key of the wrong type, a file that will not open
+— is a warning naming that file, and the file under it still stands.
+
+The project is the repository rather than the tree of it you are standing in,
+so several agents on one repository read one file. A worktree amx cut reads the
+repository it was cut from; any other linked worktree reads the repository it
+belongs to; a directory git has never heard of is the whole of its own project
+and reads `<dir>/.amx/config.toml`. `.amx/` is kept out of the repository's
+status, so the file is a checkout's own until somebody commits it.
+
+That is what makes the two caps different questions. `max_agents` is a
+project's: it counts the live agents in the project the new one would run in,
+so a repository at its cap refuses nothing in the next one. `max_total` is the
+ceiling over all of them, counted over every live agent on the machine, and
+where nobody sets one there is none — a machine is as busy as the projects on
+it ask between them.
+
+The view reads the same files. `amx --dir /srv/app` is drawn under that
+project's file — the dials it launches at, the palette it paints in — and its
+header counts that project's agents against that project's `max_agents`. `amx`
+on its own is about every agent there is, so it counts them against `max_total`
+where you set one, and against nothing where you have not.
 
 `summary_command` is what a finished row says. What a turn leaves behind is an
 answer, and an answer does not open with a summary of itself, so without this

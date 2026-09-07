@@ -202,14 +202,15 @@ enum Look {
 }
 
 /// What the next agent will be started with: the vendor, the dials that
-/// vendor declares, where it will run, and the gate it will meet.
+/// vendor declares, where it will run, and the cap the fleet on the screen is
+/// counted against.
 ///
-/// All of it prospective. Nothing here says anything about the agents already
-/// running: a dial is about the agent that does not exist yet, so turning one
-/// touches none of the ones that do. The profile starts at the config file
-/// every time the view opens and dies with it — a launcher that drifted from
-/// the file because of what somebody pressed last Tuesday would leave the file
-/// saying one thing and the screen another.
+/// The dials are prospective. Nothing in them says anything about the agents
+/// already running: a dial is about the agent that does not exist yet, so
+/// turning one touches none of the ones that do. The profile starts at the
+/// config file every time the view opens and dies with it — a launcher that
+/// drifted from the file because of what somebody pressed last Tuesday would
+/// leave the file saying one thing and the screen another.
 struct Profile {
     /// The vendor command a spawn runs, which is a command line rather than a
     /// program name because that is what the config key holds.
@@ -225,14 +226,26 @@ struct Profile {
     worktree: bool,
     /// Where the next agent will run, as a person writes it.
     dir: String,
-    /// How many agents may be running before `new` refuses another, so the
-    /// gate is on the screen before it bites.
-    max: usize,
+    /// What the agents on this screen are counted against, where there is a
+    /// number to count them against.
+    ///
+    /// A view about one project counts that project's agents, and what a
+    /// project runs at once is `max_agents` in its own file — the gate on the
+    /// screen before it refuses a spawn. A view about every agent on the
+    /// machine is not about any one project, and counting a machine against
+    /// one project's cap would be reading a number against a fleet it says
+    /// nothing about: what stands over all of it is `max_total`, and until
+    /// somebody sets one there is nothing to say.
+    cap: Option<usize>,
 }
 
 impl Default for Profile {
+    /// What a view about one project opens at, under a config nobody has
+    /// written.
     fn default() -> Profile {
-        Profile::open(&Config::default(), None, None)
+        let config = Config::default();
+        let cap = Some(config.max_agents);
+        Profile::open(&config, cap, None, None)
     }
 }
 
@@ -243,7 +256,16 @@ impl Profile {
     /// A dial config asked for that this vendor would not take rests at the
     /// sentinel instead, which is the second half of the law the config loader
     /// keeps: no entry, no dial, and no value amx would have to invent.
-    fn open(config: &Config, dir: Option<&Path>, home: Option<&Path>) -> Profile {
+    ///
+    /// The cap comes from the door rather than from the file, because which
+    /// key it is depends on what the view was opened about and only the door
+    /// knows that.
+    fn open(
+        config: &Config,
+        cap: Option<usize>,
+        dir: Option<&Path>,
+        home: Option<&Path>,
+    ) -> Profile {
         let entry = registry::entry(&config.agent);
         Profile {
             agent: config.agent.clone(),
@@ -255,7 +277,7 @@ impl Profile {
             ),
             worktree: config.worktrees,
             dir: dir.map(|dir| rows::shorten(dir, home)).unwrap_or_default(),
-            max: config.max_agents,
+            cap,
         }
     }
 
@@ -463,7 +485,10 @@ struct Screen {
 /// newline in it is an enter: a truncated task dispatched, and the rest of the
 /// lines queued up to dispatch themselves after it. It is the same law amx has
 /// always sent text to an agent under, facing the other way.
-pub fn run(root: &Path, config: &Config, scope: &Scope) -> Result<i32> {
+///
+/// `cap` is what the counts on the header are read against, which the front
+/// door decides: see [`Profile::cap`].
+pub fn run(root: &Path, config: &Config, scope: &Scope, cap: Option<usize>) -> Result<i32> {
     let mut terminal = ratatui::try_init().context("taking the terminal")?;
     // A terminal that declines is one amx cannot tell a paste from typing on,
     // which is what the composer did before it asked at all.
@@ -481,6 +506,7 @@ pub fn run(root: &Path, config: &Config, scope: &Scope) -> Result<i32> {
     let outcome = watch(
         root,
         config,
+        cap,
         scope,
         &mut terminal,
         &mut Keyboard,
@@ -621,6 +647,7 @@ impl Remembered {
 fn watch<B>(
     root: &Path,
     config: &Config,
+    cap: Option<usize>,
     scope: &Scope,
     terminal: &mut Terminal<B>,
     keys: &mut impl Keys,
@@ -641,6 +668,7 @@ where
         root: root.to_path_buf(),
         profile: Profile::open(
             config,
+            cap,
             std::env::current_dir().ok().as_deref(),
             std::env::home_dir().as_deref(),
         ),
@@ -2556,6 +2584,7 @@ mod tests {
         let code = watch(
             root,
             &Config::default(),
+            None,
             scope,
             &mut terminal,
             &mut Script(script.into_iter()),
@@ -2576,6 +2605,7 @@ mod tests {
         watch(
             root,
             &Config::default(),
+            None,
             &Scope::default(),
             &mut terminal,
             &mut Script(script.into_iter()),
@@ -2597,6 +2627,7 @@ mod tests {
         watch(
             root,
             &Config::default(),
+            None,
             &Scope::default(),
             &mut terminal,
             &mut Script(script.into_iter()),
@@ -2783,6 +2814,7 @@ mod tests {
         };
         let profile = Profile::open(
             &config,
+            Some(config.max_agents),
             Some(Path::new("/home/dev/code/amx")),
             Some(Path::new("/home/dev")),
         );
@@ -2790,7 +2822,7 @@ mod tests {
         assert_eq!(profile.model, "opus");
         assert_eq!(profile.permission, "plan");
         assert!(!profile.worktree);
-        assert_eq!(profile.max, 3);
+        assert_eq!(profile.cap, Some(3), "what the door said to count against");
         assert_eq!(
             profile.dir, "~/code/amx",
             "where the next one will run, written the way the headings write it"
@@ -2827,7 +2859,7 @@ mod tests {
             agent: "mock-claude".to_string(),
             ..Config::default()
         };
-        let mut profile = Profile::open(&config, None, None);
+        let mut profile = Profile::open(&config, None, None, None);
 
         profile.cycle_vendor();
         assert_eq!(profile.agent, "claude");
@@ -2852,7 +2884,7 @@ mod tests {
             agent: "mock-claude".to_string(),
             ..Config::default()
         };
-        let mut profile = Profile::open(&config, None, None);
+        let mut profile = Profile::open(&config, None, None, None);
 
         profile.cycle_vendor();
         profile.cycle_model();
@@ -2896,7 +2928,7 @@ mod tests {
             agent: "claude --add-dir ..".to_string(),
             ..Config::default()
         };
-        let mut profile = Profile::open(&config, None, None);
+        let mut profile = Profile::open(&config, None, None, None);
         profile.cycle_vendor();
         assert_eq!(profile.agent, "pi");
         profile.cycle_vendor();
@@ -2913,7 +2945,7 @@ mod tests {
             model: Some("opus".to_string()),
             ..Config::default()
         };
-        let mut profile = Profile::open(&config, None, None);
+        let mut profile = Profile::open(&config, None, None, None);
 
         assert!(profile.model_dial().is_none());
         assert!(profile.permission_dial().is_none());
@@ -2928,7 +2960,7 @@ mod tests {
             max_agents: 4,
             ..Config::default()
         };
-        let mut profile = Profile::open(&config, None, None);
+        let mut profile = Profile::open(&config, None, None, None);
 
         let resting = profile.launching(&config);
         assert_eq!(
@@ -2961,7 +2993,7 @@ mod tests {
             ..Config::default()
         };
         let mut screen = Screen {
-            profile: Profile::open(&config, None, None),
+            profile: Profile::open(&config, None, None, None),
             ..Screen::default()
         };
         let press = |screen: &mut Screen, key| {
@@ -5137,6 +5169,7 @@ mod tests {
         watch(
             root.path(),
             &Config::default(),
+            None,
             &Scope::default(),
             &mut terminal,
             &mut Script(vec![Typed::Key(KeyEvent::from(KeyCode::Down))].into_iter()),

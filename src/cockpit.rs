@@ -14,7 +14,7 @@ use anyhow::Result;
 use std::io::IsTerminal;
 use std::path::Path;
 
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::store::now;
 use crate::verbs::ls::Scope;
 use crate::{paths, tui, verbs};
@@ -42,13 +42,28 @@ pub fn door(terminal: bool) -> Door {
 /// narrows what is behind both of them to the agents working under that
 /// directory, so `amx --dir /srv/app` is that project's agents drawn on a
 /// terminal and that project's agents down a pipe.
+///
+/// It decides one more thing for the view. A view about a project is opened
+/// under that project's own file — the dials it launches at, the palette it
+/// paints in and the cap it counts against are all the project's, laid over
+/// the person's — and a view about every agent on the machine is opened under
+/// the person's file alone, because no project's file speaks for a machine.
+/// What is wrong with a project's file is not the view's to say: `main` has
+/// already said whatever the person's file had to answer for, and a project's
+/// is read here the way every other reader reads one.
 pub fn from_env(config: &Config, dir: Option<&Path>) -> Result<i32> {
     let root = paths::state_root()?;
     let scope = Scope::of(dir)?;
 
-    match door(std::io::stdout().is_terminal()) {
-        Door::Table => verbs::ls::run(&root, false, &scope, now(), &mut std::io::stdout().lock()),
-        Door::View => tui::run(&root, config, &scope),
+    match (door(std::io::stdout().is_terminal()), dir) {
+        (Door::Table, _) => {
+            verbs::ls::run(&root, false, &scope, now(), &mut std::io::stdout().lock())
+        }
+        (Door::View, Some(dir)) => {
+            let (theirs, _) = config::for_dir(dir);
+            tui::run(&root, &theirs, &scope, Some(theirs.max_agents))
+        }
+        (Door::View, None) => tui::run(&root, config, &scope, config.max_total),
     }
 }
 

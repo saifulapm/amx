@@ -97,7 +97,7 @@ fn fleet(screen: &Screen, width: usize) -> Vec<Span<'static>> {
     };
     kept.extend(badge(&screen.list, screen.theme));
 
-    let counts = counters(&screen.list, screen.profile.max);
+    let counts = counters(&screen.list, screen.profile.cap);
     let together = said(&counts) + APART.chars().count() + said(&kept) + NAME.chars().count() + 1;
     match together <= width {
         true => [counts, vec![Span::raw(APART)], kept].concat(),
@@ -314,13 +314,13 @@ fn clipped(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
 }
 
 /// What the fleet is: a count per group, in the word the list can be narrowed
-/// by, and the gate the next agent will meet.
+/// by, and what all of it is counted against.
 ///
 /// Every group but the one the badge beside it is already counting, and no
 /// colour on any of them: a count is a reading about a fleet, and a row where
 /// four readings are coloured is a row where the one that wants a person is
 /// not.
-fn counters(list: &List, max: usize) -> Vec<Span<'static>> {
+fn counters(list: &List, cap: Option<usize>) -> Vec<Span<'static>> {
     let mut said: Vec<String> = list
         .counts()
         .iter()
@@ -328,8 +328,15 @@ fn counters(list: &List, max: usize) -> Vec<Span<'static>> {
         .map(|&(group, count)| format!("{count} {}", group.state()))
         .collect();
 
-    // The limit that refuses a spawn, said before it refuses one.
-    said.push(format!("{}/{max} running", list.live()));
+    // How many are going, over the cap they are counted against where there is
+    // one — the limit that refuses a spawn, said before it refuses one. A view
+    // about the machine is read against `max_total` or against nothing at all,
+    // so the count stands on its own rather than beside a number that is some
+    // other fleet's.
+    said.push(match cap {
+        Some(cap) => format!("{}/{cap} running", list.live()),
+        None => format!("{} running", list.live()),
+    });
     vec![Span::styled(said.join(APART), dim())]
 }
 
@@ -722,19 +729,28 @@ mod tests {
     }
 
     #[test]
-    fn header_says_the_gate_the_next_agent_meets_before_it_refuses() {
+    fn header_says_the_cap_the_fleet_is_counted_against_before_it_refuses() {
         let mut screen = launching(vec![
             view("busy-a1b", Phase::Working, None, 3),
             view("busy-b2c", Phase::Working, None, 3),
             view("busy-c3d", Phase::Working, None, 3),
             view("done-d4e", Phase::Done, Some("did it"), 60),
         ]);
-        screen.profile.max = 5;
+        screen.profile.cap = Some(5);
         assert!(
             screen_line(&screen, WIDE, 0).contains("3/5 running"),
             "an agent whose command has ended holds no slot: {:?}",
             screen_line(&screen, WIDE, 0)
         );
+
+        // A fleet with no cap over it — a view about every agent on the
+        // machine, and no `max_total` set — is counted and nothing more:
+        // `max_agents` is a project's own number, and a machine read against
+        // it would be read against a fleet it says nothing about.
+        screen.profile.cap = None;
+        let line = screen_line(&screen, WIDE, 0);
+        assert!(line.contains("3 running"), "{line:?}");
+        assert!(!line.contains("3/"), "and no cap beside it: {line:?}");
     }
 
     #[test]

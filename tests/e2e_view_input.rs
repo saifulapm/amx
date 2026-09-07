@@ -322,14 +322,77 @@ fn header_says_what_the_next_agent_will_be_started_with() {
         "and not which build it is, which says nothing about the fleet:\n{drawn}"
     );
     assert!(
-        drawn.contains("1/3 running    1 WAITING"),
-        "the gate the next one meets, and the count that wants a person set \
-         apart from it:\n{drawn}"
+        drawn.contains("1 running    1 WAITING"),
+        "what is running, and the count that wants a person set apart from \
+         it:\n{drawn}"
+    );
+    assert!(
+        !drawn.contains("1/3 running"),
+        "max_agents is one project's cap, and this view is about every agent \
+         on the machine:\n{drawn}"
     );
     assert!(
         drawn.contains("└ next  claude   model  default   permission  default   worktree  new"),
         "and under it the vendor, the dials it will be given, and whether it \
          is cut a tree of its own:\n{drawn}"
+    );
+}
+
+#[test]
+fn header_counts_the_machine_against_max_total_where_somebody_set_one() {
+    let amx = Harness::new();
+    amx.config("agent = \"claude\"\nmax_agents = 3\nmax_total = 2\n");
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let drawn = amx.until("the header", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("└ next").then_some(drawn)
+    });
+
+    assert!(
+        drawn.contains("1/2 running"),
+        "the one ceiling a view about every agent can be read against:\n{drawn}"
+    );
+}
+
+#[test]
+fn header_opens_a_view_on_a_project_under_that_projects_own_file() {
+    let amx = Harness::new();
+    amx.config("agent = \"claude\"\nmodel = \"opus\"\nmax_agents = 9\n");
+
+    let repo = amx.home().join("elsewhere");
+    std::fs::create_dir_all(repo.join(".amx")).expect("the project");
+    a_repo_at(&repo);
+    std::fs::write(
+        repo.join(".amx/config.toml"),
+        "model = \"fable\"\nworktrees = false\nmax_agents = 3\n",
+    )
+    .expect("the project's own config");
+
+    // One agent in the project and one outside it, so the count on the header
+    // is the project's rather than the machine's.
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+    amx.set_meta("ask-a1b", json!({ "dir": repo }));
+    amx.play("busy-b2c", "works-without-end");
+    amx.until_state("busy-b2c", "working");
+
+    let view = amx.in_a_terminal(&[], &["--dir", &repo.to_string_lossy()]);
+    let drawn = amx.until("the header", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("└ next").then_some(drawn)
+    });
+
+    assert!(
+        drawn.contains("└ next  claude   model  fable   permission  default   worktree  none"),
+        "the dials are the project's, laid over the person's:\n{drawn}"
+    );
+    assert!(
+        drawn.contains("1/3 running"),
+        "and this project's agents are counted against this project's own \
+         cap:\n{drawn}"
     );
 }
 
