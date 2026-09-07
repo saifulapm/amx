@@ -1898,11 +1898,11 @@ fn acts_ctrl_x_on_a_heading_forgets_the_finished_and_keeps_the_work() {
 }
 
 #[test]
-fn acts_ctrl_x_on_a_heading_stops_the_live_and_arms_rows_in_every_state() {
+fn acts_ctrl_x_on_a_heading_arms_rows_in_every_state_before_it_stops_any() {
     let amx = Harness::new();
     // A live agent sitting at its prompt and a finished one, both in the
     // harness's home: one project heading stands over both states at once.
-    amx.play("fix-login-a1b", "happy-turn");
+    let pane = amx.play("fix-login-a1b", "happy-turn");
     amx.until_state("fix-login-a1b", "idle");
     finished(&amx, "old-job-d4e", "done", 60);
 
@@ -1919,14 +1919,11 @@ fn acts_ctrl_x_on_a_heading_stops_the_live_and_arms_rows_in_every_state() {
             .then_some(())
     });
 
-    // Up from the row the view opens on is the heading. One press stops the
-    // live agent and arms every row under the heading, whatever its state —
-    // no group is refused any more.
+    // Up from the row the view opens on is the heading. One press arms every
+    // row under it, whatever its state — no group is refused any more — and
+    // stops nothing.
     press(&amx, &view, "Up");
     press(&amx, &view, "C-x");
-    amx.until("the live agent to stop", || {
-        (amx.state("fix-login-a1b")["state"] == "stopped").then_some(())
-    });
     let armed = amx.until("both rows to be armed", || {
         let drawn = screen(&amx, &view);
         (drawn.matches("ctrl+x again forgets").count() == 2).then_some(drawn)
@@ -1936,14 +1933,25 @@ fn acts_ctrl_x_on_a_heading_stops_the_live_and_arms_rows_in_every_state() {
         "the refusal went with the rule:\n{armed}"
     );
     assert_eq!(agents(&amx).len(), 2, "and arming forgets nothing");
+    assert_eq!(
+        amx.state("fix-login-a1b")["state"],
+        "idle",
+        "the press that armed the group stopped nothing in it"
+    );
+    assert!(
+        amx.pane_alive(&pane),
+        "the live agent is sitting at its prompt with its pane"
+    );
 
     // Two presses whatever the clock did to the first window: if it is still
-    // open the first of these forgets both, and if it lapsed the first
-    // re-arms — everything under the heading is terminal by now — and the
-    // second forgets.
+    // open the first of these stops the live agent and forgets both, and if it
+    // lapsed the first re-arms and the second does it.
     twice(&amx, &view, "C-x");
-    amx.until("the group to be forgotten", || {
+    amx.until("the group to be stopped and forgotten", || {
         agents(&amx).is_empty().then_some(())
+    });
+    amx.until("the live agent's pane to go with it", || {
+        (!amx.pane_alive(&pane)).then_some(())
     });
     // The project axis has no welcome line: a list of places with nothing to
     // arrange says so plainly.

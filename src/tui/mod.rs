@@ -984,15 +984,15 @@ impl Screen {
 
     /// Keep the cursor with a swept group whose heading dissolved under it.
     ///
-    /// Stopping is what a sweep's first press does to a live group, and
-    /// stopping is what moves it to completed by this very reading: the
-    /// heading that was pressed can be gone before the second press, leaving
-    /// the cursor's index to whichever heading drifted into it — a different,
-    /// live group, one keystroke from being stopped by the press meant to
-    /// finish the sweep. So while a sweep's window is open and the cursor
-    /// stands on a heading over none of its rows, it is moved to the heading
-    /// standing over them: the second press lands on what the first one was
-    /// about. A cursor anywhere else is left alone — a row reads its own
+    /// A group is however its rows read at this moment, and an agent that ends
+    /// while the window is open moves to completed by the very next reading:
+    /// the heading that was pressed can be gone before the second press,
+    /// leaving the cursor's index to whichever heading drifted into it — a
+    /// different, live group, one keystroke from being stopped by the press
+    /// meant to finish the sweep. So while a sweep's window is open and the
+    /// cursor stands on a heading over none of its rows, it is moved to the
+    /// heading standing over them: the second press lands on what the first
+    /// one was about. A cursor anywhere else is left alone — a row reads its own
     /// presses, and only a heading is a keystroke from sweeping.
     fn keep_the_sweep(&mut self) {
         let Some(arm) = self
@@ -2043,26 +2043,34 @@ impl Screen {
         });
     }
 
-    /// ctrl+x on a heading: the rows' two presses, over the whole group.
+    /// ctrl+x on a heading: two presses over the whole group, and the first of
+    /// them costs nothing.
     ///
-    /// The first press is the first press of every row under the heading at
-    /// once, whatever their states: a live agent — idle included — is stopped
-    /// the way its own row would stop it, and every row is armed in place,
-    /// each saying so where its summary was. The rows are what the second
-    /// press would take away, so the rows are where the warning is, and the
-    /// footer asks nothing. The press inside the window forgets them all,
-    /// each under the same worktree safety a single row gets; a window left
-    /// to lapse disarms with nothing removed.
+    /// Every row under the heading is armed in place, whatever their states,
+    /// each saying so where its summary was, and not one agent is touched. The
+    /// rows are what the second press would act on, so the rows are where the
+    /// warning is, and the footer asks nothing. The press inside the window is
+    /// the one that does it: every live agent under the heading — idle
+    /// included — is stopped the way its own row would stop it, and then they
+    /// are all forgotten, each under the same worktree safety a single row
+    /// gets. A window left to lapse disarms with nothing stopped and nothing
+    /// removed.
+    ///
+    /// A row that stops itself has cost somebody one pane; a heading that
+    /// stops itself can cost them every pane on the screen. So the group is
+    /// held back to the press that has been warned about, which is the one
+    /// that was going to be irreversible anyway.
     ///
     /// The second press lands on the heading standing over the armed rows
-    /// *now*, which is not always the one that was pressed: stopping a group
-    /// moves it to completed by the next reading, and the heading it left has
-    /// nothing to stand over. The rows are what the press was about, so the
-    /// rows are what it is matched by.
+    /// *now*, which is not always the one that was pressed: a group dissolves
+    /// as its rows change state, and an agent that ends while the window is
+    /// open leaves the heading it was under with nothing to stand over. The
+    /// rows are what the press was about, so the rows are what it is matched
+    /// by.
     ///
-    /// A row whose stop failed is not armed, exactly as it would not be on
-    /// its own: the failure is on the screen instead, and the rest of the
-    /// group is armed around it.
+    /// A row whose stop failed is not one this forgets, exactly as it would
+    /// not be on its own: the failure is on the screen instead, and the rest
+    /// of the group goes.
     fn sweep_or_arm(&mut self, root: &Path, under: rows::Under) {
         let again = self
             .arm
@@ -2078,51 +2086,51 @@ impl Screen {
             let arm = self.arm.take().expect("the arm that was just read");
             // What the first press armed, as the list has it now: an agent
             // whose record has gone in the meantime is not one this can
-            // forget.
-            let views: Vec<&View> = arm
-                .ids
-                .iter()
-                .filter_map(|id| self.list.agent_by_id(id))
-                .collect();
-            self.notice = said(act::forget_all(root, &views));
+            // stop or forget.
+            let mut trouble: Vec<String> = Vec::new();
+            let mut views: Vec<&View> = Vec::new();
+            for view in arm.ids.iter().filter_map(|id| self.list.agent_by_id(id)) {
+                if !view.phase().is_terminal()
+                    && let Err(e) = act::stop(root, view)
+                {
+                    trouble.push(format!("{}: {e:#}", view.id()));
+                    continue;
+                }
+                views.push(view);
+            }
+
+            let forgotten = act::forget_all(root, &views);
+            // What did happen and what would not, on the one line the view
+            // has, the way `forget_all` puts its own two together. Raised
+            // where a stop failed, because part of what was asked for did not
+            // happen.
+            self.notice = match trouble.len() {
+                0 => said(forgotten),
+                stuck => Some(Notice::Failed(format!(
+                    "{} · {stuck} would not stop: {}",
+                    match &forgotten {
+                        Ok(said) => said.clone(),
+                        Err(e) => format!("{e:#}"),
+                    },
+                    trouble[0]
+                ))),
+            };
             self.acted();
             return;
         }
 
-        let (mut ids, mut stopped) = (Vec::new(), false);
-        let mut trouble: Vec<String> = Vec::new();
-        for view in self.list.members(under) {
-            if view.phase().is_terminal() {
-                ids.push(view.id().to_string());
-                continue;
-            }
-            match act::stop(root, view) {
-                Ok(_) => {
-                    ids.push(view.id().to_string());
-                    stopped = true;
-                }
-                Err(e) => trouble.push(format!("{}: {e:#}", view.id())),
-            }
-        }
-        if stopped {
-            self.acted();
-        }
-
-        // The rows are the whole of what the view has to say about this, so
-        // whatever it was saying before makes way for them — unless a stop
-        // failed, which is louder than anything the rows are wearing. One
-        // line for however many failed, the way `forget_all` counts its own.
-        self.notice = match trouble.len() {
-            0 => None,
-            1 => Some(Notice::Failed(trouble.remove(0))),
-            more => Some(Notice::Failed(format!(
-                "{more} would not stop: {}",
-                trouble[0]
-            ))),
-        };
+        let ids: Vec<String> = self
+            .list
+            .members(under)
+            .iter()
+            .map(|view| view.id().to_string())
+            .collect();
         if ids.is_empty() {
             return;
         }
+        // The rows are the whole of what the view has to say about this, so
+        // whatever it was saying before makes way for them.
+        self.notice = None;
         self.arm = Some(Arm {
             ids,
             swept: true,
@@ -4792,7 +4800,7 @@ mod tests {
     }
 
     #[test]
-    fn acts_ctrl_x_on_a_heading_stops_the_live_and_arms_every_row_under_it() {
+    fn acts_ctrl_x_on_a_heading_arms_a_live_row_without_stopping_it() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
         idle(root.path(), "quiet-a1b");
@@ -4808,11 +4816,15 @@ mod tests {
         )]);
         screen.list.up();
 
-        // The first press is the rows' first press, over the group: the live
-        // agent is stopped and its row is armed, and nothing is refused.
+        // The first press over the group arms its rows and does nothing else:
+        // the live agent is still running, and nothing is refused.
         screen.act(ctrl('x'), root.path(), &config, None).unwrap();
         let agent = Agent::open(root.path(), "quiet-a1b").unwrap();
-        assert_eq!(agent.state().unwrap().state, Phase::Stopped);
+        assert_eq!(
+            agent.state().unwrap().state,
+            Phase::Idle,
+            "a heading's first press costs no pane"
+        );
         assert_eq!(screen.armed(), ["quiet-a1b".to_string()]);
         assert!(
             screen.notice.is_none(),
@@ -4824,10 +4836,53 @@ mod tests {
             "and the first press forgets nothing"
         );
 
-        // The second press on the heading forgets it, the same window a row
-        // gets.
+        // The second press on the heading stops it and forgets it, in the
+        // window a row gets.
         screen.act(ctrl('x'), root.path(), &config, None).unwrap();
         assert!(crate::store::list(root.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn acts_ctrl_x_sweep_leaves_a_row_it_could_not_stop_unforgotten() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        idle(root.path(), "quiet-a1b");
+        // A row the stop cannot read a state off, which is as far as stopping
+        // gets before it has done anything.
+        idle(root.path(), "broken-b2c");
+        let broken = Agent::open(root.path(), "broken-b2c").unwrap();
+        std::fs::write(broken.dir().join("state.json"), "not a reading").unwrap();
+
+        let live = |id: &str| {
+            reading(
+                id,
+                Phase::Idle,
+                State {
+                    state: Phase::Idle,
+                    since: 1,
+                    last_event: 1,
+                    ..State::default()
+                },
+            )
+        };
+        let mut screen = watching(vec![live("quiet-a1b"), live("broken-b2c")]);
+        screen.list.up();
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert_eq!(screen.armed().len(), 2, "both rows are armed either way");
+
+        // The row that would not stop is the row that is not forgotten, and
+        // the rest of the group goes.
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert_eq!(
+            crate::store::list(root.path()).unwrap(),
+            ["broken-b2c".to_string()],
+            "a record amx could not stop is a record it keeps"
+        );
+        let Some(Notice::Failed(said)) = &screen.notice else {
+            panic!("a failed stop is said louder than what went through")
+        };
+        assert!(said.contains("forgot 1"), "{said}");
+        assert!(said.contains("1 would not stop: broken-b2c"), "{said}");
     }
 
     #[test]
@@ -4869,8 +4924,8 @@ mod tests {
                 .state()
                 .unwrap()
                 .state,
-            Phase::Stopped,
-            "the live one was stopped by the press that armed it"
+            Phase::Idle,
+            "and the live one is still running after the press that armed it"
         );
 
         screen.act(ctrl('x'), root.path(), &config, None).unwrap();
@@ -4879,9 +4934,10 @@ mod tests {
 
     #[test]
     fn acts_ctrl_x_sweep_follows_its_rows_when_another_heading_drifts_into_the_cursor() {
-        // Found in review: sweeping the top heading dissolves it, and the
-        // live group below drifts up into the cursor's index. A second press
-        // there must finish the sweep, never stop the group that drifted in.
+        // Found in review: an agent that ends while the window is open
+        // dissolves the heading it was under, and the live group below drifts
+        // up into the cursor's index. A second press there must finish the
+        // sweep, never stop the group that drifted in.
         let root = TempDir::new().unwrap();
         let config = Config::default();
         idle(root.path(), "ask-a1b");
@@ -4908,8 +4964,9 @@ mod tests {
         screen.act(ctrl('x'), root.path(), &config, None).unwrap();
         assert_eq!(screen.armed(), ["ask-a1b".to_string()]);
 
-        // The reading catches up: the swept agent has stopped, its heading is
-        // gone, and the working heading now sits where the cursor's index is.
+        // The reading catches up: the armed agent has ended on its own, its
+        // heading is gone, and the working heading now sits where the cursor's
+        // index is.
         screen.list.show(vec![
             reading(
                 "ask-a1b",
@@ -4946,11 +5003,11 @@ mod tests {
 
     #[test]
     fn acts_ctrl_x_second_press_lands_on_the_heading_now_over_the_armed_rows() {
-        // Stopping is what moves a row to the completed group, so on the
-        // state axis the heading that was pressed dissolves under the cursor
-        // by the next reading. The armed rows are what the press was about,
-        // and the heading now standing over them is where the second press
-        // finds them.
+        // An agent that ends while the window is open moves to the completed
+        // group, so on the state axis the heading that was pressed can
+        // dissolve under the cursor by the next reading. The armed rows are
+        // what the press was about, and the heading now standing over them is
+        // where the second press finds them.
         let root = TempDir::new().unwrap();
         let config = Config::default();
         idle(root.path(), "quiet-a1b");
@@ -4967,8 +5024,8 @@ mod tests {
         screen.list.up();
         screen.act(ctrl('x'), root.path(), &config, None).unwrap();
 
-        // The reading catches up with the stop: the idle heading is gone and
-        // the row sits under completed, with the cursor on that heading.
+        // The agent ends of its own accord: the idle heading is gone and the
+        // row sits under completed, with the cursor on that heading.
         screen.list.show(vec![reading(
             "quiet-a1b",
             Phase::Stopped,

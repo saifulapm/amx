@@ -289,7 +289,7 @@ the whole table.
 | `pgdn` `ctrl+f` | and the other way |
 | `ctrl+u` | half a page of it, toward the edge |
 | `ctrl+d` | and half a page away |
-| `ctrl+x` | stop it, twice to forget it, and twice on a heading to clear the group |
+| `ctrl+x` | stop it, twice to forget it, and twice on a heading to stop and clear the group |
 | `ctrl+r` | call it something else |
 | `ctrl+g` | write the line in `$EDITOR` |
 | `alt+1..9` | reach the agent at that place on the wall |
@@ -396,15 +396,19 @@ stands. Where the row was saying what the agent did it says `ctrl+x again
 forgets` for about two seconds, and the press inside that window is the one
 that takes the record away, and the worktree with it where that tree holds
 nothing no commit has. Leave it alone and the row goes back to saying what it
-was saying, having forgotten nothing. On a heading the same two presses reach
-the whole group, whatever the states beneath: the first stops every agent
-under it that is still running and arms every row in place — each row wears
-the warning itself — and the second press on a heading over the armed rows,
-inside the window, forgets them all, each under the same worktree safety a
-single row gets. That heading is not always the one that was pressed, because
-stopping is what moves a group to completed: the rows carry the arming, the
-cursor is kept with them while the window is open, and the heading standing
-over them is where the second press lands.
+was saying, having forgotten nothing. On a heading the two presses reach the
+whole group, whatever the states beneath, and the first of them costs nothing
+at all: every row under the heading is armed in place — each row wears the
+warning itself — and not one agent is stopped. The press inside the window is
+the one that acts: every agent under the heading still running is stopped, and
+then they are all forgotten, each under the same worktree safety a single row
+gets. A row's first press costs you one pane, which is a thing you can watch
+happen; the same press on a heading could cost you every pane on the screen, so
+the group waits for the press you have been warned about. The heading that
+press lands on is not always the one that was pressed, because a group
+dissolves as its rows change state: the rows carry the arming, the cursor is
+kept with them while the window is open, and the heading standing over them is
+where the second press lands.
 
 The list takes the mouse: a click on an agent's row is `enter` on it — the
 cursor lands and the agent's session comes in front of you — a click on a
