@@ -1500,9 +1500,15 @@ impl Screen {
             // that grows the composer by hand, and the one enter that does not
             // dispatch: a composer where the plain one did not would be a
             // composer nobody could send from.
+            //
+            // And the same newline under the chord a terminal that will not
+            // send alt+enter has instead. It arrives as 0x0A, which raw mode
+            // no longer turns into a carriage return, so what crossterm hands
+            // over is the letter that byte is the control code of.
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
                 composer.insert("\n");
             }
+            KeyCode::Char('j') if chord(key) == KeyModifiers::CONTROL => composer.insert("\n"),
             KeyCode::Enter => {
                 // A find line narrowed the list as it was typed, so enter has
                 // nothing left to do but close it and leave the narrowing

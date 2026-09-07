@@ -663,6 +663,54 @@ fn the_composer_takes_a_paste_as_one_edit_and_grows_to_its_cap() {
 }
 
 #[test]
+fn the_composer_takes_a_newline_from_ctrl_j_where_alt_enter_puts_one() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "port the importer");
+    amx.until("the first row of the task", || {
+        screen(&amx, &view)
+            .contains("❯ port the importer")
+            .then_some(())
+    });
+
+    // The chord a terminal that will not send alt+enter has instead: 0x0A,
+    // which is ctrl+j once raw mode has stopped the tty turning it into a
+    // carriage return.
+    press(&amx, &view, "C-j");
+    types(&amx, &view, "and its tests");
+    let drawn = amx.until("the second row of the task", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("and its tests").then_some(drawn)
+    });
+    assert!(
+        !drawn.contains("importerand"),
+        "ctrl+j breaks the line rather than landing on the end of it:\n{drawn}"
+    );
+    assert!(
+        agents(&amx).is_empty(),
+        "and it grows the line rather than sending it:\n{drawn}"
+    );
+
+    // The chord it stands beside, on the same line, doing the same thing.
+    press(&amx, &view, "M-Enter");
+    types(&amx, &view, "in one go");
+    amx.until("the third row of the task", || {
+        screen(&amx, &view).contains("in one go").then_some(())
+    });
+
+    press(&amx, &view, "Enter");
+    let id = composed(&amx);
+    assert_eq!(
+        command_of(&amx, &id).last().map(String::as_str),
+        Some("port the importer\nand its tests\nin one go"),
+        "and the task the vendor is handed is the three rows as one line: {:?}",
+        command_of(&amx, &id)
+    );
+}
+
+#[test]
 fn the_composer_types_where_the_cursor_stands_rather_than_at_the_end() {
     let amx = Harness::new();
     let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");

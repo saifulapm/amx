@@ -42,7 +42,7 @@ use crate::tui::grid;
 ///
 /// The table is not public to the rest of the crate, so the test that checks
 /// the README against it reads this file as text.
-pub(in crate::tui) const HELP: [(&str, &str); 33] = [
+pub(in crate::tui) const HELP: [(&str, &str); 36] = [
     // walk
     ("↑ ↓ j k", "walk the agents"),
     ("gg G", "the top of the list, and the foot"),
@@ -63,6 +63,9 @@ pub(in crate::tui) const HELP: [(&str, &str); 33] = [
     ("alt+n", "start the line and go to the agent"),
     ("r", "reply: a message, or an answer on the card"),
     ("alt+enter", "a newline in the line, without sending it"),
+    ("ctrl+j", "the same, where alt+enter does not arrive"),
+    ("← → ctrl+←", "the cursor: a character, a word, home end"),
+    ("backspace", "a character · delete ahead · ctrl+w a word"),
     ("ctrl+g", "write the line in $EDITOR"),
     // arrange
     ("ctrl+s", "gather them by state or by project"),
@@ -95,7 +98,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 33] = [
 pub(super) const GROUPS: [(&str, usize); 5] = [
     ("walk", 6),
     ("look", 7),
-    ("start", 5),
+    ("start", 8),
     ("arrange", 8),
     ("dials", 7),
 ];
@@ -556,7 +559,13 @@ mod tests {
         // for two of anything: two columns here would be a key with a stub of
         // a description against it, and the description is the half somebody
         // came for.
-        let painted = overlay((80, 46));
+        //
+        // Tall enough for the one column whole, worked out rather than counted
+        // off a screen somebody once looked at: every key, a heading over each
+        // group, the row that stands each group off from the next, and the
+        // header, the space under it and the row of keys at the foot.
+        let deep = (HELP.len() + 2 * GROUPS.len() - 1 + 4) as u16;
+        let painted = overlay((80, deep));
         let all = painted.join("\n");
         for (key, does) in HELP {
             assert!(all.contains(key), "{key} is missing:\n{all}");
