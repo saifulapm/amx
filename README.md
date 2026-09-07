@@ -294,6 +294,7 @@ the whole table.
 | `shift+↑` `shift+↓` | move it up or down its group |
 | `alt+enter` | a newline in the line, without sending it |
 | `ctrl+j` | the same newline, where `alt+enter` does not arrive |
+| `tab` | take the word offered under the line |
 | `←` `→` `ctrl+←` `ctrl+→` | the cursor along the line, by a character or by a word |
 | `home` `end` `ctrl+a` `ctrl+e` | the front of the line, and the end of it |
 | `backspace` `delete` | the character behind the cursor, or the one under it |
@@ -454,6 +455,27 @@ name read against the directory you opened the view in, the way a shell prompt
 standing there would read it. Nothing else on it is a word amx reads: the line
 starts agents and does nothing else, so `s:waiting` typed here is the task, and
 `enter` starts one on it.
+
+A word on that line opening with `/` or `@` is the vendor's own, and a band
+under the line says what it could be: the skills and commands it runs by name,
+the agents it can be told to be, read out of its own directories as you type
+and narrowed to what you have typed of the word. `agent:` is offered the same
+way, out of the vendors amx has an entry for. Six of them at most, and the
+rows come off the wall the way the line's own do.
+
+```
+TASK · letters are text until esc ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ vendor default ┈┈
+❯ /rev█
+  /review  Read the diff.
+  /revise  Say it again.
+enter starts it   alt+enter newline   shift+tab permission   esc cancels
+```
+
+`↑` and `↓` walk the band, `tab` writes the word the choice is standing on in
+the place of the one you are typing, and `enter` does the same rather than
+starting the agent, because a line with a band open under it is a line you are
+still writing a word of. `esc` puts the band away and leaves the line where it
+was, so the way out of a suggestion is not the way out of the mode.
 
 `alt+n` enters that line and takes you with it: the agent is started and your
 terminal lands in its session, by the same two roads `enter` on a row takes.
