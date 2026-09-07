@@ -850,22 +850,35 @@ fn the_composer_takes_back_a_character_and_a_word_where_the_cursor_stands() {
 /// A skill of the person's own, where claude loads them from: the one thing
 /// `/rev` could mean on a line typed in this home.
 fn a_skill_called_review(amx: &Harness) {
-    let skill = amx.home().join(".claude/skills/review/SKILL.md");
-    std::fs::create_dir_all(skill.parent().expect("a directory")).expect("the skills directory");
-    std::fs::write(
-        &skill,
-        "---\ndescription: Read the diff.\n---\n\nRead it.\n",
-    )
-    .expect("the skill");
+    a_file_saying(
+        &amx.home().join(".claude/skills/review/SKILL.md"),
+        "Read the diff.",
+    );
+}
+
+/// And an agent of their own, which is what the other mark asks for.
+fn an_agent_called_scout(amx: &Harness) {
+    a_file_saying(
+        &amx.home().join(".claude/agents/scout.md"),
+        "Goes and looks.",
+    );
+}
+
+/// A file saying `about` about itself, in the frontmatter a suggestion reads.
+fn a_file_saying(path: &std::path::Path, about: &str) {
+    std::fs::create_dir_all(path.parent().expect("a directory")).expect("the directory");
+    std::fs::write(path, format!("---\ndescription: {about}\n---\n\nwords\n"))
+        .expect("the file the vendor loads");
 }
 
 #[test]
 fn the_composer_completes_the_word_under_the_cursor_out_of_the_vendors_files() {
     let amx = Harness::new();
-    // What `/rev` could mean is whatever is in the vendor's own directory at
+    // What `/rev` could mean is whatever is in the vendor's own directories at
     // the moment somebody types it, so the word is looked up rather than
     // guessed at.
     a_skill_called_review(&amx);
+    an_agent_called_scout(&amx);
 
     let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
     types(&amx, &view, "n");
@@ -884,13 +897,23 @@ fn the_composer_completes_the_word_under_the_cursor_out_of_the_vendors_files() {
         "tab finishes the word rather than the line:\n{drawn}"
     );
 
+    // The other mark, on the same line: `/` is something the vendor runs and
+    // `@` is one of the agents it can be told to be.
+    types(&amx, &view, "@sco");
+    press(&amx, &view, "Tab");
+    amx.until("the second word completed", || {
+        screen(&amx, &view)
+            .contains("❯ /review @scout")
+            .then_some(())
+    });
+
     press(&amx, &view, "Enter");
     let id = composed(&amx);
     assert_eq!(
         command_of(&amx, &id).last().map(String::as_str),
-        Some("/review "),
-        "and what the vendor is handed is the word it answers to, with the \
-         space tab left for the next one: {:?}",
+        Some("/review @scout "),
+        "and what the vendor is handed is the words it answers to, each with \
+         the space tab left for the next one: {:?}",
         command_of(&amx, &id)
     );
 }
