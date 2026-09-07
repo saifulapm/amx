@@ -762,7 +762,7 @@ where
                 screen.moused(rest, root, config, here.as_ref())?
             }
             Typed::Paste(text) => {
-                screen.pasted(&text);
+                screen.pasted(&text, config);
                 Doing::Carry
             }
             Typed::Key(key) => screen.act(key, root, config, here.as_ref())?,
@@ -778,7 +778,7 @@ where
                 called.clear();
             }
             Doing::Edit => {
-                edit_the_line(terminal, &mut screen)?;
+                edit_the_line(terminal, &mut screen, config)?;
                 called.clear();
             }
         }
@@ -847,7 +847,7 @@ where
 /// A line that was being typed and a line the editor filled are the same line:
 /// what comes back is the text and nothing else, so enter still does what the
 /// prompt in front of it says it will do.
-fn edit_the_line<B>(terminal: &mut Terminal<B>, screen: &mut Screen) -> Result<()>
+fn edit_the_line<B>(terminal: &mut Terminal<B>, screen: &mut Screen, config: &Config) -> Result<()>
 where
     B: Backend,
     B::Error: std::error::Error + Send + Sync + 'static,
@@ -866,6 +866,9 @@ where
                 composer.at = text.chars().count();
                 composer.text = text;
             }
+            // The line is a line somebody else wrote, so what could stand
+            // under its cursor is looked up again rather than carried over.
+            screen.suggesting(config);
             None
         }
         Ok(Edited::No(why)) => Some(Notice::Advice(why)),
@@ -1447,7 +1450,7 @@ impl Screen {
     /// A wall of agents whose keys stop things and forget things is no place to
     /// replay somebody's clipboard, and a person who pasted a task at the view
     /// meant it for the one thing here that takes text.
-    fn pasted(&mut self, text: &str) {
+    fn pasted(&mut self, text: &str, config: &Config) {
         // Whatever the view had to say, it was about the last thing that
         // happened, and this is another one.
         self.notice = None;
@@ -1462,6 +1465,9 @@ impl Screen {
                 self.mode = Mode::Typing(composer);
             }
         }
+        // A paste is an edit like any other, so the word it left the cursor in
+        // is looked up like any other.
+        self.suggesting(config);
     }
 
     /// A key while somebody is typing a line.
@@ -1482,6 +1488,14 @@ impl Screen {
         };
 
         match key.code {
+            // The suggestions go before the line does: what somebody is
+            // looking at when they press this is the list under the word they
+            // are typing, and one key back from a list is the list gone.
+            KeyCode::Esc if composer.suggest.is_some() => {
+                composer.suggest = None;
+                self.mode = Mode::Typing(composer);
+                return Ok(Doing::Carry);
+            }
             // Cancelled: the line goes, and nothing was done with it. The card
             // that was holding it goes too — it and the line are one thing, so
             // one key is what closes them.
@@ -1509,6 +1523,16 @@ impl Screen {
                 composer.insert("\n");
             }
             KeyCode::Char('j') if chord(key) == KeyModifiers::CONTROL => composer.insert("\n"),
+            // The word the choice is standing on, put where the word being
+            // typed is. Enter as well as tab, because a line with a list open
+            // under it is a line somebody is still writing a word of: sending
+            // it on the key that finishes the word would start an agent on a
+            // spelling they were in the middle of correcting.
+            KeyCode::Tab | KeyCode::Enter
+                if composer.suggest.is_some() && chord(key).is_empty() =>
+            {
+                composer.complete();
+            }
             KeyCode::Enter => {
                 // A find line narrowed the list as it was typed, so enter has
                 // nothing left to do but close it and leave the narrowing
@@ -1606,6 +1630,12 @@ impl Screen {
             KeyCode::End => composer.end(),
             KeyCode::Char('a') if chord(key) == KeyModifiers::CONTROL => composer.home(),
             KeyCode::Char('e') if chord(key) == KeyModifiers::CONTROL => composer.end(),
+            // The choice, where there are suggestions under the word to choose
+            // between. A line is one thing to walk along and the list under it
+            // is another, so the keys that walk each of them are different
+            // keys.
+            KeyCode::Up => composer.choose(-1),
+            KeyCode::Down => composer.choose(1),
             // A key held down with control or alt is somebody reaching for
             // something else, not a character they meant to type.
             KeyCode::Char(typed)
@@ -1628,7 +1658,29 @@ impl Screen {
         }
 
         self.mode = Mode::Typing(composer);
+        // And a task line by the vendor, on the same cadence and for the same
+        // reason. Not after the two keys that move the choice: those leave the
+        // line exactly as it was, and looking it up again would put the choice
+        // back on the first word every time somebody walked past it.
+        if !matches!(key.code, KeyCode::Up | KeyCode::Down) {
+            self.suggesting(config);
+        }
         Ok(Doing::Carry)
+    }
+
+    /// Look the word under the cursor up again, and hold what could stand
+    /// there.
+    ///
+    /// Against the vendor the header is showing, because that is what this
+    /// view says the next agent will be started with, and against the
+    /// directory the view was opened in, because that is where the agent will
+    /// run: a project's own files are offered beside the person's.
+    fn suggesting(&mut self, config: &Config) {
+        let launching = self.profile.launching(config);
+        let project = std::env::current_dir().unwrap_or_default();
+        if let Mode::Typing(composer) = &mut self.mode {
+            composer.suggest = act::suggest(composer, &launching, &project);
+        }
     }
 
     /// Put the agent that has just been started in front of whoever started it.

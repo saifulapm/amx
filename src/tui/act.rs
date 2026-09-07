@@ -19,10 +19,12 @@
 use anyhow::{Context, Result, bail};
 use std::cell::Cell;
 use std::io::Write;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use super::paint::Card;
 use super::rows::Narrow;
+use crate::catalog::{self, Entry};
 use crate::cli::{AgentArgs, AnswerArgs, NewArgs, StopArgs};
 use crate::config::Config;
 use crate::derive::View;
@@ -53,6 +55,27 @@ pub struct Composer {
     /// view is in hand and left here, which is the errand the paint map's
     /// cells run in the other direction.
     pub allowed: Cell<Option<String>>,
+    /// What the word under the cursor could be, where it could be something.
+    pub suggest: Option<Suggest>,
+}
+
+/// The words a vendor would answer to where the cursor is standing, as they
+/// stood at the last keystroke.
+///
+/// Taken again on every keystroke rather than held: what answers to `/review`
+/// is whatever is in the vendor's own directories at the moment somebody types
+/// it, and a list read when the line opened would be a list of what was there
+/// then.
+pub struct Suggest {
+    /// Where the word stands on the line, counted in characters the way the
+    /// cursor is, because it is what taking a suggestion writes over.
+    pub word: Range<usize>,
+    /// What answers to it, narrowed by what has been typed of it. Never empty:
+    /// a word nothing answers to has no suggestions rather than an empty list
+    /// of them.
+    pub entries: Vec<Entry>,
+    /// Which of them the choice is standing on.
+    pub chosen: usize,
 }
 
 /// What entering the line will do.
@@ -77,6 +100,7 @@ impl Composer {
             text: String::new(),
             at: 0,
             allowed: Cell::new(None),
+            suggest: None,
         }
     }
 
@@ -176,13 +200,63 @@ impl Composer {
         self.at = at;
     }
 
+    /// Move the choice through the suggestions, wrapping at both ends: a list
+    /// walked with two keys has nowhere else for them to stop.
+    ///
+    /// Nothing where there are no suggestions, which is what leaves a line
+    /// without an up and a down of its own.
+    pub fn choose(&mut self, by: isize) {
+        let Some(suggest) = &mut self.suggest else {
+            return;
+        };
+        let many = suggest.entries.len();
+        if many == 0 {
+            return;
+        }
+        suggest.chosen = (suggest.chosen + many).saturating_add_signed(by) % many;
+    }
+
+    /// Put the suggestion the choice is on where the word under the cursor is,
+    /// and a space after it.
+    ///
+    /// The space is what says the word is finished: what is being completed is
+    /// one word of a sentence, and the next thing typed is the next word
+    /// rather than more of this one. Never where the line already has one
+    /// there, because a word mended in the middle of a sentence is not a word
+    /// that pushes the next one along. The suggestions go with it either way,
+    /// since the word they were about is now the word one of them named.
+    pub fn complete(&mut self) {
+        let Some(suggest) = self.suggest.take() else {
+            return;
+        };
+        let Some(entry) = suggest.entries.get(suggest.chosen) else {
+            return;
+        };
+        let word = match self.text.chars().nth(suggest.word.end) {
+            Some(after) if after.is_whitespace() => entry.spelled.clone(),
+            _ => format!("{} ", entry.spelled),
+        };
+        let (from, to) = (
+            self.byte_at(suggest.word.start),
+            self.byte_at(suggest.word.end),
+        );
+        self.text.replace_range(from..to, &word);
+        self.at = suggest.word.start + word.chars().count();
+    }
+
     /// Where the cursor stands as a byte of the line, which is what the string
     /// under it is cut by. Past the last character it is the end of the line,
     /// which is where a line being typed usually is.
     fn byte(&self) -> usize {
+        self.byte_at(self.at)
+    }
+
+    /// The same reading for any character of the line, which is how a word
+    /// somewhere else on it is cut out.
+    fn byte_at(&self, at: usize) -> usize {
         self.text
             .char_indices()
-            .nth(self.at)
+            .nth(at)
             .map_or(self.text.len(), |(byte, _)| byte)
     }
 
@@ -276,7 +350,11 @@ pub fn finding(line: &str) -> Vec<Narrow> {
 }
 
 /// The tokens a task line may be led with, and what each of them turns.
-const DIALS: [&str; 5] = ["m:", "p:", "w:", "d:", "agent:"];
+const DIALS: [&str; 5] = ["m:", "p:", "w:", "d:", AGENT];
+
+/// The one of them that says which vendor the line is for, which is the vendor
+/// every other word on it is read against.
+const AGENT: &str = "agent:";
 
 /// What a line's leading tokens turn, for the one spawn they lead. Empty is
 /// the ordinary line, which leaves every dial where the config put it.
@@ -347,7 +425,7 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
     // Which vendor first: which dials exist at all is its answer, and a line
     // may name one the config does not.
     for (dial, value) in &tokens {
-        if *dial == "agent:" {
+        if *dial == AGENT {
             if value.is_empty() {
                 return Err("agent: takes a command".to_string());
             }
@@ -359,7 +437,7 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
 
     for (dial, value) in &tokens {
         match *dial {
-            "agent:" => {}
+            AGENT => {}
             "w:" => {
                 turned.worktree = Some(match *value {
                     "on" => true,
@@ -413,6 +491,120 @@ fn pointed(
         ));
     }
     Ok(value.to_string())
+}
+
+/// What the word under the cursor could be, where it could be something.
+///
+/// A task line only. The other lines go to an agent that is already running,
+/// and what a vendor loads by name is what a task line asks it for.
+///
+/// Read on the keystroke, the way the find line narrows the wall on one: a
+/// suggestion arriving after the word it was about has been finished is no use
+/// to anybody. What it costs is the vendor's directories, and only for a word
+/// that opens with one of the marks that ask for them — an ordinary sentence
+/// asks nothing of the disk.
+pub fn suggest(composer: &Composer, config: &Config, project: &Path) -> Option<Suggest> {
+    if !matches!(composer.asking, Asking::Task) {
+        return None;
+    }
+    let word = under_the_cursor(&composer.text, composer.at)?;
+    let typed: String = composer
+        .text
+        .chars()
+        .take(word.end)
+        .skip(word.start)
+        .collect();
+
+    let entries = answering(&asked_of(config, &composer.text), &typed, project);
+    (!entries.is_empty()).then_some(Suggest {
+        word,
+        entries,
+        chosen: 0,
+    })
+}
+
+/// The word the cursor is standing in, in characters, and nothing where it is
+/// standing on whitespace.
+///
+/// The whole word rather than the part in front of the cursor: what a
+/// suggestion goes in the place of is the word somebody is mending, and a
+/// letter put back into the middle of `/reveiw` is one word being written and
+/// not two.
+fn under_the_cursor(text: &str, at: usize) -> Option<Range<usize>> {
+    let line: Vec<char> = text.chars().collect();
+    let (mut from, mut to) = (at.min(line.len()), at.min(line.len()));
+    while from > 0 && !line[from - 1].is_whitespace() {
+        from -= 1;
+    }
+    while to < line.len() && !line[to].is_whitespace() {
+        to += 1;
+    }
+    (from < to).then_some(from..to)
+}
+
+/// Which vendor's words these are: the `agent:` the line is led with, and the
+/// one the view is holding otherwise.
+///
+/// The line's own first, because it is what the agent this line starts will
+/// be: a word offered out of the dial's vendor would be a word the vendor
+/// named beside it has never heard of.
+fn asked_of(config: &Config, line: &str) -> String {
+    let (tokens, _) = tokens(line);
+    tokens
+        .iter()
+        .find(|(dial, value)| *dial == AGENT && !value.is_empty())
+        .map_or_else(|| config.agent.clone(), |(_, value)| (*value).to_string())
+}
+
+/// What answers to the word being typed, narrowed to what is typed of it.
+///
+/// The marks are the vendor's own: `/` runs a skill, a command or something
+/// the vendor answers out of itself, and `@` names one of its agents. `agent:`
+/// is amx's own dial and is answered out of the table rather than off anybody's
+/// disk.
+///
+/// A vendor amx has measured no places for offers nothing, and so does a
+/// machine with no home directory for its places to hang off — the line is
+/// then only ever the words somebody typed, which is what it was before any of
+/// this.
+fn answering(agent: &str, typed: &str, project: &Path) -> Vec<Entry> {
+    if typed.starts_with(AGENT) {
+        return vendors(typed);
+    }
+    let kinds: &[catalog::Kind] = match typed.chars().next() {
+        Some('/') => &[
+            catalog::Kind::Skill,
+            catalog::Kind::Command,
+            catalog::Kind::Builtin,
+        ],
+        Some('@') => &[catalog::Kind::Agent],
+        _ => return Vec::new(),
+    };
+
+    let places = registry::entry(agent).and_then(|vendor| vendor.catalog);
+    let (Some(places), Some(home)) = (places, std::env::home_dir()) else {
+        return Vec::new();
+    };
+    catalog::listing(&places, &home, project)
+        .into_iter()
+        .filter(|entry| kinds.contains(&entry.kind) && entry.spelled.starts_with(typed))
+        .collect()
+}
+
+/// The vendors amx has an entry for, as the words that aim a line at one.
+///
+/// Out of the table, which is what the kind says about each of them: a vendor
+/// is in no file of anybody's for a sentence about it to be read from.
+fn vendors(typed: &str) -> Vec<Entry> {
+    registry::entries()
+        .iter()
+        .map(|vendor| Entry {
+            spelled: format!("{AGENT}{}", vendor.name),
+            kind: catalog::Kind::Builtin,
+            about: String::new(),
+        })
+        .filter(|entry| entry.spelled.starts_with(typed))
+        .collect()
 }
 
 /// What editing a line in an editor came to.
@@ -1626,6 +1818,139 @@ mod tests {
             (Some(false), "port it"),
             "the tree is amx's own dial, and every agent gets one"
         );
+    }
+
+    /// The words a suggestion offers, in the order it offers them.
+    fn offered(suggest: &Suggest) -> Vec<&str> {
+        suggest
+            .entries
+            .iter()
+            .map(|entry| entry.spelled.as_str())
+            .collect()
+    }
+
+    /// Somewhere for a project's own files to be, for the words that are not
+    /// read out of any.
+    fn a_project() -> &'static Path {
+        Path::new("/srv/app")
+    }
+
+    #[test]
+    fn composer_offers_the_vendors_a_line_can_be_aimed_at_by_name() {
+        // The dial's own token, completed out of the table: every vendor amx
+        // has an entry for, narrowed as the word is typed.
+        let mut line = Composer::new(Asking::Task);
+        line.insert("agent:");
+        let found = suggest(&line, &as_claude(), a_project()).expect("the table");
+        assert_eq!(offered(&found), ["agent:claude", "agent:pi"]);
+        assert_eq!(
+            (found.word, found.chosen),
+            (0..6, 0),
+            "the word it is about, and the choice standing on the first of them"
+        );
+
+        line.insert("p");
+        let found = suggest(&line, &as_claude(), a_project()).expect("the one left");
+        assert_eq!(offered(&found), ["agent:pi"]);
+
+        line.insert("q");
+        assert!(
+            suggest(&line, &as_claude(), a_project()).is_none(),
+            "and a word nothing answers to is the word somebody typed"
+        );
+    }
+
+    #[test]
+    fn composer_puts_the_suggestion_the_choice_is_on_where_the_word_was() {
+        let mut line = Composer::new(Asking::Task);
+        line.insert("m:opus agent:");
+        line.suggest = suggest(&line, &as_claude(), a_project());
+
+        // The two keys walk the list, and the ends of it are each other's
+        // neighbours.
+        line.choose(1);
+        assert_eq!(line.suggest.as_ref().expect("the list").chosen, 1);
+        line.choose(1);
+        assert_eq!(
+            line.suggest.as_ref().expect("the list").chosen,
+            0,
+            "past the last of them is the first"
+        );
+        line.choose(-1);
+        assert_eq!(line.suggest.as_ref().expect("the list").chosen, 1);
+
+        line.complete();
+        assert_eq!(line.text, "m:opus agent:pi ");
+        assert_eq!(
+            line.at, 16,
+            "with the cursor after the space it left for the next word"
+        );
+        assert!(
+            line.suggest.is_none(),
+            "and the suggestions go with the word they were about"
+        );
+    }
+
+    #[test]
+    fn composer_completes_the_word_the_cursor_is_in_rather_than_the_line() {
+        let mut line = Composer::new(Asking::Task);
+        line.insert("agent:cl port it");
+        // Back to the end of the word being typed, which is where somebody
+        // mending one stands.
+        for _ in 0.." port it".chars().count() {
+            line.left();
+        }
+
+        line.suggest = suggest(&line, &as_claude(), a_project());
+        line.complete();
+        assert_eq!(line.text, "agent:claude port it");
+        assert_eq!(
+            line.at, 12,
+            "and a word mended in the middle of a sentence does not push the \
+             next one along"
+        );
+    }
+
+    #[test]
+    fn composer_suggests_nothing_for_a_word_that_asks_the_vendor_for_nothing() {
+        let mut line = Composer::new(Asking::Task);
+        line.insert("port the importer");
+        assert!(
+            suggest(&line, &as_claude(), a_project()).is_none(),
+            "a sentence asks the vendor for nothing by name"
+        );
+
+        let mut line = Composer::new(Asking::Task);
+        line.insert("agent:pi ");
+        assert!(
+            suggest(&line, &as_claude(), a_project()).is_none(),
+            "and a cursor standing on whitespace is standing in no word"
+        );
+    }
+
+    #[test]
+    fn a_line_that_is_not_a_task_is_the_words_somebody_typed() {
+        // Every other line goes to an agent that is already running or
+        // narrows the wall, and what a vendor loads by name is what a task
+        // line asks it for.
+        for asking in [
+            Asking::Find,
+            Asking::Name {
+                id: "fix-login-a1b".to_string(),
+            },
+            Asking::Reply {
+                id: "fix-login-a1b".to_string(),
+                question: false,
+            },
+        ] {
+            let mut line = Composer::new(asking);
+            line.insert("agent:");
+            assert!(
+                suggest(&line, &as_claude(), a_project()).is_none(),
+                "{}",
+                line.label()
+            );
+        }
     }
 
     #[test]

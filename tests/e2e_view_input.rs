@@ -847,6 +847,81 @@ fn the_composer_takes_back_a_character_and_a_word_where_the_cursor_stands() {
     );
 }
 
+/// A skill of the person's own, where claude loads them from: the one thing
+/// `/rev` could mean on a line typed in this home.
+fn a_skill_called_review(amx: &Harness) {
+    let skill = amx.home().join(".claude/skills/review/SKILL.md");
+    std::fs::create_dir_all(skill.parent().expect("a directory")).expect("the skills directory");
+    std::fs::write(
+        &skill,
+        "---\ndescription: Read the diff.\n---\n\nRead it.\n",
+    )
+    .expect("the skill");
+}
+
+#[test]
+fn the_composer_completes_the_word_under_the_cursor_out_of_the_vendors_files() {
+    let amx = Harness::new();
+    // What `/rev` could mean is whatever is in the vendor's own directory at
+    // the moment somebody types it, so the word is looked up rather than
+    // guessed at.
+    a_skill_called_review(&amx);
+
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+    types(&amx, &view, "n");
+    types(&amx, &view, "/rev");
+    amx.until("the word on the line", || {
+        screen(&amx, &view).contains("❯ /rev").then_some(())
+    });
+
+    press(&amx, &view, "Tab");
+    let drawn = amx.until("the word completed", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("❯ /review").then_some(drawn)
+    });
+    assert!(
+        agents(&amx).is_empty(),
+        "tab finishes the word rather than the line:\n{drawn}"
+    );
+
+    press(&amx, &view, "Enter");
+    let id = composed(&amx);
+    assert_eq!(
+        command_of(&amx, &id).last().map(String::as_str),
+        Some("/review "),
+        "and what the vendor is handed is the word it answers to, with the \
+         space tab left for the next one: {:?}",
+        command_of(&amx, &id)
+    );
+}
+
+#[test]
+fn the_composer_drops_the_suggestions_before_the_line_they_stand_under() {
+    let amx = Harness::new();
+    a_skill_called_review(&amx);
+
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+    types(&amx, &view, "n");
+    types(&amx, &view, "/rev");
+    amx.until("the word on the line", || {
+        screen(&amx, &view).contains("❯ /rev").then_some(())
+    });
+
+    // One key back from a list is the list gone, and the line is what the next
+    // press of the same key is about. So enter after it sends the word as it
+    // was typed rather than the one that was being offered.
+    press(&amx, &view, "Escape");
+    press(&amx, &view, "Enter");
+
+    let id = composed(&amx);
+    assert_eq!(
+        command_of(&amx, &id).last().map(String::as_str),
+        Some("/rev"),
+        "esc took the suggestions and left the line where it was typed: {:?}",
+        command_of(&amx, &id)
+    );
+}
+
 #[test]
 fn the_composer_turns_the_dials_for_the_one_spawn_its_tokens_lead() {
     let amx = Harness::new();
