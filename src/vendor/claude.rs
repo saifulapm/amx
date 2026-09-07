@@ -131,6 +131,9 @@ pub const VENDOR: Vendor = Vendor {
             Place::Person(".claude/agents"),
             Place::Project(".claude/agents"),
         ],
+        // `--agent <agent>`, measured at 2.1.263 on 2026-09-07: the agent for
+        // the session, over whatever the settings name.
+        agent_flag: Some("--agent"),
         builtins: &[],
         skill_prefix: "",
     }),
@@ -447,6 +450,11 @@ mod tests {
                 Place::Person(".claude/agents"),
                 Place::Project(".claude/agents"),
             ]
+        );
+        assert_eq!(
+            catalog.agent_flag,
+            Some("--agent"),
+            "and it can be told to run a session as one of them"
         );
         assert_eq!(catalog.skill_prefix, "", "claude runs a skill by its name");
         assert!(

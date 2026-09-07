@@ -315,6 +315,13 @@ pub struct Catalog {
     /// Where its agents come from. Empty from a vendor that has no such
     /// thing, and then nothing on a line for it names one.
     pub agents: &'static [Place],
+    /// The flag that runs a session as one of the agents in those places,
+    /// which is what a line led with one of their names is passed as.
+    ///
+    /// `None` from a vendor that cannot be told to be one of its agents, and
+    /// from every vendor that has none: a name is worth taking off a line only
+    /// where there is a word to hand it to.
+    pub agent_flag: Option<&'static str>,
     /// The commands the vendor answers out of itself, which are in no
     /// directory and are named here or nowhere. Each without the mark that
     /// runs it: writing that is the line's business. Empty from a vendor
@@ -961,6 +968,32 @@ mod tests {
                     vendor.name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_vendor_that_can_be_told_to_be_one_of_its_agents_names_the_flag_for_it() {
+        // The flag is what a line led with an agent's name is passed as, so a
+        // word that would not be read back out of an argv as a flag is no use
+        // to anybody. A vendor that loads no agents has none to name, and a
+        // flag there would be one amx could never fill.
+        for vendor in known() {
+            let Some(catalog) = vendor.catalog else {
+                continue;
+            };
+            let Some(flag) = catalog.agent_flag else {
+                continue;
+            };
+            assert!(
+                flag.starts_with('-'),
+                "{}'s agent flag is not one",
+                vendor.name
+            );
+            assert!(
+                !catalog.agents.is_empty(),
+                "{} names a flag for agents it loads none of",
+                vendor.name
+            );
         }
     }
 

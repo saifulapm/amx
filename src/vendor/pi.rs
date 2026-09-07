@@ -140,6 +140,8 @@ pub const VENDOR: Vendor = Vendor {
             Place::Project(".pi/prompts"),
         ],
         agents: &[],
+        // No agents to be, so no flag to be one with.
+        agent_flag: None,
         builtins: &[
             "login",
             "logout",
@@ -392,6 +394,10 @@ mod tests {
         assert!(
             catalog.agents.is_empty(),
             "pi ships no sub agents, so nothing typed with @ names one"
+        );
+        assert_eq!(
+            catalog.agent_flag, None,
+            "and there is no agent for a line to ask pi to be"
         );
         assert_eq!(
             catalog.skill_prefix, "skill:",
