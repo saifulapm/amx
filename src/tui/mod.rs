@@ -4857,6 +4857,56 @@ mod tests {
     }
 
     #[test]
+    fn acts_ctrl_x_on_a_heading_disarms_the_group_when_the_window_is_left_to_lapse() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        idle(root.path(), "quiet-a1b");
+        let mut screen = watching(vec![reading(
+            "quiet-a1b",
+            Phase::Idle,
+            State {
+                state: Phase::Idle,
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        )]);
+        screen.list.up();
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert_eq!(screen.armed(), ["quiet-a1b".to_string()]);
+
+        // The clock runs past the window with nobody pressing anything, which
+        // is what the arm is read against.
+        let arm = screen.arm.as_mut().expect("the arm the press left");
+        arm.at = arm
+            .at
+            .checked_sub(ARMED)
+            .expect("a machine that has been up longer than the window");
+        assert!(
+            screen.armed().is_empty(),
+            "the rows have nothing left to say about a press that lapsed"
+        );
+
+        // So the next press is a first press again: it arms the group and
+        // stops nothing, rather than finishing what the lapsed one started.
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert_eq!(
+            Agent::open(root.path(), "quiet-a1b")
+                .unwrap()
+                .state()
+                .unwrap()
+                .state,
+            Phase::Idle,
+        );
+        assert_eq!(
+            crate::store::list(root.path()).unwrap().len(),
+            1,
+            "and forgets nothing"
+        );
+        assert_eq!(screen.armed(), ["quiet-a1b".to_string()]);
+    }
+
+    #[test]
     fn acts_ctrl_x_sweep_leaves_a_row_it_could_not_stop_unforgotten() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
