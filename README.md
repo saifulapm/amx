@@ -459,11 +459,27 @@ name read against the directory you opened the view in, the way a shell prompt
 standing there would read it. Nothing else on it is a word amx reads, so
 `s:waiting` typed here is the task and `enter` starts an agent on it.
 
+Without a `d:` the agent starts where you opened the view, unless the wall says
+somewhere else: with the agents gathered by project, a line opened on a heading
+or on any row under it starts in that project, and the rule says which.
+
+```
+TASK · in ~/code/importer · letters are text until esc ┈┈┈┈┈┈┈ vendor default ┈┈
+❯ port the last of the callers█
+enter starts it   alt+enter newline   shift+tab permission   esc cancels
+```
+
+The cursor is where you are looking; a `d:` is you saying where, so it wins.
+Which project a row belongs to is the heading's answer and not the row's own
+directory, so a line opened on an agent running in a worktree or a
+subdirectory starts at the top of the repository the heading names.
+
 A line led with `!` runs rather than asks. `!cargo test --all` is the row
 `amx new --exec` starts at a prompt: the rest of the line is the command, it
 goes to `sh -c` whole, and the rule over the line reads `COMMAND` for as long
-as the bang stands. It runs where the view is, or in the directory a `d:`
-beside the bang names, and it is given no worktree and no dials — there is no
+as the bang stands. It runs where a task typed in its place would have: the
+view's directory, the project the line was opened under, or the one a `d:`
+beside the bang names. It is given no worktree and no dials — there is no
 vendor on that row for a dial to be about, so `!m:opus cargo test` is refused
 by name and the line comes back with what you typed still on it. The front of
 the line and nowhere else: a bang further along is a character of the task.
