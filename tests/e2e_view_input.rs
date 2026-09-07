@@ -1218,6 +1218,57 @@ fn the_composer_stands_what_the_word_could_be_in_a_band_under_the_line() {
 }
 
 #[test]
+fn the_composer_offers_the_words_the_vendor_answers_out_of_itself() {
+    let amx = Harness::new();
+    // A skill of the person's own, called what one of claude's own commands is
+    // called: the word both of them answer to is the one that has to be
+    // offered once.
+    a_skill_called_review(&amx);
+
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+    types(&amx, &view, "n");
+    types(&amx, &view, "/sec");
+
+    // Nothing in anybody's directories answers to this one. It is a word
+    // claude draws out of its own input, and the band holds it beside the
+    // files all the same.
+    let drawn = amx.until("the vendor's own word under the line", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("❯ /sec") && drawn.contains("/security-review")).then_some(drawn)
+    });
+    assert!(
+        agents(&amx).is_empty(),
+        "and reading it started nothing:\n{drawn}"
+    );
+
+    // The word they both answer to stands once, as the person's: their own
+    // directories are read before the list amx measured off the vendor, and
+    // what the row says is what their file says about itself.
+    for _ in 0.."sec".len() {
+        press(&amx, &view, "BSpace");
+    }
+    types(&amx, &view, "rev");
+    let drawn = amx.until("the band on the word they share", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("❯ /rev") && drawn.contains("Read the diff.")).then_some(drawn)
+    });
+    let rows: Vec<&str> = drawn
+        .lines()
+        .filter(|row| row.contains("/review"))
+        .collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "one row, rather than one for the file and one for the vendor:\n{drawn}"
+    );
+    assert!(
+        rows[0].contains("Read the diff."),
+        "and it is the person's, which is the one with anything to say about \
+         itself:\n{drawn}"
+    );
+}
+
+#[test]
 fn the_composer_drops_the_suggestions_before_the_line_they_stand_under() {
     let amx = Harness::new();
     a_skill_called_review(&amx);

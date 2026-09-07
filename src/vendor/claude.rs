@@ -113,9 +113,11 @@ pub const VENDOR: Vendor = Vendor {
     // version that are the plugin's to name and not amx's. A skill is run by
     // its bare name, which is the empty prefix.
     //
-    // No built-ins: the commands claude answers out of itself are drawn by its
-    // own input, `--help` lists none of them, and a list amx has not measured
-    // is a list amx does not offer.
+    // The built-ins are the twenty commands claude answers out of itself,
+    // measured at 2.1.263 on 2026-09-08 off the list its own input draws for a
+    // `/`, since `--help` names none of them. Re-measure at every vendor bump
+    // the same way as the dials: a dropped word is one amx goes on offering
+    // after claude has stopped answering it.
     catalog: Some(Catalog {
         skills: &[
             Place::Person(".claude/skills"),
@@ -134,7 +136,28 @@ pub const VENDOR: Vendor = Vendor {
         // `--agent <agent>`, measured at 2.1.263 on 2026-09-07: the agent for
         // the session, over whatever the settings name.
         agent_flag: Some("--agent"),
-        builtins: &[],
+        builtins: &[
+            "batch",
+            "claude-api",
+            "code-review",
+            "dataviz",
+            "debug",
+            "deep-research",
+            "design",
+            "design-sync",
+            "doctor",
+            "fewer-permission-prompts",
+            "init",
+            "loop",
+            "plan",
+            "review",
+            "run",
+            "run-skill-generator",
+            "security-review",
+            "simplify",
+            "verify",
+            "workflow-authoring",
+        ],
         skill_prefix: "",
     }),
 };
@@ -457,11 +480,35 @@ mod tests {
             "and it can be told to run a session as one of them"
         );
         assert_eq!(catalog.skill_prefix, "", "claude runs a skill by its name");
-        assert!(
-            catalog.builtins.is_empty(),
-            "claude's own commands are drawn by its own input and `--help` \
-             lists none of them, so amx offers what is in the places above \
-             and nothing it has not measured"
+        // And the twenty words claude answers out of itself, measured at
+        // 2.1.263 on 2026-09-08 off the list its own input draws for a `/`:
+        // `--help` names none of them, so they are read where somebody typing
+        // one reads them. A dropped word is one amx offers after claude has
+        // stopped answering it.
+        assert_eq!(
+            catalog.builtins,
+            [
+                "batch",
+                "claude-api",
+                "code-review",
+                "dataviz",
+                "debug",
+                "deep-research",
+                "design",
+                "design-sync",
+                "doctor",
+                "fewer-permission-prompts",
+                "init",
+                "loop",
+                "plan",
+                "review",
+                "run",
+                "run-skill-generator",
+                "security-review",
+                "simplify",
+                "verify",
+                "workflow-authoring",
+            ]
         );
     }
 
