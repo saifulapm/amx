@@ -559,6 +559,12 @@ fn reads_its_own_record(vendor: Option<&Vendor>) -> bool {
 /// vendor with no account of its own — see [`reads_its_own_record`] — read off
 /// a screen a rule could name.
 ///
+/// This is about the phase, and about the turn's edges and the answer that go
+/// down with it — see [`write_the_reading`], which is the only thing that asks.
+/// The question is not decided here and was: a question belongs to whatever put
+/// it on the record rather than to the agent it is on, and [`replaces_the_question`] is
+/// where that is asked.
+///
 /// [`Evidence::Screen`] is the second half and it is not a formality. It says a
 /// rule claimed the capture and was allowed to speak, which is the only reading
 /// here worth writing anything down from. A screen no rule claimed, a pane
@@ -979,11 +985,14 @@ fn hashed(rows: &[&str]) -> u64 {
 /// The writer's lock is taken only when there is something new to write, so
 /// the promise that readers never wait on writers holds for every look but the
 /// one that finds the record saying something else.
-fn note(agent: &Agent, screens: &Ruleset, meta: &Meta, state: &mut State, reading: &Reading) {
-    let corrects = is_the_record(meta, reading);
+fn note(agent: &Agent, screens: &Ruleset, state: &mut State, reading: &Reading) {
     let asking = reading.asking.as_ref();
 
+    // Dropped before the law is chosen rather than after: a question this
+    // takes off the record is one the record no longer has, and what a reading
+    // may do about a question the record has not got is fill it.
     forget_the_placeholder(screens, state);
+    let corrects = replaces_the_question(state, reading);
     let worth = match corrects {
         true => state.corrected_by(asking),
         false => asking.is_some_and(|asking| state.learns_from(asking)),
@@ -999,7 +1008,10 @@ fn note(agent: &Agent, screens: &Ruleset, meta: &Meta, state: &mut State, readin
             // vendor's own account of a moment this picture is already behind.
             if current.last_event == heard {
                 forget_the_placeholder(screens, current);
-                take_the_question(current, asking, corrects);
+                // Asked again under the lock, of the document the write lands
+                // on. The answer above is what said this write was worth
+                // taking the lock for; this one is what the write goes by.
+                take_the_question(current, asking, replaces_the_question(current, reading));
             }
         })
     });
@@ -1012,16 +1024,48 @@ fn note(agent: &Agent, screens: &Ruleset, meta: &Meta, state: &mut State, readin
     }
 }
 
-/// Put what a screen asked on a record, as far as the vendor lets a screen go.
+/// Whether this reading replaces the question on the record, rather than
+/// filling what is empty of it.
 ///
-/// Where the vendor reports, a hook is its own words about its own state and
-/// this is amx's reading of a picture of it, so the screen fills what the hooks
-/// left empty — the options, which no hook has ever carried, and the text when
-/// no hook reported one — and corrects nothing.
+/// The law follows the question rather than the agent it is on. A question a
+/// hook reported is the vendor's own words about its own state — see
+/// [`State::reported`] — and this is amx's reading of a picture of it, so the
+/// screen fills what the hooks left empty and corrects nothing. A question a
+/// screen read is an earlier look at this same pane, and a pane holds one
+/// screen at a time, so the later reading replaces it whole.
 ///
-/// Where it does not report there is nothing on the record but earlier readings
-/// of the same pane, and the pane holds one screen at a time: the reading is
-/// the record, so the later one replaces the earlier one whole.
+/// A record with no question is neither, and reads as the second: there is
+/// nothing there to be careful of, and replacing nothing with what the screen
+/// says is what filling it would do anyway.
+///
+/// Asking the vendor instead is what put #SX6QK58A on the record. pi has
+/// reported through an extension since fa96854, so every question on a pi
+/// counted as pi's own word — including the ones pi draws itself and reports
+/// nothing about, which is `/login`, `/trust`, `/model` and the startup trust
+/// gate. Those reach a record from the screen and from nowhere else, and
+/// nothing ever replaced them: a pi stopped on the trust selector was still
+/// asking for the API key the login box had wanted, with the selector's three
+/// answers grafted underneath.
+///
+/// [`Evidence::Screen`] is the second half and it is not a formality. It says
+/// a rule claimed the capture and was allowed to speak, which is the only
+/// reading here worth writing anything down from. A screen no rule claimed, a
+/// pane nobody captured and a record still fresh from the vendor's own words
+/// all come back some other way, and none of the three is an account to put
+/// over the one on file.
+fn replaces_the_question(state: &State, reading: &Reading) -> bool {
+    !state.reported && reading.verdict.evidence == Evidence::Screen
+}
+
+/// Put what a screen asked on a record, as far as the question there lets a
+/// screen go — see [`replaces_the_question`], which is where that is decided.
+///
+/// Against a question the vendor reported, the screen fills what the hooks left
+/// empty: the options, which no hook has ever carried, and the text when no
+/// hook reported one. Against one an earlier look read off the same pane it
+/// replaces the whole of it, question and choices together, because the pane
+/// holds one screen at a time — and a screen with nothing on it to answer
+/// leaves nothing outstanding.
 fn take_the_question(state: &mut State, asking: Option<&Question>, corrects: bool) {
     match (corrects, asking) {
         (true, asking) => state.correct(asking),
@@ -1566,7 +1610,7 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
         now,
         held,
     );
-    note(&agent, rules, &meta, &mut state, &reading);
+    note(&agent, rules, &mut state, &reading);
     if is_the_record(&meta, &reading) {
         let said = worth_writing_down(&meta, &reading);
         write_the_reading(&agent, &mut state, &reading.verdict, said);
@@ -1685,7 +1729,7 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
             now,
             held,
         );
-        note(&agent, rules, &meta, &mut state, &reading);
+        note(&agent, rules, &mut state, &reading);
         if is_the_record(&meta, &reading) {
             let said = worth_writing_down(&meta, &reading);
             write_the_reading(&agent, &mut state, &reading.verdict, said);
@@ -2087,6 +2131,64 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             None,
             "the placeholder is a whole sentence, not the start of one"
         );
+    }
+
+    #[test]
+    fn reader_replaces_a_question_a_screen_read_and_keeps_one_a_hook_reported() {
+        // Which of the two laws a reading is under used to be the vendor's
+        // business, and #SX6QK58A is what that cost: pi has reported through
+        // an extension since fa96854, so a question pi never reported — the
+        // login box, the trust selector, the startup gate, none of which fires
+        // an event — was treated as pi's own word and stood on the record
+        // while the pane moved on to the next of them.
+        //
+        // So the question answers for itself, on a vendor that reports as much
+        // as on one that does not.
+        let vendor = Meta {
+            agent: Some("claude".to_string()),
+            ..meta()
+        };
+        assert!(reports(vendor_of(&vendor)), "a vendor with hooks");
+
+        let looked_at_the_dialog = |question: &str, reported: bool| {
+            let root = TempDir::new().unwrap();
+            let mut state = state(Phase::Waiting, 1_000);
+            state.question = Some(question.to_string());
+            state.options = vec!["Skip".to_string()];
+            state.reported = reported;
+            a_record(root.path(), &vendor, &state);
+
+            let agent = Agent::open(root.path(), &vendor.id).expect("a record");
+            let reading = reading(&state, true, Some(A_BLOCKING_SCREEN), 1_100);
+            assert_eq!(reading.verdict.evidence, Evidence::Screen, "{question}");
+            assert!(
+                !is_the_record(&vendor, &reading),
+                "and the phase is still the vendor's to write, which this does \
+                 not move: {question}"
+            );
+            note(&agent, rules::of("claude"), &mut state, &reading);
+            state
+        };
+
+        // The vendor's own words about its own state, and a picture of them is
+        // not something to put in front of them. The screen fills what the
+        // hooks left empty and nothing else.
+        let heard = looked_at_the_dialog("Claude needs your permission to use Bash", true);
+        assert_eq!(
+            heard.question.as_deref(),
+            Some("Claude needs your permission to use Bash")
+        );
+        assert_eq!(heard.options, ["Skip"], "which was nothing here");
+        assert!(heard.reported, "and it is still the vendor's word");
+
+        // An earlier look at the same pane, and a pane holds one screen at a
+        // time. The later reading replaces it whole — the question and the
+        // choices drawn under it together — so a screen's answers never end up
+        // under another screen's question.
+        let read = looked_at_the_dialog("Which license should the LICENSE file contain?", false);
+        assert_eq!(read.question.as_deref(), Some("Do you want to proceed?"));
+        assert_eq!(read.options, ["Yes", "No"]);
+        assert!(!read.reported, "and it is still nobody's but the screen's");
     }
 
     #[test]

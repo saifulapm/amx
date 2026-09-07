@@ -318,11 +318,19 @@ readable after the cost has been paid:
   the next hook clears it. On pi nothing does: an agent driven through a dozen
   screens was still offering *Run echo hi?* as its question when it was stopped
   on the login box, which is the first `ctx.ui.select` it had ever been read on.
-  Closed: where the vendor reports nothing there is no word of its own on the
-  record for a picture to be put in front of, so a later reading replaces the
-  question and the choices under it whole, and a screen with nothing on it to
-  answer clears both. On a vendor that does report, the screen still fills what
-  the hooks left empty and corrects nothing.
+  Closed twice, because the first close asked the wrong question. Which law a
+  reading was under followed the vendor's `Hooks`, and that held only while pi
+  had none: once pi reported through its extension every question on a pi was
+  pi's own word again, including the ones pi draws itself and fires no event
+  for — `/login`, `/trust`, `/model`, the startup trust gate. Those reach a
+  record from the screen and from nowhere else, so a pi stopped on the trust
+  selector was still asking for the API key the login box had wanted, with the
+  selector's three answers grafted underneath. Closed: the law follows the
+  question rather than the agent it is on. The record says whether a hook
+  reported the question or a reader read it, a screen fills what a reported one
+  left empty and corrects nothing, and a later reading of the pane replaces a
+  read one whole — the question and its choices together, and a screen with
+  nothing on it to answer clears both.
 - **`adopt` takes the first vendor in the table whose session variable is in the
   environment.** This one came off the rig rather than off pi. A pi started from
   a terminal that already had `CLAUDE_CODE_SESSION_ID` in it was adopted as
