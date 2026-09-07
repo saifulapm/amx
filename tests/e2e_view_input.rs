@@ -397,6 +397,49 @@ fn header_opens_a_view_on_a_project_under_that_projects_own_file() {
 }
 
 #[test]
+fn a_finished_turn_is_summarised_by_the_command_its_own_project_names() {
+    let amx = Harness::new();
+    // What a finished row says is a key like any other, so a project can have
+    // its own answer to it. Both commands answer the same way every time,
+    // which is the only difference from the model call somebody would really
+    // configure here that matters to the reader running it.
+    amx.config("summary_command = \"sed s/^/mine:/\"\n");
+
+    let repo = amx.home().join("elsewhere");
+    std::fs::create_dir_all(repo.join(".amx")).expect("the project");
+    a_repo_at(&repo);
+    std::fs::write(
+        repo.join(".amx/config.toml"),
+        "summary_command = \"sed s/^/theirs:/\"\n",
+    )
+    .expect("the project's own config");
+
+    // One turn that ended in the project and one that ended outside it, so
+    // each row is a reading of the file the agent that wrote it ran under.
+    finished(&amx, "port-cli-b2c", "done", 60);
+    amx.set_meta("port-cli-b2c", json!({ "dir": repo }));
+    finished(&amx, "old-job-c3d", "done", 30);
+
+    let _view = amx.in_a_terminal(&[], &[]);
+    let summary = |id: &str| {
+        amx.until(&format!("the line {id} is worth"), || {
+            amx.state(id)["summary"].as_str().map(str::to_string)
+        })
+    };
+
+    assert_eq!(
+        summary("port-cli-b2c"),
+        "theirs:did what it was asked",
+        "the command is the one the project the turn ran in names"
+    );
+    assert_eq!(
+        summary("old-job-c3d"),
+        "mine:did what it was asked",
+        "and a turn in no project of its own is still the person's"
+    );
+}
+
+#[test]
 fn header_dials_turn_from_the_keys_and_leave_the_agents_alone() {
     let amx = Harness::new();
     amx.config("agent = \"claude\"\n");

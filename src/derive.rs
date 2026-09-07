@@ -1272,6 +1272,22 @@ fn wants_a_line(state: &State) -> bool {
             .is_some_and(|answer| !answer.trim().is_empty())
 }
 
+/// What writes the line this turn is worth, where somebody has said.
+///
+/// The project's own answer to the key rather than the person's alone: a turn
+/// is work done in a project, and how the work there is boiled down to a line
+/// is that project's to say. Which project it is comes off the record, so a
+/// reader on a wall of several answers each row from the file the agent that
+/// wrote it ran under, whichever directory the reader itself was opened in.
+///
+/// Asked of every finished turn on every reading, so it is asked of
+/// [`crate::config::for_project`], which reads a project's file once.
+fn summary_command(meta: &Meta) -> Option<&'static str> {
+    crate::config::for_project(&crate::spawn::project_dir(meta))
+        .summary_command
+        .as_deref()
+}
+
 /// The line the configured command makes of what an agent said.
 ///
 /// Through `sh`, because the key holds a command line and a shell is what a
@@ -1615,8 +1631,8 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
         let said = worth_writing_down(&meta, &reading);
         write_the_reading(&agent, &mut state, &reading.verdict, said);
     }
-    if let Some(command) = crate::config::current().summary_command.as_deref()
-        && wants_a_line(&state)
+    if wants_a_line(&state)
+        && let Some(command) = summary_command(&meta)
     {
         have_a_line_written(root, &agent, &meta, &state, command, now);
     }
@@ -1734,8 +1750,8 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
             let said = worth_writing_down(&meta, &reading);
             write_the_reading(&agent, &mut state, &reading.verdict, said);
         }
-        if let Some(command) = crate::config::current().summary_command.as_deref()
-            && wants_a_line(&state)
+        if wants_a_line(&state)
+            && let Some(command) = summary_command(&meta)
         {
             have_a_line_written(root, &agent, &meta, &state, command, now);
         }

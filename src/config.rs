@@ -200,6 +200,51 @@ pub fn current() -> &'static Config {
     CURRENT.get_or_init(|| load().0)
 }
 
+/// The config the work in one project is read under, read once per project for
+/// the life of the process.
+///
+/// [`current`]'s reason, a project at a time. A reader takes a reading every
+/// second, and the finished agents in it belong to a handful of projects
+/// between them: opening two files per agent per second to answer one key is
+/// more of the disk than the key is worth. What a file somebody has just
+/// edited says is picked up by the next amx they run, which is how the person's
+/// own file behaves already.
+///
+/// Keyed by the project as the filesystem spells it, so one project reached by
+/// two paths is one entry rather than two readings of one file. It is the
+/// project that is asked for rather than the tree an agent happens to run in —
+/// [`crate::spawn::project_dir`] is what answers that — so a repository and
+/// every worktree amx cut from it share the entry, which is the same law the
+/// file itself is kept under.
+///
+/// Warnings go unsaid here, as they are in [`current`] and in the verbs that
+/// spawn into a project: this is one key being asked about on a reading nobody
+/// asked for, and a file read once could only say what is wrong with it once,
+/// at whatever moment the first reader happened to look.
+pub fn for_project(project: &Path) -> &'static Config {
+    static READ: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, &'static Config>>,
+    > = std::sync::OnceLock::new();
+    let read = READ.get_or_init(Default::default);
+
+    let key = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
+    if let Some(config) = read.lock().ok().and_then(|read| read.get(&key).copied()) {
+        return config;
+    }
+
+    // Kept for the life of the process rather than behind the lock, because
+    // what a reader is handed it holds for as long as it is drawing with it,
+    // and there is one of these per project somebody has run an agent in. Two
+    // readers arriving at once make one read apiece and agree on which of the
+    // two the map keeps: they read the same file and got the same answer.
+    let config: &'static Config = Box::leak(Box::new(for_dir(&key).0));
+    match read.lock() {
+        Ok(mut read) => read.entry(key).or_insert(config),
+        // A map nothing can reach is a memory, not an answer.
+        Err(_) => config,
+    }
+}
+
 /// The config as amx runs with it, with warnings for the caller to print.
 pub fn load() -> (Config, Vec<String>) {
     match crate::paths::config_file() {
@@ -216,9 +261,6 @@ pub fn load() -> (Config, Vec<String>) {
 /// still whatever the person chose. Which file is the project's is
 /// [`crate::paths::project_config`]'s question, and it is the repository's
 /// rather than any one tree of it.
-// The verbs that spawn an agent, and the view that counts them, read their
-// config through here next. Until they do, its only callers are its own tests.
-#[allow(dead_code)]
 pub fn for_dir(dir: &Path) -> (Config, Vec<String>) {
     let mut files = Vec::new();
     let mut warnings = Vec::new();
@@ -747,5 +789,20 @@ mod tests {
         // The whole way through, from a directory to the key that file sets.
         let repo = a_project();
         assert_eq!(for_dir(repo.path()).0.max_agents, 42);
+    }
+
+    #[test]
+    fn a_projects_config_is_read_once_and_every_reading_after_is_that_one() {
+        // A reader asks this of every finished agent it draws, every second it
+        // is open, so what it costs is one read per project and no more.
+        let repo = a_project();
+        assert_eq!(for_project(repo.path()).max_agents, 42);
+
+        std::fs::write(repo.path().join(".amx/config.toml"), "max_agents = 7\n").unwrap();
+        assert_eq!(
+            for_project(repo.path()).max_agents,
+            42,
+            "an edited file is what the next amx reads, not this one"
+        );
     }
 }

@@ -892,7 +892,9 @@ answer, and an answer does not open with a summary of itself, so without this
 the row shows its first line. With it, the first reader to see a turn end runs
 the command where the agent ran, hands it the whole answer on stdin with
 `$AMX_ID` naming the agent, and writes the first line it prints onto the record
-for every reader after. Nothing waits for it: the row keeps the answer until
+for every reader after. The command is the one the project that turn ran in
+names, so a view standing over several projects boils each row down by its own
+project's file. Nothing waits for it: the row keeps the answer until
 the line arrives, and a command that fails, that is not installed, or that says
 nothing costs the line and nothing else. Each turn is asked about once, by one
 amx, and one turn at a time: a view opened on a week of finished agents is a
