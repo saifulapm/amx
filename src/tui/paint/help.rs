@@ -79,7 +79,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 38] = [
     ("/", "find by name, task or #12, as you type"),
     ("s:", "narrow by state, on the find line"),
     // dials
-    ("alt+v", "which vendor the next agent runs"),
+    ("alt+a", "which vendor the next agent runs"),
     ("alt+m", "which model the next agent is given"),
     ("alt+w", "whether it gets a worktree of its own"),
     ("shift+tab", "what it may do without asking"),

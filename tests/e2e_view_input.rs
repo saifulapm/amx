@@ -1655,7 +1655,7 @@ fn header_vendor_dial_runs_the_next_agent_under_the_vendor_it_names() {
          on the row to name:\n{drawn}"
     );
 
-    press(&amx, &view, "M-v");
+    press(&amx, &view, "M-a");
     amx.until("the vendor dial to turn", || {
         screen(&amx, &view)
             .contains("└ next  claude   model  default")

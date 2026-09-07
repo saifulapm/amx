@@ -304,7 +304,7 @@ the whole table.
 | `home` `end` `ctrl+a` `ctrl+e` | the front of the line, and the end of it |
 | `backspace` `delete` | the character behind the cursor, or the one under it |
 | `ctrl+w` `alt+backspace` | the word behind the cursor, in one press |
-| `alt+v` | which vendor the next agent runs |
+| `alt+a` | which vendor the next agent runs |
 | `alt+m` | which model the next agent is given |
 | `alt+w` | whether it gets a worktree of its own |
 | `shift+tab` | what the next agent may do without asking |

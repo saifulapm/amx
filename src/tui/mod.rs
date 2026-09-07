@@ -1270,16 +1270,18 @@ impl Screen {
 
     /// A dial, if this is the key that turns one.
     ///
-    /// The shape of them is the vendor's: alt with the initial of what it
-    /// turns, and shift+tab for the permission mode, which is the chord
-    /// claude's own screens cycle it with. Each one changes what the *next*
+    /// The shape of them is alt with the initial of the dial the header
+    /// names, and shift+tab for the permission mode, which is the chord
+    /// claude's own screens cycle it with. The vendor is the `agent` dial
+    /// everywhere else a person names it, on the row and in the `agent:`
+    /// prefix, so its key is alt+a. Each one changes what the *next*
     /// agent will be started with and nothing about the ones already running.
     fn turned(&mut self, key: KeyEvent) -> bool {
         let alt = chord(key) == KeyModifiers::ALT;
         let plain = chord(key).is_empty();
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
-            KeyCode::Char('v') if alt => self.profile.cycle_vendor(),
+            KeyCode::Char('a') if alt => self.profile.cycle_vendor(),
             KeyCode::Char('m') if alt => self.profile.cycle_model(),
             KeyCode::Char('w') if alt => self.profile.toggle_worktree(),
             // Shift+tab is a key of its own where a terminal has one, and tab
@@ -3207,6 +3209,12 @@ mod tests {
         };
 
         press(&mut screen, alt('v'));
+        assert_eq!(
+            screen.profile.agent, "mock-claude",
+            "the vendor is under the initial of the dial the row names, and \
+             the key it used to be under turns nothing"
+        );
+        press(&mut screen, alt('a'));
         assert_eq!(screen.profile.agent, "claude");
         press(&mut screen, alt('m'));
         assert_eq!(screen.profile.model, "fable");
