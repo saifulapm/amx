@@ -398,17 +398,18 @@ that takes the record away, and the worktree with it where that tree holds
 nothing no commit has. Leave it alone and the row goes back to saying what it
 was saying, having forgotten nothing. On a heading the two presses reach the
 whole group, whatever the states beneath, and the first of them costs nothing
-at all: every row under the heading is armed in place — each row wears the
-warning itself — and not one agent is stopped. The press inside the window is
-the one that acts: every agent under the heading still running is stopped, and
-then they are all forgotten, each under the same worktree safety a single row
-gets. A row's first press costs you one pane, which is a thing you can watch
-happen; the same press on a heading could cost you every pane on the screen, so
-the group waits for the press you have been warned about. The heading that
-press lands on is not always the one that was pressed, because a group
-dissolves as its rows change state: the rows carry the arming, the cursor is
-kept with them while the window is open, and the heading standing over them is
-where the second press lands.
+at all: every row under the heading is armed in place — each row saying
+`ctrl+x again stops and forgets` where its summary was, because the press
+after this one reaches the whole group — and not one agent is stopped. The
+press inside the window is the one that acts: every agent under the heading
+still running is stopped, and then they are all forgotten, each under the same
+worktree safety a single row gets. A row's first press costs you one pane,
+which is a thing you can watch happen; the same press on a heading could cost
+you every pane on the screen, so the group waits for the press you have been
+warned about. The heading that press lands on is not always the one that was
+pressed, because a group dissolves as its rows change state: the rows carry
+the arming, the cursor is kept with them while the window is open, and the
+heading standing over them is where the second press lands.
 
 The list takes the mouse: a click on an agent's row is `enter` on it — the
 cursor lands and the agent's session comes in front of you — a click on a

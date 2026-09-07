@@ -1993,6 +1993,17 @@ impl Screen {
             .map_or(&[], |arm| arm.ids.as_slice())
     }
 
+    /// Whether the press that armed them was on a heading, which is what
+    /// decides how much the rows say the press after it would do: a group's
+    /// second press stops the live ones under it before it forgets them all,
+    /// and a row's own second press only forgets.
+    fn swept(&self) -> bool {
+        self.arm
+            .as_ref()
+            .filter(|arm| arm.at.elapsed() < ARMED)
+            .is_some_and(|arm| arm.swept)
+    }
+
     /// ctrl+x on an agent's row: one rule, whatever the row is doing. The
     /// first press stops a live agent — idle included — and arms the row,
     /// live or finished; the press inside the window is the one that forgets;
@@ -4771,9 +4782,12 @@ mod tests {
 
         // Up from the row the view opens on is the heading over it. The first
         // press arms every finished row under it, each saying so where its
-        // summary was, and the footer asks nothing.
+        // summary was, and the footer asks nothing. Fifty columns is narrower
+        // than the sweep's warning, so the summary column cuts it the way it
+        // cuts anything else: what fits is enough to say which press this is,
+        // and the sentence whole is the paint's own test.
         let (_, armed) = pressing(root.path(), vec![KeyEvent::from(KeyCode::Up), ctrl('x')]);
-        assert_eq!(armed.matches("ctrl+x again forgets").count(), 2, "{armed}");
+        assert_eq!(armed.matches("ctrl+x again stops").count(), 2, "{armed}");
         assert!(!armed.contains("forget 2 finished"), "{armed}");
         assert_eq!(left(), 2, "and arming is all that has happened");
 

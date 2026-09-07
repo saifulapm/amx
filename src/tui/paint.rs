@@ -227,6 +227,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
             Moment {
                 beat: screen.beat,
                 armed: screen.armed(),
+                swept: screen.swept(),
                 hover: screen.hover,
             },
             card_over,

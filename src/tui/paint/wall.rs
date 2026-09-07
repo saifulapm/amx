@@ -116,7 +116,7 @@ pub(super) fn hangs_off(list: &List, id: &str, visible: u16) -> u16 {
 
 /// What the clock has made of the list at the moment it is drawn: which frame
 /// of the working pulse the rows are on, and which of them a press has armed —
-/// one row, or every finished row under the heading the press was on.
+/// one row, or every row under the heading the press was on.
 ///
 /// Neither is a fact about an agent, and neither is worth writing down: they
 /// are what the view is doing while somebody watches it, so they are handed to
@@ -125,6 +125,10 @@ pub(super) fn hangs_off(list: &List, id: &str, visible: u16) -> u16 {
 pub(super) struct Moment<'a> {
     pub(super) beat: usize,
     pub(super) armed: &'a [String],
+    /// Whether a heading armed them, which is what the armed rows say the
+    /// press after this one would do. One arm at a time, so it is a fact about
+    /// the frame rather than about each row.
+    pub(super) swept: bool,
     /// The line the pointer is resting on, if it is resting on an agent's.
     pub(super) hover: Option<usize>,
 }
@@ -346,9 +350,10 @@ fn row(
         column => column + GAP,
     });
     let armed = moment.armed.iter().any(|id| id == view.id());
-    let said = match armed {
-        true => AGAIN.to_string(),
-        false => inert(first_line(view.line().unwrap_or(""))),
+    let said = match (armed, moment.swept) {
+        (true, true) => AGAIN_ALL.to_string(),
+        (true, false) => AGAIN.to_string(),
+        (false, _) => inert(first_line(view.line().unwrap_or(""))),
     };
 
     let asking = phase == Phase::Waiting;
@@ -422,6 +427,14 @@ fn state_colour(theme: Theme, phase: Phase) -> Style {
 /// The words claude's own agent view uses for the same two presses, because a
 /// person who has met one of these screens should not have to learn the other.
 const AGAIN: &str = "ctrl+x again forgets";
+
+/// And what a row a heading armed says, which is more: the press after it
+/// stops every live agent under that heading before it forgets them all.
+///
+/// The whole group wears it, whatever each row is doing, because the press is
+/// about the group and a row cannot say what the press will cost by speaking
+/// only for itself.
+const AGAIN_ALL: &str = "ctrl+x again stops and forgets";
 
 /// How wide the pull request column has to be, which is the one column of a
 /// row the design does not fix: the widest label anybody on the screen is
@@ -1013,6 +1026,46 @@ mod tests {
             drawn[3].contains("wrote the tests"),
             "and the rows nobody armed say what they always said: {:?}",
             drawn[3]
+        );
+        assert!(
+            !drawn[2].contains("stops and forgets"),
+            "a row that armed itself says what its own second press does, and no more: {:?}",
+            drawn[2]
+        );
+    }
+
+    #[test]
+    fn view_says_on_a_row_a_heading_armed_that_the_press_after_stops_it_too() {
+        let size = (60, 8);
+        let mut screen = showing(
+            vec![
+                view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
+                view(
+                    "port-importer-b2c",
+                    Phase::Done,
+                    Some("wrote the tests"),
+                    90,
+                ),
+            ],
+            None,
+        );
+        screen.arm = Some(Arm {
+            ids: vec!["fix-login-a1b".to_string(), "port-importer-b2c".to_string()],
+            swept: true,
+            at: Instant::now(),
+        });
+        let drawn = painted(&screen, size);
+        for row in [2, 3] {
+            assert!(
+                drawn[row].contains("ctrl+x again stops and forgets"),
+                "the press over a group stops the live rows under it as well as forgetting them all: {:?}",
+                drawn[row]
+            );
+        }
+        assert_eq!(
+            word_colour(&screen, size, 2, "ctrl+x again stops and forgets"),
+            theme().waiting,
+            "in the colour a row armed on its own wears"
         );
     }
 

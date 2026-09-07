@@ -1876,7 +1876,9 @@ fn acts_ctrl_x_on_a_heading_forgets_the_finished_and_keeps_the_work() {
     press(&amx, &view, "C-x");
     let armed = amx.until("the armed rows", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("ctrl+x again forgets").then_some(drawn)
+        drawn
+            .contains("ctrl+x again stops and forgets")
+            .then_some(drawn)
     });
     assert!(
         !armed.contains("forget 2 finished"),
@@ -1926,7 +1928,7 @@ fn acts_ctrl_x_on_a_heading_arms_rows_in_every_state_before_it_stops_any() {
     press(&amx, &view, "C-x");
     let armed = amx.until("both rows to be armed", || {
         let drawn = screen(&amx, &view);
-        (drawn.matches("ctrl+x again forgets").count() == 2).then_some(drawn)
+        (drawn.matches("ctrl+x again stops and forgets").count() == 2).then_some(drawn)
     });
     assert!(
         !armed.contains("has finished"),
