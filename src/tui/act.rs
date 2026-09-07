@@ -171,13 +171,50 @@ impl Composer {
     /// Anything shorter goes in as it is. A folded phrase would be a line
     /// somebody could not read back, and the marker is only worth its
     /// awkwardness where what it hides was going to be unreadable anyway.
+    ///
+    /// The same text pasted onto a line whose marker for it is still standing
+    /// unfolds that marker instead of raising a second one beside it. Pressing
+    /// paste again on a row that came back where a file was expected is
+    /// somebody asking to see what they pasted, and this is the one press that
+    /// says so — so the text goes back in the place the marker was holding for
+    /// it, and the line reads as what will be sent. What is sent does not
+    /// move: the marker went, and the paste it stood for is the characters
+    /// now standing there.
+    ///
+    /// A marker taken back is not there to unfold, so the same text pasted
+    /// again after that folds afresh, under the next number. The paste beside
+    /// the line keeps the number it was given either way, because that number
+    /// is how [`whole`](Self::whole) reads every other marker on the line.
     pub fn paste(&mut self, text: &str) {
         if text.chars().count() <= PASTED_CHARACTERS && text.lines().count() <= PASTED_ROWS {
             self.insert(text);
             return;
         }
+        if let Some(standing) = self.standing(text) {
+            self.at = self.text[..standing.start].chars().count() + text.chars().count();
+            self.text.replace_range(standing, text);
+            return;
+        }
         self.pastes.push(text.to_string());
         self.insert(&marker(self.pastes.len()));
+    }
+
+    /// Where the line's marker for a paste it is already holding equal to this
+    /// text stands, in bytes, and nothing where no such marker is on the line.
+    ///
+    /// The text and not the number, because a person pastes a clipboard rather
+    /// than a marker: what says this is the same paste is that it is the same
+    /// characters.
+    fn standing(&self, text: &str) -> Option<Range<usize>> {
+        self.pastes
+            .iter()
+            .enumerate()
+            .filter(|(_, pasted)| pasted == &text)
+            .find_map(|(at, _)| {
+                let marker = marker(at + 1);
+                let from = self.text.find(&marker)?;
+                Some(from..from + marker.len())
+            })
     }
 
     /// The line as whatever it is sent to will be given it: every marker on it
@@ -1880,6 +1917,48 @@ mod tests {
         line.paste("!set -e\ncargo build\ncargo test\ncargo clippy");
         assert_eq!(line.text, "[Pasted text #1]");
         assert_eq!(line.label(), "COMMAND");
+    }
+
+    #[test]
+    fn composer_unfolds_a_marker_when_the_same_paste_lands_on_the_line_again() {
+        let log = "one\ntwo\nthree\nfour";
+        let folded = || {
+            let mut line = Composer::new(Asking::Task);
+            line.insert("why: ");
+            line.paste(log);
+            line.insert(" then");
+            assert_eq!(line.text, "why: [Pasted text #1] then");
+            line
+        };
+
+        // The same text pasted again goes in where its marker was standing,
+        // with the cursor after it — and what is sent is what was going to be
+        // sent either way.
+        let mut line = folded();
+        line.home();
+        line.paste(log);
+        assert_eq!(line.text, format!("why: {log} then"));
+        assert_eq!(line.at, "why: ".chars().count() + log.chars().count());
+        assert_eq!(line.whole(), format!("why: {log} then"));
+
+        // A marker taken back is not there to unfold, so the same text folds
+        // afresh — on the next number, since the first is still what the paste
+        // beside the line is read by.
+        let mut line = folded();
+        line.at = "why: [Pasted text #1]".chars().count();
+        line.delete_back();
+        line.paste(log);
+        assert_eq!(line.text, "why: [Pasted text #2] then");
+        assert_eq!(line.whole(), format!("why: {log} then"));
+
+        // And a paste the line is not already holding folds the way it always
+        // did.
+        let mut line = folded();
+        line.end();
+        let dump = "x".repeat(801);
+        line.paste(&dump);
+        assert_eq!(line.text, "why: [Pasted text #1] then[Pasted text #2]");
+        assert_eq!(line.whole(), format!("why: {log} then{dump}"));
     }
 
     #[test]
