@@ -113,10 +113,16 @@ pub const VENDOR: Vendor = Vendor {
     // version that are the plugin's to name and not amx's. A skill is run by
     // its bare name, which is the empty prefix.
     //
-    // The built-ins are the twenty commands claude answers out of itself,
-    // measured at 2.1.263 on 2026-09-08 off the list its own input draws for a
-    // `/`, since `--help` names none of them. Re-measure at every vendor bump
-    // the same way as the dials: a dropped word is one amx goes on offering
+    // The built-ins are the twenty words claude's own agent view dispatches
+    // as a session's first prompt: its bundled skills and the built-ins that
+    // expand into a prompt, `/init` among them. Every other built-in that
+    // view refuses with `attach to a session to run it`, and `--help` names
+    // none of them. Read off code.claude.com/docs/en/commands, which marks the
+    // skills, at 2.1.263 on 2026-09-08; that a word handed as the first prompt
+    // runs was measured the same day, `claude "/help"` opening the help panel.
+    // Re-measure at every vendor bump against that page and not against
+    // claude's own `/` menu, which lists every built-in, the ones a fresh
+    // session cannot run included: a dropped word is one amx goes on offering
     // after claude has stopped answering it.
     catalog: Some(Catalog {
         skills: &[
@@ -480,11 +486,11 @@ mod tests {
             "and it can be told to run a session as one of them"
         );
         assert_eq!(catalog.skill_prefix, "", "claude runs a skill by its name");
-        // And the twenty words claude answers out of itself, measured at
-        // 2.1.263 on 2026-09-08 off the list its own input draws for a `/`:
-        // `--help` names none of them, so they are read where somebody typing
-        // one reads them. A dropped word is one amx offers after claude has
-        // stopped answering it.
+        // And the twenty words claude's own agent view dispatches as a first
+        // prompt — the bundled skills and the prompt-expanding built-ins —
+        // read off code.claude.com/docs/en/commands at 2.1.263 on 2026-09-08,
+        // since `--help` names none of them. A dropped word is one amx offers
+        // after claude has stopped answering it.
         assert_eq!(
             catalog.builtins,
             [
