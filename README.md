@@ -487,6 +487,14 @@ starting the agent, because a line with a band open under it is a line you are
 still writing a word of. `esc` puts the band away and leaves the line where it
 was, so the way out of a suggestion is not the way out of the mode.
 
+A line led with one of the vendor's own agents is a task for that agent:
+`@scout port the importer` starts the session as `scout` — `--agent scout` on
+claude's argv — and the task it is given is the rest of the line. The front of
+the line and nowhere else, and only a name the vendor loads: `@scout` further
+along, or a word naming none of its agents, stays where you typed it and is
+read as the file or the sentence it is. pi has no agents of its own and no flag
+to be one with, so on a line for it every `@` is left alone.
+
 `alt+n` enters that line and takes you with it: the agent is started and your
 terminal lands in its session, by the same two roads `enter` on a row takes.
 Everything else about it is what `enter` on the line would have done, the
