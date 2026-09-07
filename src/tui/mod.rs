@@ -1764,16 +1764,22 @@ impl Screen {
     ///
     /// Against the vendor the header is showing, because that is what this
     /// view says the next agent will be started with, and against the
-    /// directory the view was opened in, because that is where the agent will
-    /// run: a project's own files are offered beside the person's. The
-    /// projects go with them, so that a `d:` can be aimed at one of them
-    /// without a path being typed out.
+    /// directory the agent will run in, because a file offered out of
+    /// anywhere else is a file it would not find: the project the line was
+    /// opened under where the wall was showing one, and the directory the
+    /// view was opened in otherwise, which is the same answer entering the
+    /// line gives. A `d:` on the line still says it instead. The projects go
+    /// with them, so that a `d:` can be aimed at one of them without a path
+    /// being typed out.
     fn suggesting(&mut self, config: &Config) {
         let launching = self.profile.launching(config);
-        let project = std::env::current_dir().unwrap_or_default();
         let Mode::Typing(composer) = &self.mode else {
             return;
         };
+        let project = composer
+            .under
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let found = act::suggest(composer, &launching, &project, &self.projects);
         if let Mode::Typing(composer) = &mut self.mode {
             composer.suggest = found;
@@ -5691,6 +5697,37 @@ mod tests {
             Mode::Confirming(Asked::Slight { task, .. }) => assert_eq!(task, "/go"),
             _ => panic!("enter on a finished word is enter on the line"),
         }
+    }
+
+    #[test]
+    fn composer_completes_a_file_of_the_project_the_line_was_opened_under() {
+        // A line opened under a project's heading runs in that project, so
+        // the files it offers are that project's: the directory the view was
+        // opened in has nothing called this.
+        let root = TempDir::new().unwrap();
+        let there = TempDir::new().unwrap();
+        std::fs::write(there.path().join("quenched.md"), "").unwrap();
+        let config = Config::default();
+        let mut screen = Screen::default();
+        let press = |screen: &mut Screen, key| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
+        let Mode::Typing(composer) = &mut screen.mode else {
+            panic!("the line is not open");
+        };
+        composer.under = Some(there.path().to_path_buf());
+
+        for key in word("read @quen") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        press(&mut screen, KeyEvent::from(KeyCode::Tab));
+        assert_eq!(
+            screen.banded().expect("the line").text,
+            "read @quenched.md ",
+            "the word is completed out of the project under the heading"
+        );
     }
 
     #[test]

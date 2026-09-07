@@ -506,14 +506,15 @@ way, out of the vendors amx has an entry for. Six of them at most, and the
 rows come off the wall the way the line's own do.
 
 The dials are offered too: `m:` and `p:` the values that vendor's dial takes,
-`w:` its two, and `d:` the directories under the one you opened the view in
+`w:` its two, and `d:` the directories under the one the line will run in
 along with every project you already have an agent in. An `@` word that names
 none of the vendor's agents is a path — the other thing the mark is for — and
 what it offers is what is in the directory it names, read against the line's
-own `d:` where it has one and under the view's directory otherwise, with `~`
-read as your home. Directories carry a `/` and keep the space off the end of
-the word, so `@src/` is a path you go on typing; `.git` and `.amx` are left
-out.
+own `d:` where it has one, under the project whose heading the line was opened
+under where the wall is showing projects, and under the view's directory
+otherwise, with `~` read as your home. Directories carry a `/` and keep the
+space off the end of the word, so `@src/` is a path you go on typing; `.git`
+and `.amx` are left out.
 
 ```
 TASK · letters are text until esc ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ vendor default ┈┈
