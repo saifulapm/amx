@@ -242,7 +242,23 @@ impl Filters {
         // gathered five ways is narrowed the same five ways, and what somebody
         // typed leaves the list holding exactly the group they read the count
         // of.
-        let state = self.state.as_ref().is_none_or(|want| group.state() == want);
+        //
+        // But the record knows more states than the wall has groups — failed,
+        // idle, stopped, starting and unknown all share a heading with others
+        // — and a word no counter says still finds its rows, because
+        // `s:failed` is how somebody picks the one that died out of everything
+        // that finished. A group's word stays the group's, though: `working`
+        // and `done` are both, and reading them as the state as well would
+        // put a pinned agent under `s:working` and a row under review under
+        // `s:done`, which is the list no longer holding what the counter
+        // counted.
+        let state = self.state.as_ref().is_none_or(|want| {
+            if Group::ALL.iter().any(|group| group.state() == want) {
+                group.state() == want
+            } else {
+                view.phase().as_str() == want
+            }
+        });
         // Every word for the agent that somebody might have in front of them:
         // the id every other surface uses, the name a person gave it because
         // the id was not what they call it, the `#12` its branch wears — which
@@ -2632,6 +2648,49 @@ mod tests {
                 group.state()
             );
         }
+    }
+
+    #[test]
+    fn a_state_word_still_narrows_to_the_rows_in_that_state() {
+        // The counters teach the five group words, but the wall knew eight
+        // states before it knew five groups, and `s:failed` was how somebody
+        // found the one that died among everything that finished. A word the
+        // record says has to keep finding its rows, or the completed group
+        // becomes the one place the list cannot be narrowed inside.
+        let fleet = || {
+            vec![
+                view("done-a1b", Phase::Done, 10),
+                view("failed-b2c", Phase::Failed, 20),
+                view("idle-c3d", Phase::Idle, 30),
+                view("stopped-d4e", Phase::Stopped, 40),
+            ]
+        };
+
+        let mut list = listed(fleet());
+        list.narrow(vec![Narrow::State(Some("failed".to_string()))]);
+        assert_eq!(
+            lines(&list),
+            ["completed (1)", "failed-b2c"],
+            "a state word keeps the rows in that state and nothing else"
+        );
+
+        let mut list = listed(fleet());
+        list.narrow(vec![Narrow::State(Some("idle".to_string()))]);
+        assert_eq!(lines(&list), ["completed (1)", "idle-c3d"]);
+
+        let mut list = listed(fleet());
+        list.narrow(vec![Narrow::State(Some("done".to_string()))]);
+        assert_eq!(
+            lines(&list),
+            [
+                "completed (4)",
+                "stopped-d4e",
+                "idle-c3d",
+                "failed-b2c",
+                "done-a1b"
+            ],
+            "and the group's own word still keeps the whole group"
+        );
     }
 
     #[test]

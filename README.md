@@ -559,9 +559,12 @@ narrows as you type, on a name, a piece of a task, or `#12` for the pull
 request the branch carries — whole and untokenised, so `port the` looks for an
 agent called that rather than for two things. A line of nothing but `s:` tokens
 narrows by state instead: `s:waiting`, or `s:waiting s:working` for either of
-them, and a token with nothing after it drops that narrowing. `enter` closes
-the line and leaves the wall as it is; `esc` gives the fleet back, with or
-without a line open.
+them, and a token with nothing after it drops that narrowing. The word is one
+of the five the counters say, which keeps that group, or a state the record
+knows and no counter names: `s:failed` picks the one that died out of
+everything under completed, and `s:idle` the ones sitting at a prompt.
+`enter` closes the line and leaves the wall as it is; `esc` gives the fleet
+back, with or without a line open.
 
 The keys that edit any of these lines are a shell prompt's. `←` and `→` walk a
 character and `ctrl+←` and `ctrl+→` a word; `home` and `end`, or `ctrl+a` and
