@@ -666,6 +666,69 @@ fn a_working_row_says_what_the_line_over_the_composer_says() {
     );
 }
 
+#[test]
+fn a_working_row_says_the_newest_line_of_its_transcript() {
+    let amx = Harness::new();
+    let mut pane_rows = vec!["✽ Nesting… (15s · ↓ 1.3k tokens)"];
+    pane_rows.extend_from_slice(&CHROME);
+    let pane = a_pane_showing(&amx, &pane_rows);
+    amx.record("port-cli-b2c", &pane);
+
+    // The transcript the session is writing, part way through a turn: the
+    // agent has said a sentence and called nothing since.
+    let transcript = amx.agent_dir("port-cli-b2c").join("session.jsonl");
+    let said = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
+                \"text\":\"The importer keeps its own clock.\"}]}}\n";
+    std::fs::write(&transcript, said).expect("the transcript");
+    amx.set_meta("port-cli-b2c", json!({ "transcript": transcript }));
+
+    // The hooks went quiet ten minutes ago, on the call the record names.
+    let quiet_since = now() - 600;
+    amx.set_state(
+        "port-cli-b2c",
+        json!({
+            "state": "working",
+            "summary": "Running Read",
+            "since": quiet_since,
+            "last_event": quiet_since,
+        }),
+    );
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let row = amx.until("the row to say what the transcript says", || {
+        row_of(&amx, &view, "port-cli-b2c").filter(|row| row.contains("The importer"))
+    });
+    assert!(
+        row.contains("The importer keeps its own clock."),
+        "the newest line of the conversation, between two calls:\n{row}"
+    );
+    assert!(
+        !row.contains("Nesting"),
+        "which is newer than the line the vendor spins:\n{row}"
+    );
+
+    // The next call lands: the row moves to the tool and the path it names.
+    let call = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\
+                \"name\":\"Read\",\"input\":{\"file_path\":\"src/importer.rs\"}}]}}\n";
+    std::fs::write(&transcript, format!("{said}{call}")).expect("the transcript");
+
+    let row = amx.until("the row to say the call the transcript names", || {
+        row_of(&amx, &view, "port-cli-b2c").filter(|row| row.contains("Read src/importer.rs"))
+    });
+    assert!(
+        !row.contains("Running Read"),
+        "the tool and its path, not the record's word for the same call:\n{row}"
+    );
+
+    // Read and not written down, like the line over the composer: a transcript
+    // is read again by whoever looks next.
+    assert_eq!(
+        amx.state("port-cli-b2c")["summary"],
+        "Running Read",
+        "the record says what the hooks said"
+    );
+}
+
 /// A turn that ended with five paragraphs, which is the shape a row cannot say
 /// anything useful about on its own: the answer opens with the work rather
 /// than with a line about the work.

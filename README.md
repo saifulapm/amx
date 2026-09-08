@@ -932,14 +932,26 @@ answer for a program.
 
 A screen with a turn running on it says more than which state the agent is in.
 claude spins one line above its composer for as long as the turn lasts, and
-that line — `Forging… (22s · ↓ 1.3k tokens)` — is what the row shows the agent
-doing, in place of the tool call the record last wrote down. Before the first
-tool call there is nothing written down at all, so the line is read from the
-first look rather than after the hooks go quiet. It is read and not recorded:
-it is true for a second, and the next reading takes it again. pi
-streams the words of the answer it is writing to its record instead, and a
-working row shows the first line of them; while a tool runs there is no
-stream, and the row says `Running Bash`.
+that line — `Forging… (22s · ↓ 1.3k tokens)` — says the turn is running and how
+long for, in place of the tool call the record last wrote down. Before the
+first tool call there is nothing written down at all, so the line is read from
+the first look rather than after the hooks go quiet. It is read and not
+recorded: it is true for a second, and the next reading takes it again.
+
+The transcript is fresher than any of that. A vendor writes each thing it says
+and each tool it calls to the session file at the moment it happens, while a
+hook reaches amx some time afterwards, so a working row shows the last line of
+that file: `Read src/importer.rs` while the record still says `Running Read`,
+and the sentence the agent wrote between two calls while the record says
+nothing about it at all. Only the end of the file is read, so a session that
+has been running all day costs a row what a minute-old one does. Read and not
+recorded, like the line over the composer.
+
+So a working row says, newest account first: what the vendor is streaming as
+the row is drawn — pi streams the words of the answer it is writing, and a
+tool running has no stream — else the newest line of its transcript, else the
+line it spins over its composer, else the `Running Bash` its last tool hook
+left on the record.
 
 ## Vendors
 

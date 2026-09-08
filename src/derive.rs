@@ -1321,36 +1321,100 @@ fn boundary(from: Phase, to: Phase) -> Option<&'static str> {
     }
 }
 
-/// One agent as one answer, with the screen where the screen is fresher.
+/// One agent as one answer, with whatever is fresher than the record.
 ///
-/// What a reader read off the pane about a turn in progress stands in front of
-/// what the record says about the same turn, and goes no further than the
-/// answer this reader hands back. The record is the vendor's own account and
-/// this is a picture of it; the picture wins here because the record is stale
-/// by the time anything looks at a pane at all.
+/// A turn under way is four accounts of the same minute, and a working row
+/// takes them in the order of how recently each was written:
 ///
-/// The vendor's own stream stands in front of both — `saying` is asked for
-/// [`Agent::live`], and only about a turn that is running. A working row says
-/// the first line of what the agent is saying now; a tool running has no
-/// stream, because the vendor takes it down as the message ends, so the
-/// `Running <tool>` the record wrote is what that row says. A finished turn is
-/// answered off the record, and a stream a vendor left behind it is not that
-/// answer.
-fn seen(
-    meta: Meta,
-    mut state: State,
-    reading: Reading,
-    saying: impl FnOnce() -> Option<String>,
-) -> View {
-    if let Some(doing) = reading.doing {
-        state.summary = Some(doing);
-    }
-    if reading.verdict.phase == Phase::Working
-        && let Some(line) = saying().as_deref().and_then(first_said)
-    {
-        state.summary = Some(line.to_string());
+/// 1. **The vendor's own stream** — [`Agent::live`] — which is the sentence
+///    being typed as the row is drawn. A tool running has no stream, because
+///    the vendor takes it down as the message ends.
+/// 2. **The newest line of the transcript**, which is the last thing the agent
+///    said or called, written the moment it happened — see [`newest_said`].
+/// 3. **The line the vendor spins**, read off the pane by whoever captured it
+///    — see [`doing`]. It says the turn is running and how long for, and not
+///    what is being run.
+/// 4. **The record's own `Running <tool>`**, which is what the last tool hook
+///    wrote, and may be ten minutes old.
+///
+/// What a reader read off the pane goes no further than the answer this reader
+/// hands back. The record is the vendor's own account and this is a picture of
+/// it; the picture wins here because the record is stale by the time anything
+/// looks at a pane at all.
+///
+/// A finished turn is answered off the record, and neither a stream nor a
+/// transcript line a vendor left behind it is that answer.
+fn seen(agent: &Agent, meta: Meta, mut state: State, reading: Reading) -> View {
+    let fresher = (reading.verdict.phase == Phase::Working)
+        .then(|| {
+            agent
+                .live()
+                .as_deref()
+                .and_then(first_said)
+                .map(str::to_string)
+                .or_else(|| newest_said(agent, &meta, &state))
+        })
+        .flatten();
+    if let Some(line) = fresher.or(reading.doing) {
+        state.summary = Some(line);
     }
     View::new(meta, state, reading.verdict)
+}
+
+/// The newest thing said in the transcript the record names, as the one line a
+/// row has room for — see [`crate::conversation::latest`].
+///
+/// The vendor writes it the moment it happens and amx is told about it when a
+/// hook fires, so between the two the transcript is the fresher account by
+/// however long the hook took: `Read src/importer.rs` while the row still says
+/// `Running Read`, and the sentence the agent wrote between two calls while
+/// nothing on the record says anything at all.
+///
+/// Read on every look and never written down, like the line the vendor spins.
+/// The transcript is where it lives, and a record carrying a copy would have
+/// every later reader repeat it as news.
+///
+/// A record naming no transcript, and a vendor that keeps none, have nothing
+/// here — see [`crate::conversation::format_of`].
+fn newest_said(agent: &Agent, meta: &Meta, state: &State) -> Option<String> {
+    if a_rewrite_stands(agent, meta, state) {
+        return None;
+    }
+    let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default())?;
+    let tail = agent.transcript_tail(meta)?;
+    crate::conversation::latest(format, &tail)
+}
+
+/// Whether the line already on the record is somebody's rewrite of this turn
+/// that the transcript has yet to overtake.
+///
+/// Where a project sets a `summary_command`, what that command writes about a
+/// turn under way is an account of the whole of it, and the transcript's last
+/// line is one row of the same work — so the rewrite is the better line right
+/// up until the agent says something the rewrite could not have read. The ask
+/// coming back after the transcript was last written is what says it read all
+/// of it, and the transcript moving after that is what takes it back.
+///
+/// About this turn and no other. The ask carries the turn it was about — see
+/// [`Asked`] — so a line written about the turn before this one has nothing to
+/// say about this one, and an ask still out has written nothing yet.
+fn a_rewrite_stands(agent: &Agent, meta: &Meta, state: &State) -> bool {
+    state.summary.is_some()
+        && asked(agent.dir()).is_some_and(|asked| {
+            asked.over
+                && asked.turn == state.since
+                && written_at(meta).is_some_and(|at| asked.at > at)
+        })
+}
+
+/// When the transcript the record names was last written, in epoch seconds.
+fn written_at(meta: &Meta) -> Option<u64> {
+    std::fs::metadata(meta.transcript.as_ref()?)
+        .and_then(|file| file.modified())
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|since| since.as_secs())
 }
 
 /// The line a row has room for of what an agent is saying: the first with
@@ -1753,7 +1817,7 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
         have_a_line_written(root, &agent, &meta, &state, command, now);
     }
 
-    Ok(seen(meta, state, reading, || agent.live()))
+    Ok(seen(&agent, meta, state, reading))
 }
 
 /// One agent's record, read off the disk.
@@ -1863,7 +1927,7 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
             have_a_line_written(root, &agent, &meta, &state, command, now);
         }
 
-        views.push(seen(meta, state, reading, || agent.live()));
+        views.push(seen(&agent, meta, state, reading));
     }
 
     views.sort_by_key(|view| (view.meta.created, view.meta.id.clone()));
@@ -2141,6 +2205,12 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             transcript: None,
             created: 1,
         }
+    }
+
+    /// An agent's directory on disk, for the readings that go looking beside
+    /// the record for what the agent is saying now.
+    fn an_agent(root: &TempDir) -> Agent {
+        Agent::create(root.path(), &meta()).expect("a record")
     }
 
     fn verdict(phase: Phase, evidence: Evidence, rule: Option<&str>) -> Verdict {
@@ -2491,7 +2561,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             "the glyph is the vendor's pulse rather than a word about the turn"
         );
 
-        let view = seen(meta(), told, reading, || None);
+        let root = TempDir::new().unwrap();
+        let view = seen(&an_agent(&root), meta(), told, reading);
         assert_eq!(view.line(), Some("Forging… (22s · ↓ 1.3k tokens)"));
         assert_eq!(view.json()["summary"], "Forging… (22s · ↓ 1.3k tokens)");
     }
@@ -2514,8 +2585,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             fresh.doing.as_deref(),
             Some("Forging… (22s · ↓ 1.3k tokens)")
         );
+        let root = TempDir::new().unwrap();
         assert_eq!(
-            seen(meta(), told.clone(), fresh, || None).line(),
+            seen(&an_agent(&root), meta(), told.clone(), fresh).line(),
             Some("Forging… (22s · ↓ 1.3k tokens)")
         );
 
@@ -2597,8 +2669,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         let mut told = state(Phase::Working, 1_000);
         told.summary = Some("Running Bash".to_string());
         let reading = reading(&told, true, Some(A_SHELL), 1_500);
+        let root = TempDir::new().unwrap();
         assert_eq!(
-            seen(meta(), told, reading, || None).line(),
+            seen(&an_agent(&root), meta(), told, reading).line(),
             Some("Running Bash")
         );
     }
@@ -2610,36 +2683,192 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // stream is what is happening now, so the stream is what the row says.
         let mut told = state(Phase::Working, 1_000);
         told.summary = Some("Running Bash".to_string());
-        let stream = || Some("\nThe redirect drops the query.\n\nFixing it.".to_string());
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(&root);
+        let streaming = agent.dir().join(crate::store::LIVE);
+        std::fs::write(&streaming, "\nThe redirect drops the query.\n\nFixing it.").unwrap();
         let view = seen(
+            &agent,
             meta(),
             told.clone(),
             reading(&told, true, None, 1_000),
-            stream,
         );
         assert_eq!(view.line(), Some("The redirect drops the query."));
         assert_eq!(view.json()["summary"], "The redirect drops the query.");
 
         // A tool running has no stream: the vendor takes it down as the
         // message ends. The record's word stands.
+        std::fs::remove_file(&streaming).unwrap();
         let quiet = seen(
+            &agent,
             meta(),
             told.clone(),
             reading(&told, true, None, 1_000),
-            || None,
         );
         assert_eq!(quiet.line(), Some("Running Bash"));
 
         // A stream a vendor left behind a finished turn is not its answer.
+        std::fs::write(&streaming, "\nThe redirect drops the query.\n\nFixing it.").unwrap();
         let mut ended = state(Phase::Idle, 1_000);
         ended.result = Some("the redirect keeps the query now".to_string());
         let done = seen(
+            &agent,
             meta(),
             ended.clone(),
             reading(&ended, true, None, 1_000),
-            stream,
         );
         assert_eq!(done.line(), Some("the redirect keeps the query now"));
+    }
+
+    /// A claude transcript part way through a turn: the agent has said a
+    /// sentence, and the call under it is appended as the turn goes on.
+    const A_SENTENCE: &str = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"The importer keeps its own clock.\"}]}}\n";
+    const A_CALL: &str = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"src/importer.rs\"}}]}}\n";
+
+    #[test]
+    fn reader_says_what_a_working_agent_last_said_off_its_transcript() {
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(&root);
+        let session = root.path().join("session.jsonl");
+        let keeping_one = Meta {
+            agent: Some("claude".to_string()),
+            transcript: Some(session.clone()),
+            ..meta()
+        };
+
+        // The hooks went quiet on a call ten minutes ago and the vendor's line
+        // is up on the pane. The transcript is newer than either: the agent
+        // answered that call and has said a sentence since.
+        let mut told = state(Phase::Working, 1_000);
+        told.summary = Some("Running Bash".to_string());
+        let row = |meta: &Meta, screen, now| {
+            let reading = reading(&told, true, screen, now);
+            seen(&agent, meta.clone(), told.clone(), reading)
+                .line()
+                .map(str::to_string)
+        };
+
+        std::fs::write(&session, A_SENTENCE).unwrap();
+        assert_eq!(
+            row(&keeping_one, Some(A_WORKING_SCREEN), 1_100).as_deref(),
+            Some("The importer keeps its own clock."),
+            "the newest line of the conversation, over the line the vendor spins"
+        );
+
+        // The next call lands: the tool and the one argument worth a row, in
+        // place of the tool the last hook named.
+        std::fs::write(&session, format!("{A_SENTENCE}{A_CALL}")).unwrap();
+        assert_eq!(
+            row(&keeping_one, None, 1_000).as_deref(),
+            Some("Read src/importer.rs"),
+            "fresh hooks are still the older account of the same call"
+        );
+
+        // Nothing said this turn leaves the row where it was: a transcript
+        // holding only what the person typed says nothing a reader wants, and
+        // a record naming no transcript is not read for one.
+        std::fs::write(
+            &session,
+            "{\"type\":\"user\",\"message\":{\"content\":\"port the importer\"}}\n",
+        )
+        .unwrap();
+        for meta in [&keeping_one, &meta()] {
+            assert_eq!(
+                row(meta, Some(A_WORKING_SCREEN), 1_100).as_deref(),
+                Some("Forging… (22s · ↓ 1.3k tokens)")
+            );
+            assert_eq!(row(meta, None, 1_000).as_deref(), Some("Running Bash"));
+        }
+
+        // And the vendor's own stream comes first of all: it is the sentence
+        // being written as the row is drawn.
+        std::fs::write(&session, format!("{A_SENTENCE}{A_CALL}")).unwrap();
+        std::fs::write(
+            agent.dir().join(crate::store::LIVE),
+            "Reading the importer's clock.",
+        )
+        .unwrap();
+        assert_eq!(
+            row(&keeping_one, Some(A_WORKING_SCREEN), 1_100).as_deref(),
+            Some("Reading the importer's clock.")
+        );
+
+        // A turn that has ended is answered off the record, whatever the
+        // transcript still holds.
+        let mut ended = state(Phase::Idle, 1_000);
+        ended.result = Some("the importer keeps the clock now".to_string());
+        let done = seen(
+            &agent,
+            keeping_one.clone(),
+            ended.clone(),
+            reading(&ended, true, None, 1_000),
+        );
+        assert_eq!(done.line(), Some("the importer keeps the clock now"));
+    }
+
+    #[test]
+    fn reader_keeps_a_rewrite_of_this_turn_until_the_transcript_moves() {
+        // A `summary_command` has written a line about the turn under way,
+        // over an answer it read the whole of. The transcript's last line is
+        // one row of the same work, so the rewrite is the better of the two
+        // until the agent says something the rewrite cannot have read.
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(&root);
+        let session = root.path().join("session.jsonl");
+        std::fs::write(&session, format!("{A_SENTENCE}{A_CALL}")).unwrap();
+        let keeping_one = Meta {
+            agent: Some("claude".to_string()),
+            transcript: Some(session),
+            ..meta()
+        };
+        let written = written_at(&keeping_one).expect("the transcript's own stamp");
+
+        let mut told = state(Phase::Working, 1_000);
+        told.summary = Some("Porting the importer's clock.".to_string());
+        let row = || {
+            seen(
+                &agent,
+                keeping_one.clone(),
+                told.clone(),
+                reading(&told, true, None, 1_000),
+            )
+            .line()
+            .map(str::to_string)
+        };
+        let ask = |asked| assert!(write_asked(agent.dir(), asked), "the ask");
+
+        ask(Asked {
+            turn: told.since,
+            at: written + 1,
+            over: true,
+        });
+        assert_eq!(row().as_deref(), Some("Porting the importer's clock."));
+
+        // The transcript moving is what takes it back.
+        ask(Asked {
+            turn: told.since,
+            at: written - 1,
+            over: true,
+        });
+        assert_eq!(row().as_deref(), Some("Read src/importer.rs"));
+
+        // A line written about the turn before this one says nothing about
+        // this one, and an ask still out has written no line at all.
+        for asked in [
+            Asked {
+                turn: told.since - 1,
+                at: written + 1,
+                over: true,
+            },
+            Asked {
+                turn: told.since,
+                at: written + 1,
+                over: false,
+            },
+        ] {
+            ask(asked);
+            assert_eq!(row().as_deref(), Some("Read src/importer.rs"));
+        }
     }
 
     #[test]
@@ -3332,7 +3561,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(reading.verdict.evidence, Evidence::Screen);
         assert_eq!(reading.verdict.age, 500, "and how long it has been running");
 
-        let view = seen(ran, starting.clone(), reading, || None);
+        let root = TempDir::new().unwrap();
+        let view = seen(&an_agent(&root), ran, starting.clone(), reading);
         assert_eq!(view.line(), Some("test reads_the_line ... ok"));
         assert_eq!(view.json()["state"], "working");
         assert_eq!(view.json()["summary"], "test reads_the_line ... ok");
