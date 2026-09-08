@@ -227,6 +227,14 @@ name column is the one that gives way. A wall with nothing on it keeps
 everything above the list and offers, where a name would be, the only two keys
 that lead anywhere from there: `n` and `?`.
 
+The name in that column is the row's own word for the agent, and on a claude
+agent it is the title claude gave the session. The vendor names the
+conversation out of the work in it and writes a new one as that work moves, so
+the column says what the agents are doing rather than repeating a column of
+ids. `ctrl+r` puts a word of yours there instead, and from then on yours is the
+one that stands. The id goes nowhere: the `ls` table prints it, every verb
+takes it, and `/` finds a row by it as readily as by the title.
+
 The glyph is two shapes, and the shape answers what a colour cannot: whether
 there is still an agent there. `✻` is a process you can attach to, answer or
 stop; `∙` is the dot it leaves behind, which is a record to read. While a turn
