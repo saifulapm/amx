@@ -288,6 +288,15 @@ pub struct State {
     /// agent runs — and how the agent was started is not something a rename
     /// changes.
     pub name: Option<String>,
+    /// What the vendor calls the session this agent is running, where it has
+    /// said so. It is read out of the transcript — see
+    /// [`crate::conversation::session_title`] — because that is the only place
+    /// the vendor ever writes it down.
+    ///
+    /// Not a second [`name`](State::name): that is what somebody here called
+    /// this agent, and this is what the session was called on the other side
+    /// of the pane.
+    pub session_title: Option<String>,
     /// Bumped by each `send`, so `result` can tell this turn's end from the
     /// end of the turn before it.
     pub seq: u64,
@@ -571,6 +580,7 @@ struct Wire {
     #[serde(deserialize_with = "phase_or_unknown")]
     state: Phase,
     name: Option<String>,
+    session_title: Option<String>,
     seq: u64,
     since: u64,
     summary: Option<String>,
@@ -669,6 +679,7 @@ impl From<State> for Wire {
         let State {
             state,
             name,
+            session_title,
             seq,
             since,
             summary,
@@ -691,6 +702,7 @@ impl From<State> for Wire {
         Wire {
             state,
             name,
+            session_title,
             seq,
             since,
             summary,
@@ -756,6 +768,7 @@ impl From<Wire> for State {
         State {
             state: wire.state,
             name: wire.name,
+            session_title: wire.session_title,
             seq: wire.seq,
             since: wire.since,
             summary: wire.summary,

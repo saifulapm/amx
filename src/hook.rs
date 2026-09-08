@@ -183,20 +183,29 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
     let before = meta.clone();
     let notice = apply(payload, &mut state, &mut meta);
 
-    // The transcript is the second place an answer can be, and it is read only
-    // when the payload had none. Reading a file is all this costs; asking the
-    // pane would mean a tmux call on the hook path, which is not this
-    // command's to make.
+    // The transcript is the second place an answer can be and the only place
+    // the session's name ever is, so it is read at the end of a turn and only
+    // there. Reading a file is all this costs; asking the pane would mean a
+    // tmux call on the hook path, which is not this command's to make.
     if state.state == Phase::Idle
-        && state.result.is_none()
         && let Some(path) = &meta.transcript
         && let Ok(text) = std::fs::read_to_string(path)
         && let Some(format) =
             crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default())
-        && let Some(answer) = crate::conversation::answer(format, &text)
     {
-        state.result = Some(answer);
-        state.source = Some(Source::Transcript);
+        // The payload is the freshest place an answer exists, so the
+        // transcript answers only where the payload had none.
+        if state.result.is_none()
+            && let Some(answer) = crate::conversation::answer(format, &text)
+        {
+            state.result = Some(answer);
+            state.source = Some(Source::Transcript);
+        }
+        // A file with no name in it is a session the vendor has not named
+        // yet, which is not a reason to take the name off the record.
+        if let Some(title) = crate::conversation::session_title(format, &text) {
+            state.session_title = Some(title);
+        }
     }
 
     let written = writer.update_state(|current| *current = state)?;
@@ -2435,6 +2444,56 @@ mod tests {
         assert_eq!(state.state, Phase::Idle);
         assert_eq!(state.result.as_deref(), Some("from the transcript"));
         assert_eq!(state.source, Some(Source::Transcript));
+    }
+
+    #[test]
+    fn hook_takes_the_sessions_title_from_the_transcript() {
+        // The transcript is the only place the vendor writes the name of the
+        // session down, and the payload that ends a turn carries the answer,
+        // so the title has to be read whether or not the answer was wanted
+        // from the same file.
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(root.path());
+        let transcript = root.path().join("session.jsonl");
+        let titled = concat!(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Fix the login bug\",\"sessionId\":\"abc-123\"}\n",
+        );
+        std::fs::write(&transcript, titled).unwrap();
+
+        hook(
+            root.path(),
+            agent.id(),
+            &json!({
+                "hook_event_name": "SessionStart",
+                "session_id": "abc-123",
+                "transcript_path": transcript,
+            })
+            .to_string(),
+        );
+        hook(
+            root.path(),
+            agent.id(),
+            r#"{"hook_event_name":"Stop","last_assistant_message":"done"}"#,
+        );
+        assert_eq!(
+            agent.state().unwrap().session_title.as_deref(),
+            Some("Fix the login bug")
+        );
+
+        // A turn that ends over a transcript with no name in it leaves the
+        // name the record has. The vendor writes one when it has one, and
+        // nothing takes it back.
+        std::fs::write(&transcript, "{\"type\":\"attachment\"}\n").unwrap();
+        hook(
+            root.path(),
+            agent.id(),
+            r#"{"hook_event_name":"Stop","last_assistant_message":"done"}"#,
+        );
+        assert_eq!(
+            agent.state().unwrap().session_title.as_deref(),
+            Some("Fix the login bug")
+        );
     }
 
     #[test]
