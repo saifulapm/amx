@@ -1869,9 +1869,11 @@ fn a_pi_reports_its_turn_and_the_record_moves_by_its_word() {
     let id = "fix-login-a1b";
     start(&amx, id, "reports-a-turn");
 
-    let agent = amx.until("the tool to be running", || {
+    // The row says the call with its command, off the transcript pi is
+    // writing as it goes, where the hook alone could only name the tool.
+    let agent = amx.until("the call to be on the row", || {
         let agent = status(&amx, id);
-        (agent["summary"] == json!("Running bash")).then_some(agent)
+        (agent["summary"] == json!("bash cargo test")).then_some(agent)
     });
     assert_eq!(agent["state"], "working", "{agent}");
     assert_eq!(
