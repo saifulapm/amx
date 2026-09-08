@@ -216,7 +216,13 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
     // hour when the pane is worth more than that — amx has no daemon — so the
     // server that owns the pane is asked to ask itself, once, when the hour is
     // up. See [`crate::verbs::park`], which is what it will run.
-    if let Some(delay) = parks_in(&written, park_after(config, &meta))
+    //
+    // Idle is asked before the project's file is, because the file is behind
+    // a git lookup and this path runs on every event the vendor sends: a tool
+    // call is waiting on this hook, and it should not pay for a timer that
+    // was never going to be set.
+    if written.state == Phase::Idle
+        && let Some(delay) = parks_in(&written, park_after(config, &meta))
         && let Some(command) = park_command(root, agent.id())
     {
         // A timer that could not be set is a pane that keeps its memory, and
@@ -234,10 +240,8 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
 /// at an hour the verb will not act on, and nothing then sets a second one.
 ///
 /// Unless the person's own file has turned parking off, which is not a
-/// project's to turn back on — the pane is on their machine. That is also what
-/// keeps this path, which runs on every event the vendor sends, from asking
-/// git which project a directory belongs to on behalf of somebody who has said
-/// no.
+/// project's to turn back on — the pane is on their machine. Nothing is read
+/// off the disk to find that out.
 fn park_after(config: &Config, meta: &Meta) -> u64 {
     if config.park_after == 0 {
         return 0;
