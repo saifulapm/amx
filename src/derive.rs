@@ -80,6 +80,13 @@
 //! reader after — see [`wants_a_line`] and [`staying`]. Nothing configured is
 //! nothing run, and nothing staying is nothing asked.
 //!
+//! The same command answers the same question about a turn still running, and
+//! there it is asked again as the turn moves: every [`REWRITE`] seconds, over
+//! the conversation so far rather than an answer there is not yet — see
+//! [`wants_a_rewrite`] and [`the_turn_so_far`]. The line it writes stands until
+//! the agent says something the command cannot have read, and it goes off the
+//! record with the turn it was about.
+//!
 //! Whatever it concludes, it concludes once. Every reader of an agent — `ls`,
 //! `status`, the view, `--json` — is handed one [`View`], and what is on that
 //! view agrees with the phase on it. A record can disagree with itself; the
@@ -1197,6 +1204,22 @@ fn keep_the_answer(state: &mut State, said: &str) {
     state.source = Some(Source::Screen);
 }
 
+/// Take the line about the turn off the record as the turn ends.
+///
+/// What a row says about a turn that has ended is its answer, and the line
+/// there is about the turn that just finished: the tool the last hook named, or
+/// what a `summary_command` wrote about work that was still going. Either would
+/// stand in front of the answer for as long as the record lasts — see
+/// [`View::line`] — and a rewrite left there would also read as a line already
+/// written, so the finished turn would never be asked about at all.
+///
+/// The same clearing a vendor's own end-of-turn hook does, on the vendor that
+/// has none. Reached from [`write_the_reading`] and from nowhere else, because
+/// a turn's end is the one moment it is true.
+fn the_line_goes_with_the_turn(state: &mut State) {
+    state.summary = None;
+}
+
 /// Write down what a reading concluded, on the vendor where nothing else ever
 /// will — see [`reads_its_own_record`].
 ///
@@ -1260,10 +1283,11 @@ fn write_the_reading(agent: &Agent, state: &mut State, verdict: &Verdict, said: 
             }
             crossed = boundary(current.state, verdict.phase);
             current.state = verdict.phase;
-            if crossed == Some(READ_TURN_END)
-                && let Some(said) = said
-            {
-                keep_the_answer(current, said);
+            if crossed == Some(READ_TURN_END) {
+                the_line_goes_with_the_turn(current);
+                if let Some(said) = said {
+                    keep_the_answer(current, said);
+                }
             }
         })?;
         if let Some(kind) = crossed {
@@ -1286,10 +1310,11 @@ fn write_the_reading(agent: &Agent, state: &mut State, verdict: &Verdict, said: 
         // is kept on the reading — and the record is where this look found it,
         // so the next look arrives at the same edge and writes it again.
         Err(_) => {
-            if boundary(state.state, verdict.phase) == Some(READ_TURN_END)
-                && let Some(said) = said
-            {
-                keep_the_answer(state, said);
+            if boundary(state.state, verdict.phase) == Some(READ_TURN_END) {
+                the_line_goes_with_the_turn(state);
+                if let Some(said) = said {
+                    keep_the_answer(state, said);
+                }
             }
         }
     }
@@ -1337,6 +1362,13 @@ fn boundary(from: Phase, to: Phase) -> Option<&'static str> {
 /// 4. **The record's own `Running <tool>`**, which is what the last tool hook
 ///    wrote, and may be ten minutes old.
 ///
+/// Two of the four give way to a line somebody's `summary_command` wrote about
+/// this turn, and for the same reason: that line was written over the whole of
+/// the turn, where the transcript's last row and the vendor's spinner are each
+/// one moment of it — see [`a_rewrite_stands`]. The stream is not one of the
+/// two. It is the sentence being written now, which the rewrite cannot have
+/// read.
+///
 /// What a reader read off the pane goes no further than the answer this reader
 /// hands back. The record is the vendor's own account and this is a picture of
 /// it; the picture wins here because the record is stale by the time anything
@@ -1355,7 +1387,11 @@ fn seen(agent: &Agent, meta: Meta, mut state: State, reading: Reading) -> View {
                 .or_else(|| newest_said(agent, &meta, &state))
         })
         .flatten();
-    if let Some(line) = fresher.or(reading.doing) {
+    if let Some(line) = fresher.or_else(|| {
+        reading
+            .doing
+            .filter(|_| !a_rewrite_stands(agent, &meta, &state))
+    }) {
         state.summary = Some(line);
     }
     View::new(meta, state, reading.verdict)
@@ -1461,6 +1497,22 @@ fn wants_a_line(state: &State) -> bool {
             .is_some_and(|answer| !answer.trim().is_empty())
 }
 
+/// Whether this record is a turn under way, which is the other thing a line
+/// can be written about.
+///
+/// [`wants_a_line`] read the other way round. A turn that has ended has an
+/// answer and no more work coming; a turn still running has the opposite of
+/// both, so what a line is made of is the conversation so far — see
+/// [`the_turn_so_far`] — and it is made again as the turn moves.
+///
+/// Nothing else is asked of the record here. A line already on it is a tool
+/// the last hook named or the rewrite before this one, and neither is a reason
+/// not to write a better one; whether this is the moment to write it is
+/// [`worth_asking`]'s question and the clock's.
+fn wants_a_rewrite(state: &State) -> bool {
+    state.state == Phase::Working
+}
+
 /// What writes the line this turn is worth, where somebody has said.
 ///
 /// The project's own answer to the key rather than the person's alone: a turn
@@ -1480,22 +1532,22 @@ fn summary_command(meta: &Meta) -> Option<&'static str> {
 /// The line the configured command makes of what an agent said.
 ///
 /// Through `sh`, because the key holds a command line and a shell is what a
-/// command line is written for. The answer goes in on stdin whole — an answer
-/// is arbitrary text and an argv is the one place it could be read as syntax —
-/// and the command runs where the agent ran, with [`crate::hook::ID_ENV`]
-/// naming which agent it is about, so a command that wants more than the
-/// answer knows where to look for it. The same variable a pane is handed, so
-/// a command written for one is written for the other.
+/// command line is written for. What it is asked about goes in on stdin whole
+/// — the answer a turn left, or the turn so far — because either is arbitrary
+/// text and an argv is the one place it could be read as syntax. The command
+/// runs where the agent ran, with [`crate::hook::ID_ENV`] naming which agent
+/// it is about, so a command that wants more than the text knows where to look
+/// for it. The same variable a pane is handed, so a command written for one is
+/// written for the other.
 ///
 /// What comes back is the first line with anything on it. A command that fails,
 /// that is not there, or that says nothing leaves the row exactly as it was:
-/// this is a line about the answer, and the answer is on the record either way.
+/// this is a line about the turn, and the turn is on the record either way.
 ///
-/// The answer goes in on a thread of its own. An answer is as long as the turn
-/// was and a pipe holds a page or sixteen of it, so whoever writes the answer
-/// cannot also be whoever reads what comes back: a command that echoes what it
-/// reads fills its own pipe, stops reading, and the two of them wait on each
-/// other for good.
+/// It goes in on a thread of its own. A turn is as long as a turn is and a pipe
+/// holds a page or sixteen of it, so whoever writes it cannot also be whoever
+/// reads what comes back: a command that echoes what it reads fills its own
+/// pipe, stops reading, and the two of them wait on each other for good.
 fn ask_for_a_line(command: &str, at: &Path, id: &str, answer: &str) -> Option<String> {
     let mut child = std::process::Command::new("sh")
         .arg("-c")
@@ -1541,13 +1593,19 @@ fn ask_for_a_line(command: &str, at: &Path, id: &str, answer: &str) -> Option<St
 /// record's freshness would have the next reader believe this document over
 /// the pane it is meant to be checking.
 ///
-/// Against the answer it was asked about, and no other. Whatever wrote the
-/// line took its time about it, and a record that has moved on to another turn
-/// is not the record this sentence is about. The answer is what says so rather
-/// than the clock: two turns of one second are told apart by what they said
-/// and not by when they said it.
-fn write_the_line(root: &Path, id: &str, turn: u64, at: &Path, command: &str, answer: &str) {
-    let line = ask_for_a_line(command, at, id, answer);
+/// Onto the turn it was asked about, and no other. Whatever wrote the line took
+/// its time about it, and a record that has moved on is not the record this
+/// sentence is about — see [`About`] for what says so in each case.
+fn write_the_line(
+    root: &Path,
+    id: &str,
+    turn: u64,
+    at: &Path,
+    command: &str,
+    said: &str,
+    about: About,
+) {
+    let line = ask_for_a_line(command, at, id, said);
     let Ok(agent) = Agent::open(root, id) else {
         return;
     };
@@ -1560,11 +1618,30 @@ fn write_the_line(root: &Path, id: &str, turn: u64, at: &Path, command: &str, an
     };
     let _ = agent.writer().and_then(|writer| {
         writer.observe(|current| {
-            if current.result.as_deref() == Some(answer) && current.summary.is_none() {
+            if still_the_turn_asked_about(current, turn, said, about) {
                 current.summary = Some(line);
             }
         })
     });
+}
+
+/// Whether the record this line is about to go on is still the one it is about.
+///
+/// The two questions are told apart by different things because they are asked
+/// at different ends of a turn. A finished turn is told apart by its answer
+/// rather than by the clock: two turns of one second are told apart by what
+/// they said and not by when they said it, and a line already there is one
+/// somebody else wrote about the same answer. A turn under way has no answer
+/// yet, so what tells it apart is `since`, which moves whenever the phase does
+/// — a turn that ended while the command was thinking is a different number
+/// here, and the line is about work that is over. The line already there is
+/// this key's own previous rewrite or the tool a hook named, and both are what
+/// this one is written to replace.
+fn still_the_turn_asked_about(current: &State, turn: u64, said: &str, about: About) -> bool {
+    match about {
+        About::TheAnswer => current.result.as_deref() == Some(said) && current.summary.is_none(),
+        About::TheTurnSoFar => current.since == turn,
+    }
 }
 
 thread_local! {
@@ -1660,10 +1737,43 @@ struct Asked {
 /// row gets its line from the next reader rather than from the next turn.
 const AGAIN: u64 = 300;
 
+/// How long a line about a turn under way stands before it is written again.
+///
+/// The question is what the agent is doing, and a turn is doing something else
+/// by the time a few minutes have gone by. Short enough that the row is about
+/// this part of the turn rather than the opening of it, long enough that a
+/// watched agent costs a handful of calls an hour: a row is drawn every second
+/// and a wall of five would otherwise be five commands a second.
+const REWRITE: u64 = 180;
+
+/// Which of the two questions is being put to the command.
+///
+/// The same ask either way — the same command, the same claim, the same queue —
+/// over two different pieces of text, and they differ in what they are worth
+/// asking twice. An answer is finished work and says the same thing whenever it
+/// is read, so the line about it is written once. A turn under way is different
+/// work every few minutes, so the line about it is written again for as long as
+/// the turn lasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum About {
+    /// The answer a turn left behind.
+    TheAnswer,
+    /// The turn so far, as the transcript has it.
+    TheTurnSoFar,
+}
+
 /// Whether this turn is worth asking about, given what the last ask was.
-fn worth_asking(asked: Option<Asked>, turn: u64, now: u64) -> bool {
+fn worth_asking(asked: Option<Asked>, turn: u64, now: u64, about: About) -> bool {
     match asked {
-        Some(asked) if asked.turn == turn => !asked.over && now.saturating_sub(asked.at) >= AGAIN,
+        Some(asked) if asked.turn == turn => match (asked.over, about) {
+            // Still out: being answered, or gone with the verb that made it.
+            (false, _) => now.saturating_sub(asked.at) >= AGAIN,
+            // The answer is what it was, and the line about it is written.
+            (true, About::TheAnswer) => false,
+            // The turn has moved on since, and so has what is worth saying
+            // about it.
+            (true, About::TheTurnSoFar) => now.saturating_sub(asked.at) >= REWRITE,
+        },
         // Nothing asked yet, or asked about the turn before this one.
         _ => true,
     }
@@ -1676,15 +1786,15 @@ fn worth_asking(asked: Option<Asked>, turn: u64, now: u64) -> bool {
 /// every amx on the machine, and read once without it first: a claim already
 /// made costs a small file read, and a turn with a line on it never gets this
 /// far.
-fn claim_the_turn(agent: &Agent, turn: u64, now: u64) -> bool {
-    if !worth_asking(asked(agent.dir()), turn, now) {
+fn claim_the_turn(agent: &Agent, turn: u64, now: u64, about: About) -> bool {
+    if !worth_asking(asked(agent.dir()), turn, now, about) {
         return false;
     }
     let Ok(_writer) = agent.writer() else {
         return false;
     };
     // Under the lock, where two amx that read the same absence become one.
-    if !worth_asking(asked(agent.dir()), turn, now) {
+    if !worth_asking(asked(agent.dir()), turn, now, about) {
         return false;
     }
     write_asked(
@@ -1727,6 +1837,59 @@ fn write_asked(dir: &Path, asked: Asked) -> bool {
     crate::store::write_atomic(&dir.join(ASKED), said.as_bytes()).is_ok()
 }
 
+/// Ask the command whatever this record is at a moment worth asking about,
+/// where the project has said what does the asking.
+///
+/// The one place either question is put, so a reading that draws a row and a
+/// reading that draws a wall put them in the same order and under the same
+/// rules — see [`wants_a_line`] and [`wants_a_rewrite`], which no record
+/// answers both of.
+fn have_a_line_where_one_is_wanted(
+    root: &Path,
+    agent: &Agent,
+    meta: &Meta,
+    state: &State,
+    now: u64,
+) {
+    let Some(command) = summary_command(meta) else {
+        return;
+    };
+    if wants_a_line(state) {
+        have_a_line_written(root, agent, meta, state, command, now);
+    } else if wants_a_rewrite(state) {
+        have_a_line_rewritten(root, agent, meta, state, command, now);
+    }
+}
+
+/// The line a finished turn is worth, out of the answer it left behind.
+fn have_a_line_written(
+    root: &Path,
+    agent: &Agent,
+    meta: &Meta,
+    state: &State,
+    command: &str,
+    now: u64,
+) {
+    ask_about_the_turn(root, agent, meta, state, command, now, About::TheAnswer);
+}
+
+/// The same ask about a turn still running, out of the conversation so far.
+///
+/// Every rule [`have_a_line_written`] is under, and one more that is the same
+/// rule read on a clock that has not stopped: a turn nobody has asked about in
+/// [`REWRITE`] seconds is worth asking about again, where a finished turn never
+/// is.
+fn have_a_line_rewritten(
+    root: &Path,
+    agent: &Agent,
+    meta: &Meta,
+    state: &State,
+    command: &str,
+    now: u64,
+) {
+    ask_about_the_turn(root, agent, meta, state, command, now, About::TheTurnSoFar);
+}
+
 /// Set that going, with nobody waiting for it — except a caller that has said
 /// it will be.
 ///
@@ -1736,13 +1899,14 @@ fn write_asked(dir: &Path, asked: Asked) -> bool {
 /// [`staying`] — so exiting first truly costs the line and nothing else,
 /// rather than a claim it never comes back to settle. A command that never
 /// returns costs the thread it is on, and the queue behind it.
-fn have_a_line_written(
+fn ask_about_the_turn(
     root: &Path,
     agent: &Agent,
     meta: &Meta,
     state: &State,
     command: &str,
     now: u64,
+    about: About,
 ) {
     // Only a reader that can settle the ask may claim a turn: nothing else is
     // here to hear the command back, or ought to be paying to run it.
@@ -1753,13 +1917,23 @@ fn have_a_line_written(
     // about is one this reading will never ask about, and a row that stood in
     // the queue holding a place it cannot use would keep every row under it
     // from ever being asked about at all.
-    if !worth_asking(asked(agent.dir()), state.since, now) {
+    if !worth_asking(asked(agent.dir()), state.since, now, about) {
         return;
     }
+    // And before the queue for a second reason on a turn under way: the
+    // transcript is read off the disk here, and a row worth no ask is a row
+    // worth no read either.
+    let said = match about {
+        About::TheAnswer => state.result.clone(),
+        About::TheTurnSoFar => the_turn_so_far(agent, meta),
+    };
+    let Some(said) = said else {
+        return;
+    };
     if !may_ask() {
         return;
     }
-    if !claim_the_turn(agent, state.since, now) {
+    if !claim_the_turn(agent, state.since, now, about) {
         done_asking();
         return;
     }
@@ -1767,16 +1941,33 @@ fn have_a_line_written(
     let (root, id, turn) = (root.to_path_buf(), meta.id.clone(), state.since);
     let at = where_it_ran(meta);
     let command = command.to_string();
-    let answer = state.result.clone().unwrap_or_default();
     let asking = std::thread::Builder::new()
         .name("amx-summary".to_string())
         .spawn(move || {
-            write_the_line(&root, &id, turn, &at, &command, &answer);
+            write_the_line(&root, &id, turn, &at, &command, &said, about);
             done_asking();
         });
     if asking.is_err() {
         done_asking();
     }
+}
+
+/// The turn as the command is handed it: everything said in it so far, in the
+/// plain shape `amx logs` prints — see [`crate::conversation::plain`].
+///
+/// The tail of the transcript rather than the whole of it. What the command is
+/// being asked is what this turn is doing, a turn is at the end of the file,
+/// and a session that has run all day is a file no reading wants to carry —
+/// see [`Agent::transcript_tail`].
+///
+/// A vendor that keeps no conversation, a record naming none, and a file with
+/// nothing readable in it are each nothing to ask about, and asking a command
+/// about nothing is a call somebody pays for and no line to show for it.
+fn the_turn_so_far(agent: &Agent, meta: &Meta) -> Option<String> {
+    let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default())?;
+    let tail = agent.transcript_tail(meta)?;
+    let said = crate::conversation::plain(&crate::conversation::read(format, &tail));
+    (!said.trim().is_empty()).then_some(said)
 }
 
 /// Where the command runs: the agent's own tree while it is there, else where
@@ -1811,11 +2002,7 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
         let said = worth_writing_down(&meta, &reading);
         write_the_reading(&agent, &mut state, &reading.verdict, said);
     }
-    if wants_a_line(&state)
-        && let Some(command) = summary_command(&meta)
-    {
-        have_a_line_written(root, &agent, &meta, &state, command, now);
-    }
+    have_a_line_where_one_is_wanted(root, &agent, &meta, &state, now);
 
     Ok(seen(&agent, meta, state, reading))
 }
@@ -1921,11 +2108,7 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
             let said = worth_writing_down(&meta, &reading);
             write_the_reading(&agent, &mut state, &reading.verdict, said);
         }
-        if wants_a_line(&state)
-            && let Some(command) = summary_command(&meta)
-        {
-            have_a_line_written(root, &agent, &meta, &state, command, now);
-        }
+        have_a_line_where_one_is_wanted(root, &agent, &meta, &state, now);
 
         views.push(seen(&agent, meta, state, reading));
     }
@@ -2869,6 +3052,22 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             ask(asked);
             assert_eq!(row().as_deref(), Some("Read src/importer.rs"));
         }
+
+        // Nor does the line the vendor spins overtake it. That line says the
+        // turn is running and how long for, and the rewrite says what it is
+        // running: the row gives up its one line to the second of those.
+        ask(Asked {
+            turn: told.since,
+            at: written + 1,
+            over: true,
+        });
+        let spinning = seen(
+            &agent,
+            keeping_one.clone(),
+            told.clone(),
+            reading(&told, true, Some(A_WORKING_SCREEN), 1_100),
+        );
+        assert_eq!(spinning.line(), Some("Porting the importer's clock."));
     }
 
     #[test]
@@ -4180,13 +4379,16 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             })
         };
 
-        assert!(worth_asking(None, 100, 1_000), "nobody has asked yet");
         assert!(
-            !worth_asking(out(100, 1_000), 100, 1_100),
+            worth_asking(None, 100, 1_000, About::TheAnswer),
+            "nobody has asked yet"
+        );
+        assert!(
+            !worth_asking(out(100, 1_000), 100, 1_100, About::TheAnswer),
             "an ask that went out a minute ago is still out"
         );
         assert!(
-            worth_asking(out(100, 1_000), 100, 1_000 + AGAIN),
+            worth_asking(out(100, 1_000), 100, 1_000 + AGAIN, About::TheAnswer),
             "and one that never came back went with the verb that made it"
         );
         assert!(
@@ -4197,12 +4399,13 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
                     over: true
                 }),
                 100,
-                90_000
+                90_000,
+                About::TheAnswer
             ),
             "a command that answered nothing has answered"
         );
         assert!(
-            worth_asking(out(100, 1_000), 200, 1_100),
+            worth_asking(out(100, 1_000), 200, 1_100, About::TheAnswer),
             "the turn after it is a question of its own"
         );
     }
@@ -4222,9 +4425,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             .unwrap();
         drop(writer);
 
-        assert!(claim_the_turn(&agent, ended.since, 1_000));
+        assert!(claim_the_turn(&agent, ended.since, 1_000, About::TheAnswer));
         assert!(
-            !claim_the_turn(&agent, ended.since, 1_001),
+            !claim_the_turn(&agent, ended.since, 1_001, About::TheAnswer),
             "a caller's next ls is a new process, and the record is the only \
              thing either of them shares"
         );
@@ -4239,7 +4442,12 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // The command answered, with a line or with nothing, and either way
         // the question has been put.
         settle_the_ask(&agent, ended.since, 1_002);
-        assert!(!claim_the_turn(&agent, ended.since, 90_000));
+        assert!(!claim_the_turn(
+            &agent,
+            ended.since,
+            90_000,
+            About::TheAnswer
+        ));
         assert!(agent.state().unwrap().summary.is_none());
     }
 
@@ -4297,11 +4505,18 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
         // The command runs on a thread of its own; wait for it to settle and
         // free the queue before the next test takes it.
+        the_command_comes_back();
+    }
+
+    /// Wait for the ask on its own thread to settle and free the queue, so a
+    /// test reads the record the command wrote and the next test takes the
+    /// queue as it found it.
+    fn the_command_comes_back() {
         let waited = std::time::Instant::now();
         loop {
             if may_ask() {
                 done_asking();
-                break;
+                return;
             }
             assert!(
                 waited.elapsed() < std::time::Duration::from_secs(5),
@@ -4333,6 +4548,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             at.path(),
             "cat",
             &answer,
+            About::TheAnswer,
         );
 
         let written = agent.state().unwrap();
@@ -4361,8 +4577,255 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             at.path(),
             "cat",
             &answer,
+            About::TheAnswer,
         );
         assert_eq!(agent.state().unwrap().summary, None);
+    }
+
+    #[test]
+    fn summary_asks_again_about_a_turn_still_running_every_three_minutes() {
+        let answered = |at| {
+            Some(Asked {
+                turn: 100,
+                at,
+                over: true,
+            })
+        };
+
+        assert_eq!(REWRITE, 180, "three minutes");
+        // A finished turn's answer is what it is, so the line about it is
+        // written once. A turn under way is different work every minute, and
+        // the line about it is worth writing again as the work moves.
+        assert!(!worth_asking(
+            answered(1_000),
+            100,
+            90_000,
+            About::TheAnswer
+        ));
+        assert!(!worth_asking(
+            answered(1_000),
+            100,
+            1_000 + REWRITE - 1,
+            About::TheTurnSoFar
+        ));
+        assert!(worth_asking(
+            answered(1_000),
+            100,
+            1_000 + REWRITE,
+            About::TheTurnSoFar
+        ));
+
+        // An ask still out is still out, whichever question it put: it is
+        // being answered, or it went with the verb that made it.
+        let out = Some(Asked {
+            turn: 100,
+            at: 1_000,
+            over: false,
+        });
+        assert!(!worth_asking(
+            out,
+            100,
+            1_000 + REWRITE,
+            About::TheTurnSoFar
+        ));
+        assert!(worth_asking(out, 100, 1_000 + AGAIN, About::TheTurnSoFar));
+    }
+
+    /// A record of a turn under way, over a transcript holding a sentence and
+    /// the call after it.
+    fn a_running_turn(root: &TempDir) -> (Meta, Agent, State) {
+        let session = root.path().join("session.jsonl");
+        std::fs::write(&session, format!("{A_SENTENCE}{A_CALL}")).expect("a transcript");
+        let meta = Meta {
+            agent: Some("claude".to_string()),
+            transcript: Some(session),
+            // Somewhere the command can be run: `where_it_ran` is the agent's
+            // own directory, and a command cannot start in one that is not
+            // there.
+            dir: root.path().to_path_buf(),
+            ..meta()
+        };
+        let agent = Agent::create(root.path(), &meta).expect("a record");
+        let writer = agent.writer().expect("the lock");
+        let running = writer
+            .update_state(|state| state.state = Phase::Working)
+            .expect("a record");
+        drop(writer);
+        (meta, agent, running)
+    }
+
+    #[test]
+    fn summary_rewrites_a_running_turn_out_of_the_whole_transcript() {
+        let _queue = the_queue_to_itself();
+        will_stay_for_the_answer();
+
+        let root = TempDir::new().unwrap();
+        let (meta, agent, running) = a_running_turn(&root);
+
+        // What goes in is the turn as `amx logs` prints it — everything said
+        // so far and not merely the last row of it — and the line that comes
+        // back is on the record while the turn runs.
+        have_a_line_rewritten(root.path(), &agent, &meta, &running, "tr '\\n' ' '", 1_000);
+        the_command_comes_back();
+        assert_eq!(
+            agent.state().unwrap().summary.as_deref(),
+            Some("The importer keeps its own clock.  ⚒ Read src/importer.rs")
+        );
+
+        let asked = asked(agent.dir()).expect("the ask");
+        assert_eq!(asked.turn, running.since, "about the turn under way");
+        assert!(asked.over, "and the ask is over");
+
+        // Asked again once three minutes have passed, and not before.
+        let again = "printf 'porting the importer\\n'";
+        have_a_line_rewritten(
+            root.path(),
+            &agent,
+            &meta,
+            &running,
+            again,
+            asked.at + REWRITE - 1,
+        );
+        assert!(
+            agent.state().unwrap().summary.as_deref() != Some("porting the importer"),
+            "a row is drawn every second and the command is not run every second"
+        );
+
+        have_a_line_rewritten(
+            root.path(),
+            &agent,
+            &meta,
+            &running,
+            again,
+            asked.at + REWRITE,
+        );
+        the_command_comes_back();
+        assert_eq!(
+            agent.state().unwrap().summary.as_deref(),
+            Some("porting the importer")
+        );
+    }
+
+    #[test]
+    fn summary_a_reader_that_is_not_staying_never_rewrites_a_turn() {
+        let root = TempDir::new().unwrap();
+        let (meta, agent, running) = a_running_turn(&root);
+
+        // Nothing on this thread has declared it is staying for the answer,
+        // which is every verb but the view.
+        have_a_line_rewritten(
+            root.path(),
+            &agent,
+            &meta,
+            &running,
+            "printf 'porting the importer\\n'",
+            1_000,
+        );
+
+        assert!(
+            asked(agent.dir()).is_none(),
+            "a reader that will not be here to settle it never claims the turn"
+        );
+        assert!(agent.state().unwrap().summary.is_none());
+    }
+
+    #[test]
+    fn summary_a_project_that_names_no_command_is_asked_nothing_at_all() {
+        let _queue = the_queue_to_itself();
+        will_stay_for_the_answer();
+
+        let root = TempDir::new().unwrap();
+        let (meta, agent, running) = a_running_turn(&root);
+        assert!(
+            summary_command(&meta).is_none(),
+            "this record's project names no command"
+        );
+
+        have_a_line_where_one_is_wanted(root.path(), &agent, &meta, &running, 1_000);
+        assert!(asked(agent.dir()).is_none(), "so nothing was asked");
+        assert!(agent.state().unwrap().summary.is_none());
+    }
+
+    #[test]
+    fn summary_a_rewrite_lands_only_on_the_turn_it_was_asked_about() {
+        let root = TempDir::new().unwrap();
+        let (meta, agent, running) = a_running_turn(&root);
+        let so_far = the_turn_so_far(&agent, &meta).expect("the turn so far");
+
+        write_the_line(
+            root.path(),
+            &meta.id,
+            running.since,
+            root.path(),
+            "printf 'porting the importer\\n'",
+            &so_far,
+            About::TheTurnSoFar,
+        );
+        assert_eq!(
+            agent.state().unwrap().summary.as_deref(),
+            Some("porting the importer")
+        );
+
+        // The turn ended while the command was thinking. `since` moves with
+        // the phase, so the turn this line is about is not the turn the record
+        // is on, and a line about work that is over does not stand in front of
+        // the answer.
+        let writer = agent.writer().unwrap();
+        let ended = writer
+            .observe(|state| {
+                state.state = Phase::Idle;
+                // The stamp laid down by hand, so the two turns are a second
+                // apart rather than however long this test took to get here.
+                state.since = running.since + 1;
+                state.summary = None;
+                state.result = Some("the importer keeps the clock now".to_string());
+            })
+            .unwrap();
+        drop(writer);
+        assert_ne!(ended.since, running.since);
+
+        write_the_line(
+            root.path(),
+            &meta.id,
+            running.since,
+            root.path(),
+            "printf 'porting the importer\\n'",
+            &so_far,
+            About::TheTurnSoFar,
+        );
+        assert_eq!(agent.state().unwrap().summary, None);
+    }
+
+    #[test]
+    fn reader_drops_the_line_about_a_turn_it_watched_end() {
+        // A rewrite of the turn under way is a sentence about work that is
+        // over the moment the turn ends, and what a row says about a turn that
+        // has ended is its answer. A record the hooks move is cleared by the
+        // hook that ends the turn; this is the vendor that has none.
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(&root);
+        let writer = agent.writer().unwrap();
+        let mut running = writer
+            .update_state(|state| {
+                state.state = Phase::Working;
+                state.summary = Some("Porting the importer's clock.".to_string());
+            })
+            .unwrap();
+        drop(writer);
+
+        write_the_reading(
+            &agent,
+            &mut running,
+            &verdict(Phase::Idle, Evidence::Screen, Some("prompt")),
+            Some("the importer keeps the clock now"),
+        );
+
+        assert_eq!(running.summary, None);
+        assert_eq!(agent.state().unwrap().summary, None);
+        assert!(
+            wants_a_line(&running),
+            "so the finished turn is asked about, as a turn with no rewrite on it is"
+        );
     }
 
     #[test]
