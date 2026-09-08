@@ -510,6 +510,22 @@ impl Server {
         Ok(())
     }
 
+    /// Run a shell command on this server once `delay` seconds have passed.
+    ///
+    /// amx has no daemon of its own, and the server hosting an agent's pane
+    /// outlives every amx that touched it, so a timer the server holds is the
+    /// one timer there is to hold. `-b` so the server carries on serving its
+    /// clients instead of waiting for the command, `-d` for the delay.
+    ///
+    /// `command` is spelled for `sh` and reads the server's own environment
+    /// rather than any pane's, the same as [`Server::pipe_pane`]. A server
+    /// that goes before the delay is up takes the timer with it, which is the
+    /// end a timer about a pane on that server wants.
+    pub fn run_after(&self, delay: u64, command: &str) -> Result<()> {
+        self.run(&["run-shell", "-b", "-d", &delay.to_string(), command])?;
+        Ok(())
+    }
+
     /// Set a pane-scoped option.
     pub fn set_pane_option(&self, pane: &PaneId, name: &str, value: &str) -> Result<()> {
         self.run(&["set-option", "-p", "-t", pane.as_str(), name, value])?;
@@ -1284,6 +1300,25 @@ mod tests {
             "the file stops where the pipe did"
         );
         assert!(!second.exists(), "and nothing was opened in its place");
+    }
+
+    #[test]
+    fn tmux_runs_a_command_after_the_delay_and_not_before_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let fired = dir.path().join("fired");
+        let server = TestServer::new();
+        server.new_session(&idle()).unwrap();
+
+        server
+            .run_after(1, &format!("touch '{}'", fired.display()))
+            .unwrap();
+        // The delay is counted from the call, and a loaded machine can only
+        // make the command later, so a file that is there already is a delay
+        // nothing waited out.
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(!fired.exists(), "it ran before its delay was up");
+
+        until("the delayed command to run", || fired.exists());
     }
 
     /// A pane with one word printed on it and nothing else happening.
