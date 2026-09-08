@@ -443,12 +443,19 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
 
     let dir = crate::paths::agent_dir_in(root, id)?;
     wait_for(&dir.join("meta.json"))?;
+    let meta = Agent::open(root, id)?.meta()?;
     let handoff = read_handoff(&dir)?;
     let env = take_boot_env(&dir)?;
 
     let Some(vendor) = handoff.command.first() else {
         bail!("the handoff for {id} names no command to run");
     };
+
+    // Before the exec below, so that the first byte the command prints is in
+    // the file rather than only the bytes after amx got out of the way.
+    if meta.agent.is_none() {
+        keep_output(&meta, &dir.join(crate::store::OUTPUT))?;
+    }
 
     let mut command = std::process::Command::new("sh");
     command
@@ -477,6 +484,33 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
 
     // Exec, so the pane's process is the vendor's and amx is not in its way.
     Err(command.exec()).context("starting the agent's command")
+}
+
+/// Keep everything the command prints in `path`, by asking tmux to pipe the
+/// command's own pane there.
+///
+/// Only a command's pane, which is why this is asked of a record naming no
+/// vendor. Nothing reports on a command — there is no vendor in it and no hook
+/// behind it — so what it printed is on its screen and nowhere else, and a
+/// screen is the first thing a pane throws away. An agent's pane is the
+/// vendor's full-screen drawing, repaints and cursor moves and all, and a file
+/// of that is megabytes saying nothing.
+///
+/// The pane is addressed on the server its record names rather than on
+/// whichever one this process can see: `_boot` runs in the pane, and the pane
+/// belongs to the server that made it.
+///
+/// The pipe is a shell command the tmux server runs, so the path goes in as
+/// one word a shell reads whole, and `>>` rather than `>` because a resumed
+/// command is the same record saying more.
+fn keep_output(meta: &Meta, path: &Path) -> Result<()> {
+    let server = Server::from_socket(meta.socket.clone());
+    server.pipe_pane(&meta.pane, &format!("cat >> {}", quoted(path)))
+}
+
+/// A path as one word, whatever is in it.
+fn quoted(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
 }
 
 /// The environment the pane runs in: the one the spawn snapshotted, and the

@@ -44,6 +44,10 @@ const LOCK: &str = "lock";
 /// runs and taken away when the turn ends. Written by the vendor's side and
 /// only ever read here.
 pub const LIVE: &str = "live";
+/// Everything a command has printed, written by tmux piping the command's own
+/// pane here — see [`crate::spawn::boot`]. A command's alone: an agent's pane
+/// is a vendor's drawing and is piped nowhere.
+pub const OUTPUT: &str = "output";
 /// How much of a transcript's end [`Agent::transcript_tail`] reads. Enough for
 /// the last turn of any conversation, and a fixed cost however long the
 /// session has run.
@@ -855,6 +859,18 @@ impl Agent {
         std::fs::read_to_string(self.dir.join(LIVE))
             .ok()
             .filter(|text| !text.trim().is_empty())
+    }
+
+    /// Everything the command has printed, where its boot piped the pane into
+    /// the record — see [`OUTPUT`]. The whole file, because a command's output
+    /// is the whole of what it said and nothing here knows which part of it a
+    /// reader is after.
+    ///
+    /// `None` where there is no file: every agent, whose pane is piped
+    /// nowhere, and a command that has printed nothing yet.
+    #[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
+    pub fn output(&self) -> Option<String> {
+        std::fs::read_to_string(self.dir.join(OUTPUT)).ok()
     }
 
     /// The end of the transcript the record names, for a reader that wants
@@ -2054,6 +2070,24 @@ mod tests {
             crate::conversation::latest(crate::vendor::Transcript::Claude, &tail).as_deref(),
             Some("Read src/importer.rs"),
             "and the rest of the tail reads as the transcript it is"
+        );
+    }
+
+    #[test]
+    fn store_reads_what_was_piped_beside_the_record() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("run-tests-a1b")).unwrap();
+        assert_eq!(
+            agent.output(),
+            None,
+            "an agent's pane is piped nowhere, so there is no file"
+        );
+
+        std::fs::write(agent.dir().join(OUTPUT), "one\ntwo\n").unwrap();
+        assert_eq!(
+            agent.output().as_deref(),
+            Some("one\ntwo\n"),
+            "the whole of what the command printed, first line and last"
         );
     }
 

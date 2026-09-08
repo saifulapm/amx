@@ -494,6 +494,22 @@ impl Server {
         Ok(())
     }
 
+    /// Send everything the pane prints from here on to `command`'s standard
+    /// input.
+    ///
+    /// `command` is a shell command line the tmux server runs, not the pane:
+    /// whatever is in it is spelled for `sh` and reads the server's own
+    /// environment, never the pane's.
+    ///
+    /// `-o`, which is tmux's toggle: a pane that is already being piped has
+    /// that pipe closed and nothing opened in its place. So this attaches a
+    /// pipe to a pane that has none, and never quietly moves one pane's output
+    /// from whatever was reading it to something else.
+    pub fn pipe_pane(&self, pane: &PaneId, command: &str) -> Result<()> {
+        self.run(&["pipe-pane", "-o", "-t", pane.as_str(), command])?;
+        Ok(())
+    }
+
     /// Set a pane-scoped option.
     pub fn set_pane_option(&self, pane: &PaneId, name: &str, value: &str) -> Result<()> {
         self.run(&["set-option", "-p", "-t", pane.as_str(), name, value])?;
@@ -1206,6 +1222,68 @@ mod tests {
         let screen = server.capture(&pane).unwrap();
         assert!(screen.contains("RED"), "{screen:?}");
         assert!(!screen.contains('\u{1b}'), "a capture carries no escapes");
+    }
+
+    #[test]
+    fn tmux_pipes_everything_a_pane_prints_into_a_command() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kept = dir.path().join("output");
+        let second = dir.path().join("second");
+        let (first_word, last_word) = (dir.path().join("go"), dir.path().join("go-again"));
+        let server = TestServer::new();
+
+        // The pane says nothing until it is told to, so the pipe is attached
+        // before its first word and that word lands in the file with the rest.
+        let script = format!(
+            "while [ ! -f '{first}' ]; do sleep 0.02; done; printf 'one\\ntwo\\n'; \
+             while [ ! -f '{last}' ]; do sleep 0.02; done; printf 'three\\n'; \
+             while :; do sleep 0.05; done",
+            first = first_word.display(),
+            last = last_word.display(),
+        );
+        let (_, pane) = server
+            .new_session(&Spawn {
+                command: &["sh", "-c", &script],
+                ..Spawn::default()
+            })
+            .unwrap();
+
+        server
+            .pipe_pane(&pane, &format!("cat >> '{}'", kept.display()))
+            .unwrap();
+        std::fs::write(&first_word, "").unwrap();
+        until("the pane's output to reach the file", || {
+            std::fs::read_to_string(&kept).is_ok_and(|text| text.lines().count() == 2)
+        });
+        assert_eq!(
+            std::fs::read_to_string(&kept)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["one", "two"]
+        );
+
+        // `-o` is a toggle: asking a second time takes the pipe the pane has
+        // away and opens nothing in its place. So the second command is never
+        // started, and what the pane says afterwards is kept nowhere.
+        server
+            .pipe_pane(&pane, &format!("cat >> '{}'", second.display()))
+            .unwrap();
+        std::fs::write(&last_word, "").unwrap();
+        until("the pane to say its last word on the screen", || {
+            server
+                .capture(&pane)
+                .is_ok_and(|screen| screen.contains("three"))
+        });
+        assert_eq!(
+            std::fs::read_to_string(&kept)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["one", "two"],
+            "the file stops where the pipe did"
+        );
+        assert!(!second.exists(), "and nothing was opened in its place");
     }
 
     /// A pane with one word printed on it and nothing else happening.

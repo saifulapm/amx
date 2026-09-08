@@ -239,6 +239,61 @@ fn a_command_that_has_exited_ends_by_its_exit_code() {
 }
 
 #[test]
+fn a_commands_output_is_kept_beside_its_record() {
+    // Nothing reports on a command: it has no vendor and no hooks, so what it
+    // printed is on its screen and nowhere else, and a screen is the first
+    // thing a pane throws away. Its boot pipes the pane into a file of the
+    // record's before the command starts, so the first line is in it as well
+    // as the last.
+    let amx = Harness::new();
+    let id = "print-two-b2c";
+    let out = amx
+        .amx_command(&["new", "--name", id, "--exec", r#"printf "one\ntwo\n""#])
+        .output()
+        .expect("running amx new --exec");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    amx.until_state(id, "done");
+    let printed = amx.until("what the command printed to reach the file", || {
+        let text = std::fs::read_to_string(amx.agent_dir(id).join("output")).ok()?;
+        let lines: Vec<String> = text.lines().map(str::to_string).collect();
+        (lines.len() >= 2).then_some(lines)
+    });
+    assert_eq!(printed, ["one", "two"]);
+}
+
+#[test]
+fn an_agents_pane_is_piped_nowhere() {
+    // A vendor's pane is a full-screen drawing -- repaints, cursor moves and
+    // all -- and a file of that says nothing anybody can read. It is a
+    // command's output that has nowhere else to go.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let id = id_of(&new(
+        &amx,
+        "a-dispatched-worker",
+        &["--no-worktree", "--agent", &mock, "fix the login bug"],
+    ));
+
+    // The vendor saying how it was called is the boot already past the point
+    // where it would have attached a pipe.
+    argv_of(&amx, &id);
+    let piped = amx.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &amx.pane_of(&id),
+        "#{pane_pipe}",
+    ]);
+    assert_eq!(piped, "0", "nothing is reading the agent's pane");
+    assert!(!amx.agent_dir(&id).join("output").exists());
+}
+
+#[test]
 fn the_task_never_rides_the_tmux_command_line() {
     // A task is arbitrary text and a tmux command line is not a place for it.
     // It travels in a file only its owner can read, and the pane is started
