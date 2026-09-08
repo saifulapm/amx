@@ -1763,16 +1763,26 @@ enum About {
 }
 
 /// Whether this turn is worth asking about, given what the last ask was.
+///
+/// A turn under way is paced by the clock and by nothing else. `since` moves
+/// whenever the phase does, and the phase moves every time an agent stops on a
+/// permission box and starts again, so a turn that asked four times in three
+/// minutes is four values of `since` and one piece of work — and one ask paid
+/// for, not four. The ask before this one is read whatever turn it was about:
+/// the question is whether somebody paid for a line lately, and a line about
+/// the turn that just ended is one somebody paid for lately.
 fn worth_asking(asked: Option<Asked>, turn: u64, now: u64, about: About) -> bool {
     match asked {
-        Some(asked) if asked.turn == turn => match (asked.over, about) {
+        // The turn has moved on since, and so has what is worth saying about
+        // it — once the clock says so.
+        Some(asked) if asked.over && about == About::TheTurnSoFar => {
+            now.saturating_sub(asked.at) >= REWRITE
+        }
+        Some(asked) if asked.turn == turn => match asked.over {
             // Still out: being answered, or gone with the verb that made it.
-            (false, _) => now.saturating_sub(asked.at) >= AGAIN,
+            false => now.saturating_sub(asked.at) >= AGAIN,
             // The answer is what it was, and the line about it is written.
-            (true, About::TheAnswer) => false,
-            // The turn has moved on since, and so has what is worth saying
-            // about it.
-            (true, About::TheTurnSoFar) => now.saturating_sub(asked.at) >= REWRITE,
+            true => false,
         },
         // Nothing asked yet, or asked about the turn before this one.
         _ => true,
@@ -4614,6 +4624,26 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             1_000 + REWRITE,
             About::TheTurnSoFar
         ));
+
+        // A permission box moves the phase and `since` with it, and the same
+        // work goes on under the new number. The clock is what paces the
+        // rewrite, not the number: the ask answered a minute ago holds
+        // whatever turn it was written about, and so does the line the turn
+        // before this one ended on. A finished turn's own line is a new
+        // question straight away, as it always was.
+        assert!(!worth_asking(
+            answered(1_000),
+            200,
+            1_000 + REWRITE - 1,
+            About::TheTurnSoFar
+        ));
+        assert!(worth_asking(
+            answered(1_000),
+            200,
+            1_000 + REWRITE,
+            About::TheTurnSoFar
+        ));
+        assert!(worth_asking(answered(1_000), 200, 1_001, About::TheAnswer));
 
         // An ask still out is still out, whichever question it put: it is
         // being answered, or it went with the verb that made it.
