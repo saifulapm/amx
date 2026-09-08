@@ -26,6 +26,11 @@ const BULLET: &str = "• ";
 const QUOTE: &str = "│ ";
 /// What code is set in from the margin, block and fence alike.
 const CODE_INDENT: &str = "  ";
+/// What a tab in a block of code is worth: spaces to the next stop, at the
+/// four columns an editor shows a tab-indented block at. Left to the
+/// sanitiser it would be one space, and a Go or Makefile block would lose
+/// its indentation.
+const TAB: usize = 4;
 
 /// `text` as markdown, drawn into rows no wider than `width`.
 pub(super) fn render(text: &str, width: u16, theme: Theme) -> Vec<Line<'static>> {
@@ -300,7 +305,7 @@ impl Drawing {
     /// row too wide for the card is cut by the card, the way code is.
     fn code_lines(&mut self, text: &str) {
         for line in text.lines() {
-            let row = format!("{}{CODE_INDENT}{}", self.gutter(), inert(line));
+            let row = format!("{}{CODE_INDENT}{}", self.gutter(), inert(&untabbed(line)));
             self.rows.push(Line::from(Span::styled(row, dim())));
         }
     }
@@ -502,6 +507,23 @@ fn glyph_width(c: char) -> usize {
     width_of(c.encode_utf8(&mut [0; 4]))
 }
 
+/// `line` with every tab spelled out as the spaces to the next [`TAB`] stop.
+fn untabbed(line: &str) -> String {
+    let mut out = String::new();
+    let mut column = 0;
+    for c in line.chars() {
+        if c == '\t' {
+            let stop = TAB - column % TAB;
+            out.push_str(&" ".repeat(stop));
+            column += stop;
+        } else {
+            out.push(c);
+            column += glyph_width(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,6 +670,27 @@ Done.";
         assert!(said.contains("]0;PWNED"), "{said:?}");
         assert!(said.contains("ad min"), "{said:?}");
         assert_eq!(said.chars().filter(|c| c.is_control()).count(), 0);
+    }
+
+    #[test]
+    fn prose_keeps_a_tab_indented_block_indented() {
+        let rows = render(
+            "```go\nfunc main() {\n\tgo()\n\t\tdeep\nab\tc\n}\n```",
+            40,
+            theme(),
+        );
+        assert_eq!(
+            words(&rows),
+            vec![
+                "  go",
+                "  func main() {",
+                "      go()",
+                "          deep",
+                "  ab  c",
+                "  }",
+            ],
+            "a tab is the spaces to the next stop, not the one space a control becomes"
+        );
     }
 
     #[test]
