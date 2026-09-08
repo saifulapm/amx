@@ -161,6 +161,34 @@ pub fn latest(format: Transcript, jsonl: &str) -> Option<String> {
     }
 }
 
+/// The name the session goes under, where something has given it one.
+///
+/// claude writes the title on a line of its own and writes the whole line
+/// again every time it changes, so the file holds every name the session has
+/// had and the last of them is the one it goes under now. The vendor's own
+/// name for it is `aiTitle` and the one a person typed is `customTitle`; a
+/// session somebody has named is one the vendor stops naming — measured at
+/// 2.1.263 on 2026-09-08, no transcript holds both — so the last of either
+/// answers, and a name with nothing in it is no name at all.
+///
+/// pi keeps no title in its session file, and there is nothing to read.
+pub fn session_title(format: Transcript, jsonl: &str) -> Option<String> {
+    match format {
+        Transcript::Pi => None,
+        Transcript::Claude => entries(jsonl)
+            .filter_map(|entry| {
+                let title = match entry["type"].as_str()? {
+                    "custom-title" => entry["customTitle"].as_str()?,
+                    "ai-title" => entry["aiTitle"].as_str()?,
+                    _ => return None,
+                }
+                .trim();
+                (!title.is_empty()).then(|| title.to_string())
+            })
+            .last(),
+    }
+}
+
 /// The conversation as lines somebody reads down a terminal or a pipe: a
 /// prompt wears the composer's own `❯` so the two voices read apart, a tool
 /// call wears `›`, and what the agent said is its own words. One blank line
@@ -572,6 +600,56 @@ mod tests {
             latest(Transcript::Claude, "{\"type\":\"attachment\"}\n"),
             None,
             "and the vendor's bookkeeping is nothing said at all"
+        );
+    }
+
+    #[test]
+    fn conversation_title_is_the_last_name_the_session_was_given() {
+        // Shapes measured from live claude 2.1.263 transcripts on 2026-09-08.
+        // The vendor writes the whole line again every time the name changes,
+        // so the file holds every name the session has had.
+        let named = concat!(
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Audio panel work\",\"sessionId\":\"120567b6\"}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":\"and the mixer too\"}}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Audio panel and mixer work\",\"sessionId\":\"120567b6\"}\n",
+        );
+        assert_eq!(
+            session_title(Transcript::Claude, named).as_deref(),
+            Some("Audio panel and mixer work"),
+            "the newest of them is what the session goes under now"
+        );
+
+        // A name a person typed arrives under a key of its own, after
+        // whatever the vendor had been calling the session.
+        let renamed = format!(
+            "{named}{}\n",
+            "{\"type\":\"custom-title\",\"customTitle\":\"foundation\",\"sessionId\":\"120567b6\"}"
+        );
+        assert_eq!(
+            session_title(Transcript::Claude, &renamed).as_deref(),
+            Some("foundation")
+        );
+
+        // A name with nothing in it is no name, and leaves the one before it
+        // standing.
+        let blanked = format!(
+            "{renamed}{}\n",
+            "{\"type\":\"custom-title\",\"customTitle\":\"  \",\"sessionId\":\"120567b6\"}"
+        );
+        assert_eq!(
+            session_title(Transcript::Claude, &blanked).as_deref(),
+            Some("foundation")
+        );
+
+        assert_eq!(
+            session_title(Transcript::Claude, CLAUDE),
+            None,
+            "a session nothing has named yet"
+        );
+        assert_eq!(
+            session_title(Transcript::Pi, PI),
+            None,
+            "and pi keeps no title in its session file"
         );
     }
 
