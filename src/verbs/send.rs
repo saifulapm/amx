@@ -85,6 +85,16 @@ pub fn run(
     out: &mut impl Write,
 ) -> Result<i32> {
     let view = derive::view(root, id, store::now())?;
+    // Asked before the phase is, because a pane amx let go is no ending and
+    // the record reads whatever the agent was doing when the pane was taken.
+    // Nothing below would say a word about it: the message would be pasted at
+    // a pane that is not there, or somebody would be sent to answer a question
+    // on a screen that has gone.
+    if view.verdict.evidence == derive::Evidence::LetGo {
+        complain!("amx: {}", was_let_go(id));
+        return Ok(exit::FAILURE);
+    }
+
     let phase = view.phase();
     match phase {
         Phase::Waiting => return waiting_on_a_question(&view, to_terminal, out),
@@ -350,6 +360,17 @@ fn previewed(state: &State) -> bool {
 pub fn nothing_more_is_coming(id: &str, phase: Phase) -> i32 {
     complain!("amx: {id} is {phase}. {}", remedy(id, phase));
     exit::FAILURE
+}
+
+/// What an agent whose pane amx let go has to say for itself, and what to do
+/// about it.
+///
+/// Its own sentence rather than one of [`remedy`]'s: nothing here has ended.
+/// The agent is where it was, its session is where it was, and the one thing
+/// missing is the pane — which is what `amx resume` puts back. See
+/// [`crate::verbs::park`].
+fn was_let_go(id: &str) -> String {
+    format!("{id} is parked; amx let its pane go. run: amx resume {id}")
 }
 
 /// What to do about an agent in this state — the same offer `ls` makes on a
@@ -642,6 +663,42 @@ mod tests {
             ["1. the sqlite one", "2. the docker one"]
         );
         assert_eq!(numbered(&[]).count(), 0);
+    }
+
+    #[test]
+    fn send_says_so_when_amx_has_let_the_agents_pane_go() {
+        // A parked agent reads idle, which is where it was when its pane was
+        // taken, so nothing above this refuses it: without a word here the
+        // message would be pasted at a pane that is not there. The record is
+        // untouched — the send is not queued for a vendor that will never see
+        // it — and one command puts the agent back.
+        let root = tempfile::TempDir::new().unwrap();
+        let meta = Meta {
+            socket: Socket::Name(format!("amx-no-such-server-{}", std::process::id())),
+            pane: PaneId::new("%404").unwrap(),
+            ..asking(None, &[], None).meta
+        };
+        let agent = Agent::create(root.path(), &meta).unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .observe(|state| {
+                state.state = Phase::Idle;
+                state.parked_at = 4_600;
+            })
+            .unwrap();
+
+        let mut out = Vec::new();
+        let code = run(root.path(), &meta.id, "and now the linter", false, &mut out).unwrap();
+        assert_eq!(code, exit::FAILURE);
+        assert!(out.is_empty(), "{out:?}");
+        assert_eq!(agent.state().unwrap().seq, 0, "no send is counted");
+        assert!(agent.events().unwrap().is_empty(), "and none is logged");
+
+        // And what it says is the command that undoes it.
+        let said = was_let_go(&meta.id);
+        assert!(said.contains("parked"), "{said}");
+        assert!(said.contains("amx resume fix-login-a1b"), "{said}");
     }
 
     #[test]
