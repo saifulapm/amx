@@ -154,6 +154,40 @@ pub struct Arrangement {
     order: BTreeMap<Group, Vec<String>>,
 }
 
+// What spends these is the verb that takes an idle agent's pane, which comes
+// next: a pane is not amx's to take while somebody has that agent pinned in
+// front of them. Until it lands, the only caller is this module's own tests.
+#[allow(dead_code)]
+impl Arrangement {
+    /// What the last view left written down under this state root, for a
+    /// reader that is not a view.
+    ///
+    /// Nothing else amx runs holds a list, and what somebody pinned is still
+    /// theirs to have obeyed: a verb deciding whether to take an idle agent's
+    /// pane has to know that the agent is the one they wanted in front of
+    /// them. So the file is read where it is written, through the view's own
+    /// [`crate::tui::Remembered`], rather than a second account of the same
+    /// document.
+    ///
+    /// The default where there is no file, no room for one, or nothing
+    /// readable in it. A verb that failed because a view had never been opened
+    /// would be a verb that needs a view.
+    pub fn from_disk(root: &Path) -> Arrangement {
+        crate::paths::view_file(root)
+            .map(|path| super::Remembered::read(&path).arrangement)
+            .unwrap_or_default()
+    }
+
+    /// Whether this agent is one somebody pinned over the wall.
+    ///
+    /// By id, because a reader outside the view has an id and not a reading:
+    /// see [`List::holding`], which is the same question asked of the list a
+    /// view is drawing.
+    pub fn has_pinned(&self, id: &str) -> bool {
+        self.held.contains(id)
+    }
+}
+
 /// What a heading stands for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Under {
@@ -1424,6 +1458,7 @@ mod tests {
     use crate::store::{Meta, State};
     use crate::tmux::{PaneId, Socket};
     use std::path::PathBuf;
+    use tempfile::TempDir;
 
     /// A reading of one agent: the state it is in, and when it was last heard
     /// from.
@@ -2660,6 +2695,53 @@ mod tests {
             lines(&opened),
             left,
             "another view, gathered the same way and holding the same agent"
+        );
+    }
+
+    #[test]
+    fn arranged_what_is_pinned_is_read_off_the_view_file_from_outside_the_view() {
+        let state = TempDir::new().unwrap();
+        let root = state.path().join("agents");
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert_eq!(
+            Arrangement::from_disk(&root),
+            Arrangement::default(),
+            "a fleet nobody has opened the view over has nobody pinned"
+        );
+
+        let list = pinning(
+            listed(vec![
+                view("fix-login-a1b", Phase::Idle, 10),
+                view("port-import-b2c", Phase::Idle, 20),
+            ]),
+            "fix-login-a1b",
+        );
+        let kept = crate::paths::view_file(&root).expect("somewhere to keep it");
+        crate::tui::Remembered {
+            statusline: true,
+            arrangement: list.arrangement(),
+        }
+        .write(&kept)
+        .unwrap();
+
+        let read = Arrangement::from_disk(&root);
+        assert_eq!(
+            read,
+            list.arrangement(),
+            "the view's own file, the way the view left it"
+        );
+        assert!(read.has_pinned("fix-login-a1b"), "the one somebody pinned");
+        assert!(
+            !read.has_pinned("port-import-b2c"),
+            "and not the row that was under it"
+        );
+
+        std::fs::write(&kept, b"{\"arrangement\":").unwrap();
+        assert_eq!(
+            Arrangement::from_disk(&root),
+            Arrangement::default(),
+            "a half-written file is nobody pinned rather than a refusal"
         );
     }
 
