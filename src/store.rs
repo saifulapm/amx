@@ -344,6 +344,15 @@ pub struct State {
     /// changed, but `since` is about the phase an agent is in, and nothing
     /// asking when a run ended should have to know that the two coincide.
     pub ended: u64,
+    /// Epoch seconds when amx let this agent's pane go, and zero for one whose
+    /// pane amx has not touched.
+    ///
+    /// An idle agent nobody is attached to loses its pane after a while and
+    /// keeps everything else — see `amx _park`. The stamp is what tells that
+    /// pane from one that was killed or whose server died: both are records
+    /// with no pane behind them, and only one of them is coming back on the
+    /// next enter, attach or resume.
+    pub parked_at: u64,
     /// Epoch seconds when somebody last looked at this agent, and zero for one
     /// nobody has opened. Read against `last_event`, it says whether what the
     /// agent has to say came before or after the last look at it.
@@ -571,6 +580,7 @@ struct Wire {
     exit: Option<i32>,
     last_event: u64,
     ended: u64,
+    parked_at: u64,
     seen: u64,
     worked: u64,
     still: Option<Still>,
@@ -672,6 +682,7 @@ impl From<State> for Wire {
             exit,
             last_event,
             ended,
+            parked_at,
             seen,
             worked,
             still,
@@ -720,6 +731,7 @@ impl From<State> for Wire {
             exit,
             last_event,
             ended,
+            parked_at,
             seen,
             worked,
             still,
@@ -757,6 +769,7 @@ impl From<Wire> for State {
             exit: wire.exit,
             last_event: wire.last_event,
             ended: wire.ended,
+            parked_at: wire.parked_at,
             seen: wire.seen,
             worked: wire.worked,
             still: wire.still,
@@ -1363,6 +1376,29 @@ mod tests {
         // And an agent put back to work has not ended at all.
         let again = writer.update_state(|s| s.state = Phase::Working).unwrap();
         assert_eq!(again.ended, 0);
+    }
+
+    #[test]
+    fn store_keeps_the_moment_it_let_a_pane_go() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        let writer = agent.writer().unwrap();
+
+        let idle = writer.update_state(|s| s.state = Phase::Idle).unwrap();
+        assert_eq!(idle.parked_at, 0, "its pane is still there");
+
+        // The stamp goes on the record without moving `last_event`: letting a
+        // pane go is something amx did, not something the agent said.
+        let parked = writer.observe(|s| s.parked_at = 1_700).unwrap();
+        assert_eq!(parked.parked_at, 1_700);
+        assert_eq!(parked.last_event, idle.last_event);
+        assert_eq!(written(&agent)["parked_at"], 1_700);
+        assert_eq!(agent.state().unwrap().parked_at, 1_700);
+
+        // And a document from before the field existed reads as a pane amx
+        // never let go.
+        std::fs::write(agent.dir().join(STATE), r#"{"state":"idle"}"#).unwrap();
+        assert_eq!(agent.state().unwrap().parked_at, 0);
     }
 
     #[test]
