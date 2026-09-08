@@ -73,8 +73,12 @@ struct Drawing {
     quoted: usize,
     /// Inside a code block, where lines are rows and nothing is wrapped.
     coding: bool,
-    /// Inside a table row, where cells are joined rather than stacked.
+    /// Inside a table: the cells of the row being gathered, and the rows
+    /// gathered before it, each in the weight it arrived in. Drawn together
+    /// once the table closes, because a column is as wide as its widest cell
+    /// and that is not known until the last row.
     cell: Vec<String>,
+    table: Vec<(Vec<String>, Style)>,
     /// Whether the last block drawn wants a blank row before the next one.
     spaced: bool,
 }
@@ -92,6 +96,7 @@ impl Drawing {
             quoted: 0,
             coding: false,
             cell: Vec::new(),
+            table: Vec::new(),
             spaced: false,
         }
     }
@@ -268,6 +273,7 @@ impl Drawing {
                 self.cell.push(cell.trim().to_string());
             }
             TagEnd::Table => {
+                self.table();
                 self.spaced = true;
             }
             TagEnd::HtmlBlock
@@ -299,15 +305,46 @@ impl Drawing {
         }
     }
 
-    /// The cells gathered for one table row, joined on one row.
+    /// The cells gathered for one table row, kept for the table to draw.
     fn table_row(&mut self) {
         if self.cell.is_empty() {
             return;
         }
         let style = self.current();
-        let row = std::mem::take(&mut self.cell).join("  ");
-        self.runs.push(Run { text: row, style });
-        self.flush();
+        self.table.push((std::mem::take(&mut self.cell), style));
+    }
+
+    /// The table gathered, a row apiece: every cell padded to the widest in
+    /// its column so the columns stand under one another, two blanks apart,
+    /// and the last cell of a row left as it is.
+    fn table(&mut self) {
+        let rows = std::mem::take(&mut self.table);
+        let columns = rows.iter().map(|(cells, _)| cells.len()).max().unwrap_or(0);
+        let widths: Vec<usize> = (0..columns)
+            .map(|at| {
+                rows.iter()
+                    .filter_map(|(cells, _)| cells.get(at))
+                    .map(|cell| width_of(cell))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        for (cells, style) in rows {
+            let last = cells.len().saturating_sub(1);
+            let text = cells
+                .iter()
+                .enumerate()
+                .map(|(at, cell)| match at < last {
+                    true => format!("{cell}{}", " ".repeat(widths[at] - width_of(cell))),
+                    false => cell.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("  ")
+                .trim_end()
+                .to_string();
+            self.runs.push(Run { text, style });
+            self.flush();
+        }
     }
 
     /// A blank row between one block and the next, where the last block asked
@@ -620,9 +657,17 @@ Done.";
     }
 
     #[test]
-    fn prose_joins_a_tables_cells_on_one_row() {
-        let rows = render("| a | b |\n|---|---|\n| 1 | 2 |", 40, theme());
-        assert_eq!(words(&rows), vec!["a  b", "1  2"]);
+    fn prose_stands_a_tables_columns_under_one_another() {
+        let rows = render(
+            "| a | bee | c |\n|---|---|---|\n| one | 2 | three |\n| 日本 | x | |",
+            40,
+            theme(),
+        );
+        assert_eq!(
+            words(&rows),
+            vec!["a     bee  c", "one   2    three", "日本  x"],
+            "each column as wide as its widest cell, measured in columns"
+        );
         assert!(
             span_with(&rows[0], "a")
                 .style
