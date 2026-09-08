@@ -331,6 +331,10 @@ impl View {
             "pane": self.meta.pane.as_str(),
             "socket": self.meta.socket,
             "session": self.meta.session,
+            // What the vendor calls that session, which is the word the wall
+            // puts where the id was. A program drawing its own list of agents
+            // wants the same word, and this is the only place it is written.
+            "session_title": self.state.session_title,
             "created": self.meta.created,
         })
     }
@@ -4287,6 +4291,32 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             serde_json::json!([]),
             "and an agent amx cut no branch for has nothing to say here, \
              which is an empty list rather than a missing field"
+        );
+    }
+
+    #[test]
+    fn reader_hands_a_program_the_title_the_session_goes_under() {
+        // The word the wall puts where the id was, so a program drawing its
+        // own list of agents has the same word to put there.
+        let seen = |title: Option<&str>| {
+            View::new(
+                meta(),
+                State {
+                    session_title: title.map(str::to_string),
+                    ..state(Phase::Idle, 1_300)
+                },
+                verdict(Phase::Idle, Evidence::Hooks, None),
+            )
+        };
+        assert_eq!(
+            seen(Some("Importer clock drift")).json()["session_title"],
+            "Importer clock drift"
+        );
+        assert_eq!(
+            seen(None).json()["session_title"],
+            serde_json::Value::Null,
+            "and a session that has never been titled says so rather than \
+             leaving the field out"
         );
     }
 
