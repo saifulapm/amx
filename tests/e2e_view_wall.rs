@@ -158,20 +158,20 @@ fn sgr_at(line: &str, word: &str) -> Vec<u16> {
     on
 }
 
-/// What the default theme paints a role in, out of the file that states it.
+/// What the default theme paints a role in, as the file that states it spells
+/// it: a hex it measured, or the name of one of the terminal's own.
 ///
 /// The escapes below are what tmux wrote for a colour, and a colour typed out
 /// here as well would part company with the palette the day somebody edited
 /// one. `assets/themes/default.toml` is held to the struct default by a test
 /// of its own, so reading it here reaches both.
-fn default_theme(role: &str) -> (u8, u8, u8) {
-    let said = include_str!("../assets/themes/default.toml")
+fn default_theme(role: &str) -> &'static str {
+    include_str!("../assets/themes/default.toml")
         .lines()
         .find_map(|line| line.strip_prefix(&format!("{role} = ")))
         .unwrap_or_else(|| panic!("the default theme names {role}"))
         .trim()
-        .trim_matches('"');
-    rgb(said)
+        .trim_matches('"')
 }
 
 /// A colour as a theme file spells it, in the three bytes tmux writes.
@@ -190,14 +190,31 @@ fn text_in((r, g, b): (u8, u8, u8)) -> String {
     format!("38;2;{r};{g};{b}")
 }
 
+/// A colour the theme named rather than measured, as the same escape: the
+/// terminal's own eight, which is what a name is written as and what tmux
+/// keeps.
+fn text_named(said: &str) -> String {
+    let at = [
+        "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+    ]
+    .iter()
+    .position(|name| *name == said)
+    .unwrap_or_else(|| panic!("a colour of the terminal's own: {said}"));
+    format!("38;5;{at}")
+}
+
 /// A role of the default theme as the escape tmux writes for text in it.
 fn foreground(role: &str) -> String {
-    text_in(default_theme(role))
+    let said = default_theme(role);
+    match said.starts_with('#') {
+        true => text_in(rgb(said)),
+        false => text_named(said),
+    }
 }
 
 /// And as the escape for a line drawn on it.
 fn background(role: &str) -> String {
-    let (r, g, b) = default_theme(role);
+    let (r, g, b) = rgb(default_theme(role));
     format!("48;2;{r};{g};{b}")
 }
 
@@ -1803,6 +1820,71 @@ fn enter_lends_the_terminal_to_a_view_that_has_it_to_itself() {
     assert!(
         row_of(&amx, &view, "fix-login-a1b").is_some(),
         "with the agent still on it"
+    );
+}
+
+#[test]
+fn the_row_the_terminal_came_back_from_is_the_one_the_accent_marks() {
+    // Two agents sitting at their prompts, which is a wall of rows that look
+    // alike: the same glyph, the same weight, and nothing to say which of them
+    // somebody has just been inside.
+    let amx = Harness::new();
+    amx.play("fix-login-a1b", "happy-turn");
+    amx.play("port-import-b2c", "happy-turn");
+    amx.until_state("fix-login-a1b", "idle");
+    amx.until_state("port-import-b2c", "idle");
+
+    let view = outside_tmux(&amx);
+    let drawn = amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("fix-login-a1b") && drawn.contains("port-import-b2c")).then_some(drawn)
+    });
+    // The cursor opens on the first row, and which of the two that is is
+    // whichever of them ended last, so it is read off the screen.
+    let (went_into, stayed) =
+        match line_of(&drawn, "fix-login-a1b") < line_of(&drawn, "port-import-b2c") {
+            true => ("fix-login-a1b", "port-import-b2c"),
+            false => ("port-import-b2c", "fix-login-a1b"),
+        };
+
+    // In, the way enter takes somebody in outside tmux: the terminal is the
+    // view's to lend, and the agent's own screen comes up on it. The footer is
+    // the last thing the scenario prints, so waiting on it waits for the whole
+    // screen.
+    press(&amx, &view, "Enter");
+    amx.until("the agent's own screen", || {
+        screen(&amx, &view)
+            .contains("⏵⏵ auto mode on")
+            .then_some(())
+    });
+
+    // And out the way somebody who is looking at a session gets out: the tmux
+    // prefix and d, at the client the view handed the terminal to.
+    press(&amx, &view, "C-b");
+    press(&amx, &view, "d");
+    amx.until("the wall again", || {
+        screen(&amx, &view).contains("? keys").then_some(())
+    });
+
+    // The cursor onto the other row, so what is left on the first name is the
+    // mark rather than the bar that follows the cursor about.
+    press(&amx, &view, "Down");
+    amx.until("the cursor on the row nobody went into", || {
+        coloured_line(&amx, &view, stayed)
+            .contains(&bar())
+            .then_some(())
+    });
+
+    let marked = coloured_line(&amx, &view, went_into);
+    assert!(
+        marked.contains(&foreground("accent")),
+        "the name of the agent the terminal came back from is in the \
+         accent:\n{marked:?}"
+    );
+    let rest = coloured_line(&amx, &view, stayed);
+    assert!(
+        !rest.contains(&foreground("accent")),
+        "and the row nobody went into is the terminal's own:\n{rest:?}"
     );
 }
 
