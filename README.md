@@ -251,6 +251,14 @@ An unread name is bold until you open its card, and comes back bold if the
 agent says something after that — what state a row is in is on the row already,
 and whether you have caught up with it is nowhere else.
 
+The name of the agent you last went into is in the accent until you go into
+another. Coming back out of a session lands you on a screenful of rows that
+look alike, and the one you were just inside is the one you are about to look
+for. A name a state has already coloured keeps that colour, because what an
+agent wants of you is worth more than where you have been, and the mark is the
+view's rather than the record's: it says where you have been at this screen,
+and it goes when the screen does.
+
 The seconds at the end of a row are the time the agent has worked: ticking
 while it works, standing still while it waits or sits idle — an agent left at
 a question all afternoon has not worked an afternoon — and stopped for good
