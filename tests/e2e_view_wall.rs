@@ -1889,6 +1889,73 @@ fn the_row_the_terminal_came_back_from_is_the_one_the_accent_marks() {
 }
 
 #[test]
+fn the_row_the_client_came_back_from_is_marked_inside_tmux_too() {
+    // The view's other way in, and the one most people are on: inside tmux
+    // the terminal is not the view's to lend, so enter moves the client to the
+    // agent's session and the view keeps drawing behind it. Coming back is the
+    // client moving again, and the wall has to say where it has been the same
+    // as when it lent the terminal out.
+    let amx = Harness::new();
+    amx.play("fix-login-a1b", "happy-turn");
+    amx.play("port-import-b2c", "happy-turn");
+    amx.until_state("fix-login-a1b", "idle");
+    amx.until_state("port-import-b2c", "idle");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let holding = pane_field(&amx, &view, "#{session_name}");
+    // Without a client there is nothing for enter to move.
+    watching(&amx, &holding);
+    let tty = amx.until("a client on the view", || {
+        let clients = clients_on(&amx, &holding);
+        (!clients.is_empty()).then_some(clients)
+    });
+
+    let drawn = amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("fix-login-a1b") && drawn.contains("port-import-b2c")).then_some(drawn)
+    });
+    let (went_into, stayed) =
+        match line_of(&drawn, "fix-login-a1b") < line_of(&drawn, "port-import-b2c") {
+            true => ("fix-login-a1b", "port-import-b2c"),
+            false => ("port-import-b2c", "fix-login-a1b"),
+        };
+
+    // The session the agent's pane is in, by name: a harness pane is not one
+    // `new` named, so the pane is asked rather than the id spelled.
+    let into = pane_field(&amx, &amx.pane_of(went_into), "#{session_name}");
+    press(&amx, &view, "Enter");
+    amx.until("the client on the agent", || {
+        (clients_on(&amx, &into) == tty).then_some(())
+    });
+
+    // Back to the view the way tmux brings somebody back: the same client,
+    // moved to the session it left.
+    amx.tmux(&["switch-client", "-c", &tty, "-t", &holding]);
+    amx.until("the client on the view again", || {
+        (clients_on(&amx, &holding) == tty).then_some(())
+    });
+
+    press(&amx, &view, "Down");
+    amx.until("the cursor on the row nobody went into", || {
+        coloured_line(&amx, &view, stayed)
+            .contains(&bar())
+            .then_some(())
+    });
+
+    let marked = coloured_line(&amx, &view, went_into);
+    assert!(
+        marked.contains(&foreground("accent")),
+        "the name of the agent the client came back from is in the \
+         accent:\n{marked:?}"
+    );
+    let rest = coloured_line(&amx, &view, stayed);
+    assert!(
+        !rest.contains(&foreground("accent")),
+        "and the row nobody went into is the terminal's own:\n{rest:?}"
+    );
+}
+
+#[test]
 fn ctrl_x_stops_the_agent_and_then_forgets_it() {
     let amx = Harness::new();
     let pane = amx.play("watch-log-e5f", "works-without-end");

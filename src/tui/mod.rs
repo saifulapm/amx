@@ -477,7 +477,9 @@ struct Screen {
     /// it, unlike the arm a `ctrl+x` leaves: that one is timed because the
     /// press inside it destroys something, and this one only moves a cursor.
     going: bool,
-    /// The agent the terminal was last lent to, where it has been lent to one.
+    /// The agent somebody last went into from this screen, where they have
+    /// gone into one: the terminal lent to it outside tmux, or the client
+    /// switched to it inside, which is the same door from the other side.
     ///
     /// Kept for the frame rather than written down, like the arm and the
     /// pulse: it is about the person at this screen and what they were just
@@ -1905,7 +1907,10 @@ impl Screen {
         };
 
         match reach(root, config, here, &view)? {
-            Reach::There => {}
+            // Inside tmux the client has gone to the agent and this view is
+            // still drawing behind it, so where somebody went is known now
+            // rather than when a lend comes back.
+            Reach::There => self.lent = Some(id.to_string()),
             Reach::Say(notice) => self.notice = Some(notice),
             Reach::Lend(on, session) => {
                 return Ok(Doing::Lend {
@@ -1935,7 +1940,7 @@ impl Screen {
         // about.
         self.acted();
         match reached {
-            Reach::There => {}
+            Reach::There => self.lent = Some(id),
             Reach::Say(notice) => self.notice = Some(notice),
             Reach::Lend(on, session) => return Ok(Doing::Lend { id, on, session }),
         }
@@ -1972,7 +1977,7 @@ impl Screen {
         let reached = reach(root, config, here, view)?;
         self.acted();
         match reached {
-            Reach::There => {}
+            Reach::There => self.lent = Some(id),
             Reach::Say(notice) => self.notice = Some(notice),
             Reach::Lend(on, session) => return Ok(Doing::Lend { id, on, session }),
         }
