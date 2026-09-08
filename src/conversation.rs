@@ -139,6 +139,29 @@ pub fn answer(format: Transcript, jsonl: &str) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// The newest thing said, as the one line a row has room for.
+///
+/// Where [`answer`] waits for the turn to end, this does not: a row says what
+/// an agent is doing now, and a call whose result has not come back yet is
+/// exactly that. A tool call is its name and the one argument worth a row —
+/// `Bash cargo test --all`, `Read src/importer.rs`, a name on its own where
+/// the call spells none of them. What the agent said is its first line,
+/// because the rest of a paragraph is not a row's to carry.
+///
+/// A prompt answers nothing. It is what the person typed, and whoever is
+/// reading the row typed it.
+#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
+pub fn latest(format: Transcript, jsonl: &str) -> Option<String> {
+    match read(format, jsonl).pop()? {
+        Said::Prompt(_) => None,
+        Said::Text(words) => words.lines().next().map(str::to_string),
+        Said::Tool { name, detail } => Some(match detail {
+            Some(detail) => format!("{name} {detail}"),
+            None => name,
+        }),
+    }
+}
+
 /// The conversation as lines somebody reads down a terminal or a pipe: a
 /// prompt wears the composer's own `❯` so the two voices read apart, a tool
 /// call wears `⚒`, and what the agent said is its own words. One blank line
@@ -504,6 +527,44 @@ mod tests {
         assert_eq!(
             answer(Transcript::Claude, mixed).as_deref(),
             Some("the answer")
+        );
+    }
+
+    #[test]
+    fn conversation_latest_is_the_newest_thing_said_as_one_row() {
+        assert_eq!(
+            latest(Transcript::Claude, CLAUDE).as_deref(),
+            Some("1"),
+            "the words, down to the one line a row has room for"
+        );
+        assert_eq!(
+            latest(Transcript::Pi, PI).as_deref(),
+            Some("Hello. You are in /srv/app.")
+        );
+
+        // Mid-turn, with the call's result back and nothing said since: the
+        // call is the newest row there is, its command beside its name.
+        let calling = concat!(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cargo test --all\"}}]}}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"ok\"}]}}\n",
+        );
+        assert_eq!(
+            latest(Transcript::Claude, calling).as_deref(),
+            Some("Bash cargo test --all")
+        );
+
+        // A call spelling none of the arguments worth a row is its name alone.
+        let bare = "{\"type\":\"message\",\"id\":\"a1\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"name\":\"ls\",\"arguments\":{}}]}}\n";
+        assert_eq!(latest(Transcript::Pi, bare).as_deref(), Some("ls"));
+
+        // What the person typed is not news to whoever is reading the row.
+        let asked = "{\"type\":\"user\",\"message\":{\"content\":\"print the numbers\"}}\n";
+        assert_eq!(latest(Transcript::Claude, asked), None);
+        assert_eq!(latest(Transcript::Claude, ""), None);
+        assert_eq!(
+            latest(Transcript::Claude, "{\"type\":\"attachment\"}\n"),
+            None,
+            "and the vendor's bookkeeping is nothing said at all"
         );
     }
 
