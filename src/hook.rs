@@ -33,6 +33,7 @@ use crate::config::Config;
 use crate::exit;
 use crate::notify::{self, Notice};
 use crate::store::{Agent, Ask, Choice, Kind, Meta, Phase, Source, State};
+use crate::tmux::Server;
 use crate::vendor::{Moment, claude};
 
 /// How the hook learns which agent it belongs to. `_boot` puts it in the
@@ -77,7 +78,7 @@ pub fn run(
         return exit::OK;
     };
 
-    let _ = record(&agent, &payload, config);
+    let _ = record(root, &agent, &payload, config);
     if hears_the_answer(&agent) {
         let _ = writeln!(out, "{}", agent.dir().display());
     }
@@ -168,8 +169,9 @@ pub fn exited(root: &Path, id: &str, code: i32, config: &Config) -> i32 {
     exit::OK
 }
 
-/// Fold one payload into an agent's record, under the writer's lock.
-pub fn record(agent: &Agent, payload: &Value, config: &Config) -> Result<()> {
+/// Fold one payload into an agent's record, under the writer's lock, and set
+/// the timer over the pane of a turn that has ended.
+pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> Result<()> {
     let writer = agent.writer()?;
     writer.append(&crate::store::Event::new(
         kind(payload).unwrap_or("unknown"),
@@ -197,9 +199,9 @@ pub fn record(agent: &Agent, payload: &Value, config: &Config) -> Result<()> {
         state.source = Some(Source::Transcript);
     }
 
-    writer.update_state(|current| *current = state)?;
+    let written = writer.update_state(|current| *current = state)?;
     if meta != before {
-        writer.update_meta(|current| *current = meta)?;
+        writer.update_meta(|current| *current = meta.clone())?;
     }
     drop(writer);
 
@@ -208,7 +210,78 @@ pub fn record(agent: &Agent, payload: &Value, config: &Config) -> Result<()> {
     {
         notify::post(&notice);
     }
+
+    // The turn is over and the vendor is sitting at its prompt, holding the
+    // couple of hundred megabytes it worked in. Nothing is watching for the
+    // hour when the pane is worth more than that — amx has no daemon — so the
+    // server that owns the pane is asked to ask itself, once, when the hour is
+    // up. See [`crate::verbs::park`], which is what it will run.
+    if let Some(delay) = parks_in(&written, park_after(config, &meta))
+        && let Some(command) = park_command(root, agent.id())
+    {
+        // A timer that could not be set is a pane that keeps its memory, and
+        // that is not worth a word to somebody whose agent is waiting on this
+        // process to return.
+        let _ = Server::from_socket(meta.socket).run_after(delay, &command);
+    }
     Ok(())
+}
+
+/// How long this agent keeps a pane it is idle in.
+///
+/// The project's file over the person's, which is the file `_park` reads when
+/// the timer fires: a timer set by one number and judged against another fires
+/// at an hour the verb will not act on, and nothing then sets a second one.
+///
+/// Unless the person's own file has turned parking off, which is not a
+/// project's to turn back on — the pane is on their machine. That is also what
+/// keeps this path, which runs on every event the vendor sends, from asking
+/// git which project a directory belongs to on behalf of somebody who has said
+/// no.
+fn park_after(config: &Config, meta: &Meta) -> u64 {
+    if config.park_after == 0 {
+        return 0;
+    }
+    crate::config::for_dir(&meta.dir).0.park_after
+}
+
+/// How long until this record's pane is worth more than what it is holding,
+/// where it is a record worth a timer at all.
+///
+/// Idle is the whole of it. Every other phase is an agent doing something with
+/// that pane, and `_park` reads the record again when it fires: a turn that
+/// ends twice sets two timers, and the second finds a pane that has already
+/// gone.
+fn parks_in(state: &State, park_after: u64) -> Option<u64> {
+    (park_after > 0 && state.state == Phase::Idle).then_some(park_after)
+}
+
+/// The command the server runs when the timer is up.
+///
+/// The state root is named on the line because the server's environment is not
+/// this process's: `run-shell` runs in the environment the server was started
+/// in, which is a login shell from whenever that was, so an amx pointed
+/// anywhere else — every test, and anybody who sets `$AMX_STATE_DIR` — would
+/// have its timers fire over the records in the default root. The variable
+/// names the directory the agents directory sits under, which is the layout
+/// `crate::paths` gives it.
+///
+/// `current_exe` rather than `amx`: the timer belongs to the amx that set it,
+/// and the server's path may name another or none at all.
+fn park_command(root: &Path, id: &str) -> Option<String> {
+    let over = root.parent().filter(|over| !over.as_os_str().is_empty())?;
+    let exe = std::env::current_exe().ok()?;
+    Some(format!(
+        "env AMX_STATE_DIR={} {} _park {}",
+        quoted(&over.to_string_lossy()),
+        quoted(&exe.to_string_lossy()),
+        quoted(id),
+    ))
+}
+
+/// One word for the `sh` that reads the line, whatever is in it.
+fn quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', r"'\''"))
 }
 
 /// Record how the command ended, and tell somebody if it is worth telling.
@@ -629,9 +702,13 @@ mod tests {
         }
     }
 
+    /// A config that neither interrupts anybody nor sets a timer. The key is
+    /// off because a timer is a tmux call on the machine running the suite,
+    /// against whichever server the record it was written for happens to name.
     fn quiet() -> Config {
         Config {
             notifications: false,
+            park_after: 0,
             ..Config::default()
         }
     }
@@ -2052,6 +2129,105 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "PreToolUse");
         assert_eq!(events[0].payload["tool_name"], "Bash");
+    }
+
+    #[test]
+    fn hook_only_an_idle_turn_is_worth_a_timer() {
+        // The pane amx would take is the one a vendor is sitting at its prompt
+        // in, holding what the turn left in it. Every other phase is an agent
+        // doing something with that pane, and a timer set over one is a timer
+        // `_park` reads the record and refuses.
+        let idle = State {
+            state: Phase::Idle,
+            ..State::default()
+        };
+        assert_eq!(parks_in(&idle, 3_600), Some(3_600));
+        assert_eq!(parks_in(&idle, 0), None, "the key is off");
+
+        for phase in [
+            Phase::Starting,
+            Phase::Working,
+            Phase::Waiting,
+            Phase::Done,
+            Phase::Failed,
+            Phase::Stopped,
+            Phase::Unknown,
+        ] {
+            let state = State {
+                state: phase,
+                ..State::default()
+            };
+            assert_eq!(parks_in(&state, 3_600), None, "{phase}");
+        }
+    }
+
+    #[test]
+    fn hook_a_person_who_turned_parking_off_is_not_asked_a_second_time() {
+        // Their machine and their panes: a project's file cannot start taking
+        // them. Nothing is read off the disk to find that out either, on a
+        // path that runs on every event the vendor sends.
+        assert_eq!(park_after(&quiet(), &meta()), 0);
+    }
+
+    #[test]
+    fn hook_the_timer_names_the_root_this_hook_is_writing_to() {
+        // A tmux server runs `run-shell` in the environment it was started in,
+        // which is somebody's login shell from Monday. The root this hook is
+        // writing to is in this process's, so a timer that did not carry it
+        // would fire over the records in the default root.
+        let exe = std::env::current_exe().expect("a binary to name");
+        assert_eq!(
+            park_command(Path::new("/state/amx/agents"), "fix-login-a1b").expect("a command"),
+            format!(
+                "env AMX_STATE_DIR='/state/amx' {} _park 'fix-login-a1b'",
+                quoted(&exe.to_string_lossy())
+            ),
+            "the variable names the directory the agents live under"
+        );
+
+        // Whatever is in it, each of them is one word to the shell that reads
+        // the line.
+        let odd = park_command(Path::new("/it's/agents"), "fix-login-a1b").expect("a command");
+        assert!(odd.contains(r"'/it'\''s'"), "{odd}");
+
+        // And a root with nothing above it names no state directory at all.
+        assert_eq!(park_command(Path::new("agents"), "fix-login-a1b"), None);
+    }
+
+    #[test]
+    fn hook_a_timer_it_cannot_set_ends_the_way_everything_else_here_does() {
+        // The server holding the pane is the one asked to hold the timer, and
+        // a server that has gone cannot be asked. Nobody is told: this process
+        // is standing between the vendor and its next token, and what it costs
+        // is a pane that keeps its memory.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(
+            root.path(),
+            &Meta {
+                socket: Socket::Name(format!("amx-no-such-server-{}", std::process::id())),
+                ..meta()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            run(
+                Some(agent.id()),
+                root.path(),
+                &mut r#"{"hook_event_name":"Stop","last_assistant_message":"done"}"#.as_bytes(),
+                &mut std::io::sink(),
+                &Config {
+                    park_after: 5,
+                    ..quiet()
+                },
+            ),
+            exit::OK
+        );
+        assert_eq!(
+            agent.state().unwrap().state,
+            Phase::Idle,
+            "and the turn that ended is on the record all the same"
+        );
     }
 
     #[test]
