@@ -19,9 +19,24 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # The e2e suite drives throwaway `tmux -L` servers.
+      # The e2e suite drives throwaway `tmux -L` servers, and one of its tests
+      # sets `extended-keys-format`, which arrived in tmux 3.5; the apt package
+      # on this runner is 3.4. So the release the suite is driven against at
+      # home is built here from its tarball. amx itself still runs on 3.2.
       - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+        env:
+          TMUX_VERSION: 3.7c
+        # Named, so the step runs with pipefail and a download that fails
+        # says so rather than tar.
+        shell: bash
+        run: |
+          sudo apt-get update && sudo apt-get install -y libevent-dev libncurses-dev bison
+          cd /tmp
+          curl -fsSL "https://github.com/tmux/tmux/releases/download/$TMUX_VERSION/tmux-$TMUX_VERSION.tar.gz" | tar -xz
+          cd "tmux-$TMUX_VERSION" && ./configure && make -j"$(nproc)" && sudo make install
+          # The one on the path is the one just built, not whatever the
+          # runner image put ahead of /usr/local/bin.
+          test "$(tmux -V)" = "tmux $TMUX_VERSION"
 
       - name: Format
         run: cargo fmt --check
