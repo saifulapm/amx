@@ -17,7 +17,7 @@ colour: a row is painted for having failed, not for being red.
 | `done` | what went as intended: finished rows, merged and ready pull requests |
 | `failed` | what was attempted and failed: failed rows, failing checks, the failure notice |
 | `stopped` | what was ended by hand and is over: stopped rows, closed requests, the completed group's count |
-| `accent` | the agent that does not exist yet: the dials' values in the header, and the rule a line is typed off — its label, and the permission dial set into its far end |
+| `accent` | the agent that does not exist yet: the dials' values in the header, and the rule a line is typed off — its label, and the permission dial set into its far end. On a card, the glyph a prompt wears, and a heading and inline code in an answer |
 | `cursor` | the line the cursor is on — a background, so it says where the cursor is without taking a colour away from what the line was saying |
 
 Most of the screen wears none of them. What a row is, where a group begins and

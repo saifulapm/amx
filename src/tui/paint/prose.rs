@@ -3,8 +3,9 @@
 //! What an agent says is markdown, and a card that showed the marks would be
 //! showing the agent's typing rather than its answer. So the text is parsed
 //! the way the vendor's own screen parses it and drawn into rows a card can
-//! hold: headings in weight, emphasis in its two slants, code set apart and
-//! dim, lists with a bullet in the gutter, a quote behind a bar, a rule a rule.
+//! hold: headings in weight, emphasis in its two slants, a block of code set
+//! apart and dim, code in a line in the accent, lists with a bullet in the
+//! gutter, a quote behind a bar, a rule a rule.
 //! Every row is already wrapped to the width it was asked for, because the
 //! rows of a card are windowed and not reflowed — see [`super::card::Body`].
 //!
@@ -110,7 +111,10 @@ impl Drawing {
                 true => self.code_lines(&text),
                 false => self.push(&text, self.current()),
             },
-            Event::Code(code) => self.push(&code, self.current().patch(dim())),
+            // A path or a flag is what a reader scans an answer for, and dim
+            // is what a tool row, a rule and a gutter already wear: the one
+            // colour the theme lends the card keeps code apart from both.
+            Event::Code(code) => self.push(&code, self.current().fg(self.theme.accent)),
             Event::SoftBreak => self.push(" ", self.current()),
             Event::HardBreak => self.push("\n", self.current()),
             Event::Rule => {
@@ -563,11 +567,11 @@ Done.";
                 .add_modifier
                 .contains(Modifier::ITALIC)
         );
+        let code = span_with(row_with(&rows, "auth.rs"), "auth.rs").style;
+        assert_eq!(code.fg, Some(theme().accent));
         assert!(
-            span_with(row_with(&rows, "auth.rs"), "auth.rs")
-                .style
-                .add_modifier
-                .contains(Modifier::DIM)
+            !code.add_modifier.contains(Modifier::DIM),
+            "code in a line is in the accent and not dim, which a tool row is"
         );
         assert!(
             span_with(row_with(&rows, "token.len"), "token.len")
