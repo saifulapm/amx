@@ -84,6 +84,10 @@ struct Drawing {
     /// and that is not known until the last row.
     cell: Vec<String>,
     table: Vec<(Vec<String>, Style)>,
+    /// The link open around the words arriving now: where it points, and how
+    /// much of the block was gathered before it opened, so its words can be
+    /// told from its address once it closes.
+    link: Option<(String, usize)>,
     /// Whether the last block drawn wants a blank row before the next one.
     spaced: bool,
 }
@@ -102,6 +106,7 @@ impl Drawing {
             coding: false,
             cell: Vec::new(),
             table: Vec::new(),
+            link: None,
             spaced: false,
         }
     }
@@ -208,9 +213,11 @@ impl Drawing {
             Tag::Strikethrough => self
                 .open
                 .push(Style::new().add_modifier(Modifier::CROSSED_OUT)),
-            Tag::Link { .. } => self
-                .open
-                .push(Style::new().add_modifier(Modifier::UNDERLINED)),
+            Tag::Link { dest_url, .. } => {
+                self.open
+                    .push(Style::new().add_modifier(Modifier::UNDERLINED));
+                self.link = Some((dest_url.to_string(), self.gathered().len()));
+            }
             Tag::Image { .. } => self.open.push(dim()),
             Tag::Table(_) => {
                 self.flush();
@@ -260,12 +267,20 @@ impl Drawing {
                 self.flush();
                 self.marker = None;
             }
-            TagEnd::Emphasis
-            | TagEnd::Strong
-            | TagEnd::Strikethrough
-            | TagEnd::Link
-            | TagEnd::Image => {
+            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Image => {
                 self.open.pop();
+            }
+            TagEnd::Link => {
+                self.open.pop();
+                // The address, dim behind the words, so a reader can copy
+                // where the words point — unless the words are the address
+                // already, which an autolink's are.
+                if let Some((url, from)) = self.link.take() {
+                    let address = inert(url.strip_prefix("mailto:").unwrap_or(&url));
+                    if self.gathered().get(from..).map(str::trim) != Some(address.as_str()) {
+                        self.push(&format!(" ({url})"), self.current().patch(dim()));
+                    }
+                }
             }
             TagEnd::TableHead => {
                 // Drawn in the weight the head opened, before it closes.
@@ -290,6 +305,11 @@ impl Drawing {
             | TagEnd::Superscript
             | TagEnd::Subscript => {}
         }
+    }
+
+    /// Everything gathered for this block so far, as one string.
+    fn gathered(&self) -> String {
+        self.runs.iter().map(|run| run.text.as_str()).collect()
     }
 
     /// Words arriving for the block being gathered.
@@ -691,6 +711,30 @@ Done.";
             ],
             "a tab is the spaces to the next stop, not the one space a control becomes"
         );
+    }
+
+    #[test]
+    fn prose_keeps_a_links_address_beside_its_words() {
+        let rows = render(
+            "see [the docs](https://x.dev/d), <https://y.dev> or <me@x.dev>",
+            80,
+            theme(),
+        );
+        assert_eq!(
+            words(&rows),
+            vec!["see the docs (https://x.dev/d), https://y.dev or me@x.dev"],
+            "the address behind the words, and once only where the words are it"
+        );
+        let row = &rows[0];
+        assert!(
+            span_with(row, "the docs")
+                .style
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
+        let address = span_with(row, "(https://x.dev/d)").style;
+        assert!(address.add_modifier.contains(Modifier::DIM));
+        assert!(!address.add_modifier.contains(Modifier::UNDERLINED));
     }
 
     #[test]
