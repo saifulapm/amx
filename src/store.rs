@@ -797,6 +797,32 @@ pub struct Agent {
     dir: PathBuf,
 }
 
+/// What a terminal would have left of lines written over themselves.
+///
+/// A carriage return takes the cursor back to the column the line began in,
+/// so what is printed after one stands in place of what came before it: a
+/// progress bar that drew itself a hundred times over one row printed one row,
+/// and a line ending `\r\n` ended. What a longer earlier draw left showing
+/// past the end of a shorter later one is not kept — the last draw is the one
+/// the eye was on — and the colours an overwritten draw set go with it.
+fn returned(printed: &str) -> String {
+    printed
+        .split_inclusive('\n')
+        .map(|line| {
+            let (body, end) = match line.strip_suffix('\n') {
+                Some(body) => (body, "\n"),
+                None => (line, ""),
+            };
+            let kept = body
+                .trim_end_matches('\r')
+                .rsplit('\r')
+                .next()
+                .unwrap_or("");
+            format!("{kept}{end}")
+        })
+        .collect()
+}
+
 impl Agent {
     /// Make the directory and write the opening record.
     pub fn create(root: &Path, meta: &Meta) -> Result<Agent> {
@@ -866,10 +892,16 @@ impl Agent {
     /// is the whole of what it said and nothing here knows which part of it a
     /// reader is after.
     ///
+    /// As a terminal would have shown it, not as the bytes went by: the pane
+    /// ends its lines `\r\n`, and a progress bar draws itself a hundred times
+    /// over one row with a `\r` between each — see [`returned`]. Bytes that
+    /// are not text are read past rather than costing the file.
+    ///
     /// `None` where there is no file: every agent, whose pane is piped
     /// nowhere, and a command that has printed nothing yet.
     pub fn output(&self) -> Option<String> {
-        std::fs::read_to_string(self.dir.join(OUTPUT)).ok()
+        let bytes = std::fs::read(self.dir.join(OUTPUT)).ok()?;
+        Some(returned(&String::from_utf8_lossy(&bytes)))
     }
 
     /// The end of the transcript the record names, for a reader that wants
@@ -2087,6 +2119,27 @@ mod tests {
             agent.output().as_deref(),
             Some("one\ntwo\n"),
             "the whole of what the command printed, first line and last"
+        );
+
+        // As the terminal showed it: the pane ends its lines the terminal's
+        // way, and a progress bar is one row however many times it drew.
+        std::fs::write(
+            agent.dir().join(OUTPUT),
+            b"\x1b[32mgreen\x1b[0m\r\n 1/3\r 2/3\r 3/3 done\r\nlast",
+        )
+        .unwrap();
+        assert_eq!(
+            agent.output().as_deref(),
+            Some("\x1b[32mgreen\x1b[0m\n 3/3 done\nlast"),
+            "colours kept, the return before each newline gone, and only the \
+             last draw of an overwritten row"
+        );
+
+        std::fs::write(agent.dir().join(OUTPUT), b"caf\xc3\xa9 \xff\n").unwrap();
+        assert_eq!(
+            agent.output().as_deref(),
+            Some("café \u{fffd}\n"),
+            "and a byte that is not text is read past, not the whole file lost"
         );
     }
 
