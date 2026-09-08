@@ -868,7 +868,6 @@ impl Agent {
     ///
     /// `None` where there is no file: every agent, whose pane is piped
     /// nowhere, and a command that has printed nothing yet.
-    #[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
     pub fn output(&self) -> Option<String> {
         std::fs::read_to_string(self.dir.join(OUTPUT)).ok()
     }
