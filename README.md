@@ -1010,7 +1010,7 @@ the notice is handed over and never waited for.
 
 ## Configuration
 
-`~/.config/amx/config.toml`, eleven keys and no more:
+`~/.config/amx/config.toml`, twelve keys and no more:
 
 ```toml
 agent = "claude"        # the command a new agent runs: claude, pi or your own
@@ -1019,6 +1019,7 @@ max_total = 10          # a ceiling over every project on the machine
 worktrees = true        # give each agent its own worktree in a repository
 notifications = true    # desktop notification when one needs you or finishes
 trust = false           # answer claude's folder-trust screen for trees amx cuts
+park_after = 3600       # seconds an idle agent nobody is watching keeps its pane
 theme = "default"       # which palette the view paints in
 
 # The dials. A key left out is a flag amx does not pass, which leaves the
@@ -1062,6 +1063,18 @@ project's file — the dials it launches at, the palette it paints in — and it
 header counts that project's agents against that project's `max_agents`. `amx`
 on its own is about every agent there is, so it counts them against `max_total`
 where you set one, and against nothing where you have not.
+
+`park_after` is how long an agent that has stopped working keeps its pane. A
+vendor sitting at its prompt holds a couple of hundred megabytes to do nothing
+with, and a wall of them is the machine's memory spent on turns that ended
+hours ago. So an agent that has been idle that long with nobody attached to it
+loses the pane and keeps everything else — the record, the transcript, what it
+last said — and its row turns from `✻` to the dot. `enter` on that row, `amx
+attach` or `amx resume` starts the agent again where it left off. A pane
+somebody is looking at is never taken, and neither is one whose agent you have
+pinned over the wall with `ctrl+t`: pinning it is having said you want it in
+front of you. `park_after = 0` turns the whole thing off, and a pane stands
+until you stop it.
 
 `summary_command` is what a row says about a turn. What a turn leaves behind is
 an answer, and an answer does not open with a summary of itself, so without this

@@ -1,4 +1,4 @@
-//! `~/.config/amx/config.toml` — eleven keys and nothing else — with a
+//! `~/.config/amx/config.toml` — twelve keys and nothing else — with a
 //! project's own `<project>/.amx/config.toml` laid over it.
 //!
 //! Config is a convenience, never a gate: a file that cannot be read or
@@ -13,7 +13,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 /// Every key the file may carry. Anything else is warned about and ignored.
-pub const KNOWN_KEYS: [&str; 11] = [
+pub const KNOWN_KEYS: [&str; 12] = [
     "agent",
     "max_agents",
     "max_total",
@@ -25,6 +25,7 @@ pub const KNOWN_KEYS: [&str; 11] = [
     "effort",
     "summary_command",
     "theme",
+    "park_after",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -76,6 +77,17 @@ pub struct Config {
     /// `Option`, because there is a palette amx paints in when nobody has
     /// chosen and it has a name of its own.
     pub theme: String,
+    /// How many seconds an idle agent nobody is attached to keeps its pane.
+    ///
+    /// A vendor at its prompt holds a couple of hundred megabytes to do
+    /// nothing with, and a wall of them is the machine's memory spent on turns
+    /// that ended hours ago. So the pane goes and the record stays, and the
+    /// next enter, attach or resume starts the agent again.
+    ///
+    /// A number rather than an `Option`, because zero has an answer of its own
+    /// here — never let a pane go — and an hour is what amx does where nobody
+    /// has said otherwise.
+    pub park_after: u64,
 }
 
 impl Default for Config {
@@ -92,6 +104,7 @@ impl Default for Config {
             effort: None,
             summary_command: None,
             theme: "default".to_string(),
+            park_after: 3600,
         }
     }
 }
@@ -368,6 +381,8 @@ mod tests {
         // A theme, unlike a dial, has a value that means the default one, so
         // there is a name here rather than an absence.
         assert_eq!(c.theme, "default");
+        // An hour of sitting idle with nobody attached, and the pane goes.
+        assert_eq!(c.park_after, 3600);
     }
 
     #[test]
@@ -436,6 +451,17 @@ mod tests {
         assert_eq!(c.theme, "terminal");
         assert_eq!(c.agent, Config::default().agent);
         assert!(w.is_empty(), "{w:?}");
+
+        let (c, w) = parse("park_after = 900").unwrap();
+        assert_eq!(c.park_after, 900);
+        assert_eq!(c.theme, Config::default().theme);
+        assert!(w.is_empty(), "{w:?}");
+
+        // Zero is a value of its own — never let a pane go — rather than an
+        // absence that falls back to the hour.
+        let (c, w) = parse("park_after = 0").unwrap();
+        assert_eq!(c.park_after, 0);
+        assert!(w.is_empty(), "{w:?}");
     }
 
     #[test]
@@ -453,6 +479,7 @@ mod tests {
                 effort = "xhigh"
                 summary_command = "summarise"
                 theme = "terminal"
+                park_after = 900
             "#,
         )
         .unwrap();
@@ -467,10 +494,11 @@ mod tests {
         assert_eq!(c.effort.as_deref(), Some("xhigh"));
         assert_eq!(c.summary_command.as_deref(), Some("summarise"));
         assert_eq!(c.theme, "terminal");
+        assert_eq!(c.park_after, 900);
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(
             KNOWN_KEYS.len(),
-            11,
+            12,
             "a key this file does not name is a key nothing here proves"
         );
     }
