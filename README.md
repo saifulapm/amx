@@ -232,7 +232,10 @@ there is still an agent there. `✻` is a process you can attach to, answer or
 stop; `∙` is the dot it leaves behind, which is a record to read. While a turn
 is running the `✻` breathes — the vendor's own mark, growing and shrinking a
 frame at a time — so the rows in motion are the rows mid-turn, and a row that
-stops settles onto the shape it was already breathing through.
+stops settles onto the shape it was already breathing through. The dot stands
+for one thing more: an agent amx let go. One left idle for `park_after` with
+nobody attached loses its pane and keeps its record, so the row turns from `✻`
+to the dot in the colour it was already wearing, and `enter` brings it back.
 
 The colour on it says which state that process is in: amber for an agent
 stopped on a question, green for one that finished, red for one that failed,

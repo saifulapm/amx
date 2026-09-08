@@ -23,7 +23,7 @@ use std::sync::OnceLock;
 use super::empty;
 use super::style::{bold, colour, dim, name_colour, request_colour};
 use super::text::{RULE, inert, width_of};
-use crate::derive::{self, View};
+use crate::derive::{self, Evidence, View};
 use crate::pr::Pr;
 use crate::store::Phase;
 use crate::theme::Theme;
@@ -360,7 +360,7 @@ fn row(
     let mut spans = vec![
         Span::raw(GUTTER),
         Span::styled(
-            format!("{} ", icon(phase, moment.beat)),
+            format!("{} ", icon(phase, &view.verdict.evidence, moment.beat)),
             colour(theme, phase),
         ),
         Span::styled(
@@ -531,10 +531,18 @@ pub(super) fn resting(phase: Phase) -> &'static str {
 /// and the pulse is what says a turn is under way. Which of the two it is, is
 /// on the row in words under a project heading and in the heading itself under
 /// a state one.
-fn icon(phase: Phase, beat: usize) -> &'static str {
-    match phase {
-        Phase::Starting | Phase::Working => pulse(beat),
-        phase => resting(phase),
+///
+/// An agent amx let go is the dot whatever its record says, and the evidence
+/// is asked before the phase for it: parking takes the pane and leaves the
+/// record standing, so the phase is the one the agent was in and the shape is
+/// the only thing on the row that can say the pane has gone. The colour stays
+/// the state's own, because the state is still true — see
+/// [`crate::derive::Evidence::LetGo`].
+fn icon(phase: Phase, evidence: &Evidence, beat: usize) -> &'static str {
+    match (evidence, phase) {
+        (Evidence::LetGo, _) => ENDED,
+        (_, Phase::Starting | Phase::Working) => pulse(beat),
+        (_, phase) => resting(phase),
     }
 }
 
@@ -821,13 +829,21 @@ mod tests {
 
         // The pulse is a turn running, which starting is the first part of.
         for phase in [Phase::Starting, Phase::Working] {
-            assert_eq!(icon(phase, 1), pulse(1), "{phase} is a turn under way");
+            assert_eq!(
+                icon(phase, &Evidence::Hooks, 1),
+                pulse(1),
+                "{phase} is a turn under way"
+            );
         }
         for phase in EVERY
             .iter()
             .filter(|phase| !matches!(phase, Phase::Starting | Phase::Working))
         {
-            assert_eq!(icon(*phase, 1), resting(*phase), "and {phase} stands still");
+            assert_eq!(
+                icon(*phase, &Evidence::Hooks, 1),
+                resting(*phase),
+                "and {phase} stands still"
+            );
         }
     }
 
@@ -883,6 +899,48 @@ mod tests {
             ("✻".into(), Color::Reset, Modifier::DIM)
         );
         assert_eq!(painted(Phase::Unknown), ("✻".into(), Color::Reset, plain));
+    }
+
+    #[test]
+    fn glyphs_draw_the_dot_on_an_agent_amx_let_go() {
+        // The same idle agent twice: one sitting at its prompt, and one whose
+        // pane amx took while nobody was watching. The record says the same
+        // thing about both — nothing about the agent ended — so the shape is
+        // the only thing left to say there is nothing there to attach to.
+        let row = |evidence| {
+            let mut idle = view(
+                "fix-login-a1b",
+                Phase::Idle,
+                Some("the login bug is fixed"),
+                240,
+            );
+            idle.verdict.evidence = evidence;
+            let screen = showing(vec![idle], None);
+            (
+                mark(&screen, (60, 8), 2),
+                painted(&screen, (60, 8))[2].clone(),
+            )
+        };
+
+        let (there, at_its_prompt) = row(Evidence::Hooks);
+        let (gone, let_go) = row(Evidence::LetGo);
+
+        assert_eq!(there.0, set()[LIVE], "a pane to attach to, answer or stop");
+        assert_eq!(
+            gone.0, ENDED,
+            "and a record to read, which enter brings back"
+        );
+        assert_eq!(
+            (gone.1, gone.2),
+            (there.1, there.2),
+            "painted in the state's own colour, because the state has not \
+             changed"
+        );
+        assert_eq!(
+            let_go.replace(ENDED, set()[LIVE]),
+            at_its_prompt,
+            "and the name, what it said and the seconds stand where they stood"
+        );
     }
 
     #[test]
