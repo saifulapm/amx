@@ -132,9 +132,12 @@ itself is `exit` in the JSON. `amx result` has nothing to hand back — a comman
 answers nothing, it exits — but what it printed is kept. The pane is piped into
 `output` beside the record before the command starts, so the first line is in
 the file as well as the last, and neither goes when the pane does. `amx logs`
-reads the pane while the command is in it and that file afterwards. Space on
-the row reads the same file: the end of it while the command runs, all of it
-from the top once the command has ended, in the colours it was printed in.
+reads the pane while the command is in it and that file afterwards, whole.
+Space on the row reads the last quarter megabyte of the same file: the end of
+it while the command runs, the top of that once the command has ended, in the
+colours it was printed in. A quarter megabyte is more rows than a card is ever
+paged through, and the card is taken again every second it is open — so a
+build that has printed for an hour costs the view what a short command does.
 
 Like every pane amx starts, it is told where its own scratch directory is in
 `$AMX_AGENT_DIR`. While it runs there are no hook events to hear from and no
@@ -347,10 +350,12 @@ answers on the row above and every earlier turn a page up. One that is working
 ends on a live tail under a dim `live` rule: the last few rows of what pi is
 saying at this moment, streamed by the extension `doctor --fix` installs, or,
 for claude, of its pane with the composer and statusline cut, tracking output
-as it lands. A command row is neither: its card is the file its pane is piped
-into, the end of it while the command runs and all of it from the top once the
-command has ended, with nothing cut off the bottom — the anchors that cut are a
-vendor's own, and every row a command prints is its own work. An agent with no
+as it lands. A command row is neither: its card is the last quarter megabyte of
+the file its pane is piped into, which is more rows than a card is paged
+through and the same cost however long the command has printed — the end of
+that while the command runs and the top of it once the command has ended, with
+nothing cut off the bottom, since the anchors that cut are a vendor's own and
+every row a command prints is its own work. An agent with no
 conversation to read — one adopted before its first report has named one —
 keeps the older card: its live screen, chrome cut, while it works, and the
 recorded answer once its turn is over. A waiting agent's card is

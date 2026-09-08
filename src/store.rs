@@ -52,6 +52,10 @@ pub const OUTPUT: &str = "output";
 /// the last turn of any conversation, and a fixed cost however long the
 /// session has run.
 const TAIL: u64 = 64 * 1024;
+/// How much of a command's output [`Agent::output_tail`] reads. About three
+/// thousand rows of eighty columns, which is more than a card is ever paged
+/// through, and a fixed cost however long the command has been printing.
+pub const OUTPUT_TAIL: u64 = 256 * 1024;
 
 /// Where an agent is, as far as amx has been told.
 ///
@@ -888,9 +892,10 @@ impl Agent {
     }
 
     /// Everything the command has printed, where its boot piped the pane into
-    /// the record — see [`OUTPUT`]. The whole file, because a command's output
-    /// is the whole of what it said and nothing here knows which part of it a
-    /// reader is after.
+    /// the record — see [`OUTPUT`]. The whole file, for the reader that wants
+    /// the whole of what the command said and reads it once: `amx logs` does,
+    /// and the card that is retaken every second reads
+    /// [`output_tail`](Self::output_tail) instead.
     ///
     /// As a terminal would have shown it, not as the bytes went by: the pane
     /// ends its lines `\r\n`, and a progress bar draws itself a hundred times
@@ -902,6 +907,37 @@ impl Agent {
     pub fn output(&self) -> Option<String> {
         let bytes = std::fs::read(self.dir.join(OUTPUT)).ok()?;
         Some(returned(&String::from_utf8_lossy(&bytes)))
+    }
+
+    /// The end of what the command has printed, for the card that shows it.
+    ///
+    /// A card is taken again every second it is open, and a `!cargo build`
+    /// prints tens of megabytes over an hour: reading and walking all of that
+    /// once a second is a cost that grows with the log. So this seeks to
+    /// [`OUTPUT_TAIL`] bytes from the end, which is more rows than a card is
+    /// paged through anyway, and the long command costs the view what a short
+    /// one does.
+    ///
+    /// The offset lands inside a row, and that half row is dropped rather than
+    /// drawn: a card shows every row it is given, so half of one would be a row
+    /// the command never printed. A tail with no row boundary in it at all is
+    /// kept as it stands — half a row is more than none. Otherwise this is
+    /// [`output`](Self::output): as the terminal would have shown it, with the
+    /// returns resolved, and `None` where there is no file.
+    pub fn output_tail(&self) -> Option<String> {
+        let mut file = File::open(self.dir.join(OUTPUT)).ok()?;
+        let from = file.metadata().ok()?.len().saturating_sub(OUTPUT_TAIL);
+        file.seek(SeekFrom::Start(from)).ok()?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).ok()?;
+        let printed = String::from_utf8_lossy(&bytes);
+        let whole = match from {
+            0 => printed.as_ref(),
+            _ => printed
+                .split_once('\n')
+                .map_or(printed.as_ref(), |(_, rest)| rest),
+        };
+        Some(returned(whole))
     }
 
     /// The end of the transcript the record names, for a reader that wants
@@ -2114,11 +2150,22 @@ mod tests {
             "an agent's pane is piped nowhere, so there is no file"
         );
 
+        assert_eq!(
+            agent.output_tail(),
+            None,
+            "and the card reading its end finds no file either"
+        );
+
         std::fs::write(agent.dir().join(OUTPUT), "one\ntwo\n").unwrap();
         assert_eq!(
             agent.output().as_deref(),
             Some("one\ntwo\n"),
             "the whole of what the command printed, first line and last"
+        );
+        assert_eq!(
+            agent.output_tail().as_deref(),
+            Some("one\ntwo\n"),
+            "and a file shorter than the cap is the tail, whole"
         );
 
         // As the terminal showed it: the pane ends its lines the terminal's
@@ -2134,12 +2181,50 @@ mod tests {
             "colours kept, the return before each newline gone, and only the \
              last draw of an overwritten row"
         );
+        assert_eq!(
+            agent.output_tail().as_deref(),
+            agent.output().as_deref(),
+            "the tail resolves its returns the same way"
+        );
 
         std::fs::write(agent.dir().join(OUTPUT), b"caf\xc3\xa9 \xff\n").unwrap();
         assert_eq!(
             agent.output().as_deref(),
             Some("café \u{fffd}\n"),
             "and a byte that is not text is read past, not the whole file lost"
+        );
+    }
+
+    #[test]
+    fn store_reads_the_end_of_a_long_command_output() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("build-a1b")).unwrap();
+
+        // A build's log, longer than the cap: 3840 numbered rows of 80 bytes,
+        // 300 KiB of them, so the read opens 16 bytes into row 564.
+        let printed: String = (1..=3840)
+            .map(|n| format!("{:<79}\n", format!("row {n}")))
+            .collect();
+        std::fs::write(agent.dir().join(OUTPUT), &printed).unwrap();
+
+        let tail = agent.output_tail().unwrap();
+        assert!(
+            tail.len() <= OUTPUT_TAIL as usize && printed.ends_with(&tail),
+            "a quarter megabyte of it at most, and the end of it"
+        );
+        assert_eq!(
+            tail.lines().next().unwrap().trim_end(),
+            "row 565",
+            "opening on a whole row: the half of 564 the offset landed in goes"
+        );
+        assert_eq!(
+            tail.lines().last().unwrap().trim_end(),
+            "row 3840",
+            "and ending on the last row the command printed"
+        );
+        assert!(
+            agent.output().unwrap().starts_with("row 1 "),
+            "while the reader that wants all of it still gets the first row"
         );
     }
 

@@ -2439,12 +2439,14 @@ fn said(outcome: Result<String>) -> Option<Notice> {
 /// answer it left. A command's card is what the command printed.
 ///
 /// That last one comes before everything else, because the file it is read
-/// from — see [`Agent::output`] — is written for a command's record and for no
-/// other, and it is the whole of what the command said where the pane holds a
-/// screenful. Nothing is cut off it: no vendor drew that pane, so there is no
-/// furniture on it, and every row of it is the command's own. While the
-/// command runs the card is the end of the file and follows what lands there;
-/// once it has ended the card opens on the top and pages down.
+/// from — see [`Agent::output_tail`] — is written for a command's record and
+/// for no other, and it holds what the command said where the pane holds a
+/// screenful. The end of it, since a card is taken again every second it is
+/// open and a build's log grows all the while. Nothing is cut off it: no
+/// vendor drew that pane, so there is no furniture on it, and every row of it
+/// is the command's own. While the command runs the card is the end of the
+/// file and follows what lands there; once it has ended the card opens on the
+/// top of what it has and pages down.
 ///
 /// The conversation comes first wherever the record names a transcript amx
 /// can read — see [`crate::conversation`] — because it is the agent's own
@@ -2470,7 +2472,7 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> Card<Body> {
     // program with the fallback vendor's anchors held against it.
     if let Some(printed) = Agent::open(root, view.id())
         .ok()
-        .and_then(|agent| agent.output())
+        .and_then(|agent| agent.output_tail())
     {
         return Card {
             id: view.id().to_string(),
@@ -3646,6 +3648,37 @@ mod tests {
             assert!(card.answer, "read forward, {phase:?}");
             assert_eq!(card.body.anchor(), 0, "from the top, {phase:?}");
         }
+    }
+
+    #[test]
+    fn card_on_a_long_command_row_is_the_end_of_what_it_printed() {
+        // The card is taken again every second it is open, and a build's log
+        // grows for as long as the build runs, so what the card holds is the
+        // end of the file: 3840 numbered rows of 80 bytes here, of which the
+        // last quarter megabyte opens on row 565.
+        let root = TempDir::new().unwrap();
+        let log: String = (1..=3840)
+            .map(|n| format!("{:<79}\n", format!("row {n}")))
+            .collect();
+        printed(root.path(), "build-a1b", &log);
+
+        let running = reading("build-a1b", Phase::Working, State::default());
+        let card = card_of(&running, root.path(), 76, Theme::default());
+        let says = card.body.says();
+        assert!(
+            says.len() <= crate::store::OUTPUT_TAIL as usize && log.ends_with(&says),
+            "a quarter megabyte of the log at most, and the end of it"
+        );
+        assert_eq!(
+            says.lines().next().unwrap().trim_end(),
+            "row 565",
+            "opening on a whole row, never on the first row of a long log"
+        );
+        assert_eq!(
+            says.lines().last().unwrap().trim_end(),
+            "row 3840",
+            "and ending on the last row the command printed"
+        );
     }
 
     #[test]
