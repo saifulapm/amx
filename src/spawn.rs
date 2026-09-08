@@ -452,9 +452,14 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
     };
 
     // Before the exec below, so that the first byte the command prints is in
-    // the file rather than only the bytes after amx got out of the way.
-    if meta.agent.is_none() {
-        keep_output(&meta, &dir.join(crate::store::OUTPUT))?;
+    // the file rather than only the bytes after amx got out of the way. A
+    // pipe that cannot be attached costs the file and nothing else: the
+    // command is what the row was started for, and a boot that died here
+    // would be a row that never ran and never recorded why.
+    if meta.agent.is_none()
+        && let Err(e) = keep_output(&meta, &dir.join(crate::store::OUTPUT))
+    {
+        crate::warn!("amx: {id}: what it prints will not be kept: {e:#}");
     }
 
     let mut command = std::process::Command::new("sh");
