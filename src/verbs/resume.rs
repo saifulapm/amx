@@ -104,10 +104,7 @@ pub fn run(
 /// One agent, named.
 fn one(root: &Path, id: &str, env: &BTreeMap<String, String>, out: &mut impl Write) -> Result<i32> {
     let view = derive::view(root, id, store::now())?;
-    // Anything that has not ended is already doing what a resume would start.
-    // Starting a second command over the top of it is the one outcome nobody
-    // asked for.
-    if !view.phase().is_terminal() {
+    if !nothing_is_running(&view) {
         warn!(
             "amx resume: {id} is {}. stop it before starting it again",
             view.phase()
@@ -122,6 +119,19 @@ fn one(root: &Path, id: &str, env: &BTreeMap<String, String>, out: &mut impl Wri
     bring_back(root, id, env)?;
     writeln!(out, "{id} resumed")?;
     Ok(exit::OK)
+}
+
+/// Whether there is nothing in a pane for a resume to be started over the top
+/// of, which is the one outcome nobody asked for.
+///
+/// An agent that has ended is the plain case. The other is an agent amx let go:
+/// the record reads idle because idle is where it was when its pane was taken,
+/// and reading that as an agent to leave alone would refuse the one command
+/// that brings a parked agent back — see [`crate::verbs::park`]. Every other
+/// idle agent is a vendor sitting at its prompt in a pane, and a second command
+/// started in front of it is a conversation nobody can follow.
+fn nothing_is_running(view: &derive::View) -> bool {
+    view.phase().is_terminal() || view.verdict.evidence == derive::Evidence::LetGo
 }
 
 /// Every agent whose pane is gone — the morning after a tmux server died.
@@ -493,6 +503,8 @@ fn is_session_id(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::derive::{Evidence, Verdict};
+    use crate::tmux::{PaneId, Socket};
     use crate::vendor::second::SECOND;
     use tempfile::TempDir;
 
@@ -500,6 +512,71 @@ mod tests {
         Handoff {
             task: task.to_string(),
             command: command.iter().map(|word| word.to_string()).collect(),
+        }
+    }
+
+    /// An agent as a reader hands it over.
+    fn read_as(phase: Phase, evidence: Evidence) -> derive::View {
+        derive::View {
+            meta: Meta {
+                id: "fix-login-a1b".to_string(),
+                task: "fix the login bug".to_string(),
+                agent: None,
+                dir: PathBuf::from("/srv/app"),
+                worktree: None,
+                branch: None,
+                base: None,
+                socket: Socket::Name("amx".to_string()),
+                pane: PaneId::new("%7").unwrap(),
+                bg: false,
+                session: Some("abc-123".to_string()),
+                transcript: None,
+                created: 1,
+            },
+            state: State {
+                state: phase,
+                ..State::default()
+            },
+            verdict: Verdict {
+                phase,
+                evidence,
+                rule: None,
+                age: 3_640,
+                worked: 12,
+            },
+        }
+    }
+
+    #[test]
+    fn resume_brings_back_an_agent_whose_pane_amx_let_go() {
+        // A parked agent reads idle, because idle is where it was when its
+        // pane went. Nothing is running it: the vendor is gone and the session
+        // is waiting to be picked up, which is the whole of what a resume
+        // does.
+        assert!(nothing_is_running(&read_as(Phase::Idle, Evidence::LetGo)));
+
+        // An agent that ended is the other one there is nothing to interrupt.
+        for phase in [Phase::Done, Phase::Failed, Phase::Stopped] {
+            assert!(
+                nothing_is_running(&read_as(phase, Evidence::Record)),
+                "{phase}"
+            );
+        }
+
+        // And an agent in a pane is turned away whatever it is doing there —
+        // including sitting idle at its prompt, which is a pane a second
+        // command would be started over the top of.
+        for phase in [
+            Phase::Starting,
+            Phase::Working,
+            Phase::Waiting,
+            Phase::Idle,
+            Phase::Unknown,
+        ] {
+            assert!(
+                !nothing_is_running(&read_as(phase, Evidence::Hooks)),
+                "{phase}"
+            );
         }
     }
 
