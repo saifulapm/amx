@@ -1,0 +1,10 @@
+# A turn in a session claude names itself. The name arrives as a line of its
+# own in the transcript, within seconds of the first prompt and under the id
+# the hooks announced, which is the only place the vendor ever writes it down.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "fix the login bug"}
+transcript {"type":"ai-title","aiTitle":"Login bug in the session cookie","sessionId":"@SESSION@"}
+print the cookie is set on the right domain now
+hook Stop {"last_assistant_message": "the cookie is set on the right domain now"}
+print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+sleep 600000

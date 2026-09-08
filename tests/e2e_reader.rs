@@ -242,6 +242,23 @@ fn a_fresh_record_is_read_from_the_hooks() {
 }
 
 #[test]
+fn the_name_claude_gave_the_session_reaches_the_record() {
+    // The vendor writes the session's name into the transcript and nowhere
+    // else, so a title on the record can only have been read off the file the
+    // hooks announced. The name the stand-in writes is one no id and no task
+    // of amx's own would produce, which is what makes it evidence.
+    let amx = Harness::new();
+    amx.play("fix-login-a1b", "titles-itself");
+    amx.until_state("fix-login-a1b", "idle");
+
+    let recorded = amx.state("fix-login-a1b");
+    assert_eq!(
+        recorded["session_title"], "Login bug in the session cookie",
+        "{recorded}"
+    );
+}
+
+#[test]
 fn the_listing_reads_as_a_table_when_nobody_asks_for_json() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
