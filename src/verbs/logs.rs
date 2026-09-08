@@ -17,9 +17,12 @@
 //!   statusline, mode footer — cut off the bottom, the same walk the card
 //!   takes, because none of it is the agent's work.
 //! * **The recorded answer**, once the pane is gone and the record is what is
-//!   left. Whether an agent is still running is not something a caller should
-//!   have to know before it can ask. An agent that left not even that gets a
-//!   line naming what was missing, the vendor's own gap included.
+//!   left, or **what a command printed**, which its own boot kept beside the
+//!   record for the same moment: a command exits rather than answers, and the
+//!   file is the whole of what it said where the pane held a screenful.
+//!   Whether an agent is still running is not something a caller should have
+//!   to know before it can ask. An agent that left not even that gets a line
+//!   naming what was missing, the vendor's own gap included.
 //!
 //! `amx result` is still the one that hands back a turn's answer alone,
 //! verbatim, and blocks for it. This is the other question: what has been
@@ -93,7 +96,7 @@ pub fn run(
             }
             None => screen(&server, &meta.pane, id, lines, chrome(vendor), out),
         },
-        false => recorded(&agent, id, vendor, to_terminal, out),
+        false => recorded(&agent, id, vendor, lines, to_terminal, out),
     }
 }
 
@@ -179,18 +182,33 @@ fn screen(
 /// The answer on the record, which is the agent's own words rather than a
 /// picture of them, so it goes out the way `result` sends it: verbatim down a
 /// pipe, inert on a terminal.
+///
+/// A command leaves no answer — it exits rather than answers — so what is left
+/// of one is what it printed, kept beside the record by its own boot; see
+/// [`Agent::output`]. It goes out the same way, and cut to length the same way
+/// the readings above it are, because it is the same question asked of a row
+/// whose pane has gone. A file with nothing in it is a command that printed
+/// nothing, and that is nothing to hand back.
 fn recorded(
     agent: &Agent,
     id: &str,
     vendor: Option<&Vendor>,
+    lines: u32,
     to_terminal: bool,
     out: &mut impl Write,
 ) -> Result<i32> {
-    let Some(answer) = agent.state()?.result else {
+    let left = match agent.state()?.result {
+        Some(answer) => Some(answer),
+        None => agent
+            .output()
+            .map(|printed| last_lines(&printed, lines as usize))
+            .filter(|printed| !printed.trim().is_empty()),
+    };
+    let Some(left) = left else {
         complain!("{}", nothing_left(id, vendor));
         return Ok(exit::FAILURE);
     };
-    send::line(&send::rendered(&answer, to_terminal), out)?;
+    send::line(&send::rendered(&left, to_terminal), out)?;
     Ok(exit::OK)
 }
 
@@ -581,6 +599,72 @@ mod tests {
         let (code, said) = printed(root.path(), "fix-login-a1b", LINES);
         assert_eq!(code, exit::OK);
         assert_eq!(said, "wrote the parser\nand the tests with it\n");
+    }
+
+    #[test]
+    fn logs_of_a_command_that_has_ended_are_what_it_printed() {
+        // A command leaves no answer on its record: it exits, it does not
+        // answer. What it printed is in the file its own boot piped the pane
+        // into, and that file is the reading once the pane has gone.
+        let root = TempDir::new().unwrap();
+        let agent = without_a_pane(root.path(), "build-a1b");
+        agent
+            .writer()
+            .unwrap()
+            .update_state(|s| {
+                s.state = Phase::Done;
+                s.exit = Some(0);
+            })
+            .unwrap();
+        std::fs::write(agent.dir().join(crate::store::OUTPUT), "one\ntwo\n").unwrap();
+
+        let (code, said) = printed(root.path(), "build-a1b", LINES);
+        assert_eq!(code, exit::OK);
+        assert_eq!(said, "one\ntwo\n");
+
+        // Cut to length from the end of it, like every other reading here.
+        let (_, said) = printed(root.path(), "build-a1b", 1);
+        assert_eq!(said, "two\n");
+
+        // A command that printed nothing has nothing to hand back, and an
+        // empty stdout on its own reads as amx having failed to look.
+        std::fs::write(agent.dir().join(crate::store::OUTPUT), "").unwrap();
+        let (code, said) = printed(root.path(), "build-a1b", LINES);
+        assert_eq!(code, exit::FAILURE);
+        assert!(said.is_empty(), "{said:?}");
+    }
+
+    #[test]
+    fn logs_of_a_command_still_in_its_pane_are_that_pane() {
+        // The file is still being written to while the command runs, and what
+        // a caller asked is what is going on over there now. So the pane comes
+        // first for as long as there is one, as it does for every other row.
+        let server = TestServer::new();
+        let (_, pane) = server
+            .new_session(&Spawn {
+                command: &["sh", "-c", "echo on the pane; while :; do sleep 0.05; done"],
+                ..Spawn::default()
+            })
+            .unwrap();
+
+        let root = TempDir::new().unwrap();
+        let agent = record(
+            root.path(),
+            "build-a1b",
+            server.socket().clone(),
+            pane.clone(),
+        );
+        std::fs::write(agent.dir().join(crate::store::OUTPUT), "in the file\n").unwrap();
+        until("the pane to say its piece", || {
+            server
+                .capture(&pane)
+                .is_ok_and(|screen| screen.contains("on the pane"))
+        });
+
+        let (code, said) = printed(root.path(), "build-a1b", LINES);
+        assert_eq!(code, exit::OK);
+        assert!(said.contains("on the pane"), "{said:?}");
+        assert!(!said.contains("in the file"), "{said:?}");
     }
 
     #[test]
