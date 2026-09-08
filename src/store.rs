@@ -28,7 +28,7 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -44,6 +44,10 @@ const LOCK: &str = "lock";
 /// runs and taken away when the turn ends. Written by the vendor's side and
 /// only ever read here.
 pub const LIVE: &str = "live";
+/// How much of a transcript's end [`Agent::transcript_tail`] reads. Enough for
+/// the last turn of any conversation, and a fixed cost however long the
+/// session has run.
+const TAIL: u64 = 64 * 1024;
 
 /// Where an agent is, as far as amx has been told.
 ///
@@ -851,6 +855,33 @@ impl Agent {
         std::fs::read_to_string(self.dir.join(LIVE))
             .ok()
             .filter(|text| !text.trim().is_empty())
+    }
+
+    /// The end of the transcript the record names, for a reader that wants
+    /// the newest thing on it rather than the whole conversation.
+    ///
+    /// A session's transcript grows all day — a long one runs to megabytes,
+    /// most of it tool results — and a row redrawn every second must not read
+    /// all of that to learn the last line of it. So this seeks to [`TAIL`]
+    /// bytes from the end and reads from there.
+    ///
+    /// The offset lands wherever it lands, usually inside a line. That is the
+    /// reader's to handle and it already does: a line that is not JSON is
+    /// skipped rather than fatal — see [`crate::conversation`] — and the half
+    /// line this opens on is one of those. Bytes that are half a character are
+    /// in that same first line, and go the same way.
+    ///
+    /// `None` where the record names no transcript, or names one that is not
+    /// there: the vendor announces the path in its first hook, and the file
+    /// can be gone by the time somebody reads the record.
+    pub fn transcript_tail(&self, meta: &Meta) -> Option<String> {
+        let path = meta.transcript.as_ref()?;
+        let mut file = File::open(path).ok()?;
+        let from = file.metadata().ok()?.len().saturating_sub(TAIL);
+        file.seek(SeekFrom::Start(from)).ok()?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).ok()?;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// How it was started.
@@ -1977,6 +2008,53 @@ mod tests {
         let read = agent.meta().unwrap();
         assert_eq!(read.session.as_deref(), Some("abc-123"));
         assert_eq!(read.task, "fix the login bug", "the rest is untouched");
+    }
+
+    #[test]
+    fn store_reads_the_tail_of_the_transcript_the_record_names() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        let mut record = meta("fix-login-a1b");
+
+        assert_eq!(
+            agent.transcript_tail(&record),
+            None,
+            "a record naming no transcript has no tail"
+        );
+
+        let path = root.path().join("abc-123.jsonl");
+        record.transcript = Some(path.clone());
+        assert_eq!(
+            agent.transcript_tail(&record),
+            None,
+            "and neither has one whose file is not there"
+        );
+
+        let padding = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"still working\"}]}}\n";
+        std::fs::write(&path, padding).unwrap();
+        assert_eq!(
+            agent.transcript_tail(&record).as_deref(),
+            Some(padding),
+            "a transcript shorter than the tail is read whole"
+        );
+
+        // A day's session, longer than the tail: 800 lines of 84 bytes and a
+        // call at the end of them, so the read opens 19 bytes into a line.
+        let mut session = padding.repeat(800);
+        session.push_str("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"src/importer.rs\"}}]}}\n");
+        std::fs::write(&path, &session).unwrap();
+
+        let tail = agent.transcript_tail(&record).unwrap();
+        assert_eq!(tail.len(), TAIL as usize, "the last 64 KiB of it");
+        assert!(
+            serde_json::from_str::<serde_json::Value>(tail.lines().next().unwrap()).is_err(),
+            "cut inside a line, which is the half line the reading skips"
+        );
+        assert_eq!(
+            crate::conversation::latest(crate::vendor::Transcript::Claude, &tail).as_deref(),
+            Some("Read src/importer.rs"),
+            "and the rest of the tail reads as the transcript it is"
+        );
     }
 
     #[test]
