@@ -507,12 +507,15 @@ subdirectory starts at the top of the repository the heading names.
 A line led with `!` runs rather than asks. `!cargo test --all` is the row
 `amx new --exec` starts at a prompt: the rest of the line is the command, it
 goes to `sh -c` whole, and the rule over the line reads `COMMAND` for as long
-as the bang stands. It runs where a task typed in its place would have: the
-view's directory, the project the line was opened under, or the one a `d:`
-beside the bang names. It is given no worktree and no dials — there is no
-vendor on that row for a dial to be about, so `!m:opus cargo test` is refused
-by name and the line comes back with what you typed still on it. The front of
-the line and nowhere else: a bang further along is a character of the task.
+as the bang stands. The rule's dashes and the `❯` under them take the accent
+while it stands as well, so the band says what enter will do before a word of
+it is read, and go back to dim the keystroke the bang comes off. It runs where
+a task typed in its place would have: the view's directory, the project the
+line was opened under, or the one a `d:` beside the bang names. It is given no
+worktree and no dials — there is no vendor on that row for a dial to be about,
+so `!m:opus cargo test` is refused by name and the line comes back with what
+you typed still on it. The front of the line and nowhere else: a bang further
+along is a character of the task.
 
 A word on that line opening with `/` or `@` is the vendor's own, and a band
 under the line says what it could be: the skills and commands it runs by name,

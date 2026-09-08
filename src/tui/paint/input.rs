@@ -219,17 +219,15 @@ fn rule(composer: &Composer, width: usize, theme: Theme) -> Line<'static> {
     };
 
     let drawn = prospective(theme);
+    let edge = edge_colour(composer, theme);
     let mut spans = vec![
         Span::styled(fit(&label, width), drawn),
         Span::styled(gloss, dim()),
-        Span::styled(
-            RULE.repeat(width.saturating_sub(taken(gloss, &dial))),
-            dim(),
-        ),
+        Span::styled(RULE.repeat(width.saturating_sub(taken(gloss, &dial))), edge),
     ];
     if !dial.is_empty() {
         spans.push(Span::styled(dial, drawn.add_modifier(Modifier::REVERSED)));
-        spans.push(Span::styled(RULE.repeat(TAIL), dim()));
+        spans.push(Span::styled(RULE.repeat(TAIL), edge));
     }
     Line::from(spans)
 }
@@ -240,6 +238,23 @@ const GLOSS: &str = "· letters are text until esc ";
 /// How much rule closes the edge past the dial, so the dial reads as set into
 /// it rather than as the end of it.
 const TAIL: usize = 2;
+
+/// What the rule's dashes and the chevron under them are drawn in.
+///
+/// Dim on a line that will start an agent, which is what an edge is for: it
+/// holds the band together and asks to be read after everything inside it. A
+/// line led with a bang takes the accent instead, the whole rule and the
+/// chevron below it, because that one runs a shell where every other one asks
+/// an agent something — and the label saying COMMAND is a word at one end of a
+/// row somebody typing is not looking at. The same accent the label wears,
+/// without its weight: the mode's word is still the thing to read, and an edge
+/// in bold would be an edge shouting.
+fn edge_colour(composer: &Composer, theme: Theme) -> Style {
+    match composer.commanding() {
+        true => Style::new().fg(theme.accent),
+        false => dim(),
+    }
+}
 
 /// The rule and, under it, the line somebody is typing.
 ///
@@ -275,12 +290,13 @@ pub(super) fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect,
     let shown = &rows[from..];
 
     let indent = " ".repeat(prompt.chars().count());
+    let edge = edge_colour(composer, theme);
     let lines: Vec<Line> = shown
         .iter()
         .enumerate()
         .map(|(down, text)| {
             let head = match down {
-                0 => Span::styled(prompt.clone(), dim()),
+                0 => Span::styled(prompt.clone(), edge),
                 _ => Span::raw(indent.clone()),
             };
             let mut spans = vec![head];
@@ -1449,6 +1465,55 @@ mod tests {
             !drawn[7].contains("shift+tab"),
             "which names no key for a dial this row has nothing to turn: {:?}",
             drawn[7]
+        );
+    }
+
+    /// The colour of the rule's first dash and of the chevron under it, on the
+    /// screen a line of this text is being typed on. Both of them are edge
+    /// rather than word, and the one thing they say is which of them it is.
+    fn edges(asking: Asking, text: &str) -> (Color, Color) {
+        let mut screen = launching(Vec::new());
+        let mut composer = Composer::new(asking);
+        composer.insert(text);
+        screen.mode = Mode::Typing(composer);
+
+        let cells = cells(&screen, (60, 8));
+        let dash = (0..60)
+            .find(|column| cells[(*column, 5)].symbol() == RULE)
+            .expect("a rule with an edge on it");
+        (cells[(dash, 5)].fg, cells[(0, 6)].fg)
+    }
+
+    #[test]
+    fn composer_a_command_row_lights_its_rule_and_the_chevron_under_it() {
+        // The label is already in the accent and says COMMAND; the edge it is
+        // set into says the same thing without a word, so a glance at the foot
+        // of the screen is enough to tell a shell from a spawn.
+        assert_eq!(
+            edges(Asking::Task, "!cargo test"),
+            (theme().accent, theme().accent),
+            "the dashes and the chevron take the accent while the bang stands"
+        );
+
+        // And give it straight back: the bang is the whole of what lit them,
+        // and a task line looks like every other task line.
+        assert_eq!(
+            edges(Asking::Task, "cargo test"),
+            (Color::Reset, Color::Reset),
+            "and go back to dim the keystroke the bang comes off"
+        );
+
+        // A bang typed into a reply is a character of the message: it runs
+        // nothing, so it lights nothing.
+        assert_eq!(
+            edges(
+                Asking::Reply {
+                    id: "fix-a1b".to_string(),
+                    question: false,
+                },
+                "!cargo test"
+            ),
+            (Color::Reset, Color::Reset)
         );
     }
 
