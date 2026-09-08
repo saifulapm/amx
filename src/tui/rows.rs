@@ -154,10 +154,6 @@ pub struct Arrangement {
     order: BTreeMap<Group, Vec<String>>,
 }
 
-// What spends these is the verb that takes an idle agent's pane, which comes
-// next: a pane is not amx's to take while somebody has that agent pinned in
-// front of them. Until it lands, the only caller is this module's own tests.
-#[allow(dead_code)]
 impl Arrangement {
     /// What the last view left written down under this state root, for a
     /// reader that is not a view.
