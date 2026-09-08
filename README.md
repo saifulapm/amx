@@ -1011,7 +1011,8 @@ model = "opus"
 permission = "plan"
 effort = "high"
 
-# What writes the one line a finished turn is worth. Left out, nothing runs.
+# What writes the one line a turn is worth, finished or still running. Left
+# out, nothing runs.
 summary_command = "claude -p 'Sum this up in eight words. Answer with the words alone.'"
 ```
 
@@ -1046,21 +1047,37 @@ header counts that project's agents against that project's `max_agents`. `amx`
 on its own is about every agent there is, so it counts them against `max_total`
 where you set one, and against nothing where you have not.
 
-`summary_command` is what a finished row says. What a turn leaves behind is an
-answer, and an answer does not open with a summary of itself, so without this
-the row shows its first line. With it, the first reader to see a turn end runs
-the command where the agent ran, hands it the whole answer on stdin with
+`summary_command` is what a row says about a turn. What a turn leaves behind is
+an answer, and an answer does not open with a summary of itself, so without this
+a finished row shows its first line. With it, the first reader to see a turn end
+runs the command where the agent ran, hands it the whole answer on stdin with
 `$AMX_ID` naming the agent, and writes the first line it prints onto the record
 for every reader after. The command is the one the project that turn ran in
 names, so a view standing over several projects boils each row down by its own
 project's file. Nothing waits for it: the row keeps the answer until
 the line arrives, and a command that fails, that is not installed, or that says
-nothing costs the line and nothing else. Each turn is asked about once, by one
-amx, and one turn at a time: a view opened on a week of finished agents is a
-queue rather than a week of model calls at once, and a caller running `ls` in a
-loop does not start the command again on every pass. A verb that prints and
-exits while the command is still thinking takes the ask with it, and the next
-reader along makes it again. Left out, nothing is run and nothing is spent.
+nothing costs the line and nothing else. Each finished turn is asked about once,
+by one amx, and one turn at a time: a view opened on a week of finished agents is
+a queue rather than a week of model calls at once, and a caller running `ls` in a
+loop does not start the command again on every pass. Left out, nothing is run
+and nothing is spent.
+
+The same command says what a row means while the turn is still running. There is
+no answer yet, so a working row shows the last thing the agent did — `Read
+src/importer.rs`, or the `Running Bash` a tool hook left. With the key set, the
+view asks the command what the turn is about every three minutes and puts its
+line on the row instead. What goes in on stdin is the conversation so far, in
+the shape `amx logs` prints it and read off the end of the transcript, so a
+session that has run all day costs the same as one that started ten minutes ago.
+The line stands until the agent says something the command cannot have read; the
+row goes back to the transcript's newest line then, until the next rewrite. It
+goes off the record when the turn ends, so a finished row is about the answer.
+
+Only the view ever runs the command, for either question. `ls`, `status` and
+`statusline` print and exit, and starting a command nothing will be there to
+hear back would cost money for a line nobody reads. So the price of the key is
+the view being open: one call per finished turn, plus one per working agent
+every three minutes.
 
 ## Themes
 
@@ -1108,7 +1125,8 @@ One directory per agent under `~/.local/state/amx/agents/<id>/`:
   asked, and is only there once one has.
 - `summary.asked` holds the last ask a `summary_command` made: the turn it was
   about, when it went out, and whether it came back. It is what keeps one amx
-  asking and every other one reading, and is only there once the key is set.
+  asking and every other one reading, what spaces the rewrites of a turn still
+  running, and it is only there once the key is set.
 - `scratch/` is the agent's own directory to write in. Every pane amx starts is
   told where it is in `$AMX_AGENT_DIR`, and it goes when the record goes, so
   anything worth keeping belongs in the worktree with the rest of the work.
