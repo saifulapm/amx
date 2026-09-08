@@ -1927,7 +1927,7 @@ fn a_pi_reports_its_turn_and_the_record_moves_by_its_word() {
     let out = amx.amx(&["logs", id]);
     let printed = String::from_utf8_lossy(&out.stdout);
     assert!(printed.contains("❯ fix the login bug"), "{printed}");
-    assert!(printed.contains("⚒ bash cargo test"), "{printed}");
+    assert!(printed.contains("› bash cargo test"), "{printed}");
     assert!(printed.contains(ANSWERED), "{printed}");
     assert!(
         !printed.contains("Took") && !printed.contains("$0.0"),

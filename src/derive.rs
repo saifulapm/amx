@@ -4699,7 +4699,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         the_command_comes_back();
         assert_eq!(
             agent.state().unwrap().summary.as_deref(),
-            Some("The importer keeps its own clock.  ⚒ Read src/importer.rs")
+            Some("The importer keeps its own clock.  › Read src/importer.rs")
         );
 
         let asked = asked(agent.dir()).expect("the ask");

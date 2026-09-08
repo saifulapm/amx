@@ -149,8 +149,11 @@ pub enum Live {
 
 /// The glyph a prompt wears in the conversation, which is the composer's own.
 const PROMPT: &str = "❯ ";
-/// And the one a tool call wears.
-const TOOL: &str = "⚒ ";
+/// And the one a tool call wears: a smaller mark of the same family, from a
+/// block no font maps to an emoji. The hammer this used to be (U+2692) is in
+/// the emoji set, and a terminal with a colour-emoji fallback drew it in
+/// orange, two cells wide, over the space after it.
+const TOOL: &str = "› ";
 /// What the rule over the live tail says.
 const LIVE: &str = " live ";
 /// How much of the tail the card keeps under that rule: the last rows of what
@@ -180,9 +183,11 @@ impl Body {
     /// the agent is saying now under it where a turn is still running.
     ///
     /// A prompt stands behind the composer's own glyph, an answer is its
-    /// markdown drawn into rows, a tool call is one dim row naming the tool
-    /// and the argument worth a row, and a blank row stands between one thing
-    /// said and the next. Every row is wrapped to `width` here, because a
+    /// markdown drawn into rows, and a tool call is one row: the tool at the
+    /// terminal's own weight and the argument worth a row dim behind it. A
+    /// blank row stands between one thing said and the next, except between
+    /// one call and the call after it: a run of calls is one block, read as
+    /// a column of names. Every row is wrapped to `width` here, because a
     /// card windows its rows and does not reflow them.
     ///
     /// The anchor is the first row of the last prompt: the top of the last
@@ -197,6 +202,7 @@ impl Body {
         let width = width.max(1);
         let mut rows: Vec<Line<'static>> = Vec::new();
         let mut anchor = 0;
+        let mut after_call = false;
         for one in said {
             let drawn: Vec<Line<'static>> = match one {
                 Said::Prompt(text) => {
@@ -214,26 +220,31 @@ impl Body {
                 }
                 Said::Text(text) => prose::render(text, width, theme),
                 Said::Tool { name, detail } => {
-                    let row = match detail {
-                        Some(detail) => format!("{TOOL}{name} {detail}"),
-                        None => format!("{TOOL}{name}"),
-                    };
-                    vec![Line::from(Span::styled(
-                        fit(&inert(&row), width as usize),
-                        dim(),
-                    ))]
+                    let width = width as usize;
+                    let name = fit(&inert(name), width.saturating_sub(width_of(TOOL)));
+                    let mut spans = vec![Span::styled(TOOL, dim()), Span::raw(name.clone())];
+                    if let Some(detail) = detail {
+                        let room = width.saturating_sub(width_of(TOOL) + width_of(&name) + 1);
+                        if room > 0 {
+                            let detail = fit(&inert(detail), room);
+                            spans.push(Span::styled(format!(" {detail}"), dim()));
+                        }
+                    }
+                    vec![Line::from(spans)]
                 }
             };
             if drawn.is_empty() {
                 continue;
             }
-            if !rows.is_empty() {
+            let call = matches!(one, Said::Tool { .. });
+            if !rows.is_empty() && !(after_call && call) {
                 rows.push(Line::raw(String::new()));
             }
             if matches!(one, Said::Prompt(_)) {
                 anchor = rows.len();
             }
             rows.extend(drawn);
+            after_call = call;
         }
 
         let blank =
@@ -1291,8 +1302,8 @@ mod tests {
 
         assert_eq!(
             body.says(),
-            "❯ first ask\n\n⚒ Bash cargo test\n\nfirst answer\n\n\
-             ❯ second ask\n\n⚒ Bash cargo test\n\nsecond answer",
+            "❯ first ask\n\n› Bash cargo test\n\nfirst answer\n\n\
+             ❯ second ask\n\n› Bash cargo test\n\nsecond answer",
             "the composer's glyph on a prompt, a tool's on a call, the words \
              drawn rather than their marks"
         );
@@ -1305,15 +1316,24 @@ mod tests {
         );
         assert!(!body.chrome);
 
-        // The glyph wears the accent, the tool row is dim, the words are not.
+        // The glyph wears the accent; on a call the glyph and the argument
+        // are dim and the tool's name is not; the words are not.
         let prompt = &body.rows[6].spans[0];
         assert_eq!(prompt.content.as_ref(), PROMPT);
         assert_eq!(prompt.style.fg, Some(theme().accent));
-        assert!(
-            body.rows[8].spans[0]
-                .style
-                .add_modifier
-                .contains(Modifier::DIM)
+        let call: Vec<(&str, bool)> = body.rows[8]
+            .spans
+            .iter()
+            .map(|span| {
+                (
+                    span.content.as_ref(),
+                    span.style.add_modifier.contains(Modifier::DIM),
+                )
+            })
+            .collect();
+        assert_eq!(
+            call,
+            vec![(TOOL, true), ("Bash", false), (" cargo test", true)]
         );
         assert!(
             body.rows[10]
@@ -1330,6 +1350,34 @@ mod tests {
     }
 
     #[test]
+    fn card_stands_a_run_of_tool_calls_as_one_block_and_cuts_a_long_one() {
+        let call = |name: &str, detail: Option<&str>| Said::Tool {
+            name: name.to_string(),
+            detail: detail.map(str::to_string),
+        };
+        let told = vec![
+            Said::Prompt("look".to_string()),
+            call("Read", Some("src/main.rs")),
+            call("Bash", Some("cargo test")),
+            call("ls", None),
+            Said::Text("seen".to_string()),
+        ];
+        let body = Body::conversation(&told, None, 40, theme());
+        assert_eq!(
+            body.says(),
+            "❯ look\n\n› Read src/main.rs\n› Bash cargo test\n› ls\n\nseen",
+            "no blank row inside the run, one on either side of it"
+        );
+
+        // A row is one row: the argument is cut to what is left beside the
+        // name, and a name that fills the row leaves it no room at all.
+        let body = Body::conversation(&[call("Bash", Some("cargo test --all"))], None, 14, theme());
+        assert_eq!(body.says(), "› Bash cargo …");
+        let body = Body::conversation(&[call("Bash", Some("cargo test"))], None, 6, theme());
+        assert_eq!(body.says(), "› Bash");
+    }
+
+    #[test]
     fn card_ends_a_running_conversation_on_a_live_tail() {
         let told = a_talk("port it", "on it");
         let streamed = Body::conversation(
@@ -1341,7 +1389,7 @@ mod tests {
         assert_eq!(
             streamed.says(),
             format!(
-                "❯ port it\n\n⚒ Bash cargo test\n\non it\n\n{RULE}{RULE}{LIVE}{}\nstill going",
+                "❯ port it\n\n› Bash cargo test\n\non it\n\n{RULE}{RULE}{LIVE}{}\nstill going",
                 RULE.repeat(30 - 2 - width_of(LIVE))
             ),
             "the vendor's own stream under a rule that says what it is"

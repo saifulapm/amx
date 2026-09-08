@@ -163,20 +163,28 @@ pub fn latest(format: Transcript, jsonl: &str) -> Option<String> {
 
 /// The conversation as lines somebody reads down a terminal or a pipe: a
 /// prompt wears the composer's own `❯` so the two voices read apart, a tool
-/// call wears `⚒`, and what the agent said is its own words. One blank line
-/// between one thing said and the next.
+/// call wears `›`, and what the agent said is its own words. One blank line
+/// between one thing said and the next, except between one call and the call
+/// after it: a run of calls is one block, the way the card draws it.
 pub fn plain(said: &[Said]) -> String {
-    said.iter()
-        .map(|one| match one {
+    let mut out = String::new();
+    let mut after_call = false;
+    for one in said {
+        let call = matches!(one, Said::Tool { .. });
+        if !out.is_empty() {
+            out.push_str(if after_call && call { "\n" } else { "\n\n" });
+        }
+        out.push_str(&match one {
             Said::Prompt(text) => format!("❯ {text}"),
             Said::Text(text) => text.clone(),
             Said::Tool { name, detail } => match detail {
-                Some(detail) => format!("⚒ {name} {detail}"),
-                None => format!("⚒ {name}"),
+                Some(detail) => format!("› {name} {detail}"),
+                None => format!("› {name}"),
             },
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+        });
+        after_call = call;
+    }
+    out
 }
 
 /// Which voice an entry is in, for the formats that have one.
@@ -572,9 +580,18 @@ mod tests {
         let said = read(Transcript::Claude, CLAUDE);
         assert_eq!(
             plain(&said),
-            "❯ print the numbers\n\n⚒ Bash seq 3\n\n1\n2\n3"
+            "❯ print the numbers\n\n› Bash seq 3\n\n1\n2\n3"
         );
-        assert_eq!(plain(&[tool("Bash", None)]), "⚒ Bash");
+        assert_eq!(plain(&[tool("Bash", None)]), "› Bash");
+        assert_eq!(
+            plain(&[
+                tool("Read", Some("a.rs")),
+                tool("ls", None),
+                Said::Text("ok".into())
+            ]),
+            "› Read a.rs\n› ls\n\nok",
+            "a run of calls is one block"
+        );
         assert_eq!(plain(&[]), "");
     }
 

@@ -127,7 +127,7 @@ fn chrome(vendor: Option<&Vendor>) -> &'static Furniture {
 ///
 /// Read by the shape the record's own vendor writes — see
 /// [`crate::conversation::format_of`] — and printed the way that module
-/// prints one: a prompt wears the composer's `❯`, a tool call `⚒` and the
+/// prints one: a prompt wears the composer's `❯`, a tool call `›` and the
 /// argument worth a row, and what the agent said is its own words.
 ///
 /// `None` when the file cannot be read or renders to nothing: a transcript
@@ -498,7 +498,7 @@ mod tests {
         let (code, said) = printed(root.path(), "fix-login-a1b", LINES);
         assert_eq!(code, exit::OK);
         assert!(said.contains("❯ print the numbers"), "{said:?}");
-        assert!(said.contains("⚒ Bash"), "{said:?}");
+        assert!(said.contains("› Bash"), "{said:?}");
         assert!(said.contains("1\n2\n3"), "{said:?}");
         assert!(
             !said.contains("the pane") && !said.contains("thinking"),

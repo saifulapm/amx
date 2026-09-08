@@ -342,9 +342,9 @@ them would spend a row of the wall on what you were already looking at.
 What the card's body is follows the agent. Where its vendor keeps the
 conversation in a file — claude and pi both do — the card is that whole
 conversation, drawn rather than pictured: every prompt behind the composer's
-own `❯`, every answer with its markdown rendered, every tool call as one dim
-row naming the tool and the command or path it was given. Nothing the vendor
-draws under its pane is in it. One whose turn is over — idle at its prompt,
+own `❯`, every answer with its markdown rendered, every tool call as one row
+naming the tool with the command or path it was given dim beside it, and a run
+of calls as one block. Nothing the vendor draws under its pane is in it. One whose turn is over — idle at its prompt,
 done, failed or stopped alike — opens on its last answer, with the question it
 answers on the row above and every earlier turn a page up. One that is working
 ends on a live tail under a dim `live` rule: the last few rows of what pi is
