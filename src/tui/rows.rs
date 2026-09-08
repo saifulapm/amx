@@ -1267,12 +1267,6 @@ impl List {
     }
 }
 
-/// What a row calls its agent: the name somebody gave it, and the id until
-/// somebody does.
-///
-/// Here rather than on the reading itself, because it is a fact about the row:
-/// the record is filed under the id, every verb takes the id, and the name is
-/// the word this one screen shows instead.
 /// Whether `said` holds `want`, whatever case either was written in.
 ///
 /// An id and a generated name are lowercase and always were, so folding costs
@@ -1283,8 +1277,26 @@ fn holds(said: &str, want: &str) -> bool {
     said.to_lowercase().contains(&want.to_lowercase())
 }
 
+/// What a row calls its agent: the name somebody gave it, else the title the
+/// session goes under, and the id until there is either.
+///
+/// Here rather than on the reading itself, because it is a fact about the row:
+/// the record is filed under the id, every verb takes the id, and these are
+/// the words this one screen shows instead.
+///
+/// The rename comes first because it is the only one of the three a person
+/// here wrote. The title after it, because an id says what the agent was
+/// started on and says it in the words it was started with, while the vendor
+/// has been naming the conversation out of the work all along and writing a
+/// new name as the work moves. The id last, and it is not lost anywhere else:
+/// the `ls` table prints it, every verb takes it, and a narrowing finds a row
+/// by it.
 pub fn called(view: &View) -> &str {
-    view.state.name.as_deref().unwrap_or_else(|| view.id())
+    view.state
+        .name
+        .as_deref()
+        .or(view.state.session_title.as_deref())
+        .unwrap_or_else(|| view.id())
 }
 
 /// Whether this row is holding something nobody has read.
@@ -3002,24 +3014,40 @@ mod tests {
     }
 
     #[test]
-    fn acts_a_row_is_called_what_somebody_renamed_it_to() {
+    fn acts_a_row_takes_the_rename_then_the_sessions_title_then_the_id() {
+        // All three on one agent, so what outranks what is read off one row
+        // rather than off three that could each be true on their own.
         let mut named = view("fix-login-a1b", Phase::Idle, 10);
+        named.state.session_title = Some("Login timeout".to_string());
         named.state.name = Some("auth".to_string());
-        let plain = view("port-importer-b2c", Phase::Idle, 20);
+        let mut titled = view("port-importer-b2c", Phase::Idle, 20);
+        titled.state.session_title = Some("Importer clock".to_string());
+        let plain = view("old-job-c3d", Phase::Idle, 30);
 
         assert_eq!(called(&named), "auth");
         assert_eq!(
+            called(&titled),
+            "Importer clock",
+            "and the title the session goes under where nobody has renamed it"
+        );
+        assert_eq!(
             called(&plain),
-            "port-importer-b2c",
-            "and its id until somebody calls it something else"
+            "old-job-c3d",
+            "and its id until there is either"
         );
 
-        let mut list = listed(vec![named, plain]);
+        let mut list = listed(vec![named, titled, plain]);
         list.narrow(vec![Narrow::Name(Some("auth".to_string()))]);
         assert_eq!(
             lines(&list),
             ["completed (1)", "fix-login-a1b"],
             "and a narrowing takes the name off the row as readily as the id"
+        );
+        list.narrow(vec![Narrow::Name(Some("clock".to_string()))]);
+        assert_eq!(
+            lines(&list),
+            ["completed (1)", "port-importer-b2c"],
+            "and a word of the title reaches the row wearing it"
         );
     }
 

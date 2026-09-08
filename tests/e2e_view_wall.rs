@@ -226,6 +226,21 @@ fn theme(amx: &Harness, name: &str, text: &str) {
     std::fs::write(dir.join(format!("{name}.toml")), text).expect("writing the theme");
 }
 
+/// The title claude gave the session, where the hook writes it: on the record,
+/// at the end of a turn.
+fn titled(amx: &Harness, id: &str, title: &str) {
+    let mut state = amx.state(id);
+    state["session_title"] = json!(title);
+    amx.set_state(id, state);
+}
+
+/// And what somebody at the wall renamed the agent to.
+fn renamed(amx: &Harness, id: &str, name: &str) {
+    let mut state = amx.state(id);
+    state["name"] = json!(name);
+    amx.set_state(id, state);
+}
+
 /// Move a record's directory, which is what decides its project.
 fn running_in(amx: &Harness, id: &str, dir: &std::path::Path) {
     let path = amx.agent_dir(id).join("meta.json");
@@ -258,6 +273,11 @@ fn until_empty(amx: &Harness, view: &str) {
 
 fn press(amx: &Harness, view: &str, key: &str) {
     amx.tmux(&["send-keys", "-t", view, key]);
+}
+
+/// Characters typed at a line the view has open, as against a key it acts on.
+fn types(amx: &Harness, view: &str, text: &str) {
+    amx.tmux(&["send-keys", "-t", view, "-l", text]);
 }
 
 /// The same key twice, close enough together that a view holding a window
@@ -1083,6 +1103,45 @@ fn a_row_lands_its_name_summary_and_age_in_the_columns_the_grid_fixes() {
     assert!(
         !age.trim().is_empty() && !age.ends_with(' '),
         "the age is right-aligned in its own column:\n{row:?}"
+    );
+}
+
+#[test]
+fn a_row_goes_under_the_title_its_session_was_given_until_somebody_renames_it() {
+    let amx = Harness::new();
+    finished(&amx, "port-import-b2c", "done", 60);
+    titled(&amx, "port-import-b2c", "Importer clock");
+    // A record carrying both, which is the one the order has to be read off.
+    finished(&amx, "fix-login-a1b", "done", 120);
+    titled(&amx, "fix-login-a1b", "Login timeout");
+    renamed(&amx, "fix-login-a1b", "auth");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let row = amx.until("the row under the title claude gave the session", || {
+        row_of(&amx, &view, "Importer clock")
+    });
+    assert!(
+        !row.contains("port-import-b2c"),
+        "the title stands where the id stood:\n{row}"
+    );
+    let both = row_of(&amx, &view, "auth").expect("the renamed row");
+    assert!(
+        !both.contains("Login timeout"),
+        "and a name somebody typed here outranks the one the session goes \
+         under:\n{both}"
+    );
+
+    // The find line reads the title the way it reads a name or an id: the row
+    // is on the wall under a word of it, and the row it does not reach is off.
+    types(&amx, &view, "/");
+    types(&amx, &view, "clock");
+    let drawn = amx.until("the wall narrowed to the title", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("Importer clock") && !drawn.contains("auth")).then_some(drawn)
+    });
+    assert!(
+        !drawn.contains("fix-login-a1b"),
+        "the row the word misses is gone, id and all:\n{drawn}"
     );
 }
 
