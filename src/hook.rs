@@ -183,29 +183,36 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
     let before = meta.clone();
     let notice = apply(payload, &mut state, &mut meta);
 
-    // The transcript is the second place an answer can be and the only place
-    // the session's name ever is, so it is read at the end of a turn and only
-    // there. Reading a file is all this costs; asking the pane would mean a
-    // tmux call on the hook path, which is not this command's to make.
+    let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default());
+
+    // The transcript is the second place an answer can be, and it is read only
+    // when the payload had none. Reading a file is all this costs; asking the
+    // pane would mean a tmux call on the hook path, which is not this
+    // command's to make.
     if state.state == Phase::Idle
+        && state.result.is_none()
         && let Some(path) = &meta.transcript
         && let Ok(text) = std::fs::read_to_string(path)
-        && let Some(format) =
-            crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default())
+        && let Some(format) = format
+        && let Some(answer) = crate::conversation::answer(format, &text)
     {
-        // The payload is the freshest place an answer exists, so the
-        // transcript answers only where the payload had none.
-        if state.result.is_none()
-            && let Some(answer) = crate::conversation::answer(format, &text)
-        {
-            state.result = Some(answer);
-            state.source = Some(Source::Transcript);
-        }
-        // A file with no name in it is a session the vendor has not named
-        // yet, which is not a reason to take the name off the record.
-        if let Some(title) = crate::conversation::session_title(format, &text) {
-            state.session_title = Some(title);
-        }
+        state.result = Some(answer);
+        state.source = Some(Source::Transcript);
+    }
+
+    // The transcript is also the only place the session's name ever is, and
+    // the vendor writes it within seconds of the first prompt, before a word
+    // of the answer: a row that waited for the turn to end would go under its
+    // id for the whole of its first turn, which for a one-shot agent is most
+    // of its life. So it is read on every event, off the tail the view
+    // already reads once a second per row, where the newest name always is.
+    // A file with no name in it is a session the vendor has not named yet,
+    // which is not a reason to take the name off the record.
+    if let Some(format) = format
+        && let Some(tail) = agent.transcript_tail(&meta)
+        && let Some(title) = crate::conversation::session_title(format, &tail)
+    {
+        state.session_title = Some(title);
     }
 
     let written = writer.update_state(|current| *current = state)?;
@@ -2461,6 +2468,9 @@ mod tests {
         );
         std::fs::write(&transcript, titled).unwrap();
 
+        // The first event that names the transcript is enough: the name is on
+        // the record before a turn has ended, so a row goes under it from the
+        // first tool call rather than from the first answer.
         hook(
             root.path(),
             agent.id(),
@@ -2471,6 +2481,34 @@ mod tests {
             })
             .to_string(),
         );
+        assert_eq!(
+            agent.state().unwrap().session_title.as_deref(),
+            Some("Fix the login bug"),
+            "read before any turn has ended"
+        );
+
+        // And a newer name in the file reaches the record on whatever event
+        // comes next, mid-turn included.
+        std::fs::write(
+            &transcript,
+            concat!(
+                "{\"type\":\"ai-title\",\"aiTitle\":\"Fix the login bug\",\"sessionId\":\"abc-123\"}\n",
+                "{\"type\":\"custom-title\",\"customTitle\":\"auth\",\"sessionId\":\"abc-123\"}\n",
+            ),
+        )
+        .unwrap();
+        hook(
+            root.path(),
+            agent.id(),
+            r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cargo test"}}"#,
+        );
+        assert_eq!(
+            agent.state().unwrap().session_title.as_deref(),
+            Some("auth"),
+            "the name a person typed, taken mid-turn"
+        );
+        // Back to the one the rest of the test reads.
+        std::fs::write(&transcript, titled).unwrap();
         hook(
             root.path(),
             agent.id(),
