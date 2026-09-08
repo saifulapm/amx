@@ -32,15 +32,15 @@ pub fn run(root: &Path, id: &str, json: bool, now: u64, out: &mut impl Write) ->
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&view.json())?)?;
     } else {
-        report(&view, out)?;
+        report(&view, now, out)?;
     }
     Ok(exit::OK)
 }
 
 /// What a person reads.
-fn report(view: &View, out: &mut impl Write) -> Result<()> {
+fn report(view: &View, now: u64, out: &mut impl Write) -> Result<()> {
     writeln!(out, "{}  {}", view.id(), view.phase())?;
-    writeln!(out, "  evidence  {}", evidence(view))?;
+    writeln!(out, "  evidence  {}", evidence(view, now))?;
     if let Some(question) = &view.state.question {
         say(out, "asking", question)?;
         for choice in send::numbered(&view.state.options) {
@@ -93,11 +93,20 @@ fn inert(text: &str) -> String {
 }
 
 /// The sentence that says what amx is going on, and how old it is.
-fn evidence(view: &View) -> String {
+///
+/// The age is the reading's own, which is how long since the agent was heard
+/// from. A pane amx took away is dated from the record instead: an agent
+/// parked after an hour of quiet was heard from an hour ago and let go a
+/// moment ago, and the moment is the one a person is reading this for.
+fn evidence(view: &View, now: u64) -> String {
     let age = view.verdict.age;
     match &view.verdict.evidence {
         Evidence::Record => "the record says how it ended".to_string(),
         Evidence::Gone => "its pane is gone".to_string(),
+        Evidence::LetGo => format!(
+            "amx let the process go {}s ago; enter, attach or resume bring it back",
+            now.saturating_sub(view.state.parked_at)
+        ),
         Evidence::Hooks => match &view.verdict.rule {
             // The screen was read and was not allowed to end a running turn.
             Some(rule) => format!(
@@ -156,8 +165,14 @@ mod tests {
     }
 
     fn printed(view: &View) -> String {
+        printed_at(view, 0)
+    }
+
+    /// The same report, read at a given moment: what amx did to a pane is
+    /// dated from the record rather than from the last thing the agent said.
+    fn printed_at(view: &View, now: u64) -> String {
         let mut out = Vec::new();
-        report(view, &mut out).unwrap();
+        report(view, now, &mut out).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -194,6 +209,19 @@ mod tests {
         ));
         assert!(held.contains("idle_prompt"), "{held}");
         assert!(held.contains("held still"), "{held}");
+    }
+
+    #[test]
+    fn reader_status_says_a_parked_agent_is_still_there_to_come_back_to() {
+        // Its turn ended an hour ago, and amx took the pane away forty
+        // seconds ago. The one a person needs is the second.
+        let mut parked = view(Phase::Idle, Evidence::LetGo, None, 3_640);
+        parked.state.parked_at = 5_000;
+        let text = printed_at(&parked, 5_040);
+
+        assert!(text.starts_with("fix-login-a1b  idle"), "{text}");
+        assert!(text.contains("let the process go 40s ago"), "{text}");
+        assert!(text.contains("enter, attach or resume"), "{text}");
     }
 
     #[test]

@@ -139,6 +139,12 @@ pub enum Evidence {
     Record,
     /// There is no pane any more.
     Gone,
+    /// There is no pane because amx took it: an idle agent nobody was
+    /// attached to, whose record says when. The phase is the record's own,
+    /// because nothing about the agent ended — see [`crate::store::State`]'s
+    /// `parked_at`.
+    #[serde(rename = "parked")]
+    LetGo,
     /// The vendor's own events, recently enough to trust.
     Hooks,
     /// The screen: the rule that claimed it, or a command's own output, which
@@ -861,6 +867,12 @@ pub fn read(
     }
 
     if !alive {
+        // amx let this one go: the agent sat idle and unwatched long enough
+        // that its pane was worth more than it was. The record stands as it
+        // stood, and the next enter, attach or resume gives it a pane again.
+        if state.parked_at > 0 {
+            return told(state.state, Evidence::LetGo, None);
+        }
         // The pane went without recording an exit: killed, or its server died.
         return told(Phase::Stopped, Evidence::Gone, None);
     }
@@ -4005,6 +4017,33 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // An ending before the agent was started is a record somebody edited,
         // and a run of no length is the only honest answer to it.
         assert_eq!(started(9_000, &unstamped, true, None, 9_100).verdict.age, 0);
+    }
+
+    #[test]
+    fn reader_tells_a_pane_amx_let_go_from_one_that_died() {
+        // amx took the pane away from an idle agent an hour after its turn
+        // ended. Nothing about the agent changed: it is still idle, and the
+        // next enter, attach or resume gives it a pane again.
+        let mut parked = state(Phase::Idle, 1_000);
+        parked.parked_at = 4_600;
+        let verdict = started(900, &parked, false, None, 4_700).verdict;
+        assert_eq!(verdict.phase, Phase::Idle);
+        assert_eq!(verdict.evidence, Evidence::LetGo);
+
+        // The same record without the stamp is a pane that went of its own
+        // accord — killed, or its server died — which is where a reader has
+        // always ended it.
+        let died = state(Phase::Idle, 1_000);
+        let verdict = started(900, &died, false, None, 4_700).verdict;
+        assert_eq!(verdict.phase, Phase::Stopped);
+        assert_eq!(verdict.evidence, Evidence::Gone);
+
+        // And what `--json` calls it, which callers branch on.
+        assert_eq!(
+            serde_json::to_value(Evidence::LetGo).unwrap(),
+            "parked",
+            "the word every surface prints"
+        );
     }
 
     #[test]

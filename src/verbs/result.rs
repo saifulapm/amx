@@ -94,7 +94,7 @@ pub fn run(
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Ok(exit::TIMEOUT);
         }
-        std::thread::sleep(pace(&view));
+        std::thread::sleep(pace(&view.verdict.evidence));
     }
 }
 
@@ -130,10 +130,10 @@ fn settled(phase: Phase, ended: bool) -> Settled {
 }
 
 /// How long to wait before reading again, given what the last reading cost.
-fn pace(view: &View) -> Duration {
-    match view.verdict.evidence {
+fn pace(evidence: &Evidence) -> Duration {
+    match evidence {
         Evidence::Screen | Evidence::Unknown => LOOK,
-        Evidence::Record | Evidence::Gone | Evidence::Hooks => POLL,
+        Evidence::Record | Evidence::Gone | Evidence::LetGo | Evidence::Hooks => POLL,
     }
 }
 
@@ -254,6 +254,20 @@ mod tests {
         // Nothing more is coming, and what is on the record answers the turn
         // before the message. Saying so is the only honest ending.
         assert_eq!(settled(Phase::Done, false), Settled::Unanswered);
+    }
+
+    #[test]
+    fn a_wait_reads_the_record_often_and_the_pane_rarely() {
+        for evidence in [Evidence::Record, Evidence::Gone, Evidence::Hooks] {
+            assert_eq!(pace(&evidence), POLL, "{evidence:?}");
+        }
+        // An agent amx let go has no pane to read either: what says it is
+        // parked is the record, and reading that costs nothing.
+        assert_eq!(pace(&Evidence::LetGo), POLL);
+
+        for evidence in [Evidence::Screen, Evidence::Unknown] {
+            assert_eq!(pace(&evidence), LOOK, "{evidence:?}");
+        }
     }
 
     #[test]
