@@ -53,13 +53,16 @@ fn a_scenario_prints_to_a_real_pane() {
     let pane = amx.play("fix-login-a1b", "happy-turn");
     amx.until_state("fix-login-a1b", "idle");
 
+    // The footer is the last thing the scenario prints, and it prints it after
+    // the Stop hook has run: waiting on anything earlier is a race against
+    // however long that hook takes.
     let screen = amx.until("the vendor's screen", || {
         let screen = amx.capture(&pane);
-        screen.contains("the tests pass now").then_some(screen)
+        screen.contains("⏵⏵ auto mode on").then_some(screen)
     });
     assert!(
-        screen.contains("⏵⏵ auto mode on"),
-        "the vendor's own chrome is on the pane: {screen}"
+        screen.contains("the tests pass now"),
+        "what the vendor said is on the pane under its own chrome: {screen}"
     );
 }
 
