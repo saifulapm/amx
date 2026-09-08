@@ -2436,7 +2436,15 @@ fn said(outcome: Result<String>) -> Option<Notice> {
 /// The card for one agent: what it is asking and the answers it is offering;
 /// the whole conversation where its vendor keeps one, with what it is saying
 /// now under that while a turn runs; or the screen it is working on, or the
-/// answer it left.
+/// answer it left. A command's card is what the command printed.
+///
+/// That last one comes before everything else, because the file it is read
+/// from — see [`Agent::output`] — is written for a command's record and for no
+/// other, and it is the whole of what the command said where the pane holds a
+/// screenful. Nothing is cut off it: no vendor drew that pane, so there is no
+/// furniture on it, and every row of it is the command's own. While the
+/// command runs the card is the end of the file and follows what lands there;
+/// once it has ended the card opens on the top and pages down.
 ///
 /// The conversation comes first wherever the record names a transcript amx
 /// can read — see [`crate::conversation`] — because it is the agent's own
@@ -2456,6 +2464,29 @@ fn said(outcome: Result<String>) -> Option<Notice> {
 /// copied first: a card is taken again on every pass a question is up for, and
 /// a copy nothing would draw is work for nobody.
 fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> Card<Body> {
+    // What the command printed, kept beside the record by its own boot. An
+    // empty file is an empty card: the command has printed nothing yet, and a
+    // capture of the pane in its place would be a screen of somebody else's
+    // program with the fallback vendor's anchors held against it.
+    if let Some(printed) = Agent::open(root, view.id())
+        .ok()
+        .and_then(|agent| agent.output())
+    {
+        return Card {
+            id: view.id().to_string(),
+            phase: view.phase(),
+            question: view.state.question.clone(),
+            options: view.state.options.clone(),
+            kind: view.kind(),
+            body: Body::said(&printed),
+            changes: false,
+            // A command still printing is read up from its live edge; one
+            // that has ended is read forward, because what it printed is all
+            // there and the start of it is where a reader begins.
+            answer: view.phase().is_terminal(),
+        };
+    }
+
     let server = Server::from_socket(view.meta.socket.clone());
     // A card holding a question is the question block and nothing else, so
     // there is no capture to take for it. The waiting agent whose question amx
@@ -3568,6 +3599,66 @@ mod tests {
         );
         let card = card_of(&quiet, Path::new(""), 76, Theme::default());
         assert!(!card.answer);
+        assert_eq!(card.body.says(), "");
+    }
+
+    /// A command's record with what it printed beside it, which is where its
+    /// own boot pipes the pane.
+    fn printed(root: &Path, id: &str, output: &str) -> PathBuf {
+        let dir = root.join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("output"), output).unwrap();
+        dir
+    }
+
+    #[test]
+    fn card_on_a_command_row_is_what_the_command_printed() {
+        // The one row of the wall with no vendor behind it, and the one whose
+        // pane is piped into a file. The card is that file: whole, in the
+        // paint the command printed it in, with nothing cut off the bottom —
+        // the anchors the walk would hold are a vendor's, and a command that
+        // prints a rule and a prompt is printing its own work.
+        let root = TempDir::new().unwrap();
+        let output = "make: entering\n\n────\n❯ \n────\n  statusline\n";
+        printed(root.path(), "build-a1b", output);
+
+        // While it runs, read up from the end, where what is landing is.
+        let running = reading("build-a1b", Phase::Working, State::default());
+        let card = card_of(&running, root.path(), 76, Theme::default());
+        assert_eq!(card.body.says(), output);
+        assert!(!card.answer, "a running command's card follows its output");
+
+        // Once it has ended, the same file from the top of it.
+        for phase in [Phase::Done, Phase::Failed, Phase::Stopped] {
+            let ended = reading(
+                "build-a1b",
+                phase,
+                State {
+                    state: phase,
+                    exit: Some(0),
+                    since: 1,
+                    last_event: 1,
+                    ..State::default()
+                },
+            );
+            let card = card_of(&ended, root.path(), 76, Theme::default());
+            assert_eq!(card.body.says(), output, "{phase:?}");
+            assert!(card.answer, "read forward, {phase:?}");
+            assert_eq!(card.body.anchor(), 0, "from the top, {phase:?}");
+        }
+    }
+
+    #[test]
+    fn card_on_a_command_that_has_printed_nothing_is_empty() {
+        // An empty file is a command that has said nothing yet, and the card
+        // says nothing back. The pane is not consulted for it: a capture would
+        // be somebody else's program read with a vendor's anchors held against
+        // it, and whatever those cut would be the command's own work.
+        let root = TempDir::new().unwrap();
+        printed(root.path(), "quiet-a1b", "");
+
+        let quiet = reading("quiet-a1b", Phase::Working, State::default());
+        let card = card_of(&quiet, root.path(), 76, Theme::default());
         assert_eq!(card.body.says(), "");
     }
 

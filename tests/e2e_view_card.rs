@@ -1438,3 +1438,41 @@ fn card_over_a_working_conversation_ends_on_what_is_being_said_now() {
         "the stream stands where the pane stood:\n{streamed}"
     );
 }
+
+/// What one row of the card says, its spine and the column it stands in aside.
+fn card_says(line: &str) -> &str {
+    line.trim_start().trim_start_matches(['│', '╰']).trim()
+}
+
+#[test]
+fn card_on_a_command_that_has_ended_is_what_it_printed() {
+    // A command has no vendor, no conversation and no answer on its record,
+    // and its pane goes when it does. What it printed is in the file its boot
+    // piped the pane into, and that file is the card.
+    let amx = Harness::new();
+    let id = "print-two-b2c";
+    let ran = amx.amx(&["new", "--name", id, "--exec", r#"printf "one\ntwo\n""#]);
+    assert!(
+        ran.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    amx.until_state(id, "done");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || screen(&amx, &view).contains(id).then_some(()));
+    press(&amx, &view, "Space");
+    // Both lines, on the card's own rows: the row above it is the command
+    // itself, and the command has both words in it.
+    let carded = amx.until("the card to hold what the command printed", || {
+        let drawn = screen(&amx, &view);
+        let said: Vec<&str> = card_lines(&drawn).into_iter().map(card_says).collect();
+        (said.contains(&"one") && said.contains(&"two")).then_some(drawn)
+    });
+    let card = card_lines(&carded);
+    assert!(
+        card.iter().position(|line| card_says(line) == "one")
+            < card.iter().position(|line| card_says(line) == "two"),
+        "in the order it printed them:\n{carded}"
+    );
+}
