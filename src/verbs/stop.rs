@@ -77,7 +77,11 @@ pub fn run(
 ///
 /// The pid comes from tmux, live, and is never read off disk: pids are reused,
 /// and a stale one names whatever the machine has started since.
-fn end(server: &Server, pane: &PaneId) -> Result<()> {
+///
+/// Shared with `_park`, which takes an idle agent's pane and leaves the record
+/// standing: how a vendor is ended is the same question there, and a second
+/// answer to it would be a second thing to get the grace period wrong in.
+pub(crate) fn end(server: &Server, pane: &PaneId) -> Result<()> {
     use nix::sys::signal::{Signal, killpg};
     use nix::unistd::Pid;
 

@@ -109,6 +109,7 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         }
         Some(cli::Command::Statusline) => finish(verbs::statusline::from_env()),
         Some(cli::Command::Boot { id }) => finish(spawn::boot_from_env(id)),
+        Some(cli::Command::Park { id }) => finish(verbs::park::from_env(id)),
         Some(cli::Command::Stop(args)) => finish(verbs::stop::from_env(args)),
         Some(cli::Command::Doctor { fix }) => finish(verbs::doctor::from_env(config, *fix)),
         Some(cli::Command::Uninstall) => finish(verbs::uninstall::from_env()),
@@ -310,7 +311,7 @@ mod tests {
     /// Every source that has anything to say on stderr. A verb printing there
     /// with `eprintln!` is one saying it in whatever colour was already in
     /// force, which is the split this pair of macros exists to keep.
-    const VERBS: [(&str, &str); 17] = [
+    const VERBS: [(&str, &str); 18] = [
         ("adopt", include_str!("verbs/adopt.rs")),
         ("answer", include_str!("verbs/answer.rs")),
         ("attach", include_str!("verbs/attach.rs")),
@@ -321,6 +322,7 @@ mod tests {
         ("logs", include_str!("verbs/logs.rs")),
         ("ls", include_str!("verbs/ls.rs")),
         ("new", include_str!("verbs/new.rs")),
+        ("park", include_str!("verbs/park.rs")),
         ("result", include_str!("verbs/result.rs")),
         ("resume", include_str!("verbs/resume.rs")),
         ("send", include_str!("verbs/send.rs")),

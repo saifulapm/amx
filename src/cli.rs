@@ -1,9 +1,9 @@
 //! The command line: every verb amx answers to.
 //!
 //! Bare `amx` has no subcommand — that is the front door (the cockpit), not a
-//! usage error. The three underscore verbs are amx talking to itself from
-//! inside a pane or a vendor hook; they are hidden from help but are as much
-//! of the contract as the rest.
+//! usage error. The four underscore verbs are amx talking to itself from
+//! inside a pane, a vendor hook, or a timer a tmux server is holding; they are
+//! hidden from help but are as much of the contract as the rest.
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
@@ -53,6 +53,7 @@ impl Cli {
             Hook => "_hook",
             Exit { .. } => "_exit",
             Boot { .. } => "_boot",
+            Park { .. } => "_park",
         })
     }
 }
@@ -242,6 +243,10 @@ pub enum Command {
     /// Start the agent's command inside its pane.
     #[command(name = "_boot", hide = true)]
     Boot { id: String },
+
+    /// Let an idle agent's pane go, keeping everything else about it.
+    #[command(name = "_park", hide = true)]
+    Park { id: String },
 }
 
 #[derive(Debug, Args)]
@@ -530,6 +535,7 @@ mod tests {
             (&["amx", "_hook"], "_hook"),
             (&["amx", "_exit", "fix-a1b", "0"], "_exit"),
             (&["amx", "_boot", "fix-a1b"], "_boot"),
+            (&["amx", "_park", "fix-a1b"], "_park"),
         ];
         for (argv, verb) in lines {
             let cli = parse(argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));

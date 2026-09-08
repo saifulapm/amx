@@ -28,7 +28,10 @@
 mod act;
 mod grid;
 mod paint;
-mod rows;
+// The list is the view's own, and one thing in it is not: what somebody
+// pinned outlives the view they pinned it in, and the verb that takes an idle
+// agent's pane has to obey it. See [`rows::Arrangement::from_disk`].
+pub(crate) mod rows;
 
 use anyhow::{Context, Result};
 use crossterm::cursor::Show;
