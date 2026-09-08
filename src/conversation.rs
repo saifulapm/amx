@@ -150,7 +150,6 @@ pub fn answer(format: Transcript, jsonl: &str) -> Option<String> {
 ///
 /// A prompt answers nothing. It is what the person typed, and whoever is
 /// reading the row typed it.
-#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 pub fn latest(format: Transcript, jsonl: &str) -> Option<String> {
     match read(format, jsonl).pop()? {
         Said::Prompt(_) => None,
