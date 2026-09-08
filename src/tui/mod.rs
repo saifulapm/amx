@@ -477,6 +477,13 @@ struct Screen {
     /// it, unlike the arm a `ctrl+x` leaves: that one is timed because the
     /// press inside it destroys something, and this one only moves a cursor.
     going: bool,
+    /// The agent the terminal was last lent to, where it has been lent to one.
+    ///
+    /// Kept for the frame rather than written down, like the arm and the
+    /// pulse: it is about the person at this screen and what they were just
+    /// looking at, and a mark that outlived the view would be telling them
+    /// about a session they left yesterday.
+    lent: Option<String>,
     /// The projects the agents on the wall run in, once each and in order.
     /// Kept with the reading rather than worked out where a line is typed: a
     /// `d:` is offered them on every keystroke, and the wall behind the line is
@@ -805,6 +812,13 @@ where
             Doing::Close => return Ok(exit::OK),
             Doing::Lend { id, on, session } => {
                 screen.notice = lend(terminal, &id, &on, &session)?;
+                // Where the terminal has just come back from, for the wall to
+                // mark the row with. Only where it went: a lend tmux refused
+                // is a row nobody has been to, and the last one somebody did
+                // come back from is still the answer to where they were.
+                if screen.notice.is_none() {
+                    screen.lent = Some(id);
+                }
                 // Whoever had the terminal had the title with it, so the
                 // view says what it is called again rather than trusting a
                 // name it did not put there.

@@ -13,21 +13,26 @@ use crate::theme::Theme;
 
 /// What a row's name is painted in, and at what weight: the colour of a thing
 /// waiting on a person where that is what the row is, the colour of a failure
-/// where the work ended in one, the terminal's own everywhere else — and the
-/// weight where nobody has been to read what the row is holding.
+/// where the work ended in one, the accent on the row the terminal was lent
+/// to, the terminal's own everywhere else — and the weight where nobody has
+/// been to read what the row is holding.
 ///
 /// Two states out of eight take a colour, because a column of names in eight
 /// colours is a column nobody reads. Those two are the ones a person scanning
 /// the wall is looking for, and the rest have said all they have to say on the
-/// glyph.
+/// glyph. So the accent goes on top of the states that said nothing and never
+/// over the two that did: what an agent wants is worth more than where the
+/// terminal has been, and a name cannot say both.
 ///
 /// The weight is about the reader rather than the agent, which is why it is
 /// the one weight the wall spends: what state a row is in is on the row
-/// already, and whether somebody has caught up with it is nowhere else.
-pub(super) fn name_colour(theme: Theme, phase: Phase, unread: bool) -> Style {
+/// already, and whether somebody has caught up with it is nowhere else. The
+/// accent is about the reader too, so a row can wear both.
+pub(super) fn name_colour(theme: Theme, phase: Phase, unread: bool, lent: bool) -> Style {
     let paint = match phase {
         Phase::Waiting => Style::new().fg(theme.waiting),
         Phase::Failed => Style::new().fg(theme.failed),
+        _ if lent => Style::new().fg(theme.accent),
         _ => Style::new(),
     };
     match unread {
@@ -127,12 +132,12 @@ mod tests {
         // is the reader's, and it says the same thing on every one of them.
         for phase in [Phase::Waiting, Phase::Failed] {
             assert!(
-                name_colour(theme(), phase, false).fg.is_some(),
+                name_colour(theme(), phase, false, false).fg.is_some(),
                 "{phase} is a name worth finding down a column of them"
             );
         }
         assert_eq!(
-            name_colour(theme(), Phase::Waiting, false).fg,
+            name_colour(theme(), Phase::Waiting, false, false).fg,
             Some(theme().waiting),
             "a question somebody has read is still a question"
         );
@@ -145,23 +150,54 @@ mod tests {
             Phase::Unknown,
         ] {
             assert_eq!(
-                name_colour(theme(), phase, false).fg,
+                name_colour(theme(), phase, false, false).fg,
                 None,
                 "{phase} has said what it has to say on the glyph"
             );
         }
         for phase in [Phase::Waiting, Phase::Done, Phase::Failed] {
             assert!(
-                name_colour(theme(), phase, true)
+                name_colour(theme(), phase, true, false)
                     .add_modifier
                     .contains(Modifier::BOLD),
                 "{phase}, unread, carries the weight"
             );
             assert!(
-                !name_colour(theme(), phase, false)
+                !name_colour(theme(), phase, false, false)
                     .add_modifier
                     .contains(Modifier::BOLD),
                 "{phase}, read, does not"
+            );
+        }
+    }
+
+    #[test]
+    fn rows_the_accent_marks_a_name_the_state_left_alone() {
+        // Where the terminal has been is the third thing a name can say, and
+        // the quietest of the three: it goes on the states that had nothing
+        // to say for themselves.
+        for phase in [
+            Phase::Starting,
+            Phase::Working,
+            Phase::Idle,
+            Phase::Done,
+            Phase::Stopped,
+            Phase::Unknown,
+        ] {
+            assert_eq!(
+                name_colour(theme(), phase, false, true).fg,
+                Some(theme().accent),
+                "{phase} is the row the terminal came back from"
+            );
+        }
+        for (phase, colour) in [
+            (Phase::Waiting, theme().waiting),
+            (Phase::Failed, theme().failed),
+        ] {
+            assert_eq!(
+                name_colour(theme(), phase, false, true).fg,
+                Some(colour),
+                "{phase} says what it is before it says where somebody has been"
             );
         }
     }

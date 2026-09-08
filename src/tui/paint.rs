@@ -229,6 +229,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
                 armed: screen.armed(),
                 swept: screen.swept(),
                 hover: screen.hover,
+                lent: screen.lent.as_deref(),
             },
             card_over,
             theme,

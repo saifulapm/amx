@@ -11,6 +11,11 @@
 //! about the agent at all — nobody has been to read what this row is holding.
 //! So a person coming back to a screenful of endings sees which of them they
 //! have already been through.
+//!
+//! One colour is not about the agent either: the row the terminal was lent to
+//! wears the accent on its name. Detaching from a pane lands on a wall of rows
+//! that all look alike, and the one somebody was just inside is the one they
+//! are about to look for.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -71,6 +76,9 @@ pub(super) fn agents(
                 At {
                     selected: at == list.cursor(),
                     hovered: moment.hover == Some(at),
+                    lent: moment
+                        .lent
+                        .is_some_and(|id| list.agent(*item).is_some_and(|view| view.id() == id)),
                 },
                 widths,
                 requests,
@@ -131,13 +139,17 @@ pub(super) struct Moment<'a> {
     pub(super) swept: bool,
     /// The line the pointer is resting on, if it is resting on an agent's.
     pub(super) hover: Option<usize>,
+    /// The agent the terminal was last lent to, where it has been lent to one.
+    pub(super) lent: Option<&'a str>,
 }
 
-/// How the cursor and the pointer stand to one line: on it, or over it.
+/// How the cursor and the pointer stand to one line: on it, over it, or come
+/// back from it.
 #[derive(Clone, Copy, Default)]
 struct At {
     selected: bool,
     hovered: bool,
+    lent: bool,
 }
 
 /// One line of the list, whatever kind of line it is.
@@ -318,6 +330,10 @@ fn path_heading(
 /// there — see [`state_colour`]. What the cursor is on is said by the bar
 /// under it, not by the row changing its tones.
 ///
+/// The row the terminal was lent to takes the accent on its name, which is the
+/// weight's rule in colour: about the person at the screen rather than the
+/// agent, and given up wherever the state has already coloured the name.
+///
 /// A row a press has armed says that instead of what the agent said, in the
 /// colour of a thing waiting on a person. The summary is the one part of a row
 /// amx is free to speak over: the state, the name and the age are what the row
@@ -368,7 +384,7 @@ fn row(
             // The pointer resting on a row borrows the weight an unread row
             // wears, without the bar or the cursor, which is the whole of what
             // a hover is.
-            name_colour(theme, phase, rows::unread(view) || at.hovered),
+            name_colour(theme, phase, rows::unread(view) || at.hovered, at.lent),
         ),
     ];
     if widths.state > 0 {
@@ -1498,6 +1514,75 @@ mod tests {
             behind(&screen, size, 4),
             vec![Color::Reset; 60],
             "and a hover is not the bar"
+        );
+    }
+
+    #[test]
+    fn rows_the_one_the_terminal_came_back_from_wears_the_accent() {
+        // Somebody attaches to an agent, reads what it is doing, and detaches
+        // onto a wall of rows that all look alike. The one they were just in
+        // is the row they are about to look for, so the wall says which it
+        // was rather than leaving them to remember.
+        let size = (60, 12);
+        let mut screen = showing(
+            vec![
+                read(view("ask-a1b", Phase::Waiting, Some("Proceed?"), 30)),
+                read(view("busy-b2c", Phase::Working, Some("Running Bash"), 3)),
+                view("fix-login-c3d", Phase::Done, Some("wrote the parser"), 60),
+            ],
+            None,
+        );
+        // Which line each of them is drawn on, taken once: the mark is a
+        // colour on a name and moves no row.
+        let lines = painted(&screen, size);
+        let at = |name: &str| {
+            lines
+                .iter()
+                .position(|line| line.contains(name))
+                .unwrap_or_else(|| panic!("{name} is not on {lines:?}")) as u16
+        };
+        let (asking, busy, done) = (at("ask-a1b"), at("busy-b2c"), at("fix-login-c3d"));
+
+        // A view nobody has lent the terminal out of yet marks nothing: the
+        // accent says where somebody has been, and they have been nowhere.
+        assert_eq!(
+            word_colour(&screen, size, busy, "busy-b2c"),
+            Color::Reset,
+            "nothing is marked before the first lend"
+        );
+
+        screen.lent = Some("busy-b2c".to_string());
+        assert_eq!(
+            word_colour(&screen, size, busy, "busy-b2c"),
+            theme().accent,
+            "the row the terminal came back from"
+        );
+        assert_eq!(
+            word_colour(&screen, size, done, "fix-login-c3d"),
+            Color::Reset,
+            "and every other name is the terminal's own"
+        );
+
+        // A name that already has a colour keeps it. What an agent wants is
+        // worth more than where the terminal has been, and a wall that said
+        // both on one name would be saying neither.
+        screen.lent = Some("ask-a1b".to_string());
+        assert_eq!(
+            word_colour(&screen, size, asking, "ask-a1b"),
+            theme().waiting,
+            "a row that is asking is still asking"
+        );
+
+        // The weight is about the reader and the accent is about the
+        // terminal, so one row can wear both.
+        screen.lent = Some("fix-login-c3d".to_string());
+        assert_eq!(
+            word_colour(&screen, size, done, "fix-login-c3d"),
+            theme().accent
+        );
+        assert!(
+            word_modifier(&screen, size, done, "fix-login-c3d").contains(Modifier::BOLD),
+            "an ending nobody has been to read carries the weight as well"
         );
     }
 
