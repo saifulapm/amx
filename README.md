@@ -851,6 +851,11 @@ worktree with uncommitted work in it is always kept, whatever you answer.
 `--delete` says the record goes; `--force` says every question takes its
 default. They are separate on purpose.
 
+`resume` is also what brings back an agent amx parked. One that sat idle past
+`park_after` lost its pane and nothing else, so there is a conversation to pick
+up and no ending to undo: `amx resume <id>` puts it in a pane again on the
+session it was parked on.
+
 ## Worktrees
 
 In a git repository, `new` gives each agent a worktree of its own at
@@ -929,7 +934,10 @@ date. A reader works it out at the moment you ask, in this order:
 
 1. The record ended it. An exit code was written, or a stop was. Nothing
    overrules that.
-2. The pane is gone. No pane, no agent.
+2. The pane is gone. No pane, no agent — unless amx is the one that took it.
+   A pane let go after `park_after` is stamped on the record, so the agent
+   keeps the state it was idle in and the evidence is `parked`: the next
+   `enter`, `attach` or `resume` gives it a pane again.
 3. The hooks are fresh. Within 8 seconds, the agent's own events are the best
    account there is.
 4. The screen is all there is. Older than that, the pane is captured and
