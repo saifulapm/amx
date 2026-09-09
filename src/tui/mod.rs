@@ -48,7 +48,7 @@ use ratatui::backend::Backend;
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::Config;
 use crate::derive::{self, View};
@@ -428,6 +428,67 @@ struct Arm {
     at: Instant,
 }
 
+/// Where a card came from, and what would say it is out of date.
+///
+/// Taking a card is the most expensive thing the view does: an agent's whole
+/// transcript read off disk and drawn into rows, or a `capture-pane` fork.
+/// Most passes it comes to the same card, because nothing has written to the
+/// files behind it since the last one — so what a card is read from is kept
+/// with it, and two stats decide whether the reading is worth taking again.
+enum Freshness {
+    /// The files the card was read from, each with the length and the moment
+    /// it was last written that it had when it was read. `None` for a file
+    /// that was not there: a vendor announces its transcript before it writes
+    /// one, and a file that appears is a file that moved.
+    Files(Vec<(PathBuf, Option<(u64, SystemTime)>)>),
+    /// A capture of a pane, or a question. Nothing on disk says whether a
+    /// vendor has redrawn its pane, and a question is what the view exists to
+    /// keep true, so both are taken again every time they are asked for.
+    Pane,
+}
+
+impl Freshness {
+    /// Whether anything the card was read from has been written since.
+    fn moved(&self) -> bool {
+        match self {
+            Freshness::Pane => true,
+            Freshness::Files(files) => files.iter().any(|(path, at)| stamped(path) != *at),
+        }
+    }
+}
+
+/// What a file was when a card read it: how long it is and when it was last
+/// written. `None` where there is no file to ask about.
+fn stamped(path: &Path) -> Option<(u64, SystemTime)> {
+    let file = std::fs::metadata(path).ok()?;
+    Some((file.len(), file.modified().ok()?))
+}
+
+/// A file about to be read, with what it stands at now.
+///
+/// Asked before the read rather than after it, because a file written in
+/// between belongs to the reading that comes next: a card that recorded the
+/// newer pair would stand on words the file no longer holds.
+fn as_read(path: PathBuf) -> (PathBuf, Option<(u64, SystemTime)>) {
+    let at = stamped(&path);
+    (path, at)
+}
+
+/// What the card on the screen was taken of, which is what says whether taking
+/// it again would come to the same card.
+///
+/// The agent it is about and what the record said it was doing, because a card
+/// is a picture of one reading of one agent; the width it was wrapped for,
+/// because a terminal somebody resized wraps the same words differently; and
+/// where its body was read from.
+struct Taken {
+    id: String,
+    phase: Phase,
+    question: Option<String>,
+    width: u16,
+    fresh: Freshness,
+}
+
 /// The view as it stands: what was read, where the cursor is, what the keys
 /// are doing, and what the view last had to say for itself.
 #[derive(Default)]
@@ -447,6 +508,10 @@ struct Screen {
     mode: Mode,
     look: Look,
     card: Option<Card<Body>>,
+    /// What that card was taken of, where the view took it. Kept beside the
+    /// card rather than on it, so that a card built anywhere else — a patch is
+    /// — is one the next pass takes again.
+    taken: Option<Taken>,
     /// How far the card's body has been paged from its natural edge, and how
     /// far one page is. The paint owns the clamp: only it knows the rows the
     /// body was given.
@@ -766,7 +831,7 @@ where
         // the reading clock came round — a stat every 120ms would be the view
         // asking the filesystem about a file that changes once a fortnight.
         if refreshing && let Some((theme, warnings)) = watching.reread() {
-            screen.theme = theme;
+            screen.repaint(theme);
             screen.say_of_the_theme(&warnings);
         }
         // The last frame said how many rows the screen has; a screen that
@@ -1009,6 +1074,16 @@ impl Screen {
         self.list.show(views);
     }
 
+    /// Paint in what the palette file says now.
+    ///
+    /// The card the view is holding goes with the old colours: its rows were
+    /// drawn in them, and every file it was read from still stands, so nothing
+    /// else would say the card is out of date.
+    fn repaint(&mut self, theme: Theme) {
+        self.theme = theme;
+        self.taken = None;
+    }
+
     /// Say what reading the theme had to say for itself, where the view says
     /// everything else.
     ///
@@ -1117,6 +1192,33 @@ impl Screen {
         }
     }
 
+    /// How wide a card's body is this frame: the band the last frame drew the
+    /// list in, less the name column. Eighty columns before anything has been
+    /// drawn, which is a card wrapped for a terminal nobody has measured yet
+    /// and redrawn to the real one at the next reading.
+    fn body_width(&self) -> u16 {
+        paint::body_width(self.map.width().unwrap_or(80))
+    }
+
+    /// Whether the card on the screen is the card this pass would take anyway:
+    /// the same agent, saying what the record still says it is saying, wrapped
+    /// for the width the frame has, and read from files nothing has written to
+    /// since.
+    ///
+    /// A card is asked for on every pass, and the reading behind one is a
+    /// transcript off disk and a walk of every turn in it. A card nothing
+    /// about would change is one the view already has.
+    fn stands(&self) -> bool {
+        let (Some(taken), Some(view)) = (&self.taken, self.list.selected()) else {
+            return false;
+        };
+        taken.id == view.id()
+            && taken.phase == view.phase()
+            && taken.question == view.state.question
+            && taken.width == self.body_width()
+            && !taken.fresh.moved()
+    }
+
     /// Take the card again, when it is the kind that follows the cursor: what
     /// an agent is doing is what its pane is showing now.
     ///
@@ -1128,17 +1230,17 @@ impl Screen {
     /// asking is never held either, since the record moves under it while the
     /// vendor redraws, and freshness is what keeps the question and its tab
     /// paired.
-    /// How wide a card's body is this frame: the band the last frame drew the
-    /// list in, less the name column. Eighty columns before anything has been
-    /// drawn, which is a card wrapped for a terminal nobody has measured yet
-    /// and redrawn to the real one at the next reading.
-    fn body_width(&self) -> u16 {
-        paint::body_width(self.map.width().unwrap_or(80))
-    }
-
+    ///
+    /// A card that would come back the same is not taken again either — see
+    /// [`Screen::stands`]. That hold is about the cost rather than about
+    /// somebody's eyes, and it is the one hold a question falls under too: a
+    /// question card is read from no file, so nothing about it ever stands.
     fn follow_the_cursor(&mut self) {
         match self.look {
-            Look::Away => self.card = None,
+            Look::Away => {
+                self.card = None;
+                self.taken = None;
+            }
             Look::Screen => {
                 let held = self.scroll.paged()
                     && match (&self.card, self.list.selected()) {
@@ -1147,11 +1249,20 @@ impl Screen {
                         }
                         _ => false,
                     };
-                if !held {
-                    self.card = self
-                        .list
-                        .selected()
-                        .map(|view| card_of(view, &self.root, self.body_width(), self.theme));
+                if !held && !self.stands() {
+                    let width = self.body_width();
+                    let taken = self.list.selected().map(|view| {
+                        let (card, fresh) = card_of(view, &self.root, width, self.theme);
+                        let taken = Taken {
+                            id: card.id.clone(),
+                            phase: card.phase,
+                            question: card.question.clone(),
+                            width,
+                            fresh,
+                        };
+                        (card, taken)
+                    });
+                    (self.card, self.taken) = taken.unzip();
                     // A card read forward opens on its anchor — the last
                     // answer of a conversation — and everything else at its
                     // edge. Where it opened is where it is held from.
@@ -1526,6 +1637,10 @@ impl Screen {
                     match act::changes(root, view) {
                         Ok(card) => {
                             self.card = Some(card.read());
+                            // Not a card the view took of a reading, so there
+                            // is nothing about it that could stand: whatever
+                            // puts the look back on the agent takes its card.
+                            self.taken = None;
                             self.look = Look::Changes;
                             // A patch just taken is read from its top.
                             self.scroll.open_at(0);
@@ -2490,28 +2605,36 @@ fn said(outcome: Result<String>) -> Option<Notice> {
 /// it gave back. So the record's own words are read where they lie rather than
 /// copied first: a card is taken again on every pass a question is up for, and
 /// a copy nothing would draw is work for nobody.
-fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> Card<Body> {
+///
+/// What the card was read from comes back beside it — see [`Freshness`] — so
+/// that the pass which asks for it next can tell whether all of that would
+/// come to the same card.
+fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, Freshness) {
+    let agent = Agent::open(root, view.id()).ok();
     // What the command printed, kept beside the record by its own boot. An
     // empty file is an empty card: the command has printed nothing yet, and a
     // capture of the pane in its place would be a screen of somebody else's
     // program with the fallback vendor's anchors held against it.
-    if let Some(printed) = Agent::open(root, view.id())
-        .ok()
-        .and_then(|agent| agent.output_tail())
-    {
-        return Card {
-            id: view.id().to_string(),
-            phase: view.phase(),
-            question: view.state.question.clone(),
-            options: view.state.options.clone(),
-            kind: view.kind(),
-            body: Body::said(&printed),
-            changes: false,
-            // A command still printing is read up from its live edge; one
-            // that has ended is read forward, because what it printed is all
-            // there and the start of it is where a reader begins.
-            answer: view.phase().is_terminal(),
-        };
+    let printed = agent
+        .as_ref()
+        .map(|agent| as_read(agent.dir().join(crate::store::OUTPUT)));
+    if let Some(said) = agent.as_ref().and_then(Agent::output_tail) {
+        return (
+            Card {
+                id: view.id().to_string(),
+                phase: view.phase(),
+                question: view.state.question.clone(),
+                options: view.state.options.clone(),
+                kind: view.kind(),
+                body: Body::said(&said),
+                changes: false,
+                // A command still printing is read up from its live edge; one
+                // that has ended is read forward, because what it printed is
+                // all there and the start of it is where a reader begins.
+                answer: view.phase().is_terminal(),
+            },
+            Freshness::Files(printed.into_iter().collect()),
+        );
     }
 
     let server = Server::from_socket(view.meta.socket.clone());
@@ -2523,15 +2646,21 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> Card<Body> {
 
     let working = view.phase() == Phase::Working;
 
+    let recorded = view.meta.transcript.clone().map(as_read);
+    // The stream is read for as long as a turn runs, and for no other agent.
+    let streaming = agent
+        .as_ref()
+        .filter(|_| working)
+        .map(|agent| as_read(agent.dir().join(crate::store::LIVE)));
     if !asks && let Some(said) = conversation_of(&view.meta, working) {
         // What it is saying now, under the record: the vendor's own stream
         // where there is one, and the pane where there is not. Only while a
         // turn runs — a finished turn's words are all on the record already.
         let live = working
             .then(|| {
-                Agent::open(root, view.id())
-                    .ok()
-                    .and_then(|agent| agent.live())
+                agent
+                    .as_ref()
+                    .and_then(Agent::live)
                     .map(Live::Text)
                     .or_else(|| {
                         server
@@ -2542,18 +2671,28 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> Card<Body> {
                     })
             })
             .flatten();
-        return Card {
-            id: view.id().to_string(),
-            phase: view.phase(),
-            question: view.state.question.clone(),
-            options: view.state.options.clone(),
-            kind: view.kind(),
-            body: Body::conversation(&said, live, width, theme),
-            changes: false,
-            // A conversation still being added to is read up from its live
-            // edge; one whose turn is over reads forward from its last answer.
-            answer: !working,
-        };
+        // A card whose live tail came off the pane has a capture in it, and no
+        // file says what a pane is showing now.
+        let captured = matches!(live, Some(Live::Screen(..)));
+        return (
+            Card {
+                id: view.id().to_string(),
+                phase: view.phase(),
+                question: view.state.question.clone(),
+                options: view.state.options.clone(),
+                kind: view.kind(),
+                body: Body::conversation(&said, live, width, theme),
+                changes: false,
+                // A conversation still being added to is read up from its live
+                // edge; one whose turn is over reads forward from its last
+                // answer.
+                answer: !working,
+            },
+            match captured {
+                true => Freshness::Pane,
+                false => Freshness::Files(recorded.into_iter().chain(streaming).collect()),
+            },
+        );
     }
 
     // An agent whose turn is over and whose record holds its answer — idle at
@@ -2573,36 +2712,44 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> Card<Body> {
         // paint over none of them.
         .filter(|screen| !crate::ansi::strip_ansi(screen).trim().is_empty());
 
-    Card {
-        id: view.id().to_string(),
-        phase: view.phase(),
-        question: view.state.question.clone(),
-        options: view.state.options.clone(),
-        kind: view.kind(),
-        // No falling back to the answer a finished turn left, either: a card
-        // that is asking shows nothing older than the question.
-        body: match (asks, answered) {
-            (true, _) => Body::none(),
-            (_, true) => Body::said(view.state.result.as_deref().unwrap_or_default()),
-            _ => {
-                let said = screen
-                    .as_deref()
-                    .or(view.state.result.as_deref())
-                    .unwrap_or_default();
-                // An agent whose command has ended has no pane left to hold
-                // the vendor's furniture, so nothing is cut off what it left.
-                // A live pane is cut with the anchors of the vendor the record
-                // says was started in it: every one of them is that vendor's
-                // own, and claude's find nothing on a pi screen.
-                match view.phase().is_terminal() {
-                    true => Body::said(said),
-                    false => Body::screen(own_chrome(&view.meta), said),
+    (
+        Card {
+            id: view.id().to_string(),
+            phase: view.phase(),
+            question: view.state.question.clone(),
+            options: view.state.options.clone(),
+            kind: view.kind(),
+            // No falling back to the answer a finished turn left, either: a
+            // card that is asking shows nothing older than the question.
+            body: match (asks, answered) {
+                (true, _) => Body::none(),
+                (_, true) => Body::said(view.state.result.as_deref().unwrap_or_default()),
+                _ => {
+                    let said = screen
+                        .as_deref()
+                        .or(view.state.result.as_deref())
+                        .unwrap_or_default();
+                    // An agent whose command has ended has no pane left to
+                    // hold the vendor's furniture, so nothing is cut off what
+                    // it left. A live pane is cut with the anchors of the
+                    // vendor the record says was started in it: every one of
+                    // them is that vendor's own, and claude's find nothing on
+                    // a pi screen.
+                    match view.phase().is_terminal() {
+                        true => Body::said(said),
+                        false => Body::screen(own_chrome(&view.meta), said),
+                    }
                 }
-            }
+            },
+            changes: false,
+            answer: answered,
         },
-        changes: false,
-        answer: answered,
-    }
+        // Every card that reaches here is a question, a capture, or the words
+        // the record itself holds — and the record is read again on the wall's
+        // own cadence, which is the cadence these were taken at before there
+        // was anything to keep.
+        Freshness::Pane,
+    )
 }
 
 /// The conversation on the record's transcript, where the record names one
@@ -3609,7 +3756,7 @@ mod tests {
                     ..State::default()
                 },
             );
-            let card = card_of(&agent, Path::new(""), 76, Theme::default());
+            let (card, _) = card_of(&agent, Path::new(""), 76, Theme::default());
             assert_eq!(card.body.says(), long, "the whole answer, {phase:?}");
             assert!(card.answer, "an answer reads forward, {phase:?}");
         }
@@ -3627,7 +3774,7 @@ mod tests {
                 ..State::default()
             },
         );
-        assert!(!card_of(&busy, Path::new(""), 76, Theme::default()).answer);
+        assert!(!card_of(&busy, Path::new(""), 76, Theme::default()).0.answer);
 
         // And an idle agent with nothing recorded falls back to it too:
         // there is no pane here to capture, so its card is simply empty.
@@ -3641,7 +3788,7 @@ mod tests {
                 ..State::default()
             },
         );
-        let card = card_of(&quiet, Path::new(""), 76, Theme::default());
+        let (card, _) = card_of(&quiet, Path::new(""), 76, Theme::default());
         assert!(!card.answer);
         assert_eq!(card.body.says(), "");
     }
@@ -3666,7 +3813,7 @@ mod tests {
         for path in [held.path().join("unwritten.jsonl"), empty] {
             let mut view = reading("port-a1b", Phase::Working, State::default());
             view.meta.transcript = Some(path.clone());
-            let card = card_of(&view, root.path(), 76, Theme::default());
+            let (card, _) = card_of(&view, root.path(), 76, Theme::default());
             let says = card.body.says();
             assert!(
                 says.starts_with("❯ port the importer"),
@@ -3694,6 +3841,7 @@ mod tests {
         let adopted = reading("port-a1b", Phase::Working, State::default());
         assert_eq!(
             card_of(&adopted, root.path(), 76, Theme::default())
+                .0
                 .body
                 .says(),
             "",
@@ -3702,13 +3850,13 @@ mod tests {
 
         let mut asking = stopped_on_a_question("ask-b2c");
         asking.meta.transcript = Some(unwritten.clone());
-        let card = card_of(&asking, root.path(), 76, Theme::default());
+        let (card, _) = card_of(&asking, root.path(), 76, Theme::default());
         assert_eq!(card.body.says(), "", "a card that is asking shows nothing");
         assert!(card.question.is_some());
 
         let mut done = finished_saying("done-c3d", "the answer");
         done.meta.transcript = Some(unwritten);
-        let card = card_of(&done, root.path(), 76, Theme::default());
+        let (card, _) = card_of(&done, root.path(), 76, Theme::default());
         assert_eq!(card.body.says(), "the answer", "the answer it left");
         assert!(card.answer);
     }
@@ -3735,7 +3883,7 @@ mod tests {
 
         // While it runs, read up from the end, where what is landing is.
         let running = reading("build-a1b", Phase::Working, State::default());
-        let card = card_of(&running, root.path(), 76, Theme::default());
+        let (card, _) = card_of(&running, root.path(), 76, Theme::default());
         assert_eq!(card.body.says(), output);
         assert!(!card.answer, "a running command's card follows its output");
 
@@ -3752,7 +3900,7 @@ mod tests {
                     ..State::default()
                 },
             );
-            let card = card_of(&ended, root.path(), 76, Theme::default());
+            let (card, _) = card_of(&ended, root.path(), 76, Theme::default());
             assert_eq!(card.body.says(), output, "{phase:?}");
             assert!(card.answer, "read forward, {phase:?}");
             assert_eq!(card.body.anchor(), 0, "from the top, {phase:?}");
@@ -3772,7 +3920,7 @@ mod tests {
         printed(root.path(), "build-a1b", &log);
 
         let running = reading("build-a1b", Phase::Working, State::default());
-        let card = card_of(&running, root.path(), 76, Theme::default());
+        let (card, _) = card_of(&running, root.path(), 76, Theme::default());
         let says = card.body.says();
         assert!(
             says.len() <= crate::store::OUTPUT_TAIL as usize && log.ends_with(&says),
@@ -3800,7 +3948,7 @@ mod tests {
         printed(root.path(), "quiet-a1b", "");
 
         let quiet = reading("quiet-a1b", Phase::Working, State::default());
-        let card = card_of(&quiet, root.path(), 76, Theme::default());
+        let (card, _) = card_of(&quiet, root.path(), 76, Theme::default());
         assert_eq!(card.body.says(), "");
     }
 
@@ -4624,6 +4772,128 @@ mod tests {
             walked + 1,
             "and the reading itself takes it again"
         );
+    }
+
+    /// A claude transcript holding one answer, as its vendor writes one.
+    fn transcript(said: &str) -> String {
+        let turn = serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": said}]},
+        });
+        format!("{turn}\n")
+    }
+
+    /// The view with its card open on an agent whose conversation is the
+    /// transcript at `path`, which is a card read from a file rather than
+    /// from a pane.
+    fn watching_a_transcript(path: &Path) -> Screen {
+        let mut view = reading(
+            "port-a1b",
+            Phase::Idle,
+            State {
+                state: Phase::Idle,
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        );
+        view.meta.transcript = Some(path.to_path_buf());
+        let mut screen = watching(vec![view]);
+        screen.look = Look::Screen;
+        screen.follow_the_cursor();
+        screen
+    }
+
+    #[test]
+    fn card_stands_until_a_file_it_was_read_from_moves() {
+        // Taking a card reads the agent's whole transcript and draws every
+        // turn of it into rows, and between readings the file has usually not
+        // been written to at all. What it was read at says so, and the card
+        // already on the screen is the card the reading would have taken.
+        let held = TempDir::new().unwrap();
+        let path = held.path().join("session.jsonl");
+        std::fs::write(&path, transcript("the first answer")).unwrap();
+        let mut screen = watching_a_transcript(&path);
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.body.says()),
+            Some("the first answer".to_string())
+        );
+
+        // Nothing has written to the file, so the card is left where it is.
+        screen.card.as_mut().expect("a card").body = Body::said("what she was reading");
+        screen.follow_the_cursor();
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.body.says()),
+            Some("what she was reading".to_string()),
+            "the transcript stood, so the card was not read again"
+        );
+
+        // The agent answers again, and the file the card was read from is not
+        // the file it is now.
+        let both = transcript("the first answer") + &transcript("the second answer");
+        std::fs::write(&path, both).unwrap();
+        screen.follow_the_cursor();
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.body.says()),
+            Some("the first answer\n\nthe second answer".to_string()),
+            "the card follows the file it was read from"
+        );
+    }
+
+    #[test]
+    fn card_is_taken_again_in_the_palette_a_theme_reread_brought() {
+        // Somebody edits the palette with the view open beside them. The
+        // card's rows were drawn in the colours the file used to say and no
+        // file behind it has moved, so the reread is what says it is stale.
+        let held = TempDir::new().unwrap();
+        let path = held.path().join("session.jsonl");
+        std::fs::write(&path, transcript("the first answer")).unwrap();
+        let mut screen = watching_a_transcript(&path);
+
+        screen.card.as_mut().expect("a card").body = Body::said("in the old colours");
+        screen.repaint(Theme {
+            accent: Color::Rgb(255, 0, 255),
+            ..Theme::default()
+        });
+        screen.follow_the_cursor();
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.body.says()),
+            Some("the first answer".to_string())
+        );
+    }
+
+    #[test]
+    fn card_freshness_is_the_pair_each_file_was_read_at() {
+        let held = TempDir::new().unwrap();
+        let path = held.path().join("session.jsonl");
+        std::fs::write(&path, transcript("the first answer")).unwrap();
+
+        let at = stamped(&path);
+        let fresh = Freshness::Files(vec![(path.clone(), at)]);
+        assert!(!fresh.moved(), "nothing has written to it");
+
+        // A turn lands on the transcript, and the file is longer than the
+        // length the card read it at.
+        let both = transcript("the first answer") + &transcript("the second answer");
+        std::fs::write(&path, both).unwrap();
+        assert!(fresh.moved(), "a turn was appended");
+
+        // The same bytes back, at the moment they were written. The pair is
+        // the whole of what a card holds against a file — nothing reads one to
+        // find out — so a file standing on both is a file it can go on showing.
+        std::fs::write(&path, transcript("the first answer")).unwrap();
+        let (_, written) = at.expect("the file was there to be read");
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(written))
+            .unwrap();
+        assert!(!fresh.moved(), "the same bytes at the same moment");
+
+        // A pane is not a file: nothing on disk says whether a vendor has
+        // redrawn one, so a card holding a capture is always out of date.
+        assert!(Freshness::Pane.moved());
     }
 
     #[test]
@@ -5699,7 +5969,7 @@ mod tests {
                 screen.card = screen
                     .list
                     .selected()
-                    .map(|view| card_of(view, Path::new(""), 76, Theme::default()));
+                    .map(|view| card_of(view, Path::new(""), 76, Theme::default()).0);
             }),
         ];
 
