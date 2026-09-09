@@ -67,6 +67,9 @@ Without the hooks amx falls back to reading panes, which is enough to say what
 an agent is doing but not enough to hand you what it said. Answers come from
 the events. `amx doctor` says when they are missing.
 
+`amx completion` writes a shell's completion script to stdout, for bash,
+elvish, fish, powershell or zsh, off the verbs this build has.
+
 ## Starting an agent
 
 ```sh
