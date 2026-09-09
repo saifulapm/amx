@@ -6,7 +6,10 @@
 //! 1. **The record ended it.** An exit code was written, or `stop` was. That
 //!    is not a guess and nothing overrules it.
 //! 2. **The pane is gone.** No pane, no agent: it is stopped, whatever the
-//!    last hook said.
+//!    last hook said. A pane that answers for another agent is gone the same
+//!    way — pane numbers are handed out again, so a record that outlived its
+//!    server names a number some later agent is standing at, and only the
+//!    pane can say whose it is. See [`crate::tmux::Server::pane_answers_for`].
 //! 3. **It is nobody's agent.** A record that names no vendor is a command
 //!    somebody ran — see [`runs_a_command`] — and every question below this
 //!    one is about a vendor: its events, its screens, its words. A command has
@@ -688,8 +691,9 @@ fn wants_the_question(screens: &Ruleset, state: &State) -> bool {
 /// that: the screens it does need are worth taking in one call rather than
 /// one at a time (see [`Server::captures`]), and a call made before any of the
 /// records has been read is a call that cannot know which panes to name. So
-/// the same three questions [`read`] asks — is this over, is the pane there,
-/// are the hooks fresh enough — are asked here, off the record alone.
+/// the same three questions [`read`] asks — is this over, is the pane still
+/// this agent's, are the hooks fresh enough — are asked here, off the record
+/// alone.
 ///
 /// The two have to agree, and a test says so rather than a comment: a reading
 /// wanting a screen nobody asked for concludes `unknown` off a capture that
@@ -860,8 +864,8 @@ pub fn in_words(seconds: u64) -> String {
 
 /// Work out what an agent is doing.
 ///
-/// `alive` is whether its pane is still there, and `capture` is asked for the
-/// screen only when it is going to be read: a fresh record needs no tmux call
+/// `alive` is whether the pane the record names still answers for this agent,
+/// and `capture` is asked for the screen only when it is going to be read: a fresh record needs no tmux call
 /// at all unless it is a record of an agent waiting on a question it cannot
 /// name, which is what keeps `ls` cheap with a wall full of agents.
 ///
@@ -2060,7 +2064,7 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
     let server = Server::from_socket(meta.socket.clone());
     let rules = own_screens(&meta);
 
-    let alive = state.state.is_terminal() || server.pane_alive(&meta.pane);
+    let alive = state.state.is_terminal() || server.pane_answers_for(&meta.pane, &meta.id);
     // Taken here rather than left to the closure below, so there is a screen
     // in hand to weigh against the one the record says was there before `read`
     // is asked to trust that anything has held still.
@@ -2108,8 +2112,8 @@ pub fn records(root: &Path) -> Result<Vec<Record>> {
     Ok(records)
 }
 
-/// One agent's record, and whether its pane is still there: everything a
-/// reading of a wall has in hand before it asks for a screen.
+/// One agent's record, and whether the pane it names still answers for it:
+/// everything a reading of a wall has in hand before it asks for a screen.
 struct Pending {
     record: Record,
     alive: bool,
@@ -2124,33 +2128,33 @@ pub fn views(root: &Path, now: u64) -> Result<Vec<View>> {
 ///
 /// Two passes over the records with one round of tmux between them, because
 /// what tmux is asked is worked out from the records and the answer comes back
-/// for all of them at once: one pane list per server, and one call for every
-/// screen the reading needs. A wall of ten agents is two tmux calls, not
-/// twenty.
+/// for all of them at once: one listing of who each pane answers for per
+/// server, and one call for every screen the reading needs. A wall of ten
+/// agents is two tmux calls, not twenty.
 ///
 /// A wall is a wall of whatever somebody started, so each record brings its own
 /// document — see [`own_screens`]. Two vendors side by side are read against
 /// their own screens rather than both against the first one's.
 pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
     let mut pending: Vec<Pending> = Vec::new();
-    let mut panes: Vec<(crate::tmux::Socket, Vec<crate::tmux::PaneId>)> = Vec::new();
+    let mut owners: Vec<(crate::tmux::Socket, crate::tmux::PaneOwners)> = Vec::new();
 
     for record in records {
         let meta = &record.meta;
         let alive = if record.state.state.is_terminal() {
             true
         } else {
-            let listed = match panes.iter().find(|(socket, _)| socket == &meta.socket) {
+            let listed = match owners.iter().find(|(socket, _)| socket == &meta.socket) {
                 Some((_, listed)) => listed,
                 None => {
                     let listed = Server::from_socket(meta.socket.clone())
-                        .panes()
+                        .pane_owners()
                         .unwrap_or_default();
-                    panes.push((meta.socket.clone(), listed));
-                    &panes.last().expect("just pushed").1
+                    owners.push((meta.socket.clone(), listed));
+                    &owners.last().expect("just pushed").1
                 }
             };
-            listed.contains(&meta.pane)
+            listed.pane_answers_for(&meta.pane, &meta.id)
         };
 
         pending.push(Pending { record, alive });
@@ -3150,7 +3154,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         let server = Own(
             Server::named(format!("amx-derive-live-{}", std::process::id())).with_conf("/dev/null"),
         );
-        let pane = a_pane_showing(&server.0, A_SHELL);
+        let pane = a_pane_showing(&server.0, &meta().id, A_SHELL);
         let meta = Meta {
             socket: server.0.socket().clone(),
             pane,
@@ -3339,19 +3343,25 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     /// A pane with a screen on it and nothing running but a sleep, on a
     /// server nothing else is using.
     ///
+    /// In a session named for the agent whose pane it is, the way
+    /// [`crate::spawn::place`] names them: that name is what makes the pane
+    /// answer for that agent and nobody else.
+    ///
     /// Waited for on the last row the screen has anything on it, which is a
     /// row of its vendor's own chrome on every screen here: a capture carrying
     /// that row is a capture of the whole screen, and half a screen is a pane
     /// no vendor ever drew.
-    fn a_pane_showing(server: &Server, screen: &str) -> crate::tmux::PaneId {
+    fn a_pane_showing(server: &Server, id: &str, screen: &str) -> crate::tmux::PaneId {
         let showing = [
             "sh",
             "-c",
             "printf '%s' \"$0\"; while :; do sleep 0.05; done",
             screen,
         ];
+        let session = format!("{}{id}", crate::tmux::SESSION_PREFIX);
         let (_, pane) = server
             .new_session(&crate::tmux::Spawn {
+                name: Some(&session),
                 command: &showing,
                 ..crate::tmux::Spawn::default()
             })
@@ -3398,8 +3408,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // screen on its pane. The screens are taken in one call, and what
         // says they were handed back to the right readings is that the two
         // readings differ.
-        let asking = a_pane_showing(&server.0, A_BLOCKING_SCREEN);
-        let idle = a_pane_showing(&server.0, IDLE_SCREEN);
+        let asking = a_pane_showing(&server.0, "asks-a1b", A_BLOCKING_SCREEN);
+        let idle = a_pane_showing(&server.0, "idles-b2c", IDLE_SCREEN);
         for (id, pane, phase) in [
             ("asks-a1b", &asking, Phase::Working),
             ("idles-b2c", &idle, Phase::Starting),
@@ -3439,6 +3449,71 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     }
 
     #[test]
+    fn reader_gives_a_pane_to_the_one_agent_it_answers_for() {
+        // Two records naming one pane, which is what a machine hands out on
+        // its own: a server dies with a reboot, the records of the agents that
+        // were on it never hear their pane go, and the next server numbers its
+        // panes from %0 again. The pane answers for the agent whose session it
+        // is in, and the other record has lost it as surely as if it had gone.
+        let root = TempDir::new().unwrap();
+        let server = Own(
+            Server::named(format!("amx-derive-owner-{}", std::process::id()))
+                .with_conf("/dev/null"),
+        );
+        let socket = server.0.socket().clone();
+        let pane = a_pane_showing(&server.0, "holds-it-a1b", IDLE_SCREEN);
+        for id in ["holds-it-a1b", "lost-it-b2c"] {
+            a_record(
+                root.path(),
+                &Meta {
+                    id: id.to_string(),
+                    agent: Some("claude".to_string()),
+                    socket: socket.clone(),
+                    pane: pane.clone(),
+                    ..meta()
+                },
+                &state(Phase::Starting, 1_000),
+            );
+        }
+
+        let read = |id: &str| view(root.path(), id, 1_100).expect("a reading");
+        assert_eq!(read("holds-it-a1b").phase(), Phase::Idle);
+        assert_eq!(read("holds-it-a1b").verdict.evidence, Evidence::Screen);
+        assert_eq!(read("lost-it-b2c").phase(), Phase::Stopped);
+        assert_eq!(
+            read("lost-it-b2c").verdict.evidence,
+            Evidence::Gone,
+            "a pane answering for somebody else is a pane this record lost"
+        );
+
+        // A wall reads them the same way, off the one listing it takes.
+        let wall = views(root.path(), 1_100).expect("a reading");
+        let seen = |id: &str| {
+            wall.iter()
+                .find(|view| view.id() == id)
+                .unwrap_or_else(|| panic!("{id} was read"))
+        };
+        assert_eq!(seen("holds-it-a1b").phase(), Phase::Idle);
+        assert_eq!(seen("holds-it-a1b").verdict.evidence, Evidence::Screen);
+        assert_eq!(seen("lost-it-b2c").phase(), Phase::Stopped);
+        assert_eq!(seen("lost-it-b2c").verdict.evidence, Evidence::Gone);
+
+        // And a record amx parked keeps the state it was parked in, which is
+        // what it does for a pane that is missing: both are the record naming
+        // a pane it no longer has.
+        let mut parked = state(Phase::Idle, 1_000);
+        parked.parked_at = 1_050;
+        let lost = Agent::open(root.path(), "lost-it-b2c").expect("the record");
+        std::fs::write(
+            lost.dir().join("state.json"),
+            serde_json::to_vec(&parked).expect("a record"),
+        )
+        .expect("a record");
+        assert_eq!(read("lost-it-b2c").phase(), Phase::Idle);
+        assert_eq!(read("lost-it-b2c").verdict.evidence, Evidence::LetGo);
+    }
+
+    #[test]
     fn reader_leaves_the_answer_to_a_vendor_that_reports_it_itself() {
         let root = TempDir::new().unwrap();
         let server = Own(
@@ -3453,8 +3528,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // session file that report names — and a picture of those words is not
         // something to write down beside them. The reading still says what
         // the screen says: idle, by the vendor's own rule.
-        let pi = a_pane_showing(&server.0, A_PI_PROMPT);
-        let claude = a_pane_showing(&server.0, IDLE_SCREEN);
+        let pi = a_pane_showing(&server.0, "pi-a1b", A_PI_PROMPT);
+        let claude = a_pane_showing(&server.0, "claude-b2c", IDLE_SCREEN);
         for (id, agent, pane) in [("pi-a1b", "pi", &pi), ("claude-b2c", "claude", &claude)] {
             a_record(
                 root.path(),
