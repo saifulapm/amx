@@ -39,6 +39,7 @@ impl Cli {
             Send { .. } => "send",
             Answer { .. } => "answer",
             Interrupt { .. } => "interrupt",
+            Rename { .. } => "rename",
             Result { .. } => "result",
             Attach { .. } => "attach",
             Logs { .. } => "logs",
@@ -120,6 +121,19 @@ pub enum Command {
     /// esc` is what dismisses one — and a command row has no vendor in it to
     /// read a key, so `amx stop` is what ends one of those.
     Interrupt { id: String },
+
+    /// Call an agent something else on the wall.
+    ///
+    /// The word in the name column and nothing else. The id is untouched — it
+    /// is what every verb takes and what the pane, the branch and the worktree
+    /// are named after — so `amx rename <id> <id>` is what puts the row back to
+    /// the name amx gives it.
+    Rename {
+        /// The agent being renamed.
+        id: String,
+        /// What to call it.
+        name: String,
+    },
 
     /// Wait for the agent's turn to end and print its answer.
     Result {
@@ -570,6 +584,7 @@ mod tests {
                 "answer",
             ),
             (&["amx", "interrupt", "fix-a1b"], "interrupt"),
+            (&["amx", "rename", "fix-a1b", "auth"], "rename"),
             (&["amx", "result", "fix-a1b"], "result"),
             (&["amx", "result", "fix-a1b", "--timeout", "30"], "result"),
             (&["amx", "attach", "fix-a1b"], "attach"),
@@ -847,6 +862,10 @@ mod tests {
             &["amx", "logs"],
             &["amx", "send", "fix-a1b"],
             &["amx", "interrupt"],
+            // A rename says which agent and what to call it, and one of the
+            // two on its own says neither.
+            &["amx", "rename"],
+            &["amx", "rename", "fix-a1b"],
             &["amx", "answer", "fix-a1b"],
             // Which of the two a thing that reads as both is has to be said,
             // and saying both says neither.

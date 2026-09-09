@@ -1529,58 +1529,12 @@ pub fn invitation(kind: Option<Kind>, options: &[String], asked: Option<&Ask>) -
     }
 }
 
-/// What a rename came to.
-pub enum Renamed {
-    /// The wall calls it something else now, and this says what.
-    Yes(String),
-    /// It is called what it was called, and this says why.
-    No(String),
-}
-
-/// The longest name a row will carry. Past this the column that holds it cuts,
-/// and a name that only reads whole in the line it was typed on is not a name
-/// on the wall.
-const NAME: usize = 24;
-
-/// Call the agent under the cursor something else.
+/// Calling the agent under the cursor something else, which is the verb's.
 ///
-/// The id is untouched. It is what the record is filed under, what a shell
-/// addresses, and what the pane, the branch and the tree amx cut are named
-/// after — an id that moved would leave every one of those pointing at a name
-/// nothing answers to. What a rename changes is the word on the row, which is
-/// the thing a person reads a hundred times a day.
-///
-/// What is typed is made safe where it is written down: a name goes on a row,
-/// into a notice and back into a line somebody is editing, and a record that
-/// never held a control character cannot hand one to any of them.
-pub fn rename(root: &Path, id: &str, typed: &str) -> Result<Renamed> {
-    // A control character becomes the space it stands in for rather than
-    // nothing at all: a name pasted over two lines is two words, and dropping
-    // the newline outright would run them into one.
-    let spaced: String = typed
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    let name = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
-    let name = name.as_str();
-    if name.is_empty() {
-        return Ok(Renamed::No("a name is a word, not nothing".to_string()));
-    }
-    if name.chars().count() > NAME {
-        return Ok(Renamed::No(format!(
-            "a name is {NAME} characters at most, so that a row can carry it"
-        )));
-    }
-
-    // Written the way a reading is written rather than as something the agent
-    // said: a name is a fact about the wall, and moving the record's own clock
-    // for it would have the next reader trust this document over the pane.
-    let agent = Agent::open(root, id)?;
-    agent
-        .writer()?
-        .observe(|state| state.name = (name != id).then(|| name.to_string()))?;
-    Ok(Renamed::Yes(format!("{id} is {name}")))
-}
+/// `ctrl+r` and `amx rename` are one reading of one line: the same limit, the
+/// same refusals in the same words, and the same record written the same way.
+/// What differs is where the sentence lands, which is this file's whole errand.
+pub use crate::verbs::rename::{Renamed, rename};
 
 /// Write down that somebody has looked at this agent.
 ///
@@ -1737,87 +1691,9 @@ fn one_line(written: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{Choice, Meta};
-    use crate::tmux::{PaneId, Socket};
+    use crate::store::Choice;
     use std::path::PathBuf;
     use tempfile::TempDir;
-
-    /// An agent with a record under `root`, for the acts that change one.
-    fn recorded(root: &Path, id: &str) -> Agent {
-        Agent::create(
-            root,
-            &Meta {
-                id: id.to_string(),
-                task: "fix the login bug".to_string(),
-                agent: None,
-                dir: PathBuf::from("/srv/app"),
-                worktree: None,
-                branch: None,
-                base: None,
-                socket: Socket::Name("amx-not-a-server".to_string()),
-                pane: PaneId::new("%404").unwrap(),
-                bg: false,
-                session: None,
-                transcript: None,
-                created: store::now(),
-            },
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn acts_rename_puts_the_name_on_the_record_and_leaves_the_id_where_it_was() {
-        let root = TempDir::new().unwrap();
-        let agent = recorded(root.path(), "fix-login-a1b");
-
-        let Renamed::Yes(said) = rename(root.path(), "fix-login-a1b", "  auth\u{7}  ").unwrap()
-        else {
-            panic!("the rename was refused")
-        };
-        assert!(said.contains("auth"), "{said}");
-        assert_eq!(
-            agent.state().unwrap().name.as_deref(),
-            Some("auth"),
-            "trimmed, and without the characters a terminal reads as an \
-             instruction rather than a letter"
-        );
-        assert_eq!(
-            agent.meta().unwrap().id,
-            "fix-login-a1b",
-            "the id is what everything else addresses, and a rename is not \
-             about the id"
-        );
-
-        rename(root.path(), "fix-login-a1b", "auth\nfix").unwrap();
-        assert_eq!(
-            agent.state().unwrap().name.as_deref(),
-            Some("auth fix"),
-            "and a name pasted over two lines is the two words it is"
-        );
-    }
-
-    #[test]
-    fn acts_rename_refuses_what_no_row_could_carry() {
-        let root = TempDir::new().unwrap();
-        let agent = recorded(root.path(), "fix-login-a1b");
-        let refused = |typed: &str| match rename(root.path(), "fix-login-a1b", typed).unwrap() {
-            Renamed::No(why) => why,
-            Renamed::Yes(said) => panic!("{typed:?} was taken: {said}"),
-        };
-
-        assert!(refused("   ").contains("a name"), "nothing is not a name");
-        assert!(
-            refused(&"x".repeat(NAME + 1)).contains(&NAME.to_string()),
-            "and one no row can draw whole is refused with the length in it"
-        );
-        assert_eq!(agent.state().unwrap().name, None, "and nothing was written");
-
-        // A name that is the id is the name it already had, so the record goes
-        // back to holding none.
-        rename(root.path(), "fix-login-a1b", "auth").unwrap();
-        rename(root.path(), "fix-login-a1b", "fix-login-a1b").unwrap();
-        assert_eq!(agent.state().unwrap().name, None);
-    }
 
     #[test]
     fn a_line_says_what_it_is_aimed_at_before_anybody_types_into_it() {

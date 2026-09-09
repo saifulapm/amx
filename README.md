@@ -690,6 +690,7 @@ amx ls --dir .         # only this project's
 amx --dir /srv/app     # the same narrowing at the front door, drawn or printed
 amx status <id>        # one agent, and which signal that state came from
 amx status <id> --json
+amx rename <id> auth   # call it something else on the wall; the id stays
 amx attach <id>        # hand this terminal to its pane
 amx logs <id>          # the last of what its pane has printed, without attaching
 amx logs <id> --lines 40

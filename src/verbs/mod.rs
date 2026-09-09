@@ -12,6 +12,7 @@ pub mod logs;
 pub mod ls;
 pub mod new;
 pub mod park;
+pub mod rename;
 pub mod result;
 pub mod resume;
 pub mod send;
