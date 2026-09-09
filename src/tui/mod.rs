@@ -2477,6 +2477,9 @@ fn said(outcome: Result<String>) -> Option<Notice> {
 /// with the vendor's own markdown rendered rather than shown. A turn still
 /// running ends on a live tail: what the vendor streams to the record, where
 /// it streams anything, and the pane with its furniture cut where it does not.
+/// A working agent whose transcript has nothing on it yet has its first turn
+/// about to land, and stands its task in the conversation's place until it
+/// does — see [`conversation_of`].
 ///
 /// The screen is captured with its paint kept, because the card shows the
 /// pane as the vendor drew it: bold where claude went bold, coloured where it
@@ -2518,8 +2521,9 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> Card<Body> {
     // question is written at all.
     let asks = view.phase() == Phase::Waiting && view.state.question.is_some();
 
-    if !asks && let Some(said) = conversation_of(&view.meta) {
-        let working = view.phase() == Phase::Working;
+    let working = view.phase() == Phase::Working;
+
+    if !asks && let Some(said) = conversation_of(&view.meta, working) {
         // What it is saying now, under the record: the vendor's own stream
         // where there is one, and the pane where there is not. Only while a
         // turn runs — a finished turn's words are all on the record already.
@@ -2602,18 +2606,34 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> Card<Body> {
 }
 
 /// The conversation on the record's transcript, where the record names one
-/// amx can read and there is anything in it.
+/// amx can read.
 ///
 /// Read by the shape the record's own vendor writes, the way `amx logs` reads
 /// it, and none at all from a vendor that keeps no conversation — a record
 /// only ever names a transcript its vendor announced, and a vendor with no
 /// shape to read one by has announced nothing.
-fn conversation_of(meta: &crate::store::Meta) -> Option<Vec<crate::conversation::Said>> {
+///
+/// A named file that is missing, or there and saying nothing, is a vendor
+/// that has been started and has not written its first turn down yet. A
+/// working agent is handed the task it was given in its place, as the prompt
+/// it is: that is the conversation as far as it has gone, and a card that
+/// showed a pane for those seconds and a conversation after them would change
+/// shape under whoever opened it. Only a working one — an agent that is
+/// waiting, or whose turn is over, has nothing about to land behind the empty
+/// file, and what it has to show is elsewhere.
+fn conversation_of(
+    meta: &crate::store::Meta,
+    working: bool,
+) -> Option<Vec<crate::conversation::Said>> {
     let path = meta.transcript.as_ref()?;
     let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default())?;
-    let text = std::fs::read_to_string(path).ok()?;
-    let said = crate::conversation::read(format, &text);
-    (!said.is_empty()).then_some(said)
+    let said = std::fs::read_to_string(path)
+        .map(|text| crate::conversation::read(format, &text))
+        .unwrap_or_default();
+    if said.is_empty() {
+        return working.then(|| vec![crate::conversation::Said::Prompt(meta.task.clone())]);
+    }
+    Some(said)
 }
 
 /// The chrome the vendor in this agent's pane draws under it.
@@ -3624,6 +3644,73 @@ mod tests {
         let card = card_of(&quiet, Path::new(""), 76, Theme::default());
         assert!(!card.answer);
         assert_eq!(card.body.says(), "");
+    }
+
+    #[test]
+    fn card_on_a_transcript_with_nothing_on_it_yet_is_the_task_the_agent_was_given() {
+        // The seconds between a vendor being started and its first turn
+        // landing on the transcript. The record names the file, amx knows the
+        // shape to read it by, and there is nothing in it to read. What the
+        // agent was asked is the conversation as far as it has gone, so the
+        // card is that, with what the agent is saying now under it.
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join("port-a1b");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("live"), "reading the importer\n").unwrap();
+
+        let held = TempDir::new().unwrap();
+        let empty = held.path().join("empty.jsonl");
+        std::fs::write(&empty, "").unwrap();
+        // A file the vendor has not created yet, and one it created and has
+        // written nothing to.
+        for path in [held.path().join("unwritten.jsonl"), empty] {
+            let mut view = reading("port-a1b", Phase::Working, State::default());
+            view.meta.transcript = Some(path.clone());
+            let card = card_of(&view, root.path(), 76, Theme::default());
+            let says = card.body.says();
+            assert!(
+                says.starts_with("❯ port the importer"),
+                "the task behind the composer's own glyph, {path:?}:\n{says}"
+            );
+            assert!(
+                says.contains(" live ") && says.ends_with("reading the importer"),
+                "and what it is saying now under the rule, {path:?}:\n{says}"
+            );
+            assert!(!card.answer, "read up from the live edge, {path:?}");
+        }
+    }
+
+    #[test]
+    fn card_stands_the_task_in_for_a_working_agents_transcript_and_no_other() {
+        // An empty transcript is a turn about to land, and a turn about to
+        // land is a working agent. Nobody else is handed the task in place of
+        // a conversation: an adopted agent names no transcript at all, a card
+        // that is asking shows nothing older than the question, and an agent
+        // whose turn is over has its answer on the record.
+        let root = TempDir::new().unwrap();
+        let held = TempDir::new().unwrap();
+        let unwritten = held.path().join("unwritten.jsonl");
+
+        let adopted = reading("port-a1b", Phase::Working, State::default());
+        assert_eq!(
+            card_of(&adopted, root.path(), 76, Theme::default())
+                .body
+                .says(),
+            "",
+            "an adopted agent has no transcript to stand in for"
+        );
+
+        let mut asking = stopped_on_a_question("ask-b2c");
+        asking.meta.transcript = Some(unwritten.clone());
+        let card = card_of(&asking, root.path(), 76, Theme::default());
+        assert_eq!(card.body.says(), "", "a card that is asking shows nothing");
+        assert!(card.question.is_some());
+
+        let mut done = finished_saying("done-c3d", "the answer");
+        done.meta.transcript = Some(unwritten);
+        let card = card_of(&done, root.path(), 76, Theme::default());
+        assert_eq!(card.body.says(), "the answer", "the answer it left");
+        assert!(card.answer);
     }
 
     /// A command's record with what it printed beside it, which is where its
