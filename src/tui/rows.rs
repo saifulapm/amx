@@ -97,13 +97,14 @@ impl Group {
         }
     }
 
+    /// The words a heading over the group reads, as a person reads them.
     pub fn title(self) -> &'static str {
         match self {
-            Group::Pinned => "pinned",
-            Group::Review => "ready for review",
-            Group::NeedsInput => "needs input",
-            Group::Working => "working",
-            Group::Completed => "completed",
+            Group::Pinned => "Pinned",
+            Group::Review => "Ready for review",
+            Group::NeedsInput => "Needs input",
+            Group::Working => "Working",
+            Group::Completed => "Completed",
         }
     }
 
@@ -1662,14 +1663,14 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "needs input (1)",
+                "Needs input (1)",
                 "ask-c3d",
                 "",
-                "working (2)",
+                "Working (2)",
                 "busy-a1b",
                 "starting-e5f",
                 "",
-                "completed (2)",
+                "Completed (2)",
                 "idle-d4e",
                 "done-b2c",
             ],
@@ -1736,7 +1737,7 @@ mod tests {
         // sit among the agents that are working. How long it has been out of
         // touch is on the row; the group only says nobody is waiting on it.
         let list = listed(vec![view("puzzling-a1b", Phase::Unknown, 10)]);
-        assert_eq!(lines(&list), ["completed (1)", "puzzling-a1b"]);
+        assert_eq!(lines(&list), ["Completed (1)", "puzzling-a1b"]);
     }
 
     #[test]
@@ -1755,16 +1756,16 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "ready for review (1)",
+                "Ready for review (1)",
                 "fix-login-a1b",
                 "",
-                "needs input (1)",
+                "Needs input (1)",
                 "ask-b2c",
                 "",
-                "working (1)",
+                "Working (1)",
                 "busy-c3d",
                 "",
-                "completed (2)",
+                "Completed (2)",
                 "done-e5f",
                 "merged-d4e",
             ],
@@ -1783,7 +1784,7 @@ mod tests {
         ]);
         assert_eq!(
             lines(&list),
-            ["completed (3)", "stopped-c3d", "failed-b2c", "done-a1b"],
+            ["Completed (3)", "stopped-c3d", "failed-b2c", "done-a1b"],
             "newest ending first"
         );
     }
@@ -1801,7 +1802,7 @@ mod tests {
         late.state.ended = 300;
 
         let list = listed(vec![early, late]);
-        assert_eq!(lines(&list), ["completed (2)", "done-b2c", "done-a1b"]);
+        assert_eq!(lines(&list), ["Completed (2)", "done-b2c", "done-a1b"]);
     }
 
     #[test]
@@ -1817,7 +1818,7 @@ mod tests {
 
         assert_eq!(
             lines(&list),
-            ["completed (5)", "done-4", "done-3", "done-2", "… 2 more"]
+            ["Completed (5)", "done-4", "done-3", "done-2", "… 2 more"]
         );
 
         list.unfold();
@@ -1846,7 +1847,7 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "completed (5)",
+                "Completed (5)",
                 "done-4",
                 "done-3",
                 "done-2",
@@ -1861,7 +1862,7 @@ mod tests {
         list.refit();
         assert_eq!(
             lines(&list),
-            ["completed (5)", "done-4", "done-3", "… 3 more"]
+            ["Completed (5)", "done-4", "done-3", "… 3 more"]
         );
 
         // And gives it back when the screen grows again.
@@ -1884,13 +1885,13 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "needs input (1)",
+                "Needs input (1)",
                 "ask-a1b",
                 "",
-                "working (1)",
+                "Working (1)",
                 "busy-b2c",
                 "",
-                "completed (4)",
+                "Completed (4)",
                 "done-3",
                 "… 3 more"
             ]
@@ -1921,7 +1922,7 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "completed (6)",
+                "Completed (6)",
                 "unread-g7h",
                 "broke-e5f",
                 "merged-f6g",
@@ -1950,7 +1951,7 @@ mod tests {
         list.refit();
         assert_eq!(
             lines(&list),
-            ["completed (5)", "done-4", "done-3", "done-0", "… 2 more"]
+            ["Completed (5)", "done-4", "done-3", "done-0", "… 2 more"]
         );
         assert_eq!(list.selected().unwrap().id(), "done-0");
     }
@@ -1967,13 +1968,13 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "needs input (1)",
+                "Needs input (1)",
                 "ask-a1b",
                 "",
-                "working (1)",
+                "Working (1)",
                 "busy-b2c",
                 "",
-                "completed (1)",
+                "Completed (1)",
                 "done-c3d",
             ]
         );
@@ -2217,7 +2218,7 @@ mod tests {
         assert_eq!(list.axis(), Axis::State);
         assert_eq!(
             lines(&list),
-            ["needs input (1)", "ask-a1b", "", "working (1)", "busy-b2c"]
+            ["Needs input (1)", "ask-a1b", "", "Working (1)", "busy-b2c"]
         );
 
         list.turn();
@@ -2274,7 +2275,7 @@ mod tests {
         list.narrow(vec![Narrow::State(Some("working".to_string()))]);
         assert_eq!(
             lines(&list),
-            ["working (2)", "busy-b2c", "busy-c3d"],
+            ["Working (2)", "busy-b2c", "busy-c3d"],
             "a hidden agent heads nothing, counts for nothing and is drawn nowhere"
         );
         assert_eq!(list.counts(), [(Group::Working, 2)]);
@@ -2290,10 +2291,10 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "needs input (1)",
+                "Needs input (1)",
                 "ask-a1b",
                 "",
-                "working (2)",
+                "Working (2)",
                 "busy-b2c",
                 "busy-c3d",
             ],
@@ -2308,14 +2309,14 @@ mod tests {
         list.narrow(vec![Narrow::State(Some("working".to_string()))]);
         assert_eq!(
             lines(&list),
-            ["working (2)", "busy-b2c", "busy-c3d"],
+            ["Working (2)", "busy-b2c", "busy-c3d"],
             "a shorter line replaces the states rather than adding to them"
         );
 
         list.narrow(vec![Narrow::Name(Some("c3d".to_string()))]);
         assert_eq!(
             lines(&list),
-            ["working (1)", "busy-c3d"],
+            ["Working (1)", "busy-c3d"],
             "and a line only changes the narrowing it names"
         );
         assert_eq!(
@@ -2413,7 +2414,7 @@ mod tests {
         list.shut_or_open();
         assert_eq!(
             lines(&list),
-            ["needs input (1) shut", "", "working (1)", "busy-b2c"],
+            ["Needs input (1) shut", "", "Working (1)", "busy-b2c"],
             "the rows go and the heading stays"
         );
         assert!(list.on_heading(), "with the cursor still on it");
@@ -2421,7 +2422,7 @@ mod tests {
         list.shut_or_open();
         assert_eq!(
             lines(&list),
-            ["needs input (1)", "ask-a1b", "", "working (1)", "busy-b2c"]
+            ["Needs input (1)", "ask-a1b", "", "Working (1)", "busy-b2c"]
         );
     }
 
@@ -2443,13 +2444,13 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "needs input (1)",
+                "Needs input (1)",
                 "ask-c3d",
                 "",
-                "working (1)",
+                "Working (1)",
                 "busy-b2c",
                 "",
-                "completed (1) shut",
+                "Completed (1) shut",
             ],
             "a group somebody shut stays shut while the reading moves under it"
         );
@@ -2542,13 +2543,13 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "pinned (1)",
+                "Pinned (1)",
                 "busy-c3d",
                 "",
-                "needs input (1)",
+                "Needs input (1)",
                 "ask-a1b",
                 "",
-                "working (2)",
+                "Working (2)",
                 "busy-b2c",
                 "busy-d4e",
             ]
@@ -2567,13 +2568,13 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "pinned (1)",
+                "Pinned (1)",
                 "busy-c3d",
                 "",
-                "needs input (1)",
+                "Needs input (1)",
                 "ask-a1b",
                 "",
-                "working (2)",
+                "Working (2)",
                 "busy-b2c",
                 "busy-d4e",
             ]
@@ -2584,11 +2585,11 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "needs input (2)",
+                "Needs input (2)",
                 "ask-a1b",
                 "busy-c3d",
                 "",
-                "working (2)",
+                "Working (2)",
                 "busy-b2c",
                 "busy-d4e",
             ]
@@ -2606,7 +2607,7 @@ mod tests {
         assert!(list.move_by(1));
         assert_eq!(
             lines(&list),
-            ["working (3)", "busy-b2c", "busy-a1b", "busy-c3d"]
+            ["Working (3)", "busy-b2c", "busy-a1b", "busy-c3d"]
         );
         assert_eq!(
             list.selected().unwrap().id(),
@@ -2623,7 +2624,7 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "working (4)",
+                "Working (4)",
                 "busy-b2c",
                 "busy-a1b",
                 "busy-c3d",
@@ -2649,7 +2650,7 @@ mod tests {
         assert!(list.hold_or_let_go());
         assert_eq!(
             lines(&list),
-            ["pinned (1)", "busy-b2c", "", "working (1)", "busy-a1b"]
+            ["Pinned (1)", "busy-b2c", "", "Working (1)", "busy-a1b"]
         );
         for _ in 0..2 {
             list.down();
@@ -2658,7 +2659,7 @@ mod tests {
         assert!(!list.move_by(-1), "and the pinned row is not one of them");
         assert_eq!(
             lines(&list),
-            ["pinned (1)", "busy-b2c", "", "working (1)", "busy-a1b"]
+            ["Pinned (1)", "busy-b2c", "", "Working (1)", "busy-a1b"]
         );
 
         // And a heading is not an agent either to move or to pin.
@@ -2688,7 +2689,7 @@ mod tests {
         );
         assert_eq!(
             lines(&list),
-            ["completed (5)", "done-4", "done-3", "done-2", "… 2 more"]
+            ["Completed (5)", "done-4", "done-3", "done-2", "… 2 more"]
         );
 
         // Opened, every row is a row a move can reach.
@@ -2697,7 +2698,7 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "completed (5)",
+                "Completed (5)",
                 "done-4",
                 "done-3",
                 "done-1",
@@ -2812,6 +2813,23 @@ mod tests {
     }
 
     #[test]
+    fn a_group_titles_itself_in_the_words_its_heading_reads() {
+        // The heading is drawn out of this and nothing else, so the words a
+        // person reads over the rows are settled here rather than by whoever
+        // paints them.
+        assert_eq!(
+            Group::ALL.map(Group::title),
+            [
+                "Pinned",
+                "Ready for review",
+                "Needs input",
+                "Working",
+                "Completed"
+            ]
+        );
+    }
+
+    #[test]
     fn header_counts_a_group_in_a_word_the_list_can_be_narrowed_by() {
         // The heading over the rows says what the group means; the counter at
         // the top says the word that stands for it, and every one of those is
@@ -2871,20 +2889,20 @@ mod tests {
         list.narrow(vec![Narrow::State(Some("failed".to_string()))]);
         assert_eq!(
             lines(&list),
-            ["completed (1)", "failed-b2c"],
+            ["Completed (1)", "failed-b2c"],
             "a state word keeps the rows in that state and nothing else"
         );
 
         let mut list = listed(fleet());
         list.narrow(vec![Narrow::State(Some("idle".to_string()))]);
-        assert_eq!(lines(&list), ["completed (1)", "idle-c3d"]);
+        assert_eq!(lines(&list), ["Completed (1)", "idle-c3d"]);
 
         let mut list = listed(fleet());
         list.narrow(vec![Narrow::State(Some("done".to_string()))]);
         assert_eq!(
             lines(&list),
             [
-                "completed (4)",
+                "Completed (4)",
                 "stopped-d4e",
                 "idle-c3d",
                 "failed-b2c",
@@ -2908,7 +2926,7 @@ mod tests {
         assert!(list.hold_or_let_go());
         assert_eq!(
             lines(&list),
-            ["pinned (1)", "ask-a1b", "", "working (1)", "busy-b2c"]
+            ["Pinned (1)", "ask-a1b", "", "Working (1)", "busy-b2c"]
         );
         assert_eq!(list.counts(), [(Group::Pinned, 1), (Group::Working, 1)]);
         assert_eq!(
@@ -3074,13 +3092,13 @@ mod tests {
         list.narrow(vec![Narrow::Name(Some("auth".to_string()))]);
         assert_eq!(
             lines(&list),
-            ["completed (1)", "fix-login-a1b"],
+            ["Completed (1)", "fix-login-a1b"],
             "and a narrowing takes the name off the row as readily as the id"
         );
         list.narrow(vec![Narrow::Name(Some("clock".to_string()))]);
         assert_eq!(
             lines(&list),
-            ["completed (1)", "port-importer-b2c"],
+            ["Completed (1)", "port-importer-b2c"],
             "and a word of the title reaches the row wearing it"
         );
     }
@@ -3097,15 +3115,15 @@ mod tests {
         // task is the one string on the record that the person typed.
         let mut list = listed(vec![porting, logging]);
         list.narrow(vec![Narrow::Name(Some("importer".to_string()))]);
-        assert_eq!(lines(&list), ["completed (1)", "a1b"]);
+        assert_eq!(lines(&list), ["Completed (1)", "a1b"]);
 
         // Ignoring case, because a task is a sentence somebody wrote and a
         // search that missed it over a capital is a search nobody trusts.
         list.narrow(vec![Narrow::Name(Some("PORT".to_string()))]);
-        assert_eq!(lines(&list), ["completed (1)", "a1b"]);
+        assert_eq!(lines(&list), ["Completed (1)", "a1b"]);
 
         list.narrow(vec![Narrow::Name(Some("LOGIN".to_string()))]);
-        assert_eq!(lines(&list), ["completed (1)", "b2c"]);
+        assert_eq!(lines(&list), ["Completed (1)", "b2c"]);
     }
 
     #[test]
@@ -3118,9 +3136,9 @@ mod tests {
             lines(&list)
         };
 
-        assert_eq!(list("AUTH"), ["completed (1)", "fix-login-a1b"]);
-        assert_eq!(list("auth"), ["completed (1)", "fix-login-a1b"]);
-        assert_eq!(list("FIX-LOGIN"), ["completed (1)", "fix-login-a1b"]);
+        assert_eq!(list("AUTH"), ["Completed (1)", "fix-login-a1b"]);
+        assert_eq!(list("auth"), ["Completed (1)", "fix-login-a1b"]);
+        assert_eq!(list("FIX-LOGIN"), ["Completed (1)", "fix-login-a1b"]);
     }
 
     #[test]
@@ -3153,11 +3171,11 @@ mod tests {
         // Somebody has come to the wall from the request itself, and its
         // number is the only word for the agent they have in front of them.
         list.narrow(vec![Narrow::Name(Some("#12".to_string()))]);
-        assert_eq!(lines(&list), ["ready for review (1)", "fix-login-a1b"]);
+        assert_eq!(lines(&list), ["Ready for review (1)", "fix-login-a1b"]);
         assert_eq!(list.counts(), [(Group::Review, 1)]);
 
         list.narrow(vec![Narrow::Name(Some("#3".to_string()))]);
-        assert_eq!(lines(&list), ["ready for review (1)", "port-importer-b2c"]);
+        assert_eq!(lines(&list), ["Ready for review (1)", "port-importer-b2c"]);
 
         list.narrow(vec![Narrow::Name(Some("#99".to_string()))]);
         assert!(
