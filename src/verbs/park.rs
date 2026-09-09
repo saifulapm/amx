@@ -59,9 +59,11 @@ fn let_go(root: &Path, agent: &Agent, meta: &Meta, park_after: u64, now: u64) ->
     // The pane as it is now rather than as the timer was set over it. One that
     // has already gone was killed, or its server died, and both of those are
     // an agent that ended: a stamp on that record would tell every reader
-    // after it that amx let this one go and will bring it back.
+    // after it that amx let this one go and will bring it back. A pane that
+    // answers for somebody else is the same answer — the number came round
+    // again to another agent, and taking it would end theirs.
     let server = Server::from_socket(meta.socket.clone());
-    if !server.pane_alive(&meta.pane) {
+    if !server.pane_answers_for(&meta.pane, &meta.id) {
         return Ok(exit::OK);
     }
 
@@ -353,6 +355,35 @@ mod tests {
 
         assert_eq!(considered(&root, &agent, 3_600, 4_600), exit::OK);
         assert_eq!(left(&agent), (0, Vec::new()));
+    }
+
+    #[test]
+    fn park_leaves_a_pane_that_answers_for_another_agent_alone() {
+        // The pane is today's agent's, and the record asking for it is
+        // yesterday's, whose server died and whose number came round again.
+        // Nothing here is this record's to take, and a stamp would tell every
+        // reader after it that this agent is parked and comes back.
+        let state = TempDir::new().unwrap();
+        let root = state_root(&state);
+        let today = Sitting::new(&root, "today-b2c");
+        let yesterday = record(
+            &root,
+            "yesterday-a1b",
+            today.server.socket().clone(),
+            today.pane.clone(),
+        );
+        yesterday
+            .writer()
+            .unwrap()
+            .observe(|state| {
+                state.state = Phase::Idle;
+                state.since = 1_000;
+            })
+            .unwrap();
+
+        assert_eq!(considered(&root, &yesterday, 3_600, 4_600), exit::OK);
+        assert!(today.has_a_pane(), "it is the other agent's pane");
+        assert_eq!(left(&yesterday), (0, Vec::new()));
     }
 
     #[test]
