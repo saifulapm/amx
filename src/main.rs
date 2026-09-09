@@ -113,8 +113,22 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Stop(args)) => finish(verbs::stop::from_env(args)),
         Some(cli::Command::Doctor { fix }) => finish(verbs::doctor::from_env(config, *fix)),
         Some(cli::Command::Uninstall) => finish(verbs::uninstall::from_env()),
+        Some(cli::Command::Completion { shell }) => finish(completion(*shell)),
         None => finish(cockpit::from_env(config, cli.dir.as_deref())),
     }
+}
+
+/// Write a shell's completion script to stdout.
+///
+/// The one write goes through [`finish`], so a shell that stopped reading is
+/// answered the way it is everywhere else amx prints: nothing said, nothing
+/// failed.
+fn completion(shell: clap_complete::Shell) -> Result<i32> {
+    use std::io::Write;
+    std::io::stdout()
+        .lock()
+        .write_all(&cli::completion_script(shell))?;
+    Ok(exit::OK)
 }
 
 /// A verb's outcome as an exit code: what it decided, or a failure with the

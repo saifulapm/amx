@@ -7,6 +7,7 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive"] }
+clap_complete = "4.6.9"
 crossterm = "0.29.0"
 nix = { version = "0.31.3", features = ["process", "signal", "term", "fs", "user"] }
 pulldown-cmark = { version = "0.13", default-features = false }

@@ -50,6 +50,7 @@ impl Cli {
             Statusline => "statusline",
             Doctor { .. } => "doctor",
             Uninstall => "uninstall",
+            Completion { .. } => "completion",
             Hook => "_hook",
             Exit { .. } => "_exit",
             Boot { .. } => "_boot",
@@ -231,6 +232,18 @@ pub enum Command {
 
     /// Remove amx's hooks and state, restoring the settings backup.
     Uninstall,
+
+    /// Print the completion script for a shell.
+    ///
+    /// It goes to stdout for the shell to keep or to read at every start,
+    /// whichever that shell does with these:
+    /// `amx completion fish > ~/.config/fish/completions/amx.fish`. What it
+    /// offers is this build's own surface, so a kept copy is written again
+    /// after an upgrade.
+    Completion {
+        /// The shell the script is written for.
+        shell: clap_complete::Shell,
+    },
 
     /// Record one vendor hook event. Reads the payload on stdin.
     #[command(name = "_hook", hide = true)]
@@ -430,6 +443,40 @@ pub fn usage_exit_code(err: &clap::Error) -> i32 {
     }
 }
 
+/// The completion script for one shell, as that shell reads it.
+///
+/// Written out of the parser above rather than kept by hand, so a verb or a
+/// flag added there is offered without anyone remembering to say so.
+///
+/// It is rendered whole rather than streamed, because a shell reading half a
+/// script is worse off than one reading none.
+pub fn completion_script(shell: clap_complete::Shell) -> Vec<u8> {
+    let mut script = Vec::new();
+    clap_complete::generate(shell, &mut public_surface(), "amx", &mut script);
+    script
+}
+
+/// The surface a completion is written from: what `amx --help` lists, and
+/// nothing it hides.
+///
+/// clap_complete writes out every subcommand a command holds, `hide` or not,
+/// so the four amx runs against itself have to be left behind rather than
+/// marked. Everything in front of the verb is carried across: the flags, the
+/// version that adds two more of them, and `disable_help_subcommand`, without
+/// which clap would build a `help` verb amx does not answer to and the script
+/// would offer that instead.
+fn public_surface() -> clap::Command {
+    use clap::CommandFactory;
+    let full = Cli::command();
+    let top = clap::Command::new("amx")
+        .version(env!("CARGO_PKG_VERSION"))
+        .disable_help_subcommand(full.is_disable_help_subcommand_set())
+        .args(full.get_arguments().cloned());
+    full.get_subcommands()
+        .filter(|verb| !verb.is_hide_set())
+        .fold(top, |surface, verb| surface.subcommand(verb.clone()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -532,6 +579,7 @@ mod tests {
             (&["amx", "doctor"], "doctor"),
             (&["amx", "doctor", "--fix"], "doctor"),
             (&["amx", "uninstall"], "uninstall"),
+            (&["amx", "completion", "fish"], "completion"),
             (&["amx", "_hook"], "_hook"),
             (&["amx", "_exit", "fix-a1b", "0"], "_exit"),
             (&["amx", "_boot", "fix-a1b"], "_boot"),
@@ -862,6 +910,61 @@ mod tests {
         // It takes nothing: what it prints is the same for everyone, and a
         // dial here would be one more thing to get wrong inside a config file.
         assert_eq!(code(&["amx", "statusline", "fix-a1b"]), exit::USAGE);
+    }
+
+    #[test]
+    fn completion_writes_a_script_for_each_shell_it_names() {
+        use clap_complete::Shell;
+
+        for (named, shell) in [
+            ("bash", Shell::Bash),
+            ("elvish", Shell::Elvish),
+            ("fish", Shell::Fish),
+            ("powershell", Shell::PowerShell),
+            ("zsh", Shell::Zsh),
+        ] {
+            let cli = parse(&["amx", "completion", named]).unwrap();
+            assert!(matches!(cli.command, Some(Command::Completion { shell: s }) if s == shell));
+            assert!(
+                !completion_script(shell).is_empty(),
+                "the {named} script is empty"
+            );
+        }
+
+        // Which shell is the whole of what it takes, and a shell amx cannot
+        // write for is better said than guessed at.
+        assert_eq!(code(&["amx", "completion"]), exit::USAGE);
+        assert_eq!(code(&["amx", "completion", "nushell"]), exit::USAGE);
+    }
+
+    #[test]
+    fn completion_offers_every_verb_a_person_can_type_and_none_of_the_others() {
+        use clap_complete::Shell;
+
+        // The four amx runs against itself are kept out of help because they
+        // are not typed by hand, and a completion that types them for you is
+        // help by another name.
+        for shell in [
+            Shell::Bash,
+            Shell::Elvish,
+            Shell::Fish,
+            Shell::PowerShell,
+            Shell::Zsh,
+        ] {
+            let script = String::from_utf8(completion_script(shell)).expect("a script is text");
+            for (verb, _) in listed_verbs() {
+                assert!(
+                    script.contains(&verb),
+                    "the {shell} script never offers `{verb}`"
+                );
+            }
+            for hidden in ["_hook", "_exit", "_boot", "_park"] {
+                assert!(
+                    !script.contains(hidden),
+                    "the {shell} script offers `{hidden}`"
+                );
+            }
+        }
     }
 
     /// clap's own contract check: the derived surface is internally consistent
