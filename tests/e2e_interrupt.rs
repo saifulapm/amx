@@ -11,23 +11,38 @@
 mod common;
 
 use common::Harness;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// How long the row is given to come off `working` once the key has landed.
 ///
 /// The vendor says nothing about a turn it was interrupted out of, so the only
 /// account of this one ending is a reader's, off the screen the vendor drew
-/// when it went back to its prompt. That screen is the one the idle rule may
-/// not decide from until it has held still — thirty seconds, since an idle
-/// pane and a pause mid-turn are the same bytes — and this is that wait with
-/// room around it for a loaded machine.
-const SETTLES: Duration = Duration::from_secs(60);
+/// when it went back to its prompt. Nothing about that screen has to hold
+/// still first: amx ended the turn itself and the record says when, so the
+/// prompt is read on the first look. This is that look, and room around it for
+/// a loaded machine.
+const SETTLES: Duration = Duration::from_secs(10);
+
+/// How soon after the prompt is drawn the row has to say so.
+///
+/// The wait a turn nobody cut short is owed is half a minute, because a prompt
+/// and a pause mid-turn are the same bytes. This one is owed none of it, and
+/// five seconds is short enough that sitting any of it out would fail here.
+const AT_ONCE: Duration = Duration::from_secs(5);
+
+/// The clock the record keeps its own times by.
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("a clock set later than 1970")
+        .as_secs()
+}
 
 /// Wait for the reader to call the row idle, and answer with what it said.
 ///
 /// The harness's own `until` is not this wait: it is patient in seconds an
-/// agent takes to speak, and this one is measured by how long a screen has to
-/// stand still before a rule may end a turn nobody sent a hook for.
+/// agent takes to speak, and this one is measured by how long a reader takes
+/// to go to a pane and take what is on it for the end of a turn.
 fn until_idle(amx: &Harness, id: &str) -> serde_json::Value {
     let deadline = Instant::now() + SETTLES;
     loop {
@@ -51,7 +66,19 @@ fn until_idle(amx: &Harness, id: &str) -> serde_json::Value {
 fn interrupting_a_turn_ends_it_at_the_pane_with_no_word_from_the_vendor() {
     let amx = Harness::new();
     let pane = amx.play("port-importer-c3d", "interrupted");
-    amx.until_state("port-importer-c3d", "working");
+    let started = amx.until_state("port-importer-c3d", "working");
+
+    // What amx writes down about the turn it is about to end outranks the
+    // vendor's last word by being newer than it, and the record keeps both in
+    // whole seconds. Coming up, starting a turn and being interrupted inside
+    // one of them is this suite rather than anybody's afternoon, so the key
+    // waits for the second the hooks landed in to pass.
+    let spoke = started["last_event"]
+        .as_u64()
+        .expect("the record says when it last heard from the vendor");
+    amx.until("the second the vendor last spoke in to pass", || {
+        (now() > spoke).then_some(())
+    });
 
     let out = amx.amx(&["interrupt", "port-importer-c3d"]);
     assert_eq!(
@@ -73,8 +100,15 @@ fn interrupting_a_turn_ends_it_at_the_pane_with_no_word_from_the_vendor() {
     });
 
     // Which is the whole of what says the turn is over, so it is a reader at
-    // the pane that ends it rather than anything the agent said.
+    // the pane that ends it rather than anything the agent said — and it says
+    // so on the look that finds the prompt, with no screen to sit out.
+    let drew = Instant::now();
     let agent = until_idle(&amx, "port-importer-c3d");
+    assert!(
+        drew.elapsed() < AT_ONCE,
+        "the prompt was up {:?} before the row read idle",
+        drew.elapsed()
+    );
     assert_eq!(agent["evidence"], "screen", "{agent}");
     assert_eq!(agent["rule"], "idle_prompt", "{agent}");
     let kinds = amx.event_kinds("port-importer-c3d");

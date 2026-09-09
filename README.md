@@ -890,7 +890,9 @@ which a vendor at work reads as drop what you are doing, so the work stops
 where it stands and the agent is back at its prompt with the conversation
 behind it whole. The pane stands, the worktree stands and the record keeps that
 conversation, so an agent you interrupted is one you can go on talking to with
-the next `send`.
+the next `send`. claude says nothing about a turn it was interrupted out of,
+but amx ended that one itself, so the row does not wait a word out: it reads
+idle as soon as the prompt is back on the pane.
 
 A turn is the only thing that key can cut short, so `interrupt` exits `0`
 having sent one and refuses in two other ways. An agent stopped on a question
