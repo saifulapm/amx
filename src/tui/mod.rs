@@ -5780,14 +5780,16 @@ mod tests {
     }
 
     #[test]
-    fn acts_peeking_at_an_agent_takes_the_mark_off_its_row() {
+    fn acts_peeking_at_an_agent_writes_the_look_on_its_record() {
         let root = TempDir::new().unwrap();
         finished(root.path(), "first-a1b", "wrote the parser", 60);
         finished(root.path(), "second-b2c", "wrote the tests", 120);
 
         // The view opens on the newest ending, so the card opens on that one.
-        // A row nobody has read says so in the weight of its name rather than
-        // in a mark, so this is a question for the frame and not for its text.
+        // The wall says nothing about who has been to read what, so the look is
+        // worth nothing on the screen and everything on the record: the next
+        // view opens knowing it, and the ordering keeps the unread rows in
+        // front of the fold.
         let (code, painted) = buffered(
             root.path(),
             &Scope::default(),
@@ -5807,7 +5809,7 @@ mod tests {
             })
             .collect();
         let drawn = lines.join("\n");
-        let unread = |id: &str| {
+        let weighty = |id: &str| {
             let (row, line) = lines
                 .iter()
                 .enumerate()
@@ -5816,14 +5818,12 @@ mod tests {
             let at = line[..line.find(id).unwrap()].chars().count() as u16;
             painted[(at, row as u16)].modifier.contains(Modifier::BOLD)
         };
-        assert!(
-            !unread("first-a1b"),
-            "the row somebody looked at has nothing left to say:\n{drawn}"
-        );
-        assert!(
-            unread("second-b2c"),
-            "and the one they did not is still holding something:\n{drawn}"
-        );
+        for id in ["first-a1b", "second-b2c"] {
+            assert!(
+                !weighty(id),
+                "the row somebody opened and the row they did not read alike:\n{drawn}"
+            );
+        }
 
         let looked = |id: &str| {
             crate::store::Agent::open(root.path(), id)

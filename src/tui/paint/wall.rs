@@ -7,10 +7,14 @@
 //!
 //! A row says its state on one glyph: the shape is whether there is still a
 //! process to go back to, the colour is which state that process is in, and
-//! the pulse is a turn running. It says one thing with weight, and that is not
-//! about the agent at all — nobody has been to read what this row is holding.
-//! So a person coming back to a screenful of endings sees which of them they
-//! have already been through.
+//! the pulse is a turn running. It says nothing at all with weight, because the
+//! wall spends none: a screenful of names half of which are shouting is a
+//! screenful nobody reads down.
+//!
+//! What marks the row somebody is working with is strength instead. Every name
+//! is as quiet as the summary beside it and the heading over it, but the one
+//! under the cursor and the one under the pointer, and those come up to the
+//! terminal's own.
 //!
 //! One colour is not about the agent either: the row the terminal was lent to
 //! wears the accent on its name. Detaching from a pane lands on a wall of rows
@@ -292,21 +296,20 @@ fn failures(tally: Tally) -> String {
 /// measured off the fleet, so the columns stand where they stood when the last
 /// agent ended and the row a person learned wide is the row they get narrow.
 ///
-/// The one weight on the wall is on the name of a row nobody has been to read,
-/// which is the only fact on the screen a person cannot work out by looking at
-/// it. Everything else is the name in the terminal's own and what the agent
-/// said dim under it, with the state on the glyph alone. A row that is asking
-/// puts its question at full strength, because that is the sentence somebody
-/// opened the view to read. The exceptions earn their colour: a waiting name
-/// and a failed one say so without their glyph being read, the pull request's
-/// number answers how the work went, and under a project heading the state
-/// word keeps what the phase has to say because it replaces the glyph's job
-/// there — see [`state_colour`]. What the cursor is on is said by the bar
-/// under it, not by the row changing its tones.
+/// The wall spends no weight, so a row is drawn as quietly as the heading over
+/// it: the name dim, what the agent said dim beside it, and the state on the
+/// glyph alone. The name under the cursor and the name under the pointer are
+/// what come up to the terminal's own, which is the row somebody is working
+/// with saying so. A row that is asking puts its question at full strength,
+/// because that is the sentence somebody opened the view to read. The
+/// exceptions earn their colour: a waiting name and a failed one say so without
+/// their glyph being read, the pull request's number answers how the work went,
+/// and under a project heading the state word keeps what the phase has to say
+/// because it replaces the glyph's job there — see [`state_colour`].
 ///
-/// The row the terminal was lent to takes the accent on its name, which is the
-/// weight's rule in colour: about the person at the screen rather than the
-/// agent, and given up wherever the state has already coloured the name.
+/// The row the terminal was lent to takes the accent on its name: about the
+/// person at the screen rather than the agent, and given up wherever the state
+/// has already coloured the name.
 ///
 /// A row a press has armed says that instead of what the agent said, in the
 /// colour of a thing waiting on a person. The summary is the one part of a row
@@ -355,10 +358,11 @@ fn row(
         ),
         Span::styled(
             format!("{name}{}", " ".repeat(GAP)),
-            // The pointer resting on a row borrows the weight an unread row
-            // wears, without the bar or the cursor, which is the whole of what
-            // a hover is.
-            name_colour(theme, phase, rows::unread(view) || at.hovered, at.lent),
+            // The two rows a person is working with, brought up out of the
+            // quiet the rest of the wall is drawn at: the one the cursor is on,
+            // and the one the pointer is resting on — which, without the bar,
+            // is the whole of what a hover is.
+            name_colour(theme, phase, at.selected || at.hovered, at.lent),
         ),
     ];
     if widths.state > 0 {
@@ -621,8 +625,8 @@ mod tests {
     }
 
     /// The same reading, with somebody having been to look at what it is
-    /// holding: what a row wears while nobody has is the weight on its name,
-    /// and most of these tests are about something else.
+    /// holding. The wall paints it neither way; what it moves is where the row
+    /// sorts against the completed fold, which is [`rows`]'s business.
     fn read(mut view: View) -> View {
         view.state.seen = view.state.last_event.max(view.state.since);
         view
@@ -756,7 +760,8 @@ mod tests {
         buffer[(line[..at].chars().count() as u16, row)].fg
     }
 
-    /// And the weight it was painted at, for the tests about the muted rows.
+    /// And the strength it was painted at, for the tests about which of the
+    /// wall's rows is brought up out of the quiet.
     fn word_modifier(screen: &Screen, size: (u16, u16), row: u16, word: &str) -> Modifier {
         let buffer = cells(screen, size);
         let line: String = (0..size.0)
@@ -853,7 +858,7 @@ mod tests {
         let plain = Modifier::empty();
 
         // The colour is the whole of what the glyph says, weight and all: the
-        // one weight on a row is the name's, and it says nobody has read it.
+        // wall spends no weight on anything, the glyph included.
         assert_eq!(
             painted(Phase::Waiting),
             ("✻".into(), theme().waiting, plain)
@@ -1425,7 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_keep_the_name_bright_and_dim_what_the_agent_said() {
+    fn rows_bring_up_the_name_under_the_cursor_and_leave_the_wall_quiet() {
         let size = (60, 10);
         let screen = showing(
             vec![
@@ -1445,25 +1450,26 @@ mod tests {
             None,
         );
 
-        // The cursor opens on the first agent, and the two rows read the same:
-        // the name in the terminal's own, what the agent said and how long it
-        // worked dim beside it. Which line the cursor is on is the bar's to
-        // say, and a row does not change its tones to say it again.
-        for (row, name, said, age) in [
-            (3, "fix-login-a1b", "wrote the parser", "1m"),
-            (4, "port-import-b2c", "wrote the tests", "5m"),
+        // The cursor opens on the first agent, and its name is the one thing on
+        // the wall at the terminal's own strength. Everything else is dim: what
+        // the agent said, how long it worked, and the whole of the row under it.
+        let named = word_modifier(&screen, size, 3, "fix-login-a1b");
+        assert!(
+            !named.contains(Modifier::DIM) && !named.contains(Modifier::BOLD),
+            "the name under the cursor comes up without weight: {named:?}"
+        );
+        for (row, word) in [
+            (3, "wrote the parser"),
+            (3, "1m"),
+            (4, "port-import-b2c"),
+            (4, "wrote the tests"),
+            (4, "5m"),
         ] {
-            let named = word_modifier(&screen, size, row, name);
+            let painted = word_modifier(&screen, size, row, word);
             assert!(
-                !named.contains(Modifier::DIM) && !named.contains(Modifier::BOLD),
-                "{name} is neither dimmed nor weighted: {named:?}"
+                painted.contains(Modifier::DIM) && !painted.contains(Modifier::BOLD),
+                "{word} is drawn at the quiet the rest of the wall is: {painted:?}"
             );
-            for word in [said, age] {
-                assert!(
-                    word_modifier(&screen, size, row, word).contains(Modifier::DIM),
-                    "{word} is the quiet half of the row"
-                );
-            }
         }
 
         // The state is carried by the glyph's colour alone.
@@ -1472,7 +1478,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_carry_the_weight_on_a_name_nobody_has_been_to_read() {
+    fn rows_say_nothing_about_who_has_been_to_read_them() {
         let size = (60, 10);
         let screen = showing(
             vec![
@@ -1488,30 +1494,28 @@ mod tests {
             None,
         );
 
-        // The one weight on the wall, and it says nobody has been to read what
-        // this row is holding rather than anything about the agent. So the row
-        // somebody has already been through reads quieter than the one they
-        // have not, whatever state either of them is in.
-        assert!(
-            word_modifier(&screen, size, 6, "fix-login-a1b").contains(Modifier::BOLD),
-            "the ending nobody has read"
-        );
-        assert!(
-            !word_modifier(&screen, size, 7, "port-import-b2c").contains(Modifier::BOLD),
-            "and the one somebody has"
-        );
+        // An ending nobody has been to read and one somebody has been through
+        // are the same row: whether a person has caught up is what keeps the
+        // unread one in front of the fold, and the paint says none of it.
+        for (row, name) in [(6, "fix-login-a1b"), (7, "port-import-b2c")] {
+            let painted = word_modifier(&screen, size, row, name);
+            assert!(
+                painted.contains(Modifier::DIM) && !painted.contains(Modifier::BOLD),
+                "{name} is as quiet as the other: {painted:?}"
+            );
+        }
 
-        // A row that is asking keeps its colour either way: the weight says
-        // whether it has been read, and the colour says what it wants.
+        // The colour a state earned stays on the name off the cursor's row, at
+        // the strength the rest of the wall is drawn at.
         assert_eq!(word_colour(&screen, size, 3, "ask-c3d"), theme().waiting);
         assert!(
-            !word_modifier(&screen, size, 3, "ask-c3d").contains(Modifier::BOLD),
-            "a question somebody has been to read is a question they know about"
+            !word_modifier(&screen, size, 3, "ask-c3d").contains(Modifier::DIM),
+            "and the cursor opens on it, which is what brings it up"
         );
     }
 
     #[test]
-    fn rows_hovered_name_takes_the_weight_and_nothing_else_does() {
+    fn rows_a_hovered_name_comes_up_the_way_the_cursors_does() {
         let size = (60, 10);
         let mut screen = showing(
             vec![
@@ -1535,8 +1539,8 @@ mod tests {
         screen.hover = Some(2);
 
         let hovered = word_modifier(&screen, size, 4, "port-import-b2c");
-        assert!(hovered.contains(Modifier::BOLD), "{hovered:?}");
         assert!(!hovered.contains(Modifier::DIM), "{hovered:?}");
+        assert!(!hovered.contains(Modifier::BOLD), "{hovered:?}");
         assert!(
             word_modifier(&screen, size, 4, "wrote the tests").contains(Modifier::DIM),
             "the tint is the name's alone: what the agent said stays quiet"
@@ -1604,16 +1608,17 @@ mod tests {
             "a row that is asking is still asking"
         );
 
-        // The weight is about the reader and the accent is about the
-        // terminal, so one row can wear both.
+        // And the mark is a colour rather than a second cursor, so it is drawn
+        // at the strength every row off the cursor's is drawn at.
         screen.lent = Some("fix-login-c3d".to_string());
         assert_eq!(
             word_colour(&screen, size, done, "fix-login-c3d"),
             theme().accent
         );
+        let marked = word_modifier(&screen, size, done, "fix-login-c3d");
         assert!(
-            word_modifier(&screen, size, done, "fix-login-c3d").contains(Modifier::BOLD),
-            "an ending nobody has been to read carries the weight as well"
+            marked.contains(Modifier::DIM) && !marked.contains(Modifier::BOLD),
+            "the row somebody came back from is still a quiet row: {marked:?}"
         );
     }
 

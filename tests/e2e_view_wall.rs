@@ -77,17 +77,9 @@ fn mark(amx: &Harness, view: &str, id: &str) -> Option<char> {
     row_of(amx, view, id)?.chars().nth(2)
 }
 
-/// Whether the view is saying nobody has read this row, which it says in the
-/// weight on the name.
-fn unread(amx: &Harness, view: &str, id: &str) -> bool {
-    coloured(amx, view)
-        .lines()
-        .rfind(|line| line.contains(id))
-        .is_some_and(|line| sgr_at(line, id).contains(&1))
-}
-
 /// Somebody having been to read what an agent is holding, written where a look
-/// writes it: the row is the same row, without the weight.
+/// writes it. Nothing on the wall is painted for it: what it moves is where the
+/// row sorts against the completed fold.
 fn read(amx: &Harness, id: &str) {
     let mut state = amx.state(id);
     state["seen"] = json!(now());
@@ -1029,7 +1021,7 @@ fn completed_agents_fold_into_a_count_when_the_screen_runs_out_of_rows() {
 }
 
 #[test]
-fn a_row_keeps_the_weight_for_what_nobody_has_read_and_dims_what_it_said() {
+fn a_row_brings_up_the_name_under_the_cursor_and_leaves_the_wall_quiet() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
     amx.until_state("ask-a1b", "waiting");
@@ -1042,32 +1034,32 @@ fn a_row_keeps_the_weight_for_what_nobody_has_read_and_dims_what_it_said() {
         (drawn.contains("ask-a1b") && drawn.contains("fix-login-b2c")).then_some(())
     });
 
-    // A row somebody has already been through: its name at the terminal's own
-    // strength, what it said dim under the name of the next one, and no weight
-    // anywhere.
+    // A row the cursor is not on: the name as quiet as what the agent said
+    // beside it, and no weight anywhere on either.
     let quiet = coloured_line(&amx, &view, "fix-login-b2c");
     let name = sgr_at(&quiet, "fix-login-b2c");
     assert!(
-        !name.contains(&1) && !name.contains(&2),
-        "the name is the terminal's own, neither dim nor bold:\n{quiet:?}"
+        name.contains(&2) && !name.contains(&1),
+        "the name is dim and carries no weight:\n{quiet:?}"
     );
     assert!(
         sgr_at(&quiet, "did what it was asked").contains(&2),
-        "and what it said is the quieter of the two:\n{quiet:?}"
+        "and what it said is drawn at the same strength:\n{quiet:?}"
     );
     assert!(
         quiet.contains(&foreground("done")),
         "the glyph alone carries the state's colour:\n{quiet:?}"
     );
 
-    // A row that is asking and has not been read is the one that stands out,
-    // wherever the cursor happens to be: the name bold and in the colour of a
-    // thing waiting on a person, and the question at full strength because it
-    // is the sentence somebody came to read.
+    // The row the view opens on, which is the one asking: the name up at the
+    // terminal's own strength in the colour of a thing waiting on a person, and
+    // the question at full strength because it is the sentence somebody came to
+    // read.
     let asking = coloured_line(&amx, &view, "ask-a1b");
+    let name = sgr_at(&asking, "ask-a1b");
     assert!(
-        sgr_at(&asking, "ask-a1b").contains(&1),
-        "the name nobody has read is the bold one:\n{asking:?}"
+        !name.contains(&2) && !name.contains(&1),
+        "the name under the cursor comes up without weight:\n{asking:?}"
     );
     assert!(
         asking.contains(&foreground("waiting")),
@@ -1486,7 +1478,8 @@ fn hovering_a_row_tints_its_name_and_moves_no_cursor() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
     finished(&amx, "port-import-b2c", "done", 120);
-    // Both read, so the weight the pointer puts on a name is the pointer's.
+    // Both read, which the wall paints neither way, so what the pointer does to
+    // a name is the whole of the difference between the two rows.
     read(&amx, "fix-login-a1b");
     read(&amx, "port-import-b2c");
 
@@ -1500,12 +1493,11 @@ fn hovering_a_row_tints_its_name_and_moves_no_cursor() {
     let row = screen_row_of(&amx, &view, "port-import-b2c");
     mouse(&amx, &view, 35, 5, row, true);
     amx.until("the name to take the tint", || {
-        sgr_at(
+        let name = sgr_at(
             &coloured_line(&amx, &view, "port-import-b2c"),
             "port-import-b2c",
-        )
-        .contains(&1)
-        .then_some(())
+        );
+        (!name.contains(&2) && !name.contains(&1)).then_some(())
     });
     assert!(
         coloured_line(&amx, &view, "fix-login-a1b").contains(&bar()),
@@ -2201,30 +2193,41 @@ fn acts_ctrl_x_on_a_heading_arms_rows_in_every_state_before_it_stops_any() {
 }
 
 #[test]
-fn acts_space_takes_the_weight_off_the_row_it_opened() {
+fn acts_space_writes_the_look_on_the_record_and_leaves_the_rows_alone() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
     finished(&amx, "port-import-b2c", "done", 120);
 
     let view = amx.in_a_terminal(&[], &[]);
-    amx.until("both names to carry the weight", || {
-        (unread(&amx, &view, "fix-login-a1b") && unread(&amx, &view, "port-import-b2c"))
-            .then_some(())
+    amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("fix-login-a1b") && drawn.contains("port-import-b2c")).then_some(())
     });
 
     // The cursor opens on the newest ending, which is the row the card opens
-    // over.
+    // over. Nothing on the wall is painted for whether a row has been read, so
+    // what the look is worth is on the record rather than on the screen.
     press(&amx, &view, "Space");
-    amx.until("the weight to go with the look", || {
-        (!unread(&amx, &view, "fix-login-a1b")).then_some(())
+    amx.until("the look to reach the record", || {
+        (amx.state("fix-login-a1b")["seen"].as_u64().unwrap_or(0) > 0).then_some(())
     });
-    assert!(
-        unread(&amx, &view, "port-import-b2c"),
-        "and the row nobody opened keeps its weight:\n{}",
-        screen(&amx, &view)
+    let opened = sgr_at(
+        &coloured_line(&amx, &view, "fix-login-a1b"),
+        "fix-login-a1b",
     );
     assert!(
-        amx.state("fix-login-a1b")["seen"].as_u64().unwrap_or(0) > 0,
-        "the look is on the record, so the next view opens knowing it"
+        !opened.contains(&1) && !opened.contains(&2),
+        "the row the card is over is the row the cursor is on, and it reads as \
+         it did before the press:\n{}",
+        screen(&amx, &view)
+    );
+    let untouched = sgr_at(
+        &coloured_line(&amx, &view, "port-import-b2c"),
+        "port-import-b2c",
+    );
+    assert!(
+        untouched.contains(&2) && !untouched.contains(&1),
+        "and the row nobody opened is as quiet as it always was:\n{}",
+        screen(&amx, &view)
     );
 }

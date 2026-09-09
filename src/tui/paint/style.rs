@@ -11,11 +11,11 @@ use crate::pr::Standing;
 use crate::store::Phase;
 use crate::theme::Theme;
 
-/// What a row's name is painted in, and at what weight: the colour of a thing
-/// waiting on a person where that is what the row is, the colour of a failure
-/// where the work ended in one, the accent on the row the terminal was lent
-/// to, the terminal's own everywhere else — and the weight where nobody has
-/// been to read what the row is holding.
+/// What a row's name is painted in, and at what strength: the colour of a
+/// thing waiting on a person where that is what the row is, the colour of a
+/// failure where the work ended in one, the accent on the row the terminal was
+/// lent to, the terminal's own everywhere else — and dim unless `bright`, which
+/// is the row under the cursor or the row under the pointer.
 ///
 /// Two states out of eight take a colour, because a column of names in eight
 /// colours is a column nobody reads. Those two are the ones a person scanning
@@ -24,20 +24,22 @@ use crate::theme::Theme;
 /// over the two that did: what an agent wants is worth more than where the
 /// terminal has been, and a name cannot say both.
 ///
-/// The weight is about the reader rather than the agent, which is why it is
-/// the one weight the wall spends: what state a row is in is on the row
-/// already, and whether somebody has caught up with it is nowhere else. The
-/// accent is about the reader too, so a row can wear both.
-pub(super) fn name_colour(theme: Theme, phase: Phase, unread: bool, lent: bool) -> Style {
+/// The wall spends no weight at all, so the one thing a name has left to say
+/// about the person reading it is strength: every row is as quiet as the
+/// summary beside it but the one being worked with, and that one comes up in
+/// whatever colour it already had. Which is why `bright` is a strength rather
+/// than a colour of its own — a row does not stop saying what it is to say
+/// where the cursor is.
+pub(super) fn name_colour(theme: Theme, phase: Phase, bright: bool, lent: bool) -> Style {
     let paint = match phase {
         Phase::Waiting => Style::new().fg(theme.waiting),
         Phase::Failed => Style::new().fg(theme.failed),
         _ if lent => Style::new().fg(theme.accent),
         _ => Style::new(),
     };
-    match unread {
-        true => paint.add_modifier(Modifier::BOLD),
-        false => paint,
+    match bright {
+        true => paint,
+        false => paint.add_modifier(Modifier::DIM),
     }
 }
 
@@ -127,9 +129,10 @@ mod tests {
     ];
 
     #[test]
-    fn rows_a_name_takes_two_colours_and_one_weight() {
-        // The colour is the state's and only two states have one; the weight
-        // is the reader's, and it says the same thing on every one of them.
+    fn rows_a_name_takes_two_colours_and_no_weight() {
+        // The colour is the state's and only two states have one; what is left
+        // to say which row a person is working with is strength, and it says
+        // the same thing on every one of them.
         for phase in [Phase::Waiting, Phase::Failed] {
             assert!(
                 name_colour(theme(), phase, false, false).fg.is_some(),
@@ -139,7 +142,7 @@ mod tests {
         assert_eq!(
             name_colour(theme(), Phase::Waiting, false, false).fg,
             Some(theme().waiting),
-            "a question somebody has read is still a question"
+            "a question the cursor is not on is still a question"
         );
         for phase in [
             Phase::Starting,
@@ -156,17 +159,26 @@ mod tests {
             );
         }
         for phase in [Phase::Waiting, Phase::Done, Phase::Failed] {
+            for bright in [true, false] {
+                assert!(
+                    !name_colour(theme(), phase, bright, false)
+                        .add_modifier
+                        .contains(Modifier::BOLD),
+                    "{phase} carries no weight either way"
+                );
+            }
             assert!(
-                name_colour(theme(), phase, true, false)
+                name_colour(theme(), phase, false, false)
                     .add_modifier
-                    .contains(Modifier::BOLD),
-                "{phase}, unread, carries the weight"
+                    .contains(Modifier::DIM),
+                "{phase} is as quiet as the summary beside it"
             );
             assert!(
-                !name_colour(theme(), phase, false, false)
+                !name_colour(theme(), phase, true, false)
                     .add_modifier
-                    .contains(Modifier::BOLD),
-                "{phase}, read, does not"
+                    .contains(Modifier::DIM),
+                "{phase}, under the cursor or the pointer, comes up to the \
+                 terminal's own strength"
             );
         }
     }
@@ -200,6 +212,11 @@ mod tests {
                 "{phase} says what it is before it says where somebody has been"
             );
         }
+        assert_eq!(
+            name_colour(theme(), Phase::Done, true, true).fg,
+            Some(theme().accent),
+            "and the mark survives the row coming up under the cursor"
+        );
     }
 
     #[test]

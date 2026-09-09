@@ -777,6 +777,19 @@ mod tests {
             .collect()
     }
 
+    /// The weight and the strength a word on the wall was drawn at, for the
+    /// tests about what a line being typed does to what it is drawn over.
+    fn word_modifier(screen: &Screen, size: (u16, u16), word: &str) -> Modifier {
+        let lines = painted(screen, size);
+        let (row, line) = lines
+            .iter()
+            .enumerate()
+            .find(|(_, line)| line.contains(word))
+            .unwrap_or_else(|| panic!("{word:?} is on none of {lines:?}"));
+        let at = line.find(word).expect("the word on the row");
+        cells(screen, size)[(line[..at].chars().count() as u16, row as u16)].modifier
+    }
+
     /// The two agents a card is opened over, so there is a list to still be
     /// drawn behind it.
     fn a_fleet() -> Vec<View> {
@@ -810,7 +823,7 @@ mod tests {
     }
 
     #[test]
-    fn find_stands_on_the_keys_row_and_leaves_the_wall_its_weight() {
+    fn find_stands_on_the_keys_row_and_leaves_the_wall_alone() {
         // Empty, it says its whole grammar: what it takes and what the two
         // keys out of it do.
         let empty = painted(&seeking(""), TALL);
@@ -839,15 +852,13 @@ mod tests {
             "and the agents are still on the wall: {typed:?}"
         );
 
-        // Nor its weight. Every other line amx takes dims the wall behind it,
+        // Nor its strength. Every other line amx takes dims the wall behind it,
         // because the wall has stopped answering to the keyboard; this one is
-        // answered by the wall on every keystroke.
-        let cells = cells(&seeking("port"), TALL);
+        // answered by the wall on every keystroke, so the name under the cursor
+        // stands where it stood.
         assert!(
-            (0..29).any(|row| {
-                (0..TALL.0).any(|column| cells[(column, row)].modifier.contains(Modifier::BOLD))
-            }),
-            "the wall keeps its weight while a find is open"
+            !word_modifier(&seeking("port"), TALL, "ask-a1b").contains(Modifier::DIM),
+            "the wall keeps its strength while a find is open"
         );
     }
 
@@ -947,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn input_mode_takes_the_weight_off_the_wall_it_is_drawn_over() {
+    fn input_mode_takes_the_strength_off_the_wall_it_is_drawn_over() {
         // Everything above the band the line is drawn in, which on a screen
         // this tall holding one line is every row but the last three.
         let weighty = |screen: &Screen| {
@@ -960,7 +971,12 @@ mod tests {
         let mut screen = showing(a_fleet(), None);
         assert!(
             weighty(&screen),
-            "the wall carries weight while the keys are still keys"
+            "the band above the wall carries weight while the keys are still keys"
+        );
+        assert!(
+            !word_modifier(&screen, TALL, "ask-a1b").contains(Modifier::DIM),
+            "and the wall spends none of it, so what it has to give up is the \
+             strength on the name under the cursor"
         );
 
         let mut composer = Composer::new(Asking::Task);
@@ -968,7 +984,11 @@ mod tests {
         screen.mode = Mode::Typing(composer);
         assert!(
             !weighty(&screen),
-            "and gives up every bit of it the moment a line is being typed"
+            "the moment a line is being typed every bit of the weight goes"
+        );
+        assert!(
+            word_modifier(&screen, TALL, "ask-a1b").contains(Modifier::DIM),
+            "and the row somebody was working with goes quiet with the rest"
         );
 
         // Dimmed rather than taken away: the wall is still the wall it was a
