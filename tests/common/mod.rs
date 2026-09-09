@@ -261,7 +261,24 @@ impl Harness {
     }
 
     /// The record amx's own `new` would have written.
+    ///
+    /// The pane is stamped with the id first, the way `amx adopt` stamps a
+    /// pane it took over. amx puts the panes it opens in a session called
+    /// `amx-<id>` and reads that name to tell whose pane a pane is; these
+    /// panes are made by hand, in sessions tmux named after itself, so the
+    /// stamp is what makes this one answer for this agent. Without it the
+    /// reader calls the agent gone, which is true of a pane that answers for
+    /// nobody and is not what these tests are about.
+    ///
+    /// A record naming a pane that is not there — `%404`, `%99` — is left
+    /// naming one, because a record of a gone pane is what those tests came
+    /// for.
     pub fn record(&self, id: &str, pane: &str) {
+        if self.pane_alive(pane) {
+            // amx's own pane option, spelled here because a test binary has no
+            // way to read a constant out of the binary it drives.
+            self.tmux(&["set-option", "-p", "-t", pane, "@amx-id", id]);
+        }
         let dir = self.agent_dir(id);
         std::fs::create_dir_all(&dir).expect("the agent's directory");
         write(
