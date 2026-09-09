@@ -16,9 +16,11 @@ Nothing here needs a screen scraped or a state file polled.
 |---|---|
 | `amx new "<task>"` | Start an agent on the task. Prints its id, and nothing else. |
 | `amx new --exec "<command>"` | Run a shell command as a row of its own, `done` or `failed` by its exit code. |
+| `amx rename <id> "<name>"` | Call it something else on the user's wall. The id is what you keep addressing. |
 | `amx result <id> [--timeout N]` | Block until the turn ends, then print what it said. |
 | `amx answer <id> <key>` | Answer the question it stopped on. |
 | `amx send <id> "<text>"` | Give a working or idle agent its next turn. |
+| `amx interrupt <id>` | End the turn it is in the middle of. The agent stays, its conversation whole. |
 | `amx ls [--json]` | Every agent, one line each. |
 | `amx status <id> [--json]` | One agent, and which signal that state came from. |
 | `amx events [<ids>] [--follow] [--json]` | Every agent's log, merged in time order. |
@@ -41,8 +43,8 @@ that and never on your own. It starts nothing and sends nothing.
 | Code | Means | Do |
 |---|---|---|
 | `0` | The turn ended. The answer is on stdout. | Read it. |
-| `1` | Failed, stopped, or ended with no answer to give. | Read stderr, which names the remedy. |
-| `2` | Blocked. From `result` that means a question, and the question is on stdout. | Answer it, then call `result` again. |
+| `1` | Failed, stopped, or ended with no answer to give. From `interrupt`, there was no turn to cut short. | Read stderr, which names the remedy. |
+| `2` | Blocked. From `result` that means a question, and the question is on stdout; `interrupt` hands the same question back rather than answer it by accident. | Answer it, then call `result` again. |
 | `3` | `--timeout` expired. The agent is still working. | Call `result` again, or go and do something else. |
 | `64` | The command line was wrong, including an answer the question would not take. | Fix the command line. Nothing reached the agent. |
 

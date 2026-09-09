@@ -68,15 +68,26 @@ an agent is doing but not enough to hand you what it said. Answers come from
 the events. `amx doctor` says when they are missing.
 
 `amx completion` writes a shell's completion script to stdout, for bash,
-elvish, fish, powershell or zsh, off the verbs this build has.
+elvish, fish, powershell or zsh, off the verbs this build has. Where it lands
+is your shell's business:
+
+```sh
+amx completion fish > ~/.config/fish/completions/amx.fish
+amx completion zsh > ~/.zfunc/_amx   # with ~/.zfunc on the fpath compinit reads
+```
+
+fish reads that directory itself and needs nothing else. zsh reads the
+directories on its `fpath`, so the file goes in one of those and `compinit`
+runs after it.
 
 ## Starting an agent
 
 ```sh
 amx new "fix the login bug"            # in a repository: its own worktree
 amx new --no-worktree "run the tests"  # in this directory, as it is
-amx new --name importer "port it"      # a name you chose
+amx new --name importer "port it"      # an id you chose
 amx new --dir /srv/app "tail the log"  # somewhere other than here
+amx rename importer auth               # what the wall calls it, afterwards
 ```
 
 Every agent is one detached tmux session called `amx-<id>`, on the server you
@@ -87,6 +98,14 @@ looking at exactly where it was. The server is yours, so it reads the
 
 `new` prints the agent's id and nothing else. Everything after this takes that
 id.
+
+`--name` and `amx rename` name different things. `--name` is the id itself,
+chosen rather than cut out of the task, and it is what the pane, the branch and
+the worktree are named after. `amx rename` is only the word the name column
+carries, so it can be said again whenever the work turns out to be about
+something else, and it is 24 characters at most because a name a column cuts in
+half is not a name. The id under it does not move, and `amx rename <id> <id>`
+hands the row back to whatever named it without you.
 
 Four dials say what is being launched and how it should behave:
 
@@ -317,7 +336,7 @@ the whole table.
 | `ctrl+u` | half a page of it, toward the edge |
 | `ctrl+d` | and half a page away |
 | `ctrl+x` | stop it, twice to forget it, and twice on a heading to stop and clear the group |
-| `ctrl+r` | call it something else |
+| `ctrl+r` | call it something else, as `amx rename` does from a shell |
 | `ctrl+g` | write the line in `$EDITOR` |
 | `alt+1..9` | reach the agent at that place on the wall |
 | `/` | find by name, task or `#12`, as you type; `esc` clears it |
@@ -857,6 +876,7 @@ started by hand, and can be again.
 ## Ending one
 
 ```sh
+amx interrupt <id>       # end the turn it is on, and leave the agent standing
 amx stop <id>            # asks what to do with the worktree and the branch
 amx stop <id> --force    # takes the defaults, asks nothing
 amx stop <id> --worktree keep --branch delete
@@ -864,6 +884,24 @@ amx stop <id> --delete   # and forget the record too
 amx resume <id>          # start it again on the conversation it had
 amx resume --all         # everything that was stopped, as after a server death
 ```
+
+`interrupt` ends the turn; `stop` ends the agent. `interrupt` sends `esc`,
+which a vendor at work reads as drop what you are doing, so the work stops
+where it stands and the agent is back at its prompt with the conversation
+behind it whole. The pane stands, the worktree stands and the record keeps that
+conversation, so an agent you interrupted is one you can go on talking to with
+the next `send`.
+
+A turn is the only thing that key can cut short, so `interrupt` exits `0`
+having sent one and refuses in two other ways. An agent stopped on a question
+is not working, and `esc` there dismisses the question, which is an answer
+nobody can take back: the question goes to stdout the way `result` puts it
+there, stderr names `amx answer <id> esc` as the verb that does mean to dismiss
+it, and the code is `2`. A command row has no vendor in it to read a key at
+all, and an agent amx can see no turn on — coming up, idle, parked or ended —
+has nothing for one to cut short: both are `1`, and the line says what to do
+instead. A `result` waiting on a turn somebody interrupted ends `1` as well,
+because that turn is over and there is no answer to hand back.
 
 Stopping asks the pane's process group to stop, waits, and only then kills it.
 An agent cut down mid-sentence loses the answer it was writing. The defaults
@@ -932,21 +970,23 @@ this loop written for one.
 removed. Each row carries `id`, `state`, `evidence`, `rule`, `age`, `since`,
 `last_event`, `ended`, `worked`, `seq`, `summary`, `question`, `options`,
 `result`, `source`, `exit`, `kind`, `pr`, `task`, `dir`, `worktree`, `branch`,
-`base`, `pane`, `socket`, `session` and `created`, so one `ls` call answers
-both "is it still going?" and "when was it last heard from?" for every agent
-at once. `age` keeps its three questions — how long a finished run worked, how
-long a waiting agent has waited, and how long since anything was heard from
-one still going — and `worked` is the spans of work the record has added up.
-The table's column is the human reading of the same spans; programs read the
-fields.
+`base`, `pane`, `socket`, `session`, `name` and `created`, so one `ls` call
+answers both "is it still going?" and "when was it last heard from?" for every
+agent at once. `age` keeps its three questions — how long a finished run
+worked, how long a waiting agent has waited, and how long since anything was
+heard from one still going — and `worked` is the spans of work the record has
+added up. The table's column is the human reading of the same spans; programs
+read the fields.
 
 `state` is one of `starting`, `working`, `waiting`, `idle`, `done`, `failed`,
 `stopped`, `unknown`. `done`, `failed` and `stopped` are endings; every other
 state is an agent still worth waiting on. `kind` says what an outstanding
-question is: `permission`, `question` or `trust`. `pr` is what the agent's
-branch has open, each entry a `number` and a `standing` — `merged`, `closed`,
-`draft`, `failing`, `changes`, `running`, `ready` or `open` — which is the word
-the number's colour is drawn from in the view.
+question is: `permission`, `question` or `trust`. `name` is what somebody here
+called the agent, and null where nobody has: a program drawing its own list of
+agents wants that word where there is one. `pr` is what the agent's branch has
+open, each entry a `number` and a `standing` — `merged`, `closed`, `draft`,
+`failing`, `changes`, `running`, `ready` or `open` — which is the word the
+number's colour is drawn from in the view.
 
 ## How amx knows what an agent is doing
 
