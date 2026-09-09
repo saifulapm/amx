@@ -998,9 +998,17 @@ date. A reader works it out at the moment you ask, in this order:
 1. The record ended it. An exit code was written, or a stop was. Nothing
    overrules that.
 2. The pane is gone. No pane, no agent — unless amx is the one that took it.
-   A pane let go after `park_after` is stamped on the record, so the agent
-   keeps the state it was idle in and the evidence is `parked`: the next
-   `enter`, `attach` or `resume` gives it a pane again.
+   A pane number on its own is not the question: tmux numbers panes from `%0`
+   for each server, so a record that outlived its server names a number the
+   next server handed to somebody else. A pane answers for the agent whose id
+   is written on it, else for the agent its session is named for, else for
+   nobody — amx opens every pane of its own in a session called `amx-<id>`,
+   and writes the id on a pane it adopts, which is sitting in a session of
+   yours. A record whose pane answers for somebody else has lost that pane and
+   reads as stopped, the same as a record whose pane is missing. A pane let go
+   after `park_after` is stamped on the record, so the agent keeps the state it
+   was idle in and the evidence is `parked`: the next `enter`, `attach` or
+   `resume` gives it a pane again.
 3. The hooks are fresh. Within 8 seconds, the agent's own events are the best
    account there is.
 4. The screen is all there is. Older than that, the pane is captured and
