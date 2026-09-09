@@ -10,9 +10,24 @@
 //!   target as an index, so a session named `0` collides with itself.
 //! * **A value read is not a liveness check.** `display -p -t <gone>` answers
 //!   emptily and happily. Liveness is the pane appearing in `list-panes`.
+//! * **A pane number is not an identity.** tmux numbers panes from `%0` per
+//!   server, and a server that died and started again hands the numbers out
+//!   afresh, so `%3` is whoever is standing there now. A record that outlived
+//!   its server and asked only whether `%3` was listed read another agent's
+//!   pane as its own: its phase, its screen, and the verbs aimed at it. So a
+//!   pane answers for the agent written on it, else for the agent its session
+//!   is named for, else for nobody — see [`Server::pane_owners`]. Every pane
+//!   amx places sits in a session called [`SESSION_PREFIX`]`<id>`, and a pane
+//!   amx adopts sits in somebody else's session and carries the id in
+//!   [`ID_OPTION`]. Whether an agent still has its pane is
+//!   [`Server::pane_answers_for`]; [`Server::pane_alive`] is for the questions
+//!   that are about a pane and not about an agent.
 //! * **Pane options are read with `show-options -p`,** never through a
 //!   `#{@option}` format: format lookup walks up to the global scope, so one
-//!   `set -g` would answer for every pane on the server.
+//!   `set -g` would answer for every pane on the server. The one exception is
+//!   the listing above, which reads [`ID_OPTION`] as a format because it wants
+//!   every pane's in one call: amx sets that option at pane scope and nowhere
+//!   else, so it has no global of its own for the walk to find.
 //! * **A capture is sanitized.** Control characters — including the 8-bit CSI
 //!   at U+009B, which `capture-pane` passes through verbatim — become spaces,
 //!   and so do the invisible format characters. Replaced, never deleted:
@@ -29,12 +44,25 @@
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// The oldest tmux amx runs against.
 pub const MINIMUM_VERSION: (u32, u32) = (3, 2);
+
+/// The pane option carrying the id of the agent a pane answers for.
+///
+/// Written on the panes amx did not open, which sit in somebody else's session
+/// and have no other way of saying whose they are — see
+/// [`crate::verbs::adopt`]. Pane-scoped options are tmux 3.0, which is under
+/// the floor above.
+pub const ID_OPTION: &str = "@amx-id";
+
+/// What the session holding an agent amx placed is called, before its id — see
+/// [`crate::spawn::place`].
+pub const SESSION_PREFIX: &str = "amx-";
 
 /// Where a tmux server listens.
 ///
@@ -106,6 +134,25 @@ macro_rules! tmux_id {
 tmux_id!(SessionId, '$', "session");
 tmux_id!(WindowId, '@', "window");
 tmux_id!(PaneId, '%', "pane");
+
+/// Which agent each pane on a server answers for, as one listing said.
+///
+/// Read once and asked many times: a wall of agents on one server costs that
+/// server's [`Server::pane_owners`] and a lookup apiece.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PaneOwners(HashMap<PaneId, String>);
+
+impl PaneOwners {
+    /// Whether this pane answers for that agent.
+    ///
+    /// Three things answer no, and they are one answer: a pane the server does
+    /// not list, a pane with somebody else's id written on it, and a pane in a
+    /// session named for somebody else. An agent whose pane answers for
+    /// somebody else has lost its pane as surely as one whose pane is gone.
+    pub fn pane_answers_for(&self, pane: &PaneId, id: &str) -> bool {
+        self.0.get(pane).is_some_and(|owner| owner == id)
+    }
+}
 
 /// What to create, and where.
 #[derive(Debug, Default, Clone)]
@@ -353,8 +400,36 @@ impl Server {
 
     /// Whether the pane is still there — asked of `list-panes`, because a
     /// value read answers for a gone pane as happily as for a live one.
+    ///
+    /// About a pane and not about an agent: pane numbers are handed out again,
+    /// so a record asking this of the number it holds is answered by whoever
+    /// is standing there now. [`Server::pane_answers_for`] is that question.
     pub fn pane_alive(&self, pane: &PaneId) -> bool {
         self.panes().is_ok_and(|panes| panes.contains(pane))
+    }
+
+    /// Which agent each pane on this server answers for.
+    ///
+    /// The one call a wall makes about a server, which is why the id is asked
+    /// for alongside the pane rather than read off each pane in turn.
+    ///
+    /// The stamp goes ahead of the session name in the format, because an id
+    /// carries no space and a session name may: two splits from the left read
+    /// the line whatever anybody called their session. A pane setting no
+    /// option prints an empty field, which is a second space rather than a
+    /// missing one.
+    pub fn pane_owners(&self) -> Result<PaneOwners> {
+        let format = format!("#{{pane_id}} #{{{ID_OPTION}}} #{{session_name}}");
+        Ok(owners(&self.run(&["list-panes", "-a", "-F", &format])?))
+    }
+
+    /// Whether this pane answers for that agent — see [`PaneOwners`].
+    ///
+    /// A server that will not answer is a server on which nothing can be shown
+    /// to be anybody's, and that reads as a pane an agent has lost.
+    pub fn pane_answers_for(&self, pane: &PaneId, id: &str) -> bool {
+        self.pane_owners()
+            .is_ok_and(|owners| owners.pane_answers_for(pane, id))
     }
 
     /// Read one format from a pane. A **value read**: an empty answer means
@@ -662,6 +737,36 @@ fn answered(printed: &str, marker: &str, ended_well: bool, asked: usize) -> Opti
     }
     screens.truncate(asked);
     Some(screens)
+}
+
+/// Who each pane in a `<pane id> <stamp> <session name>` listing answers for:
+/// the id written on it, else the id its session is named for.
+///
+/// A pane neither says anything about is left out, which is the answer for a
+/// pane in somebody's own session that amx never took over. So is a line in
+/// any other shape: this reads one format and no other.
+fn owners(listed: &str) -> PaneOwners {
+    let mut owners = HashMap::new();
+    for line in listed.lines() {
+        let Some((pane, rest)) = line.split_once(' ') else {
+            continue;
+        };
+        let Some((stamp, session)) = rest.split_once(' ') else {
+            continue;
+        };
+        let owner = match stamp.is_empty() {
+            false => stamp,
+            true => match session.strip_prefix(SESSION_PREFIX) {
+                Some(id) if !id.is_empty() => id,
+                _ => continue,
+            },
+        };
+        let Ok(pane) = PaneId::new(pane) else {
+            continue;
+        };
+        owners.insert(pane, owner.to_string());
+    }
+    PaneOwners(owners)
 }
 
 /// The id tmux listed beside `name`, in a listing of `<id> <name>` lines.
@@ -1471,6 +1576,74 @@ mod tests {
 
         server.unset_pane_option(&pane, "@amx-id").unwrap();
         assert_eq!(server.pane_option(&pane, "@amx-id").unwrap(), None);
+    }
+
+    #[test]
+    fn tmux_a_pane_answers_for_the_agent_written_on_it_or_the_one_its_session_names() {
+        let server = TestServer::new();
+        // A pane amx placed: its session is named for the agent, and there is
+        // nothing written on the pane itself.
+        let (_, placed) = server
+            .new_session(&Spawn {
+                name: Some(&format!("{SESSION_PREFIX}fix-login-a1b")),
+                ..idle()
+            })
+            .unwrap();
+        // And one amx adopted: somebody else's session, under a name with a
+        // space in it, with the id stamped on the pane.
+        let (_, adopted) = server
+            .new_session(&Spawn {
+                name: Some("my work"),
+                ..idle()
+            })
+            .unwrap();
+        server
+            .set_pane_option(&adopted, ID_OPTION, "port-importer-c3d")
+            .unwrap();
+
+        let owners = server.pane_owners().unwrap();
+        assert!(owners.pane_answers_for(&placed, "fix-login-a1b"));
+        assert!(owners.pane_answers_for(&adopted, "port-importer-c3d"));
+        // The half a pane number cannot answer: neither pane is the other
+        // agent's, and a record naming one of them holds nothing.
+        assert!(!owners.pane_answers_for(&placed, "port-importer-c3d"));
+        assert!(!owners.pane_answers_for(&adopted, "fix-login-a1b"));
+        assert!(!owners.pane_answers_for(&PaneId::new("%404").unwrap(), "fix-login-a1b"));
+
+        // What is written on a pane outranks the session it is sitting in:
+        // an adoption is somebody taking over a pane amx placed for somebody
+        // else.
+        server
+            .set_pane_option(&placed, ID_OPTION, "port-importer-c3d")
+            .unwrap();
+        let owners = server.pane_owners().unwrap();
+        assert!(!owners.pane_answers_for(&placed, "fix-login-a1b"));
+        assert!(owners.pane_answers_for(&placed, "port-importer-c3d"));
+
+        // The whole question, asked of the server in one call.
+        assert!(server.pane_answers_for(&adopted, "port-importer-c3d"));
+        assert!(!server.pane_answers_for(&adopted, "fix-login-a1b"));
+    }
+
+    #[test]
+    fn tmux_a_listing_of_owners_reads_the_stamp_before_the_session_name() {
+        // The lines tmux 3.7c prints for a pane amx placed and a pane amx
+        // adopted. An unset option is an empty field, so the pane amx placed
+        // has two spaces in a row, and a session name may hold spaces of its
+        // own: the stamp is ahead of it so that two splits from the left read
+        // the line either way.
+        let read = owners("%0  amx-fix-login-a1b\n%1 port-importer-c3d my work\n");
+        assert!(read.pane_answers_for(&PaneId::new("%0").unwrap(), "fix-login-a1b"));
+        assert!(read.pane_answers_for(&PaneId::new("%1").unwrap(), "port-importer-c3d"));
+
+        // A pane in somebody's own session with nothing written on it is
+        // nobody's agent, and neither is a session whose name merely starts
+        // the way amx's do.
+        let read = owners("%2  my work\n%3  amx\n");
+        for nobody in ["", "my work", "amx", "work"] {
+            assert!(!read.pane_answers_for(&PaneId::new("%2").unwrap(), nobody));
+            assert!(!read.pane_answers_for(&PaneId::new("%3").unwrap(), nobody));
+        }
     }
 
     #[test]
