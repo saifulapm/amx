@@ -19,7 +19,11 @@
 //!    is on the pane and nowhere else, so it is read from there at once rather
 //!    than waited for. They can say a turn is running without saying what it
 //!    is running — before its first tool call — and the line the vendor spins
-//!    is read the same way, see [`wants_the_doing`].
+//!    is read the same way, see [`wants_the_doing`]. One thing outranks them,
+//!    because it is amx's own and later: a turn `amx interrupt` cut short. A
+//!    record stamped after the last thing the vendor said is read off the pane
+//!    on the first look and needs no screen to settle, since amx ended that
+//!    turn itself — see [`cut_short`].
 //! 5. **The screen, against the rules.** Older than that, the pane is captured
 //!    and matched against the screens of the vendor the record says was started
 //!    in it — see [`own_screens`]. A rule that claims it decides.
@@ -102,7 +106,7 @@ use serde::Serialize;
 use std::io::Write;
 use std::path::Path;
 
-use crate::rules::{Claim, Ruleset};
+use crate::rules::{Claim, Ruleset, SETTLED_LOOKS};
 use crate::store::{Agent, Event, Meta, Phase, Question, Source, State, Still};
 use crate::tmux::Server;
 use crate::vendor::{Capability, Vendor};
@@ -707,7 +711,7 @@ fn wants_the_screen(
     if command {
         return true;
     }
-    if now.saturating_sub(heard(state)) <= FRESH {
+    if !cut_short(state) && now.saturating_sub(heard(state)) <= FRESH {
         return wants_the_question(screens, state) || wants_the_doing(screens, state);
     }
     true
@@ -739,6 +743,27 @@ fn wants_the_doing(screens: &Ruleset, state: &State) -> bool {
 /// hour out of touch.
 fn heard(state: &State) -> u64 {
     state.last_event.max(state.since)
+}
+
+/// Whether amx ended this agent's turn itself and has heard nothing since.
+///
+/// claude sends no hook for an interrupt. The key ends the turn where it
+/// stands, the vendor says nothing about it, and the record is left saying a
+/// turn is running: for [`FRESH`] seconds the hooks are believed over the pane,
+/// and after that the prompt the agent is sitting at has to hold still for
+/// [`SETTLED_LOOKS`] before a quiescent rule may end the turn, because a prompt
+/// and a mid-turn pause are the same bytes.
+///
+/// They are not the same bytes here. The stamp `amx interrupt` leaves is amx's
+/// own word that the turn is over — see [`crate::verbs::interrupt`] — so
+/// neither wait is buying anything: the pane is the only thing that can say
+/// what took the turn's place, and it is read at once and taken at its word.
+///
+/// Until the vendor speaks again. Anything heard after the stamp is the agent's
+/// own account of a moment the stamp is behind — the next turn somebody sent,
+/// the question it stopped on — and both waits are back.
+fn cut_short(state: &State) -> bool {
+    state.interrupted_at > heard(state)
 }
 
 /// The seconds a surface puts beside an agent.
@@ -888,7 +913,7 @@ pub fn read(
         return told(Phase::Stopped, Evidence::Gone, None);
     }
 
-    if quiet <= FRESH {
+    if quiet <= FRESH && !cut_short(state) {
         // The hooks decide the phase. Two things the record cannot carry are
         // read off the pane on the first look rather than on the one after
         // the freshness runs out. A record that says waiting and cannot say
@@ -908,6 +933,14 @@ pub fn read(
 
     let Some(screen) = capture() else {
         return told(Phase::Unknown, Evidence::Unknown, None);
+    };
+
+    // A turn amx cut short has ended already, so a quiescent rule has nothing
+    // left to tell apart and is handed its patience as served — see
+    // [`cut_short`]. Every other rule reads the screen it always did.
+    let held = match cut_short(state) {
+        true => SETTLED_LOOKS,
+        false => held,
     };
 
     match rules.claim(&screen, state.state, held) {
@@ -3237,11 +3270,16 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         placeheld.question = Some(A_PLACEHOLDER.to_string());
         let mut running = state(Phase::Working, 1_000);
         running.summary = Some("Running Bash".to_string());
+        // A turn amx cut short is read off the pane from the moment the key
+        // landed, however fresh the record is and whatever it says it is doing.
+        let mut cut = running.clone();
+        cut.interrupted_at = 1_001;
 
         let records = [
             state(Phase::Starting, 1_000),
             state(Phase::Working, 1_000),
             running,
+            cut,
             state(Phase::Waiting, 1_000),
             asked,
             placeheld,
@@ -3625,6 +3663,58 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(verdict.evidence, Evidence::Hooks);
         assert_eq!(verdict.rule.as_deref(), Some("idle_prompt"), "and says why");
         assert_eq!(verdict.age, 100);
+    }
+
+    #[test]
+    fn reader_ends_a_turn_amx_cut_short_as_soon_as_the_prompt_is_up() {
+        // claude fires no hook for an interrupt, so the record is left saying a
+        // turn is running that amx itself ended: the freshness window would
+        // hold it there, and the idle screen it is sitting at would then have
+        // to hold still for half a minute before a quiescent rule could speak.
+        // The stamp is amx's own word that the turn is over, so the pane is
+        // read on the first look and the rule that reads a prompt may end it.
+        let mut cut = state(Phase::Working, 1_000);
+        cut.interrupted_at = 1_002;
+
+        let verdict = decided(&cut, true, Some(IDLE_SCREEN), 1_003);
+        assert_eq!(verdict.phase, Phase::Idle);
+        assert_eq!(verdict.evidence, Evidence::Screen);
+        assert_eq!(verdict.rule.as_deref(), Some("idle_prompt"));
+    }
+
+    #[test]
+    fn reader_reads_a_cut_turn_that_is_still_drawing_as_working() {
+        // The key is sent and nothing waits for it: a vendor part way through a
+        // tool call is still spinning when the next look arrives. The stamp
+        // says to go to the pane, not what to find there.
+        let mut cut = state(Phase::Working, 1_000);
+        cut.interrupted_at = 1_002;
+
+        let verdict = decided(&cut, true, Some(A_WORKING_SCREEN), 1_003);
+        assert_eq!(verdict.phase, Phase::Working);
+        assert_eq!(verdict.evidence, Evidence::Screen);
+        assert_eq!(verdict.rule.as_deref(), Some("spinner"));
+    }
+
+    #[test]
+    fn reader_takes_a_hook_after_an_interrupt_as_the_agent_speaking_again() {
+        // Something the vendor said after the key is its own account of a
+        // moment the stamp is behind — a turn somebody sent next, a question it
+        // stopped on — and the record is the best evidence there is again.
+        let mut spoke = state(Phase::Working, 1_010);
+        spoke.interrupted_at = 1_002;
+
+        let fresh = decided(&spoke, true, Some(IDLE_SCREEN), 1_012);
+        assert_eq!(fresh.phase, Phase::Working);
+        assert_eq!(fresh.evidence, Evidence::Hooks);
+        assert_eq!(fresh.rule, None, "and the screen decided nothing");
+
+        // And once it goes quiet the screen has to hold still to end the turn,
+        // the way it does over any other running turn.
+        let quiet = decided(&spoke, true, Some(IDLE_SCREEN), 1_100);
+        assert_eq!(quiet.phase, Phase::Working);
+        assert_eq!(quiet.evidence, Evidence::Hooks);
+        assert_eq!(quiet.rule.as_deref(), Some("idle_prompt"), "unsettled");
     }
 
     /// claude's chrome, whole, with `tick` standing in for whatever changes

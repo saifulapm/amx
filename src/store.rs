@@ -362,6 +362,16 @@ pub struct State {
     /// with no pane behind them, and only one of them is coming back on the
     /// next enter, attach or resume.
     pub parked_at: u64,
+    /// Epoch seconds when `amx interrupt` cut this agent's turn short, and zero
+    /// for one whose turns have all ended on their own.
+    ///
+    /// claude sends no hook for an interrupt: the key ends the turn where it
+    /// stands and the vendor says nothing about it, so the record is left
+    /// saying a turn is running that amx itself ended. The stamp is what says
+    /// otherwise, and a reader weighs it against the last thing the agent said
+    /// — see [`crate::derive::read`]. It is written with the observing hand,
+    /// like `parked_at` above: amx typed at a pane and heard nothing back.
+    pub interrupted_at: u64,
     /// Epoch seconds when somebody last looked at this agent, and zero for one
     /// nobody has opened. Read against `last_event`, it says whether what the
     /// agent has to say came before or after the last look at it.
@@ -591,6 +601,7 @@ struct Wire {
     last_event: u64,
     ended: u64,
     parked_at: u64,
+    interrupted_at: u64,
     seen: u64,
     worked: u64,
     still: Option<Still>,
@@ -694,6 +705,7 @@ impl From<State> for Wire {
             last_event,
             ended,
             parked_at,
+            interrupted_at,
             seen,
             worked,
             still,
@@ -744,6 +756,7 @@ impl From<State> for Wire {
             last_event,
             ended,
             parked_at,
+            interrupted_at,
             seen,
             worked,
             still,
@@ -783,6 +796,7 @@ impl From<Wire> for State {
             last_event: wire.last_event,
             ended: wire.ended,
             parked_at: wire.parked_at,
+            interrupted_at: wire.interrupted_at,
             seen: wire.seen,
             worked: wire.worked,
             still: wire.still,
@@ -1412,6 +1426,29 @@ mod tests {
         // never let go.
         std::fs::write(agent.dir().join(STATE), r#"{"state":"idle"}"#).unwrap();
         assert_eq!(agent.state().unwrap().parked_at, 0);
+    }
+
+    #[test]
+    fn store_keeps_the_moment_it_cut_a_turn_short() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        let writer = agent.writer().unwrap();
+
+        let working = writer.update_state(|s| s.state = Phase::Working).unwrap();
+        assert_eq!(working.interrupted_at, 0, "nothing has been cut short");
+
+        // The stamp goes on the record without moving `last_event`, the way
+        // the parked stamp does: a key amx typed is not news from the agent.
+        let cut = writer.observe(|s| s.interrupted_at = 1_700).unwrap();
+        assert_eq!(cut.interrupted_at, 1_700);
+        assert_eq!(cut.last_event, working.last_event);
+        assert_eq!(written(&agent)["interrupted_at"], 1_700);
+        assert_eq!(agent.state().unwrap().interrupted_at, 1_700);
+
+        // And a document from before the field existed reads as an agent whose
+        // turn nothing ever cut short.
+        std::fs::write(agent.dir().join(STATE), r#"{"state":"working"}"#).unwrap();
+        assert_eq!(agent.state().unwrap().interrupted_at, 0);
     }
 
     #[test]

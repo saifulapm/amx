@@ -129,10 +129,20 @@ fn runs_a_command(view: &View) -> bool {
 /// key is about to end. A `result` reading the log a moment later would
 /// otherwise hand that answer back as this turn's, which is the mistake
 /// nothing downstream can undo.
+///
+/// The log is for whoever reads the whole history; the stamp beside it is for
+/// whoever reads the state document, which is every reader of a row. It says
+/// the turn on that document is one amx ended itself, so a reader need not sit
+/// out the wait a turn nobody cut short is owed — see [`crate::derive::read`].
+/// Written with the observing hand, because nothing was heard: the phase is
+/// still the vendor's last word, and a stamp for a key amx typed must not have
+/// the next reader believe this document over the pane it was typed at.
 fn recorded(agent: &Agent) -> Result<()> {
-    agent
-        .writer()?
-        .append(&Event::new(INTERRUPT, serde_json::json!({})))
+    let writer = agent.writer()?;
+    let event = Event::new(INTERRUPT, serde_json::json!({}));
+    writer.append(&event)?;
+    writer.observe(|state| state.interrupted_at = event.at)?;
+    Ok(())
 }
 
 /// Exit `BLOCKED`, with the question this agent is stopped on where the answer
@@ -352,11 +362,25 @@ mod tests {
         let root = tempfile::TempDir::new().unwrap();
         let agent =
             Agent::create(root.path(), &reading(Phase::Working, Evidence::Hooks).meta).unwrap();
+        let turn = agent
+            .writer()
+            .unwrap()
+            .update_state(|state| state.state = Phase::Working)
+            .unwrap();
 
         recorded(&agent).unwrap();
 
         let events = agent.events().unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, INTERRUPT);
+
+        // And the stamp beside it, which is what tells a reader the turn on the
+        // record is one amx ended itself. Written with the observing hand: amx
+        // typed at the pane and heard nothing back, so the record is no fresher
+        // than it was.
+        let state = agent.state().unwrap();
+        assert_eq!(state.interrupted_at, events[0].at);
+        assert_eq!(state.last_event, turn.last_event, "and nothing was heard");
+        assert_eq!(state.state, Phase::Working, "nor did the phase move");
     }
 }
