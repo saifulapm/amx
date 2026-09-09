@@ -198,14 +198,23 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         ),
         _ => 0,
     };
-    let visible = middle.height - floating;
+    // The room the card takes off the band, which is one row more than it
+    // draws: a blank row under its last, so the list below stands off it
+    // rather than against it. Where the band has no room for that row the card
+    // keeps its rows and the row is what goes, because the only row left to
+    // take it is the row of the list `card_height` leaves standing.
+    let room = match floating {
+        0 => 0,
+        drawn => (drawn + 1).min(middle.height - 1),
+    };
+    let visible = middle.height - room;
     // Where the card floats: under the line its own agent stands on, with the
     // rows below that line moved down to make the room.
     let card_over = screen
         .card
         .as_ref()
         .filter(|_| floating > 0)
-        .map(|card| under(middle, hangs_off(&screen.list, &card.id, visible), floating));
+        .map(|card| under(middle, hangs_off(&screen.list, &card.id, visible), room));
     // How many rows the list has in front of the card, told back to it the
     // way the map and the scroll are: the fold in the completed group is cut
     // to this, by the next rebuild rather than under the frame being drawn.
@@ -245,7 +254,13 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
             prs,
             screen.answering(),
             &screen.scroll,
-            floated,
+            // The rows it draws rather than the room it took, so the spine
+            // stops on the card's last row and nothing is drawn on the row
+            // under it.
+            Rect {
+                height: floating,
+                ..floated
+            },
             theme,
         );
     }

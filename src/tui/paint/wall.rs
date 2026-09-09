@@ -37,12 +37,14 @@ use crate::tui::rows::{self, Group, Item, List, Tally, Under};
 
 /// The agents themselves.
 ///
-/// `floated` is the card's own box, where one is up. The rows above it are
-/// drawn where they stood and the rows under it are moved down by its height,
-/// so the card stands between the line it hangs off and the rest of the list
-/// rather than over any of them. What that pushes off the bottom of the band
-/// is what somebody gets back by closing it, and what is left above the card
-/// is what the cursor is kept inside.
+/// `floated` is the room the card takes, where one is up, which is one row
+/// more than the card draws. The rows above it are drawn where they stood and
+/// the rows under it are moved down by that room, so the card stands between
+/// the line it hangs off and the rest of the list rather than over any of
+/// them, with a blank row between its last row and the row that follows. What
+/// that pushes off the bottom of the band is what somebody gets back by
+/// closing it, and what is left above the card is what the cursor is kept
+/// inside.
 pub(super) fn agents(
     frame: &mut Frame,
     list: &List,
@@ -89,7 +91,8 @@ pub(super) fn agents(
         })
         .collect();
     // The room the card takes, given up by the rows under the line it hangs
-    // off: blank here, because the card draws over them itself.
+    // off: blank here, because the card draws over all but the last of them
+    // itself, and the last is the row it stands off the list on.
     if let Some(card) = floated {
         let at = (card.y - area.y) as usize;
         lines.splice(at..at, repeat_n(Line::raw(""), card.height as usize));

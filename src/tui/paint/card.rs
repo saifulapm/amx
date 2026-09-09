@@ -489,8 +489,9 @@ pub(super) fn card_rows(
     rows.min(u16::MAX as usize) as u16
 }
 
-/// The `height` rows under the line the card hangs off, which is where it
-/// floats.
+/// The `height` rows under the line the card hangs off, which is the room the
+/// card takes: one row more than it draws, the last of them blank, so the list
+/// below starts clear of the card rather than against its last row.
 ///
 /// Under that line because the card is a thing said about it: the rows above
 /// stay where they are and the rows below give up the room, so what the card
@@ -1603,6 +1604,47 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("busy-b2c")),
             "with the rows that were under it moved down: {screen:?}"
+        );
+    }
+
+    #[test]
+    fn card_leaves_a_blank_row_between_itself_and_the_row_under_it() {
+        // Two agents under one heading, so what follows the card is a row of
+        // the list rather than the blank row a heading of its own stands on.
+        let group = || {
+            vec![
+                view("ask-a1b", Phase::Waiting, None, 29),
+                view("ask-c3d", Phase::Waiting, None, 12),
+            ]
+        };
+        let question = || asking(&["the sqlite one"], Some(Kind::Question));
+        let screen = drawn(group(), Some(question()), (60, 20));
+
+        let foot = screen
+            .iter()
+            .rposition(|line| line.starts_with("  ╰"))
+            .expect("the foot of the card");
+        assert!(
+            screen[foot + 1].is_empty(),
+            "the card takes a blank row under its last row: {screen:?}"
+        );
+        assert!(
+            screen[foot + 2].contains("ask-c3d"),
+            "and the next agent stands under that: {screen:?}"
+        );
+
+        // On a band with no room for the blank row the card keeps its rows and
+        // the blank row is what goes, because the row it would take is the
+        // last row of the list.
+        let tight = drawn(group(), Some(question()), (60, 5));
+        assert_eq!(
+            card_lines(&tight).len(),
+            2,
+            "the card draws what it drew: {tight:?}"
+        );
+        assert!(
+            tight.iter().any(|line| line.contains("ask-a1b")),
+            "with a row of the list still standing: {tight:?}"
         );
     }
 
