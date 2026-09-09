@@ -258,13 +258,17 @@ fn edge_colour(composer: &Composer, theme: Theme) -> Style {
 
 /// The rule and, under it, the line somebody is typing.
 ///
-/// The line is drawn bold with a block for the cursor, because it is the one
-/// thing on the screen that has not happened yet and the only thing left
-/// carrying weight — everything behind is dimmed by the same call. The block
-/// is the only cursor there is: nothing is asked of the terminal's own, which
-/// is hidden for as long as the view holds the screen, so what somebody is
-/// looking at is a cell amx painted rather than one a terminal blinks on and
-/// off under it.
+/// The line is drawn at the weight anything else typed into a terminal is,
+/// with a block for the cursor. What says where somebody is is the block; the
+/// weight never was, and a line set in bold reads as words asking to be
+/// stressed rather than as the ones they are about to send. What lifts the
+/// band off the screen is the dimming behind it, which is one call and takes
+/// the whole wall.
+///
+/// The block is the only cursor there is: nothing is asked of the terminal's
+/// own, which is hidden for as long as the view holds the screen, so what
+/// somebody is looking at is a cell amx painted rather than one a terminal
+/// blinks on and off under it.
 ///
 /// Past the cap it is the rows around the cursor that are drawn, because the
 /// cursor is where somebody is typing — but the chevron stays on the top row
@@ -312,10 +316,10 @@ pub(super) fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect,
                 None if from + down == row => spans.extend(under_the_block(
                     text,
                     column.min(room.saturating_sub(1)),
-                    bold(),
-                    bold().fg(theme.accent),
+                    Style::new(),
+                    Style::new().fg(theme.accent),
                 )),
-                None => spans.push(Span::styled(text.clone(), bold())),
+                None => spans.push(Span::styled(text.clone(), Style::new())),
             }
             Line::from(spans)
         })
@@ -1331,6 +1335,39 @@ mod tests {
             block(&typing_at(&"x".repeat(116), 59), TALL, 27),
             Some(59),
             "and the one before it is the last of the first row"
+        );
+    }
+
+    #[test]
+    fn composer_draws_the_line_at_the_weight_the_rest_of_the_view_is_typed_at() {
+        // Three rows with the cursor walked back into the last of them, so the
+        // row it stands on and the rows drawn whole above it are both on the
+        // screen.
+        let screen = typing_at("port the importer\nand its tests\nand the docs", 4);
+        let cells = cells(&screen, TALL);
+        for row in 26..=28 {
+            assert!(
+                (0..TALL.0).all(|column| !cells[(column, row)].modifier.contains(Modifier::BOLD)),
+                "no cell of the line being typed carries weight: row {row}"
+            );
+        }
+
+        // The block is what says where the next character lands, and it says
+        // it the way it always has: the cell turned over, in the accent.
+        let cell = cells[(10, 28)].clone();
+        assert_eq!(cell.symbol(), "d");
+        assert!(
+            cell.modifier.contains(Modifier::REVERSED),
+            "{:?}",
+            cell.modifier
+        );
+        assert_eq!(cell.fg, theme().accent);
+
+        // And the keys under the line keep theirs, which is what makes that
+        // row read as a keyboard rather than as prose.
+        assert!(
+            (0..TALL.0).any(|column| cells[(column, 29)].modifier.contains(Modifier::BOLD)),
+            "the keys under the line are still keys"
         );
     }
 
