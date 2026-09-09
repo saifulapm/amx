@@ -155,10 +155,10 @@ mod tests {
         painted(&showing(views, card), size)
     }
 
-    /// What a heading line says in front of the rule that carries it out to
-    /// the edge: the label, and how many failed under it where any did.
+    /// What a heading line says: the group's own words, the count where the
+    /// group is shut, and how many failed under it where any did.
     fn heading_of(line: &str) -> &str {
-        line.split('┈').next().unwrap_or_default().trim()
+        line.trim()
     }
 
     /// A screen with room for the bands above and below the list, the space
@@ -256,7 +256,7 @@ mod tests {
             None,
             WALL,
         );
-        assert_eq!(heading_of(&one[3]), "COMPLETED");
+        assert_eq!(heading_of(&one[3]), "Completed");
         assert!(
             !one.iter().any(|line| line.contains("nobody asking")),
             "one agent and there is something to read off the rows: {one:?}"

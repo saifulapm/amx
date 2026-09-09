@@ -19,15 +19,15 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use std::iter::repeat_n;
 use std::sync::OnceLock;
 
 use super::empty;
-use super::style::{bold, colour, dim, name_colour, request_colour};
-use super::text::{RULE, inert, width_of};
+use super::style::{colour, dim, name_colour, request_colour};
+use super::text::inert;
 use crate::derive::{self, Evidence, View};
 use crate::pr::Pr;
 use crate::store::Phase;
@@ -169,8 +169,8 @@ fn line(
 ) -> Line<'static> {
     let line = match item {
         Item::Heading(under, tally) => match under {
-            Under::Group(group) => heading(group, tally, widths, width, theme),
-            Under::Project(_) => path_heading(list.title(under), tally, widths, width, theme),
+            Under::Group(group) => heading(group, tally, theme),
+            Under::Project(_) => path_heading(list.title(under), tally, width, theme),
         },
         Item::Fold(hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
         Item::Agent(_) => match list.agent(item) {
@@ -219,97 +219,68 @@ fn barred(line: Line<'static>, width: usize, theme: Theme) -> Line<'static> {
 
 /// A heading: what it stands for, and what it is answerable for.
 ///
-/// Uppercase and bold, which is what makes a heading out of a label without a
-/// second type size — the only uppercase words on the screen. Then a dim rule
-/// run out to the group's count, right-aligned in the column the ages under it
-/// are right-aligned in, so the right edge of the screen is one line of
-/// numbers rather than two. The count is there open or shut: a person reading
-/// down the margin is asking how many, and a number that came and went with
-/// the rows would make them count instead.
+/// The group's own words, and the line ends there. What makes it a heading is
+/// the blank row over it and the rows indented under it, so it needs neither
+/// case nor weight to be read as one — and with no number waiting at the far
+/// edge there is nothing for a rule to carry the eye out to. That leaves the
+/// right margin of the wall the ages alone.
 ///
-/// The failures are said in front of the rule, because that is the one thing a
+/// The count is there only while the rows are not: an open group is counted by
+/// the rows a person is looking at, and saying it again in a number is the same
+/// fact twice. Shut, the number is all that stands in for them, so it follows
+/// the label rather than the edge.
+///
+/// The failures come after it either way, because that is the one thing a
 /// heading is worth reading without opening it — an agent that failed is the
 /// reason somebody came to the screen.
-fn heading(
-    group: Group,
-    tally: Tally,
-    widths: Widths,
-    width: usize,
-    theme: Theme,
-) -> Line<'static> {
-    let label = group.title().to_uppercase();
-    let failures = match tally.failures {
-        0 => String::new(),
-        failures => format!("· {failures} failed "),
-    };
-    // What the rule is left: the space in front of the label, the label, the
-    // space after it, the failures, and the gap and the count at the far end.
-    let spent = 1 + width_of(&label) + 1 + width_of(&failures) + GAP + widths.age;
-    let rule = RULE.repeat(width.saturating_sub(spent).max(1));
-    // The group that wants a person carries the one colour up here, on the
-    // label and on the count alike. The group nothing is going to happen to
-    // again takes the colour of a thing that has ended, so the margin says
-    // which of its numbers is still moving.
-    let (label_paint, count_paint) = match group {
-        Group::NeedsInput => {
-            let waiting = Style::new().fg(theme.waiting).add_modifier(Modifier::BOLD);
-            (waiting, waiting)
-        }
-        Group::Completed => (bold(), Style::new().fg(theme.stopped)),
-        _ => (bold(), dim()),
+fn heading(group: Group, tally: Tally, theme: Theme) -> Line<'static> {
+    // Dim like the rows under it, with the one exception the wall makes up
+    // here: the group that wants a person says so in colour, which is what the
+    // weight used to be spent on and reads louder than it did.
+    let label = match group {
+        Group::NeedsInput => Style::new().fg(theme.waiting),
+        _ => dim(),
     };
     Line::from(vec![
-        Span::styled(format!(" {label} "), label_paint),
-        Span::styled(failures, Style::new().fg(theme.failed)),
-        Span::styled(rule, dim()),
-        Span::raw(" ".repeat(GAP)),
-        Span::styled(
-            grid::padl(&tally.members.to_string(), widths.age),
-            count_paint,
-        ),
+        Span::styled(format!(" {}{}", group.title(), count(tally)), label),
+        Span::styled(failures(tally), Style::new().fg(theme.failed)),
     ])
 }
 
 /// The heading over a project, which is a path rather than a word.
 ///
-/// The same rule and the same right-aligned count as the heading over a group,
-/// so the two axes read as one document and the right margin is one line of
-/// numbers on either. What changes is the label: a path is not a word, so it is
-/// not uppercased, and the weight goes on the last segment with the parents it
-/// hangs off dim behind it — which gives a left-heavy string of no fixed length
-/// a bright end to find it by.
+/// The same words in the same places as the heading over a group, so the two
+/// axes read as one document: dim end to end, no weight on the last segment,
+/// and the count only where the rows are shut.
 ///
 /// A path too long for the heading loses its middle rather than its end, which
 /// is [`grid::elide`]'s business: the end is the segment that says which
 /// worktree of a project this is, and cutting there would leave every one of
 /// them reading the same.
-fn path_heading(
-    title: String,
-    tally: Tally,
-    widths: Widths,
-    width: usize,
-    theme: Theme,
-) -> Line<'static> {
-    let failures = match tally.failures {
-        0 => String::new(),
-        failures => format!("· {failures} failed "),
-    };
-    let path = grid::elide(&title, grid::path_room(width, failures.trim_end()));
-    // Everything up to the last separator is where the directory is; what
-    // comes after it is which directory it is.
-    let cut = path.rfind('/').map(|at| at + 1).unwrap_or(0);
-    // The same arithmetic the group heading's rule is left over from.
-    let spent = 1 + width_of(&path) + 1 + width_of(&failures) + GAP + widths.age;
-    let rule = RULE.repeat(width.saturating_sub(spent).max(1));
+fn path_heading(title: String, tally: Tally, width: usize, theme: Theme) -> Line<'static> {
+    let failed = failures(tally);
+    let path = grid::elide(&title, grid::path_room(width, failed.trim()));
     Line::from(vec![
-        Span::styled(format!(" {}", &path[..cut]), dim()),
-        Span::styled(path[cut..].to_string(), bold()),
-        Span::raw(" "),
-        Span::styled(failures, Style::new().fg(theme.failed)),
-        Span::styled(rule, dim()),
-        Span::raw(" ".repeat(GAP)),
-        Span::styled(grid::padl(&tally.members.to_string(), widths.age), dim()),
+        Span::styled(format!(" {path}{}", count(tally)), dim()),
+        Span::styled(failed, Style::new().fg(theme.failed)),
     ])
+}
+
+/// How many agents a heading answers for, said only where the rows it stands
+/// over are not on the screen to be counted.
+fn count(tally: Tally) -> String {
+    match tally.shut {
+        true => format!(" {}", tally.members),
+        false => String::new(),
+    }
+}
+
+/// And how many of them failed, said whether the group is open or shut.
+fn failures(tally: Tally) -> String {
+    match tally.failures {
+        0 => String::new(),
+        failures => format!(" · {failures} failed"),
+    }
 }
 
 /// An agent's row: what state it is in, what it is called, what its work is
@@ -469,8 +440,8 @@ fn request_column(list: &List) -> usize {
         .unwrap_or(0)
 }
 
-/// What stands between two columns of the list, whether that is a name and a
-/// summary or a heading's rule and its count.
+/// What stands between two columns of a row, whether that is a name and a
+/// summary or a summary and the seconds at the edge.
 const GAP: usize = 2;
 
 /// One line of it, so a paragraph of an answer cannot take over a row.
@@ -579,7 +550,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
-    use ratatui::style::Color;
+    use ratatui::style::{Color, Modifier};
     use std::path::PathBuf;
     use std::time::Instant;
 
@@ -741,15 +712,10 @@ mod tests {
         painted(&showing(views, card), size)
     }
 
-    /// What a heading line says in front of the rule that carries it out to
-    /// the edge: the label, and how many failed under it where any did.
+    /// What a heading line says: the group's own words, the count where the
+    /// group is shut, and how many failed under it where any did.
     fn heading_of(line: &str) -> &str {
-        line.split('┈').next().unwrap_or_default().trim()
-    }
-
-    /// And the count it ends in, which is the last thing on the line.
-    fn counted(line: &str) -> &str {
-        line.split_whitespace().next_back().unwrap_or_default()
+        line.trim()
     }
 
     /// The same, once the list has learned the screen's size: the first
@@ -997,7 +963,7 @@ mod tests {
             "{:?}",
             screen[0]
         );
-        assert_eq!(heading_of(&screen[2]), "NEEDS INPUT");
+        assert_eq!(heading_of(&screen[2]), "Needs input");
         assert!(
             screen[3].starts_with("  ✻ ask-a1b"),
             "two cells of indent, the glyph and a space, and then the name: \
@@ -1006,7 +972,7 @@ mod tests {
         );
         assert!(screen[3].ends_with("1m"), "{:?}", screen[3]);
         assert_eq!(screen[4], "", "the next group stands off from this one");
-        assert_eq!(heading_of(&screen[5]), "WORKING");
+        assert_eq!(heading_of(&screen[5]), "Working");
         assert!(
             screen[6].starts_with(&format!("  {} fix-login-b2c", pulse(0))),
             "{:?}",
@@ -1160,7 +1126,7 @@ mod tests {
             (60, 10),
         );
 
-        assert!(screen[2].starts_with(" /src/api "), "{:?}", screen[2]);
+        assert_eq!(screen[2], " /src/api", "{screen:?}");
         assert!(screen[3].contains("ask-a1b"), "{:?}", screen[3]);
         assert!(
             screen[3].contains("waiting"),
@@ -1169,7 +1135,7 @@ mod tests {
         );
         assert!(screen[4].contains("done"), "{:?}", screen[4]);
         assert_eq!(screen[5], "", "the next project stands off from this one");
-        assert!(screen[6].starts_with(" /src/web "), "{:?}", screen[6]);
+        assert_eq!(screen[6], " /src/web", "{screen:?}");
 
         // One column, so the states read down the screen rather than wandering
         // with the length of the name above them. Counted in characters: the
@@ -1187,7 +1153,7 @@ mod tests {
             &showing(vec![view("busy-a1b", Phase::Working, None, 3)], None),
             (60, 8),
         );
-        assert_eq!(heading_of(&screen[1]), "WORKING");
+        assert_eq!(heading_of(&screen[1]), "Working");
         assert!(
             !screen[2].contains("working"),
             "twice on one screen is a column of noise: {:?}",
@@ -1265,7 +1231,23 @@ mod tests {
     }
 
     #[test]
-    fn headings_count_their_agents_whether_or_not_the_rows_are_under_them() {
+    fn headings_read_the_groups_own_words_and_stop_there() {
+        // The words somebody would say out loud, and nothing after them: no
+        // rule, because there is no number at the far end to carry the eye out
+        // to, and the right margin is the ages alone.
+        let screen = drawn(a_fleet(), None, (60, 12));
+
+        assert_eq!(screen[3], " Needs input");
+        assert_eq!(screen[6], " Working");
+        assert!(
+            !screen.iter().any(|line| line.contains('┈')),
+            "nothing is run out to the edge of the wall: {screen:?}"
+        );
+    }
+
+    #[test]
+    fn headings_count_their_agents_only_once_the_rows_are_shut() {
+        let size = (60, 8);
         let mut screen = showing(
             vec![
                 view("busy-a1b", Phase::Working, None, 3),
@@ -1275,23 +1257,35 @@ mod tests {
         );
 
         assert_eq!(
-            counted(&painted(&screen, (60, 8))[1]),
-            "2",
-            "the margin of a screen is a line of numbers, open or shut"
+            painted(&screen, size)[1],
+            " Working",
+            "the rows under an open heading are the count, and a number beside \
+             them is the same fact drawn twice"
         );
 
         screen.list.up();
         screen.list.shut_or_open();
-        let painted = painted(&screen, (60, 8));
-        assert_eq!(counted(&painted[1]), "2");
-        assert!(
-            !painted.iter().any(|line| line.contains("busy-a1b")),
-            "and shut, the count is all that is standing in for them: {painted:?}"
+        let drawn = painted(&screen, size);
+        assert_eq!(
+            drawn[1], " Working 2",
+            "shut, the count is all that stands in for them, so it follows the \
+             label rather than the far edge"
         );
+        assert!(
+            !drawn.iter().any(|line| line.contains("busy-a1b")),
+            "{drawn:?}"
+        );
+        assert_eq!(
+            word_colour(&screen, size, 1, "2"),
+            Color::Reset,
+            "and it is the label's own paint: a count is not a second state"
+        );
+        assert!(word_modifier(&screen, size, 1, "2").contains(Modifier::DIM));
     }
 
     #[test]
     fn headings_say_how_many_failed_whether_or_not_the_rows_are_under_them() {
+        let size = (60, 8);
         let mut screen = showing(
             vec![
                 view("done-a1b", Phase::Done, Some("did it"), 60),
@@ -1301,17 +1295,30 @@ mod tests {
         );
 
         assert_eq!(
-            heading_of(&painted(&screen, (60, 8))[1]),
-            "COMPLETED · 1 failed",
+            painted(&screen, size)[1],
+            " Completed · 1 failed",
             "a screenful of headings says how it went without being opened"
+        );
+        assert_eq!(
+            word_colour(&screen, size, 1, "· 1 failed"),
+            theme().failed,
+            "the one thing up here worth a colour besides the group that wants \
+             a person"
         );
 
         screen.list.up();
         screen.list.shut_or_open();
         assert_eq!(
-            heading_of(&painted(&screen, (60, 8))[1]),
-            "COMPLETED · 1 failed",
-            "shutting a group hides the detail of a failure, never the fact"
+            painted(&screen, size)[1],
+            " Completed 2 · 1 failed",
+            "shutting a group hides the detail of a failure, never the fact, \
+             and the failures keep their place after the count"
+        );
+        assert_eq!(
+            word_colour(&screen, size, 1, "2 ·"),
+            Color::Reset,
+            "a group that has ended does not paint its count the colour of a \
+             stopped agent: the margin that number stood in is gone"
         );
     }
 
@@ -1324,49 +1331,70 @@ mod tests {
         let screen = drawn(a_fleet(), None, (60, 12));
         assert!(screen[0].contains("running"), "the header: {screen:?}");
         assert_eq!(screen[2], "", "the space over the list");
-        assert_eq!(heading_of(&screen[3]), "NEEDS INPUT", "the first heading");
+        assert_eq!(heading_of(&screen[3]), "Needs input", "the first heading");
         assert!(screen[4].contains("ask-a1b"), "{screen:?}");
         assert_eq!(screen[5], "", "a blank line stands the next group off");
-        assert_eq!(heading_of(&screen[6]), "WORKING");
+        assert_eq!(heading_of(&screen[6]), "Working");
         assert!(screen[7].contains("busy-b2c"), "{screen:?}");
     }
 
     #[test]
-    fn headings_carry_the_weight_on_the_label_and_none_of_it_on_the_rule() {
-        // Case and weight are what make a heading here, with no second type
-        // size to make it with, and every heading wears them: where the cursor
-        // is standing is said by the bar under one line, not by the headings
-        // around it putting weight down and picking it up.
+    fn headings_carry_no_weight_and_one_colour() {
+        // What makes a heading here is the blank row over it and the rows
+        // indented under it, not weight: the wall spends none. So a heading
+        // reads as quiet as the summaries beside the rows it heads, and the
+        // one thing that breaks the quiet is a group waiting on a person.
         let screen = showing(a_fleet(), None);
         let cells = cells(&screen, (60, 10));
-        for row in [2, 5] {
-            let label = cells[(1, row)].clone();
-            assert!(
-                label.modifier.contains(Modifier::BOLD),
-                "the heading on row {row} is bold: {:?}",
-                label.modifier
-            );
-        }
+
+        let asking = cells[(1, 2)].clone();
         assert_eq!(
-            cells[(1, 2)].fg,
+            asking.fg,
             theme().waiting,
             "the group that wants a person is the one carrying colour up here"
         );
-        assert_eq!(
-            cells[(1, 5)].fg,
-            Color::Reset,
-            "and the rest of them do not"
+        assert!(
+            !asking.modifier.contains(Modifier::BOLD),
+            "and it carries it instead of weight: {:?}",
+            asking.modifier
         );
 
-        // The rule that carries the label out to its count carries none of the
-        // weight, which is what leaves the label the loud thing on the line.
-        let rule = cells[(30, 2)].clone();
-        assert_eq!(rule.symbol(), "┈", "the rule runs out to the count");
+        let working = cells[(1, 5)].clone();
+        assert_eq!(working.fg, Color::Reset, "and the rest of them do not");
         assert!(
-            rule.modifier.contains(Modifier::DIM) && !rule.modifier.contains(Modifier::BOLD),
+            working.modifier.contains(Modifier::DIM) && !working.modifier.contains(Modifier::BOLD),
             "{:?}",
-            rule.modifier
+            working.modifier
         );
+    }
+
+    #[test]
+    fn path_headings_read_the_way_a_group_heading_does() {
+        // One document on either axis: the same words in the same places, dim
+        // end to end, with the count only where the rows are not.
+        let size = (60, 10);
+        let mut screen = by_project(vec![
+            at(view("ask-a1b", Phase::Waiting, None, 30), "/src/api"),
+            at(
+                view("broke-b2c", Phase::Failed, Some("could not"), 60),
+                "/src/api",
+            ),
+        ]);
+
+        assert_eq!(painted(&screen, size)[2], " /src/api · 1 failed");
+        assert_eq!(word_colour(&screen, size, 2, "· 1 failed"), theme().failed);
+        for word in ["/src/api", "api"] {
+            let painted = word_modifier(&screen, size, 2, word);
+            assert!(
+                painted.contains(Modifier::DIM) && !painted.contains(Modifier::BOLD),
+                "the last segment of a path carries no more weight than its \
+                 parents do: {painted:?}"
+            );
+        }
+
+        screen.list.up();
+        screen.list.shut_or_open();
+        assert_eq!(painted(&screen, size)[2], " /src/api 2 · 1 failed");
     }
 
     #[test]
@@ -1388,7 +1416,7 @@ mod tests {
         assert!(!tall.iter().any(|l| l.contains("more")), "{tall:?}");
 
         let short = settled(fleet(), (40, 10));
-        assert_eq!(heading_of(&short[5]), "COMPLETED");
+        assert_eq!(heading_of(&short[5]), "Completed");
         assert_eq!(short.iter().filter(|l| l.contains("done-")).count(), 2);
         assert!(
             short[8].contains("… 3 more"),

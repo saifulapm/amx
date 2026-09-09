@@ -454,10 +454,10 @@ mod tests {
         painted(&showing(views, card), size)
     }
 
-    /// What a heading line says in front of the rule that carries it out to
-    /// the edge: the label, and how many failed under it where any did.
+    /// What a heading line says: the group's own words, the count where the
+    /// group is shut, and how many failed under it where any did.
     fn heading_of(line: &str) -> &str {
-        line.split('┈').next().unwrap_or_default().trim()
+        line.trim()
     }
 
     /// The two agents a card is opened over, so there is a list to still be
@@ -502,10 +502,10 @@ mod tests {
         // and this one goes the same way.
         let tall = drawn(a_fleet(), None, (60, SPACED as u16));
         assert_eq!(tall[2], "", "{tall:?}");
-        assert_eq!(heading_of(&tall[3]), "NEEDS INPUT", "{tall:?}");
+        assert_eq!(heading_of(&tall[3]), "Needs input", "{tall:?}");
 
         let short = drawn(a_fleet(), None, (60, SPACED as u16 - 1));
-        assert_eq!(heading_of(&short[2]), "NEEDS INPUT", "{short:?}");
+        assert_eq!(heading_of(&short[2]), "Needs input", "{short:?}");
         assert!(short[3].contains("ask-a1b"), "{short:?}");
     }
 
@@ -542,7 +542,7 @@ mod tests {
         assert_eq!(screen[2], "", "a blank row stands the list off from it");
         assert_eq!(
             heading_of(&screen[3]),
-            "NEEDS INPUT",
+            "Needs input",
             "and the list starts under that"
         );
     }
@@ -851,7 +851,7 @@ mod tests {
         assert!(!short.iter().any(|line| line.starts_with('└')), "{short:?}");
         assert_eq!(
             heading_of(&short[1]),
-            "WORKING",
+            "Working",
             "and the list starts a row sooner"
         );
     }

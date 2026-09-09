@@ -1254,10 +1254,10 @@ mod tests {
             .collect()
     }
 
-    /// What a heading line says in front of the rule that carries it out to
-    /// the edge: the label, and how many failed under it where any did.
+    /// What a heading line says: the group's own words, the count where the
+    /// group is shut, and how many failed under it where any did.
     fn heading_of(line: &str) -> &str {
-        line.split('┈').next().unwrap_or_default().trim()
+        line.trim()
     }
 
     /// Which cell of this row the block is standing in: the one drawn in
@@ -1546,7 +1546,7 @@ mod tests {
             (60, 14),
         );
 
-        assert_eq!(heading_of(&screen[3]), "NEEDS INPUT", "{screen:?}");
+        assert_eq!(heading_of(&screen[3]), "Needs input", "{screen:?}");
         assert!(
             screen[4].contains("ask-a1b"),
             "the row the card was opened from is still on the screen: {screen:?}"
