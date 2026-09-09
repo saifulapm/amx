@@ -173,6 +173,45 @@ fn ran_and_stopped(amx: &Harness, id: &str) -> String {
     gone
 }
 
+/// An agent whose record names a pane that is another agent's now, answering
+/// with that pane.
+///
+/// The morning after a reboot, in the order it happens. The pane went with the
+/// server that died, and nothing recorded the agent's ending, so its record
+/// still says idle. tmux numbers panes from `%0` per server, so the server
+/// that started afterwards handed the same number out again — and the agent
+/// standing at it is somebody else.
+fn taken_over(amx: &Harness, id: &str) -> String {
+    something_else_on_the_server(amx);
+    start(amx, id, amx.home(), "happy-turn");
+    amx.until_state(id, "idle");
+    kill_pane(amx, &amx.pane_of(id));
+    assert_eq!(
+        amx.state(id)["state"],
+        "idle",
+        "a pane that goes without amx being told leaves the record where it was"
+    );
+
+    // The other agent's pane, in the session amx names for the agent it holds:
+    // every pane amx places sits in one called `amx-<id>`, and that name is
+    // what says whose pane it is.
+    let theirs = amx.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "amx-port-importer-c3d",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "--",
+        "sh",
+        "-c",
+        "echo the other agent; while :; do sleep 0.05; done",
+    ]);
+    amx.set_meta(id, json!({ "pane": theirs }));
+    theirs
+}
+
 /// A claude somebody started themselves, taken onto the wall by `amx adopt`.
 ///
 /// The one shape of agent amx has a session for and no command: that claude
@@ -327,6 +366,53 @@ fn resume_brings_a_stopped_agent_back_on_the_session_it_had() {
     assert!(amx.pane_alive(&pane));
     assert_ne!(amx.state(id)["state"], "stopped");
     assert_eq!(amx.state(id)["exit"], json!(null), "it is running again");
+}
+
+#[test]
+fn resume_brings_back_an_agent_whose_pane_answers_for_somebody_else() {
+    // A record that has lost its pane is a record to bring back, and one that
+    // lost it to another agent has lost it as surely as one whose pane is
+    // gone. Read as the agent still being in that pane, the resume is refused
+    // and the agent nobody can see stays where nobody can see it.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let theirs = taken_over(&amx, id);
+
+    said(&resume(&amx, &[id]));
+    until_continued(&amx, id);
+    assert_ne!(amx.pane_of(id), theirs, "a pane of its own again");
+    assert!(
+        amx.pane_alive(&theirs),
+        "and the other agent is left where it was"
+    );
+}
+
+#[test]
+fn logs_of_an_agent_whose_pane_answers_for_somebody_else_read_the_record() {
+    // A reading is what has been going on over there, and over there is
+    // whichever pane the record names — so an agent whose number another agent
+    // is standing at read that agent's screen back under its own name. What is
+    // left of this one is the answer on its record.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    taken_over(&amx, id);
+    // A vendor that announced no transcript, which is the shape where the pane
+    // is the only other account there is: with one, a reading opens that file
+    // whatever pane the record names, and which pane it reaches for is the
+    // question here.
+    amx.set_meta(id, json!({ "transcript": null }));
+
+    let out = amx.amx(&["logs", id]);
+    assert!(
+        out.status.success(),
+        "amx logs: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "the tests pass now\n",
+        "the answer this agent left, not what the pane is showing now"
+    );
 }
 
 #[test]
@@ -819,6 +905,26 @@ fn attach_brings_back_an_agent_whose_pane_is_gone() {
 }
 
 #[test]
+fn attach_brings_back_an_agent_whose_pane_answers_for_somebody_else() {
+    // What somebody asked for is to look at this agent. The pane its record
+    // names belongs to another agent now, and handing that over would show
+    // them somebody else's work under this agent's name.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let theirs = taken_over(&amx, id);
+
+    let terminal = a_terminal(&amx, &["attach", id]);
+
+    until_continued(&amx, id);
+    assert_ne!(amx.pane_of(id), theirs, "a pane of its own again");
+    assert!(
+        amx.pane_alive(&theirs),
+        "and the other agent is left where it was"
+    );
+    until_looking_at_it(&amx, &terminal);
+}
+
+#[test]
 fn attach_says_so_when_there_is_nothing_to_bring_back() {
     // A record whose agent never announced a session: there is nothing to pick
     // up, and saying which is missing beats saying that the pane is.
@@ -981,6 +1087,27 @@ fn enter_on_a_dead_agent_brings_it_back() {
     let pane = amx.pane_of(id);
     assert_ne!(pane, gone, "a pane of its own again");
     assert!(amx.pane_alive(&pane));
+    until_looking_at_it(&amx, &view);
+}
+
+#[test]
+fn enter_on_an_agent_whose_pane_answers_for_somebody_else_brings_it_back() {
+    // The wall's door to the same thing: enter on a row reaches for a pane the
+    // way `amx attach` does, and reaches for the agent's own or none.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let theirs = taken_over(&amx, id);
+
+    let view = a_terminal(&amx, &[]);
+    amx.until("the row", || amx.capture(&view).contains(id).then_some(()));
+    amx.tmux(&["send-keys", "-t", &view, "Enter"]);
+
+    until_continued(&amx, id);
+    assert_ne!(amx.pane_of(id), theirs, "a pane of its own again");
+    assert!(
+        amx.pane_alive(&theirs),
+        "and the other agent is left where it was"
+    );
     until_looking_at_it(&amx, &view);
 }
 

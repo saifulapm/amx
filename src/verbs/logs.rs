@@ -16,13 +16,14 @@
 //!   transcript. The picture comes with the vendor's own furniture — composer,
 //!   statusline, mode footer — cut off the bottom, the same walk the card
 //!   takes, because none of it is the agent's work.
-//! * **The recorded answer**, once the pane is gone and the record is what is
-//!   left, or **what a command printed**, which its own boot kept beside the
-//!   record for the same moment: a command exits rather than answers, and the
-//!   file is the whole of what it said where the pane held a screenful.
-//!   Whether an agent is still running is not something a caller should have
-//!   to know before it can ask. An agent that left not even that gets a line
-//!   naming what was missing, the vendor's own gap included.
+//! * **The recorded answer**, once the pane is gone — or is another agent's,
+//!   which is the same loss — and the record is what is left, or **what a
+//!   command printed**, which its own boot kept beside the record for the same
+//!   moment: a command exits rather than answers, and the file is the whole of
+//!   what it said where the pane held a screenful. Whether an agent is still
+//!   running is not something a caller should have to know before it can ask.
+//!   An agent that left not even that gets a line naming what was missing, the
+//!   vendor's own gap included.
 //!
 //! `amx result` is still the one that hands back a turn's answer alone,
 //! verbatim, and blocks for it. This is the other question: what has been
@@ -84,10 +85,12 @@ pub fn run(
         })
         .flatten();
 
-    // Whether there is a screen to read is a question for the pane list and not
-    // for the record: the phase says what amx was last told, and this verb is
-    // asking what has been going on over there right now.
-    match server.pane_alive(&meta.pane) {
+    // Whether there is a screen to read is a question for tmux and not for the
+    // record: the phase says what amx was last told, and this verb is asking
+    // what has been going on over there right now. The pane has to answer for
+    // this agent, though — a number the record still names and another agent
+    // is standing at would hand back that agent's screen under this one's name.
+    match server.pane_answers_for(&meta.pane, &meta.id) {
         true => match told {
             Some(said) => {
                 let tail = last_lines(&said, lines as usize);
@@ -318,6 +321,24 @@ mod tests {
         panic!("timed out waiting for {what}");
     }
 
+    /// A pane running `command`, in the session amx would have placed this
+    /// agent in.
+    ///
+    /// That name is what makes the pane answer for the agent whose reading the
+    /// test asks for — see [`Server::pane_answers_for`]. A pane in a session
+    /// nobody named answers for nobody, and a record naming one has lost it.
+    fn a_pane_for(server: &Server, id: &str, command: &[&str]) -> PaneId {
+        let session = format!("{}{id}", tmux::SESSION_PREFIX);
+        let (_, pane) = server
+            .new_session(&Spawn {
+                name: Some(&session),
+                command,
+                ..Spawn::default()
+            })
+            .expect("a pane to read");
+        pane
+    }
+
     /// A record of an agent, pointed at whichever pane the test has.
     fn record(root: &Path, id: &str, socket: Socket, pane: PaneId) -> Agent {
         Agent::create(
@@ -360,16 +381,15 @@ mod tests {
     #[test]
     fn logs_are_what_the_pane_has_been_saying() {
         let server = TestServer::new();
-        let (_, pane) = server
-            .new_session(&Spawn {
-                command: &[
-                    "sh",
-                    "-c",
-                    "for i in 1 2 3; do echo line $i; done; while :; do sleep 0.05; done",
-                ],
-                ..Spawn::default()
-            })
-            .unwrap();
+        let pane = a_pane_for(
+            &server,
+            "fix-login-a1b",
+            &[
+                "sh",
+                "-c",
+                "for i in 1 2 3; do echo line $i; done; while :; do sleep 0.05; done",
+            ],
+        );
 
         let root = TempDir::new().unwrap();
         let agent = record(
@@ -419,17 +439,16 @@ mod tests {
             "the work\n\n{box_rule}\n\n{box_rule}\n~/srv/app (main)\n↑1.9k ↓1.7k R1.9k 0.3%/1.0M (auto)\n"
         );
         let server = TestServer::new();
-        let (_, pane) = server
-            .new_session(&Spawn {
-                command: &[
-                    "sh",
-                    "-c",
-                    "printf '%s' \"$0\"; while :; do sleep 0.05; done",
-                    &screen,
-                ],
-                ..Spawn::default()
-            })
-            .unwrap();
+        let pane = a_pane_for(
+            &server,
+            "adopted-a1b",
+            &[
+                "sh",
+                "-c",
+                "printf '%s' \"$0\"; while :; do sleep 0.05; done",
+                &screen,
+            ],
+        );
         let root = TempDir::new().unwrap();
         let agent = record(
             root.path(),
@@ -475,12 +494,11 @@ mod tests {
         .unwrap();
 
         let server = TestServer::new();
-        let (_, pane) = server
-            .new_session(&Spawn {
-                command: &["sh", "-c", "echo the pane; while :; do sleep 0.05; done"],
-                ..Spawn::default()
-            })
-            .unwrap();
+        let pane = a_pane_for(
+            &server,
+            "fix-login-a1b",
+            &["sh", "-c", "echo the pane; while :; do sleep 0.05; done"],
+        );
 
         let root = TempDir::new().unwrap();
         let agent = record(
@@ -527,16 +545,15 @@ mod tests {
         // footer. The rows are the measured shapes furniture::cut walks; what
         // the agent printed above them is what a reading is for.
         let server = TestServer::new();
-        let (_, pane) = server
-            .new_session(&Spawn {
-                command: &[
-                    "sh",
-                    "-c",
-                    "printf 'the work itself\\n\\n\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\n\\342\\235\\257 try\\n\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\n  statusline here\\n  \\342\\217\\270 manual mode on\\n'; while :; do sleep 0.05; done",
-                ],
-                ..Spawn::default()
-            })
-            .unwrap();
+        let pane = a_pane_for(
+            &server,
+            "fix-login-a1b",
+            &[
+                "sh",
+                "-c",
+                "printf 'the work itself\\n\\n\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\n\\342\\235\\257 try\\n\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\n  statusline here\\n  \\342\\217\\270 manual mode on\\n'; while :; do sleep 0.05; done",
+            ],
+        );
 
         let root = TempDir::new().unwrap();
         record(
@@ -563,12 +580,11 @@ mod tests {
     #[test]
     fn logs_of_a_pane_that_has_printed_nothing_are_not_a_failure() {
         let server = TestServer::new();
-        let (_, pane) = server
-            .new_session(&Spawn {
-                command: &["sh", "-c", "while :; do sleep 0.05; done"],
-                ..Spawn::default()
-            })
-            .unwrap();
+        let pane = a_pane_for(
+            &server,
+            "fix-login-a1b",
+            &["sh", "-c", "while :; do sleep 0.05; done"],
+        );
 
         let root = TempDir::new().unwrap();
         record(
@@ -640,12 +656,11 @@ mod tests {
         // a caller asked is what is going on over there now. So the pane comes
         // first for as long as there is one, as it does for every other row.
         let server = TestServer::new();
-        let (_, pane) = server
-            .new_session(&Spawn {
-                command: &["sh", "-c", "echo on the pane; while :; do sleep 0.05; done"],
-                ..Spawn::default()
-            })
-            .unwrap();
+        let pane = a_pane_for(
+            &server,
+            "build-a1b",
+            &["sh", "-c", "echo on the pane; while :; do sleep 0.05; done"],
+        );
 
         let root = TempDir::new().unwrap();
         let agent = record(

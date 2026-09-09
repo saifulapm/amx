@@ -200,11 +200,13 @@ fn bring_back(root: &Path, id: &str, env: &BTreeMap<String, String>) -> Result<(
 
     // The raw record rather than the derived view, which may take this very
     // lock to note a question it read off a pane. An agent has ended when its
-    // record says so, or when the pane the record names is gone.
+    // record says so, or when the pane the record names is gone — or answers
+    // for somebody else, which is the same ending: a pane number that came
+    // round again on a later server is another agent running, not this one.
     let current = writer.state()?;
     let meta = agent.meta()?;
     if !current.state.is_terminal()
-        && Server::from_socket(meta.socket.clone()).pane_alive(&meta.pane)
+        && Server::from_socket(meta.socket.clone()).pane_answers_for(&meta.pane, &meta.id)
     {
         bail!("{id} is already going again");
     }

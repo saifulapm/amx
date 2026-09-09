@@ -2835,16 +2835,18 @@ enum Reach {
 }
 
 /// Put the agent in front of whoever is looking at the view, bringing it back
-/// first where there is no pane left to put in front of them.
+/// first where there is no pane of its own left to put in front of them.
 ///
 /// Enter on a row is somebody asking to look at this agent, and the same key
-/// answers that whether or not the pane it was in is still there: an agent
-/// with a session behind it is picked up into a fresh pane and shown, which
-/// is what `amx attach` does at a shell prompt. Only one with nothing to
-/// continue is refused, and then in the words that say which is missing.
+/// answers that whether or not the pane it was in is still there — or is
+/// another agent's now, which is the same thing and would put somebody else's
+/// work in front of them under this name. An agent with a session behind it is
+/// picked up into a fresh pane and shown, which is what `amx attach` does at a
+/// shell prompt. Only one with nothing to continue is refused, and then in the
+/// words that say which is missing.
 fn reach(root: &Path, config: &Config, here: Option<&Here>, view: &View) -> Result<Reach> {
     let server = Server::from_socket(view.meta.socket.clone());
-    if server.pane_alive(&view.meta.pane) {
+    if server.pane_answers_for(&view.meta.pane, view.id()) {
         return reaching(server, here, view);
     }
 

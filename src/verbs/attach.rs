@@ -5,11 +5,14 @@
 //! by tmux's own client. What happens after that is between the person and the
 //! vendor.
 //!
-//! A pane that is gone is not the end of the verb. What somebody asked for is
-//! to look at this agent, and an agent with a session behind it can be looked
-//! at again: it is brought back into a pane first, and the terminal is handed
-//! over to that one. Only an agent with nothing to continue is refused, and
-//! then in the words that say which is missing.
+//! A pane that is gone is not the end of the verb, and neither is a pane that
+//! turns out to be another agent's — the same loss with somebody standing in
+//! the way, and handing that pane over would show the person somebody else's
+//! work under the name they asked for. What somebody asked for is to look at
+//! this agent, and an agent with a session behind it can be looked at again:
+//! it is brought back into a pane first, and the terminal is handed over to
+//! that one. Only an agent with nothing to continue is refused, and then in
+//! the words that say which is missing.
 
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -46,7 +49,7 @@ pub fn run(
     let agent = Agent::open(root, id)?;
     let mut meta = agent.meta()?;
 
-    if !Server::from_socket(meta.socket.clone()).pane_alive(&meta.pane) {
+    if !Server::from_socket(meta.socket.clone()).pane_answers_for(&meta.pane, &meta.id) {
         match resume::again(root, config, id, env)? {
             // The record now names a pane nothing has read yet, so it is read
             // again: where the agent is is what the rest of this verb is about.
