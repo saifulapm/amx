@@ -92,6 +92,30 @@ fn an_agent_that_will_not_stop_when_asked_is_stopped_anyway() {
 }
 
 #[test]
+fn a_pane_that_answers_for_another_agent_is_left_standing() {
+    // tmux hands pane numbers out again after a server restart, so a record
+    // that outlived its server names whichever pane took its number. Recording
+    // a second agent on the pane is that, without the reboot: the pane answers
+    // for the agent recorded last, and the first record has lost it.
+    let amx = Harness::new();
+    let pane = amx.play("yesterday-a1b", "happy-turn");
+    amx.until_state("yesterday-a1b", "idle");
+    amx.record("today-b2c", &pane);
+
+    let out = said(&stop(&amx, &["yesterday-a1b", "--force"]));
+    assert!(out.contains("stopped"), "{out}");
+    assert!(
+        amx.pane_alive(&pane),
+        "the pane is the other agent's, and stopping this one does not reach it"
+    );
+    assert_eq!(
+        amx.state("yesterday-a1b")["state"],
+        "stopped",
+        "the agent it was aimed at is ended all the same"
+    );
+}
+
+#[test]
 fn stopping_an_agent_deletes_its_worktree_and_keeps_its_branch() {
     let amx = Harness::new();
     let repo = amx.a_repo();

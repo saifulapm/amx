@@ -57,7 +57,7 @@ pub fn run(
             .update_state(|state| state.state = Phase::Stopped)?;
     }
 
-    end(&server, &meta.pane)?;
+    end(&server, &meta.pane, &meta.id)?;
     writeln!(out, "{} stopped", args.id)?;
 
     dispositions(&meta, args, input, out)?;
@@ -76,16 +76,21 @@ pub fn run(
 /// Ask the agent to stop, then insist.
 ///
 /// The pid comes from tmux, live, and is never read off disk: pids are reused,
-/// and a stale one names whatever the machine has started since.
+/// and a stale one names whatever the machine has started since. The pane is
+/// asked whose it is for the same reason: tmux hands pane numbers out again,
+/// so a record that outlived its server names whichever pane took its number,
+/// and every rung below is a signal or a kill aimed at whatever is standing
+/// there. An agent whose pane answers for somebody else has already lost it,
+/// and there is nothing here left to end.
 ///
 /// Shared with `_park`, which takes an idle agent's pane and leaves the record
 /// standing: how a vendor is ended is the same question there, and a second
 /// answer to it would be a second thing to get the grace period wrong in.
-pub(crate) fn end(server: &Server, pane: &PaneId) -> Result<()> {
+pub(crate) fn end(server: &Server, pane: &PaneId, id: &str) -> Result<()> {
     use nix::sys::signal::{Signal, killpg};
     use nix::unistd::Pid;
 
-    if !server.pane_alive(pane) {
+    if !server.pane_answers_for(pane, id) {
         return Ok(());
     }
     let group = Pid::from_raw(server.pane_pid(pane)?);
@@ -93,12 +98,12 @@ pub(crate) fn end(server: &Server, pane: &PaneId) -> Result<()> {
     // The whole group: the vendor forks, and a child holding the tty outlives
     // a parent that is signalled alone.
     let _ = killpg(group, Signal::SIGTERM);
-    if gone(server, pane, GRACE) {
+    if gone(server, pane, id, GRACE) {
         return Ok(());
     }
 
     let _ = killpg(group, Signal::SIGKILL);
-    if gone(server, pane, GRACE) {
+    if gone(server, pane, id, GRACE) {
         return Ok(());
     }
 
@@ -106,16 +111,17 @@ pub(crate) fn end(server: &Server, pane: &PaneId) -> Result<()> {
     server.kill_pane(pane)
 }
 
-/// Whether the pane goes within `patience`.
-fn gone(server: &Server, pane: &PaneId, patience: Duration) -> bool {
+/// Whether the pane stops being this agent's within `patience` — because it
+/// went, or because the number is somebody else's now.
+fn gone(server: &Server, pane: &PaneId, id: &str, patience: Duration) -> bool {
     let deadline = Instant::now() + patience;
     while Instant::now() < deadline {
-        if !server.pane_alive(pane) {
+        if !server.pane_answers_for(pane, id) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    !server.pane_alive(pane)
+    !server.pane_answers_for(pane, id)
 }
 
 /// What becomes of the worktree and the branch.

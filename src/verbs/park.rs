@@ -75,7 +75,7 @@ fn let_go(root: &Path, agent: &Agent, meta: &Meta, park_after: u64, now: u64) ->
     // stop's own ladder: the vendor is asked to finish what it is writing
     // before it is insisted on. What it was writing is the transcript, and the
     // transcript is what an agent that comes back comes back to.
-    stop::end(&server, &meta.pane)?;
+    stop::end(&server, &meta.pane, &meta.id)?;
 
     let writer = agent.writer()?;
     writer.append(&Event::new(
@@ -151,10 +151,16 @@ mod tests {
 
     impl Sitting {
         /// One agent, in a pane running a shell that does not exit.
+        ///
+        /// In a session named the way [`crate::spawn::place`] names one, which
+        /// is what makes the pane answer for this agent rather than for
+        /// nobody: an agent whose pane is somebody else's has lost it, and a
+        /// pane nobody can be shown to own is that.
         fn new(root: &Path, id: &str) -> Sitting {
             let server = TestServer::new();
             let (session, pane) = server
                 .new_session(&Spawn {
+                    name: Some(&format!("{}{id}", crate::tmux::SESSION_PREFIX)),
                     command: &["sh", "-c", "while :; do sleep 0.05; done"],
                     ..Spawn::default()
                 })
