@@ -407,8 +407,12 @@ pub fn server() -> Result<Server> {
 }
 
 /// What the session holding an agent is called.
+///
+/// The prefix is [`crate::tmux::SESSION_PREFIX`] and is spelled there alone:
+/// the name written here is the name tmux.rs reads back to say whose a pane
+/// is, and two spellings of it would be a rename nobody noticed.
 fn session_name(id: &str) -> String {
-    format!("amx-{id}")
+    format!("{}{id}", crate::tmux::SESSION_PREFIX)
 }
 
 /// Start the agent's pane: a detached session of its own, named for the id.
@@ -582,8 +586,13 @@ pub fn live_under(root: &Path, project: &Path) -> Result<Vec<String>> {
 }
 
 /// The records of the agents that are still going: the record says they have
-/// not finished, and the pane it names is still there on the server it was
-/// recorded on.
+/// not finished, and the pane it names still answers for them on the server it
+/// was recorded on.
+///
+/// Whose the pane is rather than whether it is there, because these agents are
+/// what a cap is counted over: a record whose server died names a number tmux
+/// has since handed to somebody else, and counting it would refuse a spawn
+/// over an agent that stopped running yesterday.
 ///
 /// An agent whose state amx cannot read is skipped rather than failing the
 /// whole walk: one bad document should cost that agent, not everyone listed
@@ -597,7 +606,7 @@ fn going(root: &Path) -> Result<Vec<Meta>> {
             continue;
         }
         let Ok(meta) = agent.meta() else { continue };
-        if Server::from_socket(meta.socket.clone()).pane_alive(&meta.pane) {
+        if Server::from_socket(meta.socket.clone()).pane_answers_for(&meta.pane, &meta.id) {
             going.push(meta);
         }
     }
@@ -1295,6 +1304,17 @@ mod tests {
         }
     }
 
+    /// A pane of this agent's own, placed where amx places one and running
+    /// something that does not exit.
+    ///
+    /// Through [`place`], because what makes a pane answer for an agent is the
+    /// session `place` names, and a test that named its own would be proving
+    /// the counting against a rule nothing else follows.
+    fn placed(server: &Server, id: &str) -> PaneId {
+        let command = ["sh", "-c", "while :; do sleep 0.05; done"].map(str::to_string);
+        place(server, id, Path::new("/"), &command).expect("a pane for it")
+    }
+
     #[test]
     fn spawn_an_agent_of_a_tree_amx_cut_belongs_to_the_repository_behind_it() {
         let tree = PathBuf::from("/srv/app/.amx/worktrees/fix-login-a1b");
@@ -1345,13 +1365,6 @@ mod tests {
         let (alpha, beta) = (TempDir::new().unwrap(), TempDir::new().unwrap());
         let server =
             Own(Server::named(format!("amx-count-{}", std::process::id())).with_conf("/dev/null"));
-        let (_, pane) = server
-            .0
-            .new_session(&Spawn {
-                command: &["sh", "-c", "while :; do sleep 0.05; done"],
-                ..Spawn::default()
-            })
-            .expect("a pane");
         let socket = server.0.socket().clone();
 
         for (id, dir) in [
@@ -1361,7 +1374,7 @@ mod tests {
         ] {
             let of_theirs = Meta {
                 dir: dir.to_path_buf(),
-                ..meta(id, socket.clone(), pane.clone())
+                ..meta(id, socket.clone(), placed(&server.0, id))
             };
             Agent::create(root.path(), &of_theirs).expect("a record");
         }
@@ -1405,26 +1418,57 @@ mod tests {
     }
 
     #[test]
+    fn live_does_not_count_an_agent_whose_pane_answers_for_another() {
+        // Yesterday's record, naming the number today's agent was handed: the
+        // server it was placed on died overnight, and tmux numbers panes from
+        // %0 per server. An agent that has lost its pane is not running,
+        // whatever is standing at its number, and counting it would refuse
+        // somebody a spawn the cap has room for.
+        let root = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        let server =
+            Own(Server::named(format!("amx-owner-{}", std::process::id())).with_conf("/dev/null"));
+        let pane = placed(&server.0, "today-b2c");
+        let socket = server.0.socket().clone();
+
+        for id in ["today-b2c", "yesterday-a1b"] {
+            let of_theirs = Meta {
+                dir: project.path().to_path_buf(),
+                ..meta(id, socket.clone(), pane.clone())
+            };
+            Agent::create(root.path(), &of_theirs).expect("a record");
+        }
+
+        assert_eq!(live(root.path()).unwrap(), ["today-b2c"]);
+        assert_eq!(
+            at_capacity(root.path(), project.path(), 2, None).unwrap(),
+            None,
+            "and the record that lost its pane fills none of the cap"
+        );
+    }
+
+    #[test]
     fn live_skips_an_agent_whose_state_json_is_unreadable_but_lists_the_rest() {
         let root = TempDir::new().unwrap();
         let server =
             Own(Server::named(format!("amx-spawn-{}", std::process::id())).with_conf("/dev/null"));
-        let (_, pane) = server
-            .0
-            .new_session(&Spawn {
-                command: &["sh", "-c", "while :; do sleep 0.05; done"],
-                ..Spawn::default()
-            })
-            .expect("a pane");
         let socket = server.0.socket().clone();
 
         let broken = Agent::create(
             root.path(),
-            &meta("broken-a1b", socket.clone(), pane.clone()),
+            &meta(
+                "broken-a1b",
+                socket.clone(),
+                placed(&server.0, "broken-a1b"),
+            ),
         )
         .expect("a record");
         std::fs::write(broken.dir().join("state.json"), b"not json at all").expect("garbage bytes");
-        Agent::create(root.path(), &meta("fine-b2c", socket, pane)).expect("a record");
+        Agent::create(
+            root.path(),
+            &meta("fine-b2c", socket, placed(&server.0, "fine-b2c")),
+        )
+        .expect("a record");
 
         let live = live(root.path()).expect("the walk to finish");
         assert_eq!(live, vec!["fine-b2c".to_string()]);
