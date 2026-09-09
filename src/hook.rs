@@ -403,7 +403,9 @@ fn typed(payload: &Value, what: &str) -> bool {
 ///   not the agent's state.
 /// * A record that has already ended stays ended. A late hook is a hook about
 ///   a turn that is over.
-/// * An event the vendor never told amx about moves nothing at all.
+/// * An event the vendor never told amx about moves nothing at all, save the
+///   stamp `amx interrupt` left, which every event about the agent takes off:
+///   what it is about is that the vendor spoke, not what it said.
 ///
 /// What comes back is the one notice a stop is worth, and one for every stop.
 /// Somebody is told when a screen goes up that nothing has told them about,
@@ -437,6 +439,14 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
     if !payload["agent_id"].is_null() || state.state.is_terminal() {
         return None;
     }
+    // The stamp `amx interrupt` leaves says amx cut a turn short and the
+    // vendor has not spoken since — see [`crate::derive::cut_short`]. This is
+    // the vendor speaking, so it comes off, whatever the event says and
+    // whatever second it landed in. Weighing the two stamps against each other
+    // was the other way to say it and it could not: both are whole seconds,
+    // and a key pressed in the second the last hook landed in tied.
+    state.interrupted_at = 0;
+
     // An adopted agent's record was written with its session and nothing
     // about the transcript: the vendor announced that session's start before
     // there was a record to hear it, and does not announce it again. Every
@@ -2035,6 +2045,41 @@ mod tests {
             assert_eq!(state.question.as_deref(), Some("Run the migration?"));
             assert_eq!(notice, None);
         }
+    }
+
+    #[test]
+    fn hook_a_word_from_the_vendor_takes_an_interrupt_stamp_off_the_record() {
+        // The stamp says amx cut a turn short and the vendor has not spoken
+        // since. So the vendor speaking is what takes it down, whatever second
+        // the event lands in: weighing the two stamps against each other left
+        // an interrupt that tied with the last hook reading as no interrupt at
+        // all, which on a tool-heavy turn is most of them — ruling #M9DAPT6P.
+        for payload in [
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash" }),
+            json!({ "hook_event_name": "UserPromptSubmit", "prompt": "carry on" }),
+        ] {
+            let mut state = State {
+                state: Phase::Working,
+                interrupted_at: 1_000,
+                ..State::default()
+            };
+            apply(&payload, &mut state, &mut meta());
+            assert_eq!(state.interrupted_at, 0, "{payload}");
+        }
+
+        // A subagent's event is not the agent speaking, and the turn amx cut
+        // short is the agent's.
+        let mut state = State {
+            state: Phase::Working,
+            interrupted_at: 1_000,
+            ..State::default()
+        };
+        apply(
+            &json!({ "hook_event_name": "PreToolUse", "tool_name": "Read", "agent_id": "sub-1" }),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(state.interrupted_at, 1_000, "a subagent's work is not it");
     }
 
     #[test]

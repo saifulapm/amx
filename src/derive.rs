@@ -20,10 +20,11 @@
 //!    than waited for. They can say a turn is running without saying what it
 //!    is running — before its first tool call — and the line the vendor spins
 //!    is read the same way, see [`wants_the_doing`]. One thing outranks them,
-//!    because it is amx's own and later: a turn `amx interrupt` cut short. A
-//!    record stamped after the last thing the vendor said is read off the pane
-//!    on the first look and needs no screen to settle, since amx ended that
-//!    turn itself — see [`cut_short`].
+//!    because it is amx's own and the vendor has said nothing since: a turn
+//!    `amx interrupt` cut short. A record carrying that stamp is read off the
+//!    pane on the first look and needs no screen to settle, since amx ended
+//!    that turn itself; the stamp stands until the vendor's next event takes
+//!    it down — see [`cut_short`].
 //! 5. **The screen, against the rules.** Older than that, the pane is captured
 //!    and matched against the screens of the vendor the record says was started
 //!    in it — see [`own_screens`]. A rule that claims it decides.
@@ -759,11 +760,16 @@ fn heard(state: &State) -> u64 {
 /// neither wait is buying anything: the pane is the only thing that can say
 /// what took the turn's place, and it is read at once and taken at its word.
 ///
-/// Until the vendor speaks again. Anything heard after the stamp is the agent's
-/// own account of a moment the stamp is behind — the next turn somebody sent,
-/// the question it stopped on — and both waits are back.
+/// Until the vendor speaks again, which is what takes the stamp off the record
+/// rather than anything read here: the next event about the agent itself clears
+/// it — see [`crate::hook::apply`] — because that event is the agent's own
+/// account of a moment the stamp knows nothing about, the next turn somebody
+/// sent, the question it stopped on. So a stamp still standing is the whole of
+/// the question, and no time is compared. Comparing them was the same sentence
+/// said in clocks, and it could not be said that way: the record keeps both in
+/// whole seconds, and a key pressed in the second the last hook landed in tied.
 fn cut_short(state: &State) -> bool {
-    state.interrupted_at > heard(state)
+    state.interrupted_at > 0
 }
 
 /// The seconds a surface puts beside an agent.
@@ -3683,6 +3689,23 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     }
 
     #[test]
+    fn reader_ends_a_turn_cut_short_in_the_second_the_vendor_last_spoke_in() {
+        // The record keeps both times in whole seconds, and a turn full of
+        // tool calls sends a hook about once a second: the key lands in the
+        // second the last one did more often than not. Weighing the two
+        // stamps read that as no interrupt at all and the row sat out the
+        // whole wait — ruling #M9DAPT6P. The stamp is not a clock to compare;
+        // it stands until the vendor speaks, and here it is standing.
+        let mut tied = state(Phase::Working, 1_000);
+        tied.interrupted_at = 1_000;
+
+        let verdict = decided(&tied, true, Some(IDLE_SCREEN), 1_001);
+        assert_eq!(verdict.phase, Phase::Idle);
+        assert_eq!(verdict.evidence, Evidence::Screen);
+        assert_eq!(verdict.rule.as_deref(), Some("idle_prompt"));
+    }
+
+    #[test]
     fn reader_reads_a_cut_turn_that_is_still_drawing_as_working() {
         // The key is sent and nothing waits for it: a vendor part way through a
         // tool call is still spinning when the next look arrives. The stamp
@@ -3698,11 +3721,18 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn reader_takes_a_hook_after_an_interrupt_as_the_agent_speaking_again() {
-        // Something the vendor said after the key is its own account of a
-        // moment the stamp is behind — a turn somebody sent next, a question it
-        // stopped on — and the record is the best evidence there is again.
+        // Something the vendor says after the key is its own account of a
+        // moment the stamp knows nothing about — a turn somebody sent next, a
+        // question it stopped on — so the hook that carried it takes the stamp
+        // off the record, and the record is the best evidence there is again.
+        // The hook is what is driven here, because no other hand clears it.
         let mut spoke = state(Phase::Working, 1_010);
         spoke.interrupted_at = 1_002;
+        crate::hook::apply(
+            &serde_json::json!({ "hook_event_name": "UserPromptSubmit", "prompt": "carry on" }),
+            &mut spoke,
+            &mut meta(),
+        );
 
         let fresh = decided(&spoke, true, Some(IDLE_SCREEN), 1_012);
         assert_eq!(fresh.phase, Phase::Working);

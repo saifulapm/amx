@@ -11,7 +11,7 @@
 mod common;
 
 use common::Harness;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 /// How long the row is given to come off `working` once the key has landed.
 ///
@@ -29,14 +29,6 @@ const SETTLES: Duration = Duration::from_secs(10);
 /// and a pause mid-turn are the same bytes. This one is owed none of it, and
 /// five seconds is short enough that sitting any of it out would fail here.
 const AT_ONCE: Duration = Duration::from_secs(5);
-
-/// The clock the record keeps its own times by.
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock set later than 1970")
-        .as_secs()
-}
 
 /// Wait for the reader to call the row idle, and answer with what it said.
 ///
@@ -66,20 +58,12 @@ fn until_idle(amx: &Harness, id: &str) -> serde_json::Value {
 fn interrupting_a_turn_ends_it_at_the_pane_with_no_word_from_the_vendor() {
     let amx = Harness::new();
     let pane = amx.play("port-importer-c3d", "interrupted");
-    let started = amx.until_state("port-importer-c3d", "working");
+    amx.until_state("port-importer-c3d", "working");
 
-    // What amx writes down about the turn it is about to end outranks the
-    // vendor's last word by being newer than it, and the record keeps both in
-    // whole seconds. Coming up, starting a turn and being interrupted inside
-    // one of them is this suite rather than anybody's afternoon, so the key
-    // waits for the second the hooks landed in to pass.
-    let spoke = started["last_event"]
-        .as_u64()
-        .expect("the record says when it last heard from the vendor");
-    amx.until("the second the vendor last spoke in to pass", || {
-        (now() > spoke).then_some(())
-    });
-
+    // The key goes in the second the turn started in, which is where this
+    // suite puts it and where a tool-heavy turn puts it in anybody's
+    // afternoon: what amx writes down about the turn it is ending stands on
+    // its own and is not weighed against the hook that came a moment before.
     let out = amx.amx(&["interrupt", "port-importer-c3d"]);
     assert_eq!(
         out.status.code(),

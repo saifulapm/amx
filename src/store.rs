@@ -363,14 +363,16 @@ pub struct State {
     /// next enter, attach or resume.
     pub parked_at: u64,
     /// Epoch seconds when `amx interrupt` cut this agent's turn short, and zero
-    /// for one whose turns have all ended on their own.
+    /// for one the vendor has spoken about since, or that nobody cut short.
     ///
     /// claude sends no hook for an interrupt: the key ends the turn where it
     /// stands and the vendor says nothing about it, so the record is left
     /// saying a turn is running that amx itself ended. The stamp is what says
-    /// otherwise, and a reader weighs it against the last thing the agent said
-    /// — see [`crate::derive::read`]. It is written with the observing hand,
-    /// like `parked_at` above: amx typed at a pane and heard nothing back.
+    /// otherwise, for as long as it stands — see [`crate::derive::read`]. The
+    /// vendor's next event about this agent takes it back off, because that is
+    /// the agent speaking for itself again. It is written with the observing
+    /// hand, like `parked_at` above: amx typed at a pane and heard nothing
+    /// back.
     pub interrupted_at: u64,
     /// Epoch seconds when somebody last looked at this agent, and zero for one
     /// nobody has opened. Read against `last_event`, it says whether what the
