@@ -183,6 +183,43 @@ fn clibatch_new_refuses_a_task_with_nothing_in_it() {
 }
 
 #[test]
+fn clibatch_rename_puts_the_word_where_a_program_reads_it() {
+    // A rename is for the eye, but the wall is not the only thing with rows to
+    // draw. What somebody calls an agent is on `--json` beside the id every
+    // surface still addresses it by, so a program listing agents can label
+    // them the way the person who renamed them does.
+    let amx = Harness::new();
+    amx.play("fix-login-a1b", "happy-turn");
+    amx.until_state("fix-login-a1b", "idle");
+
+    let out = amx.amx(&["rename", "fix-login-a1b", "auth"]);
+    assert!(
+        out.status.success(),
+        "amx rename: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = amx.amx(&["ls", "--json"]);
+    assert!(
+        out.status.success(),
+        "amx ls: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let listed: Vec<serde_json::Value> =
+        serde_json::from_slice(&out.stdout).expect("the listing is json");
+    let agent = listed
+        .iter()
+        .find(|agent| agent["id"] == "fix-login-a1b")
+        .expect("the agent that was renamed");
+
+    assert_eq!(agent["name"], "auth");
+    assert_eq!(
+        agent["id"], "fix-login-a1b",
+        "and the id a caller addresses it by did not move"
+    );
+}
+
+#[test]
 fn events_merges_the_logs_and_keeps_each_agents_own_order() {
     let amx = Harness::new();
     amx.play("fix-login-a1b", "happy-turn");

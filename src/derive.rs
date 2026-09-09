@@ -331,6 +331,13 @@ impl View {
             "pane": self.meta.pane.as_str(),
             "socket": self.meta.socket,
             "session": self.meta.session,
+            // What somebody here has called this agent, where somebody has —
+            // see [`crate::verbs::rename`]. It is what a person reading a wall
+            // has been calling it since, so a program drawing its own rows
+            // labels them the same way rather than by an id nobody says out
+            // loud. Null where nobody renamed it, and the id is untouched
+            // either way.
+            "name": self.state.name,
             // What the vendor calls that session, which is the word the wall
             // puts where the id was. A program drawing its own list of agents
             // wants the same word, and this is the only place it is written.
@@ -4317,6 +4324,30 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             serde_json::Value::Null,
             "and a session that has never been titled says so rather than \
              leaving the field out"
+        );
+    }
+
+    #[test]
+    fn reader_hands_a_program_the_name_somebody_gave_the_agent() {
+        // The word a rename put on the row, which is what a person reading a
+        // wall has been calling this agent since. A program drawing its own
+        // rows wants the same word, and the id beside it is what both address.
+        let seen = |name: Option<&str>| {
+            View::new(
+                meta(),
+                State {
+                    name: name.map(str::to_string),
+                    ..state(Phase::Idle, 1_300)
+                },
+                verdict(Phase::Idle, Evidence::Hooks, None),
+            )
+        };
+        assert_eq!(seen(Some("auth")).json()["name"], "auth");
+        assert_eq!(
+            seen(None).json()["name"],
+            serde_json::Value::Null,
+            "and an agent nobody has renamed says so rather than leaving the \
+             field out"
         );
     }
 
