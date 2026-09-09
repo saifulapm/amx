@@ -5,8 +5,9 @@
 //! screen. Four endings, and the exit code is which one happened:
 //!
 //! * `0` — the agent's answer is on stdout.
-//! * `1` — nothing is coming: the agent failed, was stopped, or ended its turn
-//!   without an answer amx could capture.
+//! * `1` — nothing is coming: the agent failed, was stopped, had its turn cut
+//!   short by `amx interrupt`, or ended its turn without an answer amx could
+//!   capture.
 //! * `2` — it is asking a question, which is on stdout with the choices under
 //!   it. **A wait never goes through a question**: the question usually
 //!   arrives *during* the wait, and a caller that cannot see it cannot answer
@@ -27,6 +28,7 @@ use std::time::{Duration, Instant};
 use crate::derive::{self, Evidence, View};
 use crate::store::{Agent, Event, Phase};
 use crate::vendor::Moment;
+use crate::verbs::interrupt::INTERRUPT;
 use crate::verbs::send::{self, nothing_more_is_coming, waiting_on_a_question};
 use crate::{complain, exit, paths, store};
 
@@ -76,7 +78,7 @@ pub fn run(
         // turn to place against the last message.
         let ended = match phase {
             Phase::Idle | Phase::Done => past_the_last_message(root, id)?,
-            _ => false,
+            _ => Ended::NotYet,
         };
 
         match settled(phase, ended) {
@@ -85,6 +87,12 @@ pub fn run(
             // The command ended, and the message it was sent went with it.
             Settled::Unanswered => {
                 complain!("amx: {id} ended without answering");
+                return Ok(exit::FAILURE);
+            }
+            // Somebody stopped the turn this wait was for. Whatever is on the
+            // record answers the turn before the message.
+            Settled::Interrupted => {
+                complain!("amx: {id} was interrupted; the turn ended with no answer");
                 return Ok(exit::FAILURE);
             }
             Settled::Nothing => return Ok(nothing_more_is_coming(id, phase)),
@@ -107,25 +115,40 @@ enum Settled {
     Question,
     /// The command ended before the last message was answered.
     Unanswered,
+    /// The turn was cut short: there is no answer to it and never will be.
+    Interrupted,
     /// It failed or was stopped: no answer is coming.
     Nothing,
     /// Still going.
     NotYet,
 }
 
-/// Weigh one reading. `ended` is whether the turn amx can see is the one after
-/// the last message — `false` on a turn that has not ended at all.
-fn settled(phase: Phase, ended: bool) -> Settled {
-    match phase {
-        Phase::Waiting => Settled::Question,
-        Phase::Idle if ended => Settled::Answer,
-        Phase::Done if ended => Settled::Answer,
+/// Whether the turn amx is waiting for has ended, and what ended it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ended {
+    /// Nothing since the last message says a turn is over.
+    NotYet,
+    /// A turn of the agent's own ended, and whatever it left is its answer.
+    Turn,
+    /// `amx interrupt` ended it — see [`crate::verbs::interrupt`]. A turn
+    /// nobody let finish leaves no answer, and the one on the record belongs
+    /// to the turn before the message.
+    Interrupted,
+}
+
+/// Weigh one reading. `ended` is how the turn after the last message ended, if
+/// it has.
+fn settled(phase: Phase, ended: Ended) -> Settled {
+    match (phase, ended) {
+        (Phase::Waiting, _) => Settled::Question,
+        (Phase::Idle | Phase::Done, Ended::Interrupted) => Settled::Interrupted,
+        (Phase::Idle | Phase::Done, Ended::Turn) => Settled::Answer,
         // Idle, but the last thing amx did was hand it a message it has not
         // finished with. That turn is still to come.
-        Phase::Idle => Settled::NotYet,
-        Phase::Done => Settled::Unanswered,
-        Phase::Failed | Phase::Stopped => Settled::Nothing,
-        Phase::Starting | Phase::Working | Phase::Unknown => Settled::NotYet,
+        (Phase::Idle, Ended::NotYet) => Settled::NotYet,
+        (Phase::Done, Ended::NotYet) => Settled::Unanswered,
+        (Phase::Failed | Phase::Stopped, _) => Settled::Nothing,
+        (Phase::Starting | Phase::Working | Phase::Unknown, _) => Settled::NotYet,
     }
 }
 
@@ -137,8 +160,9 @@ fn pace(evidence: &Evidence) -> Duration {
     }
 }
 
-/// Whether a turn has ended since the last message amx sent.
-fn past_the_last_message(root: &Path, id: &str) -> Result<bool> {
+/// Whether a turn has ended since the last message amx sent, and what ended
+/// it.
+fn past_the_last_message(root: &Path, id: &str) -> Result<Ended> {
     Ok(ended_past_the_last_message(
         &Agent::open(root, id)?.events()?,
     ))
@@ -151,12 +175,21 @@ fn past_the_last_message(root: &Path, id: &str) -> Result<bool> {
 /// anything to has no message to be past, and whatever it last answered is its
 /// answer.
 ///
+/// The first ending after the message is the one that counts. An interrupt the
+/// vendor caught up with afterwards is still the thing that ended the turn,
+/// and a turn that ended on its own before anybody typed at it ended on its
+/// own.
+///
 /// Whose word said the turn ended is not this question — see [`a_turn_ended`].
-fn ended_past_the_last_message(events: &[Event]) -> bool {
+fn ended_past_the_last_message(events: &[Event]) -> Ended {
     let Some(sent) = events.iter().rposition(|event| event.kind == send::SEND) else {
-        return true;
+        return Ended::Turn;
     };
-    events[sent..].iter().any(a_turn_ended)
+    match events[sent..].iter().find(|event| a_turn_ended(event)) {
+        None => Ended::NotYet,
+        Some(event) if cut_short(event) => Ended::Interrupted,
+        Some(_) => Ended::Turn,
+    }
 }
 
 /// Whether this event says a turn of the agent's own ended.
@@ -168,9 +201,20 @@ fn ended_past_the_last_message(events: &[Event]) -> bool {
 /// on a hookless agent that had been sent a message ran to its own deadline
 /// over a turn that had ended and an answer that was on the record beside it.
 ///
+/// An interrupt is the third, and the one nothing else may ever say twice: a
+/// turn cancelled at the pane is over whether or not the vendor mentions it,
+/// and a wait holding out for a word that may never come is a wait that runs
+/// to its own deadline.
+///
 /// A subagent's events ride the same log and are not the agent's turn.
 fn a_turn_ended(event: &Event) -> bool {
-    (turn_end(event) || event.kind == derive::READ_TURN_END) && event.payload["agent_id"].is_null()
+    (turn_end(event) || event.kind == derive::READ_TURN_END || cut_short(event))
+        && event.payload["agent_id"].is_null()
+}
+
+/// Whether this event is amx cutting the turn short.
+fn cut_short(event: &Event) -> bool {
+    event.kind == INTERRUPT
 }
 
 /// The answer, or the honest absence of one.
@@ -216,6 +260,8 @@ fn transcript(view: &View) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Meta;
+    use crate::tmux::{PaneId, Socket};
     use serde_json::json;
 
     fn log(kinds: &[&str]) -> Vec<Event> {
@@ -227,33 +273,47 @@ mod tests {
 
     #[test]
     fn a_turn_ends_a_wait_and_a_question_interrupts_it() {
-        assert_eq!(settled(Phase::Idle, true), Settled::Answer);
-        assert_eq!(settled(Phase::Done, true), Settled::Answer);
-        assert_eq!(settled(Phase::Waiting, false), Settled::Question);
+        assert_eq!(settled(Phase::Idle, Ended::Turn), Settled::Answer);
+        assert_eq!(settled(Phase::Done, Ended::Turn), Settled::Answer);
+        assert_eq!(settled(Phase::Waiting, Ended::NotYet), Settled::Question);
         assert_eq!(
-            settled(Phase::Waiting, true),
+            settled(Phase::Waiting, Ended::Turn),
             Settled::Question,
             "a question is a question whatever the log says"
         );
-        assert_eq!(settled(Phase::Failed, false), Settled::Nothing);
-        assert_eq!(settled(Phase::Stopped, false), Settled::Nothing);
+        assert_eq!(settled(Phase::Failed, Ended::NotYet), Settled::Nothing);
+        assert_eq!(settled(Phase::Stopped, Ended::NotYet), Settled::Nothing);
+    }
+
+    #[test]
+    fn a_turn_nobody_let_finish_leaves_no_answer_to_hand_back() {
+        // The one ending with an answer on the record that is not this turn's:
+        // what amx captured belongs to the turn before the message.
+        assert_eq!(
+            settled(Phase::Idle, Ended::Interrupted),
+            Settled::Interrupted
+        );
+        assert_eq!(
+            settled(Phase::Done, Ended::Interrupted),
+            Settled::Interrupted
+        );
     }
 
     #[test]
     fn a_wait_keeps_waiting_while_there_is_a_turn_to_wait_for() {
         for phase in [Phase::Starting, Phase::Working, Phase::Unknown] {
-            assert_eq!(settled(phase, false), Settled::NotYet, "{phase}");
+            assert_eq!(settled(phase, Ended::NotYet), Settled::NotYet, "{phase}");
         }
         // Idle, but the turn amx is waiting for has not started yet: the
         // message it was sent is still in front of it.
-        assert_eq!(settled(Phase::Idle, false), Settled::NotYet);
+        assert_eq!(settled(Phase::Idle, Ended::NotYet), Settled::NotYet);
     }
 
     #[test]
     fn a_command_that_ended_on_an_unanswered_message_is_not_an_answer() {
         // Nothing more is coming, and what is on the record answers the turn
         // before the message. Saying so is the only honest ending.
-        assert_eq!(settled(Phase::Done, false), Settled::Unanswered);
+        assert_eq!(settled(Phase::Done, Ended::NotYet), Settled::Unanswered);
     }
 
     #[test]
@@ -272,34 +332,32 @@ mod tests {
 
     #[test]
     fn an_agent_nobody_has_written_to_answers_with_its_last_turn() {
-        assert!(ended_past_the_last_message(&log(&[])));
-        assert!(ended_past_the_last_message(&log(&[
-            "SessionStart",
-            "UserPromptSubmit",
-            "Stop"
-        ])));
+        assert_eq!(ended_past_the_last_message(&log(&[])), Ended::Turn);
+        assert_eq!(
+            ended_past_the_last_message(&log(&["SessionStart", "UserPromptSubmit", "Stop"])),
+            Ended::Turn
+        );
     }
 
     #[test]
     fn an_answer_from_before_the_last_message_is_not_past_it() {
-        assert!(!ended_past_the_last_message(&log(&["Stop", send::SEND])));
-        assert!(!ended_past_the_last_message(&log(&[
-            "Stop",
-            send::SEND,
-            "UserPromptSubmit"
-        ])));
-        assert!(ended_past_the_last_message(&log(&[
-            "Stop",
-            send::SEND,
-            "UserPromptSubmit",
-            "Stop"
-        ])));
+        assert_eq!(
+            ended_past_the_last_message(&log(&["Stop", send::SEND])),
+            Ended::NotYet
+        );
+        assert_eq!(
+            ended_past_the_last_message(&log(&["Stop", send::SEND, "UserPromptSubmit"])),
+            Ended::NotYet
+        );
+        assert_eq!(
+            ended_past_the_last_message(&log(&["Stop", send::SEND, "UserPromptSubmit", "Stop"])),
+            Ended::Turn
+        );
         // And it is the *last* message that counts.
-        assert!(!ended_past_the_last_message(&log(&[
-            send::SEND,
-            "Stop",
-            send::SEND
-        ])));
+        assert_eq!(
+            ended_past_the_last_message(&log(&[send::SEND, "Stop", send::SEND])),
+            Ended::NotYet
+        );
     }
 
     #[test]
@@ -307,18 +365,106 @@ mod tests {
         // On the vendor that sends no Stop, a reading of the pane is the only
         // thing that will ever place the end of a turn, so a wait that took
         // the vendor's word alone was waiting on a word never coming.
-        assert!(ended_past_the_last_message(&log(&[
-            send::SEND,
-            derive::READ_PROMPT,
-            derive::READ_TURN_END,
-        ])));
-        assert!(
-            !ended_past_the_last_message(&log(&[send::SEND, derive::READ_PROMPT])),
+        assert_eq!(
+            ended_past_the_last_message(&log(&[
+                send::SEND,
+                derive::READ_PROMPT,
+                derive::READ_TURN_END,
+            ])),
+            Ended::Turn
+        );
+        assert_eq!(
+            ended_past_the_last_message(&log(&[send::SEND, derive::READ_PROMPT])),
+            Ended::NotYet,
             "a turn a reading watched begin is under way, not over"
         );
-        assert!(
-            !ended_past_the_last_message(&log(&[derive::READ_TURN_END, send::SEND])),
+        assert_eq!(
+            ended_past_the_last_message(&log(&[derive::READ_TURN_END, send::SEND])),
+            Ended::NotYet,
             "and one that ended before the message is the turn before it"
+        );
+    }
+
+    #[test]
+    fn a_turn_amx_cut_short_is_a_turn_that_ended() {
+        // A wait that held out for the vendor's word about a turn it was
+        // interrupted out of would run to its own deadline over a turn that
+        // ended the moment the key landed.
+        assert_eq!(
+            ended_past_the_last_message(&log(&[send::SEND, "UserPromptSubmit", INTERRUPT])),
+            Ended::Interrupted
+        );
+        // The first word for the turn's end is the one that ended it: a vendor
+        // catching up afterwards is not a second ending.
+        assert_eq!(
+            ended_past_the_last_message(&log(&[send::SEND, INTERRUPT, TURN_END])),
+            Ended::Interrupted
+        );
+        // And an interrupt from before the last message belongs to the turn
+        // before it, like any other ending.
+        assert_eq!(
+            ended_past_the_last_message(&log(&[INTERRUPT, send::SEND])),
+            Ended::NotYet
+        );
+    }
+
+    #[test]
+    fn result_over_an_interrupted_turn_hands_back_nothing_and_says_so() {
+        // The answer on the record is the turn before the message's, and
+        // serving it as this turn's is the mistake nothing downstream can
+        // undo. A turn nobody let finish has no answer at all.
+        let root = tempfile::TempDir::new().unwrap();
+        let waited_on = |id: &str, ended_on: &str| {
+            let meta = Meta {
+                id: id.to_string(),
+                task: "fix the login bug".to_string(),
+                agent: Some("claude".to_string()),
+                dir: std::path::PathBuf::from("/srv/app"),
+                worktree: None,
+                branch: None,
+                base: None,
+                socket: Socket::Name(format!("amx-no-such-server-{}", std::process::id())),
+                pane: PaneId::new("%404").unwrap(),
+                bg: false,
+                session: None,
+                transcript: None,
+                created: 1,
+            };
+            let agent = Agent::create(root.path(), &meta).unwrap();
+            let writer = agent.writer().unwrap();
+            writer
+                .append(&Event::new(
+                    send::SEND,
+                    json!({ "text": "and now the linter" }),
+                ))
+                .unwrap();
+            writer.append(&Event::new(ended_on, json!({}))).unwrap();
+            writer
+                .observe(|state| {
+                    state.state = Phase::Idle;
+                    state.result = Some("the login bug is fixed".to_string());
+                    // Parked, so the record's own phase is what a reader hands
+                    // back with no pane left to look at.
+                    state.parked_at = 4_600;
+                })
+                .unwrap();
+            drop(writer);
+
+            let mut out = Vec::new();
+            let code = run(root.path(), id, None, false, &mut out).unwrap();
+            (code, String::from_utf8(out).unwrap())
+        };
+
+        assert_eq!(
+            waited_on("fix-login-a1b", INTERRUPT),
+            (exit::FAILURE, String::new())
+        );
+        // The same wait over a turn the agent was left to finish hands back
+        // what it answered, which is what says the ending above is the
+        // interrupt rather than the record being unreadable.
+        assert_eq!(
+            waited_on("fix-login-c3d", TURN_END),
+            (exit::OK, "the login bug is fixed\n".to_string())
         );
     }
 
@@ -331,6 +477,6 @@ mod tests {
             Event::new(send::SEND, json!({ "text": "and now the linter" })),
             Event::new(TURN_END, json!({ "agent_id": "sub-1" })),
         ];
-        assert!(!ended_past_the_last_message(&events));
+        assert_eq!(ended_past_the_last_message(&events), Ended::NotYet);
     }
 }
