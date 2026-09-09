@@ -698,6 +698,7 @@ amx answer <id> y      # the keys a prompt reads: y, n, 1-9, enter, esc
 amx answer <id> 1,3    # a question that takes several: check these two
 amx answer <id> --text "keep the old importer"   # the row it offers for words
 amx answer <id> 1 --note "and keep the subtitle" # a note beside the choice
+amx interrupt <id>     # stop the turn it is in the middle of
 amx diff <id>          # its worktree against the commit it was cut from
 amx diff <id> --stat   # the shape of it: a file per line, and the totals
 amx events --follow    # every agent's log, merged

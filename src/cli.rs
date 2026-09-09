@@ -38,6 +38,7 @@ impl Cli {
             Status { .. } => "status",
             Send { .. } => "send",
             Answer { .. } => "answer",
+            Interrupt { .. } => "interrupt",
             Result { .. } => "result",
             Attach { .. } => "attach",
             Logs { .. } => "logs",
@@ -107,6 +108,18 @@ pub enum Command {
         #[command(flatten)]
         key: AnswerArgs,
     },
+
+    /// Stop the turn an agent is in the middle of.
+    ///
+    /// Escape at the pane: the turn ends where it stands and the agent goes
+    /// back to its prompt with the conversation behind it intact. It is for
+    /// the turn that has gone the wrong way, and the next `send` is what says
+    /// which way it should have gone.
+    ///
+    /// A question is not a turn — Escape there answers it, so `amx answer <id>
+    /// esc` is what dismisses one — and a command row has no vendor in it to
+    /// read a key, so `amx stop` is what ends one of those.
+    Interrupt { id: String },
 
     /// Wait for the agent's turn to end and print its answer.
     Result {
@@ -556,6 +569,7 @@ mod tests {
                 &["amx", "answer", "fix-a1b", "1", "--note", "keep it short"],
                 "answer",
             ),
+            (&["amx", "interrupt", "fix-a1b"], "interrupt"),
             (&["amx", "result", "fix-a1b"], "result"),
             (&["amx", "result", "fix-a1b", "--timeout", "30"], "result"),
             (&["amx", "attach", "fix-a1b"], "attach"),
@@ -832,6 +846,7 @@ mod tests {
             &["amx", "status"],
             &["amx", "logs"],
             &["amx", "send", "fix-a1b"],
+            &["amx", "interrupt"],
             &["amx", "answer", "fix-a1b"],
             // Which of the two a thing that reads as both is has to be said,
             // and saying both says neither.
