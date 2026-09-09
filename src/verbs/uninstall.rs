@@ -135,9 +135,13 @@ mod tests {
         let settings = settings_with_amx(home.path());
 
         let server = TestServer::new();
+        // In a session named the way spawn::place names one, so the pane
+        // answers for this agent: a pane nobody owns is a pane its record has
+        // lost, and uninstall waits on no such agent.
         let (_, pane) = server
             .0
             .new_session(&Spawn {
+                name: Some(&format!("{}fix-login-a1b", crate::tmux::SESSION_PREFIX)),
                 command: &["sh", "-c", "while :; do sleep 0.05; done"],
                 ..Spawn::default()
             })
