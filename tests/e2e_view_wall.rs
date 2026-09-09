@@ -120,16 +120,20 @@ fn coloured_line(amx: &Harness, view: &str, text: &str) -> String {
         .to_string()
 }
 
-/// The SGR attributes in force where `word` starts on this captured line:
-/// every escape before it walked, resets honoured, and the colour
-/// introducers' arguments consumed — the `2` of `38;2;r;g;b` is a
-/// colourspace, never the dim attribute.
-fn sgr_at(line: &str, word: &str) -> Vec<u16> {
-    let at = line
+/// The SGR attributes in force where `word` starts on this capture: every
+/// escape before it walked, resets honoured, and the colour introducers'
+/// arguments consumed — the `2` of `38;2;r;g;b` is a colourspace, never the
+/// dim attribute.
+///
+/// A whole screen where the attribute being read was turned on further up it:
+/// tmux writes an attribute where it changes and leaves it in force, so a
+/// line lifted out on its own carries none of what the lines above it set.
+fn sgr_at(drawn: &str, word: &str) -> Vec<u16> {
+    let at = drawn
         .find(word)
-        .unwrap_or_else(|| panic!("{word:?} is not on {line:?}"));
+        .unwrap_or_else(|| panic!("{word:?} is not on {drawn:?}"));
     let mut on: Vec<u16> = Vec::new();
-    let mut rest = &line[..at];
+    let mut rest = &drawn[..at];
     while let Some(start) = rest.find("\u{1b}[") {
         let after = &rest[start + 2..];
         let Some(end) = after.find('m') else { break };
@@ -467,7 +471,7 @@ fn the_view_gathers_the_agents_under_what_they_need() {
     let view = amx.in_a_terminal(&[], &[]);
     let drawn = amx.until("every group", || {
         let drawn = screen(&amx, &view);
-        ["NEEDS INPUT", "WORKING", "COMPLETED"]
+        ["Needs input", "Working", "Completed"]
             .iter()
             .all(|group| drawn.contains(group))
             .then_some(drawn)
@@ -480,12 +484,12 @@ fn the_view_gathers_the_agents_under_what_they_need() {
     // whose command exited: both turns are over, and whether the process is
     // still there is the row's business rather than the group's.
     assert!(
-        !drawn.contains("IDLE"),
+        !drawn.contains("Idle"),
         "an ended turn is completed, so there is no group between:\n{drawn}"
     );
     assert!(
-        line_of(&drawn, "COMPLETED") < line_of(&drawn, "fix-login-c3d"),
-        "the idle agent stands under COMPLETED:\n{drawn}"
+        line_of(&drawn, "Completed") < line_of(&drawn, "fix-login-c3d"),
+        "the idle agent stands under Completed:\n{drawn}"
     );
     // A row says what the agent is up to: what it is asking, else what it is
     // doing, else what it answered.
@@ -493,10 +497,9 @@ fn the_view_gathers_the_agents_under_what_they_need() {
     assert!(drawn.contains("Running Bash"), "{drawn}");
     assert!(drawn.contains("did what it was asked"), "{drawn}");
 
-    // Twice over, in two vocabularies and two cases: the heading says what the
-    // group means, and the band at the top says the word the list can be
-    // narrowed by.
-    for group in ["NEEDS INPUT", "COMPLETED"] {
+    // Twice over, in two vocabularies: the heading says what the group means,
+    // and the band at the top says the word the list can be narrowed by.
+    for group in ["Needs input", "Completed"] {
         assert_eq!(
             drawn.matches(group).count(),
             1,
@@ -524,7 +527,7 @@ fn ctrl_t_pins_the_row_under_the_cursor_over_every_group_and_lets_it_go() {
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the two groups", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("NEEDS INPUT") && drawn.contains("WORKING")).then_some(())
+        (drawn.contains("Needs input") && drawn.contains("Working")).then_some(())
     });
 
     // Onto the working agent: the view opens on the first row, and the walk
@@ -534,20 +537,20 @@ fn ctrl_t_pins_the_row_under_the_cursor_over_every_group_and_lets_it_go() {
     press(&amx, &view, "C-t");
     let drawn = amx.until("the pinned group", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("PINNED").then_some(drawn)
+        drawn.contains("Pinned").then_some(drawn)
     });
 
     assert!(
-        line_of(&drawn, "PINNED") < line_of(&drawn, "NEEDS INPUT"),
+        line_of(&drawn, "Pinned") < line_of(&drawn, "Needs input"),
         "what somebody pinned stands over the agent that is asking:\n{drawn}"
     );
     assert_eq!(
         line_of(&drawn, "port-import-b2c"),
-        line_of(&drawn, "PINNED") + 1,
+        line_of(&drawn, "Pinned") + 1,
         "and it is the row under the heading, whatever it is doing:\n{drawn}"
     );
     assert!(
-        !drawn.contains("WORKING"),
+        !drawn.contains("Working"),
         "the group it came out of was the last of it:\n{drawn}"
     );
 
@@ -555,11 +558,11 @@ fn ctrl_t_pins_the_row_under_the_cursor_over_every_group_and_lets_it_go() {
     press(&amx, &view, "C-t");
     let back = amx.until("the working group again", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("WORKING").then_some(drawn)
+        drawn.contains("Working").then_some(drawn)
     });
-    assert!(!back.contains("PINNED"), "{back}");
+    assert!(!back.contains("Pinned"), "{back}");
     assert!(
-        line_of(&back, "WORKING") < line_of(&back, "port-import-b2c"),
+        line_of(&back, "Working") < line_of(&back, "port-import-b2c"),
         "{back}"
     );
 }
@@ -576,16 +579,16 @@ fn ready_for_review_takes_an_ended_agent_whose_request_is_still_open() {
     let view = amx.in_a_terminal(&[], &[]);
     let drawn = amx.until("both groups", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("READY FOR REVIEW") && drawn.contains("COMPLETED")).then_some(drawn)
+        (drawn.contains("Ready for review") && drawn.contains("Completed")).then_some(drawn)
     });
 
     assert!(
-        line_of(&drawn, "READY FOR REVIEW") < line_of(&drawn, "COMPLETED"),
+        line_of(&drawn, "Ready for review") < line_of(&drawn, "Completed"),
         "work waiting on a reviewer stands over the work that is over:\n{drawn}"
     );
     assert_eq!(
         line_of(&drawn, "fix-login-a1b"),
-        line_of(&drawn, "READY FOR REVIEW") + 1,
+        line_of(&drawn, "Ready for review") + 1,
         "the agent whose request is still asking for something:\n{drawn}"
     );
     assert!(
@@ -594,7 +597,7 @@ fn ready_for_review_takes_an_ended_agent_whose_request_is_still_open() {
     );
     for id in ["port-import-b2c", "old-job-c3d"] {
         assert!(
-            line_of(&drawn, id) > line_of(&drawn, "COMPLETED"),
+            line_of(&drawn, id) > line_of(&drawn, "Completed"),
             "a merged request and a branch nobody opened one for are both \
              over, so {id} is completed:\n{drawn}"
         );
@@ -858,7 +861,7 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the agents", || {
-        screen(&amx, &view).contains("NEEDS INPUT").then_some(())
+        screen(&amx, &view).contains("Needs input").then_some(())
     });
 
     press(&amx, &view, "C-s");
@@ -874,22 +877,26 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
             .unwrap_or_else(|| panic!("no row for {id} in:\n{drawn}"))
             .to_string()
     };
-    let at = |text: &str| {
+    // A heading is the whole of its line now, so the project it stands over is
+    // what the line reads rather than what it starts with: ~ heads the agents
+    // outside any repository, not the ones under ~/repo as well.
+    let headings = |text: &str| {
+        let heading = format!(" {text}");
         drawn
             .lines()
-            .position(|line| line.starts_with(&format!(" {text} ")))
-            .unwrap_or_else(|| panic!("no {text} heading in:\n{drawn}"))
+            .enumerate()
+            .filter(move |(_, line)| line.trim_end() == heading)
+    };
+    let at = |text: &str| match headings(text).next() {
+        Some((at, _)) => at,
+        None => panic!("no {text} heading in:\n{drawn}"),
     };
     assert!(
         at("~/repo") < at("~"),
         "the project with the question in it comes first:\n{drawn}"
     );
     assert!(
-        drawn
-            .lines()
-            .filter(|line| line.starts_with(" ~/repo "))
-            .count()
-            == 1,
+        headings("~/repo").count() == 1,
         "one heading for the repository, subdirectory and all:\n{drawn}"
     );
     // The heading no longer says the state, so every row carries it.
@@ -897,14 +904,14 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
     assert!(row("fix-login-b2c").contains("idle"), "{drawn}");
     assert!(row("old-job-c3d").contains("done"), "{drawn}");
     assert!(
-        !drawn.contains("NEEDS INPUT"),
+        !drawn.contains("Needs input"),
         "and the state headings are gone with the axis:\n{drawn}"
     );
 
     // And back, on the same key.
     press(&amx, &view, "C-s");
     amx.until("what they need again", || {
-        screen(&amx, &view).contains("NEEDS INPUT").then_some(())
+        screen(&amx, &view).contains("Needs input").then_some(())
     });
 }
 
@@ -919,11 +926,11 @@ fn a_wall_with_nothing_on_it_says_so_in_one_line_of_amxs_own() {
     // amx's own line where the rows would be. How many rows the empty wall
     // comes to is the empty wall's own business.
     for group in [
-        "PINNED",
-        "READY FOR REVIEW",
-        "NEEDS INPUT",
-        "WORKING",
-        "COMPLETED",
+        "Pinned",
+        "Ready for review",
+        "Needs input",
+        "Working",
+        "Completed",
     ] {
         assert!(
             !drawn.contains(group),
@@ -952,14 +959,14 @@ fn a_blank_line_stands_the_list_off_from_the_header() {
     let view = amx.in_a_terminal(&[], &[]);
     let drawn = amx.until("the first heading", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("NEEDS INPUT").then_some(drawn)
+        drawn.contains("Needs input").then_some(drawn)
     });
 
     let lines: Vec<&str> = drawn.lines().map(str::trim_end).collect();
     let at = lines
         .iter()
-        .position(|line| line.starts_with(" NEEDS INPUT "))
-        .unwrap_or_else(|| panic!("no NEEDS INPUT heading in:\n{drawn}"));
+        .position(|line| *line == " Needs input")
+        .unwrap_or_else(|| panic!("no Needs input heading in:\n{drawn}"));
     assert!(
         lines[at - 1].is_empty(),
         "the first heading is stood off from the header the way the next one \
@@ -1146,7 +1153,7 @@ fn a_row_goes_under_the_title_its_session_was_given_until_somebody_renames_it() 
 }
 
 #[test]
-fn a_group_heading_is_uppercase_over_a_rule_that_ends_in_its_count() {
+fn a_group_heading_is_the_groups_own_words_and_stops_there() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
     amx.until_state("ask-a1b", "waiting");
@@ -1155,52 +1162,38 @@ fn a_group_heading_is_uppercase_over_a_rule_that_ends_in_its_count() {
 
     let view = amx.in_a_terminal(&[], &[]);
     // Drawn whole, not merely drawn: the view puts out no synchronized-output
-    // markers, so a capture can land between a heading's rule and the count
-    // that ends it — measured once as a 73-cell COMPLETED, about one run in
-    // twenty-four under parallel load. Waiting for the width the assertions
-    // below take is what makes them assertions rather than a coin toss.
-    let drawn = amx.until("the headings, both drawn to the edge", || {
+    // markers, so a capture can land partway through a line. Waiting for the
+    // words the assertions below take is what makes them assertions rather
+    // than a coin toss.
+    let drawn = amx.until("both headings, whole", || {
         let drawn = screen(&amx, &view);
-        let whole = ["NEEDS INPUT", "COMPLETED"].iter().all(|label| {
+        let whole = ["Needs input", "Completed"].iter().all(|label| {
             drawn
                 .lines()
-                .any(|line| line.starts_with(&format!(" {label} ")) && line.chars().count() == 80)
+                .any(|line| line.trim_end() == format!(" {label}"))
         });
         whole.then_some(drawn)
     });
 
-    for (label, members) in [("NEEDS INPUT", 1), ("COMPLETED", 2)] {
-        let line = drawn
-            .lines()
-            .find(|line| line.starts_with(&format!(" {label} ")))
-            .unwrap_or_else(|| panic!("no {label} heading in:\n{drawn}"))
-            .to_string();
-        let cells: Vec<char> = line.chars().collect();
-        assert_eq!(cells.len(), 80, "a heading is drawn to the edge:\n{line:?}");
-        assert_eq!(
-            cells[76..].iter().collect::<String>(),
-            format!("{members:>4}"),
-            "the count is right-aligned in the column the ages are:\n{line:?}"
-        );
-        let rule: String = cells[label.chars().count() + 2..74].iter().collect();
-        assert!(
-            !rule.is_empty() && rule.chars().all(|cell| cell == '┈'),
-            "and a rule runs from the label out to it:\n{line:?}"
-        );
-    }
+    // The words a person would say out loud, and the line ends on them: no
+    // rule out to the edge, and no count while the rows the heading stands
+    // over are on the screen to be counted.
+    assert!(
+        !drawn.contains('┈'),
+        "nothing carries the eye out to the edge of the wall:\n{drawn}"
+    );
 
-    // The label carries the weight and the rule carries none of it, which is
-    // what makes a heading without a second type size.
-    let painted = coloured_line(&amx, &view, "COMPLETED");
+    // Dim, the way the summary beside a row is, with the one exception the
+    // wall makes up here: the group that wants a person says so in colour.
+    // Read off the whole screen, because the dim the heading is drawn in was
+    // turned on by the row above it and left in force.
+    let painted = coloured(&amx, &view);
+    let label = sgr_at(&painted, "Completed");
     assert!(
-        sgr_at(&painted, "COMPLETED").contains(&1),
-        "the label is bold:\n{painted:?}"
+        label.contains(&2) && !label.contains(&1),
+        "the label is dim and carries no weight:\n{painted:?}"
     );
-    assert!(
-        sgr_at(&painted, "┈┈┈").contains(&2),
-        "the rule is dim:\n{painted:?}"
-    );
-    let waiting = coloured_line(&amx, &view, "NEEDS INPUT");
+    let waiting = coloured_line(&amx, &view, "Needs input");
     assert!(
         waiting.contains(&foreground("waiting")),
         "and the group that wants a person is painted for it:\n{waiting:?}"
@@ -1208,7 +1201,7 @@ fn a_group_heading_is_uppercase_over_a_rule_that_ends_in_its_count() {
 }
 
 #[test]
-fn a_path_heading_keeps_its_case_and_carries_the_same_rule_and_count() {
+fn a_path_heading_reads_the_way_a_group_heading_does() {
     let amx = Harness::new();
     let repo = amx.a_repo();
     amx.play("ask-a1b", "asks-a-question");
@@ -1218,56 +1211,35 @@ fn a_path_heading_keeps_its_case_and_carries_the_same_rule_and_count() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the agents", || {
-        screen(&amx, &view).contains("NEEDS INPUT").then_some(())
+        screen(&amx, &view).contains("Needs input").then_some(())
     });
     press(&amx, &view, "C-s");
-    let drawn = amx.until("the heading over the repository, drawn to the edge", || {
+    let drawn = amx.until("the heading over the repository, whole", || {
         let drawn = screen(&amx, &view);
-        let whole = drawn
-            .lines()
-            .any(|line| line.starts_with(" ~/repo ") && line.chars().count() == 80);
+        let whole = drawn.lines().any(|line| line.trim_end() == " ~/repo");
         whole.then_some(drawn)
     });
 
-    let line = drawn
-        .lines()
-        .find(|line| line.starts_with(" ~/repo "))
-        .unwrap_or_else(|| panic!("no heading over the repository in:\n{drawn}"))
-        .to_string();
-    let cells: Vec<char> = line.chars().collect();
-    assert_eq!(cells.len(), 80, "a heading is drawn to the edge:\n{line:?}");
-    assert_eq!(
-        cells[76..].iter().collect::<String>(),
-        "   1",
-        "the count is right-aligned in the column the ages are:\n{line:?}"
-    );
-    let rule: String = cells[8..74].iter().collect();
+    // One document on either axis: the path and nothing after it, with the
+    // count left to the rows under it the way a group's is.
     assert!(
-        rule.chars().all(|cell| cell == '┈'),
-        "and a rule runs from the path out to it:\n{line:?}"
-    );
-    assert!(
-        !drawn.contains("~/REPO"),
-        "a path is not a word, and a word is what uppercases:\n{drawn}"
+        !drawn.contains('┈'),
+        "no rule over a project either:\n{drawn}"
     );
 
-    // The weight goes on the segment that says which directory this is, with
-    // the parents it hangs off dim behind it. Found by the segment alone,
-    // because the escape that changes the weight stands between the two.
-    let painted = coloured_line(&amx, &view, "repo");
-    let last = sgr_at(&painted, "repo");
-    assert!(
-        last.contains(&1) && !last.contains(&2),
-        "the last segment is the bold one:\n{painted:?}"
-    );
-    assert!(
-        sgr_at(&painted, "~/").contains(&2),
-        "and the parents in front of it are dim:\n{painted:?}"
-    );
-    assert!(
-        sgr_at(&painted, "┈┈┈").contains(&2),
-        "the rule is dim, the way it is over a group:\n{painted:?}"
-    );
+    // Dim end to end, so the segment that says which directory this is reads
+    // no louder than the parents it hangs off. Found by the segment alone,
+    // because the two used to be told apart by an escape between them, and
+    // read off the whole screen, because the dim carries down from the rows
+    // above rather than being turned on again here.
+    let painted = coloured(&amx, &view);
+    for segment in ["~/", "repo"] {
+        let cells = sgr_at(&painted, segment);
+        assert!(
+            cells.contains(&2) && !cells.contains(&1),
+            "{segment} carries no more weight than the rest of the path:\n{painted:?}"
+        );
+    }
 }
 
 #[test]
@@ -1281,30 +1253,19 @@ fn a_path_too_long_for_its_heading_loses_its_middle_and_not_its_end() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the agent", || {
-        screen(&amx, &view).contains("NEEDS INPUT").then_some(())
+        screen(&amx, &view).contains("Needs input").then_some(())
     });
     press(&amx, &view, "C-s");
-    let line = amx.until("the heading over the deep path, drawn to the edge", || {
+    let line = amx.until("the heading over the deep path, whole", || {
         screen(&amx, &view)
             .lines()
-            .find(|line| line.starts_with(" /srv/") && line.chars().count() == 80)
+            .find(|line| line.starts_with(" /srv/") && line.ends_with("legacy-shim"))
             .map(str::to_string)
     });
 
-    let cells: Vec<char> = line.chars().collect();
-    assert_eq!(
-        cells.len(),
-        80,
-        "a path this long does not push the heading off the edge:\n{line:?}"
-    );
-    assert_eq!(
-        cells[76..].iter().collect::<String>(),
-        "   1",
-        "the count is in the column it is in over a short path:\n{line:?}"
-    );
     assert!(
-        cells.iter().filter(|cell| **cell == '┈').count() >= 8,
-        "and enough rule is left to read the line as a heading:\n{line:?}"
+        line.chars().count() <= 80,
+        "a path this long does not push the heading off the edge:\n{line:?}"
     );
 
     let path = line.split_whitespace().next().expect("the path");
@@ -1491,13 +1452,13 @@ fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
     // A click on the heading shuts the group, and another opens it.
     let heading = screen(&amx, &view)
         .lines()
-        .position(|line| line.starts_with(" COMPLETED "))
+        .position(|line| line.trim_end() == " Completed")
         .expect("the heading") as u16
         + 1;
     click(&amx, &view, 5, heading);
     amx.until("the group shut", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("COMPLETED") && !drawn.contains("port-import-b2c")).then_some(())
+        (drawn.contains("Completed") && !drawn.contains("port-import-b2c")).then_some(())
     });
     click(&amx, &view, 5, heading);
     amx.until("the group open again", || {
@@ -1645,13 +1606,13 @@ fn the_cursor_is_a_bar_over_rows_and_headings_alike() {
             .then_some(())
     });
     assert!(
-        !coloured_line(&amx, &view, "NEEDS INPUT").contains(&bar()),
+        !coloured_line(&amx, &view, "Needs input").contains(&bar()),
         "and not under the heading the cursor is not on"
     );
 
     press(&amx, &view, "Up");
     amx.until("the bar to move up onto the heading", || {
-        coloured_line(&amx, &view, "NEEDS INPUT")
+        coloured_line(&amx, &view, "Needs input")
             .contains(&bar())
             .then_some(())
     });
@@ -1682,7 +1643,7 @@ fn the_vim_letters_walk_the_bar_and_go_in_and_out_of_the_card() {
     // k walks up onto the heading exactly as the arrow does, and j back down.
     press(&amx, &view, "k");
     amx.until("the bar to move up onto the heading", || {
-        coloured_line(&amx, &view, "COMPLETED")
+        coloured_line(&amx, &view, "Completed")
             .contains(&bar())
             .then_some(())
     });
@@ -1747,7 +1708,7 @@ fn gg_and_g_reach_the_two_ends_of_the_list_and_one_g_waits() {
     press(&amx, &view, "g");
     amx.until("the bar at the top", || {
         let drawn = screen(&amx, &view);
-        (coloured_line(&amx, &view, "COMPLETED").contains(&bar()) && !drawn.contains("g again"))
+        (coloured_line(&amx, &view, "Completed").contains(&bar()) && !drawn.contains("g again"))
             .then_some(())
     });
 }
@@ -1759,24 +1720,28 @@ fn enter_shuts_the_group_its_headings_stand_over_and_opens_it_again() {
     finished(&amx, "two-b2c", "failed", 120);
 
     let view = amx.in_a_terminal(&[], &[]);
-    let drawn = amx.until("both agents", || {
+    // The heading whole, not merely started: a capture can land partway
+    // through the line it is drawn on.
+    let drawn = amx.until("both agents under a heading that says so", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("one-a1b") && drawn.contains("two-b2c")).then_some(drawn)
+        (drawn.contains("one-a1b")
+            && drawn.contains("two-b2c")
+            && drawn.contains(" Completed · 1 failed"))
+        .then_some(drawn)
     });
-    assert!(
-        drawn.contains("COMPLETED · 1 failed"),
-        "a heading says how many failed in front of its rule:\n{drawn}"
-    );
     let heading = |drawn: &str| {
         drawn
             .lines()
-            .find(|line| line.starts_with(" COMPLETED "))
-            .unwrap_or_else(|| panic!("no COMPLETED heading in:\n{drawn}"))
+            .find(|line| line.trim_end().starts_with(" Completed"))
+            .unwrap_or_else(|| panic!("no Completed heading in:\n{drawn}"))
+            .trim_end()
             .to_string()
     };
-    assert!(
-        heading(&drawn).ends_with("   2"),
-        "and how many there are, open or shut:\n{drawn}"
+    assert_eq!(
+        heading(&drawn),
+        " Completed · 1 failed",
+        "a heading says how many failed under it, and leaves the counting of \
+         the rows to the rows:\n{drawn}"
     );
 
     // Up off the first agent onto the heading over it, and shut the group.
@@ -1784,12 +1749,14 @@ fn enter_shuts_the_group_its_headings_stand_over_and_opens_it_again() {
     press(&amx, &view, "Enter");
     let shut = amx.until("the group to be put away", || {
         let drawn = screen(&amx, &view);
-        (!drawn.contains("one-a1b")).then_some(drawn)
+        (!drawn.contains("one-a1b") && drawn.contains(" Completed 2 · 1 failed")).then_some(drawn)
     });
     assert!(!shut.contains("two-b2c"), "the rows are away:\n{shut}");
-    assert!(
-        heading(&shut).ends_with("   2") && shut.contains("COMPLETED · 1 failed"),
-        "the count stands for them, unmoved by their going:\n{shut}"
+    assert_eq!(
+        heading(&shut),
+        " Completed 2 · 1 failed",
+        "the count comes up to stand for the rows that have gone, and the \
+         failures keep their place after it:\n{shut}"
     );
 
     press(&amx, &view, "Enter");

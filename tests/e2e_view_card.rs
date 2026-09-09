@@ -162,7 +162,7 @@ fn card_stands_under_its_own_row_and_moves_the_rows_below_it_down() {
     });
     // The waiting agent is the first row, so it is the one the view opens on,
     // with a heading and a finished row under it.
-    for below in ["COMPLETED", "old-job-b2c"] {
+    for below in ["Completed", "old-job-b2c"] {
         assert!(
             line_holding(&before, below) > line_holding(&before, "ask-a1b"),
             "{below} is under the row the card will hang off:\n{before}"
@@ -177,7 +177,7 @@ fn card_stands_under_its_own_row_and_moves_the_rows_below_it_down() {
         "the card starts on the line under the row it hangs off, with no wall \
          between them:\n{carded}"
     );
-    for below in ["COMPLETED", "old-job-b2c"] {
+    for below in ["Completed", "old-job-b2c"] {
         assert!(
             line_holding(&carded, below) > foot,
             "{below} was under that row, so the card moved it down rather than \
@@ -286,7 +286,7 @@ fn card_hangs_a_spine_off_the_row_with_the_question_alone_on_it() {
         "the header is where it was:\n{carded}"
     );
     assert!(
-        carded.contains("NEEDS INPUT"),
+        carded.contains("Needs input"),
         "and so is the group the row is under:\n{carded}"
     );
 

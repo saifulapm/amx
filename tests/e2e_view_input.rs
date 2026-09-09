@@ -610,7 +610,7 @@ fn a_filter_line_of_two_words_keeps_the_groups_both_of_them_name() {
         .then_some(drawn)
     });
     assert!(
-        drawn.contains("NEEDS INPUT") && drawn.contains("WORKING"),
+        drawn.contains("Needs input") && drawn.contains("Working"),
         "with both groups still headed over their agents:\n{drawn}"
     );
 
