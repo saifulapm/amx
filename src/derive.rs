@@ -865,9 +865,10 @@ pub fn in_words(seconds: u64) -> String {
 /// Work out what an agent is doing.
 ///
 /// `alive` is whether the pane the record names still answers for this agent,
-/// and `capture` is asked for the screen only when it is going to be read: a fresh record needs no tmux call
-/// at all unless it is a record of an agent waiting on a question it cannot
-/// name, which is what keeps `ls` cheap with a wall full of agents.
+/// and `capture` is asked for the screen only when it is going to be read: a
+/// fresh record needs no tmux call at all unless it is a record of an agent
+/// waiting on a question it cannot name, which is what keeps `ls` cheap with a
+/// wall full of agents.
 ///
 /// `created` is when the agent was started, which is what a finished run with
 /// no spans of work on it is measured from. It is the one thing here that is
