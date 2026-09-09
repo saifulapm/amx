@@ -184,25 +184,25 @@ The screen is four things: two rows above the list, the list, the line you are
 typing when you are typing one, and a row of keys at the foot.
 
 ```
-AMX           1 pinned   1 review   1 working   1 done   3 running    1 WAITING
+AMX          1 pinned   1 review   1 working   27 done   3 running    1 WAITING
 └ next  claude   model  default   permission  default   worktree  new
 
- PINNED ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
+ Pinned
   ✻ bump-deps-e5f          Running Bash                                      12s
 
- READY FOR REVIEW ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
+ Ready for review
   ∙ fix-login-a1b     #12  the login bug is fixed                             4m
 
- NEEDS INPUT ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
+ Needs input
   ✻ port-import-b2c        Which fixture should the port keep?               29s
   │ Which fixture should the port keep?
   ╰ 1. the old one   2. the new one   3. both
 
- WORKING ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
+
+ Working
   ✻ ship-docs-a7d          Running cargo test                                 3s
 
- COMPLETED ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
-  ∙ tidy-imports-d4e       did what it was asked                              2m
+ Completed 27
 
 space closes it   enter attach   ctrl+x stop   ctrl+t pin   ctrl+s axis   ? keys
 ```
@@ -229,17 +229,17 @@ sitting at its prompt, one whose command exited, one amx has lost track of —
 because a turn at a prompt has ended as surely as a turn that exited, and
 reading down two headings to find that out is one heading too many.
 
-A heading is a line like the rows under it: the group's name in caps, a dim
-rule run out to its count, and the count right-aligned in the column the ages
-under it are right-aligned in, so the right margin is one line of numbers
-rather than two. The rule is drawn in `┈`, the lightest dash there is, and
-every rule on the screen is — dim is the weight a summary wears too, but a
-terminal inks a box-drawing glyph across the whole cell, so a solid rule reads
-brighter than the words beside it at the same colour. Half the cells left blank
-is what puts the two level. A group holding a failure says so in front of the
-rule, because a failed agent is why somebody came to the screen. The cursor
-stops on a heading, and shutting it puts its agents away behind the count that
-was already there.
+A heading is a line as quiet as the rows under it: a blank row, then the
+group's name at the left margin, capitalised the way a sentence is rather than
+shouted in caps, and nothing drawn across the rest of the line. There is no
+count while the group is open, because the rows it would count are under it to
+be counted. Shutting the heading — `enter` on it — puts those rows away and the
+count where they were: `Completed 27`. A group holding a failure says so either
+way, after the label and after the count where there is one, because a failed
+agent is why somebody came to the screen: `Completed 27 · 2 failed` shut,
+`Completed · 2 failed` open. Two things up here take a colour, and each of them
+wants a person: those failures, and the words `Needs input`. The cursor stops
+on a heading like any other line.
 
 A row is one line, always, on columns the screen fixes rather than the fleet:
 two cells of indent, the state glyph, the name, what the agent last said, and
@@ -273,13 +273,16 @@ grey for one you stopped by hand, dim for one sitting idle at its prompt, and
 your terminal's own colour while it is coming up or working, or when amx cannot
 account for it. The name takes that amber or that red as well, so a row that is
 asking and a row that failed can be found down a column of names without the
-glyph being read; every other name is your terminal's own. What those colours
-are is the theme's to say, under [Themes](#themes).
+glyph being read; every other name is your terminal's own, dimmed like the
+heading over it. What those colours are is the theme's to say, under
+[Themes](#themes).
 
-The one thing the wall says with weight is that nobody has been to read a row.
-An unread name is bold until you open its card, and comes back bold if the
-agent says something after that — what state a row is in is on the row already,
-and whether you have caught up with it is nowhere else.
+The wall says nothing at all with weight. Every name on it is as quiet as the
+summary beside it and the heading over it, and what marks the row you are
+working with is strength instead: the name under the cursor comes up out of
+that dim, and so does the name under the pointer, each in whatever colour it
+already had. A screenful of names half of which are shouting is a screenful
+nobody reads down.
 
 The name of the agent you last went into is in the accent until you go into
 another. Coming back out of a session lands you on a screenful of rows that
@@ -296,28 +299,28 @@ when the run ends. The `amx ls` table prints the same number. How long a
 question has been standing is on the card, in its title.
 
 `ctrl+s` gathers the same agents under the directory each one runs in, and the
-screen changes twice for it. A heading is a path rather than a word, so it is
-not put in caps: the parents stand dim behind a bold last segment, on the same
-rule and the same count a group heading carries, and a path too long for the
+screen changes twice for it. A heading is a path rather than a word, and it is
+drawn the way a group's heading is: dim end to end, no weight on the last
+segment, no count while the rows are on the screen, and a path too long for the
 line loses its middle rather than its end — the end is the segment that says
 which worktree of a project this is. And every row grows a state word between
 its name and what the agent said, because the heading over it no longer says
 what state the row is in:
 
 ```
- ~/code/amx ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     2
+ ~/code/amx
   ✻ port-import-b2c   waiting   Which fixture should the port keep?          29s
   ∙ tidy-imports-d4e  done      did what it was asked                         2m
 
- /srv/app ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈     1
+ /srv/app
   ✻ fix-login-a1b     idle      the login bug is fixed                        4m
 ```
 
 Eight cells, which is what `starting` needs and what the shorter words are
 padded out to: a state word cut down would be a lie. The summary column pays
-for all of it, so the name, the seconds and the group's count sit exactly where
-they sat on the other axis — switching the axis moves one boundary rather than
-the whole table.
+for all of it, so the name and the seconds sit exactly where they sat on the
+other axis — switching the axis moves one boundary rather than the whole
+table.
 
 | Key | What it does |
 | --- | ------------ |
@@ -375,10 +378,14 @@ by the number you were about to count to.
 name starts in. It hangs directly under the row it is a look at and moves the
 rows below it down, so what it belongs to is said by where it stands rather
 than by four borders and the two rows and two columns of wall they would cost.
-It takes half the screen at most, and always leaves a row of the list it was
-opened from. It opens straight onto what it has to show: which agent this is
-and what it is doing are on the row two cells above, and a card that repeated
-them would spend a row of the wall on what you were already looking at.
+A blank row stands under its last one, so the list picks up clear of the card
+rather than against it. That row is part of what the card costs, and where the
+screen has no room for it the card keeps its rows and the blank is what goes:
+the card takes half the screen at most, and always leaves a row of the list it
+was opened from. It opens straight onto what it has to show: which agent this
+is and what it is doing are on the row two cells above, and a card that
+repeated them would spend a row of the wall on what you were already looking
+at.
 
 What the card's body is follows the agent. Where its vendor keeps the
 conversation in a file — claude and pi both do — the card is that whole
@@ -389,21 +396,21 @@ of calls as one block. Nothing the vendor draws under its pane is in it. One
 whose turn is over — idle at its prompt, done, failed or stopped alike — opens
 on the end of its last answer, where the conclusion of it is, with the rest of
 that answer and every earlier turn a page up. One that is working ends on a
-live tail under a dim `live` rule: the last few rows of what pi is saying at
-this moment, streamed by the extension `doctor --fix` installs, or, for
-claude, of its pane with the composer and statusline cut, tracking output
-as it lands. Where that cut leaves nothing — the seconds between a turn
-starting and its first word landing — there is no rule, and the card is the
-record alone. A command row is neither: its card is the last quarter megabyte
-of the file its pane is piped into, which is more rows than a card is paged
-through and the same cost however long the command has printed — the end of
-that while the command runs and the top of it once the command has ended, with
-nothing cut off the bottom, since the anchors that cut are a vendor's own and
-every row a command prints is its own work. An agent with no
-conversation to read — one adopted before its first report has named one —
-keeps the older card: its live screen, chrome cut, while it works, and the
-recorded answer once its turn is over. A waiting agent's card is
-the question block alone.
+live tail, standing off the record above it by a blank row: the last few rows
+of what pi is saying at this moment, streamed by the extension `doctor --fix`
+installs, or, for claude, of its pane with the composer and statusline cut,
+tracking output as it lands. It is kept short enough that a row of the record
+stays above it, and where the cut leaves nothing — the seconds between a turn
+starting and its first word landing — the card is the record alone. A command
+row is neither: its card is the last quarter megabyte of the file its pane is
+piped into, which is more rows than a card is paged through and the same cost
+however long the command has printed — the end of that while the command runs
+and the top of it once the command has ended, with nothing cut off the bottom,
+since the anchors that cut are a vendor's own and every row a command prints is
+its own work. An agent with no conversation to read — one adopted before its
+first report has named one — keeps the older card: its live screen, chrome cut,
+while it works, and the recorded answer once its turn is over. A waiting
+agent's card is the question block alone.
 
 The card's own line is where that question is answered, and while nothing has
 been typed on it the line says what the question will take. At a question of
@@ -432,16 +439,15 @@ and pgdn exactly. A lone `ctrl+b` under tmux's default prefix is tmux's own
 business: `ctrl+b ctrl+b` is what reaches the view there.
 
 `?` puts every key where the list was, in the five groups they are learned in —
-walk, look, start, arrange, dials — each under the heading a group of agents
-wears, so the overlay reads as the same screen showing something else rather
-than as a manual somebody opened. From 100 columns the groups stand in two
-ruled columns, cut where the two halves come nearest to holding the same number
-of keys, and nothing is shortened to fit. Narrower than that the second column
-is given up whole rather than squeezed: one column, every key still saying what
-it does in full, paged with `pgup` and `pgdn`, and the foot of each page says
-which page it is and which of those two keys turns it — a key nobody can reach
-is a key the screen may as well not list. Any other key goes back to the list,
-and `q` closes the view.
+walk, look, start, arrange, dials — each under a heading of its own: the label,
+a dim rule, and how many keys stand under it at the far end. From 100 columns
+the groups stand in two ruled columns, cut where the two halves come nearest to
+holding the same number of keys, and nothing is shortened to fit. Narrower than
+that the second column is given up whole rather than squeezed: one column,
+every key still saying what it does in full, paged with `pgup` and `pgdn`, and
+the foot of each page says which page it is and which of those two keys turns
+it — a key nobody can reach is a key the screen may as well not list. Any other
+key goes back to the list, and `q` closes the view.
 
 `ctrl+x` forgets nothing on the first press, and the first press is the same
 press on every row. An agent that is still running — sitting idle at its
@@ -504,7 +510,10 @@ it is aimed at one, and after that the one thing true of all four: while the
 line is open a letter is a letter and not the key it is bound to, and `esc` is
 the way out. Its far end carries what the next agent may do without asking, in
 reverse video, set into the edge: it is the one dial somebody is about to press
-enter past.
+enter past. The dashes are `┈`, the lightest there is, because a terminal inks
+a box-drawing glyph across the whole cell and a solid rule would read brighter
+than the dim words beside it — half the cells left blank is what puts the two
+level.
 
 The line itself begins with a `❯` in the column the rule's own label starts in,
 whichever of the four it is holding, so moving between them does not move the
