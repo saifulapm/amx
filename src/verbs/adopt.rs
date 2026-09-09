@@ -31,10 +31,18 @@
 //! written down — leaves the environment to answer alone, as it always did.
 //!
 //! The session is the half that keeps working afterwards. amx cannot put its
-//! own id into a pane it did not start, so the events this agent fires carry
-//! nothing saying whose they are, and the hook falls back to finding the
-//! record whose session matches the payload's. This is where that session is
-//! written down.
+//! own id into the environment of a process that is already running, so the
+//! events this agent fires carry nothing saying whose they are, and the hook
+//! falls back to finding the record whose session matches the payload's. This
+//! is where that session is written down.
+//!
+//! The id does go on the pane, as the `@amx-id` option. A pane amx placed says
+//! whose it is by the session it is in and this one is in somebody's own, so
+//! the stamp is the only thing that can say it — and every reading of this
+//! agent afterwards rests on it, see [`crate::tmux::Server::pane_owners`].
+//! That is why a stamp that will not go on is an adoption that does not
+//! happen. A pane an older amx adopted carries no stamp and reads as gone
+//! until it is adopted again.
 //!
 //! What amx did not do for this agent it does not claim: no worktree, no
 //! branch, no commit to measure a diff from, and no command it was launched
@@ -50,7 +58,7 @@ use std::path::{Path, PathBuf};
 use crate::cli::AdoptArgs;
 use crate::rules::{Claim, Ruleset};
 use crate::store::{Agent, Event, Meta, Phase, State, now};
-use crate::tmux::{PaneId, Server, Socket};
+use crate::tmux::{PaneId, PaneOwners, Server, Socket};
 use crate::vendor::{Capability, Vendor};
 use crate::{exit, ids, paths, registry, rules, spawn};
 
@@ -98,7 +106,8 @@ pub fn run(
         bail!("{pane} is not a pane on the tmux server this is running on");
     }
     let (vendor, session) = this_session(server, &pane, env)?;
-    if let Some(refusal) = spoken_for(root, server.socket(), &pane, &session)? {
+    let owners = server.pane_owners()?;
+    if let Some(refusal) = spoken_for(root, server.socket(), &owners, &pane, &session)? {
         bail!(refusal);
     }
 
@@ -121,6 +130,15 @@ pub fn run(
     let screen = server
         .capture(&pane)
         .with_context(|| format!("reading what is on {pane}"))?;
+
+    // The id on the pane, before there is a record to name it. A pane amx
+    // placed says whose it is by the session it is in; this one is in
+    // somebody's own session and can say it no other way, and a record about a
+    // pane that answers for nobody is a record every reader calls gone. So a
+    // stamp that will not go on is an adoption that does not happen.
+    server
+        .set_pane_option(&pane, crate::tmux::ID_OPTION, &id)
+        .with_context(|| format!("writing `{id}` on {pane}"))?;
 
     let agent = Agent::create(
         root,
@@ -354,9 +372,16 @@ fn either(each: &[impl AsRef<str>]) -> String {
 /// Only agents that are still going are in the way. A record that has ended is
 /// history — the pane it names may have been somebody else's for a week — and
 /// standing on a finished agent's toes is what an id is for.
+///
+/// Nor is a record that still reads as going but has lost this pane: a server
+/// that died took its records' endings with it, and the pane numbers it was
+/// handing out are being handed out again. Such a record names this pane and
+/// holds nothing, and refusing on the number alone left somebody unable to
+/// adopt the agent that is in front of them.
 fn spoken_for(
     root: &Path,
     socket: &Socket,
+    owners: &PaneOwners,
     pane: &PaneId,
     session: &str,
 ) -> Result<Option<String>> {
@@ -368,7 +393,7 @@ fn spoken_for(
         if agent.state()?.state.is_terminal() {
             continue;
         }
-        if &meta.pane == pane && &meta.socket == socket {
+        if &meta.pane == pane && &meta.socket == socket && owners.pane_answers_for(pane, &id) {
             return Ok(Some(format!("{pane} is agent `{id}` already")));
         }
         if meta.session.as_deref() == Some(session) {
@@ -957,6 +982,105 @@ mod tests {
             [first],
             "and none of the refusals left a record behind"
         );
+    }
+
+    /// The record of an agent amx never started, naming this pane: what a
+    /// reboot leaves behind, and what a record written by hand is.
+    fn a_record_naming(root: &Path, id: &str, pane: &APane) {
+        Agent::create(
+            root,
+            &Meta {
+                id: id.to_string(),
+                task: "fix the login bug".to_string(),
+                agent: Some(a_vendor().name.to_string()),
+                dir: PathBuf::from("/srv/app"),
+                worktree: None,
+                branch: None,
+                base: None,
+                socket: pane.server.socket().clone(),
+                pane: pane.pane.clone(),
+                bg: false,
+                session: Some("some-other-conversation".to_string()),
+                transcript: None,
+                created: 1,
+            },
+        )
+        .expect("a record");
+    }
+
+    #[test]
+    fn adopt_writes_the_id_on_the_pane_it_takes_over() {
+        // An adopted pane sits in somebody's own session, so nothing about it
+        // says whose agent is in it. The stamp is what makes it answer for
+        // this record, and every reading of this agent afterwards rests on it.
+        let root = TempDir::new().unwrap();
+        let pane = APane::showing(&A_PERMISSION_BOX);
+
+        let (_, printed) = adopt(
+            root.path(),
+            &pane,
+            &pane.env("abc-123"),
+            &AdoptArgs::default(),
+        )
+        .unwrap();
+        let id = printed.trim();
+
+        assert_eq!(
+            pane.server
+                .pane_option(&pane.pane, crate::tmux::ID_OPTION)
+                .unwrap()
+                .as_deref(),
+            Some(id)
+        );
+        assert!(pane.server.pane_answers_for(&pane.pane, id));
+        assert!(
+            !pane
+                .server
+                .pane_answers_for(&pane.pane, "somebody-else-b2c"),
+            "and for nobody else, whatever pane number they were recorded with"
+        );
+    }
+
+    #[test]
+    fn adopt_stands_aside_for_a_record_that_has_lost_the_pane_it_names() {
+        // A record from before a reboot, naming the number this pane wears
+        // now. Nothing wrote its ending — the server it was on died — so it is
+        // not history, and refusing on the pane number alone left somebody
+        // unable to adopt the agent that is actually here.
+        let root = TempDir::new().unwrap();
+        let pane = APane::showing(&A_PERMISSION_BOX);
+        a_record_naming(root.path(), "yesterday-a1b", &pane);
+
+        let (code, printed) = adopt(
+            root.path(),
+            &pane,
+            &pane.env("abc-123"),
+            &AdoptArgs::default(),
+        )
+        .unwrap();
+        assert_eq!(code, exit::OK);
+        let id = printed.trim();
+        assert_ne!(id, "yesterday-a1b");
+        assert!(pane.server.pane_answers_for(&pane.pane, id));
+        assert!(
+            !pane.server.pane_answers_for(&pane.pane, "yesterday-a1b"),
+            "the older record holds nothing here"
+        );
+
+        // A record that does own the pane is still in the way: that is one
+        // claude with two records driving it, and an answer typed twice.
+        let said = format!(
+            "{:#}",
+            adopt(
+                root.path(),
+                &pane,
+                &pane.env("def-456"),
+                &AdoptArgs::default()
+            )
+            .unwrap_err()
+        );
+        assert!(said.contains(id), "{said}");
+        assert!(said.contains("already"), "{said}");
     }
 
     #[test]
