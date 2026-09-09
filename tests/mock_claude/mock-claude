@@ -23,6 +23,9 @@
 #                         screen rather than only appending to it.
 #   sleep <ms>            wait. A long trailing sleep is how a scenario keeps
 #                         its agent alive for the test driving it.
+#   await <Key>           wait until this key is typed at the pane, the way a
+#                         vendor at work waits to be told to stop. `Escape`,
+#                         which is byte 27, is the only key named so far.
 #   transcript <json>     append a line to the transcript the hooks announced.
 #   ignore <signal>       stop answering this signal, so a test can prove what
 #                         happens to an agent that will not stop when asked.
@@ -102,6 +105,45 @@ nap() {
 	sleep "$((ms / 1000)).$(printf '%03d' "$((ms % 1000))")"
 }
 
+# The byte a terminal sends for a key a scenario can wait on.
+byte_of() {
+	case "$1" in
+	Escape) printf '27' ;;
+	*) return 1 ;;
+	esac
+}
+
+# Block until that byte arrives on stdin.
+#
+# The vendor this stands in for reads keys rather than lines, so the terminal
+# is taken out of the mode that holds everything back until enter, and told
+# not to echo what it is holding. Whatever is typed before the key is read and
+# dropped: this waits for one key, and a message somebody sent the agent
+# first is not it.
+#
+# Stdin closing is the other way out. Nothing more is ever coming down it, and
+# a scenario left blocking on a pane whose terminal has gone would hold the
+# test driving it until its own deadline.
+await() {
+	want=$(byte_of "$1") || {
+		echo "mock-claude: $scenario: no key called \`$1\`" >&2
+		exit 65
+	}
+
+	if [ -t 0 ]; then
+		before=$(stty -g)
+		stty -icanon -echo min 1 time 0
+	fi
+	while :; do
+		typed=$(dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \n')
+		[ -n "$typed" ] || break
+		[ "$typed" = "$want" ] && break
+	done
+	if [ -t 0 ]; then
+		stty "$before"
+	fi
+}
+
 # The stamp claude puts on every transcript line: ISO-8601 UTC to the
 # millisecond. `%3N` is GNU date; where it is unsupported the field comes back
 # literal, so fall back to `.000` rather than write a stamp nothing can order.
@@ -121,7 +163,9 @@ sed -e "s|@TRANSCRIPT2@|$transcript2|g" \
 	-e "s|@SESSION@|$session|g" \
 	"$scenario" >"$steps"
 
-while IFS= read -r line || [ -n "$line" ]; do
+# The steps are read on a descriptor of their own, so the pane's own stdin is
+# still stdin while a step runs: `await` has nowhere else to read a key from.
+while IFS= read -r line <&3 || [ -n "$line" ]; do
 	case "$line" in
 	'' | '#'*) continue ;;
 	esac
@@ -134,6 +178,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 	hook) deliver "$rest" ;;
 	print) printf '%b\n' "$rest" ;;
 	sleep) nap "$rest" ;;
+	await) await "$rest" ;;
 	ignore) trap '' "$rest" ;;
 	transcript)
 		mkdir -p "$(dirname "$transcript")"
@@ -145,6 +190,6 @@ while IFS= read -r line || [ -n "$line" ]; do
 		exit 65
 		;;
 	esac
-done <"$steps"
+done 3<"$steps"
 
 exit 0
