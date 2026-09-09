@@ -16,14 +16,14 @@ colour: a row is painted for having failed, not for being red.
 | `waiting` | anything waiting on a person: the waiting rows and their group, the card's question and its answer prompt, the composer's confirm line |
 | `done` | what went as intended: finished rows, merged and ready pull requests |
 | `failed` | what was attempted and failed: failed rows, failing checks, the failure notice |
-| `stopped` | what was ended by hand and is over: stopped rows, closed requests, the completed group's count |
+| `stopped` | what was ended by hand and is over: stopped rows, closed requests |
 | `accent` | the agent that does not exist yet: the dials' values in the header, and the rule a line is typed off — its label, and the permission dial set into its far end. On a card, the glyph a prompt wears, and a heading and inline code in an answer |
 | `cursor` | the line the cursor is on — a background, so it says where the cursor is without taking a colour away from what the line was saying |
 
 Most of the screen wears none of them. What a row is, where a group begins and
-what it holds are said in words, in bold and in the dim the terminal already
-renders, which is why a wall of forty rows has two or three colours on it and
-they are the two or three worth looking at.
+what it holds are said in words and in the dim the terminal already renders,
+which is why a wall of forty rows has two or three colours on it and they are
+the two or three worth looking at.
 
 ## The glyph
 
@@ -136,5 +136,9 @@ whatever the terminal does, light or dark.
 - **amx's stderr.** Errors and warnings from the verbs land among git's and
   cargo's output and follow the terminal, not the view.
 - **Dim and bold.** Weight is meaning in the view — what an agent said is dim,
-  and the name of a row nobody has been to read is bold — and a theme that
-  could remove meaning is a theme that can lie.
+  and a key somebody can press is bold — and a theme that could remove meaning
+  is a theme that can lie. What is left carrying it is the chrome around the
+  list: the corner's own name, the keys in the hints and in the help, the line
+  that would start an agent. The wall itself spends none — every name on it is
+  as quiet as the summary beside it, and the row being worked with is marked by
+  strength instead.
