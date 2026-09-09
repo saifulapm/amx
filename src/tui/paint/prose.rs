@@ -33,6 +33,13 @@ const CODE_INDENT: &str = "  ";
 const TAB: usize = 4;
 
 /// `text` as markdown, drawn into rows no wider than `width`.
+///
+/// A single newline ends the row it stands on, the way a hard break does,
+/// rather than becoming the space markdown calls it. That is what the pane
+/// beside the card shows: pi draws an answer through pi-tui's `Markdown`, which
+/// leaves the newline in the paragraph it renders and starts a row on it when
+/// it wraps. An agent that wrote three short lines meant three rows, and a card
+/// that ran them into one would be redrafting the agent.
 pub(super) fn render(text: &str, width: u16, theme: Theme) -> Vec<Line<'static>> {
     let mut drawing = Drawing::new(width.max(1) as usize, theme);
     let mut options = Options::empty();
@@ -130,8 +137,8 @@ impl Drawing {
             // is what a tool row, a rule and a gutter already wear: the one
             // colour the theme lends the card keeps code apart from both.
             Event::Code(code) => self.push(&code, self.current().fg(self.theme.accent)),
-            Event::SoftBreak => self.push(" ", self.current()),
-            Event::HardBreak => self.push("\n", self.current()),
+            // Both breaks end their row — see [`render`].
+            Event::SoftBreak | Event::HardBreak => self.push("\n", self.current()),
             Event::Rule => {
                 self.flush();
                 self.space();
@@ -681,6 +688,46 @@ Done.";
         // Width is measured in columns, so a wide glyph is two of them.
         let rows = render("日本 語", 4, theme());
         assert_eq!(words(&rows), vec!["日本", "語"]);
+    }
+
+    #[test]
+    fn prose_ends_a_row_at_a_single_newline() {
+        let rows = render("first line\nsecond line", 40, theme());
+        assert_eq!(
+            words(&rows),
+            vec!["first line", "second line"],
+            "one newline is a row break, not the space markdown calls it"
+        );
+
+        // The blocks that were already drawing their own rows are untouched by
+        // that: a fence is a row a line, a list an item a row, and a paragraph
+        // too wide for the card still wraps at its words.
+        let rows = render(
+            "```rust\nfn check() {}\n```\n\n\
+             - first thing\n\
+             - second thing, which is rather longer than one row of this card holds\n\n\
+             plain words wrapped because they are longer than the row is wide",
+            40,
+            theme(),
+        );
+        assert_eq!(
+            words(&rows),
+            vec![
+                "  rust",
+                "  fn check() {}",
+                "",
+                "• first thing",
+                "• second thing, which is rather longer",
+                "  than one row of this card holds",
+                "",
+                "plain words wrapped because they are",
+                "longer than the row is wide",
+            ]
+        );
+
+        // A line broken inside an item hangs under that item's marker.
+        let rows = render("- first line\n  second line", 40, theme());
+        assert_eq!(words(&rows), vec!["• first line", "  second line"]);
     }
 
     #[test]
