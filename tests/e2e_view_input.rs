@@ -151,6 +151,22 @@ fn foreground(role: &str) -> String {
     text_in(default_theme(role))
 }
 
+/// The background the cursor's bar is made of, as tmux writes the escape.
+fn bar() -> String {
+    let (r, g, b) = default_theme("cursor");
+    format!("48;2;{r};{g};{b}")
+}
+
+/// The captured line holding this text, escapes and all.
+fn coloured_line(amx: &Harness, view: &str, text: &str) -> String {
+    let drawn = coloured(amx, view);
+    drawn
+        .lines()
+        .rfind(|line| line.contains(text))
+        .unwrap_or_else(|| panic!("no line holding {text} in:\n{drawn}"))
+        .to_string()
+}
+
 /// Every agent amx holds a record for.
 fn agents(amx: &Harness) -> Vec<String> {
     let mut ids: Vec<String> = std::fs::read_dir(amx.state_root())
@@ -728,6 +744,43 @@ fn the_composer_starts_an_agent_where_the_view_is() {
     amx.until("the agent's own row", || {
         screen(&amx, &view).contains(&id).then_some(())
     });
+}
+
+#[test]
+fn the_cursor_lands_on_the_agent_the_line_started() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches(&amx, "happy-turn");
+
+    // One agent already on the wall for the cursor to be standing on, so that
+    // the bar has somewhere to move from.
+    finished(&amx, "fix-login-a1b", "done", 60);
+    amx.until("the cursor on the agent already there", || {
+        coloured(&amx, &view)
+            .lines()
+            .any(|line| line.contains("fix-login-a1b") && line.contains(&bar()))
+            .then_some(())
+    });
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "port it");
+    amx.until("the task on the screen", || {
+        screen(&amx, &view).contains("❯ port it").then_some(())
+    });
+    press(&amx, &view, "Enter");
+
+    // The row does not exist until the reading after the start, and the bar is
+    // on it as soon as it does.
+    let id = composed_after(&amx, "fix-login-a1b");
+    amx.until("the bar on the row of the agent the line started", || {
+        coloured(&amx, &view)
+            .lines()
+            .any(|line| line.contains(&id) && line.contains(&bar()))
+            .then_some(())
+    });
+    assert!(
+        !coloured_line(&amx, &view, "fix-login-a1b").contains(&bar()),
+        "one cursor, and it is on the agent that was just started"
+    );
 }
 
 #[test]

@@ -921,6 +921,26 @@ impl List {
         }
     }
 
+    /// Put the cursor on this agent, for a caller holding an id rather than a
+    /// line: an agent just started has no line on the screen for anything to
+    /// point at, and its id is the whole of what is known about it. Answers
+    /// whether the cursor landed, which a narrowing hiding that agent — or a
+    /// reading taken before it — makes false.
+    pub fn land_on(&mut self, id: &str) -> bool {
+        let Some(at) = self.row_of(id) else {
+            return false;
+        };
+        self.cursor = at;
+        true
+    }
+
+    /// Which line this agent is drawn on, where the list is drawing it.
+    fn row_of(&self, id: &str) -> Option<usize> {
+        self.items
+            .iter()
+            .position(|item| self.agent(*item).is_some_and(|view| view.id() == id))
+    }
+
     /// Move to the next line, staying put at the ends. Every line is a stop,
     /// headings included — a group is a thing somebody does something to —
     /// except the blank over a heading, which the cursor walks straight over.
@@ -1221,10 +1241,7 @@ impl List {
     /// Put the cursor back on what it was on, where that is still drawn.
     fn follow(&mut self, held: &On) {
         let found = match held {
-            On::Agent(id) => self
-                .items
-                .iter()
-                .position(|item| self.agent(*item).is_some_and(|view| view.id() == id)),
+            On::Agent(id) => self.row_of(id),
             On::Heading(key) => self.items.iter().position(|item| match item {
                 Item::Heading(under, _) => self.key(*under).as_ref() == Some(key),
                 _ => false,
@@ -2000,6 +2017,23 @@ mod tests {
         // is still there.
         list.show(vec![view("ask-a1b", Phase::Idle, 10)]);
         assert_eq!(list.selected().unwrap().id(), "ask-a1b");
+    }
+
+    #[test]
+    fn view_puts_the_cursor_on_an_agent_the_caller_names() {
+        let mut list = listed(vec![
+            view("ask-a1b", Phase::Waiting, 10),
+            view("busy-b2c", Phase::Working, 20),
+        ]);
+        assert_eq!(list.selected().unwrap().id(), "ask-a1b");
+
+        assert!(list.land_on("busy-b2c"));
+        assert_eq!(list.selected().unwrap().id(), "busy-b2c");
+
+        // An agent the list is not drawing has no line for the cursor to go
+        // to, and the answer says so rather than the cursor moving.
+        assert!(!list.land_on("port-c3d"));
+        assert_eq!(list.selected().unwrap().id(), "busy-b2c");
     }
 
     #[test]

@@ -556,6 +556,12 @@ struct Screen {
     /// `d:` is offered them on every keystroke, and the wall behind the line is
     /// a second old whatever the line is doing.
     projects: Vec<PathBuf>,
+    /// The agent the line last started, until the cursor has been put on it.
+    ///
+    /// Kept for the one reading after the start, because that is the first
+    /// frame the agent has a row on: the wall behind the line was read before
+    /// it existed, and a cursor cannot be moved to a line nobody has drawn.
+    started: Option<String>,
     /// Which frame of the working pulse the rows are on.
     beat: usize,
     /// When that frame came up.
@@ -1109,8 +1115,26 @@ impl Screen {
         self.showing(scope.narrow(derive::views(root, now())?));
         self.read = Some(Instant::now());
         self.keep_the_sweep();
+        self.land_on_what_was_started();
         self.follow_the_cursor();
         Ok(())
+    }
+
+    /// Put the cursor on the agent the line just started, the moment the wall
+    /// has a row for it.
+    ///
+    /// Here rather than where it was started: what somebody typed a task for
+    /// is what they are about to watch, and the card follows the cursor onto
+    /// it as it would after any move.
+    ///
+    /// The agent is let go of whether or not the cursor landed. A narrowing
+    /// that hides it is somebody saying they are looking at something else,
+    /// and an agent held onto would take the cursor away from them on
+    /// whatever reading widened the wall again.
+    fn land_on_what_was_started(&mut self) {
+        if let Some(id) = self.started.take() {
+            self.list.land_on(&id);
+        }
     }
 
     /// Keep the cursor with a swept group whose heading dissolved under it.
@@ -2146,6 +2170,10 @@ impl Screen {
                 if follow {
                     return self.landing(root, config, &id, here);
                 }
+                // Whoever stayed here is watching the wall for the agent they
+                // just started, so the cursor goes to meet it. Not now: the
+                // rows on the screen were read before it existed.
+                self.started = Some(id);
             }
             // A line nothing was made from is a line somebody is still
             // writing, so it stays where they typed it with the reason under
@@ -3638,6 +3666,51 @@ mod tests {
             screen.projects,
             [PathBuf::from("/srv/app"), PathBuf::from("/srv/api")]
         );
+    }
+
+    /// The agent that was on the wall before a line was typed.
+    fn was_there() -> View {
+        reading("fix-login-a1b", Phase::Idle, State::default())
+    }
+
+    /// And the one the line started.
+    fn just_started() -> View {
+        reading("port-b2c", Phase::Working, State::default())
+    }
+
+    #[test]
+    fn the_cursor_lands_on_the_agent_the_line_started_when_the_wall_shows_it() {
+        let mut screen = watching(vec![was_there()]);
+        assert_eq!(screen.list.selected().unwrap().id(), "fix-login-a1b");
+
+        // What starting a line leaves behind: the agent is running and the
+        // wall is one reading old, so there is no row for the cursor yet.
+        screen.started = Some("port-b2c".to_string());
+        screen.showing(vec![was_there(), just_started()]);
+        screen.land_on_what_was_started();
+        assert_eq!(screen.list.selected().unwrap().id(), "port-b2c");
+        assert!(
+            screen.started.is_none(),
+            "and the cursor is done following it"
+        );
+    }
+
+    #[test]
+    fn the_cursor_waits_for_no_agent_the_narrowing_on_the_screen_hides() {
+        let mut screen = watching(vec![was_there()]);
+        screen.started = Some("port-b2c".to_string());
+
+        // The reading after the start, narrowed to what somebody asked for,
+        // which the new agent is not among.
+        screen.showing(vec![was_there()]);
+        screen.land_on_what_was_started();
+        assert_eq!(screen.list.selected().unwrap().id(), "fix-login-a1b");
+
+        // And it is not waited for: a reading that widens the wall again
+        // leaves the cursor where the person at it left it.
+        screen.showing(vec![was_there(), just_started()]);
+        screen.land_on_what_was_started();
+        assert_eq!(screen.list.selected().unwrap().id(), "fix-login-a1b");
     }
 
     #[test]

@@ -326,7 +326,7 @@ the whole table.
 | `space` `l` | the card: what one is asking, and the answer |
 | `enter` `→` | put its session in front of you, or shut the group under the cursor |
 | `esc` `h` | put the card away, or leave a line alone |
-| `n` | start an agent |
+| `n` | start an agent, and the cursor goes to its row |
 | `alt+n` | start the line and go to the agent it started |
 | `!` | leading the task line, run it as a command rather than give it to an agent |
 | `r` | reply: a message, or an answer on the card |
@@ -614,6 +614,12 @@ the line and nowhere else, and only a name the vendor loads: `@scout` further
 along, or a word naming none of its agents, stays where you typed it and is
 read as the file or the sentence it is. pi has no agents of its own and no flag
 to be one with, so on a line for it every `@` is left alone.
+
+`enter` starts the agent and leaves you at the wall, with the cursor on its
+row. The row is not there until the reading after the start, so the cursor
+lands on it the moment the wall draws it, and the card follows as it does on
+any other move. An agent the wall is narrowed away from is not waited for: the
+cursor stays where it is.
 
 `alt+n` enters that line and takes you with it: the agent is started and your
 terminal lands in its session, by the same two roads `enter` on a row takes.
