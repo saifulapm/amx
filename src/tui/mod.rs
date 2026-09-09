@@ -3898,8 +3898,8 @@ mod tests {
                 "the task behind the composer's own glyph, {path:?}:\n{says}"
             );
             assert!(
-                says.contains(" live ") && says.ends_with("reading the importer"),
-                "and what it is saying now under the rule, {path:?}:\n{says}"
+                says.ends_with("\n\nreading the importer"),
+                "and what it is saying now one blank row under it, {path:?}:\n{says}"
             );
             assert!(!card.answer, "read up from the live edge, {path:?}");
         }

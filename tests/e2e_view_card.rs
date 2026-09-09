@@ -1423,12 +1423,12 @@ fn card_over_a_working_conversation_ends_on_what_is_being_said_now() {
     let view = amx.in_a_terminal(&[], &[]);
     let carded = card_on(&amx, &view, "port-cli-b2c");
     let card = card_lines(&carded).join("\n");
-    for said in ["❯ port it", "on it", " live ", "i ported the importer"] {
+    for said in ["❯ port it", "on it", "i ported the importer"] {
         assert!(card.contains(said), "{said} in:\n{carded}");
     }
     assert!(
-        card.find("on it") < card.find(" live ") && card.find(" live ") < card.find("i ported"),
-        "the record above the rule, the pane below it:\n{carded}"
+        card.find("on it") < card.find("i ported"),
+        "the record above, the pane below it:\n{carded}"
     );
     for furniture in ["accept edits on", "still thinking", "execute amx-v2"] {
         assert!(
@@ -1449,7 +1449,10 @@ fn card_over_a_working_conversation_ends_on_what_is_being_said_now() {
         drawn.contains("now streaming words").then_some(drawn)
     });
     let card = card_lines(&streamed).join("\n");
-    assert!(card.contains(" live "), "{streamed}");
+    assert!(
+        card.find("on it") < card.find("now streaming words"),
+        "the stream under the record:\n{streamed}"
+    );
     assert!(
         !card.contains("i ported the importer"),
         "the stream stands where the pane stood:\n{streamed}"
@@ -1460,8 +1463,8 @@ fn card_over_a_working_conversation_ends_on_what_is_being_said_now() {
 fn card_over_a_transcript_with_nothing_on_it_yet_is_the_task_over_the_pane() {
     // The vendor has been started, has announced the transcript it is going to
     // write, and has not written a turn to it yet. The card is the task the
-    // agent was given, drawn as the prompt it is, with the pane under the live
-    // rule — the same shape the card will keep once the first turn lands.
+    // agent was given, drawn as the prompt it is, with the pane under it — the
+    // same shape the card will keep once the first turn lands.
     let amx = Harness::new();
     let mut pane_rows = vec!["reading the importer", ""];
     pane_rows.extend_from_slice(&CHROME);
@@ -1479,15 +1482,12 @@ fn card_over_a_transcript_with_nothing_on_it_yet_is_the_task_over_the_pane() {
     let task = card
         .find("❯ fix the login bug")
         .unwrap_or_else(|| panic!("the task behind the prompt glyph:\n{carded}"));
-    let rule = card
-        .find(" live ")
-        .unwrap_or_else(|| panic!("the live rule:\n{carded}"));
     let pane_row = card
         .find("reading the importer")
         .unwrap_or_else(|| panic!("the pane under it:\n{carded}"));
     assert!(
-        task < rule && rule < pane_row,
-        "the task above the rule, the pane only under it:\n{carded}"
+        task < pane_row,
+        "the task above, the pane only under it:\n{carded}"
     );
     for furniture in ["accept edits on", "execute amx-v2"] {
         assert!(

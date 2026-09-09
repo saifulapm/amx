@@ -28,7 +28,7 @@ use std::ops::Range;
 use super::input::{composer_lines, under_the_block};
 use super::prose;
 use super::style::{bold, colour, dim, request_colour};
-use super::text::{RULE, SEPARATOR, fit, inert, width_of};
+use super::text::{SEPARATOR, fit, inert, width_of};
 use crate::ansi::{self, Colour, Painted};
 use crate::conversation::Said;
 use crate::furniture::{Furniture, cut};
@@ -156,17 +156,14 @@ const PROMPT: &str = "❯ ";
 /// the emoji set, and a terminal with a colour-emoji fallback drew it in
 /// orange, two cells wide, over the space after it.
 const TOOL: &str = "› ";
-/// What the rule over the live tail says.
-const LIVE: &str = " live ";
-/// How much of the tail the card keeps under that rule: the last rows of what
-/// is landing, and few enough that the rule and a row of the record above it
-/// stay on the card — at its tallest, and on a card half a small screen tall.
-/// A body is built before the frame that draws it says how tall the card is,
-/// which is why this is a number rather than a share of the card. Driven on
-/// 2026-09-06 against claude on an 80×24 pane: a tail that was the whole
-/// chrome-cut pane put the rule twenty rows above the card's window, and the
-/// card read as the pane it came off rather than as the record with the live
-/// under it.
+/// How much of the tail the card keeps: the last rows of what is landing, and
+/// few enough that a row of the record stays above it on the card — at its
+/// tallest, and on a card half a small screen tall. A body is built before the
+/// frame that draws it says how tall the card is, which is why this is a
+/// number rather than a share of the card. Driven on 2026-09-06 against claude
+/// on an 80×24 pane: a tail that was the whole chrome-cut pane pushed the
+/// record off the top of the card's window, and the card read as the pane it
+/// came off rather than as the record with the live under it.
 const TAIL: usize = 8;
 
 impl Body {
@@ -262,19 +259,16 @@ impl Body {
                 tail.pop();
             }
             let skipped = tail.len().saturating_sub(TAIL);
-            // The rule, and the blank row that stands it off the record above,
-            // only where there are rows under them. A turn between its first
-            // token and its first word has a pane of nothing but the vendor's
-            // spinner and composer, all of which the cut takes, and a rule
-            // over that says a tail is landing where none is.
+            // The blank row that stands the tail off the record above it, only
+            // where there are rows under it. A turn between its first token and
+            // its first word has a pane of nothing but the vendor's spinner and
+            // composer, all of which the cut takes, and a blank row over that
+            // stands the record off nothing.
             let tail: Vec<Line<'static>> = tail.into_iter().skip(skipped).collect();
             if !tail.is_empty() {
                 if !rows.is_empty() {
                     rows.push(Line::raw(String::new()));
                 }
-                let dashes = (width as usize).saturating_sub(2 + width_of(LIVE));
-                let rule = format!("{RULE}{RULE}{LIVE}{}", RULE.repeat(dashes));
-                rows.push(Line::from(Span::styled(rule, dim())));
                 rows.extend(tail);
             }
         }
@@ -1405,11 +1399,8 @@ mod tests {
         );
         assert_eq!(
             streamed.says(),
-            format!(
-                "❯ port it\n\n› Bash cargo test\n\non it\n\n{RULE}{RULE}{LIVE}{}\nstill going",
-                RULE.repeat(30 - 2 - width_of(LIVE))
-            ),
-            "the vendor's own stream under a rule that says what it is"
+            "❯ port it\n\n› Bash cargo test\n\non it\n\nstill going",
+            "the vendor's own stream one blank row under the record"
         );
 
         // A pane instead, with the vendor's furniture cut off its bottom and
@@ -1440,21 +1431,24 @@ mod tests {
     }
 
     #[test]
-    fn card_keeps_the_live_rule_on_the_card_over_a_long_tail() {
+    fn card_keeps_the_last_rows_of_a_long_live_tail() {
         let told = a_talk("port it", "on it");
-        let rule = format!("{RULE}{RULE}{LIVE}{}", RULE.repeat(30 - 2 - width_of(LIVE)));
-        let after_the_rule = |body: &Body| -> Vec<String> {
+        // Everything under the record's last row and the blank row that stands
+        // the tail off it.
+        let after_the_record = |body: &Body| -> Vec<String> {
             let said = body.says();
-            let (_, tail) = said.split_once(&rule).expect("a rule on the card");
-            tail.lines().skip(1).map(str::to_string).collect()
+            let (_, tail) = said
+                .split_once("on it\n\n")
+                .expect("a tail under the record");
+            tail.lines().map(str::to_string).collect()
         };
 
-        // A stream longer than the card: the last rows of it, under the rule.
+        // A stream longer than the card: the last rows of it.
         let streamed = (1..=20)
             .map(|n| format!("{n}. reason {n}\n"))
             .collect::<String>();
         let long = Body::conversation(&told, Some(Live::Text(streamed)), 30, theme());
-        let tail = after_the_rule(&long);
+        let tail = after_the_record(&long);
         assert_eq!(tail.len(), TAIL, "{tail:?}");
         assert!(tail[TAIL - 1].ends_with("reason 20"), "{tail:?}");
         assert!(tail[0].ends_with("reason 13"), "{tail:?}");
@@ -1470,7 +1464,7 @@ mod tests {
             30,
             theme(),
         );
-        let tail = after_the_rule(&pictured);
+        let tail = after_the_record(&pictured);
         assert_eq!(tail.len(), TAIL, "{tail:?}");
         assert_eq!(tail.last().map(String::as_str), Some("  20. a reason"));
         assert!(
@@ -1486,16 +1480,16 @@ mod tests {
             30,
             theme(),
         );
-        assert_eq!(after_the_rule(&short), ["one", "", "two"]);
+        assert_eq!(after_the_record(&short), ["one", "", "two"]);
     }
 
     #[test]
-    fn card_draws_no_live_rule_over_a_tail_that_cut_to_nothing() {
+    fn card_stands_no_blank_row_over_a_tail_that_cut_to_nothing() {
         // The seconds between a turn starting and its first word landing: the
         // pane holds the vendor's spinner and its composer and nothing else,
         // and the cut takes both. The record is the whole of what the card
-        // has, so the rule and the blank row over it are rows spent saying a
-        // tail is landing where none is.
+        // has, so the blank row over the tail is a row spent standing the
+        // record off nothing.
         let told = a_talk("port it", "on it");
         let said = "❯ port it\n\n› Bash cargo test\n\non it";
 
@@ -1510,7 +1504,7 @@ mod tests {
             30,
             theme(),
         );
-        assert_eq!(pictured.says(), said, "no rule and no blank row over one");
+        assert_eq!(pictured.says(), said, "no blank row over a tail of nothing");
         assert_eq!(pictured.kept, 5);
 
         // A stream the vendor has opened and written nothing to goes the same
@@ -1521,7 +1515,7 @@ mod tests {
             assert_eq!(body.says(), said, "{streamed:?}");
         }
 
-        // One row under the cut is a tail, and takes its rule.
+        // One row under the cut is a tail, and stands off the record.
         let mut working = String::from("reading the importer\n\n● Actioning…\n\n");
         working.push_str("────\n❯ \n────\n  statusline\n  ⏵⏵ accept edits on\n");
         let landing = Body::conversation(
@@ -1533,9 +1527,11 @@ mod tests {
             30,
             theme(),
         );
-        let drawn = landing.says();
-        assert!(drawn.contains(LIVE), "{drawn:?}");
-        assert!(drawn.ends_with("reading the importer"), "{drawn:?}");
+        assert_eq!(
+            landing.says(),
+            format!("{said}\n\nreading the importer"),
+            "one blank row between the record and the tail, and nothing else"
+        );
     }
 
     #[test]
