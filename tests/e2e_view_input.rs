@@ -1715,8 +1715,9 @@ fn input_mode_hangs_the_line_off_a_labelled_rule_over_a_wall_gone_dim() {
         "and the dial is set in reverse video, the way the badge is:\n{painted:?}"
     );
     assert!(
-        sgr_at(&painted, "port the importer").contains(&1),
-        "the line somebody is typing is the one bold thing left:\n{painted:?}"
+        !sgr_at(&painted, "port the importer").contains(&1),
+        "the line somebody is typing carries no weight of its own, because what \
+         says where somebody is on it is the block:\n{painted:?}"
     );
     assert!(
         sgr_past(&painted, "port the importer").contains(&7),
