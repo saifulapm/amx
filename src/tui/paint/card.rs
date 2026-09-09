@@ -132,8 +132,10 @@ pub struct Body {
     /// vendor's own chrome is a different fact from an agent that has said
     /// nothing yet, and the card says the first out loud.
     chrome: bool,
-    /// The row a card read forward opens on: where the last answer begins in
-    /// a conversation, and the top of everything else.
+    /// The row a card read forward opens on: the end of a conversation, past
+    /// its last row, and the top of everything else. Past the end because the
+    /// paint owns the clamp — see [`Scroll::kept`] — and only the paint knows
+    /// how many rows the card had to give.
     anchor: usize,
 }
 
@@ -190,9 +192,11 @@ impl Body {
     /// a column of names. Every row is wrapped to `width` here, because a
     /// card windows its rows and does not reflow them.
     ///
-    /// The anchor is the first row of the last prompt: the top of the last
-    /// answer, with the question it answers on the row above. A card read
-    /// forward opens there, with the turns before it a page up.
+    /// The anchor is the end of it. A card read forward opens on the last
+    /// rows of the last answer, where the conclusion of it is, with the rest
+    /// of the turn and every turn before it a page up: an answer of any
+    /// length runs off the bottom of a card, and its first rows are the ones
+    /// a reader can guess.
     pub(in crate::tui) fn conversation(
         said: &[Said],
         live: Option<Live>,
@@ -201,7 +205,6 @@ impl Body {
     ) -> Body {
         let width = width.max(1);
         let mut rows: Vec<Line<'static>> = Vec::new();
-        let mut anchor = 0;
         let mut after_call = false;
         for one in said {
             let drawn: Vec<Line<'static>> = match one {
@@ -240,9 +243,6 @@ impl Body {
             if !rows.is_empty() && !(after_call && call) {
                 rows.push(Line::raw(String::new()));
             }
-            if matches!(one, Said::Prompt(_)) {
-                anchor = rows.len();
-            }
             rows.extend(drawn);
             after_call = call;
         }
@@ -250,12 +250,6 @@ impl Body {
         let blank =
             |row: &Line<'static>| row.spans.iter().all(|span| span.content.trim().is_empty());
         if let Some(live) = live {
-            if !rows.is_empty() {
-                rows.push(Line::raw(String::new()));
-            }
-            let dashes = (width as usize).saturating_sub(2 + width_of(LIVE));
-            let rule = format!("{RULE}{RULE}{LIVE}{}", RULE.repeat(dashes));
-            rows.push(Line::from(Span::styled(rule, dim())));
             let mut tail = match live {
                 Live::Text(text) => prose::render(&text, width, theme),
                 Live::Screen(chrome, capture) => {
@@ -268,7 +262,21 @@ impl Body {
                 tail.pop();
             }
             let skipped = tail.len().saturating_sub(TAIL);
-            rows.extend(tail.into_iter().skip(skipped));
+            // The rule, and the blank row that stands it off the record above,
+            // only where there are rows under them. A turn between its first
+            // token and its first word has a pane of nothing but the vendor's
+            // spinner and composer, all of which the cut takes, and a rule
+            // over that says a tail is landing where none is.
+            let tail: Vec<Line<'static>> = tail.into_iter().skip(skipped).collect();
+            if !tail.is_empty() {
+                if !rows.is_empty() {
+                    rows.push(Line::raw(String::new()));
+                }
+                let dashes = (width as usize).saturating_sub(2 + width_of(LIVE));
+                let rule = format!("{RULE}{RULE}{LIVE}{}", RULE.repeat(dashes));
+                rows.push(Line::from(Span::styled(rule, dim())));
+                rows.extend(tail);
+            }
         }
 
         while rows.last().is_some_and(&blank) {
@@ -276,7 +284,7 @@ impl Body {
         }
         Body {
             kept: rows.len(),
-            anchor: anchor.min(rows.len()),
+            anchor: rows.len(),
             rows,
             chrome: false,
         }
@@ -389,8 +397,8 @@ pub struct Scroll {
     /// The rows the body had last frame, which is what one press moves by.
     pub page: Cell<usize>,
     /// Where the card opened, in the same rows: its edge for a conversation
-    /// that opens on its last answer rather than at its top. A card standing
-    /// anywhere else has been paged by hand, and holds.
+    /// that opens on its end rather than at its top. A card standing anywhere
+    /// else has been paged by hand, and holds.
     pub opened: Cell<usize>,
 }
 
@@ -415,9 +423,18 @@ impl Scroll {
     /// company on a card that only grows its marker row once it has left its
     /// edge: a step measured on the taller window would step over a row on
     /// the way out and never land back on the edge on the way home.
+    ///
+    /// Where it opened is clamped to that same last page, because a card is
+    /// opened past its end — a conversation is anchored on its end and no
+    /// body knows how tall a card is. Left where it was asked for, it would
+    /// never equal the offset again, [`Scroll::paged`] would read true on
+    /// every frame, and a card nobody touched would hold still forever
+    /// instead of following its agent back to work.
     fn kept(&self, length: usize, window: usize, step: usize) -> usize {
-        let away = self.away.get().min(length.saturating_sub(window));
+        let last = length.saturating_sub(window);
+        let away = self.away.get().min(last);
         self.away.set(away);
+        self.opened.set(self.opened.get().min(last));
         self.page.set(step.max(1));
         away
     }
@@ -1295,7 +1312,7 @@ mod tests {
     }
 
     #[test]
-    fn card_draws_a_conversation_a_voice_a_glyph_and_anchors_on_the_last_prompt() {
+    fn card_draws_a_conversation_a_voice_a_glyph_and_anchors_on_its_end() {
         let mut told = a_talk("first ask", "first answer");
         told.extend(a_talk("second ask", "**second** answer"));
         let body = Body::conversation(&told, None, 40, theme());
@@ -1310,9 +1327,9 @@ mod tests {
         assert_eq!(body.kept, 11);
         assert_eq!(
             body.anchor(),
-            6,
-            "the last prompt's own row: the top of the last answer, with what \
-             was asked on the row above"
+            11,
+            "the end of it, past the last row: the paint clamps that down to \
+             the last page the card has room for"
         );
         assert!(!body.chrome);
 
@@ -1470,6 +1487,55 @@ mod tests {
             theme(),
         );
         assert_eq!(after_the_rule(&short), ["one", "", "two"]);
+    }
+
+    #[test]
+    fn card_draws_no_live_rule_over_a_tail_that_cut_to_nothing() {
+        // The seconds between a turn starting and its first word landing: the
+        // pane holds the vendor's spinner and its composer and nothing else,
+        // and the cut takes both. The record is the whole of what the card
+        // has, so the rule and the blank row over it are rows spent saying a
+        // tail is landing where none is.
+        let told = a_talk("port it", "on it");
+        let said = "❯ port it\n\n› Bash cargo test\n\non it";
+
+        let mut pane = String::from("● Actioning…\n\n");
+        pane.push_str("────\n❯ \n────\n  statusline\n  ⏵⏵ accept edits on\n");
+        let pictured = Body::conversation(
+            &told,
+            Some(Live::Screen(
+                crate::rules::of("claude").furniture(),
+                pane.clone(),
+            )),
+            30,
+            theme(),
+        );
+        assert_eq!(pictured.says(), said, "no rule and no blank row over one");
+        assert_eq!(pictured.kept, 5);
+
+        // A stream the vendor has opened and written nothing to goes the same
+        // way, and so does one of nothing but blank rows.
+        for streamed in ["", "\n\n\n"] {
+            let body =
+                Body::conversation(&told, Some(Live::Text(streamed.to_string())), 30, theme());
+            assert_eq!(body.says(), said, "{streamed:?}");
+        }
+
+        // One row under the cut is a tail, and takes its rule.
+        let mut working = String::from("reading the importer\n\n● Actioning…\n\n");
+        working.push_str("────\n❯ \n────\n  statusline\n  ⏵⏵ accept edits on\n");
+        let landing = Body::conversation(
+            &told,
+            Some(Live::Screen(
+                crate::rules::of("claude").furniture(),
+                working,
+            )),
+            30,
+            theme(),
+        );
+        let drawn = landing.says();
+        assert!(drawn.contains(LIVE), "{drawn:?}");
+        assert!(drawn.ends_with("reading the importer"), "{drawn:?}");
     }
 
     #[test]

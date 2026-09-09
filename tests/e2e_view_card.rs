@@ -1344,7 +1344,7 @@ fn reported(amx: &Harness, id: &str, state: &str) {
 }
 
 #[test]
-fn card_is_the_whole_conversation_opened_on_its_last_answer() {
+fn card_is_the_whole_conversation_opened_on_the_end_of_its_last_answer() {
     let amx = Harness::new();
     let mut pane_rows = vec!["i ported the importer", ""];
     pane_rows.extend_from_slice(&CHROME);
@@ -1365,13 +1365,18 @@ fn card_is_the_whole_conversation_opened_on_its_last_answer() {
 
     let view = amx.in_a_terminal(&[], &[]);
     let carded = card_on(&amx, &view, "port-cli-b2c");
-    let card = card_lines(&carded).join("\n");
-    assert!(card.contains("❯ second ask"), "{carded}");
-    assert!(card.contains("second line 1"), "{carded}");
+    let rows = card_lines(&carded);
+    let card = rows.join("\n");
+    assert!(
+        rows.last()
+            .is_some_and(|last| last.contains("second line 15")),
+        "the last row of the last answer is the card's own last row:\n{carded}"
+    );
     assert!(!card.contains("**"), "markdown drawn, not shown:\n{carded}");
     assert!(
-        !card.contains("first line"),
-        "opens on the last answer, the turn before it a page up:\n{carded}"
+        !card.contains("❯ second ask") && !card.contains("first line"),
+        "opens on the end of that answer, the rest of it and the turn before \
+         a page up:\n{carded}"
     );
     assert!(
         !card.contains("accept edits on") && !card.contains("i ported"),
@@ -1382,10 +1387,22 @@ fn card_is_the_whole_conversation_opened_on_its_last_answer() {
         "and says how much stands above:\n{carded}"
     );
 
-    press(&amx, &view, "PPage");
-    amx.until("the earlier turn", || {
-        screen(&amx, &view).contains("first line").then_some(())
+    // Everything above is still reachable a page at a time, up to the row the
+    // conversation begins on. Pressing past the top is a press that does
+    // nothing, so this walks up until the first question is on the card.
+    let top = amx.until("the first turn", || {
+        let drawn = screen(&amx, &view);
+        if drawn.contains("❯ first ask") {
+            return Some(drawn);
+        }
+        press(&amx, &view, "PPage");
+        None
     });
+    assert!(top.contains("first line 1"), "{top}");
+    assert!(
+        !top.contains("more"),
+        "the top of it, with nothing above:\n{top}"
+    );
 }
 
 #[test]

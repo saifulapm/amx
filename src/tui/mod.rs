@@ -1287,9 +1287,12 @@ impl Screen {
                         (card, taken)
                     });
                     (self.card, self.taken) = taken.unzip();
-                    // A card read forward opens on its anchor — the last
-                    // answer of a conversation — and everything else at its
-                    // edge. Where it opened is where it is held from.
+                    // A card read forward opens on its anchor — the end of a
+                    // conversation — and everything else at its edge. That
+                    // anchor is past the body's last row, and the paint
+                    // clamps both it and the offset to the last page the
+                    // card had room for; where it opened is where it is held
+                    // from.
                     let anchor = match &self.card {
                         Some(card) if card.forward() => card.body.anchor(),
                         _ => 0,
@@ -4913,6 +4916,49 @@ mod tests {
             Some("the first answer\n\nthe second answer".to_string()),
             "the card follows the file it was read from"
         );
+    }
+
+    #[test]
+    fn card_on_a_finished_conversation_opens_on_its_last_rows_and_reads_as_unpaged() {
+        // A conversation card is anchored past its last row, and only the
+        // paint knows how many rows the card was given. So the first frame
+        // clamps it to the last page there is: the end of the last answer,
+        // where the conclusion of it is, with the rest a page up.
+        let held = TempDir::new().unwrap();
+        let path = held.path().join("session.jsonl");
+        let long: String = (0..40).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(&path, transcript(&long)).unwrap();
+        let mut screen = watching_a_transcript(&path);
+
+        let mut terminal = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        terminal.draw(|frame| paint::draw(frame, &screen)).unwrap();
+        let drawn: Vec<String> = (0..14)
+            .map(|row| {
+                (0..60)
+                    .map(|column| terminal.backend().buffer()[(column, row)].symbol())
+                    .collect::<String>()
+            })
+            .collect();
+        let card = drawn.join("\n");
+        assert!(card.contains("line 39"), "the end of the answer:\n{card}");
+        assert!(!card.contains("line 0 "), "and not its top:\n{card}");
+        assert!(card.contains("more"), "with the rest a page up:\n{card}");
+
+        // And it reads as a card nobody has paged, which is what lets it
+        // follow its agent back to work: a card that read as paged would hold
+        // still on every reading from here on.
+        assert!(!screen.scroll.paged(), "opened where it stands");
+        assert_eq!(screen.scroll.away.get(), screen.scroll.opened.get());
+
+        // The page keys still leave it, and come back to where it opened.
+        let opened = screen.scroll.away.get();
+        assert!(opened > 0, "a body taller than the card");
+        screen.paged(true);
+        assert!(screen.scroll.away.get() < opened, "a page up");
+        assert!(screen.scroll.paged(), "and that is a card being read");
+        screen.paged(false);
+        assert_eq!(screen.scroll.away.get(), opened);
+        assert!(!screen.scroll.paged(), "back where it opened");
     }
 
     #[test]

@@ -385,14 +385,17 @@ conversation in a file — claude and pi both do — the card is that whole
 conversation, drawn rather than pictured: every prompt behind the composer's
 own `❯`, every answer with its markdown rendered, every tool call as one row
 naming the tool with the command or path it was given dim beside it, and a run
-of calls as one block. Nothing the vendor draws under its pane is in it. One whose turn is over — idle at its prompt,
-done, failed or stopped alike — opens on its last answer, with the question it
-answers on the row above and every earlier turn a page up. One that is working
-ends on a live tail under a dim `live` rule: the last few rows of what pi is
-saying at this moment, streamed by the extension `doctor --fix` installs, or,
-for claude, of its pane with the composer and statusline cut, tracking output
-as it lands. A command row is neither: its card is the last quarter megabyte of
-the file its pane is piped into, which is more rows than a card is paged
+of calls as one block. Nothing the vendor draws under its pane is in it. One
+whose turn is over — idle at its prompt, done, failed or stopped alike — opens
+on the end of its last answer, where the conclusion of it is, with the rest of
+that answer and every earlier turn a page up. One that is working ends on a
+live tail under a dim `live` rule: the last few rows of what pi is saying at
+this moment, streamed by the extension `doctor --fix` installs, or, for
+claude, of its pane with the composer and statusline cut, tracking output
+as it lands. Where that cut leaves nothing — the seconds between a turn
+starting and its first word landing — there is no rule, and the card is the
+record alone. A command row is neither: its card is the last quarter megabyte
+of the file its pane is piped into, which is more rows than a card is paged
 through and the same cost however long the command has printed — the end of
 that while the command runs and the top of it once the command has ended, with
 nothing cut off the bottom, since the anchors that cut are a vendor's own and
