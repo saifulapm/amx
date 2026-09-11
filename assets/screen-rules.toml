@@ -93,9 +93,14 @@ placeholders = [
 # not; driving it is the next thing owed here.
 #
 # `rule` is the glyph the composer's box is drawn with. `statusline` is how
-# many rows of it the walk will step over to reach that box's bottom border: a
-# margin over the one row measured, not a measured maximum, and the cap is what
-# keeps the walk off the transcript. `bottom` is how many rows the bottom
+# many rows of it the walk will step over to reach that box's bottom border,
+# and the cap is what keeps the walk off the transcript. Eight is a measured
+# maximum: a statusline command is the person's own and prints as many rows as
+# it likes, and claude 2.1.263 on 2026-09-11 drew four of four and eight of
+# ten — past eight it draws no mode footer at all, so no walk begins and no
+# taller cap would be met. It stood at two until then, a margin over the one
+# row measured, and a four-row statusline left the composer on a
+# transcript-less card. `bottom` is how many rows the bottom
 # border can take — one at 22 columns and wider, which is every pane 2.1.237
 # draws a footer in at all, and two below that, where the box is wider than the
 # pane and wraps.
@@ -115,7 +120,7 @@ placeholders = [
 mode = ["⏵⏵", "⏸"]
 spinner = ["ing…"]
 rule = "─"
-statusline = 2
+statusline = 8
 bottom = 2
 
 # claude asks this before its prompt exists, so nothing else it draws can be

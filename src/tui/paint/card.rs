@@ -2177,10 +2177,22 @@ mod tests {
 
     #[test]
     fn view_tail_gives_back_by_position_what_it_cannot_place() {
-        // Three rows between the footer and the nearest rule: not the shape
-        // this was measured against, so the statusline step abandons and only
-        // the footer — matched by its own opener — stays cut.
-        let odd = [SAID, CHROME[2], "one", "two", "three", CHROME[4]];
+        // A statusline is whatever somebody's command prints, and claude
+        // 2.1.263 draws up to eight rows of it: four of four and eight of ten,
+        // measured 2026-09-11. Every row within that is stepped over.
+        for rows in [4, 8] {
+            let mut tall = vec![SAID, CHROME[2]];
+            tall.extend((0..rows).map(|_| "  status"));
+            tall.push(CHROME[4]);
+            assert_eq!(cut(chrome(), &tall), &tall[..1], "{rows} rows");
+        }
+
+        // Nine rows between the footer and the nearest rule: not a shape the
+        // vendor draws, so the statusline step abandons and only the footer —
+        // matched by its own opener — stays cut.
+        let mut odd = vec![SAID, CHROME[2]];
+        odd.extend((0..9).map(|_| "  status"));
+        odd.push(CHROME[4]);
         assert_eq!(cut(chrome(), &odd), &odd[..odd.len() - 1]);
 
         // A composer whose staged text is taller than half the capture: the
