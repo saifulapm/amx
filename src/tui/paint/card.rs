@@ -38,7 +38,7 @@ use crate::ansi::{self, Colour, Painted};
 use crate::conversation::Said;
 use crate::furniture::{Furniture, cut};
 use crate::pr::Pr;
-use crate::store::{Kind, Phase};
+use crate::store::{Ask, Kind, Phase};
 use crate::theme::Theme;
 use crate::tui::act::{self, Composer};
 use crate::tui::rows::Showing;
@@ -964,10 +964,14 @@ const BETWEEN: &str = "   ";
 /// which is the row the cursor is on — a line long enough to wrap is being
 /// written at its end, and the end is what somebody is looking at.
 ///
-/// Empty, the line says what this question will take instead — which is the
-/// one thing somebody looking at a prompt they did not draw cannot work out
-/// for themselves, and it is said from the same place the refusal is written —
-/// and the block stands on the first cell of that, where the answer will begin.
+/// Every card has one, because every agent can be said something to. Empty, it
+/// says what this one will take, and the block stands on the first cell of
+/// that, where what is typed will begin.
+///
+/// The chevron carries the waiting colour at a question and nothing but the
+/// dim elsewhere: a prompt in front of somebody is the one thing on this
+/// screen that is waiting on them, and a line they may type at if they feel
+/// like it is not.
 fn answer_row(
     frame: &mut Frame,
     card: &Card<Body>,
@@ -984,12 +988,7 @@ fn answer_row(
         .unwrap_or_default();
     let asked = showing.map(|showing| showing.ask);
     let said = match composer.text.is_empty() {
-        true => under_the_block(
-            &fit(&act::invitation(card.kind, &card.options, asked), room),
-            0,
-            dim(),
-            Style::new(),
-        ),
+        true => under_the_block(&fit(&invites(card, asked), room), 0, dim(), Style::new()),
         false => under_the_block(
             &typed,
             (column as usize).min(room.saturating_sub(1)),
@@ -998,10 +997,38 @@ fn answer_row(
         ),
     };
 
-    let mut spans = vec![Span::styled(GUTTER, Style::new().fg(theme.waiting))];
+    let chevron = match card.asks() {
+        true => Style::new().fg(theme.waiting),
+        false => dim(),
+    };
+    let mut spans = vec![Span::styled(GUTTER, chevron)];
     spans.extend(said);
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
+
+/// What the empty line says it will take.
+///
+/// At a question, what that question will take — which is the one thing
+/// somebody looking at a prompt they did not draw cannot work out for
+/// themselves, and it is said from the same place the refusal is written. On
+/// an agent still working, the word for what the line is: whatever is typed
+/// there goes to it as it stands. And on one whose command has ended, that
+/// nothing will come of it, in the words [`act::reply`] refuses it in — a
+/// line that invited a reply nobody would receive would be the card telling
+/// somebody to type into the dark.
+fn invites(card: &Card<Body>, asked: Option<&Ask>) -> String {
+    match (card.asks(), card.phase.is_terminal()) {
+        (true, _) => act::invitation(card.kind, &card.options, asked),
+        (_, true) => NOBODY.to_string(),
+        _ => REPLY.to_string(),
+    }
+}
+
+/// What the line says on an agent that is still working, which is what it is.
+const REPLY: &str = "reply";
+
+/// And on one past listening, which is the whole of what would come of it.
+const NOBODY: &str = "nothing is listening";
 
 /// How many rows text takes when it is wrapped to a width.
 fn wrapped(text: &str, width: u16) -> u16 {
@@ -1548,10 +1575,7 @@ mod tests {
     /// The same card, with somebody part way through typing the answer to it.
     fn answering(card: Card, typed: &str) -> Screen {
         let mut screen = showing(a_fleet(), Some(card));
-        let mut composer = Composer::new(Asking::Reply {
-            id: "ask-a1b".to_string(),
-            question: true,
-        });
+        let mut composer = Composer::new(Asking::Reply);
         composer.text = typed.to_string();
         // Where somebody typing it would have left the cursor, which is what
         // the block on the line stands on.
@@ -1639,6 +1663,71 @@ mod tests {
             composer.at = 4;
         }
         assert_eq!(block(&walked, size, line_row(&typed)), Some(6));
+    }
+
+    /// The weight the chevron on the card's line was drawn at, which is how
+    /// the dim is told from the colour.
+    fn chevron(screen: &Screen, size: (u16, u16)) -> (Color, Modifier) {
+        let row = line_row(&painted(screen, size));
+        let cell = cells(screen, size);
+        (cell[(0, row)].fg, cell[(0, row)].modifier)
+    }
+
+    #[test]
+    fn card_line_says_what_it_will_take_on_every_kind_of_card() {
+        let size = (60, 14);
+
+        // At a question, what that question will take, with the chevron in
+        // the colour of a thing waiting on a person.
+        let question = answering(
+            asking(&["the sqlite one", "the docker one"], Some(Kind::Question)),
+            "",
+        );
+        let asked = answer_row(&painted(&question, size));
+        assert!(
+            asked.contains("❯ 1-2 picks, or type an answer"),
+            "{asked:?}"
+        );
+        assert_eq!(chevron(&question, size).0, theme().waiting);
+
+        // On an agent still at work, the word for what the line is: what is
+        // typed there goes to it as it stands.
+        let busy = answering(
+            Card {
+                phase: Phase::Working,
+                question: None,
+                options: Vec::new(),
+                body: "$ cargo test".to_string(),
+                ..asking(&[], None)
+            },
+            "",
+        );
+        let working = answer_row(&painted(&busy, size));
+        assert!(working.contains("❯ reply"), "{working:?}");
+        assert_eq!(
+            chevron(&busy, size),
+            (Color::Reset, Modifier::DIM),
+            "with the chevron dim: a line somebody may type at is not one \
+             waiting on them"
+        );
+
+        // And on one whose command has ended, what would come of it — in the
+        // words the reply itself is refused in, because it is the same fact
+        // said before rather than after the keystroke.
+        let over = answering(
+            Card {
+                phase: Phase::Done,
+                question: None,
+                options: Vec::new(),
+                body: "did what it was asked".to_string(),
+                answer: true,
+                ..asking(&[], None)
+            },
+            "",
+        );
+        let ended = answer_row(&painted(&over, size));
+        assert!(ended.contains("❯ nothing is listening"), "{ended:?}");
+        assert_eq!(chevron(&over, size), (Color::Reset, Modifier::DIM));
     }
 
     #[test]

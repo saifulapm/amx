@@ -658,7 +658,7 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
                 said.push(("ctrl+g", "$EDITOR"));
                 fitted(&said, ("esc", "cancels"), width)
             }
-            Asking::Reply { .. } => fitted(
+            Asking::Reply => fitted(
                 &[("enter", "sends it"), ("alt+enter", "newline")],
                 ("esc", "cancels"),
                 width,
@@ -1254,11 +1254,8 @@ mod tests {
 
         // A reply goes to an agent already running, where a dial means
         // nothing, so the line would be teaching keys it does not read.
-        let mut replying = showing(Vec::new(), None);
-        replying.mode = Mode::Typing(Composer::new(Asking::Reply {
-            id: "fix-a1b".to_string(),
-            question: false,
-        }));
+        let mut replying = showing(Vec::new(), Some(asking(&[], None)));
+        replying.mode = Mode::Typing(Composer::new(Asking::Reply));
         let reply = painted(&replying, TALL);
         assert!(
             !reply.iter().any(|row| row.contains("m:model")),
@@ -1560,19 +1557,6 @@ mod tests {
             (Color::Reset, Color::Reset),
             "and go back to dim the keystroke the bang comes off"
         );
-
-        // A bang typed into a reply is a character of the message: it runs
-        // nothing, so it lights nothing.
-        assert_eq!(
-            edges(
-                Asking::Reply {
-                    id: "fix-a1b".to_string(),
-                    question: false,
-                },
-                "!cargo test"
-            ),
-            (Color::Reset, Color::Reset)
-        );
     }
 
     #[test]
@@ -1587,12 +1571,12 @@ mod tests {
         };
 
         // A reply goes to an agent that is already running under whatever it
-        // was started with, so the dial has nothing to say about it.
+        // was started with, so the dial has nothing to say about it — and it
+        // is typed at the foot of the card, where there is no rule of its own
+        // for a dial to stand on at all.
         let mut screen = launching(Vec::new());
-        screen.mode = Mode::Typing(Composer::new(Asking::Reply {
-            id: "ask-a1b".to_string(),
-            question: true,
-        }));
+        screen.card = Some(asking(&[], None).read());
+        screen.mode = Mode::Typing(Composer::new(Asking::Reply));
         assert!(!turned(&screen), "a reply is not a spawn");
 
         // Nor about a find line, which sends nothing anywhere.

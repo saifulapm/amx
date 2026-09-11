@@ -123,9 +123,14 @@ pub struct Listed {
 pub enum Asking {
     /// A task, for an agent that does not exist yet.
     Task,
-    /// Something for an agent that is already running: a message, or the key
+    /// Something for the agent the card is a look at: a message, or the key
     /// its question is waiting for.
-    Reply { id: String, question: bool },
+    ///
+    /// It names no agent, because the card it stands at the foot of does: the
+    /// line is the card's last row, and which agent that card is showing is
+    /// the view's to say at the moment enter is pressed rather than the
+    /// line's to have remembered from the moment it opened.
+    Reply,
     /// A name for one of them, which goes nowhere near the agent itself.
     Name { id: String },
     /// Which agents to keep on the wall. Not a line that is sent: it is read
@@ -518,8 +523,10 @@ impl Composer {
         }
         match &self.asking {
             Asking::Task => "TASK",
-            Asking::Reply { question: true, .. } => "ANSWER",
-            Asking::Reply { .. } => "MESSAGE",
+            // Nothing draws a rule over a reply: it is the card's own last
+            // row, under a rule the card has already written the agent's name
+            // on.
+            Asking::Reply => "REPLY",
             Asking::Name { .. } => "RENAME",
             // Nothing draws a rule over a find line: it is one row at the
             // foot, so the label has nowhere to be said and nothing to say.
@@ -530,8 +537,8 @@ impl Composer {
     /// What the line is aimed at, where it is aimed at anything.
     ///
     /// The label alone does not say it, and it is what somebody about to press
-    /// enter has to be sure of: a message goes to one agent and a rename
-    /// renames one. A task is aimed at nobody yet, so what it says instead is
+    /// enter has to be sure of: a rename renames one agent and nothing else.
+    /// A task is aimed at nobody yet, so what it says instead is
     /// the project it will run in — the one thing about a spawn that the rule
     /// can say before there is an agent to name — and nothing where that is
     /// the directory the view was opened in, which is where a task runs unless
@@ -547,8 +554,9 @@ impl Composer {
                 .under
                 .as_deref()
                 .map(|dir| format!("in {}", shorten(dir, std::env::home_dir().as_deref()))),
-            Asking::Find => None,
-            Asking::Reply { id, .. } => Some(format!("to {id}")),
+            // And a reply names nobody here, because the card's rule above it
+            // already names the agent it is going to.
+            Asking::Find | Asking::Reply => None,
             Asking::Name { id } => Some(id.clone()),
         }
     }
@@ -1707,17 +1715,10 @@ mod tests {
         under.under = Some(PathBuf::from("/src/api"));
         assert_eq!(under.about().as_deref(), Some("in /src/api"));
 
-        let asking = Composer::new(Asking::Reply {
-            id: "ask-a1b".to_string(),
-            question: true,
-        });
-        assert_eq!(asking.about().as_deref(), Some("to ask-a1b"));
-
-        let message = Composer::new(Asking::Reply {
-            id: "fix-login-b2c".to_string(),
-            question: false,
-        });
-        assert_eq!(message.about().as_deref(), Some("to fix-login-b2c"));
+        // A reply stands at the foot of the card, under a rule already
+        // carrying the name of the agent it is going to, so it has nothing of
+        // its own to say and nothing draws this.
+        assert_eq!(Composer::new(Asking::Reply).about(), None);
 
         let rename = Composer::new(Asking::Name {
             id: "fix-login-b2c".to_string(),
@@ -1964,22 +1965,6 @@ mod tests {
         // Which of the four this is, in one word, with the agent it is aimed
         // at said beside it rather than in it.
         assert_eq!(Composer::new(Asking::Task).label(), "TASK");
-        assert_eq!(
-            Composer::new(Asking::Reply {
-                id: "ask-a1b".to_string(),
-                question: true,
-            })
-            .label(),
-            "ANSWER"
-        );
-        assert_eq!(
-            Composer::new(Asking::Reply {
-                id: "fix-login-b2c".to_string(),
-                question: false,
-            })
-            .label(),
-            "MESSAGE"
-        );
         assert_eq!(
             Composer::new(Asking::Name {
                 id: "fix-login-b2c".to_string(),
@@ -2989,10 +2974,7 @@ mod tests {
             Asking::Name {
                 id: "fix-login-a1b".to_string(),
             },
-            Asking::Reply {
-                id: "fix-login-a1b".to_string(),
-                question: false,
-            },
+            Asking::Reply,
         ] {
             let mut line = Composer::new(asking);
             line.insert("agent:");

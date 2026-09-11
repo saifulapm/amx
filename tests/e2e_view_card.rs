@@ -130,6 +130,16 @@ fn card_lines(drawn: &str) -> Vec<&str> {
     }
 }
 
+/// The same rows without the line at the foot of them, which is what the card
+/// is showing: every card ends with the line it is replied on, so a test about
+/// what the card says reads the rows above it.
+fn card_body(drawn: &str) -> Vec<&str> {
+    let mut rows = card_lines(drawn);
+    let line = rows.pop().unwrap_or_default();
+    assert!(line.starts_with('❯'), "no line at the foot of:\n{drawn}");
+    rows
+}
+
 /// Which line of the screen holds this text, the card's own lines aside: the
 /// line the list drew for it. The card names the agent it is a look at on its
 /// rule, so the two are told apart by where the card starts.
@@ -1103,6 +1113,11 @@ fn d_shows_what_the_agent_has_changed() {
         shown.contains("what it has changed"),
         "and the panel says what it is showing: {shown}"
     );
+    assert!(
+        shown.contains("❯ reply"),
+        "a patch is a card like any other, so it opens with the line at its \
+         foot: {shown}"
+    );
 }
 
 #[test]
@@ -1177,10 +1192,16 @@ fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
     });
     assert!(!back.contains("more"), "{back}");
 
-    // Paged away, `d` takes the patch afresh from its top.
+    // Paged away and put down, `d` takes the patch afresh from its top. The
+    // letter is a character of the line while the card is up, so the way back
+    // round to it is esc and then the key that asked for it.
     press(&amx, &view, "NPage");
     amx.until("the paged diff", || {
         screen(&amx, &view).contains("more").then_some(())
+    });
+    press(&amx, &view, "Escape");
+    amx.until("the card put away", || {
+        (!screen(&amx, &view).contains("what it has changed")).then_some(())
     });
     types(&amx, &view, "d");
     let taken = amx.until("the fresh patch", || {
@@ -1210,20 +1231,19 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
     let view = amx.in_a_terminal(&[], &[]);
     card_on(&amx, &view, "short-a1b");
 
-    // Two pages up on a body that fits, then a round trip through the keys
-    // overlay: the overlay coming and going proves both presses were read
-    // before the frame this asserts on.
+    // Two pages up on a body that fits, then a character onto the card's own
+    // line and back off it: what lands on the line proves both presses before
+    // it were read by the frame this asserts on.
     press(&amx, &view, "PPage");
     press(&amx, &view, "PPage");
-    press(&amx, &view, "?");
-    amx.until("the keys", || {
-        screen(&amx, &view).contains("page the card").then_some(())
+    types(&amx, &view, "x");
+    amx.until("the character on the line", || {
+        screen(&amx, &view).contains("❯ x").then_some(())
     });
-    press(&amx, &view, "Escape");
+    press(&amx, &view, "BSpace");
     let unmoved = amx.until("the card, unmoved", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("\n  did what it was asked") && !drawn.contains("page the card"))
-            .then_some(drawn)
+        (drawn.contains("\n  did what it was asked") && !drawn.contains("❯ x")).then_some(drawn)
     });
     assert!(!unmoved.contains("more"), "nothing is hidden: {unmoved}");
 
@@ -1365,12 +1385,13 @@ fn card_is_the_whole_conversation_opened_on_the_end_of_its_last_answer() {
 
     let view = amx.in_a_terminal(&[], &[]);
     let carded = card_on(&amx, &view, "port-cli-b2c");
-    let rows = card_lines(&carded);
+    let rows = card_body(&carded);
     let card = rows.join("\n");
     assert!(
         rows.last()
             .is_some_and(|last| last.contains("second line 15")),
-        "the last row of the last answer is the card's own last row:\n{carded}"
+        "the last row of the last answer is the last row the card shows, \
+         under which is the line it is replied on:\n{carded}"
     );
     assert!(!card.contains("**"), "markdown drawn, not shown:\n{carded}");
     assert!(
@@ -1483,7 +1504,7 @@ fn card_over_a_transcript_with_nothing_on_it_yet_is_the_task_alone() {
 
     let view = amx.in_a_terminal(&[], &[]);
     let carded = card_on(&amx, &view, "port-cli-b2c");
-    let card: Vec<&str> = card_lines(&carded)[1..]
+    let card: Vec<&str> = card_body(&carded)[1..]
         .iter()
         .map(|row| card_says(row))
         .collect();

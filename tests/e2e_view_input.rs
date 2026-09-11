@@ -1968,13 +1968,24 @@ fn a_reply_to_an_agent_between_turns_is_a_message() {
         screen(&amx, &view).contains("fix-login-a1b").then_some(())
     });
 
-    types(&amx, &view, "r");
-    amx.until("the line to be addressed to the agent", || {
-        screen(&amx, &view)
-            .contains("MESSAGE · to fix-login-a1b")
-            .then_some(())
+    // The card, and the line at the foot of it: an agent between turns is
+    // asking nothing, so the empty line says what it is instead of what a
+    // question would take.
+    press(&amx, &view, "Space");
+    amx.until("the card and its line", || {
+        let drawn = screen(&amx, &view);
+        (drawn
+            .lines()
+            .any(|line| line.starts_with("fix-login-a1b ┈"))
+            && drawn.contains("❯ reply"))
+        .then_some(())
     });
     types(&amx, &view, "and now the linter");
+    amx.until("the words on the line", || {
+        screen(&amx, &view)
+            .contains("❯ and now the linter")
+            .then_some(())
+    });
     press(&amx, &view, "Enter");
 
     amx.until("the message to reach the agent's pane", || {

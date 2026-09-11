@@ -1616,9 +1616,9 @@ fn the_cursor_is_a_bar_over_rows_and_headings_alike() {
 
 #[test]
 fn the_vim_letters_walk_the_bar_and_go_in_and_out_of_the_card() {
-    // An agent whose turn is over, so its card is a card and not a card with
-    // a line to answer on: every letter is text the moment one of those is
-    // open, which is the whole of why these letters are free to be keys.
+    // Every card opens with a line at its foot, and every letter is text the
+    // moment one is open: these letters are keys on the wall and characters
+    // over a card, which is why esc is what comes back out.
     let amx = Harness::new();
     finished(&amx, "done-a1b", "done", 60);
 
@@ -1646,13 +1646,26 @@ fn the_vim_letters_walk_the_bar_and_go_in_and_out_of_the_card() {
             .then_some(())
     });
 
-    // l goes in to the card and h comes back out. The view still has the
+    // l goes in to the card and esc comes back out. The view still has the
     // terminal either way: an attach would have handed it to tmux, and the
     // wall would be gone rather than standing over a card.
     let carded = |drawn: &str| drawn.lines().any(|line| line.starts_with("done-a1b ┈"));
     press(&amx, &view, "l");
     amx.until("the card", || carded(&screen(&amx, &view)).then_some(()));
+
+    // And h, which used to close it, is a character of the line the card
+    // opened with: the card stands where it was with an h typed at it.
     press(&amx, &view, "h");
+    let typed = amx.until("the letter on the line", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("❯ h").then_some(drawn)
+    });
+    assert!(
+        carded(&typed),
+        "with the card still open under it:\n{typed}"
+    );
+
+    press(&amx, &view, "Escape");
     amx.until("the card put away", || {
         let drawn = screen(&amx, &view);
         (!carded(&drawn) && drawn.contains("done-a1b")).then_some(())

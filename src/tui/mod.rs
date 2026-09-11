@@ -466,6 +466,32 @@ fn chord(key: KeyEvent) -> KeyModifiers {
     key.modifiers & (KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
 
+/// Whether the line at the foot of the card has a use for this key.
+///
+/// What it has a use for is what it takes text with, what moves along it and
+/// what ends it. Everything else — the letters and arrows that walk the wall,
+/// the keys that page the card, the chords that act on an agent — is the
+/// list's while the line stands there, because a card open on an agent is a
+/// card somebody is reading a list against.
+///
+/// The four control chords are the ones a terminal line has read since before
+/// it had arrows, plus the one that takes the line to an editor and the one a
+/// keyboard with no shift+enter breaks a line with.
+fn the_lines(key: KeyEvent) -> bool {
+    let plain = chord(key).is_empty();
+    let ctrl = chord(key) == KeyModifiers::CONTROL;
+    match key.code {
+        KeyCode::Char('a' | 'e' | 'w' | 'g' | 'j') if ctrl => true,
+        // A character typed plain or with shift held. One reached for with
+        // control or alt is somebody reaching past the line.
+        KeyCode::Char(_) => plain,
+        KeyCode::Enter | KeyCode::Esc | KeyCode::Tab => true,
+        KeyCode::Backspace => plain || chord(key) == KeyModifiers::ALT,
+        KeyCode::Delete | KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End => true,
+        _ => false,
+    }
+}
+
 /// The next value a cycle offers. A value the cycle never names — a full model
 /// name out of config, say — starts the cycle over rather than ending it: the
 /// cycle is what the key offers, and it always begins at the sentinel.
@@ -1326,6 +1352,10 @@ impl Screen {
     /// [`Screen::stands`]. That hold is about the cost rather than about
     /// somebody's eyes, and it is the one hold a question falls under too: a
     /// question card is read from no file, so nothing about it ever stands.
+    ///
+    /// And the line at the foot of the card comes and goes with the card
+    /// itself, because it is the card's last row: every card has one, and the
+    /// keys are the list's again only once there is no card at all.
     fn follow_the_cursor(&mut self) {
         match self.look {
             Look::Away => {
@@ -1333,13 +1363,23 @@ impl Screen {
                 self.taken = None;
             }
             Look::Screen => {
-                let held = self.scroll.paged()
-                    && match (&self.card, self.list.selected()) {
-                        (Some(card), Some(view)) => {
-                            !card.asks() && view.phase() != Phase::Waiting && card.id == view.id()
-                        }
-                        _ => false,
-                    };
+                // A cursor on a heading or on the fold is not a cursor on
+                // another agent: the card holds still on the one it is
+                // showing, so walking past a heading does not take the card,
+                // its line and the keys that go with it away and give them
+                // back a press later.
+                let between =
+                    self.card.is_some() && (self.list.on_heading() || self.list.on_fold());
+                let held = between
+                    || self.scroll.paged()
+                        && match (&self.card, self.list.selected()) {
+                            (Some(card), Some(view)) => {
+                                !card.asks()
+                                    && view.phase() != Phase::Waiting
+                                    && card.id == view.id()
+                            }
+                            _ => false,
+                        };
                 if !held && !self.stands() {
                     let width = self.body_width();
                     let taken = self.list.selected().map(|view| {
@@ -1372,28 +1412,27 @@ impl Screen {
             Look::Changes => {}
         }
 
-        // The line to answer on comes with a question card for as long as a
-        // question is pending, not just with the press that opened it: an
-        // answer that advanced the call to its next tab spent the line it was
-        // typed on, and the tab now showing is as much a question in front of
-        // somebody as the one before it was. Only where the keys are the
-        // list's — a line already being typed is somebody's, whatever it is
-        // for.
-        if let Some(card) = self.card.as_ref().filter(|card| card.asks())
-            && matches!(self.mode, Mode::List)
-        {
-            self.mode = Mode::Typing(Composer::new(Asking::Reply {
-                id: card.id.clone(),
-                question: true,
-            }));
+        // The line comes with the card for as long as the card is up, not
+        // just with the press that opened it: an answer that advanced a call
+        // to its next tab spent the line it was typed on, and the tab now
+        // showing is as much a question in front of somebody as the one
+        // before it was. Only where the keys are the list's — a line already
+        // being typed is somebody's, whatever it is for — and it goes when
+        // the card does, because the two are one thing.
+        let replying =
+            matches!(&self.mode, Mode::Typing(line) if matches!(line.asking, Asking::Reply));
+        match (self.card.is_some(), &self.mode) {
+            (true, Mode::List) => self.mode = Mode::Typing(Composer::new(Asking::Reply)),
+            (false, _) if replying => self.mode = Mode::List,
+            _ => {}
         }
     }
 
     /// The line being typed on the card, when that is where it is going.
     ///
-    /// The card holds one line and only one: the answer to the question it is
-    /// showing. Anything else being typed — a task, a message to an agent that
-    /// is not the one on the card — is a band of its own under it.
+    /// The card holds one line and only one: what is being said to the agent
+    /// it is a look at. Anything else being typed — a task, a name — is a
+    /// band of its own under it.
     fn answering(&self) -> Option<&Composer> {
         match &self.mode {
             Mode::Typing(composer) if self.on_the_card(composer) => Some(composer),
@@ -1403,30 +1442,31 @@ impl Screen {
 
     /// And every other line, which is the one the band under the card draws.
     ///
-    /// Bar the find line, which is drawn on the row the keys have. A band
-    /// would cost the list two rows and dim what was left of it, and the list
-    /// is exactly what somebody typing there is watching.
+    /// A task and a rename, which is the whole of it. A reply is the card's
+    /// own last row wherever it is being typed, and a find line is drawn on
+    /// the row the keys have: a band would cost the list two rows and dim what
+    /// was left of it, and the list is exactly what somebody typing there is
+    /// watching.
     fn banded(&self) -> Option<&Composer> {
         match &self.mode {
-            Mode::Typing(composer)
-                if !self.on_the_card(composer) && !matches!(composer.asking, Asking::Find) =>
-            {
+            Mode::Typing(composer) if !matches!(composer.asking, Asking::Reply | Asking::Find) => {
                 Some(composer)
             }
             _ => None,
         }
     }
 
-    /// Whether this line is the answer to the question the card is showing.
+    /// Whether this line is the one at the foot of the card.
+    ///
+    /// Every card has one, so the question is only whether there is a card:
+    /// the line goes to whichever agent the card is showing when enter is
+    /// pressed, which is why it names none itself.
     ///
     /// Taken as an argument rather than read off the mode, because the one
     /// place it matters most is the keypress that has the composer out of the
     /// mode in its hand.
     fn on_the_card(&self, composer: &Composer) -> bool {
-        match (&composer.asking, &self.card) {
-            (Asking::Reply { id, .. }, Some(card)) => card.asks() && card.id == *id,
-            _ => false,
-        }
+        matches!(composer.asking, Asking::Reply) && self.card.is_some()
     }
 
     /// The agent to answer and the choice to answer it with, where the key
@@ -1706,26 +1746,10 @@ impl Screen {
                     self.mode = Mode::Typing(composer);
                 }
             }
-            // What a reply is depends on what the agent is doing: an agent
-            // that has stopped on a question is answered on the card, where
-            // the choices it is offering are, and anything else is a message
-            // on a line of its own.
-            KeyCode::Char('r') if plain => {
-                let asking = self
-                    .list
-                    .selected()
-                    .map(|view| (view.id().to_string(), view.phase() == Phase::Waiting));
-                match asking {
-                    Some((_, true)) => self.look_closer(root),
-                    Some((id, false)) => {
-                        self.mode = Mode::Typing(Composer::new(Asking::Reply {
-                            id,
-                            question: false,
-                        }));
-                    }
-                    None => {}
-                }
-            }
+            // A reply is typed on the card, whatever the agent is doing: the
+            // line is the card's last row, and opening the card is what puts
+            // it in front of somebody.
+            KeyCode::Char('r') if plain => self.look_closer(root),
             KeyCode::Char('d') if plain => {
                 if let Some(view) = self.list.selected() {
                     match act::changes(root, view) {
@@ -1738,6 +1762,10 @@ impl Screen {
                             self.look = Look::Changes;
                             // A patch just taken is read from its top.
                             self.scroll.open_at(0);
+                            // And it is a card like any other, so it opens
+                            // with the line at its foot. Nothing here is
+                            // taken again: a diff stands as it was read.
+                            self.follow_the_cursor();
                         }
                         Err(e) => self.notice = Some(Notice::Failed(format!("{e:#}"))),
                     }
@@ -1793,7 +1821,7 @@ impl Screen {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         match &mut self.mode {
             Mode::Typing(composer) => match composer.asking {
-                Asking::Task | Asking::Reply { .. } => composer.paste(&text),
+                Asking::Task | Asking::Reply => composer.paste(&text),
                 Asking::Name { .. } | Asking::Find => composer.insert(&text),
             },
             _ => {
@@ -1823,6 +1851,15 @@ impl Screen {
         let Mode::Typing(mut composer) = std::mem::take(&mut self.mode) else {
             return Ok(Doing::Carry);
         };
+
+        // The one rule while the card is holding a line: a key the line has a
+        // use for is the line's, and every other key is the list's, as if the
+        // line were not there. The line goes back into the mode before the
+        // list acts, because it is still standing there afterwards.
+        if self.on_the_card(&composer) && !the_lines(key) {
+            self.mode = Mode::Typing(composer);
+            return self.pressed(key, root, config, here);
+        }
 
         // Before the line takes the key at all: at a question whose numbered
         // choices are the whole of what it takes, the number pressed is the
@@ -1944,9 +1981,15 @@ impl Screen {
                 if composer.text.trim().is_empty() {
                     return Ok(Doing::Carry);
                 }
-                if let Asking::Reply { id, .. } = &composer.asking {
-                    let said = act::reply(root, id, &composer.whole());
-                    self.replied(said, composer);
+                // The card's line goes to the card's agent, read at the press
+                // rather than kept from the moment the line opened: the card
+                // follows the cursor, and what somebody is looking at when
+                // they press enter is what they are answering.
+                if matches!(composer.asking, Asking::Reply) {
+                    if let Some(id) = self.card.as_ref().map(|card| card.id.clone()) {
+                        let said = act::reply(root, &id, &composer.whole());
+                        self.replied(said, composer);
+                    }
                     return Ok(Doing::Carry);
                 }
 
@@ -2559,8 +2602,9 @@ impl Screen {
     /// a page, when the pointer is over an open card — and the pointer
     /// resting on a row tints that row's name without moving the cursor.
     /// Nothing else is clickable, and the clicks and the wheel are the
-    /// list's the way its letter keys are: a line being typed and a question
-    /// of the view's own keep the keys they have.
+    /// list's the way its letter keys are — the card's own line aside, which
+    /// takes no pointer and so takes none of it. A task or a name being typed
+    /// and a question of the view's own keep the keys they have.
     fn moused(
         &mut self,
         mouse: MouseEvent,
@@ -2574,7 +2618,7 @@ impl Screen {
                     .line_under(mouse.column, mouse.row)
                     .filter(|at| matches!(self.list.items().get(*at), Some(rows::Item::Agent(_))));
             }
-            MouseEventKind::Down(MouseButton::Left) if matches!(self.mode, Mode::List) => {
+            MouseEventKind::Down(MouseButton::Left) if self.list_takes_the_mouse() => {
                 let Some(at) = self.line_under(mouse.column, mouse.row) else {
                     return Ok(Doing::Carry);
                 };
@@ -2604,7 +2648,7 @@ impl Screen {
                 }
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
-                if matches!(self.mode, Mode::List) =>
+                if self.list_takes_the_mouse() =>
             {
                 let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
                 if self.card.is_some() && self.map.over_the_card(mouse.column, mouse.row) {
@@ -2620,6 +2664,16 @@ impl Screen {
             _ => {}
         }
         Ok(Doing::Carry)
+    }
+
+    /// Whether a click or a turn of the wheel reaches the list.
+    ///
+    /// Walking it, and reading a card with the line at its foot open: the
+    /// mouse has no use for a line, so a card up is a card being read against
+    /// the wall above it, and both are still there to be pointed at. A task
+    /// or a name being typed keeps the pointer the way it keeps the keys.
+    fn list_takes_the_mouse(&self) -> bool {
+        matches!(self.mode, Mode::List) || self.answering().is_some()
     }
 
     /// The line of the list under this point, bounded to the lines there are:
@@ -4286,15 +4340,23 @@ mod tests {
         press(&mut screen, KeyEvent::from(KeyCode::Char('k')));
         assert_eq!(on(&screen), "done-a1b", "and k walks back up");
 
-        // The arrows walk with a card open, and so do these: the card follows
-        // the cursor rather than holding it.
+        // With a card open the arrows walk and the letters do not: the card
+        // opens with a line at its foot, and every letter is a character of
+        // what is being typed there.
         press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
+        press(&mut screen, KeyEvent::from(KeyCode::Down));
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.id.as_str()),
+            Some("done-b2c"),
+            "the card followed the arrow"
+        );
         press(&mut screen, KeyEvent::from(KeyCode::Char('j')));
         assert_eq!(
             screen.card.as_ref().map(|card| card.id.as_str()),
             Some("done-b2c"),
-            "the card followed j the way it follows the arrow"
+            "and stood still under the letter"
         );
+        assert_eq!(screen.answering().expect("the card's line").text, "j");
     }
 
     /// Two agents with nothing in common but being on the wall, for the tests
@@ -4569,55 +4631,37 @@ mod tests {
     }
 
     #[test]
-    fn keys_l_opens_the_card_and_h_closes_it_without_either_attaching() {
+    fn keys_l_opens_the_card_and_esc_closes_it_without_either_attaching() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
         let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap()
+        };
 
-        // Directional rather than a toggle, and neither of them is enter: an
-        // attach hands the terminal to tmux and leaves the view, which is not
-        // something a letter this easy to hit should do.
-        let doing = screen
-            .act(
-                KeyEvent::from(KeyCode::Char('l')),
-                root.path(),
-                &config,
-                None,
-            )
-            .unwrap();
+        // Neither of them is enter: an attach hands the terminal to tmux and
+        // leaves the view, which is not something a letter this easy to hit
+        // should do.
+        let doing = press(&mut screen, KeyEvent::from(KeyCode::Char('l')));
         assert!(matches!(doing, Doing::Carry), "l does not attach");
         assert!(screen.card.is_some(), "l opens the card");
 
-        let doing = screen
-            .act(
-                KeyEvent::from(KeyCode::Char('l')),
-                root.path(),
-                &config,
-                None,
-            )
-            .unwrap();
+        // Pressed again it is a character of what is being typed at the card:
+        // the card opened with the line at its foot, and every letter is text
+        // for as long as one is up.
+        let doing = press(&mut screen, KeyEvent::from(KeyCode::Char('l')));
         assert!(matches!(doing, Doing::Carry));
-        assert!(screen.card.is_some(), "and pressed again leaves it open");
+        assert!(screen.card.is_some(), "and leaves it open");
+        assert_eq!(screen.answering().expect("the card's line").text, "l");
 
-        let doing = screen
-            .act(
-                KeyEvent::from(KeyCode::Char('h')),
-                root.path(),
-                &config,
-                None,
-            )
-            .unwrap();
-        assert!(matches!(doing, Doing::Carry), "h does not attach either");
-        assert!(screen.card.is_none(), "h closes the card");
+        // Which is why esc is the way out rather than h: it closes the line
+        // and the card together, whatever has been typed on it.
+        let doing = press(&mut screen, KeyEvent::from(KeyCode::Esc));
+        assert!(matches!(doing, Doing::Carry), "esc does not attach either");
+        assert!(screen.card.is_none(), "esc closes the card");
+        assert!(matches!(screen.mode, Mode::List), "and the line with it");
 
-        screen
-            .act(
-                KeyEvent::from(KeyCode::Char('h')),
-                root.path(),
-                &config,
-                None,
-            )
-            .unwrap();
+        press(&mut screen, KeyEvent::from(KeyCode::Esc));
         assert!(screen.card.is_none(), "and pressed again leaves it closed");
     }
 
@@ -4687,7 +4731,7 @@ mod tests {
     }
 
     #[test]
-    fn card_answer_line_leaves_ctrl_f_and_ctrl_b_unread_like_the_page_keys() {
+    fn card_line_leaves_ctrl_f_and_ctrl_b_to_the_card_like_the_page_keys() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
         let mut screen = watching(vec![stopped_on_a_question("ask-a1b")]);
@@ -4699,10 +4743,13 @@ mod tests {
         assert!(screen.answering().is_some(), "the line is up");
 
         // A chord is somebody reaching past the line, not a character in it,
-        // and a question card has nothing under it to page.
-        press(&mut screen, ctrl('f'));
+        // so these page the card under it exactly as they do with no line
+        // there at all. A question is read up from the screen it was asked
+        // on, so ctrl+b is the one that leaves the edge.
         press(&mut screen, ctrl('b'));
-        assert_eq!(screen.scroll.away.get(), 0);
+        assert_eq!(screen.scroll.away.get(), 1, "ctrl+b paged the card");
+        press(&mut screen, ctrl('f'));
+        assert_eq!(screen.scroll.away.get(), 0, "and ctrl+f paged it home");
         assert_eq!(screen.answering().expect("still typing").text, "");
     }
 
@@ -4864,7 +4911,7 @@ mod tests {
     }
 
     #[test]
-    fn card_answer_line_swallows_the_page_keys() {
+    fn card_line_leaves_the_page_keys_to_the_card() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
         let mut screen = watching(vec![stopped_on_a_question("ask-a1b")]);
@@ -4877,11 +4924,146 @@ mod tests {
         press(&mut screen, KeyCode::Char(' '));
         assert!(screen.answering().is_some(), "the line is up");
 
-        // The composer keeps ignoring keys that are not for it, and a question
-        // card is its question block: there is nothing under it to page.
+        // A line has no use for a page key, so the card under it takes both
+        // of them and nothing lands on the line.
         press(&mut screen, KeyCode::PageUp);
-        assert_eq!(screen.scroll.away.get(), 0);
+        assert_eq!(screen.scroll.away.get(), 1, "pgup paged the card");
+        press(&mut screen, KeyCode::PageDown);
+        assert_eq!(screen.scroll.away.get(), 0, "and pgdn paged it home");
         assert_eq!(screen.answering().expect("still typing").text, "");
+    }
+
+    #[test]
+    fn card_line_takes_the_keys_a_line_reads_and_no_others() {
+        let plain = KeyEvent::from;
+        let alt = |code| KeyEvent::new(code, KeyModifiers::ALT);
+        let shift = |code| KeyEvent::new(code, KeyModifiers::SHIFT);
+
+        // What a line reads: the characters, the keys that move along it, and
+        // the ones that end it. A letter is a letter however the shift key
+        // was held.
+        for key in [
+            plain(KeyCode::Char('j')),
+            plain(KeyCode::Char('q')),
+            plain(KeyCode::Char('/')),
+            plain(KeyCode::Char('?')),
+            plain(KeyCode::Char(' ')),
+            shift(KeyCode::Char('A')),
+            plain(KeyCode::Enter),
+            alt(KeyCode::Enter),
+            plain(KeyCode::Esc),
+            plain(KeyCode::Tab),
+            plain(KeyCode::Backspace),
+            alt(KeyCode::Backspace),
+            plain(KeyCode::Delete),
+            plain(KeyCode::Left),
+            plain(KeyCode::Right),
+            plain(KeyCode::Home),
+            plain(KeyCode::End),
+            ctrl('a'),
+            ctrl('e'),
+            ctrl('w'),
+            ctrl('g'),
+            ctrl('j'),
+        ] {
+            assert!(the_lines(key), "{key:?} is the line's");
+        }
+
+        // And everything else, which walks the wall, pages the card or acts
+        // on an agent, exactly as it does with no line up.
+        for key in [
+            plain(KeyCode::Up),
+            plain(KeyCode::Down),
+            shift(KeyCode::Down),
+            plain(KeyCode::PageUp),
+            plain(KeyCode::PageDown),
+            ctrl('f'),
+            ctrl('b'),
+            ctrl('u'),
+            ctrl('d'),
+            ctrl('x'),
+            ctrl('t'),
+            ctrl('s'),
+            ctrl('r'),
+            alt(KeyCode::Char('1')),
+            alt(KeyCode::Char('a')),
+        ] {
+            assert!(!the_lines(key), "{key:?} is the list's");
+        }
+    }
+
+    #[test]
+    fn card_line_leaves_the_keys_it_has_no_use_for_to_the_list() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            finished_saying("done-a1b", "the answer"),
+            finished_saying("done-b2c", "the other answer"),
+        ]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+        let shift = |code| KeyEvent::new(code, KeyModifiers::SHIFT);
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
+        assert!(screen.answering().is_some(), "the card's line is up");
+
+        // Each of these does to the list exactly what it does with no line
+        // there at all: a key a line has no use for was never the line's.
+        press(&mut screen, shift(KeyCode::Down));
+        assert_eq!(
+            ordered(&screen),
+            ["done-b2c", "done-a1b"],
+            "shift and an arrow moved the agent down its group"
+        );
+
+        press(&mut screen, ctrl('t'));
+        assert!(
+            screen
+                .list
+                .selected()
+                .is_some_and(|view| screen.list.holding(view)),
+            "ctrl+t pinned the row the cursor is on"
+        );
+
+        press(&mut screen, ctrl('x'));
+        assert_eq!(screen.armed(), ["done-a1b"], "ctrl+x armed the forget");
+
+        assert_eq!(
+            screen.answering().expect("the line is still up").text,
+            "",
+            "and none of them was typed into the line"
+        );
+    }
+
+    #[test]
+    fn card_holds_the_agent_it_is_showing_while_the_cursor_is_on_a_heading() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.id.as_str()),
+            Some("done-a1b")
+        );
+
+        // Up onto the heading over the group. A heading is not an agent, so
+        // there is no other card to show — and the card holds still on the
+        // one it was showing rather than going, because a card that came and
+        // went under a cursor passing over a heading would take its line and
+        // the keys that go with it along.
+        press(&mut screen, KeyEvent::from(KeyCode::Up));
+        assert!(screen.list.on_heading(), "the cursor is on the heading");
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.id.as_str()),
+            Some("done-a1b"),
+            "and the card is still the one it was"
+        );
+        assert!(screen.answering().is_some(), "with its line still up");
     }
 
     #[test]
@@ -5196,8 +5378,9 @@ mod tests {
             "the answer line is there whenever a question is pending, empty"
         );
 
-        // And when the last answer resolves the call, nothing reopens: a card
-        // that is not asking has nothing to type at.
+        // And when the last answer resolves the call, the line stands on: the
+        // agent is at work rather than waiting, and a card on an agent at
+        // work is still a card with something to say to it.
         press(&mut screen, KeyCode::Char('2'));
         screen.list.show(vec![reading(
             "ask-a1b",
@@ -5210,15 +5393,18 @@ mod tests {
             },
         )]);
         screen.freshen();
-        assert!(screen.answering().is_none());
         assert!(
-            matches!(screen.mode, Mode::List),
-            "and the keys are the list's again"
+            screen.card.as_ref().is_some_and(|card| !card.asks()),
+            "the card is not asking anything now"
+        );
+        assert!(
+            screen.answering().is_some_and(|line| line.text.is_empty()),
+            "and the line is still there, empty, for a message instead"
         );
     }
 
     #[test]
-    fn card_on_an_agent_that_is_asking_nothing_takes_no_answer() {
+    fn card_on_an_agent_that_is_asking_nothing_still_opens_its_line() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
         let mut screen = watching(vec![reading(
@@ -5244,17 +5430,17 @@ mod tests {
             "a closer look is still a closer look"
         );
         assert!(
-            screen.answering().is_none(),
-            "but there is nothing to answer, so nothing is asking for one"
+            screen.answering().is_some(),
+            "with the line at its foot: an agent at work can be told something"
         );
         assert!(
-            matches!(screen.mode, Mode::List),
-            "and the keys are the list's"
+            screen.banded().is_none(),
+            "and that line is the card's rather than a band of its own under it"
         );
     }
 
     #[test]
-    fn card_is_where_a_reply_to_a_question_is_typed() {
+    fn card_is_where_a_reply_is_typed_whatever_the_agent_is_doing() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
         let mut screen = watching(vec![stopped_on_a_question("ask-a1b")]);
@@ -5272,8 +5458,9 @@ mod tests {
             "the reply key opens the card the choices are on"
         );
 
-        // An agent that is not asking anything takes a message, on a line of
-        // its own under the wall.
+        // An agent between turns takes a message on that same line: the card
+        // is where anything said to an agent is typed, so there is no band of
+        // its own under the wall for one.
         let mut screen = watching(vec![reading(
             "fix-login-b2c",
             Phase::Idle,
@@ -5290,10 +5477,13 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert!(screen.card.is_none(), "with no card over the list");
-        let line = screen.banded().expect("a line of its own");
-        assert_eq!(line.label(), "MESSAGE");
-        assert_eq!(line.about().as_deref(), Some("to fix-login-b2c"));
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.id.as_str()),
+            Some("fix-login-b2c"),
+            "the key opens the card on the agent under the cursor"
+        );
+        assert!(screen.answering().is_some(), "with the line at its foot");
+        assert!(screen.banded().is_none(), "and no band under the wall");
     }
 
     #[test]
@@ -5927,7 +6117,9 @@ mod tests {
             &Scope::default(),
             vec![
                 Typed::Key(KeyEvent::from(KeyCode::Char(' '))),
-                Typed::Key(KeyEvent::from(KeyCode::Char('q'))),
+                // The chord, because q is a character on the line the card
+                // opened with.
+                Typed::Key(ctrl('c')),
             ],
             None,
             Painting::default(),
@@ -6477,10 +6669,16 @@ mod tests {
         finished(root.path(), "first-a1b", "wrote the parser", 60);
         finished(root.path(), "second-b2c", "wrote the tests", 120);
 
-        // Down onto the older of them, and a closer look at it.
-        let (code, screen) = held(
+        // Down onto the older of them, and a closer look at it. The view is
+        // closed on the chord rather than on q: the card opened with a line
+        // at its foot, and a letter there is a letter.
+        let (code, screen) = pressing(
             root.path(),
-            &[KeyCode::Down, KeyCode::Char(' '), KeyCode::Char('q')],
+            vec![
+                KeyEvent::from(KeyCode::Down),
+                KeyEvent::from(KeyCode::Char(' ')),
+                ctrl('c'),
+            ],
         );
         assert_eq!(code, exit::OK);
         assert!(screen.contains("  ∙ second-b2c"), "{screen}");
@@ -6570,10 +6768,7 @@ mod tests {
         );
 
         // A reply is the other line somebody writes a paragraph around.
-        let mut screen = typing(Asking::Reply {
-            id: "ask-a1b".to_string(),
-            question: false,
-        });
+        let mut screen = typing(Asking::Reply);
         screen.pasted(&long, &config);
         assert_eq!(
             line(&screen),
@@ -6760,10 +6955,7 @@ mod tests {
         // The other three are not lines a vendor reads a mark on, so the key
         // does there what it did before.
         for asking in [
-            Asking::Reply {
-                id: "ask-a1b".to_string(),
-                question: false,
-            },
+            Asking::Reply,
             Asking::Name {
                 id: "ask-a1b".to_string(),
             },
@@ -7382,6 +7574,37 @@ mod tests {
             screen.list.selected().unwrap().id(),
             "done-a1b",
             "a line being typed keeps the keys, and the mouse with them"
+        );
+
+        // The line at the foot of the card is the one exception: it takes no
+        // pointer, and the wall above it is what somebody with a card open is
+        // reading. So a click lands on the row it was aimed at, and the card
+        // follows the cursor there.
+        let mut screen = watching(vec![
+            finished_saying("done-a1b", "the first answer"),
+            finished_saying("done-b2c", "the second answer"),
+        ]);
+        screen
+            .act(
+                KeyEvent::from(KeyCode::Char(' ')),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        assert!(screen.answering().is_some(), "the card's line is up");
+        a_frame(&mut screen);
+        let _ = screen.moused(
+            mouse(MouseEventKind::Down(MouseButton::Left), 5, 5),
+            root.path(),
+            &config,
+            None,
+        );
+        assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.id.as_str()),
+            Some("done-b2c"),
+            "with the card on the agent that was clicked"
         );
     }
 
