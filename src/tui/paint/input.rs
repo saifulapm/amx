@@ -502,13 +502,13 @@ fn enters(screen: &Screen) -> Hint {
 /// for space or enter, so both are the wall's and the row says what they do
 /// down here: the enter of the line under the cursor, and the key that puts the
 /// card away — with the page key beside them where the body holds more than the
-/// card is showing, and nothing about a page there is not. The first character
-/// typed takes both back, and the row says what sending the line will do
-/// instead.
+/// card is showing, and nothing said about a page there is not. The first
+/// character typed takes both back, and the row says what sending the line will
+/// do instead.
 ///
 /// alt+enter is named only on the second of them: a newline is worth the room
 /// once there is a paragraph being written, and a line with nothing on it has
-/// no use for one either.
+/// nothing to break.
 fn card_keys(screen: &Screen, composer: &Composer, width: usize) -> Line<'static> {
     if !composer.text.is_empty() {
         // The same key reaching the agent two ways: a question is answered,
