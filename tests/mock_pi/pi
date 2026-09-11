@@ -10,8 +10,15 @@
 # foreign program in the pane, and a fixture sharing amx's own code would only
 # ever prove that amx agrees with itself.
 #
-# It answers for two of the things pi's entry claims, and for nothing else:
+# It answers for three of the things pi's entry claims, and for nothing else:
 #
+#   the listing         `--list-models` prints what pi's providers hold, a
+#                       header line and then a row per model whose first two
+#                       columns are the provider and the id that model has
+#                       there. amx runs it to find out whether a typed model is
+#                       pi's, which is a question asked before there is a pane
+#                       or a scenario for one, so it is answered first and the
+#                       run ends with it.
 #   the session flags   `--session-id <id>` opens the session already kept
 #                       under that id and creates one under it when there is
 #                       none, and `--fork <origin> --session-id <new>` branches
@@ -73,9 +80,26 @@
 #                   Before any report was answered there is nowhere to write.
 #
 # Environment:
-#   MOCK_PI_SCENARIO   the scenario to replay (required)
+#   MOCK_PI_SCENARIO   the scenario to replay (required, except on a run that
+#                      only asks for the listing)
 
 set -u
+
+# The listing, answered before the scenario below is even looked for. amx asks
+# which models a harness offers while it is working out which harness a typed
+# model belongs to, and that is a question about the program rather than about
+# a session: there is no pane yet and nothing to replay. Real pi prints 490
+# rows here; two are enough for a reader, which needs the shape and not the
+# catalogue.
+for arg do
+	[ "$arg" = "--list-models" ] || continue
+	cat <<'LISTING'
+PROVIDER        MODEL         CONTEXT
+github-copilot  gpt-5-mini    264k
+cerebras        qwen-3-coder  131k
+LISTING
+	exit 0
+done
 
 scenario=${MOCK_PI_SCENARIO:-}
 if [ -z "$scenario" ]; then

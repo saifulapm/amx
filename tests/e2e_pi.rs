@@ -117,6 +117,50 @@ fn start_playing(amx: &Harness, id: &str, scenario: &Path) {
     );
 }
 
+/// A machine that has both harnesses on it: pi through the stand-in beside
+/// this file, and claude through a copy of the other stand-in under the name
+/// the table knows that harness by, in a directory of this harness's own at the
+/// front of the PATH — `new_as_claude` in tests/e2e_spawn.rs installs it the
+/// same way and for the same reason.
+///
+/// A typed model picks the harness that offers it, and a choice between two
+/// harnesses can only be read off a machine where both of them are programs
+/// that exist.
+fn path_to_both(amx: &Harness) -> String {
+    let bin = amx.home().join("bin");
+    std::fs::create_dir_all(&bin).expect("a directory for the stand-in");
+    std::fs::copy(amx.mock(), bin.join("claude")).expect("the stand-in under claude's name");
+    format!("{}:{}", bin.display(), path_to_pi())
+}
+
+/// The file somebody who runs pi writes on a machine that still has claude on
+/// it: pi is the agent, and each harness carries words of its own.
+///
+/// pi's word is the same `--approve` its folder-trust screen is answered with,
+/// which is what a person who trusts every tree they spawn into would write
+/// here. No test below sets the `trust` key, so an `--approve` on a pi's argv
+/// under this file came from the table and from nowhere else.
+const BOTH_HARNESSES: &str = "agent = \"pi\"\n\n\
+     [claude]\nargs = [\"--add-dir\", \"/srv/shared\"]\n\n\
+     [pi]\nargs = [\"--approve\"]\n";
+
+/// `amx new` on that machine, with both stand-ins pointed at a scenario of
+/// their own, so whichever harness the model picks is a program that will say
+/// how it was called.
+fn new_on_either(amx: &Harness, id: &str, dials: &[&str]) -> std::process::Output {
+    let dir = amx.home().to_string_lossy().into_owned();
+    let mut line = vec!["new", "--name", id, "--dir", &dir];
+    line.extend_from_slice(dials);
+    line.push(TASK);
+
+    amx.amx_command(&line)
+        .env("PATH", path_to_both(amx))
+        .env("MOCK_PI_SCENARIO", scenario("takes-a-turn"))
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("a-dispatched-worker"))
+        .output()
+        .expect("running amx new")
+}
+
 /// The conversations the two vendors name in the terminal an adoption is
 /// typed in: the claude somebody is working in, and the pi they started from
 /// inside it.
@@ -210,6 +254,17 @@ fn stand_in(amx: &Harness, args: &[&str]) -> std::process::Output {
         .args(args)
         .env("HOME", amx.home())
         .env("MOCK_PI_SCENARIO", scenario("one-screen"))
+        .output()
+        .expect("running the stand-in")
+}
+
+/// The stand-in asked which models it can reach, the way amx asks: the one
+/// question that reaches pi with no scenario named anywhere near it.
+fn listing(amx: &Harness) -> std::process::Output {
+    std::process::Command::new(fixtures().join("pi"))
+        .arg("--list-models")
+        .env("HOME", amx.home())
+        .env_remove("MOCK_PI_SCENARIO")
         .output()
         .expect("running the stand-in")
 }
@@ -765,6 +820,164 @@ fn a_pi_spawned_without_the_trust_key_is_left_to_answer_its_own_screen() {
 
     let called = argv_of(&amx, id);
     assert!(!called.contains("--approve"), "{called}");
+}
+
+#[test]
+fn a_model_only_claude_offers_starts_claude_under_an_amx_configured_for_pi() {
+    // The whole of the choice: nobody named an agent, the file says pi, and
+    // `opus` is a word pi's listing does not hold and claude's cycle does. So
+    // the harness that runs is the other one, carrying the words its own table
+    // gives it.
+    let amx = Harness::new();
+    amx.config(BOTH_HARNESSES);
+    let id = "fix-login-a1b";
+
+    let out = new_on_either(&amx, id, &["--model", "opus"]);
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(amx.meta(id)["agent"], "claude --add-dir /srv/shared");
+    let called = argv_of(&amx, id);
+    assert!(
+        called.contains("--add-dir /srv/shared"),
+        "the words [claude] carries: {called}"
+    );
+    assert!(
+        called.contains("--model opus"),
+        "and the dial the word turned: {called}"
+    );
+    assert!(
+        called.ends_with(TASK),
+        "and the task is still the last word: {called}"
+    );
+}
+
+#[test]
+fn a_model_pis_own_listing_holds_starts_pi_with_the_words_its_table_carries() {
+    // The same command line with the other harness's word on it.
+    // `gpt-5-mini` is the id half of `github-copilot/gpt-5-mini`, which is what
+    // somebody types, and pi is asked first because it is the harness the file
+    // names.
+    let amx = Harness::new();
+    amx.config(BOTH_HARNESSES);
+    let id = "fix-login-a1b";
+
+    let out = new_on_either(&amx, id, &["--model", "gpt-5-mini"]);
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(amx.meta(id)["agent"], "pi --approve");
+    let called = argv_of(&amx, id);
+    assert!(
+        called.contains("--approve"),
+        "the words [pi] carries: {called}"
+    );
+    assert!(
+        called.contains("--model gpt-5-mini"),
+        "and the id as it was typed, which pi's open dial takes: {called}"
+    );
+    assert!(
+        called.contains(&format!("--session-id {id}")),
+        "and the harness is pi down to the start flag only pi declares: {called}"
+    );
+}
+
+#[test]
+fn a_model_neither_harness_offers_is_refused_naming_what_each_takes() {
+    let amx = Harness::new();
+    amx.config(BOTH_HARNESSES);
+    let id = "fix-login-a1b";
+
+    let refused = new_on_either(&amx, id, &["--model", "gpt-9"]);
+
+    assert_eq!(
+        refused.status.code(),
+        Some(64),
+        "a malformed command line, not a state a caller branches on"
+    );
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        said.contains("pi takes 2 models (pi --list-models)"),
+        "how many models pi has and what prints them: {said}"
+    );
+    assert!(
+        said.contains("claude takes") && said.contains("opus"),
+        "and claude's own words, which amx holds itself: {said}"
+    );
+    assert!(
+        !amx.agent_dir(id).exists(),
+        "and nothing was made for a spawn that never happened"
+    );
+}
+
+#[test]
+fn an_agent_somebody_named_runs_the_model_typed_beside_it() {
+    // `--agent pi --model opus` asks nothing about harnesses: the harness was
+    // named, so the word is a dial and nothing else, and pi's dial takes
+    // whatever pattern it is handed. Looking up who offers `opus` here would
+    // send somebody's pi spawn to claude.
+    let amx = Harness::new();
+    amx.config(BOTH_HARNESSES);
+    let id = "fix-login-a1b";
+
+    let out = new_on_either(&amx, id, &["--agent", "pi", "--model", "opus"]);
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(amx.meta(id)["agent"], "pi --approve");
+    let called = argv_of(&amx, id);
+    assert!(called.contains("--model opus"), "{called}");
+    assert!(
+        called.contains("--approve"),
+        "and the table's words ride however the harness was picked: {called}"
+    );
+}
+
+#[test]
+fn the_stand_in_prints_its_listing_before_it_looks_for_a_scenario() {
+    // amx asks a harness what it offers before it starts anything, so the
+    // question reaches a pi with no scenario named anywhere near it. A fixture
+    // that read its scenario first would answer with a screen, or hold the
+    // spawn open for the length of a timeline nobody is driving.
+    let amx = Harness::new();
+
+    let out = listing(&amx);
+
+    assert!(
+        out.status.success(),
+        "pi prints its models and exits: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed = String::from_utf8_lossy(&out.stdout);
+    let rows: Vec<&str> = printed.lines().collect();
+    assert_eq!(rows.len(), 3, "a header and two models: {printed}");
+    assert!(
+        rows[0].to_lowercase().starts_with("provider"),
+        "the header pi prints over them, which amx reads past: {printed}"
+    );
+
+    let models: Vec<String> = rows[1..]
+        .iter()
+        .map(|row| {
+            let mut columns = row.split_whitespace();
+            let provider = columns.next().expect("a provider");
+            let model = columns.next().expect("a model");
+            format!("{provider}/{model}")
+        })
+        .collect();
+    assert_eq!(
+        models,
+        ["github-copilot/gpt-5-mini", "cerebras/qwen-3-coder"]
+    );
 }
 
 #[test]

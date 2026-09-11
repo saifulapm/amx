@@ -118,6 +118,20 @@ passes no flag at all for a dial nobody turned. Which dials exist is the
 vendor's answer, so a dial pi does not have, or a value claude would refuse, is
 refused here instead, while the command is still on your screen.
 
+A model names the harness that runs it, so `--model` on its own is enough:
+
+```sh
+amx new --model opus "port it"        # claude, which is what offers opus
+amx new --model gpt-5-mini "port it"  # pi, whose listing holds it
+```
+
+Where you name no agent, amx asks each harness what models it offers, the one
+your config names first, and starts the one whose list holds the word. A word
+several offer stays with the configured harness. A word none of them offers is
+refused while the command is still on your screen, naming what each takes.
+`--agent` settles the question before it is asked: the harness you named is the
+one that runs, and the model is a dial on it.
+
 Anything after `--` is handed to the agent command untouched, and the task is
 added after it, where a prompt goes:
 
@@ -1090,6 +1104,16 @@ conversation `amx logs` and the card read back. A pi without the extension is
 read off its pane, the way a claude with its hooks unwired is, and `doctor`
 says so. `agent = "pi"` in the config, or `--agent pi` on one spawn, runs it
 for every new agent.
+
+An entry also says where that vendor's models are found, which is what lets a
+typed model pick the harness. claude's are a handful of aliases, so the entry
+carries them itself: fable, opus, sonnet, haiku. pi reaches whatever its
+providers hold, so the entry carries the command that prints them instead — `pi
+--list-models`, a header line and then a row per model with the provider and the
+id first — and amx runs it when it has to, keeping what it read for an hour so a
+morning of spawns costs one pi process. A harness's own `models` in the config
+stands in place of either, and a listing is never run once an earlier harness's
+list has answered the word.
 
 A command the table has no entry for — `agent = "opencode"` — gets the floor:
 a real pane, a row that reads what the screen says, and no pretending beyond
