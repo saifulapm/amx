@@ -1849,6 +1849,68 @@ fn enter_lends_the_terminal_to_a_view_that_has_it_to_itself() {
 }
 
 #[test]
+fn ctrl_z_in_the_session_gives_the_view_its_terminal_back() {
+    let amx = Harness::new();
+    let view = outside_tmux(&amx);
+    until_empty(&amx, &view);
+
+    an_agent_session(&amx, "fix-login-a1b");
+    amx.until("the row", || row_of(&amx, &view, "fix-login-a1b").map(drop));
+
+    press(&amx, &view, "Enter");
+    amx.until("the agent on the screen", || {
+        screen(&amx, &view)
+            .contains("the agent at work")
+            .then_some(())
+    });
+
+    // The key is pressed at the terminal the view lent out, which is where
+    // somebody looking at the agent is. It is the client tmux put there that
+    // reads it, not the view, and detaching is what hands the terminal back.
+    press(&amx, &view, "C-z");
+    amx.until("the list again", || {
+        screen(&amx, &view).contains("? keys").then_some(())
+    });
+    assert!(
+        row_of(&amx, &view, "fix-login-a1b").is_some(),
+        "with the agent still on it"
+    );
+}
+
+#[test]
+fn ctrl_z_in_the_session_moves_the_client_back_to_the_view_inside_tmux() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    let holding = pane_field(&amx, &view, "#{session_name}");
+    until_empty(&amx, &view);
+
+    let terminal = watching(&amx, &holding);
+    let tty = amx.until("a client on the view", || {
+        let clients = clients_on(&amx, &holding);
+        (!clients.is_empty()).then_some(clients)
+    });
+
+    an_agent_session(&amx, "fix-login-a1b");
+    amx.until("the row", || row_of(&amx, &view, "fix-login-a1b").map(drop));
+
+    press(&amx, &view, "Enter");
+    amx.until("the client on the agent", || {
+        (clients_on(&amx, "amx-fix-login-a1b") == tty).then_some(())
+    });
+
+    // The key is pressed at the client's own terminal, which is the pane it
+    // runs in, and the client goes back to the session the view never left.
+    press(&amx, &terminal, "C-z");
+    amx.until("the client on the view again", || {
+        (clients_on(&amx, &holding) == tty).then_some(())
+    });
+    assert!(
+        row_of(&amx, &view, "fix-login-a1b").is_some(),
+        "with the agent still on it"
+    );
+}
+
+#[test]
 fn the_row_the_terminal_came_back_from_is_the_one_the_accent_marks() {
     // Two agents sitting at their prompts, which is a wall of rows that look
     // alike: the same glyph, the same weight, and nothing to say which of them
