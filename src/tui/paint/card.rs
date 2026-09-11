@@ -689,6 +689,16 @@ fn rule(card: &Card<Body>, called: &str, held: usize, width: usize, theme: Theme
     ])
 }
 
+/// Whether the body holds more than the card is showing, which is what makes
+/// the page keys worth naming in the row under it.
+///
+/// Measured against what the last frame gave the body, which is the number one
+/// press of those keys moves by: the row under the card is drawn after the
+/// card itself, so within a frame this is what that frame left behind.
+pub(super) fn pages(card: &Card<Body>, scroll: &Scroll) -> bool {
+    length(card) > scroll.page.get()
+}
+
 /// How many rows the body could give a card, which is what the last page is
 /// measured against. Asked of the body itself rather than of a window of it,
 /// so measuring a patch of thousands of rows does not build them.
@@ -1066,7 +1076,6 @@ mod tests {
     use crate::tmux::{PaneId, Socket};
     use crate::tui::act::Asking;
     use crate::tui::paint::draw;
-    use crate::tui::paint::input::{ANSWERS, spelled};
     use crate::tui::{Mode, Screen};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1618,9 +1627,9 @@ mod tests {
             "on the last row the card has: {empty:?}"
         );
         assert_eq!(
-            empty[13],
-            spelled(&ANSWERS),
-            "and the row under the card says what its own keys do"
+            empty[13], "enter attach   space closes it   esc closes it",
+            "and the row under the card says what its own keys do, which while \
+             the line is empty is what the two the line has no use for do"
         );
 
         let typed = painted(&answering(question(), "the docker one"), size);
@@ -1774,9 +1783,9 @@ mod tests {
         );
         assert!(answer_row(&screen).contains("❯ the sq"), "{screen:?}");
         assert_eq!(
-            screen[5],
-            spelled(&ANSWERS),
-            "with the card's own keys under it"
+            screen[5], "enter answers it   alt+enter newline   esc closes it",
+            "with the card's own keys under it, which a line holding a word \
+             are the line's"
         );
     }
 

@@ -25,6 +25,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use super::card::pages;
 use super::style::{bold, dim, prospective};
 use super::text::{RULE, SEPARATOR, fit};
 use crate::registry::DEFAULT;
@@ -46,14 +47,10 @@ pub(super) type Hint = (&'static str, &'static str);
 /// overlay behind it is where every key is.
 const MORE: Hint = ("?", "keys");
 
-/// What the card's own keys do, under the card, while it is holding a line.
-///
-/// What may be typed *into* that line is the question's business and is said
-/// on the line itself. Only these two are offered: alt+enter puts a newline in
-/// the line like anywhere else in the view, and a prompt that reads one key
-/// would refuse whatever a newline was typed into, so a row that named it
-/// would be naming a key that cannot work where it was read.
-pub(super) const ANSWERS: [Hint; 2] = [("enter", "answers it"), ("esc", "closes it")];
+/// The key the row under a card keeps whatever else it sheds: a card is drawn
+/// over the list it was opened from, and one nobody can see the way out of is
+/// one they are stuck in.
+const CLOSES: Hint = ("esc", "closes it");
 
 /// And what the row says while a `g` is standing there waiting for its second.
 ///
@@ -444,14 +441,8 @@ fn placeholder(composer: &Composer) -> Option<&'static str> {
 fn hints(screen: &Screen) -> Vec<Hint> {
     let list = &screen.list;
     let mut said = match list.items().get(list.cursor()) {
-        Some(Item::Heading(_, tally)) => vec![
-            match tally.shut {
-                true => ("enter", "opens it"),
-                false => ("enter", "shuts it"),
-            },
-            ("ctrl+x", "clears the group"),
-        ],
-        Some(Item::Fold(_)) => vec![("enter", "shows them")],
+        Some(Item::Heading(..)) => vec![enters(screen), ("ctrl+x", "clears the group")],
+        Some(Item::Fold(_)) => vec![enters(screen)],
         // The cursor never rests on a blank; the arm is for the compiler.
         Some(Item::Blank) => Vec::new(),
         // An agent whose command has ended has no window to bring forward and
@@ -474,7 +465,7 @@ fn hints(screen: &Screen) -> Vec<Hint> {
                 .is_some_and(|view| view.phase().is_terminal())
             {
                 true => vec![card, ("ctrl+x", "forget"), pin],
-                false => vec![card, ("enter", "attach"), ("ctrl+x", "stop"), pin],
+                false => vec![card, enters(screen), ("ctrl+x", "stop"), pin],
             }
         }
         // A wall with nothing on it has no line under the cursor, and the one
@@ -483,6 +474,61 @@ fn hints(screen: &Screen) -> Vec<Hint> {
     };
     said.extend([("ctrl+s", "axis"), ("q", "quit")]);
     said
+}
+
+/// What enter does where the cursor is standing, which is three things: a
+/// heading opens and shuts the group under it, the fold gives back the rows it
+/// is holding, and a row brings its agent forward.
+///
+/// Read in one place because it is said in two — the row under the list, and
+/// the row under a card, where an enter on an empty line goes straight back to
+/// the wall. A hint that named one of the three over the other two would be
+/// teaching somebody to press the wrong key.
+fn enters(screen: &Screen) -> Hint {
+    match screen.list.items().get(screen.list.cursor()) {
+        Some(Item::Heading(_, tally)) => match tally.shut {
+            true => ("enter", "opens it"),
+            false => ("enter", "shuts it"),
+        },
+        Some(Item::Fold(_)) => ("enter", "shows them"),
+        _ => ("enter", "attach"),
+    }
+}
+
+/// The keys under a card, which are the card's own for as long as its line is
+/// standing there.
+///
+/// Two rows in one, a character apart. With nothing typed the line has no use
+/// for space or enter, so both are the wall's and the row says what they do
+/// down here: the enter of the line under the cursor, and the key that puts the
+/// card away — with the page key beside them where the body holds more than the
+/// card is showing, and nothing about a page there is not. The first character
+/// typed takes both back, and the row says what sending the line will do
+/// instead.
+///
+/// alt+enter is named only on the second of them: a newline is worth the room
+/// once there is a paragraph being written, and a line with nothing on it has
+/// no use for one either.
+fn card_keys(screen: &Screen, composer: &Composer, width: usize) -> Line<'static> {
+    if !composer.text.is_empty() {
+        // The same key reaching the agent two ways: a question is answered,
+        // and an agent that is asking nothing is told something.
+        let enter = match screen.card.as_ref().is_some_and(|card| card.asks()) {
+            true => ("enter", "answers it"),
+            false => ("enter", "sends it"),
+        };
+        return fitted(&[enter, ("alt+enter", "newline")], CLOSES, width);
+    }
+
+    let mut said = vec![enters(screen), ("space", "closes it")];
+    if screen
+        .card
+        .as_ref()
+        .is_some_and(|card| pages(card, &screen.scroll))
+    {
+        said.push(("pgup", "pages it"));
+    }
+    fitted(&said, CLOSES, width)
 }
 
 /// Those keys on one row, cut to what a screen this wide can hold, with
@@ -520,18 +566,6 @@ pub(super) fn row(hints: &[Hint]) -> Line<'static> {
         spans.push(Span::styled(format!(" {does}"), dim()));
     }
     Line::from(spans)
-}
-
-/// Those hints as the row draws them, text alone: a test reads one string back
-/// off the screen, and how a pair is spelled and what stands between two of
-/// them are this file's business rather than the caller's.
-#[cfg(test)]
-pub(in crate::tui) fn spelled(hints: &[Hint]) -> String {
-    row(hints)
-        .spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect()
 }
 
 /// The cells that row takes, which is what the shedding is measured against.
@@ -596,8 +630,9 @@ fn find_row(line: &Composer, width: usize) -> Line<'static> {
 
 /// The keys, or whatever the view has to say for itself instead.
 ///
-/// The row under the card is the card's while it is holding a line, because
-/// what enter does there is not what it does anywhere else in the view.
+/// The row under a card is the card's for as long as its line is standing
+/// there, because down there the same keys are two different things a
+/// character apart — see [`card_keys`].
 pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
     // A half-pressed `gg` before anything else, because it is the last thing
     // that happened and the one thing on the screen a keystroke has changed
@@ -614,8 +649,8 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
             Notice::Advice(said) => Line::styled(said.clone(), dim()),
         };
     }
-    if screen.answering().is_some() {
-        return row(&ANSWERS);
+    if let Some(composer) = screen.answering() {
+        return card_keys(screen, composer, width as usize);
     }
     // A find line is drawn here rather than in a band of its own, because the
     // list is the thing being read while it narrows: a band would take rows
@@ -1106,6 +1141,85 @@ mod tests {
             hint_row(&screen, wide).starts_with("n starts one"),
             "{:?}",
             hint_row(&screen, wide)
+        );
+    }
+
+    /// The view with a card up and somebody standing at the line at its foot,
+    /// which is how every card is drawn.
+    fn carded(card: Card, typed: &str) -> Screen {
+        let mut screen = showing(a_fleet(), Some(card));
+        let mut composer = Composer::new(Asking::Reply);
+        composer.insert(typed);
+        screen.mode = Mode::Typing(composer);
+        screen
+    }
+
+    /// A card whose body is longer than any card will ever have room for, so
+    /// that there is something under it to page to.
+    fn a_long_answer() -> Card {
+        Card {
+            phase: Phase::Done,
+            question: None,
+            options: Vec::new(),
+            body: (1..=40)
+                .map(|n| format!("row {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            answer: true,
+            ..asking(&[], None)
+        }
+    }
+
+    #[test]
+    fn keymap_the_keys_under_a_card_are_the_cards_while_its_line_is_empty() {
+        let wide = (80, 14);
+
+        // Nothing typed, so the two keys the line has no use for are the
+        // list's and the row says what they do down here: enter is the enter
+        // of the row under the cursor, and space is the key that opened the
+        // card. Esc is pinned to the end, because a card nobody can see the
+        // way out of is a card they are stuck in.
+        let mut screen = carded(asking(&[], None), "");
+        assert_eq!(
+            hint_row(&screen, wide),
+            "enter attach   space closes it   esc closes it"
+        );
+
+        // A card whose body holds more than the card is showing names the key
+        // that reaches the rest of it; one that fits says nothing about a page
+        // there is not.
+        assert_eq!(
+            hint_row(&carded(a_long_answer(), ""), wide),
+            "enter attach   space closes it   pgup pages it   esc closes it"
+        );
+
+        // And on a heading the row says the heading's own word, because that
+        // is what the key does where the cursor is standing.
+        screen.list.up();
+        assert!(
+            hint_row(&screen, wide).starts_with("enter shuts it   space closes it"),
+            "{:?}",
+            hint_row(&screen, wide)
+        );
+    }
+
+    #[test]
+    fn keymap_the_keys_under_a_card_are_the_lines_the_moment_it_holds_a_word() {
+        let wide = (80, 14);
+
+        // What enter will do is what the line is for: an answer at a question,
+        // and a message anywhere else. Nothing on that row is the list's any
+        // more, because none of those keys is.
+        assert_eq!(
+            hint_row(
+                &carded(asking(&["the sqlite one"], Some(Kind::Question)), "keep it"),
+                wide
+            ),
+            "enter answers it   alt+enter newline   esc closes it"
+        );
+        assert_eq!(
+            hint_row(&carded(a_long_answer(), "keep it"), wide),
+            "enter sends it   alt+enter newline   esc closes it"
         );
     }
 
