@@ -45,6 +45,7 @@ impl Launch {
             Some(command) => command,
             None => picked(config, named.and_then(|named| named.model.as_deref()))?,
         };
+        let agent = carrying(config, agent);
         let entry = registry::entry(&agent);
         let mut dials = Dials::default();
 
@@ -177,6 +178,21 @@ fn takes(vendor: &Vendor, config: &Config, list: &[String]) -> String {
             argv.join(" ")
         ),
         _ => format!("{} takes {}", vendor.name, list.join(", ")),
+    }
+}
+
+/// The command with whatever the file says this harness always carries.
+///
+/// Whenever it runs and however it was picked: a harness's own arguments are
+/// what every agent on it is started with. They go into the command rather than
+/// beside it so that everything downstream reads one command line — the dial
+/// that stands down for a flag already written, the record of what was
+/// launched, the pane's own argv.
+fn carrying(config: &Config, agent: String) -> String {
+    let args = config.harness(registry::program(&agent)).args;
+    match args.is_empty() {
+        true => agent,
+        false => format!("{agent} {}", args.join(" ")),
     }
 }
 
@@ -556,6 +572,7 @@ mod tests {
     use crate::cli::AgentArgs;
     use crate::config::HarnessConfig;
     use crate::registry::DEFAULT;
+    use std::collections::BTreeMap;
 
     fn spawn(agent: Option<&str>, dials: [Option<&str>; 3]) -> NewArgs {
         let [model, permission, effort] = dials;
@@ -737,6 +754,20 @@ mod tests {
         }
     }
 
+    /// The same, for a harness that carries arguments rather than models.
+    fn carrying_args(harness: &str, args: &[&str]) -> Config {
+        Config {
+            harnesses: BTreeMap::from([(
+                harness.to_string(),
+                HarnessConfig {
+                    models: Vec::new(),
+                    args: args.iter().map(|arg| arg.to_string()).collect(),
+                },
+            )]),
+            ..Config::default()
+        }
+    }
+
     #[test]
     fn a_typed_model_runs_the_one_harness_that_lists_it() {
         // Nobody types --agent: the word names the harness, and the harness
@@ -879,6 +910,293 @@ mod tests {
 
         assert_eq!(launch.agent, "claude");
         assert_eq!(launch.dials.model, DEFAULT);
+    }
+
+    #[test]
+    fn a_harness_carries_the_arguments_its_own_table_gives_it() {
+        // Whenever it runs and however it was picked, once each.
+        let config = carrying_args("claude", &["--add-dir", "/tmp"]);
+        let launch = Launch::resolve(&config, &spawn(None, [None; 3])).unwrap();
+        assert_eq!(launch.agent, "claude --add-dir /tmp");
+
+        let launch = Launch::resolve(&config, &spawn(Some("claude"), [None; 3])).unwrap();
+        assert_eq!(
+            launch.agent, "claude --add-dir /tmp",
+            "the agent somebody named is still that harness"
+        );
+
+        let picked = Config {
+            harnesses: BTreeMap::from([(
+                "pi".to_string(),
+                HarnessConfig {
+                    models: vec!["openai/gpt-5".to_string()],
+                    args: vec!["--approve".to_string()],
+                },
+            )]),
+            ..Config::default()
+        };
+        let launch = Launch::resolve(&picked, &spawn(None, [Some("gpt-5"), None, None])).unwrap();
+        assert_eq!(launch.agent, "pi --approve");
+        assert_eq!(
+            launch
+                .agent
+                .split_whitespace()
+                .filter(|word| *word == "--approve")
+                .count(),
+            1,
+            "{}",
+            launch.agent
+        );
+    }
+
+    #[test]
+    fn a_dial_stands_down_from_a_flag_the_harnesss_own_arguments_carry() {
+        // The same law the agent command's own words are under: both halves
+        // end up in one argv, and a flag written there wins by the dial saying
+        // nothing rather than by anybody deciding between them.
+        let config = carrying_args("claude", &["--model", "opus"]);
+        let args = spawn(None, [Some("haiku"), None, None]);
+        let launch = Launch::resolve(&config, &args).unwrap();
+
+        assert_eq!(
+            launched(&args, &launch, "port-it-b2c", false),
+            ["claude", "--model", "opus", "port the importer"]
+        );
+    }
+
+    #[test]
+    fn dials_a_flag_for_a_vendor_that_has_no_such_dial_is_refused() {
+        let refusal = Launch::resolve(
+            &Config::default(),
+            &spawn(Some("mock-claude"), [Some("opus"), None, None]),
+        )
+        .unwrap_err();
+        assert!(refusal.contains("--model"), "{refusal}");
+        assert!(refusal.contains("mock-claude"), "{refusal}");
+    }
+
+    #[test]
+    fn exec_the_pane_is_handed_the_command_instead_of_a_vendor() {
+        let launch = Launch::resolve(&Config::default(), &a_command("cargo test")).unwrap();
+
+        assert_eq!(
+            launched(&a_command("cargo test"), &launch, "port-it-b2c", false),
+            ["sh", "-c", "cargo test"],
+            "no vendor, no dials, and no task appended after it"
+        );
+        assert_eq!(
+            launched(
+                &spawn(Some("claude"), [None; 3]),
+                &launch,
+                "port-it-b2c",
+                false
+            ),
+            ["claude", "port the importer"],
+            "and an ordinary spawn is launched the way it always was"
+        );
+    }
+
+    #[test]
+    fn exec_a_command_runs_where_it_was_typed_and_never_in_a_tree_of_its_own() {
+        // A command is not a conversation: it has nothing to keep apart from
+        // the next one, and a tree amx cut is a checkout without the build a
+        // `cargo test` or an `npm test` was typed to run. So the question is
+        // not asked at all — this directory is not one to work in, and a
+        // command spawn never gets far enough to find out.
+        let nowhere = Path::new("/nowhere/at/all");
+        let config = Config::default();
+
+        assert!(
+            cut_worktree(nowhere, "cargo-test-a1b", &config, &a_command("cargo test"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            cut_worktree(nowhere, "port-it-b2c", &config, &spawn(None, [None; 3])).is_err(),
+            "where an agent is asked for one and there is nowhere to cut it"
+        );
+    }
+
+    #[test]
+    fn the_claim_is_the_mkdir_and_a_directory_already_there_is_not_ours() {
+        // Two spawns racing one name both believe it is free; the mkdir is
+        // what settles it. A directory that already exists must read as
+        // somebody else's claim — never as a success to clean up later.
+        let root = tempfile::TempDir::new().unwrap();
+        let dir = root.path().join("fix-login-a1b");
+
+        assert!(make_dir(&dir).unwrap(), "a free name is claimed");
+        assert!(
+            !make_dir(&dir).unwrap(),
+            "a name somebody holds is not claimed again"
+        );
+    }
+
+    /// A repository with a tree of amx's own in it, and a home to keep a
+    /// vendor's trust store in.
+    fn a_tree(dir: &tempfile::TempDir) -> (PathBuf, std::collections::BTreeMap<String, String>) {
+        let tree = dir.path().join("app/.amx/worktrees/fix-login-a1b");
+        std::fs::create_dir_all(&tree).unwrap();
+        let env = spawn::env_snapshot([(
+            "HOME".to_string(),
+            dir.path().join("home").to_string_lossy().into_owned(),
+        )]);
+        (tree, env)
+    }
+
+    /// A config whose person has said yes to the trust write.
+    fn agreed() -> Config {
+        Config {
+            trust: true,
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn trust_is_never_answered_until_the_config_says_yes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (tree, env) = a_tree(&dir);
+        let mut problems = Vec::new();
+
+        trust_the_tree(
+            &Config::default(),
+            &env,
+            "claude",
+            &tree,
+            &mut problems,
+            false,
+        );
+
+        assert!(
+            !trust::store_in(&env).unwrap().exists(),
+            "the person's own file, and the person has not said yes"
+        );
+        assert!(problems.is_empty(), "declining quietly is not a problem");
+    }
+
+    #[test]
+    fn trust_is_answered_for_the_tree_a_claude_spawn_was_given() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (tree, env) = a_tree(&dir);
+        let mut problems = Vec::new();
+
+        trust_the_tree(&agreed(), &env, "claude", &tree, &mut problems, false);
+
+        let store = trust::store_in(&env).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+        assert!(trust::trusted(&written, &tree), "{written}");
+        assert!(
+            problems.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&problems)
+        );
+    }
+
+    #[test]
+    fn trust_is_never_answered_for_a_vendor_that_does_not_ask() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (tree, env) = a_tree(&dir);
+        let mut problems = Vec::new();
+
+        trust_the_tree(
+            &agreed(),
+            &env,
+            "mock-claude --pane",
+            &tree,
+            &mut problems,
+            false,
+        );
+
+        assert!(
+            !trust::store_in(&env).unwrap().exists(),
+            "a store amx invented for a vendor that keeps none"
+        );
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn trust_writes_no_other_vendors_store_for_an_agent_answered_on_its_argv() {
+        // The store this write is about is claude's own file. pi claims the
+        // folder-trust capability too, and a guard that asked the capability
+        // question would have written `~/.claude.json` for a tree no claude
+        // will ever open.
+        let dir = tempfile::TempDir::new().unwrap();
+        let (tree, env) = a_tree(&dir);
+        let mut problems = Vec::new();
+
+        trust_the_tree(&agreed(), &env, "pi", &tree, &mut problems, false);
+
+        assert!(
+            !trust::store_in(&env).unwrap().exists(),
+            "another vendor's file, touched over a screen that vendor never draws"
+        );
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn trust_is_answered_on_the_argv_for_a_vendor_whose_answer_is_a_flag() {
+        // pi's half of the same key, and the reason the config is read here:
+        // `spawn` is handed none, and the flag has to reach the argv of the
+        // pane this spawn is about to start.
+        let args = spawn(Some("pi"), [None; 3]);
+        let launch = Launch::resolve(&agreed(), &args).unwrap();
+
+        assert_eq!(
+            launched(&args, &launch, "port-it-b2c", true),
+            [
+                "pi",
+                "--session-id",
+                "port-it-b2c",
+                "--approve",
+                "port the importer"
+            ]
+        );
+        assert_eq!(
+            launched(&args, &launch, "port-it-b2c", false),
+            ["pi", "--session-id", "port-it-b2c", "port the importer"],
+            "and nothing at all without the key"
+        );
+    }
+
+    #[test]
+    fn trust_that_cannot_be_written_is_said_once_and_the_spawn_goes_on() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (tree, env) = a_tree(&dir);
+        let store = trust::store_in(&env).unwrap();
+        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+        std::fs::write(&store, "{ not json at all }").unwrap();
+        let mut problems = Vec::new();
+
+        trust_the_tree(&agreed(), &env, "claude", &tree, &mut problems, true);
+
+        // A store amx cannot write is a warning and not a failure: the spawn
+        // went ahead, and what is left is a screen somebody answers by hand.
+        let told = String::from_utf8(problems).unwrap();
+        assert!(told.contains("trust store amx can read"), "{told}");
+        assert_eq!(told.lines().count(), 1, "{told}");
+        assert!(told.starts_with("\u{1b}[33mamx new: "), "{told:?}");
+    }
+
+    #[test]
+    fn spawn_writes_the_minted_id_into_metasession_the_moment_a_vendor_opens_under_it() {
+        // Recorded at the moment the pane is started, rather than left None
+        // for a Started hook that a vendor with no hooks at all could never
+        // send.
+        assert_eq!(
+            session_written(false, true, "fix-login-a1b"),
+            Some("fix-login-a1b".to_string())
+        );
+        assert_eq!(
+            session_written(false, false, "fix-login-a1b"),
+            None,
+            "no start flag was offered, so nothing was minted to record"
+        );
+        assert_eq!(
+            session_written(true, true, "fix-login-a1b"),
+            None,
+            "a command spawn opens no session of its own"
+        );
     }
 
     #[test]
