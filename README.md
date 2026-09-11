@@ -441,7 +441,21 @@ command has ended it reads `nothing is listening`, which is the refusal a reply
 would come back with — a line that invited one there would be the card telling
 you to type into the dark. The `❯` carries the waiting colour at a question and
 is dim everywhere else: a prompt waiting on you should not look like one you may
-type at if you feel like it.
+type at if you feel like it. A blank row stands between what the card says and
+the line, and goes first where the band is short.
+
+The line is the task line in everything that is not about starting an agent.
+It grows a row at a time as you write, up to the same cap, taking rows off
+what the card says and never its last one; `shift+enter` breaks a line in it
+and `ctrl+g` opens it in `$EDITOR`. And it offers the same words under itself,
+in the same band: `/` for the vendor's skills and commands, `@` for its agents
+and the project's files, `tab` and `↑` `↓` walking them exactly as under the
+task line. They are read against the agent on the card — its own vendor and the
+directory it runs in — rather than the header's dials, because a word offered
+out of anywhere else is a word that agent would not find. The dials themselves
+are the task line's alone: `m:`, `p:`, `w:`, `d:` and `agent:` typed here are
+words of the message, since the agent is already running under whatever it was
+started with.
 
 At a question of the vendor's own whose choices are all it takes, the line reads
 `1-2 picks` and the number pressed is the answer: it reaches the agent as it is

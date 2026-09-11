@@ -164,7 +164,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         (false, Some(card)) => card_height(
             area.height,
             area.height.saturating_sub(chrome),
-            card_rows(card, showing, prs, screen.answering().is_some(), area.width),
+            card_rows(card, showing, prs, screen.answering(), area.width),
         ),
         _ => 0,
     };
@@ -177,10 +177,13 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         None => 0,
     };
     // And what the word under the cursor could be, under the line it would be
-    // written on. It takes its rows off the list as the composer does and
-    // stops where the composer stops: whatever else is open, the list keeps a
-    // row, because the list is what the view is for.
-    let suggest = banded.and_then(|composer| composer.suggest.as_ref());
+    // written on — the band's own line, or the one at the foot of the card,
+    // which offers the same words. It takes its rows off the list as the
+    // composer does and stops where the composer stops: whatever else is
+    // open, the list keeps a row, because the list is what the view is for.
+    let suggest = banded
+        .or(screen.answering())
+        .and_then(|composer| composer.suggest.as_ref());
     let offering = rows_wanted(suggest).min(area.height.saturating_sub(chrome + composing + 1));
 
     let [top, _, middle, carded, line, offered, allowed, keys] = Layout::vertical([

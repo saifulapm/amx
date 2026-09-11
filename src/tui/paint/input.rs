@@ -78,7 +78,7 @@ pub enum Notice {
 /// rows, or a third of the screen where that is less. A composer that could
 /// take the whole terminal would be a list nobody could see past the task
 /// they are typing at it.
-const COMPOSER_CAP: usize = 10;
+pub(super) const COMPOSER_CAP: usize = 10;
 
 /// What the composer's rows begin with: the chevron on the first of them, and
 /// the same width of nothing under it, so a line that wrapped reads as one
@@ -167,10 +167,16 @@ const RULE_ROW: usize = 1;
 pub(super) fn composer_height(composer: &Composer, area: Rect, chrome: u16) -> u16 {
     let room = (area.height.saturating_sub(chrome + 1) as usize).saturating_sub(RULE_ROW);
     let cap = COMPOSER_CAP.min(area.height as usize / 3).min(room).max(1);
-    let rows = composer_lines(&composer.text, composer_room(area.width))
-        .len()
-        .clamp(1, cap);
+    let rows = rows_of(composer, area.width).min(cap);
     (rows + RULE_ROW) as u16
+}
+
+/// How many rows the line needs on a band this wide, before any cap: one at
+/// the least, and one more for every row it wraps onto or breaks onto.
+pub(super) fn rows_of(composer: &Composer, width: u16) -> usize {
+    composer_lines(&composer.text, composer_room(width))
+        .len()
+        .max(1)
 }
 
 /// The rule the mode hangs off, and everything said on it.
@@ -279,7 +285,33 @@ pub(super) fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect,
         Paragraph::new(rule(composer, area.width as usize, theme)),
         edge,
     );
+    typed_rows(
+        frame,
+        composer,
+        band,
+        edge_colour(composer, theme),
+        placeholder(composer),
+        theme,
+    );
+}
 
+/// The rows of the line itself, which are the same rows wherever the line
+/// stands: under the rule of a band of its own, or at the foot of the card.
+///
+/// The chevron on the first row in `chevron`, the indent under it on every
+/// row after, the block on the cell the cursor stands in, and `hint` as ghost
+/// text on an empty line — cut where the screen ends, with the block on the
+/// first cell of it: the letter under it is read straight through the reverse
+/// video, so the lesson costs nothing and the line still says where the next
+/// character lands.
+pub(super) fn typed_rows(
+    frame: &mut Frame,
+    composer: &Composer,
+    band: Rect,
+    chevron: Style,
+    hint: Option<&str>,
+    theme: Theme,
+) {
     let prompt = GUTTER.to_string();
     let room = composer_room(band.width);
     let rows = composer_lines(&composer.text, room);
@@ -292,22 +324,17 @@ pub(super) fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect,
     let shown = &rows[from..];
 
     let indent = " ".repeat(prompt.chars().count());
-    let edge = edge_colour(composer, theme);
+    let hint = hint.filter(|_| composer.text.is_empty());
     let lines: Vec<Line> = shown
         .iter()
         .enumerate()
         .map(|(down, text)| {
             let head = match down {
-                0 => Span::styled(prompt.clone(), edge),
+                0 => Span::styled(prompt.clone(), chevron),
                 _ => Span::raw(indent.clone()),
             };
             let mut spans = vec![head];
-            match placeholder(composer).filter(|_| down == 0) {
-                // An empty line holds its prefixes as ghost text, cut where the
-                // screen ends, with the block on the first of them: the letter
-                // under it is read straight through the reverse video, so the
-                // lesson costs nothing and the line still says where the next
-                // character lands.
+            match hint.filter(|_| down == 0) {
                 Some(hint) => {
                     spans.extend(under_the_block(&fit(hint, room), 0, dim(), Style::new()));
                 }

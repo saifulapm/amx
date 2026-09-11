@@ -476,8 +476,10 @@ fn chord(key: KeyEvent) -> KeyModifiers {
 ///
 /// The four control chords are the ones a terminal line has read since before
 /// it had arrows, plus the one that takes the line to an editor and the one a
-/// keyboard with no shift+enter breaks a line with.
-fn the_lines(key: KeyEvent) -> bool {
+/// keyboard with no shift+enter breaks a line with. And the two arrows that
+/// walk the words offered under the line, for exactly as long as there are
+/// words offered: with none, they walk the wall.
+fn the_lines(composer: &Composer, key: KeyEvent) -> bool {
     let plain = chord(key).is_empty();
     let ctrl = chord(key) == KeyModifiers::CONTROL;
     match key.code {
@@ -488,6 +490,7 @@ fn the_lines(key: KeyEvent) -> bool {
         KeyCode::Enter | KeyCode::Esc | KeyCode::Tab => true,
         KeyCode::Backspace => plain || chord(key) == KeyModifiers::ALT,
         KeyCode::Delete | KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End => true,
+        KeyCode::Up | KeyCode::Down => plain && composer.suggest.is_some(),
         _ => false,
     }
 }
@@ -1872,7 +1875,7 @@ impl Screen {
         // whole of the exception to it: space and enter have nothing to do to
         // a line with nothing on it, so down there they are the wall's.
         let empty = composer.text.is_empty() && the_lists_on_an_empty_line(key);
-        if self.on_the_card(&composer) && (empty || !the_lines(key)) {
+        if self.on_the_card(&composer) && (empty || !the_lines(&composer, key)) {
             self.mode = Mode::Typing(composer);
             return self.pressed(key, root, config, here);
         }
@@ -2138,14 +2141,44 @@ impl Screen {
     /// with them, so that a `d:` can be aimed at one of them without a path
     /// being typed out.
     fn suggesting(&mut self, config: &Config) {
-        let launching = self.profile.launching(config);
         let Mode::Typing(composer) = &self.mode else {
             return;
         };
-        let project = composer
-            .under
-            .clone()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        // A task line's words are the words of the vendor the header's dial
+        // names, read under the project the line was opened under. The card's
+        // line goes to an agent already running: its words are that agent's
+        // own vendor's, read under the directory it runs in, because a word
+        // offered out of anywhere else is a word that agent would not find.
+        let (launching, project) = match composer.asking {
+            Asking::Reply => {
+                let Some(view) = self
+                    .card
+                    .as_ref()
+                    .and_then(|card| self.list.agent_by_id(&card.id))
+                else {
+                    return;
+                };
+                let vendor = view
+                    .meta
+                    .agent
+                    .clone()
+                    .unwrap_or_else(|| config.agent.clone());
+                (
+                    Config {
+                        agent: vendor,
+                        ..config.clone()
+                    },
+                    view.meta.dir.clone(),
+                )
+            }
+            _ => (
+                self.profile.launching(config),
+                composer
+                    .under
+                    .clone()
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+            ),
+        };
         let found = act::suggest(composer, &launching, &project, &self.projects);
         if let Mode::Typing(composer) = &mut self.mode {
             composer.suggest = found;
@@ -4987,7 +5020,10 @@ mod tests {
             ctrl('g'),
             ctrl('j'),
         ] {
-            assert!(the_lines(key), "{key:?} is the line's");
+            assert!(
+                the_lines(&Composer::new(Asking::Reply), key),
+                "{key:?} is the line's"
+            );
         }
 
         // And everything else, which walks the wall, pages the card or acts
@@ -5009,8 +5045,93 @@ mod tests {
             alt(KeyCode::Char('1')),
             alt(KeyCode::Char('a')),
         ] {
-            assert!(!the_lines(key), "{key:?} is the list's");
+            assert!(
+                !the_lines(&Composer::new(Asking::Reply), key),
+                "{key:?} is the list's"
+            );
         }
+
+        // Bar the two arrows while words are offered under the line: then
+        // they walk the words, exactly as they do under the task line.
+        let mut offering = Composer::new(Asking::Reply);
+        offering.suggest = Some(act::Suggest {
+            word: 0..1,
+            entries: vec![crate::catalog::Entry {
+                spelled: "/review".to_string(),
+                kind: crate::catalog::Kind::Skill,
+                about: String::new(),
+            }],
+            chosen: 0,
+        });
+        for key in [plain(KeyCode::Up), plain(KeyCode::Down)] {
+            assert!(the_lines(&offering, key), "{key:?} walks the words offered");
+        }
+    }
+
+    #[test]
+    fn card_line_offers_the_words_of_the_agents_own_vendor_and_directory() {
+        // The card's line goes to an agent already running, so what it offers
+        // is read where that agent runs — not under the directory the view
+        // was opened in, which has nothing called this — and the arrows walk
+        // the words offered rather than the wall for as long as they stand.
+        let root = TempDir::new().unwrap();
+        let there = TempDir::new().unwrap();
+        for file in ["importer.rs", "imports.rs"] {
+            std::fs::write(there.path().join(file), "").unwrap();
+        }
+        let config = Config::default();
+        let mut view = finished_saying("done-a1b", "the answer");
+        view.meta.dir = there.path().to_path_buf();
+        let mut screen = watching(vec![view, finished_saying("done-b2c", "another")]);
+        let press = |screen: &mut Screen, key| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+        let offered = |screen: &Screen| -> Vec<String> {
+            screen
+                .answering()
+                .and_then(|line| line.suggest.as_ref())
+                .map(|suggest| {
+                    suggest
+                        .entries
+                        .iter()
+                        .map(|entry| entry.spelled.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
+        for key in word("see @imp") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        assert_eq!(offered(&screen), ["@importer.rs", "@imports.rs"]);
+
+        // Down walks the words, and the cursor stays on the row it was on.
+        press(&mut screen, KeyEvent::from(KeyCode::Down));
+        assert_eq!(
+            screen
+                .answering()
+                .and_then(|line| line.suggest.as_ref())
+                .map(|suggest| suggest.chosen),
+            Some(1)
+        );
+        assert_eq!(
+            screen.list.selected().map(|view| view.id().to_string()),
+            Some("done-a1b".to_string())
+        );
+        press(&mut screen, KeyEvent::from(KeyCode::Tab));
+        assert_eq!(
+            screen.answering().expect("the line").text,
+            "see @imports.rs ",
+            "and tab takes the word the choice is on"
+        );
+
+        // A dial typed there is a word of the message: nothing is offered.
+        press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
+        for key in word("m:") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        assert!(offered(&screen).is_empty(), "{:?}", offered(&screen));
     }
 
     #[test]
@@ -5395,6 +5516,69 @@ mod tests {
         screen.look = Look::Screen;
         screen.follow_the_cursor();
         screen
+    }
+
+    #[test]
+    fn card_line_growing_keeps_the_end_of_the_conversation_in_view() {
+        // A finished conversation opens on its end, which is what somebody
+        // is replying to. The line at the foot grows a row at a time as the
+        // reply is written, and the rows it takes come off the top of what the
+        // card shows, never off its end: a card that let the conclusion slide
+        // out of view under the words being written about it would be a card
+        // hiding the one thing the reply is about.
+        let held = TempDir::new().unwrap();
+        let path = held.path().join("session.jsonl");
+        let long: String = (0..40).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(&path, transcript(&long)).unwrap();
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching_a_transcript(&path);
+        let drawn = |screen: &Screen| -> Vec<String> {
+            let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+            terminal.draw(|frame| paint::draw(frame, screen)).unwrap();
+            (0..20)
+                .map(|row| {
+                    (0..60)
+                        .map(|column| terminal.backend().buffer()[(column, row)].symbol())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
+                })
+                .collect()
+        };
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        let opened = drawn(&screen);
+        assert!(
+            opened.iter().any(|row| row.contains("line 39")),
+            "the end of the answer:\n{}",
+            opened.join("\n")
+        );
+
+        for key in word("one") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        press(
+            &mut screen,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+        );
+        for key in word("two") {
+            press(&mut screen, KeyEvent::from(key));
+        }
+        let grown = drawn(&screen);
+        assert!(
+            grown.iter().any(|row| row == "  two"),
+            "the line has grown a row:\n{}",
+            grown.join("\n")
+        );
+        assert!(
+            grown.iter().any(|row| row.contains("line 39")),
+            "and the end of the answer is still in view over it:\n{}",
+            grown.join("\n")
+        );
+        assert!(!screen.scroll.paged(), "which is still a card nobody paged");
     }
 
     #[test]

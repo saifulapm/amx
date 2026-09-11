@@ -853,7 +853,11 @@ pub fn suggest(
     project: &Path,
     wall: &[PathBuf],
 ) -> Option<Suggest> {
-    if !matches!(composer.asking, Asking::Task) || composer.commanding() {
+    // A task line, and the line at the foot of the card: the vendor's words
+    // are the same words said to an agent already running, and `config` and
+    // `project` are that agent's own there rather than the header's dials.
+    // The dials are the task line's alone — see [`answering`].
+    if !matches!(composer.asking, Asking::Task | Asking::Reply) || composer.commanding() {
         return None;
     }
     let word = under_the_cursor(&composer.text, composer.at)?;
@@ -928,19 +932,30 @@ fn answering(
     wall: &[PathBuf],
 ) -> Vec<Entry> {
     let line = composer.text.as_str();
-    let agent = asked_of(config, line);
-    if typed.starts_with(AGENT) {
-        return vendors(typed);
-    }
-    if let Some(values) = dialled(&agent, typed) {
-        return values;
-    }
-    // A `d:` being typed is the one path on the line that is not read against
-    // the `d:`: it is what the rest of them will be read against.
-    if typed.starts_with(DIR) {
-        let mut found = paths(DIR, typed, project, true);
-        found.extend(on_the_wall(wall, typed));
-        return found;
+    // The dials are the task line's alone: they say what an agent is started
+    // with, and the line at the foot of the card goes to one already running
+    // under whatever it was started with. There every one of them is a word
+    // of the message, `agent:` included — and the vendor asked is the
+    // agent's own, which is what the line was handed.
+    let starting = matches!(composer.asking, Asking::Task);
+    let agent = match starting {
+        true => asked_of(config, line),
+        false => config.agent.clone(),
+    };
+    if starting {
+        if typed.starts_with(AGENT) {
+            return vendors(typed);
+        }
+        if let Some(values) = dialled(&agent, typed) {
+            return values;
+        }
+        // A `d:` being typed is the one path on the line that is not read
+        // against the `d:`: it is what the rest of them will be read against.
+        if typed.starts_with(DIR) {
+            let mut found = paths(DIR, typed, project, true);
+            found.extend(on_the_wall(wall, typed));
+            return found;
+        }
     }
 
     let kinds: &[catalog::Kind] = match typed.chars().next() {
@@ -954,8 +969,14 @@ fn answering(
     };
     let listed = composer.catalog(&agent, project, || catalogued(&agent, project));
     let named = named(&listed, typed, kinds);
+    // A path on a task line is read where its `d:` says the agent will run;
+    // on the card's line, where the agent already runs.
+    let here = match starting {
+        true => running(line, project),
+        false => project.to_path_buf(),
+    };
     match named.is_empty() && typed.starts_with(AT) {
-        true => paths(AT, typed, &running(line, project), false),
+        true => paths(AT, typed, &here, false),
         false => named,
     }
 }
@@ -2360,6 +2381,44 @@ mod tests {
         // the line, and a bang is not one. `ls` is a command somebody means.
         assert_eq!(slight(&as_claude(), "!ls"), None);
         assert_eq!(slight(&as_claude(), "!d:/srv/app ls"), None);
+    }
+
+    #[test]
+    fn composer_offers_the_cards_line_the_vendors_words_and_none_of_the_dials() {
+        // The line at the foot of the card goes to an agent already running
+        // under whatever it was started with, so the words that start one are
+        // words of the message there: a dial typed at it is offered nothing,
+        // where the task line reads the same word as a dial.
+        for word in ["agent:cl", "m:", "p:", "w:", "d:/"] {
+            let mut line = Composer::new(Asking::Reply);
+            line.insert(word);
+            assert!(
+                suggest(&line, &as_claude(), a_project(), &[]).is_none(),
+                "{word:?} is a word of the message"
+            );
+        }
+        let mut task = Composer::new(Asking::Task);
+        task.insert("agent:cl");
+        assert!(
+            suggest(&task, &as_claude(), a_project(), &[]).is_some(),
+            "and a dial on the task line it still is"
+        );
+
+        // A path is read against the directory the line was handed, which is
+        // the agent's own: there is no `d:` to read it against instead.
+        let project = TempDir::new().unwrap();
+        std::fs::write(project.path().join("importer.rs"), "").unwrap();
+        let mut line = Composer::new(Asking::Reply);
+        line.insert("see d:/nowhere @imp");
+        let found = suggest(&line, &as_claude(), project.path(), &[]).expect("the file");
+        assert_eq!(
+            found
+                .entries
+                .iter()
+                .map(|entry| entry.spelled.as_str())
+                .collect::<Vec<_>>(),
+            ["@importer.rs"]
+        );
     }
 
     #[test]

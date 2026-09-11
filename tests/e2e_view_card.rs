@@ -131,12 +131,18 @@ fn card_lines(drawn: &str) -> Vec<&str> {
 }
 
 /// The same rows without the line at the foot of them, which is what the card
-/// is showing: every card ends with the line it is replied on, so a test about
-/// what the card says reads the rows above it.
+/// is showing: every card ends with the line it is replied on, standing off
+/// what the card says by one blank row, so a test about what the card says
+/// reads the rows above both.
 fn card_body(drawn: &str) -> Vec<&str> {
     let mut rows = card_lines(drawn);
     let line = rows.pop().unwrap_or_default();
     assert!(line.starts_with('❯'), "no line at the foot of:\n{drawn}");
+    let gap = rows.pop().unwrap_or_default();
+    assert!(
+        gap.trim().is_empty(),
+        "no blank row over the line at the foot of:\n{drawn}"
+    );
     rows
 }
 

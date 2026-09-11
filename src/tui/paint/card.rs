@@ -30,7 +30,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 use std::cell::Cell;
 use std::ops::Range;
 
-use super::input::{GUTTER, behind, composer_lines, composer_room, cursor_cell, under_the_block};
+use super::input::{COMPOSER_CAP, behind, rows_of, typed_rows};
 use super::prose;
 use super::style::{bold, colour, dim, request_colour};
 use super::text::{RULE, SEPARATOR, fit, inert, width_of};
@@ -408,6 +408,12 @@ pub struct Scroll {
     /// that opens on its end rather than at its top. A card standing anywhere
     /// else has been paged by hand, and holds.
     pub opened: Cell<usize>,
+    /// Where the card was asked to open, in rows nobody has clamped: past the
+    /// end of a conversation. Kept whole so that a window that shrinks under
+    /// a card nobody has paged — the line at its foot growing a row — puts
+    /// the card back on the page it opened on, which is the end, rather than
+    /// leaving it standing a row short of the end it was opened to show.
+    anchor: Cell<usize>,
 }
 
 impl Scroll {
@@ -416,6 +422,7 @@ impl Scroll {
     pub fn open_at(&self, away: usize) {
         self.away.set(away);
         self.opened.set(away);
+        self.anchor.set(away);
     }
 
     /// Whether somebody has paged the card away from where it opened.
@@ -437,11 +444,26 @@ impl Scroll {
     /// never equal the offset again, [`Scroll::paged`] would read true on
     /// every frame, and a card nobody touched would hold still forever
     /// instead of following its agent back to work.
+    ///
+    /// A card nobody has paged is put back on the page it was asked to open
+    /// on every frame, clamped afresh: the last page moves when the window
+    /// does, and a card opened on its end stays on its end when the line
+    /// under it grows a row rather than standing one row short of it. A card
+    /// somebody has paged is clamped where it stands, and holds.
     fn kept(&self, length: usize, window: usize) -> usize {
         let last = length.saturating_sub(window);
-        let away = self.away.get().min(last);
+        let away = match self.paged() {
+            true => {
+                self.opened.set(self.opened.get().min(last));
+                self.away.get().min(last)
+            }
+            false => {
+                let edge = self.anchor.get().min(last);
+                self.opened.set(edge);
+                edge
+            }
+        };
         self.away.set(away);
-        self.opened.set(self.opened.get().min(last));
         self.page.set(window.max(1));
         away
     }
@@ -470,13 +492,15 @@ pub(super) fn card_height(total: u16, band: u16, wanted: u16) -> u16 {
 /// agent is asking, the choices under that, the row the vendor adds under
 /// them, the line the answer goes on, and the screen it is all happening on.
 ///
-/// The rule and the line are rows of the card like any other, so a card that
-/// says one thing in one row asks for three.
+/// The rule, the line and the blank row the line stands off the rest by are
+/// rows of the card like any other, so a card that says one thing in one row
+/// asks for four; and the line asks for as many rows as it has grown to, up to
+/// the cap the task line grows to.
 pub(super) fn card_rows(
     card: &Card<Body>,
     showing: Option<Showing>,
     prs: &[Pr],
-    answering: bool,
+    answering: Option<&Composer>,
     width: u16,
 ) -> u16 {
     let inner = body_width(width);
@@ -495,9 +519,15 @@ pub(super) fn card_rows(
         + usize::from(tab(showing).is_some())
         + listed
         + usize::from(added(card, showing).is_some())
-        + usize::from(answering)
+        + answering.map_or(0, |line| line_rows(line, width) + GAP_ROW)
         + shown;
     rows.min(u16::MAX as usize) as u16
+}
+
+/// How many rows the line at the foot of the card takes: as many as it has
+/// grown to, the way the task line grows, and no more than that line may.
+fn line_rows(line: &Composer, width: u16) -> usize {
+    rows_of(line, width).min(COMPOSER_CAP)
 }
 
 /// One row, which is the least a card is: the rule, which names the agent the
@@ -509,6 +539,11 @@ const CARD_TALL: u16 = 14;
 
 /// The card's own row, which it holds whatever it is a look at: the rule.
 const RULE_ROW: usize = 1;
+
+/// And the blank row its line stands off the rest of it by, so what the card
+/// says and what somebody is saying back to it do not run together. The one
+/// row the card gives up first when the band is short.
+const GAP_ROW: usize = 1;
 
 /// How far in everything the card says stands: the two cells the line under it
 /// spends on its own chevron, so a row of the card and the words being typed
@@ -561,12 +596,26 @@ pub(super) fn float(
     // does under a task line, by going quiet to its last cell.
     behind(frame, area.y);
     // The rule opens the band and the line closes it; what the card says
-    // stands between them, in under the line's own chevron. A band with room
-    // for nothing but the rule draws the rule.
-    let typing = u16::from(answering.is_some()).min(area.height.saturating_sub(RULE_ROW as u16));
-    let [ruled, between, typed] = Layout::vertical([
+    // stands between them, in under the line's own chevron, with one blank
+    // row between it and the line. The line takes the rows it has grown to
+    // off the band before anything else — it is what somebody is typing into,
+    // and it is nowhere else at all — and the blank row stands only where a
+    // row of what the card says is still left under it. A band with room for
+    // nothing but the rule draws the rule.
+    let spare = area.height.saturating_sub(RULE_ROW as u16);
+    // Never the last row of what the card says, though: a line that had
+    // grown over the whole card would be a line nobody could see what they
+    // were answering from. Only a band with one row under its rule gives that
+    // row to the line, because there the line is what the row is for.
+    let wanted = answering.map_or(0, |line| line_rows(line, area.width) as u16);
+    let typing = wanted
+        .min(spare.saturating_sub(1))
+        .max(wanted.min(spare).min(1));
+    let gap = u16::from(typing > 0 && spare > typing + 1) * GAP_ROW as u16;
+    let [ruled, between, _, typed] = Layout::vertical([
         Constraint::Length(RULE_ROW as u16),
         Constraint::Min(0),
+        Constraint::Length(gap),
         Constraint::Length(typing),
     ])
     .areas(area);
@@ -989,10 +1038,10 @@ const BETWEEN: &str = "   ";
 /// The line at the foot of the card, with the block on the cell the cursor is
 /// standing in.
 ///
-/// The composer's own line, drawn where the composer's own line is drawn: the
-/// chevron, what has been typed, and that one cell turned over. One row of it,
-/// which is the row the cursor is on — a line long enough to wrap is being
-/// written at its end, and the end is what somebody is looking at.
+/// The composer's own line, drawn by the composer's own hand: the chevron,
+/// what has been typed on as many rows as it has grown to, and the one cell
+/// the cursor stands in turned over. Past the cap it is the rows around the
+/// cursor that are drawn, exactly as under the task line.
 ///
 /// Every card has one, because every agent can be said something to. Empty, it
 /// says what this one will take, and the block stands on the first cell of
@@ -1010,30 +1059,19 @@ fn answer_row(
     area: Rect,
     theme: Theme,
 ) {
-    let room = composer_room(area.width);
-    let (row, column) = cursor_cell(composer, room);
-    let typed = composer_lines(&composer.text, room)
-        .get(row as usize)
-        .cloned()
-        .unwrap_or_default();
     let asked = showing.map(|showing| showing.ask);
-    let said = match composer.text.is_empty() {
-        true => under_the_block(&fit(&invites(card, asked), room), 0, dim(), Style::new()),
-        false => under_the_block(
-            &typed,
-            (column as usize).min(room.saturating_sub(1)),
-            Style::new(),
-            bold(),
-        ),
-    };
-
     let chevron = match card.asks() {
         true => Style::new().fg(theme.waiting),
         false => dim(),
     };
-    let mut spans = vec![Span::styled(GUTTER, chevron)];
-    spans.extend(said);
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    typed_rows(
+        frame,
+        composer,
+        area,
+        chevron,
+        Some(&invites(card, asked)),
+        theme,
+    );
 }
 
 /// What the empty line says it will take.
@@ -1498,6 +1536,126 @@ mod tests {
     }
 
     #[test]
+    fn card_stands_a_blank_row_between_what_it_says_and_its_line() {
+        // What the card says and what somebody is saying back to it do not
+        // run together: one blank row stands between the card's last row and
+        // the chevron, and it is the first row to go where the band is short.
+        let question = || asking(&["the sqlite one", "the docker one"], Some(Kind::Question));
+        let roomy = painted(&answering(question(), ""), (60, 20));
+        let line = roomy
+            .iter()
+            .position(|row| row.starts_with('❯'))
+            .expect("the line");
+        assert_eq!(roomy[line - 1], "", "a blank row over the line: {roomy:?}");
+        assert!(
+            roomy[line - 2].contains("vendor's row"),
+            "and the card's last row over that: {roomy:?}"
+        );
+
+        // On a band with room for the rule, one row of the card and the line,
+        // the gap is what goes.
+        let tight = painted(
+            &answering(asking(&["the sqlite one"], Some(Kind::Question)), ""),
+            (60, 7),
+        );
+        let line = tight
+            .iter()
+            .position(|row| row.starts_with('❯'))
+            .expect("the line");
+        assert!(
+            tight[line - 1].contains("sqlite") || tight[line - 1].contains("Which"),
+            "the card's row stands against the line: {tight:?}"
+        );
+    }
+
+    #[test]
+    fn card_line_grows_a_row_at_a_time_as_the_task_line_does() {
+        // A newline in the line is a row of the card's line, drawn the way
+        // the task line draws it: the chevron on the first row, the indent
+        // under it on the next, and the block on the cell the cursor stands
+        // in, which is the end of the second row.
+        let question = || asking(&["the sqlite one", "the docker one"], Some(Kind::Question));
+        let screen = answering(question(), "one\ntwo");
+        let drawn = painted(&screen, (60, 20));
+        let first = drawn
+            .iter()
+            .position(|row| row.starts_with("❯ one"))
+            .expect("the first row of the line");
+        assert_eq!(drawn[first + 1], "  two", "{drawn:?}");
+        assert_eq!(
+            block(&screen, (60, 20), (first + 1) as u16),
+            Some(5),
+            "with the block at the end of the row the cursor is on"
+        );
+        assert_eq!(
+            drawn[first - 1],
+            "",
+            "and the blank row still over it: {drawn:?}"
+        );
+
+        // A line taller than the card has room for takes rows off what the
+        // card says, up to the task line's own cap, and never the rule or the
+        // card's last row.
+        let tall = (1..=12)
+            .map(|n| format!("row {n}"))
+            .collect::<Vec<String>>()
+            .join("\n");
+        let screen = answering(question(), &tall);
+        let drawn = painted(&screen, (60, 40));
+        let rows = drawn
+            .iter()
+            .filter(|row| row.starts_with('❯') || row.starts_with("  row "))
+            .count();
+        assert_eq!(
+            rows, COMPOSER_CAP,
+            "capped where the task line is: {drawn:?}"
+        );
+        assert!(
+            drawn.iter().any(|row| row.starts_with("ask-a1b ┈")),
+            "the rule stands: {drawn:?}"
+        );
+        assert!(
+            drawn.iter().any(|row| row.contains("Which fixture")),
+            "and a row of what the card says: {drawn:?}"
+        );
+    }
+
+    #[test]
+    fn card_line_offers_its_words_under_the_card() {
+        // The words the line under the cursor could be stand in a band under
+        // the card and over the keys, exactly where the task line's stand:
+        // the card's line offers the same words, and the band is the same
+        // band.
+        let question = || asking(&["the sqlite one"], Some(Kind::Question));
+        let mut screen = answering(question(), "/rev");
+        if let Mode::Typing(line) = &mut screen.mode {
+            line.suggest = Some(act::Suggest {
+                word: 0..4,
+                entries: ["/review", "/revise"]
+                    .iter()
+                    .map(|spelled| crate::catalog::Entry {
+                        spelled: spelled.to_string(),
+                        kind: crate::catalog::Kind::Skill,
+                        about: String::new(),
+                    })
+                    .collect(),
+                chosen: 0,
+            });
+        }
+        let drawn = painted(&screen, (60, 20));
+        let line = drawn
+            .iter()
+            .position(|row| row.starts_with("❯ /rev"))
+            .expect("the line");
+        assert!(drawn[line + 1].contains("/review"), "{drawn:?}");
+        assert!(drawn[line + 2].contains("/revise"), "{drawn:?}");
+        assert!(
+            drawn[19].contains("esc closes it"),
+            "with the keys still the last row: {drawn:?}"
+        );
+    }
+
+    #[test]
     fn card_stands_at_the_foot_under_a_rule_that_says_whose_it_is() {
         let screen = drawn(
             a_fleet(),
@@ -1665,7 +1823,9 @@ mod tests {
             0,
             "and so does the line at its foot: {line:?}"
         );
-        for row in said {
+        // Bar the blank row the line stands off the rest by, which says
+        // nothing and stands nowhere.
+        for row in said.iter().filter(|row| !row.is_empty()) {
             assert!(
                 row.starts_with("  ") && !row.starts_with("   "),
                 "and what the card says stands two cells in, under that \
@@ -2551,6 +2711,6 @@ mod tests {
         // The one row left after the cut, not the six rows the capture has: a
         // card that measured before it cut would spend its height on the
         // vendor's furniture. Two with the rule over it.
-        assert_eq!(card_rows(&card.read(), None, &[], false, 60), 2);
+        assert_eq!(card_rows(&card.read(), None, &[], None, 60), 2);
     }
 }
