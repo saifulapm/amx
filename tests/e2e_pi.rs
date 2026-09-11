@@ -300,6 +300,12 @@ fn listed(amx: &Harness, id: &str) -> Value {
 /// what that many looks at a look a second always meant.
 const SETTLED: u64 = 30;
 
+/// How long what a vendor reported is believed before a reader looks at the
+/// pane instead: `derive::FRESH` seconds. Spelled here for the same reason
+/// [`SETTLED`] is, and because what a beat buys is a turn still read as
+/// running long after its last hook.
+const FRESH: u64 = 8;
+
 /// amx's own names for the two edges of a turn a reading places.
 ///
 /// Spelled here rather than read out of the binary: the event log is a
@@ -2069,6 +2075,96 @@ fn an_adopted_pi_streams_what_it_is_saying_to_the_record_the_hook_named() {
     assert!(
         !amx.agent_dir(id).join("live").exists(),
         "and the stream is taken away before the turn settles"
+    );
+}
+
+#[test]
+fn a_beating_pi_is_working_past_the_window_and_unknown_once_the_beating_stops() {
+    // What a vendor reported is believed for `FRESH` seconds and then the pane
+    // is read instead. A turn sends nothing between its tool calls, so a
+    // forty-second call leaves the record quiet for forty seconds — and the
+    // screen under it is not always one a rule claims, because the two things
+    // a mid-turn pi is recognised by, the braille frames and the stats line,
+    // are both an extension's to redraw. A turn that was plainly still going
+    // read `unknown` from ten seconds in.
+    //
+    // The extension is alive for as long as the turn is, so it beats beside
+    // the record to say so, and a reader told the turn goes on does not ask
+    // the pane. Neither pane below is asked anything it can answer: with no
+    // screen step in either timeline the stand-in draws not one of pi's
+    // screens, and what is on both panes is the line it opens with.
+    let amx = Harness::new();
+
+    // One pi beating for longer than this test can take to read it, so what it
+    // reads is never a beat that stopped while it was looking.
+    let beating = "fix-login-a1b";
+    let mut steps = String::from("hook session_start {}\nhook agent_start {}\n");
+    for _ in 0..50 {
+        steps.push_str("heartbeat\nsleep 400\n");
+    }
+    steps.push_str("sleep 600000\n");
+    start_playing(&amx, beating, &timeline(&amx, beating, &steps));
+
+    // And one whose beating stopped mid-turn with nothing else said, which is
+    // a record no side is speaking for any more.
+    let stopped = "fix-logout-c3d";
+    let ended = timeline(
+        &amx,
+        stopped,
+        "hook session_start {}\nhook agent_start {}\n\
+         heartbeat\nsleep 2000\nheartbeat off\nsleep 600000\n",
+    );
+    start_playing(&amx, stopped, &ended);
+
+    for id in [beating, stopped] {
+        amx.until_state(id, "working");
+    }
+    // Beating and then stopped, watched in that order: a file that is not
+    // there yet and one that has been taken away are the same empty directory,
+    // and only the second of them is what this half is about.
+    let beat = amx.agent_dir(stopped).join("heartbeat");
+    amx.until("the second pi to beat", || beat.exists().then_some(()));
+    amx.until("and to stop beating", || (!beat.exists()).then_some(()));
+
+    // Both records now say a turn is running and that nothing has been heard
+    // for an hour, which is far outside the window a report is believed in.
+    // Whatever still speaks for one of them is the beat and nothing else.
+    for id in [beating, stopped] {
+        amx.set_state(
+            id,
+            json!({ "state": "working", "since": 1, "last_event": 1 }),
+        );
+    }
+
+    let agent = status(&amx, beating);
+    assert_eq!(agent["state"], "working", "{agent}");
+    assert_eq!(
+        agent["evidence"], "hooks",
+        "a beat is the vendor's own report that the turn goes on: {agent}"
+    );
+    assert!(
+        agent["rule"].is_null(),
+        "and nothing on the pane says so: no rule claims it: {agent}"
+    );
+    assert!(
+        agent["age"].as_u64().is_some_and(|age| age < FRESH),
+        "the beat is the last thing heard, not the hour-old record: {agent}"
+    );
+    assert!(
+        amx.agent_dir(beating).join("heartbeat").exists(),
+        "beaten beside the record, which is where a reader looks"
+    );
+
+    let agent = status(&amx, stopped);
+    assert_eq!(
+        agent["state"], "unknown",
+        "a record nothing speaks for, over a screen no rule claims: {agent}"
+    );
+    assert_eq!(agent["evidence"], "unknown", "{agent}");
+    assert!(agent["rule"].is_null(), "{agent}");
+    assert!(
+        agent["age"].as_u64().is_some_and(|age| age > FRESH),
+        "with how long it has been since anything was heard: {agent}"
     );
 }
 

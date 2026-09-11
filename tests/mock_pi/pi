@@ -78,6 +78,14 @@
 #                   report was answered with, and renamed in. Bare `live`
 #                   takes it away, as the extension does when a message ends.
 #                   Before any report was answered there is nowhere to write.
+#   heartbeat       beat, the way the extension beats while a turn runs:
+#                   `heartbeat` touched in that same directory, so the record
+#                   says the turn is still going between one report and the
+#                   next. What is written in it is nothing — its mtime is the
+#                   whole of what a reader takes from it — and a scenario beats
+#                   by writing the step as often as the turn it is replaying
+#                   would. `heartbeat off` takes the file away, as the
+#                   extension does when the turn settles.
 #
 # Environment:
 #   MOCK_PI_SCENARIO   the scenario to replay (required, except on a run that
@@ -577,6 +585,18 @@ say() {
 	printf '%s' "$1" >"$record/live.tmp" && mv "$record/live.tmp" "$record/live"
 }
 
+# One beat, beside the same record. The extension writes this file every few
+# seconds for as long as a turn runs and takes it away when the turn settles;
+# a scenario says when each of those happens.
+beat() {
+	[ -n "$record" ] || return 0
+	if [ "$1" = off ]; then
+		rm -f "$record/heartbeat"
+		return 0
+	fi
+	: >"$record/heartbeat"
+}
+
 # One line of the session file, which is what pi appends to as a turn runs.
 transcribe() {
 	[ -n "$session" ] || return 0
@@ -598,6 +618,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 	hook) deliver "$rest" ;;
 	transcript) transcribe "$rest" ;;
 	live) say "$rest" ;;
+	heartbeat) beat "$rest" ;;
 	*)
 		echo "mock pi: $scenario: no step called \`$verb\`" >&2
 		exit 65
