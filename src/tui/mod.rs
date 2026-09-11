@@ -1698,13 +1698,13 @@ impl Screen {
                 Look::Away => self.look_closer(root),
                 _ => self.look_away(),
             },
-            // The same two levels under the letters vim moves between them
-            // with: l goes in to the card, h comes back out. Directional
-            // rather than a toggle, and neither of them is enter — an attach
-            // hands the terminal to tmux and leaves the view altogether, which
-            // is not something a letter this easy to hit should do.
+            // The letter vim goes in with, beside the space above it. Not
+            // enter — an attach hands the terminal to tmux and leaves the view
+            // altogether, which is not something a letter this easy to hit
+            // should do. Nothing comes back out this way: a card ends with a
+            // line, so the letters over one are characters and esc is the key
+            // that closes it.
             KeyCode::Char('l') if plain => self.look_closer(root),
-            KeyCode::Char('h') if plain => self.look_away(),
             // One layer a press, innermost first: the card is in front of the
             // list, so it goes before the list changes under it. A narrowing
             // outlives the line it was typed on, so the key that drops one has
@@ -1770,10 +1770,6 @@ impl Screen {
                     self.mode = Mode::Typing(composer);
                 }
             }
-            // A reply is typed on the card, whatever the agent is doing: the
-            // line is the card's last row, and opening the card is what puts
-            // it in front of somebody.
-            KeyCode::Char('r') if plain => self.look_closer(root),
             KeyCode::Char('d') if plain => {
                 if let Some(view) = self.list.selected() {
                     match act::changes(root, view) {
@@ -5611,7 +5607,7 @@ mod tests {
 
         screen
             .act(
-                KeyEvent::from(KeyCode::Char('r')),
+                KeyEvent::from(KeyCode::Char(' ')),
                 root.path(),
                 &config,
                 None,
@@ -5619,7 +5615,7 @@ mod tests {
             .unwrap();
         assert!(
             screen.answering().is_some(),
-            "the reply key opens the card the choices are on"
+            "the card the choices are on opens with the line to answer on"
         );
 
         // An agent between turns takes a message on that same line: the card
@@ -5635,7 +5631,7 @@ mod tests {
         )]);
         screen
             .act(
-                KeyEvent::from(KeyCode::Char('r')),
+                KeyEvent::from(KeyCode::Char(' ')),
                 root.path(),
                 &config,
                 None,
@@ -6594,6 +6590,26 @@ mod tests {
                     named(key)
                 );
             }
+        }
+    }
+
+    #[test]
+    fn keymap_the_letters_the_card_gave_up_are_bound_nowhere() {
+        let root = TempDir::new().unwrap();
+        // Both belonged to the card: r opened it and h put it away. Every card
+        // ends with a line now, so over one they are characters, and a letter
+        // bound on the list alone would be a key that means one thing on half
+        // the screens there are. space and l open the card and esc puts it
+        // away, which is the whole of what these two were for.
+        for key in [
+            KeyEvent::from(KeyCode::Char('r')),
+            KeyEvent::from(KeyCode::Char('h')),
+        ] {
+            assert!(
+                !acts_on(key, root.path(), |_| {}),
+                "{} is not a key of this view",
+                named(key)
+            );
         }
     }
 

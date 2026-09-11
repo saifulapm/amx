@@ -42,16 +42,16 @@ use crate::tui::grid;
 ///
 /// The table is not public to the rest of the crate, so the test that checks
 /// the README against it reads this file as text.
-pub(in crate::tui) const HELP: [(&str, &str); 39] = [
+pub(in crate::tui) const HELP: [(&str, &str); 38] = [
     // walk
     ("↑ ↓ j k", "walk the agents"),
     ("gg G", "the top of the list, and the foot"),
     ("alt+1..9", "reach one by where it is on the wall"),
-    ("esc h", "put the card away · leave a line alone"),
+    ("esc", "put the card away · leave a line alone"),
     ("?", "these keys"),
     ("q ctrl+c", "close the view"),
     // look
-    ("space l", "the card: what one is asking, and the answer"),
+    ("space l", "the card, and an answer or a message on it"),
     ("enter →", "bring its window forward · shut a group"),
     ("d", "what it has changed"),
     ("pgup ctrl+b", "page the card, when it holds more"),
@@ -62,7 +62,6 @@ pub(in crate::tui) const HELP: [(&str, &str); 39] = [
     ("n", "start an agent"),
     ("alt+n", "start the line and go to the agent"),
     ("!", "run the line as a command, not a task"),
-    ("r", "reply: a message, or an answer on the card"),
     ("shift+enter", "a newline in the line, without sending it"),
     ("alt+enter", "the same, where shift+enter does not arrive"),
     ("ctrl+j", "the same, where neither of those arrives"),
@@ -101,7 +100,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 39] = [
 pub(super) const GROUPS: [(&str, usize); 5] = [
     ("walk", 6),
     ("look", 7),
-    ("start", 11),
+    ("start", 10),
     ("arrange", 8),
     ("dials", 7),
 ];
@@ -224,7 +223,7 @@ fn dealt(width: usize) -> Vec<Range<usize>> {
 }
 
 /// Where those two columns part, which for the table as it stands is after
-/// `start`: fifteen keys against fourteen.
+/// `start`: twenty-three keys against fifteen.
 fn cut() -> usize {
     let total: usize = GROUPS.iter().map(|(_, under)| under).sum();
     (1..GROUPS.len())

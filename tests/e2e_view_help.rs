@@ -166,7 +166,7 @@ fn the_keys_are_on_the_screen_for_the_asking() {
     });
     for does in [
         "start an agent",
-        "reply",
+        "an answer or a message on it",
         "what it has changed",
         "stop it",
         "call it something else",

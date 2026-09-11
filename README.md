@@ -337,13 +337,12 @@ table.
 | --- | ------------ |
 | `↑` `↓` `j` `k` | walk the agents |
 | `gg` `G` | the top of the list, and the foot |
-| `space` `l` | the card: what one is asking, and the answer |
+| `space` `l` | the card, and the line on it for an answer or a message |
 | `enter` `→` | put its session in front of you, or shut the group under the cursor |
-| `esc` `h` | put the card away, or leave a line alone |
+| `esc` | put the card away, or leave a line alone |
 | `n` | start an agent, and the cursor goes to its row |
 | `alt+n` | start the line and go to the agent it started |
 | `!` | leading the task line, run it as a command rather than give it to an agent |
-| `r` | reply: a message, or an answer on the card |
 | `d` | what it has changed |
 | `pgup` `ctrl+b` | page the card, when it holds more |
 | `pgdn` `ctrl+f` | and the other way |
