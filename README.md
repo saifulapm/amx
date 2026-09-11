@@ -398,10 +398,14 @@ on the end of its last answer, where the conclusion of it is, with the rest of
 that answer and every earlier turn a page up. One that is working ends on a
 live tail, standing off the record above it by a blank row: the last few rows
 of what pi is saying at this moment, streamed by the extension `doctor --fix`
-installs, or, for claude, of its pane with the composer and statusline cut,
-tracking output as it lands. It is kept short enough that a row of the record
-stays above it, and where the cut leaves nothing — the seconds between a turn
-starting and its first word landing — the card is the record alone. A command
+installs, or, for claude, of its pane, tracking output as it lands. Of the pane
+the tail is what the vendor drew this turn: the composer and statusline are cut
+off the bottom, everything above the vendor's echo of the prompt — its banner,
+a warning it printed on starting, the turns before this one — off the top, and
+the backgrounds it boxes its rows in off the paint, so the words arrive in their
+colour and weight and nothing else. It is kept short enough that a row of the
+record stays above it, and where the cut leaves nothing — the seconds between a
+turn starting and its first word landing — the card is the record alone. A command
 row is neither: its card is the last quarter megabyte of the file its pane is
 piped into, which is more rows than a card is paged through and the same cost
 however long the command has printed — the end of that while the command runs

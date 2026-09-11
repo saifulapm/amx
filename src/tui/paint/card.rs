@@ -144,8 +144,9 @@ pub struct Body {
 pub enum Live {
     /// Streamed by the vendor's own report, whole.
     Text(String),
-    /// The pane as it stands, in the vendor's paint, with that vendor's own
-    /// furniture to cut off the bottom of it.
+    /// The pane as it stands, with that vendor's own furniture to cut off the
+    /// bottom of it, and everything above its echo of the prompt to cut off
+    /// the top — see [`Body::since_the_prompt`].
     Screen(&'static Furniture, String),
 }
 
@@ -249,15 +250,16 @@ impl Body {
         if let Some(live) = live {
             let mut tail = match live {
                 Live::Text(text) => prose::render(&text, width, theme),
-                Live::Screen(chrome, capture) => {
-                    let walked = Body::walk(&capture, Some(chrome));
-                    walked.rows.into_iter().take(walked.kept).collect()
-                }
+                Live::Screen(chrome, capture) => Body::since_the_prompt(&capture, chrome, said),
             };
-            // The end of it, where what is landing is — see [`TAIL`].
+            // The end of it, where what is landing is — see [`TAIL`] — and
+            // nothing blank at either edge: the row that stands the tail off
+            // the record is the card's own, below.
             while tail.last().is_some_and(&blank) {
                 tail.pop();
             }
+            let padding = tail.iter().take_while(|row| blank(row)).count();
+            tail.drain(..padding);
             let skipped = tail.len().saturating_sub(TAIL);
             // The blank row that stands the tail off the record above it, only
             // where there are rows under it. A turn between its first token and
@@ -313,6 +315,43 @@ impl Body {
     /// chrome where it is.
     pub(in crate::tui) fn screen(chrome: &Furniture, text: &str) -> Body {
         Body::walk(text, Some(chrome))
+    }
+
+    /// What the pane drew this turn: the rows under the vendor's echo of the
+    /// prompt the turn is on, with the furniture off the bottom and every
+    /// background off the paint.
+    ///
+    /// Everything above that echo is older than the record — the vendor's
+    /// banner, a warning it printed on starting, the turns before this one —
+    /// and every word of it the card wants is on the record already, drawn
+    /// rather than pictured. Off a dogfood on 2026-09-11: claude's logo and
+    /// version stood in the tail of every turn's first seconds, because a pane
+    /// that has drawn a prompt and a spinner has drawn little else. A pane the
+    /// echo has scrolled off is one whose banner scrolled off before it, and
+    /// it is kept whole. The last echo where there are several, because the
+    /// turn is on the last prompt.
+    ///
+    /// No background, because a vendor boxes what it draws — pi its prompts
+    /// and its tool calls, claude its echo of the prompt — and on a card whose
+    /// rows are already dressed as what they are a box is a block of colour
+    /// around some of them. The words keep their colour and their weight.
+    fn since_the_prompt(capture: &str, chrome: &Furniture, said: &[Said]) -> Vec<Line<'static>> {
+        let walked = Body::walk(capture, Some(chrome));
+        let mut rows: Vec<Line<'static>> = walked.rows.into_iter().take(walked.kept).collect();
+        let prompt = said.iter().rev().find_map(|one| match one {
+            Said::Prompt(text) => Some(text.as_str()),
+            _ => None,
+        });
+        let echo = prompt.and_then(|prompt| rows.iter().rposition(|row| echoes(row, prompt)));
+        if let Some(echo) = echo {
+            rows.drain(..=echo);
+        }
+        for row in &mut rows {
+            for span in &mut row.spans {
+                span.style.bg = None;
+            }
+        }
+        rows
     }
 
     /// What an agent said: a recorded answer, or whatever an agent whose
@@ -857,6 +896,33 @@ pub(in crate::tui) fn walks() -> usize {
 /// row begins or what is on it.
 fn words(row: &[Painted]) -> String {
     row.iter().map(|run| run.text.as_str()).collect()
+}
+
+/// How much of a prompt's first line names it on the pane, in letters and
+/// digits: enough that two prompts opening alike are still told apart, and
+/// few enough to sit on the first row of the echo at any width.
+const ECHO: usize = 24;
+
+/// Whether a captured row is the vendor's echo of `prompt`.
+///
+/// The vendor draws the prompt back in its own dress — a glyph in front of it,
+/// a box around it, the backticks of its markdown rendered away — so the two
+/// are compared with everything but their letters and digits taken out, and
+/// the row has to open with the head of the prompt rather than merely hold
+/// it: a short prompt is a short word, and a row that mentions it further
+/// along is not its echo.
+fn echoes(row: &Line<'static>, prompt: &str) -> bool {
+    let squeezed =
+        |text: &str| -> String { text.chars().filter(|c| c.is_alphanumeric()).collect() };
+    let head: String = squeezed(prompt.lines().next().unwrap_or_default())
+        .chars()
+        .take(ECHO)
+        .collect();
+    if head.is_empty() {
+        return false;
+    }
+    let words: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
+    squeezed(&words).starts_with(&head)
 }
 
 /// One captured row, drawn the way the vendor drew it.
@@ -1432,50 +1498,119 @@ mod tests {
     }
 
     #[test]
-    fn card_paints_a_box_the_pane_opened_on_one_row_and_closed_rows_later() {
-        // pi draws a prompt in a box three rows tall, and tmux writes that
-        // box down as one escape: `capture-pane -e` puts an attribute where
-        // it changes and leaves it in force, so the background opens on the
-        // padding row over the text and the text row carries no escape of
-        // its own. A walk that reset the paint at every row painted the two
-        // padding rows and not the words between them — half a box, which
-        // is what Saiful saw on 2026-09-11. Measured off pi 0.85.1.
-        let pane = "\x1b[38;2;110;114;135m  qshell\x1b[39m\n\n\x1b[48;2;33;34;47m    \n \x1b[38;2;205;214;244mCan you explain\x1b[39m  \n    \n\x1b[0m\nplain\n";
+    fn card_tail_is_what_the_pane_drew_since_it_echoed_the_prompt() {
+        // pi's pane at the start of a turn, as tmux writes it: what it drew
+        // on starting, the prompt echoed back in a box three rows tall whose
+        // background opens once and stays in force, and the tool call in a
+        // box of its own. The record has the prompt, and the banner is nobody's
+        // work, so the tail is the tool call — and no box around it. Measured
+        // off pi 0.85.1 on 2026-09-11.
+        let pane = "\x1b[38;2;245;194;231m[Themes]\x1b[39m\n\x1b[38;2;110;114;135m  qshell\x1b[39m\n\n\x1b[48;2;33;34;47m    \n \x1b[38;2;205;214;244mUse your bash tool to run \x1b[38;2;148;226;213msleep 150\x1b[39m  \n    \n\x1b[0m\n\x1b[48;2;36;41;60m    \n \x1b[1m\x1b[38;2;137;180;250m$ sleep 150\x1b[0m\x1b[48;2;36;41;60m (timeout 160s)\n    \n Elapsed 22.0s\x1b[0m\n";
+        let told = vec![Said::Prompt(
+            "Use your bash tool to run `sleep 150` and then reply done.".to_string(),
+        )];
         let pictured = Body::conversation(
-            &[Said::Prompt("Can you explain".to_string())],
+            &told,
             Some(Live::Screen(
                 crate::rules::of("pi").furniture(),
                 pane.to_string(),
             )),
-            30,
+            60,
             theme(),
         );
-        let bg_of = |row: &Line<'static>| -> Vec<Option<Color>> {
-            row.spans.iter().map(|span| span.style.bg).collect()
-        };
-        let rows = &pictured.rows;
-        // The words are on the record's prompt first, so the box's own text
-        // row is the last row holding them.
-        let text = rows
+        // The box's padding rows are rows of spaces on the pane, and stay so.
+        let said = pictured.says();
+        let trimmed: Vec<&str> = said.lines().map(str::trim_end).collect();
+        assert_eq!(
+            trimmed.join("\n"),
+            "❯ Use your bash tool to run sleep 150 and then reply done.\n\n $ sleep 150 (timeout 160s)\n\n Elapsed 22.0s",
+            "the tail opens under the echo, on its first row of words"
+        );
+        assert!(
+            pictured
+                .rows
+                .iter()
+                .flat_map(|row| row.spans.iter())
+                .all(|span| span.style.bg.is_none()),
+            "no box on the card"
+        );
+        let command = pictured
+            .rows
             .iter()
-            .rposition(|row| {
+            .find(|row| {
                 row.spans
                     .iter()
-                    .any(|span| span.content.contains("Can you explain"))
+                    .any(|span| span.content.contains("$ sleep"))
             })
-            .expect("the box's own text row");
-        let box_bg = Some(Color::Rgb(33, 34, 47));
-        for at in [text - 1, text, text + 1] {
-            let bgs = bg_of(&rows[at]);
-            assert!(
-                !bgs.is_empty() && bgs.iter().all(|bg| *bg == box_bg),
-                "row {at} of the box is painted whole: {bgs:?}"
-            );
-        }
+            .expect("the tool call");
         assert!(
-            bg_of(&rows[text + 3]).iter().all(Option::is_none),
-            "and the row after the box is not: {:?}",
-            bg_of(&rows[text + 3])
+            command
+                .spans
+                .iter()
+                .any(|span| span.style.add_modifier.contains(Modifier::BOLD)),
+            "and the words keep their weight: {command:?}"
+        );
+    }
+
+    #[test]
+    fn card_tail_leaves_the_vendor_s_banner_above_the_echo_behind() {
+        // claude's pane in the first seconds of a turn: its logo and version
+        // over the echo of the prompt, drawn on a background of its own and
+        // with the prompt's backticks rendered away, then what it is doing.
+        // Measured off claude 2.1.263 on 2026-09-11.
+        let mut pane = String::from(
+            "\x1b[38;5;174m ▐▛███▜▌\x1b[39m   \x1b[1mClaude Code\x1b[0m \x1b[38;5;145mv2.1.263\n▝▜█████▛▘  Haiku 4.5 · Claude Max\n  ▘▘ ▝▝    ~/Sites/github/amx\n\n\x1b[38;5;102m\x1b[48;5;59m❯ \x1b[38;5;189mUse the Bash tool to run \x1b[38;5;153msleep 100\x1b[38;5;189m, then reply done.\x1b[39m  \n\x1b[49m  Sleeping for 100 seconds · 7s\n  ⎿  $ sleep 100 (7s)\n\n",
+        );
+        pane.push_str("● Marinating… (5s)\n\n────\n❯ \n────\n  statusline\n  ⏸ manual mode on\n");
+        let told = vec![Said::Prompt(
+            "Use the Bash tool to run `sleep 100`, then reply done.".to_string(),
+        )];
+        let pictured = Body::conversation(
+            &told,
+            Some(Live::Screen(crate::rules::of("claude").furniture(), pane)),
+            60,
+            theme(),
+        );
+        assert_eq!(
+            pictured.says(),
+            "❯ Use the Bash tool to run sleep 100, then reply done.\n\n  Sleeping for 100 seconds · 7s\n  ⎿  $ sleep 100 (7s)",
+            "neither the banner nor the echo, and no spinner"
+        );
+
+        // A pane the echo has scrolled off — a turn that has drawn a screenful
+        // since — is kept whole: its banner went before its prompt did.
+        let scrolled = "  ⎿  Read 40 lines\n\n● Marinating…\n\n────\n❯ \n────\n  statusline\n  ⏸ manual mode on\n";
+        let kept = Body::conversation(
+            &told,
+            Some(Live::Screen(
+                crate::rules::of("claude").furniture(),
+                scrolled.to_string(),
+            )),
+            60,
+            theme(),
+        );
+        assert!(
+            kept.says().ends_with("  ⎿  Read 40 lines"),
+            "{:?}",
+            kept.says()
+        );
+
+        // And a prompt that opens the way the pane's own words do somewhere
+        // further along a row is not echoed there.
+        let mentioned = vec![Said::Prompt("done".to_string())];
+        let kept = Body::conversation(
+            &mentioned,
+            Some(Live::Screen(
+                crate::rules::of("claude").furniture(),
+                scrolled.to_string(),
+            )),
+            60,
+            theme(),
+        );
+        assert!(
+            kept.says().ends_with("  ⎿  Read 40 lines"),
+            "{:?}",
+            kept.says()
         );
     }
 
