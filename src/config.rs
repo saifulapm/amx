@@ -1,4 +1,4 @@
-//! `~/.config/amx/config.toml` — twelve keys and a table per harness — with a
+//! `~/.config/amx/config.toml` — sixteen keys and a table per harness — with a
 //! project's own `<project>/.amx/config.toml` laid over it.
 //!
 //! Config is a convenience, never a gate: a file that cannot be read or
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 /// Every key the file may carry, beside the harness tables. Anything else is
 /// warned about and ignored.
-pub const KNOWN_KEYS: [&str; 12] = [
+pub const KNOWN_KEYS: [&str; 16] = [
     "agent",
     "max_agents",
     "max_total",
@@ -28,6 +28,10 @@ pub const KNOWN_KEYS: [&str; 12] = [
     "summary_command",
     "theme",
     "park_after",
+    "copy",
+    "link",
+    "setup",
+    "base",
 ];
 
 /// What one harness says about itself, in a table of its own named after the
@@ -106,6 +110,29 @@ pub struct Config {
     /// here — never let a pane go — and an hour is what amx does where nobody
     /// has said otherwise.
     pub park_after: u64,
+    /// Files copied from the repository root into a tree amx cuts, before the
+    /// agent's pane starts.
+    ///
+    /// A checkout git has just made is missing whatever git is right not to
+    /// carry — a `.env`, a key, a local override — and without them an agent's
+    /// first turn goes on a failure nobody learns anything from. Exact paths,
+    /// relative to the repository root: what belongs here is the two or three
+    /// files somebody can name, and a glob is how a secret nobody meant to
+    /// copy ends up in a tree.
+    pub copy: Vec<String>,
+    /// Directories in a tree that point at the repository's own, under the
+    /// same rule. A `node_modules` an agent shares is an install it does not
+    /// spend its first turn on.
+    pub link: Vec<String>,
+    /// What runs in a fresh tree before the pane starts, in order, each
+    /// through `sh -c`. The first that fails refuses the spawn and the tree is
+    /// removed, because a tree an agent cannot work in is worse than no tree.
+    pub setup: Vec<String>,
+    /// What a tree is cut from: anything git resolves to a commit. Absent is
+    /// HEAD where `new` was typed, which is what a checkout somebody is
+    /// standing in already means, so there is no value here that says it and
+    /// an `Option` is the honest shape.
+    pub base: Option<String>,
     /// What each harness the file names says about itself, keyed by the
     /// program that harness runs.
     ///
@@ -142,6 +169,10 @@ impl Default for Config {
             summary_command: None,
             theme: "default".to_string(),
             park_after: 3600,
+            copy: Vec::new(),
+            link: Vec::new(),
+            setup: Vec::new(),
+            base: None,
             harnesses: BTreeMap::new(),
         }
     }
@@ -463,6 +494,12 @@ mod tests {
         assert_eq!(c.theme, "default");
         // An hour of sitting idle with nobody attached, and the pane goes.
         assert_eq!(c.park_after, 3600);
+        // A fresh tree is furnished with nothing until somebody says what, and
+        // is cut from HEAD until somebody names a base.
+        assert!(c.copy.is_empty());
+        assert!(c.link.is_empty());
+        assert!(c.setup.is_empty());
+        assert_eq!(c.base, None);
         // No harness says anything about itself until a table of its own does.
         assert!(c.harnesses.is_empty());
     }
@@ -574,6 +611,26 @@ mod tests {
         let (c, w) = parse("park_after = 0").unwrap();
         assert_eq!(c.park_after, 0);
         assert!(w.is_empty(), "{w:?}");
+
+        let (c, w) = parse("copy = [\".env\", \"config/local.toml\"]").unwrap();
+        assert_eq!(c.copy, [".env", "config/local.toml"]);
+        assert!(c.link.is_empty());
+        assert!(w.is_empty(), "{w:?}");
+
+        let (c, w) = parse("link = [\"node_modules\"]").unwrap();
+        assert_eq!(c.link, ["node_modules"]);
+        assert!(c.copy.is_empty());
+        assert!(w.is_empty(), "{w:?}");
+
+        let (c, w) = parse("setup = [\"pnpm install\", \"pnpm build\"]").unwrap();
+        assert_eq!(c.setup, ["pnpm install", "pnpm build"]);
+        assert!(c.link.is_empty());
+        assert!(w.is_empty(), "{w:?}");
+
+        let (c, w) = parse("base = \"main\"").unwrap();
+        assert_eq!(c.base.as_deref(), Some("main"));
+        assert!(c.setup.is_empty());
+        assert!(w.is_empty(), "{w:?}");
     }
 
     #[test]
@@ -592,6 +649,10 @@ mod tests {
                 summary_command = "summarise"
                 theme = "terminal"
                 park_after = 900
+                copy = [".env"]
+                link = ["node_modules"]
+                setup = ["pnpm install"]
+                base = "main"
             "#,
         )
         .unwrap();
@@ -607,10 +668,14 @@ mod tests {
         assert_eq!(c.summary_command.as_deref(), Some("summarise"));
         assert_eq!(c.theme, "terminal");
         assert_eq!(c.park_after, 900);
+        assert_eq!(c.copy, [".env"]);
+        assert_eq!(c.link, ["node_modules"]);
+        assert_eq!(c.setup, ["pnpm install"]);
+        assert_eq!(c.base.as_deref(), Some("main"));
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(
             KNOWN_KEYS.len(),
-            12,
+            16,
             "a key this file does not name is a key nothing here proves"
         );
     }
@@ -739,6 +804,9 @@ mod tests {
         assert!(parse("max_agents = \"five\"").is_err());
         assert!(parse("worktrees = \"yes\"").is_err());
         assert!(parse("theme = 3").is_err());
+        // A path is one of a list, however few the list holds.
+        assert!(parse("copy = \".env\"").is_err());
+        assert!(parse("base = 3").is_err());
     }
 
     #[test]
@@ -834,6 +902,41 @@ mod tests {
             c.harness(name).args.is_empty(),
             "the table, not a key of it"
         );
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn a_project_file_lays_each_of_the_worktree_keys_over_the_persons() {
+        // What a tree is furnished with and cut from is a fact about the
+        // repository rather than about whoever is working in it, so these four
+        // are the keys a project file is most likely to be written for.
+        let dir = TempDir::new().unwrap();
+        let person = wrote(
+            dir.path(),
+            "person.toml",
+            "copy = [\".env\"]\nlink = [\"node_modules\"]\nsetup = [\"make\"]\nbase = \"main\"\n",
+        );
+        let project = wrote(
+            dir.path(),
+            "project.toml",
+            "copy = [\".env.local\"]\nlink = [\"vendor\"]\nsetup = [\"pnpm install\"]\nbase = \"develop\"\n",
+        );
+
+        let (c, w) = layered(&[person.clone(), project]);
+        assert_eq!(c.copy, [".env.local"]);
+        assert_eq!(c.link, ["vendor"]);
+        assert_eq!(c.setup, ["pnpm install"]);
+        assert_eq!(c.base.as_deref(), Some("develop"));
+        assert!(w.is_empty(), "{w:?}");
+
+        // A list laid over another is that list entire, and the keys beside it
+        // are still the person's.
+        let one = wrote(dir.path(), "one-key.toml", "setup = [\"cargo build\"]\n");
+        let (c, w) = layered(&[person, one]);
+        assert_eq!(c.setup, ["cargo build"]);
+        assert_eq!(c.copy, [".env"]);
+        assert_eq!(c.link, ["node_modules"]);
+        assert_eq!(c.base.as_deref(), Some("main"));
         assert!(w.is_empty(), "{w:?}");
     }
 

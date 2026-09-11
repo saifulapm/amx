@@ -1205,7 +1205,7 @@ the notice is handed over and never waited for.
 
 ## Configuration
 
-`~/.config/amx/config.toml`, twelve keys and a table per harness:
+`~/.config/amx/config.toml`, sixteen keys and a table per harness:
 
 ```toml
 agent = "claude"        # the command a new agent runs: claude, pi or your own
@@ -1226,7 +1226,24 @@ effort = "high"
 # What writes the one line a turn is worth, finished or still running. Left
 # out, nothing runs.
 summary_command = "claude -p 'Sum this up in eight words. Answer with the words alone.'"
+
+# What a fresh worktree is furnished with, and what it is cut from.
+copy = [".env"]
+link = ["node_modules"]
+setup = ["pnpm install"]
+base = "main"
 ```
+
+A tree git has just cut is a clean checkout, so the first turn in it goes on an
+install or a failed test rather than on the task. `copy` is the files taken
+from the repository root into the tree — the few git is right not to carry.
+`link` is the directories pointed at the repository's own, so an agent shares
+an install rather than making one of its own. `setup` is what runs in the tree,
+in order, through `sh -c`, before the pane starts. Paths are exact and relative
+to the repository root, no globs, and one that is not in the repository is
+warned about by name and skipped. `base` is what a tree is cut from — any
+branch, tag or commit git will resolve — and left out it is HEAD where you
+typed the command.
 
 Each harness amx has an entry for — claude and pi today — can have a table of
 its own, named after the command it runs:

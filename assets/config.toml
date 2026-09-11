@@ -2,7 +2,7 @@
 #
 # Copy this to ~/.config/amx/config.toml and change what you want changed. A
 # copy nobody edits runs exactly as no file at all would: every value here is
-# the one amx uses when the key is left out. Twelve keys and a table per
+# the one amx uses when the key is left out. Sixteen keys and a table per
 # harness; a key amx has never heard of is warned about and ignored, and a file
 # it cannot parse falls back to these defaults with a warning, because losing
 # an agent to a stray comma is the worse outcome.
@@ -73,6 +73,26 @@ theme = "default"
 # agent again where it left off. A pane somebody is attached to or has pinned
 # is never taken. 0 turns this off.
 park_after = 3600
+
+# What a fresh worktree is furnished with before its pane starts, so an agent's
+# first turn goes on the task rather than on an install or a failed test. Paths
+# are exact and relative to the repository root, no globs, and one that is not
+# in the repository is warned about by name and skipped.
+#
+# copy is files taken from the repository root into the tree: the few git is
+# right not to carry. link is directories pointed at the repository's own, so
+# an agent shares an install rather than making one of its own. setup is
+# commands run in the tree through sh -c, in order, with AMX_ID, AMX_WORKTREE,
+# AMX_REPO and AMX_AGENT_DIR set; the first that fails refuses the spawn and
+# the tree is removed, because a tree an agent cannot work in is worse than no
+# tree.
+# copy = [".env"]
+# link = ["node_modules"]
+# setup = ["pnpm install"]
+
+# What a tree is cut from: any branch, tag or commit git will resolve. Left
+# out, it is HEAD where you typed `amx new`.
+# base = "main"
 
 # One table per harness, named after the command that harness runs. There is a
 # table to be had for each harness amx has an entry for, claude and pi today,
