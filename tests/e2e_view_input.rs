@@ -747,6 +747,72 @@ fn the_composer_starts_an_agent_where_the_view_is() {
 }
 
 #[test]
+fn the_task_line_brings_back_the_tasks_sent_before_on_the_arrows_in_this_view_and_the_next() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches(&amx, "happy-turn");
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "port the importer");
+    press(&amx, &view, "Enter");
+    let id = composed(&amx);
+    assert!(id.starts_with("port-the-importer"), "{id}");
+    amx.until("the agent's own row", || {
+        screen(&amx, &view)
+            .contains("port-the-import")
+            .then_some(())
+    });
+
+    // A fresh task line, and up on it is the task just sent, whole, where the
+    // line was empty. The prompt glyph is what says it is on the line and not
+    // on the agent's row above it.
+    types(&amx, &view, "n");
+    press(&amx, &view, "Up");
+    amx.until("the task sent before, back on the line", || {
+        screen(&amx, &view)
+            .contains("❯ port the importer")
+            .then_some(())
+    });
+    // Down past the newest is the empty line the walk began on, still open.
+    press(&amx, &view, "Down");
+    amx.until("the empty line again", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("TASK") && !drawn.contains("❯ port the importer")).then_some(())
+    });
+
+    // The next view has it too: the lines sent are kept beside the wall's
+    // arrangement rather than with the view that sent them. The line is
+    // closed and seen closed before q, or the two bytes arrive as alt+q.
+    press(&amx, &view, "Escape");
+    amx.until("the line to close", || {
+        (!screen(&amx, &view).contains("TASK")).then_some(())
+    });
+    // The pane is held open past the command that was in it, so that closing
+    // the view is something this test can wait for rather than a pane that
+    // has simply gone.
+    amx.tmux(&["set-option", "-w", "-t", &view, "remain-on-exit", "on"]);
+    press(&amx, &view, "q");
+    amx.until("the view to close", || {
+        (pane_field(&amx, &view, "#{pane_dead}") == "1").then_some(())
+    });
+    let next = amx.in_a_terminal(&[], &[]);
+    // By what the name column has room for rather than the whole id: a wall
+    // this narrow elides the name, and the first view matched the id only
+    // because the notice under it named the agent it had just started.
+    amx.until("the row in the next view", || {
+        screen(&amx, &next)
+            .contains("port-the-import")
+            .then_some(())
+    });
+    types(&amx, &next, "n");
+    press(&amx, &next, "Up");
+    amx.until("the task sent before, in the next view", || {
+        screen(&amx, &next)
+            .contains("❯ port the importer")
+            .then_some(())
+    });
+}
+
+#[test]
 fn the_cursor_lands_on_the_agent_the_line_started() {
     let amx = Harness::new();
     let view = a_view_that_dispatches(&amx, "happy-turn");

@@ -478,7 +478,8 @@ fn chord(key: KeyEvent) -> KeyModifiers {
 /// it had arrows, plus the one that takes the line to an editor and the one a
 /// keyboard with no shift+enter breaks a line with. And the two arrows that
 /// walk the words offered under the line, for exactly as long as there are
-/// words offered: with none, they walk the wall.
+/// words offered: with none, they walk the wall. Held with alt they walk the
+/// lines sent before, words offered or not.
 fn the_lines(composer: &Composer, key: KeyEvent) -> bool {
     let plain = chord(key).is_empty();
     let ctrl = chord(key) == KeyModifiers::CONTROL;
@@ -490,7 +491,9 @@ fn the_lines(composer: &Composer, key: KeyEvent) -> bool {
         KeyCode::Enter | KeyCode::Esc | KeyCode::Tab => true,
         KeyCode::Backspace => plain || chord(key) == KeyModifiers::ALT,
         KeyCode::Delete | KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End => true,
-        KeyCode::Up | KeyCode::Down => plain && composer.suggest.is_some(),
+        KeyCode::Up | KeyCode::Down => {
+            (plain && composer.suggest.is_some()) || chord(key) == KeyModifiers::ALT
+        }
         _ => false,
     }
 }
@@ -686,6 +689,9 @@ struct Screen {
     beat: usize,
     /// When that frame came up.
     stepped: Option<Instant>,
+    /// The lines this view has sent, tasks and replies apart, for a line
+    /// being typed to walk back over.
+    sent: act::Backlog,
 }
 
 /// Open the view on this terminal and hold it until somebody closes it.
@@ -849,6 +855,8 @@ struct Remembered {
     statusline: bool,
     /// How somebody arranged the list, as the list itself states it.
     arrangement: Arrangement,
+    /// The lines the view has sent, for a later line to bring back.
+    sent: act::Backlog,
 }
 
 impl Remembered {
@@ -917,7 +925,9 @@ where
     // saying the arrangement is something it does rather than something
     // somebody said.
     if let Some(path) = remembering {
-        screen.list.arrange(Remembered::read(path).arrangement);
+        let remembered = Remembered::read(path);
+        screen.list.arrange(remembered.arrangement);
+        screen.sent = remembered.sent;
     }
 
     // What the terminal is called at the moment, so that it is said again when
@@ -2058,8 +2068,24 @@ impl Screen {
             // between. A line is one thing to walk along and the list under it
             // is another, so the keys that walk each of them are different
             // keys.
-            KeyCode::Up => composer.choose(-1),
-            KeyCode::Down => composer.choose(1),
+            KeyCode::Up if chord(key).is_empty() && composer.suggest.is_some() => {
+                composer.choose(-1)
+            }
+            KeyCode::Down if chord(key).is_empty() && composer.suggest.is_some() => {
+                composer.choose(1)
+            }
+            // The lines sent before, walked on the alt arrows on any line and
+            // on the plain ones on a task line, where nothing else has a use
+            // for them: a task line stands over a dimmed wall with no card for
+            // the arrows to move. The card's line keeps its plain arrows for
+            // the card.
+            KeyCode::Up | KeyCode::Down
+                if chord(key) == KeyModifiers::ALT
+                    || (chord(key).is_empty() && matches!(composer.asking, Asking::Task)) =>
+            {
+                let sent = self.sent.lines_for(&composer.asking);
+                composer.recall(sent, key.code == KeyCode::Up);
+            }
             // A key held down with control or alt is somebody reaching for
             // something else, not a character they meant to type.
             KeyCode::Char(typed)
@@ -2102,6 +2128,7 @@ impl Screen {
     fn replied(&mut self, said: Result<Replied>, composer: Composer) {
         match said {
             Ok(Replied::Yes(said)) => {
+                self.remember_line(&Asking::Reply, &composer.whole());
                 self.notice = Some(Notice::Advice(said));
                 self.acted();
             }
@@ -2327,6 +2354,7 @@ impl Screen {
             composer.under.as_deref(),
         ) {
             Ok(Started::Yes { id, said }) => {
+                self.remember_line(&Asking::Task, &composer.whole());
                 self.notice = Some(Notice::Advice(said));
                 self.acted();
                 if follow {
@@ -2761,6 +2789,21 @@ impl Screen {
         remembered.arrangement = self.list.arrangement();
         // Nothing on the screen is waiting on this, and the one line the view
         // has to say things on is worth more than a failure nobody can act on.
+        let _ = remembered.write(path);
+    }
+
+    /// Keep a line that has just been sent, for a later line to bring back.
+    ///
+    /// Written to the file as it happens, the way the arrangement is: the
+    /// line somebody wants back is as often wanted from the next view, after
+    /// this one was closed on the agent it started, as from this one.
+    fn remember_line(&mut self, asking: &Asking, line: &str) {
+        self.sent.remember_line(asking, line);
+        let Some(path) = self.remembering.as_ref() else {
+            return;
+        };
+        let mut remembered = Remembered::read(path);
+        remembered.sent = self.sent.clone();
         let _ = remembered.write(path);
     }
 }
@@ -4687,6 +4730,133 @@ mod tests {
     }
 
     #[test]
+    fn keys_alt_arrows_bring_back_the_lines_sent_and_the_plain_ones_keep_the_card_moving() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            finished_saying("done-a1b", "the answer"),
+            finished_saying("done-b2c", "another"),
+        ]);
+        screen.sent.remember_line(&Asking::Reply, "carry on");
+        screen.sent.remember_line(&Asking::Reply, "ship it");
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap()
+        };
+        let line = |screen: &Screen| screen.answering().expect("the card's line").text.clone();
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char('l')));
+        let opened_on = screen.card.as_ref().map(|card| card.id.clone());
+        assert!(opened_on.is_some(), "l opens the card");
+
+        // Back through the replies sent, newest first, and forward again to
+        // the empty line the walk began on.
+        press(&mut screen, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(line(&screen), "ship it");
+        press(&mut screen, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(line(&screen), "carry on");
+        press(&mut screen, KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        assert_eq!(line(&screen), "ship it");
+        press(&mut screen, KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        assert_eq!(line(&screen), "", "the draft was the empty line");
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.id.clone()),
+            opened_on,
+            "and none of that moved the card"
+        );
+
+        // The plain arrows are still the card's: they move it to the next
+        // agent, whichever way the next one is.
+        press(&mut screen, KeyEvent::from(KeyCode::Down));
+        if screen.card.as_ref().map(|card| card.id.clone()) == opened_on {
+            press(&mut screen, KeyEvent::from(KeyCode::Up));
+        }
+        assert_ne!(
+            screen.card.as_ref().map(|card| card.id.clone()),
+            opened_on,
+            "a plain arrow moved the card"
+        );
+        assert_eq!(line(&screen), "", "and brought nothing back");
+    }
+
+    #[test]
+    fn keys_a_task_line_walks_the_lines_sent_on_the_plain_arrows() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+        screen
+            .sent
+            .remember_line(&Asking::Task, "port the importer");
+        screen.sent.remember_line(&Asking::Reply, "not a task");
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap()
+        };
+        let line = |screen: &Screen| match &screen.mode {
+            Mode::Typing(composer) => composer.text.clone(),
+            _ => panic!("no line is open"),
+        };
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
+        press(&mut screen, KeyEvent::from(KeyCode::Char('h')));
+        press(&mut screen, KeyEvent::from(KeyCode::Char('i')));
+        assert_eq!(line(&screen), "hi");
+
+        // A task line has no card for the arrows to move, so plain up is the
+        // walk back, and it walks the tasks and not the replies.
+        press(&mut screen, KeyEvent::from(KeyCode::Up));
+        assert_eq!(line(&screen), "port the importer");
+        press(&mut screen, KeyEvent::from(KeyCode::Up));
+        assert_eq!(
+            line(&screen),
+            "port the importer",
+            "the oldest is where it stops"
+        );
+        press(&mut screen, KeyEvent::from(KeyCode::Down));
+        assert_eq!(line(&screen), "hi", "and down past the newest is the draft");
+
+        // The alt arrows do the same here, so one chord works on every line.
+        press(&mut screen, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(line(&screen), "port the importer");
+    }
+
+    #[test]
+    fn replied_keeps_the_line_it_sent_and_not_one_refused() {
+        let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+        let mut sent = Composer::new(Asking::Reply);
+        sent.insert("ship it");
+        screen.replied(Ok(Replied::Yes("sent to done-a1b".to_string())), sent);
+        assert_eq!(screen.sent.lines_for(&Asking::Reply), ["ship it"]);
+
+        // A line the agent would not take is still being written, and is not
+        // a line sent.
+        let mut refused = Composer::new(Asking::Reply);
+        refused.insert("not yet");
+        screen.replied(Ok(Replied::No("busy".to_string())), refused);
+        assert_eq!(screen.sent.lines_for(&Asking::Reply), ["ship it"]);
+    }
+
+    #[test]
+    fn remembered_keeps_the_lines_sent_for_the_next_view() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("view.json");
+        let mut screen = Screen {
+            remembering: Some(path.clone()),
+            ..Screen::default()
+        };
+        screen.remember_line(&Asking::Task, "port the importer");
+        screen.remember_line(&Asking::Reply, "ship it");
+
+        // Written as it happens, and read back by whichever view opens next.
+        let read = Remembered::read(&path);
+        assert_eq!(read.sent.lines_for(&Asking::Task), ["port the importer"]);
+        assert_eq!(read.sent.lines_for(&Asking::Reply), ["ship it"]);
+
+        // A file an older amx wrote, which knows nothing of lines sent, still
+        // reads, with nothing to bring back.
+        std::fs::write(&path, b"{\"statusline\": true}\n").unwrap();
+        assert_eq!(Remembered::read(&path).sent, act::Backlog::default());
+    }
+
+    #[test]
     fn keys_l_opens_the_card_and_esc_closes_it_without_either_attaching() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
@@ -5021,6 +5191,8 @@ mod tests {
             ctrl('w'),
             ctrl('g'),
             ctrl('j'),
+            alt(KeyCode::Up),
+            alt(KeyCode::Down),
         ] {
             assert!(
                 the_lines(&Composer::new(Asking::Reply), key),

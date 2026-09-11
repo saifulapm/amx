@@ -17,6 +17,7 @@
 //! still typing.
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use std::cell::{Cell, Ref, RefCell};
 use std::io::Write;
 use std::ops::Range;
@@ -77,6 +78,68 @@ pub struct Composer {
     /// what is drawn is one row a person can read the rest of their task
     /// around, and what is sent is every character they pasted.
     pub pastes: Vec<String>,
+    /// Where a walk back through the lines sent before is standing, while
+    /// one is under way.
+    pub walking: Option<Walking>,
+}
+
+/// A walk back through the lines sent before: which of them is on the line,
+/// and what the line held when the walk began.
+pub struct Walking {
+    /// Which of the lines sent is on the line now, newest first.
+    at: usize,
+    /// The line as it was when the first step was taken — text, cursor and
+    /// pastes — given back by the step past the newest, so a line half
+    /// written is not lost to a look at the last one.
+    draft: (String, usize, Vec<String>),
+}
+
+/// The lines the view has sent, for a line being typed to bring back.
+///
+/// Two lists, because what went to an agent is not what the next agent would
+/// be started with: a task and a reply are different sentences to different
+/// listeners. Newest first, a line equal to the newest not kept twice, and
+/// fifty of each. A shell's history is longer, but a shell's history is the
+/// whole of what somebody typed, and this is only what the view sent.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Backlog {
+    tasks: Vec<String>,
+    replies: Vec<String>,
+}
+
+/// How many lines each list keeps.
+const REMEMBERED_LINES: usize = 50;
+
+impl Backlog {
+    /// Keep a line the view has just sent, newest first.
+    ///
+    /// A rename and a find line are not sent, and a digit pressed at a
+    /// question is a choice rather than a line, so only a task and a reply
+    /// have a list to go on. The same line sent twice running is kept once:
+    /// walking back over two copies of it would be a step that went nowhere.
+    pub fn remember_line(&mut self, asking: &Asking, line: &str) {
+        let lines = match asking {
+            Asking::Task => &mut self.tasks,
+            Asking::Reply => &mut self.replies,
+            Asking::Name { .. } | Asking::Find => return,
+        };
+        if line.trim().is_empty() || lines.first().is_some_and(|newest| newest == line) {
+            return;
+        }
+        lines.insert(0, line.to_string());
+        lines.truncate(REMEMBERED_LINES);
+    }
+
+    /// The lines sent from this kind of line, newest first, and none from a
+    /// kind that sends nothing.
+    pub fn lines_for(&self, asking: &Asking) -> &[String] {
+        match asking {
+            Asking::Task => &self.tasks,
+            Asking::Reply => &self.replies,
+            Asking::Name { .. } | Asking::Find => &[],
+        }
+    }
 }
 
 /// The words a vendor would answer to where the cursor is standing, as they
@@ -150,7 +213,53 @@ impl Composer {
             listed: RefCell::new(None),
             under: None,
             pastes: Vec::new(),
+            walking: None,
         }
+    }
+
+    /// Bring back a line sent before, or the one after it.
+    ///
+    /// `older` walks toward the oldest and stops there; the other way walks
+    /// toward the newest, and the step past it puts back what was being typed
+    /// when the walk began — text, cursor and pastes — so a line half written
+    /// is not lost to a look at the last one. A recalled line arrives whole,
+    /// the cursor at its end and no pastes standing beside it: it was sent as
+    /// characters and it comes back as characters. Answers whether the line
+    /// changed, which a step past either end does not.
+    pub fn recall(&mut self, sent: &[String], older: bool) -> bool {
+        let at = match (&self.walking, older) {
+            (None, true) => 0,
+            (None, false) => return false,
+            (Some(walking), true) => walking.at + 1,
+            (Some(walking), false) => match walking.at.checked_sub(1) {
+                Some(at) => at,
+                None => {
+                    let draft = self.walking.take().expect("a walk under way").draft;
+                    (self.text, self.at, self.pastes) = draft;
+                    return true;
+                }
+            },
+        };
+        let Some(line) = sent.get(at) else {
+            return false;
+        };
+        match &mut self.walking {
+            Some(walking) => walking.at = at,
+            None => {
+                self.walking = Some(Walking {
+                    at,
+                    draft: (
+                        std::mem::take(&mut self.text),
+                        self.at,
+                        std::mem::take(&mut self.pastes),
+                    ),
+                });
+            }
+        }
+        self.text = line.clone();
+        self.at = line.chars().count();
+        self.pastes.clear();
+        true
     }
 
     /// Put text in where the cursor is, and leave the cursor after it.
@@ -3052,5 +3161,119 @@ mod tests {
             "fix-login-a1b stopped · removed /srv/app/.amx/worktrees/fix-login-a1b"
         );
         assert_eq!(one_line(b""), "");
+    }
+
+    #[test]
+    fn backlog_keeps_the_lines_sent_newest_first_and_only_what_was_sent() {
+        let mut sent = Backlog::default();
+        sent.remember_line(&Asking::Task, "port the importer");
+        sent.remember_line(&Asking::Task, "fix the login");
+        sent.remember_line(&Asking::Reply, "yes, go on");
+        assert_eq!(
+            sent.lines_for(&Asking::Task),
+            ["fix the login", "port the importer"],
+            "newest first, and a task is not a reply"
+        );
+        assert_eq!(sent.lines_for(&Asking::Reply), ["yes, go on"]);
+
+        // The same line sent twice running is one line to walk back over.
+        sent.remember_line(&Asking::Task, "fix the login");
+        assert_eq!(sent.lines_for(&Asking::Task).len(), 2, "not kept twice");
+        // Sent again later, it is the newest again rather than a second copy
+        // somewhere down the list.
+        sent.remember_line(&Asking::Task, "port the importer");
+        assert_eq!(
+            sent.lines_for(&Asking::Task),
+            ["port the importer", "fix the login", "port the importer"]
+        );
+
+        // Nothing but a task and a reply is a line sent.
+        sent.remember_line(&Asking::Find, "login");
+        sent.remember_line(
+            &Asking::Name {
+                id: "fix-login-b2c".to_string(),
+            },
+            "auth",
+        );
+        sent.remember_line(&Asking::Task, "   ");
+        assert_eq!(sent.lines_for(&Asking::Find), [] as [&str; 0]);
+        assert_eq!(
+            sent.lines_for(&Asking::Task).len(),
+            3,
+            "a blank line is nothing sent"
+        );
+
+        // Fifty, and the oldest is the one that goes.
+        for n in 0..60 {
+            sent.remember_line(&Asking::Reply, &format!("line {n}"));
+        }
+        let replies = sent.lines_for(&Asking::Reply);
+        assert_eq!(replies.len(), REMEMBERED_LINES);
+        assert_eq!(replies[0], "line 59");
+        assert_eq!(replies[49], "line 10");
+    }
+
+    #[test]
+    fn composer_walks_back_over_the_lines_sent_and_gives_the_draft_back() {
+        let sent = ["fix the login".to_string(), "port the importer".to_string()];
+        let mut composer = Composer::new(Asking::Task);
+        composer.insert("half a");
+        composer.left();
+
+        // The first step sets the line aside and puts the newest in its place,
+        // the cursor at its end.
+        assert!(composer.recall(&sent, true));
+        assert_eq!((composer.text.as_str(), composer.at), ("fix the login", 13));
+        assert!(composer.recall(&sent, true));
+        assert_eq!(composer.text, "port the importer");
+        // The oldest is where the walk back stops.
+        assert!(!composer.recall(&sent, true), "nothing older to bring back");
+        assert_eq!(composer.text, "port the importer");
+
+        // Forward again, and the step past the newest is the draft, cursor
+        // and all.
+        assert!(composer.recall(&sent, false));
+        assert_eq!(composer.text, "fix the login");
+        assert!(composer.recall(&sent, false));
+        assert_eq!((composer.text.as_str(), composer.at), ("half a", 5));
+        assert!(
+            !composer.recall(&sent, false),
+            "there is nothing newer than the draft"
+        );
+        assert_eq!((composer.text.as_str(), composer.at), ("half a", 5));
+
+        // A walk that began again starts from the newest, not where the last
+        // one left off.
+        assert!(composer.recall(&sent, true));
+        assert_eq!(composer.text, "fix the login");
+    }
+
+    #[test]
+    fn composer_recalls_a_line_whole_and_keeps_the_drafts_pastes_for_it() {
+        let sent = ["ship it".to_string()];
+        let mut composer = Composer::new(Asking::Reply);
+        let long = "x\n".repeat(PASTED_ROWS + 1);
+        composer.paste(&long);
+        let folded = composer.text.clone();
+        assert_eq!(composer.pastes.len(), 1, "the draft holds a paste");
+
+        // A recalled line was sent as characters and comes back as characters,
+        // with no marker standing beside it for anything.
+        assert!(composer.recall(&sent, true));
+        assert_eq!(composer.text, "ship it");
+        assert!(composer.pastes.is_empty());
+        assert_eq!(composer.whole(), "ship it");
+
+        // And the draft comes back with its paste still behind the marker.
+        assert!(composer.recall(&sent, false));
+        assert_eq!(composer.text, folded);
+        assert_eq!(composer.whole(), long);
+
+        // Nothing sent is nothing to bring back, and the line is left alone.
+        let mut empty = Composer::new(Asking::Task);
+        empty.insert("typed");
+        assert!(!empty.recall(&[], true));
+        assert_eq!(empty.text, "typed");
+        assert!(!empty.recall(&[], false));
     }
 }

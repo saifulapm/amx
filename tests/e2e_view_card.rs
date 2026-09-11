@@ -691,6 +691,54 @@ fn card_on(amx: &Harness, view: &str, id: &str) -> String {
 }
 
 #[test]
+fn card_line_brings_back_the_message_sent_on_alt_up_and_the_plain_arrows_still_move_the_card() {
+    let amx = Harness::new();
+    // Two agents at their prompts, each showing a screen of its own, so the
+    // card says which of them it is on.
+    let alpha = a_pane_showing(&amx, &["alpha at work"]);
+    amx.record("alpha-a1b", &alpha);
+    reported(&amx, "alpha-a1b", "idle");
+    let beta = a_pane_showing(&amx, &["beta at work"]);
+    amx.record("beta-b2c", &beta);
+    reported(&amx, "beta-b2c", "idle");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    card_on(&amx, &view, "alpha-a1b");
+    types(&amx, &view, "ship it");
+    press(&amx, &view, "Enter");
+    amx.until("the message to reach the agent", || {
+        amx.capture(&alpha).contains("ship it").then_some(())
+    });
+
+    // A fresh card, and alt+up on its empty line is the message just sent.
+    press(&amx, &view, "Escape");
+    card_on(&amx, &view, "alpha-a1b");
+    press(&amx, &view, "M-Up");
+    amx.until("the message sent before, back on the line", || {
+        screen(&amx, &view).contains("❯ ship it").then_some(())
+    });
+    press(&amx, &view, "M-Down");
+    amx.until("the empty line again", || {
+        (!screen(&amx, &view).contains("❯ ship it")).then_some(())
+    });
+
+    // The plain arrows are the card's: they move it to the other agent and
+    // bring nothing back onto the line.
+    press(&amx, &view, "Down");
+    let moved = amx.until("the card on the other agent", || {
+        let drawn = screen(&amx, &view);
+        drawn
+            .lines()
+            .any(|line| line.starts_with("beta-b2c") && line.contains('┈'))
+            .then_some(drawn)
+    });
+    assert!(
+        !moved.contains("❯ ship it"),
+        "a plain arrow moves the card and recalls nothing:\n{moved}"
+    );
+}
+
+#[test]
 fn card_says_which_question_of_the_call_it_is_showing() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);

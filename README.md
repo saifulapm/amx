@@ -351,6 +351,7 @@ table.
 | `ctrl+x` | stop it, twice to forget it, and twice on a heading to stop and clear the group |
 | `ctrl+r` | call it something else, as `amx rename` does from a shell |
 | `ctrl+g` | write the line in `$EDITOR` |
+| `alt+↑` `alt+↓` | the lines sent before, newest first; a task line takes `↑` `↓` for the same |
 | `alt+1..9` | reach the agent at that place on the wall |
 | `/` | find by name, task or `#12`, as you type; `esc` clears it |
 | `ctrl+s` | gather them by state or by project |
@@ -495,6 +496,16 @@ whatever is on it. The row under the card says which of the two it is reading:
 `enter attach`, `space closes it` and `pgup pages it` where the body holds
 more, or `enter sends it` — `answers it` at a question — with `alt+enter
 newline` behind it, and `esc closes it` pinned to the end of both.
+
+`alt+↑` brings back the last line you sent, and again the one before it, back
+to the oldest; `alt+↓` walks forward again, and the step past the newest gives
+back whatever you were typing when you started. A task line takes `↑` and `↓`
+for the same walk, since nothing else has a use for them there; on the card's
+line the plain arrows keep moving the card. Tasks and replies are kept apart,
+fifty of each, in `view.json` beside the wall's arrangement, so the line you
+want back is there in the next view too. While words are offered under the
+cursor the plain arrows walk those first, and a line brought back is not
+looked up for words until you type the next character.
 
 `pgup` and `pgdn` page inside the card's body when it holds more than the card
 has room for: a patch or a finished conversation down from where it opened, a

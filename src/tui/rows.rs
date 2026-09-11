@@ -2769,6 +2769,7 @@ mod tests {
         crate::tui::Remembered {
             statusline: true,
             arrangement: list.arrangement(),
+            sent: Default::default(),
         }
         .write(&kept)
         .unwrap();
