@@ -214,6 +214,27 @@ runner shows what a hook prints. `Trust` is the one
 amx sends rather than writes: `--approve, -a` on the argv of a pane amx was
 starting anyway.
 
+The extension beats on that record as well. What a vendor reported is believed
+for `derive::FRESH` seconds and then the pane is read instead, and a turn
+sends nothing between its tool calls, so a call that runs for a minute leaves
+the record quiet for a minute. The screen under it is not always one a rule
+claims: the two things a mid-turn pi is recognised by are the braille frames
+and the stats-line footer, and an extension can redraw both. Measured on
+0.85.1 with throwaway extensions, a static dot alone left the wall right and a
+custom footer alone did too, but a pane with both read `unknown` from ten
+seconds in until the turn settled, for a forty-second tool call and a
+streaming answer alike. The answer is not another anchor. While a turn runs
+the extension is alive and knows it, so it says so on disk: `<record>/heartbeat`
+written when the turn starts and every three seconds after that, on an unref'd
+timer, and taken away at `agent_settled`. `derive` reads that file's mtime as
+one more thing heard from the agent, beside `last_event` and `since`, and the
+evidence stays `hooks` — a beat is the vendor's report that the turn goes on,
+which is what a hook is.
+
+Nothing about that file names pi. It is the record's, the way `live` is, so
+any vendor whose wire can write there may beat; claude has no extension and its
+chrome is not extensible, so nothing changes for it.
+
 A pi without the extension reads the way a claude with its hooks unwired
 reads: off its pane, against the screens document, with `doctor` naming the
 gap. The hookless machinery `derive` grew for a vendor that reports nothing —
