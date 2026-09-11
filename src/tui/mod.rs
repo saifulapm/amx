@@ -3064,7 +3064,8 @@ fn reach(root: &Path, config: &Config, here: Option<&Here>, view: &View) -> Resu
 /// there are two ways through. Inside tmux the client already on the terminal
 /// switches to the agent's session, and the view is left drawing in the
 /// session it was in, for whoever switches back. Outside tmux the view *is*
-/// the terminal, so it lends it out and waits.
+/// the terminal, so it lends it out and waits. Either way ctrl+z inside the
+/// session is the way back, and it is bound here, before anybody goes in.
 ///
 /// Nothing it answers with is a failure: an agent this view cannot reach is
 /// one somebody can still reach, and the answer says how.
@@ -3081,6 +3082,7 @@ fn reaching(server: Server, here: Option<&Here>, view: &View) -> Result<Reach> {
         ))));
     }
 
+    server.bind_way_back()?;
     server.run(&["select-window", "-t", view.meta.pane.as_str()])?;
     server.run(&["select-pane", "-t", view.meta.pane.as_str()])?;
 

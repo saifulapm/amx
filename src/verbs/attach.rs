@@ -77,6 +77,9 @@ fn client(
     pane: &PaneId,
     inside: Option<&str>,
 ) -> Result<Command> {
+    // The way back first: ctrl+z inside the session lands whoever pressed it
+    // where this was typed, at the shell or in the session the client left.
+    server.bind_way_back()?;
     // Point the session at the agent before handing the terminal over, so
     // whoever arrives is looking at the pane they asked for.
     server.run(&["select-window", "-t", pane.as_str()])?;

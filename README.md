@@ -375,7 +375,14 @@ Inside tmux, `enter` moves your client to the agent's session and leaves the
 view drawing in the session it was already in, so switching back lands on the
 list where you left it. Outside tmux the view is the only thing on the
 terminal, so it lends the terminal to a tmux client instead and takes it back
-when you detach.
+when you detach. Either way `ctrl+z` inside the session is the way back: it
+moves your client to the session it came from, and where it came from nowhere
+it detaches, which puts the view back on its terminal, or `amx attach` back at
+the shell it was typed at. It is a key amx binds on that tmux server whenever
+it hands a terminal over, and it is read only in a session amx named — in any
+other session on the server `ctrl+z` is still whatever it was. Nothing was lost
+under it: claude uses the key to suspend itself to a shell, and an agent's pane
+has no shell under it.
 
 `alt+1..9` does the same for the first nine agents by where they are on the
 wall, counting rows from the top and skipping the headings, without walking the
