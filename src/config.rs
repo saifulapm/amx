@@ -1,4 +1,4 @@
-//! `~/.config/amx/config.toml` — twelve keys and nothing else — with a
+//! `~/.config/amx/config.toml` — twelve keys and a table per harness — with a
 //! project's own `<project>/.amx/config.toml` laid over it.
 //!
 //! Config is a convenience, never a gate: a file that cannot be read or
@@ -10,9 +10,11 @@
 use crate::registry;
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Every key the file may carry. Anything else is warned about and ignored.
+/// Every key the file may carry, beside the harness tables. Anything else is
+/// warned about and ignored.
 pub const KNOWN_KEYS: [&str; 12] = [
     "agent",
     "max_agents",
@@ -27,6 +29,22 @@ pub const KNOWN_KEYS: [&str; 12] = [
     "theme",
     "park_after",
 ];
+
+/// What one harness says about itself, in a table of its own named after the
+/// program it runs.
+///
+/// Two lists, both empty until somebody writes one, and a harness that sets
+/// neither is a harness the file has said nothing about.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct HarnessConfig {
+    /// The models this harness is the one to run. A model nobody lists here is
+    /// left to whatever the registry entry says the harness takes.
+    pub models: Vec<String>,
+    /// What every agent this harness runs carries on its argv, however it was
+    /// picked.
+    pub args: Vec<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
@@ -88,6 +106,26 @@ pub struct Config {
     /// here — never let a pane go — and an hour is what amx does where nobody
     /// has said otherwise.
     pub park_after: u64,
+    /// What each harness the file names says about itself, keyed by the
+    /// program that harness runs.
+    ///
+    /// Which names there are is the registry's answer rather than a list here:
+    /// a harness amx has an entry for may have a table of its own, and a table
+    /// naming anything else is warned about and dropped. Read off the tables
+    /// of the file rather than by serde, so there is no key of this name to
+    /// write.
+    pub harnesses: BTreeMap<String, HarnessConfig>,
+}
+
+impl Config {
+    /// What the file says about the harness `program` runs, which is the empty
+    /// table where it says nothing.
+    // The verbs that pick a harness by model ask this next. Until they do, the
+    // only caller is this module's own tests.
+    #[allow(dead_code)]
+    pub fn harness(&self, program: &str) -> HarnessConfig {
+        self.harnesses.get(program).cloned().unwrap_or_default()
+    }
 }
 
 impl Default for Config {
@@ -105,6 +143,7 @@ impl Default for Config {
             summary_command: None,
             theme: "default".to_string(),
             park_after: 3600,
+            harnesses: BTreeMap::new(),
         }
     }
 }
@@ -121,18 +160,56 @@ impl Default for Config {
 pub fn parse(text: &str) -> Result<(Config, Vec<String>)> {
     let table: toml::Table = text.parse().context("not valid TOML")?;
     let mut warnings = unknown_keys(&table);
-    let mut config: Config = table.try_into()?;
+    let mut config: Config = table.clone().try_into()?;
+    config.harnesses = harness_tables(&table)?;
     warnings.extend(check_dials(&mut config));
     Ok((config, warnings))
 }
 
 /// The keys of a file amx has never heard of, one warning each.
+///
+/// A table is a harness's own, so what amx has heard of there is whatever the
+/// registry has an entry for, and it is named the way the file writes it.
 fn unknown_keys(table: &toml::Table) -> Vec<String> {
     table
-        .keys()
-        .filter(|key| !KNOWN_KEYS.contains(&key.as_str()))
-        .map(|key| format!("ignoring unknown key `{key}`"))
+        .iter()
+        .filter(|(key, _)| !KNOWN_KEYS.contains(&key.as_str()))
+        .filter_map(|(key, value)| {
+            if !value.is_table() {
+                Some(format!("ignoring unknown key `{key}`"))
+            } else if registry::entry(key).is_none() {
+                Some(format!(
+                    "ignoring [{key}]: amx runs no harness called {key}"
+                ))
+            } else {
+                None
+            }
+        })
         .collect()
+}
+
+/// What the file's harness tables say, keyed by the program each names.
+///
+/// A table naming no harness is [`unknown_keys`]' business and is passed over
+/// here. A table setting neither list is not kept, so a file that names a
+/// harness without saying anything about it says nothing at all — which is
+/// what lets the shipped file show every table there is with the lists
+/// commented out.
+fn harness_tables(table: &toml::Table) -> Result<BTreeMap<String, HarnessConfig>> {
+    let mut harnesses = BTreeMap::new();
+    for (name, value) in table.iter().filter(|(_, value)| value.is_table()) {
+        if registry::entry(name).is_none() {
+            continue;
+        }
+        let harness: HarnessConfig = value
+            .clone()
+            .try_into()
+            .with_context(|| format!("in [{name}]"))?;
+        if harness != HarnessConfig::default() {
+            harnesses.insert(name.clone(), harness);
+        }
+    }
+    Ok(harnesses)
 }
 
 /// Drop any dial the configured agent would not take, saying which and why.
@@ -306,8 +383,11 @@ fn layered(files: &[PathBuf]) -> (Config, Vec<String>) {
     }
 
     // Every file that got this far parses as a config on its own, and a key
-    // laid over another is that key entire, so what they make parses too.
-    let mut config: Config = keys.try_into().unwrap_or_default();
+    // laid over another is that key entire — a harness table included, which
+    // is why a project naming one has said what that harness is, args and all.
+    // So what the files make between them parses too.
+    let mut config: Config = keys.clone().try_into().unwrap_or_default();
+    config.harnesses = harness_tables(&keys).unwrap_or_default();
     warnings.extend(check_dials(&mut config));
     (config, warnings)
 }
@@ -343,6 +423,7 @@ fn usable(path: &Path) -> Result<Option<toml::Table>> {
     };
     let keys: toml::Table = text.parse()?;
     let _: Config = keys.clone().try_into()?;
+    harness_tables(&keys)?;
     Ok(Some(keys))
 }
 
@@ -383,6 +464,8 @@ mod tests {
         assert_eq!(c.theme, "default");
         // An hour of sitting idle with nobody attached, and the pane goes.
         assert_eq!(c.park_after, 3600);
+        // No harness says anything about itself until a table of its own does.
+        assert!(c.harnesses.is_empty());
     }
 
     #[test]
@@ -403,6 +486,15 @@ mod tests {
                     .starts_with(&format!("{key} ="))
             });
             assert!(named, "{key} is not in assets/config.toml");
+        }
+        // A harness is one entry in the registry and one table here, so a new
+        // entry nobody gave a table is a table nobody copying this will learn
+        // of. The lists are comments: an empty table is no table at all.
+        for entry in registry::entries() {
+            let named = shipped
+                .lines()
+                .any(|line| line == format!("[{}]", entry.name));
+            assert!(named, "[{}] is not in assets/config.toml", entry.name);
         }
     }
 
@@ -530,6 +622,58 @@ mod tests {
         assert_eq!(c.max_agents, 2);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("wardrobe"), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_table_named_after_a_harness_is_kept_under_that_name() {
+        // Which names there are is the registry's answer, so the test asks it
+        // rather than spelling a harness out here, as the code does.
+        for entry in registry::entries() {
+            let (c, w) = parse(&format!(
+                "[{}]\nmodels = [\"opus\"]\nargs = [\"--add-dir\", \"/tmp\"]\n",
+                entry.name
+            ))
+            .unwrap();
+            assert!(w.is_empty(), "{w:?}");
+            assert_eq!(c.harnesses.len(), 1, "{:?}", c.harnesses);
+            let harness = c.harness(entry.name);
+            assert_eq!(harness.models, ["opus"]);
+            assert_eq!(harness.args, ["--add-dir", "/tmp"]);
+        }
+    }
+
+    #[test]
+    fn a_harness_no_table_names_is_the_empty_table() {
+        let harness = Config::default().harness("some-other-agent");
+        assert_eq!(harness, HarnessConfig::default());
+        assert!(harness.models.is_empty());
+        assert!(harness.args.is_empty());
+    }
+
+    #[test]
+    fn a_table_naming_no_harness_is_warned_about_by_name_and_the_rest_applies() {
+        let (c, w) = parse("max_agents = 2\n\n[wardrobe]\nmodels = [\"opus\"]\n").unwrap();
+        assert_eq!(c.max_agents, 2);
+        assert!(c.harnesses.is_empty(), "{:?}", c.harnesses);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("ignoring [wardrobe]"), "{w:?}");
+    }
+
+    #[test]
+    fn a_table_that_sets_neither_list_is_not_kept() {
+        // Which is what lets the shipped file name every harness there is with
+        // both lists commented out and still read as no file at all.
+        let name = registry::entries()[0].name;
+        let (c, w) = parse(&format!("[{name}]\n")).unwrap();
+        assert_eq!(c, Config::default());
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn a_list_of_the_wrong_type_is_an_error_not_a_guess() {
+        let name = registry::entries()[0].name;
+        assert!(parse(&format!("[{name}]\nmodels = 3\n")).is_err());
+        assert!(parse(&format!("[{name}]\nargs = \"--add-dir\"\n")).is_err());
     }
 
     #[test]
@@ -664,6 +808,33 @@ mod tests {
         assert_eq!(c.max_agents, 2, "the key the project sets is the project's");
         assert_eq!(c.agent, "other", "and the rest is still the person's");
         assert_eq!(c.theme, "terminal");
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn a_project_files_table_replaces_the_persons_whole_table() {
+        // A table is one key, and a key laid over another is that key entire:
+        // a project that names a harness has said what that harness is here,
+        // args and all, rather than edited the list of models under it.
+        let dir = TempDir::new().unwrap();
+        let name = registry::entries()[0].name;
+        let person = wrote(
+            dir.path(),
+            "person.toml",
+            &format!("[{name}]\nmodels = [\"opus\"]\nargs = [\"--add-dir\", \"/tmp\"]\n"),
+        );
+        let project = wrote(
+            dir.path(),
+            "project.toml",
+            &format!("[{name}]\nmodels = [\"sonnet\"]\n"),
+        );
+
+        let (c, w) = layered(&[person, project]);
+        assert_eq!(c.harness(name).models, ["sonnet"]);
+        assert!(
+            c.harness(name).args.is_empty(),
+            "the table, not a key of it"
+        );
         assert!(w.is_empty(), "{w:?}");
     }
 

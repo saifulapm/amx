@@ -1112,7 +1112,7 @@ the notice is handed over and never waited for.
 
 ## Configuration
 
-`~/.config/amx/config.toml`, twelve keys and no more:
+`~/.config/amx/config.toml`, twelve keys and a table per harness:
 
 ```toml
 agent = "claude"        # the command a new agent runs: claude, pi or your own
@@ -1135,6 +1135,30 @@ effort = "high"
 summary_command = "claude -p 'Sum this up in eight words. Answer with the words alone.'"
 ```
 
+Each harness amx has an entry for — claude and pi today — can have a table of
+its own, named after the command it runs:
+
+```toml
+[claude]
+models = ["opus", "sonnet"]
+args = ["--add-dir", "/srv/shared"]
+
+[pi]
+models = ["anthropic/claude-opus-4-1", "openai/gpt-5"]
+args = ["--approve"]
+```
+
+`models` is the models that pick that harness: it is the list a model is
+looked for in, so a model named here says which harness starts and not only
+which flag it is handed. Leave it out and the list is whatever the harness
+itself offers. `args` is what every agent that harness runs carries on its
+argv, however that agent was started, and a dial amx would have set stands down
+for a flag written here the way it does for one written into `agent`.
+
+A table naming a harness amx has no entry for is warned about by name and the
+rest of the file still applies. A table that sets neither list says nothing,
+so naming a harness costs nothing until you write one of them.
+
 The repository ships the same file with every key explained and the defaults
 written out, at `assets/config.toml`: copy it and change what you want changed,
 and a copy nobody edits runs exactly as no file at all would.
@@ -1146,7 +1170,9 @@ file still applies, and so is a dial the configured agent would not take.
 
 A project can keep the same file at `<repo>/.amx/config.toml`, and it is laid
 over yours a key at a time. A project file holding one line has changed its
-mind about one key: everything else is still what you set. Whatever amx cannot
+mind about one key: everything else is still what you set. A harness table is
+one key like any other, so a project that names one has said what that harness
+is there, both lists, rather than edited the table you keep. Whatever amx cannot
 use in it — an unknown key, a key of the wrong type, a file that will not open
 — is a warning naming that file, and the file under it still stands.
 
