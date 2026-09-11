@@ -14,9 +14,12 @@ use super::{
 pub const VENDOR: Vendor = Vendor {
     name: "claude",
     // Open: `--help` says an alias "or a model's full name", so the cycle
-    // lists the three aliases and the dial takes anything.
+    // lists the aliases and the dial takes anything. Four of them: 2.1.263's
+    // `--help` names fable, opus and sonnet as its examples, and haiku is the
+    // fourth family it answers to. The cycle is what a key offers rather than
+    // the set of legal values, which is what `open` above says.
     model: Some(DialSpec {
-        cycle: &[DEFAULT, "fable", "opus", "sonnet"],
+        cycle: &[DEFAULT, "fable", "opus", "sonnet", "haiku"],
         open: true,
         flag: "--model",
     }),
@@ -306,7 +309,7 @@ mod tests {
         // spawn that fails.
         let model = VENDOR.model.expect("claude has a model dial");
         assert_eq!(model.flag, "--model");
-        assert_eq!(model.cycle, ["default", "fable", "opus", "sonnet"]);
+        assert_eq!(model.cycle, ["default", "fable", "opus", "sonnet", "haiku"]);
         assert!(model.open, "--model takes a full model name too");
 
         let permission = VENDOR.permission.expect("claude has a permission dial");

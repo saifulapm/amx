@@ -3352,7 +3352,7 @@ mod tests {
             "nothing in config, so the vendor's own choice"
         );
 
-        for want in ["fable", "opus", "sonnet", registry::DEFAULT] {
+        for want in ["fable", "opus", "sonnet", "haiku", registry::DEFAULT] {
             profile.cycle_model();
             assert_eq!(profile.model, want, "claude's own cycle, in its own order");
         }
