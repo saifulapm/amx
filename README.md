@@ -393,7 +393,11 @@ below it down, so walking the cursor with one open shakes the wall you are
 reading it against — at the foot, the list stands still and the card changes
 under it. Everything above it goes dim for as long as it is up, exactly as it
 does under the task line, because the card is the same kind of thing: a modal
-whose letters are its line's until `esc`, and the dim is what says so. It takes
+whose letters are its line's until `esc`, and the dim is what says so. It
+stands over the list rather than taking rows off it: the wall is laid out as it
+is with no card up, fold and all, and the card covers the foot of it, so
+opening one folds nothing — the list scrolls only as far as keeping the
+cursor's row above the card needs. It takes
 fourteen rows at most, never more than half the screen, and
 always leaves a row of the list it was opened from. It opens straight onto what
 it has to show: what the agent is doing is on its own row up in the list, and a

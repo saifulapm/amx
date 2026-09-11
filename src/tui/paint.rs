@@ -198,8 +198,13 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     frame.render_widget(Paragraph::new(header(screen, top)), top);
     // How many rows the list has, told back to it the way the map and the
     // scroll are: the fold in the completed group is cut to this, by the next
-    // rebuild rather than under the frame being drawn.
-    screen.list.fit(middle.height as usize);
+    // rebuild rather than under the frame being drawn. The rows the card
+    // stands on are counted in, because the card stands over the list rather
+    // than taking rows off it: what is laid out is the wall as it is with no
+    // card up, and the card covers the foot of it. So opening one folds
+    // nothing and moves nothing but the scroll that keeps the cursor's row
+    // above the card.
+    screen.list.fit((middle.height + carding) as usize);
     // What this frame put where, for the mouse to read back.
     screen.map.keep(
         (!helping).then_some(middle),
