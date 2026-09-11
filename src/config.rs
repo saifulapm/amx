@@ -113,16 +113,15 @@ pub struct Config {
     /// a harness amx has an entry for may have a table of its own, and a table
     /// naming anything else is warned about and dropped. Read off the tables
     /// of the file rather than by serde, so there is no key of this name to
-    /// write.
+    /// write — and serde is told so, or a `[harnesses]` table somebody wrote
+    /// would land here before the tables are read.
+    #[serde(skip)]
     pub harnesses: BTreeMap<String, HarnessConfig>,
 }
 
 impl Config {
     /// What the file says about the harness `program` runs, which is the empty
     /// table where it says nothing.
-    // The verbs that pick a harness by model ask this next. Until they do, the
-    // only caller is this module's own tests.
-    #[allow(dead_code)]
     pub fn harness(&self, program: &str) -> HarnessConfig {
         self.harnesses.get(program).cloned().unwrap_or_default()
     }

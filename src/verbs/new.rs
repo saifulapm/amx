@@ -187,9 +187,18 @@ fn takes(vendor: &Vendor, config: &Config, list: &[String]) -> String {
 /// what every agent on it is started with. They go into the command rather than
 /// beside it so that everything downstream reads one command line — the dial
 /// that stands down for a flag already written, the record of what was
-/// launched, the pane's own argv.
+/// launched, the pane's own argv. A word the command already carries is not
+/// written twice: `agent = "claude --add-dir .."` beside the same words in the
+/// table is one person saying one thing in two places, not a vendor to be
+/// handed the flag twice.
 fn carrying(config: &Config, agent: String) -> String {
-    let args = config.harness(registry::program(&agent)).args;
+    let carried: Vec<&str> = agent.split_whitespace().collect();
+    let args: Vec<String> = config
+        .harness(registry::program(&agent))
+        .args
+        .into_iter()
+        .filter(|arg| !carried.contains(&arg.as_str()))
+        .collect();
     match args.is_empty() {
         true => agent,
         false => format!("{agent} {}", args.join(" ")),
@@ -1209,5 +1218,16 @@ mod tests {
 
         assert_eq!(launch.agent, "mock-claude");
         assert_eq!(launch.dials, Dials::default());
+    }
+
+    #[test]
+    fn a_harness_argument_the_agent_command_already_carries_is_not_written_twice() {
+        let mut config = carrying_args("claude", &["--add-dir", "/srv/shared", "--verbose"]);
+        config.agent = "claude --add-dir /srv/shared".to_string();
+        let launch = Launch::resolve(&config, &spawn(None, [None, None, None])).unwrap();
+        assert_eq!(
+            launch.agent, "claude --add-dir /srv/shared --verbose",
+            "the words the command carries stand once, and the rest follow"
+        );
     }
 }
