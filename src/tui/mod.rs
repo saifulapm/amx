@@ -492,6 +492,30 @@ fn the_lines(key: KeyEvent) -> bool {
     }
 }
 
+/// And whether an empty one leaves this key to the list after all.
+///
+/// Two keys, read before the rule above: with nothing typed there is no line
+/// for a space to stand in and nothing for enter to send, so both of them are
+/// the wall's — space closes the card, which is the key that opened it, and
+/// enter does what enter does on the line under the cursor. The first
+/// character typed takes them back, because a message with two words in it is
+/// a message somebody has to be able to write.
+///
+/// An enter carrying shift is not one of them: that is the newline every line
+/// in the view breaks a paragraph with, and an empty line is exactly where
+/// somebody writing one starts. The alt and control newlines never reach here
+/// at all — a key held down with either is somebody reaching past the line.
+fn the_lists_on_an_empty_line(key: KeyEvent) -> bool {
+    if !chord(key).is_empty() {
+        return false;
+    }
+    match key.code {
+        KeyCode::Char(' ') => true,
+        KeyCode::Enter => !key.modifiers.contains(KeyModifiers::SHIFT),
+        _ => false,
+    }
+}
+
 /// The next value a cycle offers. A value the cycle never names — a full model
 /// name out of config, say — starts the cycle over rather than ending it: the
 /// cycle is what the key offers, and it always begins at the sentinel.
@@ -1856,7 +1880,12 @@ impl Screen {
         // use for is the line's, and every other key is the list's, as if the
         // line were not there. The line goes back into the mode before the
         // list acts, because it is still standing there afterwards.
-        if self.on_the_card(&composer) && !the_lines(key) {
+        //
+        // Two of them are read on an empty line before that rule, which is the
+        // whole of the exception to it: space and enter have nothing to do to
+        // a line with nothing on it, so down there they are the wall's.
+        let empty = composer.text.is_empty() && the_lists_on_an_empty_line(key);
+        if self.on_the_card(&composer) && (empty || !the_lines(key)) {
             self.mode = Mode::Typing(composer);
             return self.pressed(key, root, config, here);
         }
@@ -5034,6 +5063,141 @@ mod tests {
             "",
             "and none of them was typed into the line"
         );
+    }
+
+    /// The view with a card open on the agent under the cursor and the line at
+    /// its foot standing empty, which is where these two keys are read.
+    fn carded(root: &Path, config: &Config, views: Vec<View>) -> Screen {
+        let mut screen = watching(views);
+        screen
+            .act(KeyEvent::from(KeyCode::Char(' ')), root, config, None)
+            .unwrap();
+        assert!(
+            screen.answering().is_some_and(|line| line.text.is_empty()),
+            "the card opened with its line empty"
+        );
+        screen
+    }
+
+    #[test]
+    fn card_line_reads_space_on_an_empty_line_as_the_key_that_closes_the_card() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+        let space = KeyEvent::from(KeyCode::Char(' '));
+
+        // Nothing typed is nothing for a space to stand between, so the key
+        // that opened the card is still the key that puts it away.
+        let mut screen = carded(
+            root.path(),
+            &config,
+            vec![finished_saying("done-a1b", "the answer")],
+        );
+        press(&mut screen, space);
+        assert!(screen.card.is_none(), "space closed the card");
+        assert!(matches!(screen.mode, Mode::List), "and its line with it");
+        assert_eq!(
+            screen.list.selected().map(|view| view.id().to_string()),
+            Some("done-a1b".to_string()),
+            "with the cursor still on the row the card was opened from"
+        );
+
+        // A character on the line, and it is the space it is: a message with
+        // two words in it is a message somebody has to be able to write.
+        let mut screen = carded(
+            root.path(),
+            &config,
+            vec![finished_saying("done-a1b", "the answer")],
+        );
+        press(&mut screen, KeyEvent::from(KeyCode::Char('o')));
+        press(&mut screen, space);
+        press(&mut screen, KeyEvent::from(KeyCode::Char('k')));
+        assert_eq!(screen.answering().expect("still typing").text, "o k");
+        assert!(screen.card.is_some(), "and the card is still up");
+    }
+
+    #[test]
+    fn card_line_reads_enter_on_an_empty_line_as_the_lists_own_enter() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+        let enter = KeyEvent::from(KeyCode::Enter);
+
+        // On a row it is the attach it is on the list. The wall here is a
+        // reading written by hand and never put on disk, so what the attempt
+        // comes back with is the store saying it has never heard of the agent
+        // — which is a thing only the list's enter could have gone looking
+        // for.
+        let mut screen = carded(root.path(), &config, a_wall());
+        let tried = screen.act(enter, root.path(), &config, None);
+        assert!(
+            tried.is_err_and(|why| format!("{why:#}").contains("ask-a1b")),
+            "enter went to bring the agent forward"
+        );
+        assert!(screen.card.is_some(), "and the card is still up");
+        assert_eq!(
+            screen.answering().expect("with its line").text,
+            "",
+            "which took none of the keypress"
+        );
+
+        // On the heading over it, it shuts the group.
+        let mut screen = carded(root.path(), &config, a_wall());
+        press(&mut screen, KeyEvent::from(KeyCode::Up));
+        assert!(screen.list.on_heading(), "the cursor is on the heading");
+        press(&mut screen, enter);
+        assert!(
+            !showing_ids(&screen).contains(&"ask-a1b".to_string()),
+            "the group under the heading is shut: {:?}",
+            showing_ids(&screen)
+        );
+
+        // And on the fold it gives back the rows the fold is holding. A screen
+        // with room for five lines is what puts a fold under the finished
+        // ones at all.
+        let mut screen = watching(a_wall());
+        screen.list.fit(5);
+        screen.list.refit();
+        press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
+        for _ in 0..5 {
+            press(&mut screen, KeyEvent::from(KeyCode::Down));
+        }
+        assert!(screen.list.on_fold(), "the cursor is on the fold");
+        let held = showing_ids(&screen).len();
+        press(&mut screen, enter);
+        assert!(
+            showing_ids(&screen).len() > held,
+            "the fold gave its rows back: {:?}",
+            showing_ids(&screen)
+        );
+        assert!(
+            screen.answering().is_some(),
+            "with the card's line standing"
+        );
+    }
+
+    #[test]
+    fn card_line_sends_what_is_typed_on_it_rather_than_reading_the_lists_enter() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        let mut screen = carded(root.path(), &config, vec![stopped_on_a_question("ask-a1b")]);
+        for code in word("keep it") {
+            press(&mut screen, KeyEvent::from(code));
+        }
+        press(&mut screen, KeyEvent::from(KeyCode::Enter));
+        assert!(
+            screen.answering().is_none(),
+            "the line was spent on the answer rather than on an attach"
+        );
+        assert!(screen.notice.is_some(), "and what came of it is said");
     }
 
     #[test]
