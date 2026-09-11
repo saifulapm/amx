@@ -35,6 +35,25 @@ pub struct DialSpec {
     pub flag: &'static str,
 }
 
+/// Where a vendor's models are written down.
+///
+/// A model somebody names has to be found among the vendors that offer it, and
+/// a vendor answers out of one of two places: the cycle its model dial already
+/// declares, or a listing it prints when asked for one. Which of the two is
+/// the entry's to say, because it is measured off the vendor the same way a
+/// dial is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Models {
+    /// The model dial's own cycle, less the sentinel, which is the whole of
+    /// what this vendor is known to offer. Nothing to run, and nothing to
+    /// read.
+    Cycle,
+    /// The vendor prints its models, and these are the words that ask it to.
+    /// A listing is a process, so whoever reads one decides when it is worth
+    /// starting; the entry says only how it is asked for.
+    Printed(&'static [&'static str]),
+}
+
 /// One moment in a turn that amx listens for.
 ///
 /// What a vendor calls each of these is the vendor's own word and lives in the
@@ -218,6 +237,10 @@ pub struct Vendor {
     /// what a warning about it should name.
     pub name: &'static str,
     pub model: Option<DialSpec>,
+    /// Where this vendor's models are written down: the model dial's cycle,
+    /// or a listing the vendor prints. It is what a model somebody named is
+    /// looked for in, and the reason no such search knows a vendor's name.
+    pub models: Models,
     pub permission: Option<DialSpec>,
     pub effort: Option<DialSpec>,
     /// The flags that decide which session a process this vendor starts
@@ -583,6 +606,30 @@ mod tests {
                 flags.iter().all(|flag| flag.starts_with('-')),
                 "{} declares a dial whose flag is not one",
                 vendor.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_vendor_that_prints_its_models_says_what_to_run_for_the_listing() {
+        // The words go on the vendor's own program, and running one costs a
+        // process. An empty argv would start the agent itself and sit in front
+        // of a prompt; a first word that is not a flag would be a task handed
+        // to an agent nobody asked for.
+        for vendor in known() {
+            let Models::Printed(argv) = vendor.models else {
+                continue;
+            };
+            assert!(
+                !argv.is_empty(),
+                "{} prints its models and names nothing to run",
+                vendor.name
+            );
+            assert!(
+                argv[0].starts_with('-'),
+                "{}'s listing opens with {}, which is no flag",
+                vendor.name,
+                argv[0]
             );
         }
     }

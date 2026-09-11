@@ -6,7 +6,7 @@
 //! choose, and a renamed flag turns a dial into a spawn that fails.
 
 use super::{
-    Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Moment, Place, SessionSpec,
+    Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, SessionSpec,
     Transcript, Vendor, Wire, Wiring,
 };
 
@@ -22,6 +22,11 @@ pub const VENDOR: Vendor = Vendor {
         open: true,
         flag: "--model",
     }),
+    // The cycle above offers nothing, because pi's models are whatever its
+    // providers hold rather than a handful of aliases: `--list-models` prints
+    // them, a header line and then one row per model, provider and id first.
+    // Measured at 0.85.1 on 2026-09-11.
+    models: Models::Printed(&["--list-models"]),
     // pi has no permission dial: nothing in `--help` asks it to run less
     // trusting than it otherwise would, so there is no flag to spell one
     // with. Measured at 0.84.4 on 2026-09-03.
@@ -303,6 +308,15 @@ mod tests {
             ]
         );
         assert!(!effort.open, "--thinking is a closed set");
+    }
+
+    #[test]
+    fn pi_lists_its_models_by_printing_them() {
+        // pi's own models are whatever its providers offer, so the dial's
+        // cycle says nothing about them and the vendor has to be asked.
+        // `--list-models` is the word it answers to, measured at 0.85.1 on
+        // 2026-09-11.
+        assert_eq!(VENDOR.models, Models::Printed(&["--list-models"]));
     }
 
     #[test]

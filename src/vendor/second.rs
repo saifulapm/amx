@@ -11,7 +11,7 @@
 //! later field arrives on the descriptor, the way to keep it honest is to
 //! answer it differently here.
 
-use super::{Capability, DEFAULT, DialSpec, SessionSpec, Vendor};
+use super::{Capability, DEFAULT, DialSpec, Models, SessionSpec, Vendor};
 
 /// The fixture. Read the module docs before changing a value: each of these
 /// disagrees with claude on purpose.
@@ -23,6 +23,10 @@ pub const SECOND: Vendor = Vendor {
         open: false,
         flag: "-m",
     }),
+    // Its two words are the whole of what it offers, so they are found in the
+    // cycle and nothing is ever run to ask: the shape a search over the table
+    // has to answer out of the entry alone.
+    models: Models::Cycle,
     // No permission dial at all, which is the difference between a dial
     // nobody has turned and a dial that does not exist.
     permission: None,

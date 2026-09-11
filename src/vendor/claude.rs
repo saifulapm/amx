@@ -6,8 +6,8 @@
 //! that fails.
 
 use super::{
-    Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Moment, Place, SessionSpec, TOOL,
-    Transcript, Vendor, Wire, Wiring,
+    Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, SessionSpec,
+    TOOL, Transcript, Vendor, Wire, Wiring,
 };
 
 /// claude's entry in the table.
@@ -23,6 +23,9 @@ pub const VENDOR: Vendor = Vendor {
         open: true,
         flag: "--model",
     }),
+    // The aliases above are the whole of what amx offers for claude, and the
+    // vendor prints no list of its own, so its models are the cycle.
+    models: Models::Cycle,
     // Closed, and the vendor enforces it: `--permission-mode nonsense` is a
     // hard error naming these six.
     permission: Some(DialSpec {
@@ -335,6 +338,14 @@ mod tests {
             ["default", "low", "medium", "high", "xhigh", "max"]
         );
         assert!(!effort.open, "--effort is a closed set");
+    }
+
+    #[test]
+    fn claude_lists_its_models_in_the_cycle_its_dial_already_names() {
+        // The aliases are the whole of what amx offers for this vendor, so
+        // there is nothing to run and nothing to read: the dial above is the
+        // listing.
+        assert_eq!(VENDOR.models, Models::Cycle);
     }
 
     #[test]

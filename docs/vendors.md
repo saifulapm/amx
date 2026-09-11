@@ -41,6 +41,14 @@ real entry happens to take.
   legal, and the flag the vendor spells it with. The one place a dial becomes
   vendor argv is `inject`, and a flag the caller already wrote wins by the
   dial standing down.
+- **`models`** — where this vendor's models are written down, so that a model
+  somebody named can be looked for without anything knowing a vendor's name.
+  `Models::Cycle` says the model dial's own cycle is the whole list, which is
+  claude's four aliases and the second vendor's two words; `Models::Printed`
+  carries the argv that asks the vendor to print its own, which is pi's
+  `--list-models`, since pi's models are whatever its providers hold. A
+  listing costs a process, so when one is worth running is the reader's
+  business and never the entry's.
 - **`session`** — a `SessionSpec`, the flags that decide which session a
   process opens, or `None` from a vendor amx has measured no session
   vocabulary for. `start` is the flag that opens a session under an id amx
@@ -386,8 +394,9 @@ claimed the screen is worth.
    own flags are flags too and none of them lists `resume` among what
    conflicts with it, a vendor that can fork says how — and one that forks
    through no hooks declares a start flag, since there is no report coming to
-   name the copy's session — and declared screens parse. A new entry inherits
-   every one.
+   name the copy's session — declared screens parse, and a vendor that prints
+   its models names an argv to print them with that is not empty and opens
+   with a flag. A new entry inherits every one.
 4. **Prove the conformance.** `tests/mock_claude/` is a stand-in that replays
    scenarios — hook payloads, transcripts, screens — against the real tmux.
    A second vendor's harness takes the same shape: a fake that speaks the
