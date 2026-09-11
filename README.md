@@ -1135,6 +1135,10 @@ effort = "high"
 summary_command = "claude -p 'Sum this up in eight words. Answer with the words alone.'"
 ```
 
+The repository ships the same file with every key explained and the defaults
+written out, at `assets/config.toml`: copy it and change what you want changed,
+and a copy nobody edits runs exactly as no file at all would.
+
 Config is a convenience, never a gate. A file amx cannot read or parse falls
 back to these defaults with a warning, because losing an agent to a stray
 comma is the worse outcome. An unknown key is a warning and the rest of the

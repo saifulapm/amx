@@ -386,6 +386,27 @@ mod tests {
     }
 
     #[test]
+    fn the_shipped_file_is_the_defaults_written_out() {
+        // assets/config.toml is the file to copy and edit: every key, each
+        // explained, at the value amx uses when the key is left out — so a
+        // copy nobody edits runs as no file at all would. A key with no value
+        // that means "left out" is there as a comment, and a key missing from
+        // the file altogether is a key nobody copying it will learn of.
+        let shipped = include_str!("../assets/config.toml");
+        let (c, w) = parse(shipped).unwrap();
+        assert_eq!(c, Config::default());
+        assert!(w.is_empty(), "{w:?}");
+        for key in KNOWN_KEYS {
+            let named = shipped.lines().any(|line| {
+                line.trim_start()
+                    .trim_start_matches("# ")
+                    .starts_with(&format!("{key} ="))
+            });
+            assert!(named, "{key} is not in assets/config.toml");
+        }
+    }
+
+    #[test]
     fn the_theme_the_defaults_name_is_one_amx_ships() {
         // The one config value that has to mean something to another module.
         // A default naming a theme nobody has would warn on every start.

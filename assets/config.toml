@@ -1,0 +1,75 @@
+# amx — the config, with the defaults written out.
+#
+# Copy this to ~/.config/amx/config.toml and change what you want changed. A
+# copy nobody edits runs exactly as no file at all would: every value here is
+# the one amx uses when the key is left out. Twelve keys and no more; a key
+# amx has never heard of is warned about and ignored, and a file it cannot
+# parse falls back to these defaults with a warning, because losing an agent
+# to a stray comma is the worse outcome.
+#
+# A project can keep the same file at <repo>/.amx/config.toml, laid over this
+# one a key at a time: a project file holding one line has changed its mind
+# about one key, and everything else is still what you set here.
+
+# The command a new agent runs: claude, pi, or your own. The vendor is read off
+# the program this names, so `claude --dangerously-skip-permissions` is still
+# claude and gets claude's dials.
+agent = "claude"
+
+# How many live agents in a project before `new` refuses. Counted over the
+# agents whose pane still answers for them, in the project the new one would
+# run in: a repository at its cap refuses nothing in the next one.
+max_agents = 5
+
+# A ceiling over every project on the machine at once. Left out, there is
+# none: a machine is as busy as the projects on it ask between them.
+# max_total = 10
+
+# Give each agent its own git worktree. Two agents editing one checkout is the
+# failure amx is arranged to avoid; `amx new --no-worktree` is the escape for
+# one spawn.
+worktrees = true
+
+# Desktop notifications on the transitions worth interrupting for: an agent
+# that finished, or one stuck waiting on an answer.
+notifications = true
+
+# Answer the vendor's folder-trust screen for the worktrees amx cuts. For
+# claude that writes an entry in claude's own trust store, which outlives the
+# agent; for pi it puts --approve on the pane's argv and writes nothing. Off
+# until you say so: that store is the vendor's file, and this is the consent
+# the write stands behind.
+trust = false
+
+# The dials a new agent starts on. A key left out is a flag amx does not pass,
+# which leaves the choice to the vendor — there is no value that means that,
+# so leave the key out rather than write one. A value the configured agent
+# would not take is warned about and dropped.
+#
+#   claude: model is open (fable, opus, sonnet, or any id); permission is one
+#   of acceptEdits, auto, bypassPermissions, manual, dontAsk, plan; effort is
+#   one of low, medium, high, xhigh, max.
+#   pi: model is open (a provider/id pattern); effort is one of off, minimal,
+#   low, medium, high, xhigh, max; pi has no permission dial.
+# model = "opus"
+# permission = "plan"
+# effort = "high"
+
+# What writes the one line a turn is worth: run where the agent ran, handed the
+# answer on stdin with $AMX_ID naming the agent, and the first line it prints
+# goes on the row. The same command says what a working turn is about, every
+# three minutes, off the conversation so far. Only the view runs it. Left out,
+# nothing runs and nothing is spent.
+# summary_command = "claude -p 'Sum this up in eight words. Answer with the words alone.'"
+
+# Which palette the view paints in: a theme amx ships (default, terminal), a
+# file in ~/.config/amx/themes by name, or a path to one. The file is re-read
+# when it changes, so a theme switch lands in a running view.
+theme = "default"
+
+# Seconds an idle agent nobody is watching keeps its pane. A vendor at its
+# prompt holds a couple of hundred megabytes to do nothing with, so after this
+# long the pane goes and the record stays; enter, attach or resume starts the
+# agent again where it left off. A pane somebody is attached to or has pinned
+# is never taken. 0 turns this off.
+park_after = 3600
