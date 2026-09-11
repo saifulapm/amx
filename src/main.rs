@@ -16,6 +16,7 @@ mod furniture;
 mod hook;
 mod ids;
 mod install;
+mod models;
 mod notify;
 mod paths;
 mod pr;

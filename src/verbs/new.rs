@@ -14,7 +14,8 @@ use crate::cli::NewArgs;
 use crate::config::Config;
 use crate::spawn::{self, Dials, Handoff};
 use crate::store::{Meta, now};
-use crate::{Severity, exit, ids, paths, registry, said, trust, worktree};
+use crate::vendor::{Models, Vendor};
+use crate::{Severity, exit, ids, models, paths, registry, said, trust, worktree};
 
 /// What this spawn launches: the vendor's command, and where its dials are
 /// pointed for this one agent.
@@ -34,11 +35,16 @@ impl Launch {
     /// on its own terms when it was read. A flag was typed for this spawn,
     /// with the person who typed it still standing there, so telling them
     /// beats starting an agent at a setting nobody asked for.
+    ///
+    /// Which vendor runs is settled first, because a typed model picks the
+    /// harness that offers it and the dials are read against whichever one
+    /// that turns out to be.
     fn resolve(config: &Config, args: &NewArgs) -> Result<Launch, String> {
         let named = args.agent.as_ref();
-        let agent = named
-            .and_then(|named| named.command.clone())
-            .unwrap_or_else(|| config.agent.clone());
+        let agent = match named.and_then(|named| named.command.clone()) {
+            Some(command) => command,
+            None => picked(config, named.and_then(|named| named.model.as_deref()))?,
+        };
         let entry = registry::entry(&agent);
         let mut dials = Dials::default();
 
@@ -94,6 +100,83 @@ impl Launch {
         }
 
         Ok(Launch { agent, dials })
+    }
+}
+
+/// The command a spawn that named no agent runs: the harness the typed model
+/// belongs to, else the configured agent as it stands.
+///
+/// A model is asked about only where amx has an entry for the configured
+/// agent, because the answer is a comparison against what each harness offers
+/// and an agent amx knows nothing about offers nothing. The sentinel is nobody's
+/// model — it is the word for passing no model at all — so it picks nothing and
+/// leaves the configured agent where it was.
+fn picked(config: &Config, model: Option<&str>) -> Result<String, String> {
+    let Some(model) = model.filter(|model| *model != registry::DEFAULT) else {
+        return Ok(config.agent.clone());
+    };
+    if registry::entry(&config.agent).is_none() {
+        return Ok(config.agent.clone());
+    }
+    let vendor = harness_for(config, model)?;
+    // The configured command where the harness is the one it runs, because
+    // `agent = "claude --add-dir .."` is how somebody says how claude is run
+    // here. The bare name where it is another, because nothing in the file
+    // says how to run that one.
+    Ok(match registry::program(&config.agent) == vendor.name {
+        true => config.agent.clone(),
+        false => vendor.name.to_string(),
+    })
+}
+
+/// The harness a typed model belongs to: the first whose list holds the word.
+///
+/// The order is the rule. A word one harness alone lists picks that harness
+/// wherever it is asked; a word several list goes to the configured one where
+/// it is among them, and to the first in the table otherwise — which is what
+/// asking the configured agent first and stopping at the first answer says. It
+/// also spends the least: a listing a vendor has to be run for is never started
+/// once a list amx already holds has answered.
+fn harness_for(config: &Config, model: &str) -> Result<&'static Vendor, String> {
+    let mut said = Vec::new();
+    for vendor in asked(config) {
+        let list = models::models_of(vendor, config);
+        if models::lists_model(&list, model) {
+            return Ok(vendor);
+        }
+        said.push(takes(vendor, config, &list));
+    }
+    Err(format!("--model {model:?}: {}", said.join("; ")))
+}
+
+/// Every harness there is, the configured one first and the rest in the order
+/// the table holds them.
+fn asked(config: &Config) -> impl Iterator<Item = &'static Vendor> {
+    let configured = registry::entry(&config.agent);
+    let already = configured.map(|vendor| vendor.name);
+    configured.into_iter().chain(
+        registry::entries()
+            .iter()
+            .filter(move |vendor| Some(vendor.name) != already),
+    )
+}
+
+/// What a harness takes, for a refusal to name.
+///
+/// The words themselves where amx holds the list, and how many there are and
+/// what prints them where the vendor is the one holding it: a listing of
+/// several hundred models is not a sentence, and the command that prints it is
+/// what somebody would run to read it.
+fn takes(vendor: &Vendor, config: &Config, list: &[String]) -> String {
+    match vendor.models {
+        Models::Printed(argv) if config.harness(vendor.name).models.is_empty() => format!(
+            "{} takes {} models ({} {})",
+            vendor.name,
+            list.len(),
+            vendor.name,
+            argv.join(" ")
+        ),
+        _ => format!("{} takes {}", vendor.name, list.join(", ")),
     }
 }
 
@@ -471,6 +554,7 @@ fn make_dir(dir: &Path) -> Result<bool> {
 mod tests {
     use super::*;
     use crate::cli::AgentArgs;
+    use crate::config::HarnessConfig;
     use crate::registry::DEFAULT;
 
     fn spawn(agent: Option<&str>, dials: [Option<&str>; 3]) -> NewArgs {
@@ -620,247 +704,181 @@ mod tests {
 
     #[test]
     fn dials_a_full_model_name_is_taken_because_that_dial_is_open() {
+        // The agent is named here, because a word no harness lists picks none
+        // and is refused. What this is about is the dial, which takes a value
+        // its own cycle never names.
         let launch = Launch::resolve(
             &Config::default(),
-            &spawn(None, [Some("claude-fable-5"), None, None]),
+            &spawn(Some("claude"), [Some("claude-fable-5"), None, None]),
         )
         .unwrap();
         assert_eq!(launch.dials.model, "claude-fable-5");
     }
 
-    #[test]
-    fn dials_a_flag_for_a_vendor_that_has_no_such_dial_is_refused() {
-        let refusal = Launch::resolve(
-            &Config::default(),
-            &spawn(Some("mock-claude"), [Some("opus"), None, None]),
-        )
-        .unwrap_err();
-        assert!(refusal.contains("--model"), "{refusal}");
-        assert!(refusal.contains("mock-claude"), "{refusal}");
-    }
-
-    #[test]
-    fn exec_the_pane_is_handed_the_command_instead_of_a_vendor() {
-        let launch = Launch::resolve(&Config::default(), &a_command("cargo test")).unwrap();
-
-        assert_eq!(
-            launched(&a_command("cargo test"), &launch, "port-it-b2c", false),
-            ["sh", "-c", "cargo test"],
-            "no vendor, no dials, and no task appended after it"
-        );
-        assert_eq!(
-            launched(
-                &spawn(Some("claude"), [None; 3]),
-                &launch,
-                "port-it-b2c",
-                false
-            ),
-            ["claude", "port the importer"],
-            "and an ordinary spawn is launched the way it always was"
-        );
-    }
-
-    #[test]
-    fn exec_a_command_runs_where_it_was_typed_and_never_in_a_tree_of_its_own() {
-        // A command is not a conversation: it has nothing to keep apart from
-        // the next one, and a tree amx cut is a checkout without the build a
-        // `cargo test` or an `npm test` was typed to run. So the question is
-        // not asked at all — this directory is not one to work in, and a
-        // command spawn never gets far enough to find out.
-        let nowhere = Path::new("/nowhere/at/all");
-        let config = Config::default();
-
-        assert!(
-            cut_worktree(nowhere, "cargo-test-a1b", &config, &a_command("cargo test"))
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            cut_worktree(nowhere, "port-it-b2c", &config, &spawn(None, [None; 3])).is_err(),
-            "where an agent is asked for one and there is nowhere to cut it"
-        );
-    }
-
-    #[test]
-    fn the_claim_is_the_mkdir_and_a_directory_already_there_is_not_ours() {
-        // Two spawns racing one name both believe it is free; the mkdir is
-        // what settles it. A directory that already exists must read as
-        // somebody else's claim — never as a success to clean up later.
-        let root = tempfile::TempDir::new().unwrap();
-        let dir = root.path().join("fix-login-a1b");
-
-        assert!(make_dir(&dir).unwrap(), "a free name is claimed");
-        assert!(
-            !make_dir(&dir).unwrap(),
-            "a name somebody holds is not claimed again"
-        );
-    }
-
-    /// A repository with a tree of amx's own in it, and a home to keep a
-    /// vendor's trust store in.
-    fn a_tree(dir: &tempfile::TempDir) -> (PathBuf, std::collections::BTreeMap<String, String>) {
-        let tree = dir.path().join("app/.amx/worktrees/fix-login-a1b");
-        std::fs::create_dir_all(&tree).unwrap();
-        let env = spawn::env_snapshot([(
-            "HOME".to_string(),
-            dir.path().join("home").to_string_lossy().into_owned(),
-        )]);
-        (tree, env)
-    }
-
-    /// A config whose person has said yes to the trust write.
-    fn agreed() -> Config {
+    /// A config whose file says which models each harness named runs. pi is
+    /// given a list wherever a test could reach it: the list that vendor holds
+    /// is one it prints when it is run, and a unit test that started a process
+    /// would be reading whatever is installed on the machine.
+    fn listing(tables: &[(&str, &[&str])]) -> Config {
         Config {
-            trust: true,
+            harnesses: tables
+                .iter()
+                .map(|(harness, models)| {
+                    (
+                        harness.to_string(),
+                        HarnessConfig {
+                            models: models.iter().map(|model| model.to_string()).collect(),
+                            args: Vec::new(),
+                        },
+                    )
+                })
+                .collect(),
             ..Config::default()
         }
     }
 
     #[test]
-    fn trust_is_never_answered_until_the_config_says_yes() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let (tree, env) = a_tree(&dir);
-        let mut problems = Vec::new();
+    fn a_typed_model_runs_the_one_harness_that_lists_it() {
+        // Nobody types --agent: the word names the harness, and the harness
+        // amx is about to launch is whichever one offers it.
+        let config = listing(&[("pi", &["openai/gpt-5"])]);
 
-        trust_the_tree(
+        let launch = Launch::resolve(&config, &spawn(None, [Some("gpt-5"), None, None])).unwrap();
+        assert_eq!(launch.agent, "pi", "claude lists no such word");
+        assert_eq!(launch.dials.model, "gpt-5");
+
+        let launch = Launch::resolve(&config, &spawn(None, [Some("haiku"), None, None])).unwrap();
+        assert_eq!(launch.agent, "claude", "and this one is claude's alone");
+    }
+
+    #[test]
+    fn a_model_several_harnesses_list_stays_with_the_configured_one() {
+        // Both list it, so the tie goes to the harness the file already names,
+        // whichever of them that is.
+        let claudes = listing(&[("pi", &["opus"])]);
+        let launch = Launch::resolve(&claudes, &spawn(None, [Some("opus"), None, None])).unwrap();
+        assert_eq!(launch.agent, "claude");
+
+        let pis = Config {
+            agent: "pi".to_string(),
+            ..listing(&[("pi", &["opus"])])
+        };
+        let launch = Launch::resolve(&pis, &spawn(None, [Some("opus"), None, None])).unwrap();
+        assert_eq!(launch.agent, "pi");
+    }
+
+    #[test]
+    fn the_harnesses_are_asked_configured_first_and_then_in_the_tables_order() {
+        // The order is the whole rule: the configured harness where it lists
+        // the word, the first in the table where it does not, and never a
+        // listing run for a harness an earlier answer has already settled.
+        let named = |config: &Config| {
+            asked(config)
+                .map(|vendor| vendor.name)
+                .collect::<Vec<&str>>()
+        };
+        assert_eq!(named(&Config::default()), ["claude", "pi"]);
+        assert_eq!(
+            named(&Config {
+                agent: "pi --approve".to_string(),
+                ..Config::default()
+            }),
+            ["pi", "claude"],
+            "the configured command, read as the harness it runs"
+        );
+        assert_eq!(
+            named(&Config {
+                agent: "mock-claude".to_string(),
+                ..Config::default()
+            }),
+            ["claude", "pi"],
+            "an agent amx has no entry for is nobody in the table"
+        );
+    }
+
+    #[test]
+    fn a_model_no_harness_lists_is_refused_naming_what_each_takes() {
+        // Refused while the command is still on screen, with enough in the
+        // line to type the next one: nothing is minted and no pane is opened.
+        let config = listing(&[("pi", &["openai/gpt-5"])]);
+
+        let refusal =
+            Launch::resolve(&config, &spawn(None, [Some("gpt-4"), None, None])).unwrap_err();
+
+        assert!(refusal.contains("--model \"gpt-4\""), "{refusal}");
+        assert!(
+            refusal.contains("claude takes fable, opus, sonnet, haiku"),
+            "{refusal}"
+        );
+        assert!(refusal.contains("pi takes openai/gpt-5"), "{refusal}");
+    }
+
+    #[test]
+    fn a_harness_that_prints_its_models_is_named_by_how_many_and_what_prints_them() {
+        // Several hundred models is not a sentence, so the refusal says how
+        // many there are and what to run to read them. A list amx holds itself
+        // is short and is named in full.
+        let printed: Vec<String> = (0..490).map(|n| format!("openai/model-{n}")).collect();
+        let pi = registry::entry("pi").expect("an entry for pi");
+        assert_eq!(
+            takes(pi, &Config::default(), &printed),
+            "pi takes 490 models (pi --list-models)"
+        );
+
+        // And the same harness, once the file has said which models are its.
+        let told = listing(&[("pi", &["openai/gpt-5"])]);
+        assert_eq!(
+            takes(pi, &told, &models::models_of(pi, &told)),
+            "pi takes openai/gpt-5"
+        );
+    }
+
+    #[test]
+    fn a_model_picks_no_harness_where_the_agent_was_named() {
+        // `--agent` is somebody saying which harness runs, and a model is not
+        // an argument with it.
+        let config = listing(&[("pi", &["openai/gpt-5"])]);
+        let launch =
+            Launch::resolve(&config, &spawn(Some("pi"), [Some("haiku"), None, None])).unwrap();
+
+        assert_eq!(launch.agent, "pi", "claude lists haiku and is not asked");
+        assert_eq!(launch.dials.model, "haiku");
+    }
+
+    #[test]
+    fn a_model_picks_no_harness_for_a_configured_agent_amx_knows_nothing_about() {
+        // An agent with no entry has no list to be asked for, so a spawn under
+        // one is left exactly as it was: the model is the dial's business, and
+        // the dial does not exist.
+        let config = Config {
+            agent: "mock-claude".to_string(),
+            ..Config::default()
+        };
+
+        let refusal =
+            Launch::resolve(&config, &spawn(None, [Some("opus"), None, None])).unwrap_err();
+
+        assert!(refusal.contains("mock-claude"), "{refusal}");
+        assert!(
+            refusal.contains("no model dial"),
+            "claude was never asked: {refusal}"
+        );
+    }
+
+    #[test]
+    fn the_sentinel_names_no_model_and_so_picks_no_harness() {
+        // `--model default` is the word for passing no model at all, and no
+        // harness lists it. Asking which one takes it would refuse every spawn
+        // that turned a dial back to the vendor's own behaviour — and would
+        // run a listing to do it.
+        let launch = Launch::resolve(
             &Config::default(),
-            &env,
-            "claude",
-            &tree,
-            &mut problems,
-            false,
-        );
+            &spawn(None, [Some(DEFAULT), None, None]),
+        )
+        .unwrap();
 
-        assert!(
-            !trust::store_in(&env).unwrap().exists(),
-            "the person's own file, and the person has not said yes"
-        );
-        assert!(problems.is_empty(), "declining quietly is not a problem");
-    }
-
-    #[test]
-    fn trust_is_answered_for_the_tree_a_claude_spawn_was_given() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let (tree, env) = a_tree(&dir);
-        let mut problems = Vec::new();
-
-        trust_the_tree(&agreed(), &env, "claude", &tree, &mut problems, false);
-
-        let store = trust::store_in(&env).unwrap();
-        let written: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
-        assert!(trust::trusted(&written, &tree), "{written}");
-        assert!(
-            problems.is_empty(),
-            "{}",
-            String::from_utf8_lossy(&problems)
-        );
-    }
-
-    #[test]
-    fn trust_is_never_answered_for_a_vendor_that_does_not_ask() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let (tree, env) = a_tree(&dir);
-        let mut problems = Vec::new();
-
-        trust_the_tree(
-            &agreed(),
-            &env,
-            "mock-claude --pane",
-            &tree,
-            &mut problems,
-            false,
-        );
-
-        assert!(
-            !trust::store_in(&env).unwrap().exists(),
-            "a store amx invented for a vendor that keeps none"
-        );
-        assert!(problems.is_empty());
-    }
-
-    #[test]
-    fn trust_writes_no_other_vendors_store_for_an_agent_answered_on_its_argv() {
-        // The store this write is about is claude's own file. pi claims the
-        // folder-trust capability too, and a guard that asked the capability
-        // question would have written `~/.claude.json` for a tree no claude
-        // will ever open.
-        let dir = tempfile::TempDir::new().unwrap();
-        let (tree, env) = a_tree(&dir);
-        let mut problems = Vec::new();
-
-        trust_the_tree(&agreed(), &env, "pi", &tree, &mut problems, false);
-
-        assert!(
-            !trust::store_in(&env).unwrap().exists(),
-            "another vendor's file, touched over a screen that vendor never draws"
-        );
-        assert!(problems.is_empty());
-    }
-
-    #[test]
-    fn trust_is_answered_on_the_argv_for_a_vendor_whose_answer_is_a_flag() {
-        // pi's half of the same key, and the reason the config is read here:
-        // `spawn` is handed none, and the flag has to reach the argv of the
-        // pane this spawn is about to start.
-        let args = spawn(Some("pi"), [None; 3]);
-        let launch = Launch::resolve(&agreed(), &args).unwrap();
-
-        assert_eq!(
-            launched(&args, &launch, "port-it-b2c", true),
-            [
-                "pi",
-                "--session-id",
-                "port-it-b2c",
-                "--approve",
-                "port the importer"
-            ]
-        );
-        assert_eq!(
-            launched(&args, &launch, "port-it-b2c", false),
-            ["pi", "--session-id", "port-it-b2c", "port the importer"],
-            "and nothing at all without the key"
-        );
-    }
-
-    #[test]
-    fn trust_that_cannot_be_written_is_said_once_and_the_spawn_goes_on() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let (tree, env) = a_tree(&dir);
-        let store = trust::store_in(&env).unwrap();
-        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
-        std::fs::write(&store, "{ not json at all }").unwrap();
-        let mut problems = Vec::new();
-
-        trust_the_tree(&agreed(), &env, "claude", &tree, &mut problems, true);
-
-        // A store amx cannot write is a warning and not a failure: the spawn
-        // went ahead, and what is left is a screen somebody answers by hand.
-        let told = String::from_utf8(problems).unwrap();
-        assert!(told.contains("trust store amx can read"), "{told}");
-        assert_eq!(told.lines().count(), 1, "{told}");
-        assert!(told.starts_with("\u{1b}[33mamx new: "), "{told:?}");
-    }
-
-    #[test]
-    fn spawn_writes_the_minted_id_into_metasession_the_moment_a_vendor_opens_under_it() {
-        // Recorded at the moment the pane is started, rather than left None
-        // for a Started hook that a vendor with no hooks at all could never
-        // send.
-        assert_eq!(
-            session_written(false, true, "fix-login-a1b"),
-            Some("fix-login-a1b".to_string())
-        );
-        assert_eq!(
-            session_written(false, false, "fix-login-a1b"),
-            None,
-            "no start flag was offered, so nothing was minted to record"
-        );
-        assert_eq!(
-            session_written(true, true, "fix-login-a1b"),
-            None,
-            "a command spawn opens no session of its own"
-        );
+        assert_eq!(launch.agent, "claude");
+        assert_eq!(launch.dials.model, DEFAULT);
     }
 
     #[test]

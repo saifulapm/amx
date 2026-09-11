@@ -73,6 +73,24 @@ pub fn view_file(state_root: &Path) -> Option<PathBuf> {
 /// What that file is called.
 const VIEW: &str = "view.json";
 
+/// Where a listing amx read out of a vendor is kept between runs.
+///
+/// Beside the agents for the same reason the view's file is: nothing in it
+/// belongs to an agent. What a vendor offers is the vendor's, one file per
+/// harness, and a spawn that has to know which harness runs a model reads it
+/// rather than starting the vendor again.
+pub fn models_dir() -> Result<PathBuf> {
+    let agents = state_root()?;
+    let root = agents
+        .parent()
+        .filter(|root| !root.as_os_str().is_empty())
+        .context("no state root to keep a model listing under")?;
+    Ok(root.join(MODELS))
+}
+
+/// What that directory is called.
+const MODELS: &str = "models";
+
 /// The config file amx reads, whether or not it exists.
 pub fn config_file() -> Result<PathBuf> {
     let xdg = env_path(std::env::var_os("XDG_CONFIG_HOME"));
@@ -209,6 +227,18 @@ mod tests {
             None,
             "a root with nowhere above it is not a place to write"
         );
+    }
+
+    #[test]
+    fn a_vendors_model_listing_is_kept_beside_the_agents() {
+        // Reads the ambient environment and never touches it, the way the
+        // other wrapper does: whichever branch it takes, the answer is the
+        // models directory at the state root.
+        let (Ok(agents), Ok(models)) = (state_root(), models_dir()) else {
+            return;
+        };
+        assert!(models.ends_with(MODELS), "{}", models.display());
+        assert_eq!(models.parent(), agents.parent());
     }
 
     #[test]
