@@ -1873,6 +1873,44 @@ fn header_vendor_dial_runs_the_next_agent_under_the_vendor_it_names() {
 }
 
 #[test]
+fn header_model_dial_starts_the_harness_the_model_it_names_belongs_to() {
+    let amx = Harness::new();
+    // pi is what the file asks for, and claude is on the path beside it. What
+    // pi runs is a listing only a pi process could print, and the view starts
+    // none, so the models the dial offers are claude's.
+    let view = a_view_that_can_start_claude(&amx, "agent = \"pi\"\nworktrees = false\n");
+    amx.until("the header", || {
+        screen(&amx, &view)
+            .contains("└ next  pi   model  default")
+            .then_some(())
+    });
+
+    press(&amx, &view, "M-m");
+    amx.until("the model dial to turn", || {
+        screen(&amx, &view)
+            .contains("└ next  claude   model  fable")
+            .then_some(())
+    });
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "port the importer");
+    press(&amx, &view, "Enter");
+
+    let id = composed(&amx);
+    let command = command_of(&amx, &id);
+    assert_eq!(
+        command.first().map(String::as_str),
+        Some("claude"),
+        "the harness the model belongs to is the one that runs: {command:?}"
+    );
+    assert!(
+        command.windows(2).any(|pair| pair == ["--model", "fable"]),
+        "with the model the header named: {command:?}"
+    );
+    amx.until_state(&id, "idle");
+}
+
+#[test]
 fn header_worktree_dial_gives_the_next_agent_a_tree_the_file_would_not() {
     let amx = Harness::new();
     a_repo_at(amx.home());

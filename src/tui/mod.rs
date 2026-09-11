@@ -55,9 +55,10 @@ use crate::derive::{self, View};
 use crate::store::{Agent, Phase, now};
 use crate::theme::{Theme, Watch};
 use crate::tmux::{PaneId, Server, SessionId};
+use crate::vendor::Models;
 use crate::verbs::ls::Scope;
 use crate::verbs::resume::Comeback;
-use crate::{exit, registry, spawn, verbs};
+use crate::{exit, models, registry, spawn, verbs};
 use act::{Asking, Composer, Edited, Renamed, Replied, Started};
 use paint::{Body, Card, Notice};
 use rows::{Arrangement, List, Narrow};
@@ -226,6 +227,9 @@ struct Profile {
     /// Where each vendor dial stands. [`registry::DEFAULT`] is the vendor's
     /// own behaviour, which amx says by passing no flag at all.
     model: String,
+    /// Every model the dial offers, each beside the vendor that runs it, which
+    /// is what makes the model dial reach past the vendor the file names.
+    models: Vec<(String, &'static str)>,
     permission: String,
     /// Whether the next agent is cut a worktree of its own.
     worktree: bool,
@@ -276,6 +280,7 @@ impl Profile {
             agent: config.agent.clone(),
             configured: config.agent.clone(),
             model: effective(entry.and_then(|e| e.model), config.model.as_deref()),
+            models: offered(config),
             permission: effective(
                 entry.and_then(|e| e.permission),
                 config.permission.as_deref(),
@@ -317,27 +322,63 @@ impl Profile {
 
     /// The next vendor, with the dials it declares under it.
     ///
-    /// A dial the new vendor will not take rests at the sentinel, which is
-    /// the law the profile opens on read a second time: the row must not name
-    /// a model to a vendor that would refuse it.
+    /// The model goes back to the sentinel, because a model belongs to the
+    /// harness that runs it: somebody who has turned to another harness has
+    /// asked for that harness, not for it to be handed a model chosen for the
+    /// one before. The other dials rest at the sentinel where the new vendor
+    /// will not take them, which is the law the profile opens on read a second
+    /// time: the row must not name a value to a vendor that would refuse it.
     fn cycle_vendor(&mut self) {
         let Some(next) = next_in(&self.vendors(), &self.agent) else {
             return;
         };
         self.agent = next;
-        let (model, permission) = (self.model_dial(), self.permission_dial());
-        self.model = effective(model, Some(&self.model));
-        self.permission = effective(permission, Some(&self.permission));
+        self.model = registry::DEFAULT.to_string();
+        self.permission = effective(self.permission_dial(), Some(&self.permission));
     }
 
-    /// A dial a vendor does not declare has nothing to offer, so its key does
-    /// nothing rather than inventing a value the vendor would refuse.
+    /// The next model on the dial, and under it the harness that runs it.
+    ///
+    /// The walk is over every harness's models rather than the one on the row,
+    /// because a model names the harness it belongs to: turning to one turns
+    /// the vendor with it, and the dials that vendor declares are settled again
+    /// under it the way a turned vendor settles them. The sentinel is nobody's
+    /// model — it is the word for passing none — so it leaves the vendor where
+    /// it stands.
+    ///
+    /// A dial the vendor on the row does not declare has nothing to offer, so
+    /// its key does nothing rather than inventing a value that vendor would
+    /// refuse.
     fn cycle_model(&mut self) {
-        if let Some(next) = self
-            .model_dial()
-            .and_then(|d| next_in(d.cycle, &self.model))
-        {
-            self.model = next;
+        if self.model_dial().is_none() {
+            return;
+        }
+        let at = self
+            .models
+            .iter()
+            .position(|(model, _)| *model == self.model);
+        // Past the last model is the sentinel, and so is a model no list names:
+        // the dial is what the key offers, and it always begins where it began.
+        let next = at
+            .map_or(self.models.first(), |at| self.models.get(at + 1))
+            .map(|(model, vendor)| (model.clone(), *vendor));
+        let Some((model, vendor)) = next else {
+            self.model = registry::DEFAULT.to_string();
+            return;
+        };
+        self.model = model;
+        self.agent = self.spelled(vendor);
+        self.permission = effective(self.permission_dial(), Some(&self.permission));
+    }
+
+    /// How this profile writes a harness: the command the file asked for where
+    /// that is the program it runs, because `agent = "claude --add-dir .."` is
+    /// how somebody says how claude is run here; the bare program where it is
+    /// another, because nothing in the file says how to run that one.
+    fn spelled(&self, vendor: &'static str) -> String {
+        match registry::program(&self.configured) == vendor {
+            true => self.configured.clone(),
+            false => vendor.to_string(),
         }
     }
 
@@ -372,6 +413,32 @@ impl Profile {
             ..config.clone()
         }
     }
+}
+
+/// Every model some harness is the one to run, in the order the dial offers
+/// them: each harness's list in the table's order, every model beside the
+/// harness that runs it, and a model two of them both list kept under the
+/// first.
+///
+/// Only a list amx already holds, never one a harness would have to be run for.
+/// This is built while the view opens, and a process started there is a second
+/// somebody spends looking at a blank screen, for models most of them will
+/// never turn the dial to. So a harness that prints its models is on the dial
+/// only where somebody has written that harness's models down.
+fn offered(config: &Config) -> Vec<(String, &'static str)> {
+    let mut offered: Vec<(String, &'static str)> = Vec::new();
+    for vendor in registry::entries() {
+        let held = vendor.models == Models::Cycle || !config.harness(vendor.name).models.is_empty();
+        if !held {
+            continue;
+        }
+        for model in models::models_of(vendor, config) {
+            if !offered.iter().any(|(already, _)| *already == model) {
+                offered.push((model, vendor.name));
+            }
+        }
+    }
+    offered
 }
 
 /// A dial as the config states one: the sentinel is the vendor's own
@@ -2935,12 +3002,14 @@ fn reaching(server: Server, here: Option<&Here>, view: &View) -> Result<Reach> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::HarnessConfig;
     use crate::derive::{Evidence, Verdict};
     use crate::store::{Agent, Ask, Choice, Kind, Meta, Phase, State};
     use crate::tmux::Socket;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::style::{Color, Modifier};
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -3366,6 +3435,82 @@ mod tests {
     }
 
     #[test]
+    fn header_dials_the_model_dial_walks_every_harnesss_models() {
+        // pi is what the file asks for, and what pi runs is a listing only a pi
+        // process could print — which the view never starts. So the models on
+        // the dial are the ones another harness runs, and turning to one turns
+        // to that harness with it.
+        let config = Config {
+            agent: "pi".to_string(),
+            ..Config::default()
+        };
+        let mut profile = Profile::open(&config, None, None, None);
+        assert_eq!(profile.model, registry::DEFAULT);
+
+        for want in ["fable", "opus", "sonnet", "haiku"] {
+            profile.cycle_model();
+            assert_eq!(profile.model, want, "claude's own list, in its own order");
+            assert_eq!(profile.agent, "claude", "and claude is what runs it");
+        }
+
+        profile.cycle_model();
+        assert_eq!(
+            profile.model,
+            registry::DEFAULT,
+            "round again to the sentinel, which is nobody's model"
+        );
+        assert_eq!(
+            profile.agent, "claude",
+            "and says nothing about which harness runs"
+        );
+    }
+
+    #[test]
+    fn header_dials_offer_the_models_the_file_wrote_down_for_each_harness() {
+        let told = |models: &[&str]| HarnessConfig {
+            models: models.iter().map(|model| model.to_string()).collect(),
+            args: Vec::new(),
+        };
+        let config = Config {
+            agent: "claude --add-dir ..".to_string(),
+            permission: Some("plan".to_string()),
+            harnesses: BTreeMap::from([
+                ("claude".to_string(), told(&["big"])),
+                ("pi".to_string(), told(&["openai/gpt-5"])),
+            ]),
+            ..Config::default()
+        };
+        let mut profile = Profile::open(&config, None, None, None);
+
+        profile.cycle_model();
+        assert_eq!(
+            profile.model, "big",
+            "the file's list, not the dial's cycle"
+        );
+        assert_eq!(
+            profile.agent, "claude --add-dir ..",
+            "spelled the way the file spells the harness it names"
+        );
+        assert_eq!(profile.permission, "plan");
+
+        profile.cycle_model();
+        assert_eq!(profile.model, "openai/gpt-5", "then the next table's");
+        assert_eq!(
+            profile.agent, "pi",
+            "a harness the file named only in a table runs under its own name"
+        );
+        assert_eq!(
+            profile.permission,
+            registry::DEFAULT,
+            "and a dial the harness that came with the model does not declare \
+             rests where a turned vendor would leave it"
+        );
+
+        profile.cycle_model();
+        assert_eq!(profile.model, registry::DEFAULT);
+    }
+
+    #[test]
     fn header_dials_the_vendor_cycle_starts_at_the_command_config_asked_for() {
         // A vendor amx has no entry for is still what the file asked for, and
         // the cycle is the only thing that could put it back.
@@ -3407,9 +3552,10 @@ mod tests {
         profile.cycle_vendor();
         assert_eq!(profile.agent, "pi");
         assert_eq!(
-            profile.model, "fable",
-            "pi's model dial is open, so a value claude's cycle chose still \
-             rides along"
+            profile.model,
+            registry::DEFAULT,
+            "a model belongs to the harness that runs it, so a harness \
+             somebody turns to starts at its own answer"
         );
 
         profile.cycle_vendor();
