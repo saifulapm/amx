@@ -47,7 +47,7 @@ fn screen(amx: &Harness, pane: &str) -> String {
 /// row writes what it calls its agent. A notice quoting the same word is prose
 /// at the left edge and does not answer to this.
 fn a_row_called(line: &str, name: &str) -> bool {
-    line.chars().skip(4).collect::<String>().starts_with(name)
+    line.chars().skip(3).collect::<String>().starts_with(name)
 }
 
 /// The same screen with the colours the view drew it in, as the escapes tmux

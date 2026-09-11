@@ -7088,7 +7088,7 @@ mod tests {
             ],
         );
         assert_eq!(code, exit::OK);
-        assert!(screen.contains("  ∙ second-b2c"), "{screen}");
+        assert!(screen.contains(" ∙ second-b2c"), "{screen}");
         assert!(
             screen.lines().any(|line| line.starts_with("second-b2c ┈")),
             "an agent with no pane left is read from its record, onto a card \

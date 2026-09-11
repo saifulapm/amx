@@ -16,11 +16,11 @@ use crate::tui::rows::List;
 /// the good one.
 pub(super) const WELCOME: &str = "nothing running, nothing broken, nobody asking. enjoy it";
 
-/// What stands before an agent's name on a row: the two cells it is indented
-/// by, the state glyph and the space after it. The offers stand where a name
+/// What stands before an agent's name on a row: the cell it is indented by,
+/// the state glyph and the space after it. The offers stand where a name
 /// would, so the empty wall is the wall with its rows taken out rather than a
 /// screen of its own.
-const NAME: usize = 4;
+const NAME: usize = 3;
 
 /// The key column those offers stand in, which is one key and the air that
 /// holds what it does off it.
@@ -196,10 +196,10 @@ mod tests {
         // where a row's name would stand.
         assert_eq!(screen[3], WELCOME, "{screen:?}");
         assert_eq!(screen[4], "", "{screen:?}");
-        assert_eq!(screen[5], "    n   start an agent", "{screen:?}");
+        assert_eq!(screen[5], "   n   start an agent", "{screen:?}");
         assert_eq!(
             screen[6],
-            format!("    ?   the other {} keys", HELP.len() - 1),
+            format!("   ?   the other {} keys", HELP.len() - 1),
             "{screen:?}"
         );
         assert!(
@@ -219,7 +219,7 @@ mod tests {
     fn the_offers_on_an_empty_wall_carry_the_weight_on_the_key() {
         let buffer = cells(&showing(Vec::new(), None), WALL);
 
-        let key = buffer[(4, 5)].clone();
+        let key = buffer[(3, 5)].clone();
         assert_eq!(key.symbol(), "n");
         assert!(
             key.modifier.contains(Modifier::BOLD),

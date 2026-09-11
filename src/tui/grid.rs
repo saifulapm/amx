@@ -35,9 +35,9 @@ const STATE: usize = 8;
 /// The age column, which fits everything up to `365d`.
 const AGE: usize = 4;
 
-/// What stands before the name: the unread or pin mark, a space, the state
-/// glyph, and a space.
-const PREFIX: usize = 4;
+/// What stands before the name: a cell of indent, the state glyph, and a
+/// space.
+const PREFIX: usize = 3;
 
 /// What stands between two columns.
 const GAP: usize = 2;
@@ -92,15 +92,15 @@ pub(super) fn widths(width: usize, axis: Axis) -> Widths {
 /// How many cells a path heading can spend on its path, with `suffix` being
 /// whatever the heading says after the path and before its rule.
 ///
-/// What is left of the screen once the space the path stands in, the space
-/// after it, the suffix and its own space, the shortest rule a heading is
-/// allowed and the count in the age column have been taken out of it.
+/// What is left of the screen once the path, the space after it, the suffix
+/// and its own space, the shortest rule a heading is allowed and the count in
+/// the age column have been taken out of it.
 pub(super) fn path_room(width: usize, suffix: &str) -> usize {
     let said = match suffix.is_empty() {
         true => 0,
         false => width_of(suffix) + 1,
     };
-    width.saturating_sub(1 + 1 + said + SHORTEST_RULE + GAP + AGE)
+    width.saturating_sub(1 + said + SHORTEST_RULE + GAP + AGE)
 }
 
 /// `text` in a column `width` cells wide, filled with spaces, and cut with an
@@ -402,9 +402,9 @@ mod tests {
     fn path_room_leaves_the_heading_its_rule_and_its_count() {
         let room = path_room(100, "");
         assert_eq!(
-            room + 1 + 1 + SHORTEST_RULE + GAP + AGE,
+            room + 1 + SHORTEST_RULE + GAP + AGE,
             100,
-            "a space, the path, a space, the shortest rule, and the count"
+            "the path, a space, the shortest rule, and the count"
         );
         assert_eq!(
             path_room(100, "· 2 failed"),

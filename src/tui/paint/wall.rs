@@ -208,7 +208,7 @@ fn heading(group: Group, tally: Tally, theme: Theme) -> Line<'static> {
         _ => dim(),
     };
     Line::from(vec![
-        Span::styled(format!(" {}{}", group.title(), count(tally)), label),
+        Span::styled(format!("{}{}", group.title(), count(tally)), label),
         Span::styled(failures(tally), Style::new().fg(theme.failed)),
     ])
 }
@@ -227,7 +227,7 @@ fn path_heading(title: String, tally: Tally, width: usize, theme: Theme) -> Line
     let failed = failures(tally);
     let path = grid::elide(&title, grid::path_room(width, failed.trim()));
     Line::from(vec![
-        Span::styled(format!(" {path}{}", count(tally)), dim()),
+        Span::styled(format!("{path}{}", count(tally)), dim()),
         Span::styled(failed, Style::new().fg(theme.failed)),
     ])
 }
@@ -252,7 +252,7 @@ fn failures(tally: Tally) -> String {
 /// An agent's row: what state it is in, what it is called, what its work is
 /// waiting on out in the world, what it is up to, and how long it has worked.
 ///
-/// Four cells before the name — two of indent, the state glyph and the space
+/// Three cells before the name — one of indent, the state glyph and the space
 /// after it — then the name, the summary, and the age right-aligned at the
 /// edge, all on the widths the grid fixes for the screen. Fixed rather than
 /// measured off the fleet, so the columns stand where they stood when the last
@@ -416,10 +416,10 @@ fn first_line(text: &str) -> &str {
 }
 
 /// What a row is indented by, so an agent reads as sitting under the heading
-/// it belongs to rather than beside it. Two blank cells, which is what the
-/// vendor's own view spends them on: a wall that put a mark in either would be
-/// a column a person has to learn before the one they came to read.
-const GUTTER: &str = "  ";
+/// it belongs to rather than beside it. One blank cell, which is what the
+/// vendor's own view spends there: a wall that put a mark in it would be a
+/// column a person has to learn before the one they came to read.
+const GUTTER: &str = " ";
 
 /// The vendor's glyph set for a terminal. Ghostty draws the eight-spoked
 /// asterisk where everything else gets a plain one, and that is the only thing
@@ -655,7 +655,7 @@ mod tests {
     /// The mark on a row, and how the view painted it: a mark carries its
     /// colour, and a test that read the text alone could not see it.
     fn mark(screen: &Screen, size: (u16, u16), row: u16) -> (String, Color, Modifier) {
-        let cell = cells(screen, size)[(2, row)].clone();
+        let cell = cells(screen, size)[(1, row)].clone();
         (cell.symbol().to_string(), cell.fg, cell.modifier)
     }
 
@@ -907,7 +907,7 @@ mod tests {
         };
 
         assert!(
-            at(0).starts_with(&format!("  {} port-import-b2c", pulse(0))),
+            at(0).starts_with(&format!(" {} port-import-b2c", pulse(0))),
             "{:?}",
             at(0)
         );
@@ -932,8 +932,8 @@ mod tests {
         );
         assert_eq!(heading_of(&screen[2]), "Needs input");
         assert!(
-            screen[3].starts_with("  ✻ ask-a1b"),
-            "two cells of indent, the glyph and a space, and then the name: \
+            screen[3].starts_with(" ✻ ask-a1b"),
+            "a cell of indent, the glyph and a space, and then the name: \
              {:?}",
             screen[3]
         );
@@ -941,7 +941,7 @@ mod tests {
         assert_eq!(screen[4], "", "the next group stands off from this one");
         assert_eq!(heading_of(&screen[5]), "Working");
         assert!(
-            screen[6].starts_with(&format!("  {} fix-login-b2c", pulse(0))),
+            screen[6].starts_with(&format!(" {} fix-login-b2c", pulse(0))),
             "{:?}",
             screen[6]
         );
@@ -1093,7 +1093,7 @@ mod tests {
             (60, 10),
         );
 
-        assert_eq!(screen[2], " /src/api", "{screen:?}");
+        assert_eq!(screen[2], "/src/api", "{screen:?}");
         assert!(screen[3].contains("ask-a1b"), "{:?}", screen[3]);
         assert!(
             screen[3].contains("waiting"),
@@ -1102,7 +1102,7 @@ mod tests {
         );
         assert!(screen[4].contains("done"), "{:?}", screen[4]);
         assert_eq!(screen[5], "", "the next project stands off from this one");
-        assert_eq!(screen[6], " /src/web", "{screen:?}");
+        assert_eq!(screen[6], "/src/web", "{screen:?}");
 
         // One column, so the states read down the screen rather than wandering
         // with the length of the name above them. Counted in characters: the
@@ -1191,7 +1191,7 @@ mod tests {
             (60, 8),
         );
         assert!(
-            painted[2].starts_with(&format!("  {} busy-a1b", pulse(0))),
+            painted[2].starts_with(&format!(" {} busy-a1b", pulse(0))),
             "a row reads the same whether or not the cursor is on it: {:?}",
             painted[2]
         );
@@ -1204,8 +1204,8 @@ mod tests {
         // to, and the right margin is the ages alone.
         let screen = drawn(a_fleet(), None, (60, 12));
 
-        assert_eq!(screen[3], " Needs input");
-        assert_eq!(screen[6], " Working");
+        assert_eq!(screen[3], "Needs input");
+        assert_eq!(screen[6], "Working");
         assert!(
             !screen.iter().any(|line| line.contains('┈')),
             "nothing is run out to the edge of the wall: {screen:?}"
@@ -1225,7 +1225,7 @@ mod tests {
 
         assert_eq!(
             painted(&screen, size)[1],
-            " Working",
+            "Working",
             "the rows under an open heading are the count, and a number beside \
              them is the same fact drawn twice"
         );
@@ -1234,7 +1234,7 @@ mod tests {
         screen.list.shut_or_open();
         let drawn = painted(&screen, size);
         assert_eq!(
-            drawn[1], " Working 2",
+            drawn[1], "Working 2",
             "shut, the count is all that stands in for them, so it follows the \
              label rather than the far edge"
         );
@@ -1263,7 +1263,7 @@ mod tests {
 
         assert_eq!(
             painted(&screen, size)[1],
-            " Completed · 1 failed",
+            "Completed · 1 failed",
             "a screenful of headings says how it went without being opened"
         );
         assert_eq!(
@@ -1277,7 +1277,7 @@ mod tests {
         screen.list.shut_or_open();
         assert_eq!(
             painted(&screen, size)[1],
-            " Completed 2 · 1 failed",
+            "Completed 2 · 1 failed",
             "shutting a group hides the detail of a failure, never the fact, \
              and the failures keep their place after the count"
         );
@@ -1348,7 +1348,7 @@ mod tests {
             ),
         ]);
 
-        assert_eq!(painted(&screen, size)[2], " /src/api · 1 failed");
+        assert_eq!(painted(&screen, size)[2], "/src/api · 1 failed");
         assert_eq!(word_colour(&screen, size, 2, "· 1 failed"), theme().failed);
         for word in ["/src/api", "api"] {
             let painted = word_modifier(&screen, size, 2, word);
@@ -1361,7 +1361,7 @@ mod tests {
 
         screen.list.up();
         screen.list.shut_or_open();
-        assert_eq!(painted(&screen, size)[2], " /src/api 2 · 1 failed");
+        assert_eq!(painted(&screen, size)[2], "/src/api 2 · 1 failed");
     }
 
     #[test]

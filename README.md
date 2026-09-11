@@ -253,7 +253,7 @@ wants a person: those failures, and the words `Needs input`. The cursor stops
 on a heading like any other line.
 
 A row is one line, always, on columns the screen fixes rather than the fleet:
-two cells of indent, the state glyph, the name, what the agent last said, and
+a cell of indent, the state glyph, the name, what the agent last said, and
 the seconds at the end. They stand where they stood when the last agent ended,
 so the row you learned wide is the row you get narrow — under 100 columns the
 name column is the one that gives way. A wall with nothing on it keeps

@@ -71,10 +71,10 @@ fn line_of(drawn: &str, text: &str) -> usize {
         .unwrap_or_else(|| panic!("no line holding {text} in:\n{drawn}"))
 }
 
-/// The glyph on an agent's row, as the view has it drawn now: past the two
-/// blank cells its rows are indented by.
+/// The glyph on an agent's row, as the view has it drawn now: past the blank
+/// cell its rows are indented by.
 fn mark(amx: &Harness, view: &str, id: &str) -> Option<char> {
-    row_of(amx, view, id)?.chars().nth(2)
+    row_of(amx, view, id)?.chars().nth(1)
 }
 
 /// Somebody having been to read what an agent is holding, written where a look
@@ -873,7 +873,7 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
     // what the line reads rather than what it starts with: ~ heads the agents
     // outside any repository, not the ones under ~/repo as well.
     let headings = |text: &str| {
-        let heading = format!(" {text}");
+        let heading = text.to_string();
         drawn
             .lines()
             .enumerate()
@@ -957,7 +957,7 @@ fn a_blank_line_stands_the_list_off_from_the_header() {
     let lines: Vec<&str> = drawn.lines().map(str::trim_end).collect();
     let at = lines
         .iter()
-        .position(|line| *line == " Needs input")
+        .position(|line| *line == "Needs input")
         .unwrap_or_else(|| panic!("no Needs input heading in:\n{drawn}"));
     assert!(
         lines[at - 1].is_empty(),
@@ -1083,16 +1083,16 @@ fn a_row_lands_its_name_summary_and_age_in_the_columns_the_grid_fixes() {
     let cells: Vec<char> = row.chars().collect();
     assert_eq!(cells.len(), 80, "a row is drawn to the edge:\n{row:?}");
 
-    // Two blank cells of indent, the state glyph and the space after it, and
+    // A blank cell of indent, the state glyph and the space after it, and
     // then the name column: sixteen cells of it below a hundred.
     let column = |from: usize, to: usize| cells[from..to].iter().collect::<String>();
-    assert_eq!(column(4, 20), "fix-login-a1b   ", "{row:?}");
-    assert_eq!(column(20, 22), "  ", "two cells stand the columns apart");
+    assert_eq!(column(3, 19), "fix-login-a1b   ", "{row:?}");
+    assert_eq!(column(19, 21), "  ", "two cells stand the columns apart");
 
     // Then the summary, which takes whatever is left of the screen.
     assert_eq!(
-        column(22, 74),
-        format!("{:<52}", "did what it was asked"),
+        column(21, 74),
+        format!("{:<53}", "did what it was asked"),
         "{row:?}"
     );
 
@@ -1159,11 +1159,9 @@ fn a_group_heading_is_the_groups_own_words_and_stops_there() {
     // than a coin toss.
     let drawn = amx.until("both headings, whole", || {
         let drawn = screen(&amx, &view);
-        let whole = ["Needs input", "Completed"].iter().all(|label| {
-            drawn
-                .lines()
-                .any(|line| line.trim_end() == format!(" {label}"))
-        });
+        let whole = ["Needs input", "Completed"]
+            .iter()
+            .all(|label| drawn.lines().any(|line| line.trim_end() == *label));
         whole.then_some(drawn)
     });
 
@@ -1208,7 +1206,7 @@ fn a_path_heading_reads_the_way_a_group_heading_does() {
     press(&amx, &view, "C-s");
     let drawn = amx.until("the heading over the repository, whole", || {
         let drawn = screen(&amx, &view);
-        let whole = drawn.lines().any(|line| line.trim_end() == " ~/repo");
+        let whole = drawn.lines().any(|line| line.trim_end() == "~/repo");
         whole.then_some(drawn)
     });
 
@@ -1251,7 +1249,7 @@ fn a_path_too_long_for_its_heading_loses_its_middle_and_not_its_end() {
     let line = amx.until("the heading over the deep path, whole", || {
         screen(&amx, &view)
             .lines()
-            .find(|line| line.starts_with(" /srv/") && line.ends_with("legacy-shim"))
+            .find(|line| line.starts_with("/srv/") && line.ends_with("legacy-shim"))
             .map(str::to_string)
     });
 
@@ -1290,18 +1288,18 @@ fn a_row_under_a_path_grows_a_state_word_and_moves_no_other_column() {
     let cells: Vec<char> = row.chars().collect();
     let column = |from: usize, to: usize| cells[from..to].iter().collect::<String>();
     assert_eq!(cells.len(), 80, "a row is drawn to the edge:\n{row:?}");
-    assert_eq!(column(4, 20), "fix-login-a1b   ", "the name has not moved");
-    assert_eq!(column(20, 22), "  ", "two cells stand the columns apart");
+    assert_eq!(column(3, 19), "fix-login-a1b   ", "the name has not moved");
+    assert_eq!(column(19, 21), "  ", "two cells stand the columns apart");
 
     // The heading over the row is a place now, so the row says the state:
     // eight cells of it, which is what the longest of the words needs.
-    assert_eq!(column(22, 30), "done    ", "{row:?}");
-    assert_eq!(column(30, 32), "  ", "{row:?}");
+    assert_eq!(column(21, 29), "done    ", "{row:?}");
+    assert_eq!(column(29, 31), "  ", "{row:?}");
 
     // The summary pays for all ten of those cells and nothing else does.
     assert_eq!(
-        column(32, 74),
-        format!("{:<42}", "did what it was asked"),
+        column(31, 74),
+        format!("{:<43}", "did what it was asked"),
         "{row:?}"
     );
     assert_eq!(column(74, 76), "  ", "{row:?}");
@@ -1444,7 +1442,7 @@ fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
     // A click on the heading shuts the group, and another opens it.
     let heading = screen(&amx, &view)
         .lines()
-        .position(|line| line.trim_end() == " Completed")
+        .position(|line| line.trim_end() == "Completed")
         .expect("the heading") as u16
         + 1;
     click(&amx, &view, 5, heading);
@@ -1725,20 +1723,20 @@ fn enter_shuts_the_group_its_headings_stand_over_and_opens_it_again() {
         let drawn = screen(&amx, &view);
         (drawn.contains("one-a1b")
             && drawn.contains("two-b2c")
-            && drawn.contains(" Completed · 1 failed"))
+            && drawn.contains("Completed · 1 failed"))
         .then_some(drawn)
     });
     let heading = |drawn: &str| {
         drawn
             .lines()
-            .find(|line| line.trim_end().starts_with(" Completed"))
+            .find(|line| line.trim_end().starts_with("Completed"))
             .unwrap_or_else(|| panic!("no Completed heading in:\n{drawn}"))
             .trim_end()
             .to_string()
     };
     assert_eq!(
         heading(&drawn),
-        " Completed · 1 failed",
+        "Completed · 1 failed",
         "a heading says how many failed under it, and leaves the counting of \
          the rows to the rows:\n{drawn}"
     );
@@ -1748,12 +1746,12 @@ fn enter_shuts_the_group_its_headings_stand_over_and_opens_it_again() {
     press(&amx, &view, "Enter");
     let shut = amx.until("the group to be put away", || {
         let drawn = screen(&amx, &view);
-        (!drawn.contains("one-a1b") && drawn.contains(" Completed 2 · 1 failed")).then_some(drawn)
+        (!drawn.contains("one-a1b") && drawn.contains("Completed 2 · 1 failed")).then_some(drawn)
     });
     assert!(!shut.contains("two-b2c"), "the rows are away:\n{shut}");
     assert_eq!(
         heading(&shut),
-        " Completed 2 · 1 failed",
+        "Completed 2 · 1 failed",
         "the count comes up to stand for the rows that have gone, and the \
          failures keep their place after it:\n{shut}"
     );
@@ -2216,7 +2214,7 @@ fn acts_ctrl_x_on_a_heading_arms_rows_in_every_state_before_it_stops_any() {
     amx.until("the project heading over both", || {
         screen(&amx, &view)
             .lines()
-            .any(|line| line.starts_with(" ~ "))
+            .any(|line| line.starts_with("~ "))
             .then_some(())
     });
 
