@@ -1423,22 +1423,26 @@ fn card_over_a_working_conversation_ends_on_what_is_being_said_now() {
     let view = amx.in_a_terminal(&[], &[]);
     let carded = card_on(&amx, &view, "port-cli-b2c");
     let card = card_lines(&carded).join("\n");
-    for said in ["❯ port it", "on it", "i ported the importer"] {
+    for said in ["❯ port it", "on it"] {
         assert!(card.contains(said), "{said} in:\n{carded}");
     }
-    assert!(
-        card.find("on it") < card.find("i ported"),
-        "the record above, the pane below it:\n{carded}"
-    );
-    for furniture in ["accept edits on", "still thinking", "execute amx-v2"] {
+    // The pane is not under the record: what it shows is the same turn in
+    // the vendor's dress, and the words of it are on the record already. The
+    // spinner line is on the row, because a working row says what the vendor
+    // says it is doing, and once on the screen is the whole of it.
+    for pictured in [
+        "i ported the importer",
+        "still thinking",
+        "accept edits on",
+        "execute amx-v2",
+    ] {
         assert!(
-            !card.contains(furniture),
-            "{furniture} is claude's, not the agent's:\n{carded}"
+            !card.contains(pictured),
+            "{pictured} is the pane's, not the record's:\n{carded}"
         );
     }
 
-    // Where the vendor streams what it is saying, that is the tail, and the
-    // pane is not consulted.
+    // Where the vendor streams what it is saying, that is the tail.
     std::fs::write(
         amx.agent_dir("port-cli-b2c").join("live"),
         "now **streaming** words\n",
@@ -1455,16 +1459,17 @@ fn card_over_a_working_conversation_ends_on_what_is_being_said_now() {
     );
     assert!(
         !card.contains("i ported the importer"),
-        "the stream stands where the pane stood:\n{streamed}"
+        "and still no pane:\n{streamed}"
     );
 }
 
 #[test]
-fn card_over_a_transcript_with_nothing_on_it_yet_is_the_task_over_the_pane() {
+fn card_over_a_transcript_with_nothing_on_it_yet_is_the_task_alone() {
     // The vendor has been started, has announced the transcript it is going to
     // write, and has not written a turn to it yet. The card is the task the
-    // agent was given, drawn as the prompt it is, with the pane under it — the
-    // same shape the card will keep once the first turn lands.
+    // agent was given, drawn as the prompt it is, and nothing under it — the
+    // same shape the card will keep once the first turn lands, and no look at
+    // the pane in the meantime.
     let amx = Harness::new();
     let mut pane_rows = vec!["reading the importer", ""];
     pane_rows.extend_from_slice(&CHROME);
@@ -1478,23 +1483,12 @@ fn card_over_a_transcript_with_nothing_on_it_yet_is_the_task_over_the_pane() {
 
     let view = amx.in_a_terminal(&[], &[]);
     let carded = card_on(&amx, &view, "port-cli-b2c");
-    let card = card_lines(&carded).join("\n");
-    let task = card
-        .find("❯ fix the login bug")
-        .unwrap_or_else(|| panic!("the task behind the prompt glyph:\n{carded}"));
-    let pane_row = card
-        .find("reading the importer")
-        .unwrap_or_else(|| panic!("the pane under it:\n{carded}"));
-    assert!(
-        task < pane_row,
-        "the task above, the pane only under it:\n{carded}"
+    let card: Vec<&str> = card_lines(&carded).into_iter().map(card_says).collect();
+    assert_eq!(
+        card,
+        ["❯ fix the login bug"],
+        "the task behind the prompt glyph, and nothing under it:\n{carded}"
     );
-    for furniture in ["accept edits on", "execute amx-v2"] {
-        assert!(
-            !card.contains(furniture),
-            "{furniture} is claude's, not the agent's:\n{carded}"
-        );
-    }
 }
 
 /// What one row of the card says, its spine and the column it stands in aside.

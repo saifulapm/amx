@@ -59,7 +59,7 @@ use crate::verbs::ls::Scope;
 use crate::verbs::resume::Comeback;
 use crate::{exit, registry, spawn, verbs};
 use act::{Asking, Composer, Edited, Renamed, Replied, Started};
-use paint::{Body, Card, Live, Notice};
+use paint::{Body, Card, Notice};
 use rows::{Arrangement, List, Narrow};
 
 /// How often the agents are read again.
@@ -2622,7 +2622,8 @@ fn said(outcome: Result<String>) -> Option<Notice> {
 /// one turn. It is drawn into rows here, wrapped to the width the card has,
 /// with the vendor's own markdown rendered rather than shown. A turn still
 /// running ends on a live tail: what the vendor streams to the record, where
-/// it streams anything, and the pane with its furniture cut where it does not.
+/// it streams anything, and where it does not the card is the record alone —
+/// the pane is never read under a record, see [`Body::conversation`].
 /// A working agent whose transcript has nothing on it yet has its first turn
 /// about to land, and stands its task in the conversation's place until it
 /// does — see [`conversation_of`].
@@ -2685,26 +2686,14 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
         .map(|agent| as_read(agent.dir().join(crate::store::LIVE)));
     if !asks && let Some(said) = conversation_of(&view.meta, working) {
         // What it is saying now, under the record: the vendor's own stream
-        // where there is one, and the pane where there is not. Only while a
-        // turn runs — a finished turn's words are all on the record already.
+        // where there is one, and only while a turn runs — a finished turn's
+        // words are all on the record already. Where the vendor streams
+        // nothing the record is the whole card: its calls land as they are
+        // issued and its answers as each message ends, and the row over the
+        // card says what it is doing between them.
         let live = working
-            .then(|| {
-                agent
-                    .as_ref()
-                    .and_then(Agent::live)
-                    .map(Live::Text)
-                    .or_else(|| {
-                        server
-                            .capture_painted(&view.meta.pane)
-                            .ok()
-                            .filter(|screen| !crate::ansi::strip_ansi(screen).trim().is_empty())
-                            .map(|screen| Live::Screen(own_chrome(&view.meta), screen))
-                    })
-            })
+            .then(|| agent.as_ref().and_then(Agent::live))
             .flatten();
-        // A card whose live tail came off the pane has a capture in it, and no
-        // file says what a pane is showing now.
-        let captured = matches!(live, Some(Live::Screen(..)));
         return (
             Card {
                 id: view.id().to_string(),
@@ -2712,17 +2701,14 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
                 question: view.state.question.clone(),
                 options: view.state.options.clone(),
                 kind: view.kind(),
-                body: Body::conversation(&said, live, width, theme),
+                body: Body::conversation(&said, live.as_deref(), width, theme),
                 changes: false,
                 // A conversation still being added to is read up from its live
                 // edge; one whose turn is over reads forward from its last
                 // answer.
                 answer: !working,
             },
-            match captured {
-                true => Freshness::Pane,
-                false => Freshness::Files(recorded.into_iter().chain(streaming).collect()),
-            },
+            Freshness::Files(recorded.into_iter().chain(streaming).collect()),
         );
     }
 

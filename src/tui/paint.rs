@@ -59,7 +59,7 @@ use wall::{Moment, agents, first_drawn, hangs_off};
 
 #[cfg(test)]
 pub(super) use card::walks;
-pub use card::{Body, Card, Live, Scroll, body_width};
+pub use card::{Body, Card, Scroll, body_width};
 pub use header::title;
 /// The table the keys overlay is drawn from, for the test up in the view that
 /// presses everything a terminal can send and holds what acted against it.

@@ -139,17 +139,6 @@ pub struct Body {
     anchor: usize,
 }
 
-/// What a working agent is saying at this moment, under the conversation on
-/// the record: the words its vendor streams, or the pane where nothing does.
-pub enum Live {
-    /// Streamed by the vendor's own report, whole.
-    Text(String),
-    /// The pane as it stands, with that vendor's own furniture to cut off the
-    /// bottom of it, and everything above its echo of the prompt to cut off
-    /// the top — see [`Body::since_the_prompt`].
-    Screen(&'static Furniture, String),
-}
-
 /// The glyph a prompt wears in the conversation, which is the composer's own.
 const PROMPT: &str = "❯ ";
 /// And the one a tool call wears: a smaller mark of the same family, from a
@@ -157,14 +146,13 @@ const PROMPT: &str = "❯ ";
 /// the emoji set, and a terminal with a colour-emoji fallback drew it in
 /// orange, two cells wide, over the space after it.
 const TOOL: &str = "› ";
-/// How much of the tail the card keeps: the last rows of what is landing, and
-/// few enough that a row of the record stays above it on the card — at its
-/// tallest, and on a card half a small screen tall. A body is built before the
-/// frame that draws it says how tall the card is, which is why this is a
-/// number rather than a share of the card. Driven on 2026-09-06 against claude
-/// on an 80×24 pane: a tail that was the whole chrome-cut pane pushed the
-/// record off the top of the card's window, and the card read as the pane it
-/// came off rather than as the record with the live under it.
+/// How much of the tail the card keeps: the last rows of what is streaming,
+/// and few enough that a row of the record stays above it on the card — at
+/// its tallest, and on a card half a small screen tall. A body is built before
+/// the frame that draws it says how tall the card is, which is why this is a
+/// number rather than a share of the card. Eight since 2026-09-06, when a tail
+/// that was a whole chrome-cut pane pushed the record off the top of the
+/// card's window and the card read as the pane it came off.
 const TAIL: usize = 8;
 
 impl Body {
@@ -182,6 +170,17 @@ impl Body {
     /// The whole conversation, drawn the way the agent meant it, with what
     /// the agent is saying now under it where a turn is still running.
     ///
+    /// What it is saying now is what its vendor streams, and nothing else. A
+    /// vendor that streams nothing has a card that is the record alone until
+    /// its next message lands — its calls as they are issued, its answers as
+    /// each message ends — with the row over the card saying what it is doing
+    /// meanwhile. The pane used to stand under the record where nothing
+    /// streamed, cut of its furniture, and was a second copy of the same turn
+    /// in the vendor's dress: boxes with rows of nothing between them, a
+    /// banner, a spinner line, a hint about a key. Saiful took it off on
+    /// 2026-09-11, and a pane is read for a card only where there is no
+    /// record to draw — see [`Body::screen`].
+    ///
     /// A prompt stands behind the composer's own glyph, an answer is its
     /// markdown drawn into rows, and a tool call is one row: the tool at the
     /// terminal's own weight and the argument worth a row dim behind it. A
@@ -197,7 +196,7 @@ impl Body {
     /// a reader can guess.
     pub(in crate::tui) fn conversation(
         said: &[Said],
-        live: Option<Live>,
+        live: Option<&str>,
         width: u16,
         theme: Theme,
     ) -> Body {
@@ -248,24 +247,16 @@ impl Body {
         let blank =
             |row: &Line<'static>| row.spans.iter().all(|span| span.content.trim().is_empty());
         if let Some(live) = live {
-            let mut tail = match live {
-                Live::Text(text) => prose::render(&text, width, theme),
-                Live::Screen(chrome, capture) => Body::since_the_prompt(&capture, chrome, said),
-            };
-            // The end of it, where what is landing is — see [`TAIL`] — and
-            // nothing blank at either edge: the row that stands the tail off
-            // the record is the card's own, below.
+            let mut tail = prose::render(live, width, theme);
+            // The end of it, where what is landing is — see [`TAIL`].
             while tail.last().is_some_and(&blank) {
                 tail.pop();
             }
-            let padding = tail.iter().take_while(|row| blank(row)).count();
-            tail.drain(..padding);
             let skipped = tail.len().saturating_sub(TAIL);
             // The blank row that stands the tail off the record above it, only
-            // where there are rows under it. A turn between its first token and
-            // its first word has a pane of nothing but the vendor's spinner and
-            // composer, all of which the cut takes, and a blank row over that
-            // stands the record off nothing.
+            // where there are rows under it: a stream the vendor has opened
+            // and said nothing into yet is no tail, and a blank row over it
+            // would stand the record off nothing.
             let tail: Vec<Line<'static>> = tail.into_iter().skip(skipped).collect();
             if !tail.is_empty() {
                 if !rows.is_empty() {
@@ -315,43 +306,6 @@ impl Body {
     /// chrome where it is.
     pub(in crate::tui) fn screen(chrome: &Furniture, text: &str) -> Body {
         Body::walk(text, Some(chrome))
-    }
-
-    /// What the pane drew this turn: the rows under the vendor's echo of the
-    /// prompt the turn is on, with the furniture off the bottom and every
-    /// background off the paint.
-    ///
-    /// Everything above that echo is older than the record — the vendor's
-    /// banner, a warning it printed on starting, the turns before this one —
-    /// and every word of it the card wants is on the record already, drawn
-    /// rather than pictured. Off a dogfood on 2026-09-11: claude's logo and
-    /// version stood in the tail of every turn's first seconds, because a pane
-    /// that has drawn a prompt and a spinner has drawn little else. A pane the
-    /// echo has scrolled off is one whose banner scrolled off before it, and
-    /// it is kept whole. The last echo where there are several, because the
-    /// turn is on the last prompt.
-    ///
-    /// No background, because a vendor boxes what it draws — pi its prompts
-    /// and its tool calls, claude its echo of the prompt — and on a card whose
-    /// rows are already dressed as what they are a box is a block of colour
-    /// around some of them. The words keep their colour and their weight.
-    fn since_the_prompt(capture: &str, chrome: &Furniture, said: &[Said]) -> Vec<Line<'static>> {
-        let walked = Body::walk(capture, Some(chrome));
-        let mut rows: Vec<Line<'static>> = walked.rows.into_iter().take(walked.kept).collect();
-        let prompt = said.iter().rev().find_map(|one| match one {
-            Said::Prompt(text) => Some(text.as_str()),
-            _ => None,
-        });
-        let echo = prompt.and_then(|prompt| rows.iter().rposition(|row| echoes(row, prompt)));
-        if let Some(echo) = echo {
-            rows.drain(..=echo);
-        }
-        for row in &mut rows {
-            for span in &mut row.spans {
-                span.style.bg = None;
-            }
-        }
-        rows
     }
 
     /// What an agent said: a recorded answer, or whatever an agent whose
@@ -898,33 +852,6 @@ fn words(row: &[Painted]) -> String {
     row.iter().map(|run| run.text.as_str()).collect()
 }
 
-/// How much of a prompt's first line names it on the pane, in letters and
-/// digits: enough that two prompts opening alike are still told apart, and
-/// few enough to sit on the first row of the echo at any width.
-const ECHO: usize = 24;
-
-/// Whether a captured row is the vendor's echo of `prompt`.
-///
-/// The vendor draws the prompt back in its own dress — a glyph in front of it,
-/// a box around it, the backticks of its markdown rendered away — so the two
-/// are compared with everything but their letters and digits taken out, and
-/// the row has to open with the head of the prompt rather than merely hold
-/// it: a short prompt is a short word, and a row that mentions it further
-/// along is not its echo.
-fn echoes(row: &Line<'static>, prompt: &str) -> bool {
-    let squeezed =
-        |text: &str| -> String { text.chars().filter(|c| c.is_alphanumeric()).collect() };
-    let head: String = squeezed(prompt.lines().next().unwrap_or_default())
-        .chars()
-        .take(ECHO)
-        .collect();
-    if head.is_empty() {
-        return false;
-    }
-    let words: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
-    squeezed(&words).starts_with(&head)
-}
-
 /// One captured row, drawn the way the vendor drew it.
 fn as_painted(row: &[Painted]) -> Line<'static> {
     let spans: Vec<Span<'static>> = row
@@ -1456,162 +1383,19 @@ mod tests {
     }
 
     #[test]
-    fn card_ends_a_running_conversation_on_a_live_tail() {
+    fn card_ends_a_running_conversation_on_what_its_vendor_streams() {
         let told = a_talk("port it", "on it");
-        let streamed = Body::conversation(
-            &told,
-            Some(Live::Text("still **going**".to_string())),
-            30,
-            theme(),
-        );
+        let streamed = Body::conversation(&told, Some("still **going**"), 30, theme());
         assert_eq!(
             streamed.says(),
             "❯ port it\n\n› Bash cargo test\n\non it\n\nstill going",
             "the vendor's own stream one blank row under the record"
         );
-
-        // A pane instead, with the vendor's furniture cut off its bottom and
-        // its paint kept.
-        let pane = "\x1b[1mthe work\x1b[0m\n\n────\n❯ \n────\n  statusline\n  ⏵⏵ accept edits on\n";
-        let pictured = Body::conversation(
-            &told,
-            Some(Live::Screen(
-                crate::rules::of("claude").furniture(),
-                pane.to_string(),
-            )),
-            30,
-            theme(),
-        );
-        let drawn = pictured.says();
-        assert!(drawn.ends_with("the work"), "{drawn:?}");
-        assert!(!drawn.contains("accept edits"), "{drawn:?}");
-        assert!(
-            pictured
-                .rows
-                .last()
-                .unwrap()
-                .spans
-                .iter()
-                .any(|span| span.style.add_modifier.contains(Modifier::BOLD)),
-            "the pane's own paint is kept"
-        );
-    }
-
-    #[test]
-    fn card_tail_is_what_the_pane_drew_since_it_echoed_the_prompt() {
-        // pi's pane at the start of a turn, as tmux writes it: what it drew
-        // on starting, the prompt echoed back in a box three rows tall whose
-        // background opens once and stays in force, and the tool call in a
-        // box of its own. The record has the prompt, and the banner is nobody's
-        // work, so the tail is the tool call — and no box around it. Measured
-        // off pi 0.85.1 on 2026-09-11.
-        let pane = "\x1b[38;2;245;194;231m[Themes]\x1b[39m\n\x1b[38;2;110;114;135m  qshell\x1b[39m\n\n\x1b[48;2;33;34;47m    \n \x1b[38;2;205;214;244mUse your bash tool to run \x1b[38;2;148;226;213msleep 150\x1b[39m  \n    \n\x1b[0m\n\x1b[48;2;36;41;60m    \n \x1b[1m\x1b[38;2;137;180;250m$ sleep 150\x1b[0m\x1b[48;2;36;41;60m (timeout 160s)\n    \n Elapsed 22.0s\x1b[0m\n";
-        let told = vec![Said::Prompt(
-            "Use your bash tool to run `sleep 150` and then reply done.".to_string(),
-        )];
-        let pictured = Body::conversation(
-            &told,
-            Some(Live::Screen(
-                crate::rules::of("pi").furniture(),
-                pane.to_string(),
-            )),
-            60,
-            theme(),
-        );
-        // The box's padding rows are rows of spaces on the pane, and stay so.
-        let said = pictured.says();
-        let trimmed: Vec<&str> = said.lines().map(str::trim_end).collect();
-        assert_eq!(
-            trimmed.join("\n"),
-            "❯ Use your bash tool to run sleep 150 and then reply done.\n\n $ sleep 150 (timeout 160s)\n\n Elapsed 22.0s",
-            "the tail opens under the echo, on its first row of words"
-        );
-        assert!(
-            pictured
-                .rows
-                .iter()
-                .flat_map(|row| row.spans.iter())
-                .all(|span| span.style.bg.is_none()),
-            "no box on the card"
-        );
-        let command = pictured
-            .rows
-            .iter()
-            .find(|row| {
-                row.spans
-                    .iter()
-                    .any(|span| span.content.contains("$ sleep"))
-            })
-            .expect("the tool call");
-        assert!(
-            command
-                .spans
-                .iter()
-                .any(|span| span.style.add_modifier.contains(Modifier::BOLD)),
-            "and the words keep their weight: {command:?}"
-        );
-    }
-
-    #[test]
-    fn card_tail_leaves_the_vendor_s_banner_above_the_echo_behind() {
-        // claude's pane in the first seconds of a turn: its logo and version
-        // over the echo of the prompt, drawn on a background of its own and
-        // with the prompt's backticks rendered away, then what it is doing.
-        // Measured off claude 2.1.263 on 2026-09-11.
-        let mut pane = String::from(
-            "\x1b[38;5;174m ▐▛███▜▌\x1b[39m   \x1b[1mClaude Code\x1b[0m \x1b[38;5;145mv2.1.263\n▝▜█████▛▘  Haiku 4.5 · Claude Max\n  ▘▘ ▝▝    ~/Sites/github/amx\n\n\x1b[38;5;102m\x1b[48;5;59m❯ \x1b[38;5;189mUse the Bash tool to run \x1b[38;5;153msleep 100\x1b[38;5;189m, then reply done.\x1b[39m  \n\x1b[49m  Sleeping for 100 seconds · 7s\n  ⎿  $ sleep 100 (7s)\n\n",
-        );
-        pane.push_str("● Marinating… (5s)\n\n────\n❯ \n────\n  statusline\n  ⏸ manual mode on\n");
-        let told = vec![Said::Prompt(
-            "Use the Bash tool to run `sleep 100`, then reply done.".to_string(),
-        )];
-        let pictured = Body::conversation(
-            &told,
-            Some(Live::Screen(crate::rules::of("claude").furniture(), pane)),
-            60,
-            theme(),
-        );
-        assert_eq!(
-            pictured.says(),
-            "❯ Use the Bash tool to run sleep 100, then reply done.\n\n  Sleeping for 100 seconds · 7s\n  ⎿  $ sleep 100 (7s)",
-            "neither the banner nor the echo, and no spinner"
-        );
-
-        // A pane the echo has scrolled off — a turn that has drawn a screenful
-        // since — is kept whole: its banner went before its prompt did.
-        let scrolled = "  ⎿  Read 40 lines\n\n● Marinating…\n\n────\n❯ \n────\n  statusline\n  ⏸ manual mode on\n";
-        let kept = Body::conversation(
-            &told,
-            Some(Live::Screen(
-                crate::rules::of("claude").furniture(),
-                scrolled.to_string(),
-            )),
-            60,
-            theme(),
-        );
-        assert!(
-            kept.says().ends_with("  ⎿  Read 40 lines"),
-            "{:?}",
-            kept.says()
-        );
-
-        // And a prompt that opens the way the pane's own words do somewhere
-        // further along a row is not echoed there.
-        let mentioned = vec![Said::Prompt("done".to_string())];
-        let kept = Body::conversation(
-            &mentioned,
-            Some(Live::Screen(
-                crate::rules::of("claude").furniture(),
-                scrolled.to_string(),
-            )),
-            60,
-            theme(),
-        );
-        assert!(
-            kept.says().ends_with("  ⎿  Read 40 lines"),
-            "{:?}",
-            kept.says()
-        );
+        // And nothing where the vendor streams nothing: the record is the
+        // whole of the card, with no pane under it.
+        let quiet = Body::conversation(&told, None, 30, theme());
+        assert_eq!(quiet.says(), "❯ port it\n\n› Bash cargo test\n\non it");
+        assert_eq!(quiet.anchor(), quiet.kept, "and reads up from its end");
     }
 
     #[test]
@@ -1631,86 +1415,34 @@ mod tests {
         let streamed = (1..=20)
             .map(|n| format!("{n}. reason {n}\n"))
             .collect::<String>();
-        let long = Body::conversation(&told, Some(Live::Text(streamed)), 30, theme());
+        let long = Body::conversation(&told, Some(&streamed), 30, theme());
         let tail = after_the_record(&long);
         assert_eq!(tail.len(), TAIL, "{tail:?}");
         assert!(tail[TAIL - 1].ends_with("reason 20"), "{tail:?}");
         assert!(tail[0].ends_with("reason 13"), "{tail:?}");
 
-        // A pane taller than the card, in claude's chrome, with the vendor's
-        // padding under its last row: the same last rows, furniture and
-        // padding off, and the spinner above the box gone with them.
-        let mut pane: String = (1..=20).map(|n| format!("  {n}. a reason\n")).collect();
-        pane.push_str("\n● Actioning…\n\n────\n❯ \n────\n  statusline\n  ⏵⏵ accept edits on\n\n\n");
-        let pictured = Body::conversation(
-            &told,
-            Some(Live::Screen(crate::rules::of("claude").furniture(), pane)),
-            30,
-            theme(),
-        );
-        let tail = after_the_record(&pictured);
-        assert_eq!(tail.len(), TAIL, "{tail:?}");
-        assert_eq!(tail.last().map(String::as_str), Some("  20. a reason"));
-        assert!(
-            !pictured.says().contains("Actioning"),
-            "{:?}",
-            pictured.says()
-        );
-
         // A short one is whole.
-        let short = Body::conversation(
-            &told,
-            Some(Live::Text("one\n\ntwo".to_string())),
-            30,
-            theme(),
-        );
+        let short = Body::conversation(&told, Some("one\n\ntwo"), 30, theme());
         assert_eq!(after_the_record(&short), ["one", "", "two"]);
     }
 
     #[test]
-    fn card_stands_no_blank_row_over_a_tail_that_cut_to_nothing() {
-        // The seconds between a turn starting and its first word landing: the
-        // pane holds the vendor's spinner and its composer and nothing else,
-        // and the cut takes both. The record is the whole of what the card
-        // has, so the blank row over the tail is a row spent standing the
-        // record off nothing.
+    fn card_stands_no_blank_row_over_a_stream_with_nothing_in_it() {
+        // The seconds between a turn starting and its first word landing: a
+        // stream the vendor has opened and written nothing to, or nothing but
+        // blank rows. The record is the whole of what the card has, so a blank
+        // row over the tail would be a row spent standing the record off
+        // nothing.
         let told = a_talk("port it", "on it");
         let said = "❯ port it\n\n› Bash cargo test\n\non it";
-
-        let mut pane = String::from("● Actioning…\n\n");
-        pane.push_str("────\n❯ \n────\n  statusline\n  ⏵⏵ accept edits on\n");
-        let pictured = Body::conversation(
-            &told,
-            Some(Live::Screen(
-                crate::rules::of("claude").furniture(),
-                pane.clone(),
-            )),
-            30,
-            theme(),
-        );
-        assert_eq!(pictured.says(), said, "no blank row over a tail of nothing");
-        assert_eq!(pictured.kept, 5);
-
-        // A stream the vendor has opened and written nothing to goes the same
-        // way, and so does one of nothing but blank rows.
         for streamed in ["", "\n\n\n"] {
-            let body =
-                Body::conversation(&told, Some(Live::Text(streamed.to_string())), 30, theme());
+            let body = Body::conversation(&told, Some(streamed), 30, theme());
             assert_eq!(body.says(), said, "{streamed:?}");
+            assert_eq!(body.kept, 5);
         }
 
-        // One row under the cut is a tail, and stands off the record.
-        let mut working = String::from("reading the importer\n\n● Actioning…\n\n");
-        working.push_str("────\n❯ \n────\n  statusline\n  ⏵⏵ accept edits on\n");
-        let landing = Body::conversation(
-            &told,
-            Some(Live::Screen(
-                crate::rules::of("claude").furniture(),
-                working,
-            )),
-            30,
-            theme(),
-        );
+        // One row streamed is a tail, and stands off the record.
+        let landing = Body::conversation(&told, Some("reading the importer\n"), 30, theme());
         assert_eq!(
             landing.says(),
             format!("{said}\n\nreading the importer"),
