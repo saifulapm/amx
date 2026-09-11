@@ -113,13 +113,32 @@ fn fresh(cache: &Path, now: SystemTime) -> Option<Vec<String>> {
 }
 
 /// Run the listing the entry names and read what it printed.
+///
+/// Asked again, once, where the kernel refused to run the program because
+/// somebody still had it open for writing: a package manager putting a new
+/// vendor in place that instant, or — where this was first seen, on CI on
+/// 2026-09-11 — a child forked by another thread of this process between its
+/// fork and its exec, still holding a script another test had just written.
+/// The window is a moment long, and a listing that came back empty for it
+/// would have been an hour of a harness claiming no models.
 fn read_from(program: &str, argv: &[&str]) -> Vec<String> {
-    let listing = Command::new(program)
-        .args(argv)
-        // A listing is read, never talked to. A vendor handed the terminal
-        // could sit there waiting on somebody who is waiting on it.
-        .stdin(Stdio::null())
-        .output();
+    let run = || {
+        Command::new(program)
+            .args(argv)
+            // A listing is read, never talked to. A vendor handed the
+            // terminal could sit there waiting on somebody who is waiting on
+            // it.
+            .stdin(Stdio::null())
+            .output()
+    };
+    let mut listing = run();
+    if listing
+        .as_ref()
+        .is_err_and(|e| e.kind() == std::io::ErrorKind::ExecutableFileBusy)
+    {
+        std::thread::sleep(Duration::from_millis(20));
+        listing = run();
+    }
     match listing {
         Ok(listing) if listing.status.success() => rows(&String::from_utf8_lossy(&listing.stdout)),
         _ => Vec::new(),
