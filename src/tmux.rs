@@ -651,6 +651,39 @@ impl Server {
         cmd.arg("attach-session").arg("-t").arg(session.as_str());
         cmd
     }
+
+    /// Bind `ctrl+z`, in the root key table, as the way back out of an agent's
+    /// session.
+    ///
+    /// amx is never in the agent's byte path, so the key is tmux's, and it is
+    /// read only in a session amx named. There the client goes back to the
+    /// session it came from — the view's, inside tmux — and detaches when it
+    /// came from nowhere, which is what gives a view that lent the terminal
+    /// out its terminal back, and lands `amx attach` at the shell it was
+    /// typed at. In every other session on the server the key is sent on to
+    /// the pane, and is whatever it was there. A last session that has since
+    /// gone reads as none, so a view closed behind an agent detaches rather
+    /// than failing to switch. The comparison, rather than a bare `-F`, is
+    /// because tmux reads a bare `0` as false, and `0` is the name a bare
+    /// `tmux` gives its first session.
+    ///
+    /// Bound again on every hand-over, which is one command, so a server that
+    /// started after the agent did is bound the first time anybody goes in.
+    /// Nothing was lost under it: claude binds the same key to suspend itself
+    /// to a shell, and an agent's pane has no shell under it to come back to.
+    pub fn bind_way_back(&self) -> Result<()> {
+        self.run(&[
+            "bind-key",
+            "-n",
+            "C-z",
+            "if-shell",
+            "-F",
+            &format!("#{{m:{SESSION_PREFIX}*,#{{session_name}}}}"),
+            "if-shell -F '#{!=:#{client_last_session},}' 'switch-client -l' 'detach-client'",
+            "send-keys C-z",
+        ])?;
+        Ok(())
+    }
 }
 
 /// The directory and command shared by every creating verb.
@@ -1713,5 +1746,121 @@ mod tests {
         let err = server.run(&["kill-pane", "-t", "%404"]).unwrap_err();
         let message = format!("{err:#}");
         assert!(message.contains("kill-pane"), "{message}");
+    }
+
+    /// A client of this server, in a pane on it: the terminal a person is at,
+    /// for a test that has none. The pane runs the very command a lend runs,
+    /// with `$TMUX` taken away first, because a tmux started inside a pane
+    /// would otherwise take it as a client already being here.
+    fn a_client_on(server: &Server, session: &SessionId) -> PaneId {
+        let attach = server.attach_command(session);
+        let mut argv: Vec<String> = ["env", "-u", "TMUX", "-u", "TMUX_PANE"]
+            .map(String::from)
+            .into();
+        argv.push(attach.get_program().to_string_lossy().into_owned());
+        argv.extend(
+            attach
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned()),
+        );
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let (_, pane) = server
+            .new_session(&Spawn {
+                command: &argv,
+                ..Spawn::default()
+            })
+            .unwrap();
+        pane
+    }
+
+    /// The terminal of whoever is looking at a session, or nothing.
+    fn client_on(server: &Server, session: &SessionId) -> String {
+        server
+            .run(&[
+                "list-clients",
+                "-t",
+                session.as_str(),
+                "-F",
+                "#{client_tty}",
+            ])
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn tmux_ctrl_z_in_an_agents_session_goes_back_the_way_the_client_came() {
+        let server = TestServer::new();
+        // The session a view draws in, the session of an agent amx placed,
+        // and one of the person's own. That one writes down every byte it is
+        // sent, with the terminal's own reading of ctrl+z and of lines turned
+        // off, so what arrives is the byte, at once, rather than a stop signal
+        // or a line held back for its newline.
+        let (view, _) = server.new_session(&idle()).unwrap();
+        let (agent, _) = server
+            .new_session(&Spawn {
+                name: Some(&format!("{SESSION_PREFIX}fix-login-a1b")),
+                ..idle()
+            })
+            .unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let typed = dir.path().join("typed");
+        let record = format!("stty -isig -icanon; exec cat > {}", typed.display());
+        let (theirs, _) = server
+            .new_session(&Spawn {
+                name: Some("mine"),
+                command: &["sh", "-c", &record],
+                ..Spawn::default()
+            })
+            .unwrap();
+
+        server.bind_way_back().unwrap();
+
+        // Inside tmux: enter on a row moves the client from the view's session
+        // to the agent's, and ctrl+z moves it back.
+        let pane = a_client_on(&server, &view);
+        until("a client on the view", || {
+            !client_on(&server, &view).is_empty()
+        });
+        let tty = client_on(&server, &view);
+        server
+            .run(&["switch-client", "-c", &tty, "-t", agent.as_str()])
+            .unwrap();
+        until("the client on the agent", || {
+            client_on(&server, &agent) == tty
+        });
+        server
+            .run(&["send-keys", "-t", pane.as_str(), "C-z"])
+            .unwrap();
+        until("the client back on the view", || {
+            client_on(&server, &view) == tty
+        });
+
+        // In a session amx did not name the key is the pane's: the byte lands
+        // and the client stays where it is.
+        server
+            .run(&["switch-client", "-c", &tty, "-t", theirs.as_str()])
+            .unwrap();
+        until("the client on their own session", || {
+            client_on(&server, &theirs) == tty
+        });
+        server
+            .run(&["send-keys", "-t", pane.as_str(), "C-z"])
+            .unwrap();
+        until("the byte in their pane", || {
+            std::fs::read(&typed).is_ok_and(|bytes| bytes.contains(&0x1a))
+        });
+        assert_eq!(client_on(&server, &theirs), tty, "the client did not move");
+        server.kill_pane(&pane).unwrap();
+
+        // Outside tmux: the view lent the terminal to a client attached straight
+        // to the agent's session, with nowhere to switch back to, and ctrl+z
+        // detaches it — which is what gives the view its terminal back.
+        let lent = a_client_on(&server, &agent);
+        until("a client on the agent", || {
+            !client_on(&server, &agent).is_empty()
+        });
+        server
+            .run(&["send-keys", "-t", lent.as_str(), "C-z"])
+            .unwrap();
+        until("the client gone", || client_on(&server, &agent).is_empty());
     }
 }
