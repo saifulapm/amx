@@ -1,15 +1,20 @@
-//! A closer look at one agent, as the card hung under its row.
+//! A closer look at one agent, as the band at the foot of the list.
 //!
-//! Not a band, and not a box. It is a spine: one column of `│` standing where
-//! the row drew its own state glyph, closed with `╰`, and everything it says
-//! written from the name column beside it. What the card belongs to is said by
-//! where it stands, which costs no cells to say and cannot be mistaken for
-//! another row's — a box says the same thing in four borders and takes two
-//! rows and two columns of the wall to say it.
+//! Not a box, and not a thing hung among the rows. It is drawn the way the
+//! band a line is typed in is drawn, because it stands where that band stands:
+//! a rule, and rows under it. The rule carries what the card is a look at —
+//! the agent's own name, in the colour its row says its state in — and the
+//! rows stand two cells in, under the chevron the card's line begins with.
 //!
-//! How tall it is and where it stands are worked out here as well, because
-//! both are answers about the list underneath: never so much of the screen
-//! that the wall it was opened from is gone.
+//! At the foot rather than under the row it came off, because the list is what
+//! somebody with a card open is walking: a card among the rows moves every row
+//! below it down, and walking the cursor with one open shakes the wall it is
+//! being read against. Down here the list never moves and the card changes
+//! under it.
+//!
+//! How tall it is is worked out here as well, because that is an answer about
+//! the list above: never so much of the screen that the wall it was opened
+//! from is gone.
 //!
 //! A card carries its body in one of two states. It is *built* from text — a
 //! pane capture, a recorded answer, a patch — and it is *drawn* from [`Body`],
@@ -21,14 +26,14 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use std::cell::Cell;
 use std::ops::Range;
 
-use super::input::{composer_lines, under_the_block};
+use super::input::{GUTTER, composer_lines, composer_room, cursor_cell, under_the_block};
 use super::prose;
 use super::style::{bold, colour, dim, request_colour};
-use super::text::{SEPARATOR, fit, inert, width_of};
+use super::text::{RULE, SEPARATOR, fit, inert, width_of};
 use crate::ansi::{self, Colour, Painted};
 use crate::conversation::Said;
 use crate::furniture::{Furniture, cut};
@@ -39,7 +44,7 @@ use crate::tui::act::{self, Composer};
 use crate::tui::rows::Showing;
 use crate::verbs::send::numbered;
 
-/// A closer look at one agent, as the card hung under its row.
+/// A closer look at one agent, as the band at the foot of the list.
 ///
 /// A card carries its body in one of two states, which is what `B` says. A
 /// card is *built* from text — a pane capture, a recorded answer, a patch —
@@ -97,7 +102,7 @@ impl Card<String> {
             // with no vendor furniture under them; and what is left is a
             // picture of a pane somebody is still working in — one whose
             // vendor nothing here names, so the walk is handed the document
-            // amx falls back to. The card the view floats over a live agent is
+            // amx falls back to. The card the view opens on a live agent is
             // built where the record says whose pane it is.
             body: match (self.changes, self.answer || self.phase.is_terminal()) {
                 (true, _) => Body::patch(&self.body),
@@ -405,11 +410,10 @@ impl Scroll {
     /// Clamp the offset to the last page this body and window allow, remember
     /// what a page is, and say where the card now stands.
     ///
-    /// `window` is the rows the body has this frame, and `step` is what one
-    /// press moves by, which is the rows a *paged* body has. The two part
-    /// company on a card that only grows its marker row once it has left its
-    /// edge: a step measured on the taller window would step over a row on
-    /// the way out and never land back on the edge on the way home.
+    /// `window` is the rows the body has this frame, which is what one press
+    /// moves by as well: the card spends the same rows on its rule and its
+    /// line whether or not it has been paged, so the way out and the way home
+    /// are the same distance.
     ///
     /// Where it opened is clamped to that same last page, because a card is
     /// opened past its end — a conversation is anchored on its end and no
@@ -417,12 +421,12 @@ impl Scroll {
     /// never equal the offset again, [`Scroll::paged`] would read true on
     /// every frame, and a card nobody touched would hold still forever
     /// instead of following its agent back to work.
-    fn kept(&self, length: usize, window: usize, step: usize) -> usize {
+    fn kept(&self, length: usize, window: usize) -> usize {
         let last = length.saturating_sub(window);
         let away = self.away.get().min(last);
         self.away.set(away);
         self.opened.set(self.opened.get().min(last));
-        self.page.set(step.max(1));
+        self.page.set(window.max(1));
         away
     }
 }
@@ -445,15 +449,13 @@ pub(super) fn card_height(total: u16, band: u16, wanted: u16) -> u16 {
     }
 }
 
-/// How many rows the card would take to say everything it has: the heading a
-/// patch is labelled with, what its branch has open, which question of the
-/// call this is, what the agent is asking, the choices under that, the row the
-/// vendor adds under them, the line the answer goes on, and the screen it is
-/// all happening on.
+/// How many rows the card would take to say everything it has: its own rule,
+/// what its branch has open, which question of the call this is, what the
+/// agent is asking, the choices under that, the row the vendor adds under
+/// them, the line the answer goes on, and the screen it is all happening on.
 ///
-/// The row a paged body takes for its marker is not counted, and does not need
-/// to be: a body that pages is a body too tall for the card, so the height
-/// this asks for is already more than the screen will give.
+/// The rule and the line are rows of the card like any other, so a card that
+/// says one thing in one row asks for three.
 pub(super) fn card_rows(
     card: &Card<Body>,
     showing: Option<Showing>,
@@ -461,7 +463,7 @@ pub(super) fn card_rows(
     answering: bool,
     width: u16,
 ) -> u16 {
-    let inner = width.saturating_sub(NAME);
+    let inner = body_width(width);
     let asked = card
         .question
         .as_deref()
@@ -471,7 +473,7 @@ pub(super) fn card_rows(
     // patch of thousands of rows, and this runs on every frame.
     let shown = length(card).min(CARD_TALL as usize);
 
-    let rows = usize::from(card.changes)
+    let rows = RULE_ROW
         + usize::from(!prs.is_empty())
         + asked as usize
         + usize::from(tab(showing).is_some())
@@ -482,49 +484,29 @@ pub(super) fn card_rows(
     rows.min(u16::MAX as usize) as u16
 }
 
-/// The `height` rows under the line the card hangs off, which is the room the
-/// card takes: one row more than it draws, the last of them blank, so the list
-/// below starts clear of the card rather than against its last row.
-///
-/// Under that line because the card is a thing said about it: the rows above
-/// stay where they are and the rows below give up the room, so what the card
-/// belongs to is the line it is touching rather than one somewhere up the wall.
-pub(super) fn under(band: Rect, line: u16, height: u16) -> Rect {
-    Rect {
-        y: band.y + line + 1,
-        height,
-        ..band
-    }
-}
-
-/// One row, which is the least a card is: with nothing repeated off the row it
-/// hangs from, one row is a card that says something.
+/// One row, which is the least a card is: the rule, which names the agent the
+/// card is a look at and says how far a paged body has been read.
 const CARD_SHORT: u16 = 1;
 
 /// And the most of a screen it will take, however tall the terminal is.
 const CARD_TALL: u16 = 14;
 
-/// The column the spine stands in, which is the column the row it hangs from
-/// drew its state glyph in.
-const GLYPH: u16 = 2;
+/// The card's own row, which it holds whatever it is a look at: the rule.
+const RULE_ROW: usize = 1;
 
-/// And the column everything the card says starts in, which is the column that
-/// row's name starts in: the same four cells, so the card reads as a thing
-/// said under one row rather than as a table of its own.
-const NAME: u16 = 4;
+/// How far in everything the card says stands: the two cells the line under it
+/// spends on its own chevron, so a row of the card and the words being typed
+/// about it start in one column.
+const INDENT: u16 = 2;
 
-/// How wide a card's body is on a list band this wide: everything the card
-/// says stands in the name column.
+/// How wide a card's body is on a band this wide: everything the card says
+/// stands in under the chevron.
 pub fn body_width(band: u16) -> u16 {
-    band.saturating_sub(NAME)
+    band.saturating_sub(INDENT)
 }
 
-/// The spine, and the corner that closes it on the card's last row.
-const SPINE: &str = "│";
-const FOOT: &str = "╰";
-
 /// What a card holding a patch says it is, which is the one thing the row it
-/// hangs off cannot: the row says what the agent is doing, and this card is
+/// came off cannot: the row says what the agent is doing, and this card is
 /// not a look at that at all.
 const CHANGED: &str = "what it has changed";
 
@@ -532,19 +514,25 @@ const CHANGED: &str = "what it has changed";
 /// words of it a person needs to decide, with the pane underneath for the rest.
 const ASKED_TALL: u16 = 3;
 
-/// The card: what its branch has open, which question of the call this is,
-/// what one agent is asking, the choices it offers, the row the vendor adds
-/// under them, the line the answer is typed on, and the screen it is all
-/// happening on — or, when that is what was asked for, what it has changed.
+/// The card: its rule, what its branch has open, which question of the call
+/// this is, what one agent is asking, the choices it offers, the row the vendor
+/// adds under them, the screen it is all happening on — or, when that is what
+/// was asked for, what it has changed — and the line at its foot.
 ///
 /// Full width, because the bottom of it is a picture of a terminal and a
-/// terminal cut down the middle is a picture of nothing. Every row of it
-/// carries the spine, so there is no row of the card a reader has to work out
-/// the owner of.
+/// terminal cut down the middle is a picture of nothing. The rule and the line
+/// stand in the band's own columns and everything between them is indented
+/// under the chevron, so the card reads as one block rather than as rows of a
+/// second list.
+///
+/// `called` is what the list calls the agent, which is what the rule says: the
+/// card is no longer touching that row, so its name is the one thing it has to
+/// carry for itself.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn float(
     frame: &mut Frame,
     card: &Card<Body>,
+    called: &str,
     showing: Option<Showing>,
     prs: &[Pr],
     answering: Option<&Composer>,
@@ -552,26 +540,30 @@ pub(super) fn float(
     area: Rect,
     theme: Theme,
 ) {
-    // Everything the card says stands in the name column, and the spine stands
-    // in the column between.
+    // The rule opens the band and the line closes it; what the card says
+    // stands between them, in under the line's own chevron. A band with room
+    // for nothing but the rule draws the rule.
+    let typing = u16::from(answering.is_some()).min(area.height.saturating_sub(RULE_ROW as u16));
+    let [ruled, between, typed] = Layout::vertical([
+        Constraint::Length(RULE_ROW as u16),
+        Constraint::Min(0),
+        Constraint::Length(typing),
+    ])
+    .areas(area);
     let said = Rect {
-        x: area.x + NAME,
-        width: area.width.saturating_sub(NAME),
-        ..area
+        x: between.x + INDENT,
+        width: between.width.saturating_sub(INDENT),
+        ..between
     }
-    .intersection(area);
+    .intersection(between);
 
-    // What the card is for comes first and the pane takes what is left. The
-    // row being typed on comes before even the question: the question is on
-    // the agent's own row behind the card, and a line somebody is typing into
-    // is nowhere else at all.
+    // What the card is for comes first and the pane takes what is left.
     let mut room = said.height;
     let mut take = |wanted: u16| {
         let taken = wanted.min(room);
         room -= taken;
         taken
     };
-    let typing = take(u16::from(answering.is_some()));
     // Every request this branch has, above everything the card says about the
     // turn: what happened to the work after the turn ended is the question
     // somebody opening a finished agent's card came with.
@@ -599,64 +591,25 @@ pub(super) fn float(
     let added = added(card, showing);
     let adding = take(u16::from(added.is_some()));
 
-    // And a row for the heading only where there is something to put on it:
-    // that the card is a reading of a patch, or how far a paged body stands
-    // from its edge. Measured against the window the body would have had with
-    // no heading taken, which can only understate the distance — the row this
-    // decides to take leaves a shorter window, and a shorter window stands
-    // further from the edge rather than nearer.
-    let length = length(card);
-    let paged = scroll.away.get().min(length.saturating_sub(room as usize));
-    let titled = u16::from(card.changes || paged > 0).min(room);
-
     // What is left is the body's window, which is what the offset is clamped
-    // against. A press moves by the window a paged body has, heading row and
-    // all, whether or not this frame is showing one.
-    let held = scroll.kept(
-        length,
-        (room - titled) as usize,
-        room.saturating_sub(1) as usize,
-    );
+    // against and what one press moves by.
+    let held = scroll.kept(length(card), room as usize);
 
-    // Whatever the list drew here, the card is in front of it.
-    frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(spine(card.phase, area.height, theme)),
-        Rect {
-            x: area.x + GLYPH,
-            width: 1,
-            ..area
-        }
-        .intersection(area),
+        Paragraph::new(rule(card, called, held, area.width as usize, theme)),
+        ruled,
     );
 
-    let [
-        heading_row,
-        requesting,
-        tabbing,
-        asking,
-        listing,
-        adds,
-        answer,
-        screen,
-    ] = Layout::vertical([
-        Constraint::Length(titled),
+    let [requesting, tabbing, asking, listing, adds, screen] = Layout::vertical([
         Constraint::Length(opened),
         Constraint::Length(tabbed),
         Constraint::Length(asked),
         Constraint::Length(listed),
         Constraint::Length(adding),
-        Constraint::Length(typing),
         Constraint::Min(0),
     ])
     .areas(said);
 
-    if titled > 0 {
-        frame.render_widget(
-            Paragraph::new(heading(card, held, said.width as usize, theme)),
-            heading_row,
-        );
-    }
     if opened > 0 {
         frame.render_widget(Paragraph::new(Line::from(open)), requesting);
     }
@@ -683,7 +636,7 @@ pub(super) fn float(
         frame.render_widget(Paragraph::new(Line::styled(added, dim())), adds);
     }
     if let Some(composer) = answering.filter(|_| typing > 0) {
-        answer_row(frame, card, showing, composer, answer, theme);
+        answer_row(frame, card, showing, composer, typed, theme);
     }
 
     frame.render_widget(
@@ -692,61 +645,48 @@ pub(super) fn float(
     );
 }
 
-/// The spine: a column of `│` under the row's own state glyph, closed with
-/// `╰` on the card's last row.
+/// The card's rule: the edge the band hangs off, and the three things said on
+/// it.
 ///
-/// In the colour that glyph is painted in, because it is hanging off it. That
-/// is the whole of what a card wears to say which row it belongs to: it is
-/// under the row, in the row's own column, in the row's own colour, and none
-/// of those cost it a cell of the wall.
-fn spine(phase: Phase, height: u16, theme: Theme) -> Vec<Line<'static>> {
-    (1..=height)
-        .map(|row| {
-            Line::styled(
-                match row == height {
-                    true => FOOT,
-                    false => SPINE,
-                },
-                colour(theme, phase),
-            )
-        })
-        .collect()
-}
-
-/// The card's own heading, which says only what the row it hangs off cannot.
+/// At its front, what the list calls the agent, in the colour that agent's row
+/// says its state in — the card stands away from its row now, so the name is
+/// what says which agent this is a look at. After it, on a card that is a
+/// reading of a patch, that it is one: the row says what the agent is doing,
+/// and this is not that. And at the far end, how far a paged body stands from
+/// its natural edge. Both of those are dim, because they are facts about what
+/// the card is showing rather than about the agent.
 ///
-/// Which agent this is and what it is doing are on that row, two cells above,
-/// and a card that repeated them spent a row of the wall saying what the
-/// reader was already looking at. What is left is the two facts the row has no
-/// way to hold: that the card is a reading of what the agent changed rather
-/// than of what it said, and how far a paged body stands from its natural
-/// edge — dim, at the far end, because it is a fact about what the card is
-/// showing rather than about the agent.
-///
-/// Which is why there is no heading at all on the ordinary card: the row said
-/// it, the body has not moved, and the row goes to the body instead.
-fn heading(card: &Card<Body>, held: usize, width: usize, theme: Theme) -> Line<'static> {
-    let mut spans = Vec::new();
-    let titled = match card.changes {
-        true => {
-            spans.push(Span::styled(CHANGED, colour(theme, card.phase)));
-            width_of(CHANGED)
-        }
-        false => 0,
+/// The same rule the band a line is typed in draws, in the same character and
+/// the same dim, because the card is that band with something else in it.
+fn rule(card: &Card<Body>, called: &str, held: usize, width: usize, theme: Theme) -> Line<'static> {
+    let named = fit(&inert(called), width);
+    let changed = match card.changes {
+        true => fit(
+            &format!("{SEPARATOR}{CHANGED}"),
+            width.saturating_sub(width_of(&named)),
+        ),
+        false => String::new(),
     };
-    if held > 0 {
-        let edge = match card.forward() {
-            true => '↑',
-            false => '↓',
-        };
-        let more = format!("{edge} {held} more");
-        let said = titled + width_of(&more);
-        if said < width {
-            spans.push(Span::raw(" ".repeat(width - said)));
+    let more = match held {
+        0 => String::new(),
+        held => {
+            let edge = match card.forward() {
+                true => '↑',
+                false => '↓',
+            };
+            format!(" {edge} {held} more")
         }
-        spans.push(Span::styled(more, dim()));
-    }
-    Line::from(spans)
+    };
+    // A cell of wall between the label and the rule, so the words are not
+    // running into the dashes.
+    let said = width_of(&named) + width_of(&changed) + 1 + width_of(&more);
+    Line::from(vec![
+        Span::styled(named, colour(theme, card.phase)),
+        Span::styled(changed, dim()),
+        Span::raw(" "),
+        Span::styled(RULE.repeat(width.saturating_sub(said)), dim()),
+        Span::styled(more, dim()),
+    ])
 }
 
 /// How many rows the body could give a card, which is what the last page is
@@ -1016,13 +956,14 @@ pub(super) fn choices(options: &[String], width: usize, boxed: bool) -> Vec<Stri
 /// What stands between two choices sitting on one row.
 const BETWEEN: &str = "   ";
 
-/// What the row an answer is typed on begins with.
-const ANSWER: &str = "❯ ";
-
-/// The line the answer is being typed on, with the block at the end of it.
+/// The line at the foot of the card, with the block on the cell the cursor is
+/// standing in.
 ///
-/// The same block the line under the wall carries, drawn the same way, because
-/// it is the same thing: the cell the next character lands in, turned over.
+/// The composer's own line, drawn where the composer's own line is drawn: the
+/// chevron, what has been typed, and that one cell turned over. One row of it,
+/// which is the row the cursor is on — a line long enough to wrap is being
+/// written at its end, and the end is what somebody is looking at.
+///
 /// Empty, the line says what this question will take instead — which is the
 /// one thing somebody looking at a prompt they did not draw cannot work out
 /// for themselves, and it is said from the same place the refusal is written —
@@ -1035,29 +976,29 @@ fn answer_row(
     area: Rect,
     theme: Theme,
 ) {
-    let width = area.width as usize;
-    let room = width.saturating_sub(ANSWER.chars().count()).max(1);
-    // The end of the line, because the end is where somebody is typing.
+    let room = composer_room(area.width);
+    let (row, column) = cursor_cell(composer, room);
     let typed = composer_lines(&composer.text, room)
-        .pop()
+        .get(row as usize)
+        .cloned()
         .unwrap_or_default();
     let asked = showing.map(|showing| showing.ask);
     let said = match composer.text.is_empty() {
         true => under_the_block(
-            &act::invitation(card.kind, &card.options, asked),
+            &fit(&act::invitation(card.kind, &card.options, asked), room),
             0,
             dim(),
             Style::new(),
         ),
         false => under_the_block(
             &typed,
-            typed.chars().count().min(room.saturating_sub(1)),
+            (column as usize).min(room.saturating_sub(1)),
             Style::new(),
             bold(),
         ),
     };
 
-    let mut spans = vec![Span::styled(ANSWER, Style::new().fg(theme.waiting))];
+    let mut spans = vec![Span::styled(GUTTER, Style::new().fg(theme.waiting))];
     spans.extend(said);
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -1237,12 +1178,15 @@ mod tests {
         painted(&showing(views, card), size)
     }
 
-    /// The card as it stands on the screen, top to bottom: every row carrying
-    /// the spine, which is every row a card has.
+    /// The card as it stands on the screen, top to bottom: the band at the
+    /// foot of the list, which opens on its rule and runs to the row above the
+    /// keys.
     fn card_lines(screen: &[String]) -> Vec<&str> {
-        screen
+        let Some(top) = screen.iter().position(|line| line.contains(RULE)) else {
+            return Vec::new();
+        };
+        screen[top..screen.len() - 1]
             .iter()
-            .filter(|line| line.starts_with("  │") || line.starts_with("  ╰"))
             .map(String::as_str)
             .collect()
     }
@@ -1451,7 +1395,7 @@ mod tests {
     }
 
     #[test]
-    fn card_hangs_a_spine_off_the_row_it_was_opened_from() {
+    fn card_stands_at_the_foot_under_a_rule_that_says_whose_it_is() {
         let screen = drawn(
             a_fleet(),
             Some(asking(
@@ -1468,64 +1412,43 @@ mod tests {
         );
 
         let card = card_lines(&screen);
-        let [asked, ..] = card.as_slice() else {
+        let [ruled, asked, ..] = card.as_slice() else {
             panic!("no card in: {screen:?}")
         };
         assert!(
-            asked.starts_with("  │ Which fixture should the port keep?"),
-            "the card opens on what the agent is asking: {asked:?}"
+            ruled.starts_with("ask-a1b ┈") && ruled.ends_with('┈'),
+            "the card opens on a rule carrying the name of the agent it is a \
+             look at, run out to the far end: {ruled:?}"
         );
         assert!(
-            !card
-                .iter()
-                .any(|line| line.contains("ask-a1b") || line.contains("waiting")),
-            "which agent this is and what it is doing are on the row two \
-             cells above, and the card does not spend a row repeating them: \
-             {card:?}"
+            asked.starts_with("  Which fixture should the port keep?"),
+            "and what the agent is asking stands under it: {asked:?}"
         );
         assert!(
             !screen.iter().any(|line| line.contains("Do you want to")),
             "and the pane it is asking on is not echoed under it: {screen:?}"
         );
-        assert!(
-            card.last().is_some_and(|line| line.starts_with("  ╰ ")),
-            "closed on its last row: {card:?}"
-        );
-        assert!(
-            !card.iter().any(|line| line.contains('┈')),
-            "and drawn with no border cells at all: {card:?}"
-        );
 
-        let row = screen
-            .iter()
-            .position(|line| line.contains("ask-a1b"))
-            .expect("the row the card was opened from");
         let top = screen
             .iter()
-            .position(|line| line.starts_with("  │"))
-            .expect("the top of the card");
-        assert_eq!(
-            top,
-            row + 1,
-            "and it starts on the line under that row rather than at the foot \
-             of the list: {screen:?}"
-        );
-        let bottom = screen
-            .iter()
-            .rposition(|line| line.starts_with("  ╰"))
-            .expect("the foot of the card");
+            .position(|line| line.contains(RULE))
+            .expect("the card's rule");
         assert!(
-            screen[bottom + 1..]
-                .iter()
-                .any(|line| line.contains("busy-b2c")),
-            "with the rows that were under it moved down: {screen:?}"
+            screen[..top].iter().any(|line| line.contains("busy-b2c")),
+            "the whole list is above it rather than around it: {screen:?}"
+        );
+        assert_eq!(
+            top + card.len(),
+            screen.len() - 1,
+            "and the keys are the one row under it: {screen:?}"
         );
     }
 
     #[test]
-    fn card_leaves_a_blank_row_between_itself_and_the_row_under_it() {
-        // Two agents under one heading, so what follows the card is a row of
-        // the list rather than the blank row a heading of its own stands on.
+    fn card_moves_no_row_of_the_list_when_it_opens() {
+        // The wall is what somebody with a card open is walking, so opening
+        // one leaves every row of it where it stood: the card takes its rows
+        // off the foot of the screen rather than out of the middle of the list.
         let group = || {
             vec![
                 view("ask-a1b", Phase::Waiting, None, 29),
@@ -1533,29 +1456,31 @@ mod tests {
             ]
         };
         let question = || asking(&["the sqlite one"], Some(Kind::Question));
+        let bare = drawn(group(), None, (60, 20));
         let screen = drawn(group(), Some(question()), (60, 20));
 
-        let foot = screen
+        let top = screen
             .iter()
-            .rposition(|line| line.starts_with("  ╰"))
-            .expect("the foot of the card");
-        assert!(
-            screen[foot + 1].is_empty(),
-            "the card takes a blank row under its last row: {screen:?}"
+            .position(|line| line.contains(RULE))
+            .expect("the card's rule");
+        assert_eq!(
+            screen[..top],
+            bare[..top],
+            "every row above the card is the row that was there without it"
         );
         assert!(
-            screen[foot + 2].contains("ask-c3d"),
-            "and the next agent stands under that: {screen:?}"
+            screen[..top].iter().any(|line| line.contains("ask-c3d")),
+            "the row under the one the card came off included: {screen:?}"
         );
 
-        // On a band with no room for the blank row the card keeps its rows and
-        // the blank row is what goes, because the row it would take is the
-        // last row of the list.
+        // On a screen with nearly no room the card is cut to what half of it
+        // allows, because the rows it would take next are the last rows of the
+        // list.
         let tight = drawn(group(), Some(question()), (60, 5));
         assert_eq!(
             card_lines(&tight).len(),
             2,
-            "the card draws what it drew: {tight:?}"
+            "the rule and the one row it has left for what it says: {tight:?}"
         );
         assert!(
             tight.iter().any(|line| line.contains("ask-a1b")),
@@ -1564,40 +1489,42 @@ mod tests {
     }
 
     #[test]
-    fn card_stands_in_the_columns_the_rows_behind_it_stand_in() {
-        let screen = drawn(
-            a_fleet(),
-            Some(asking(
-                &["the sqlite one", "the docker one"],
-                Some(Kind::Question),
-            )),
+    fn card_stands_its_rows_in_under_the_chevron_its_line_begins_with() {
+        let screen = painted(
+            &answering(
+                asking(&["the sqlite one", "the docker one"], Some(Kind::Question)),
+                "",
+            ),
             (60, 14),
         );
 
-        // Read off a row rather than written down here as a number: the card
-        // hangs off the list, so the day the list moves its gutter the card
-        // is standing in a column of its own and this says so.
-        let row = screen
-            .iter()
-            .find(|line| line.contains("busy-b2c"))
-            .expect("a row of the list the card is not over");
-        let named = column_of(row, "busy-b2c");
-        let glyph = named - 2;
-
         let card = card_lines(&screen);
+        let [ruled, said @ .., line] = card.as_slice() else {
+            panic!("no card in: {screen:?}")
+        };
         assert_eq!(
-            column_of(card[0], "Which fixture"),
-            named,
-            "the card says what it has to say in the column the wall names \
-             its rows in: {screen:?}"
+            column_of(ruled, "ask-a1b"),
+            0,
+            "the rule stands in the band's own column: {ruled:?}"
         );
-        for line in &card {
+        assert_eq!(
+            column_of(line, "❯"),
+            0,
+            "and so does the line at its foot: {line:?}"
+        );
+        for row in said {
             assert!(
-                matches!(line.chars().nth(glyph), Some('│' | '╰')),
-                "and every row of it carries the spine in the column the wall \
-                 draws a row's own state glyph in: {line:?}"
+                row.starts_with("  ") && !row.starts_with("   "),
+                "and what the card says stands two cells in, under that \
+                 chevron: {row:?}"
             );
         }
+        assert!(
+            !card
+                .iter()
+                .any(|row| row.contains('│') || row.contains('╰')),
+            "with no spine down it and no corner under it: {card:?}"
+        );
     }
 
     #[test]
@@ -1626,6 +1553,9 @@ mod tests {
             question: true,
         });
         composer.text = typed.to_string();
+        // Where somebody typing it would have left the cursor, which is what
+        // the block on the line stands on.
+        composer.at = composer.text.chars().count();
         screen.mode = Mode::Typing(composer);
         screen
     }
@@ -1639,15 +1569,29 @@ mod tests {
             .clone()
     }
 
-    #[test]
-    fn card_takes_the_answer_on_a_row_of_the_card_itself() {
-        let question = || asking(&["the sqlite one", "the docker one"], Some(Kind::Question));
+    /// Which row of the screen the card's line is standing on.
+    fn line_row(screen: &[String]) -> u16 {
+        screen
+            .iter()
+            .position(|line| line.contains('❯'))
+            .unwrap_or_else(|| panic!("no row to answer on in: {screen:?}")) as u16
+    }
 
-        let empty = painted(&answering(question(), ""), (60, 14));
+    #[test]
+    fn card_takes_the_answer_on_the_line_at_the_foot_of_the_card() {
+        let question = || asking(&["the sqlite one", "the docker one"], Some(Kind::Question));
+        let size = (60, 14);
+
+        let empty = painted(&answering(question(), ""), size);
         assert!(
             answer_row(&empty).contains("❯ 1-2 picks, or type an answer"),
             "an empty row says what the question will take: {:?}",
             answer_row(&empty)
+        );
+        assert_eq!(
+            card_lines(&empty).last().copied(),
+            Some(answer_row(&empty).as_str()),
+            "on the last row the card has: {empty:?}"
         );
         assert_eq!(
             empty[13],
@@ -1655,7 +1599,7 @@ mod tests {
             "and the row under the card says what its own keys do"
         );
 
-        let typed = painted(&answering(question(), "the docker one"), (60, 14));
+        let typed = painted(&answering(question(), "the docker one"), size);
         assert!(
             answer_row(&typed).contains("❯ the docker one"),
             "{:?}",
@@ -1671,17 +1615,30 @@ mod tests {
              under it: {typed:?}"
         );
         assert_eq!(
-            block(&answering(question(), "the docker one"), (60, 14), 8),
-            Some(20),
-            "with the block at the end of what was typed, on the answer row of \
-             a card that is the question block's own size"
+            block(
+                &answering(question(), "the docker one"),
+                size,
+                line_row(&typed)
+            ),
+            Some(16),
+            "with the block at the end of what was typed, two cells in under \
+             the chevron"
         );
         assert_eq!(
-            block(&answering(question(), ""), (60, 14), 8),
-            Some(6),
+            block(&answering(question(), ""), size, line_row(&empty)),
+            Some(2),
             "and on the first cell of the invitation while the line is empty, \
              which is where the answer will begin"
         );
+
+        // Where the cursor has been walked back into what was typed, the block
+        // is on the cell it is standing in: that is where the next character
+        // lands, and the end of the line is not.
+        let mut walked = answering(question(), "the docker one");
+        if let Mode::Typing(composer) = &mut walked.mode {
+            composer.at = 4;
+        }
+        assert_eq!(block(&walked, size, line_row(&typed)), Some(6));
     }
 
     #[test]
@@ -1697,28 +1654,31 @@ mod tests {
         };
         let screen = drawn(a_fleet(), Some(brief), (60, 20));
         let card = card_lines(&screen);
-        assert_eq!(card.len(), 1, "the one line it has: {screen:?}");
-        assert!(
-            card[0].starts_with("  ╰ did what it was asked"),
-            "{screen:?}"
+        assert_eq!(
+            card.len(),
+            2,
+            "the rule and the one line it has: {screen:?}"
         );
+        assert!(card[1].starts_with("  did what it was asked"), "{screen:?}");
 
         let top = screen
             .iter()
-            .position(|line| line.starts_with("  ╰"))
-            .expect("the top of the card");
-        assert!(
-            screen[top - 1].contains("ask-a1b"),
-            "hung off its own row, with the rows it is not taking still on the \
-             wall around it: {screen:?}"
-        );
+            .position(|line| line.contains(RULE))
+            .expect("the card's rule");
+        for name in ["ask-a1b", "busy-b2c"] {
+            assert!(
+                screen[..top].iter().any(|line| line.contains(name)),
+                "with the rows it is not taking still on the wall above it: \
+                 {screen:?}"
+            );
+        }
     }
 
     #[test]
     fn card_keeps_the_row_being_typed_on_when_there_is_room_for_little_else() {
-        // A card with one row under its heading. What somebody is typing is
-        // what that row is for: the question is on the agent's row behind the
-        // card, and the line is nowhere else at all.
+        // A card with room for one row under its rule. What somebody is typing
+        // is what that row is for: the question is on the agent's row above,
+        // and the line is nowhere else at all.
         let screen = painted(
             &answering(asking(&["the sqlite one"], Some(Kind::Question)), "the sq"),
             (60, 6),
@@ -1855,8 +1815,8 @@ mod tests {
 
         assert_eq!(
             card_lines(&screen).len(),
-            1,
-            "and the card is the question's own size, with no window kept \
+            2,
+            "and the card is its rule and the question, with no window kept \
              for a pane it will not draw: {screen:?}"
         );
     }
@@ -1885,8 +1845,9 @@ mod tests {
         let all = screen.join("\n");
         assert!(
             all.contains("what it has changed"),
-            "a card holding a patch says so, because the row it hangs off \
-             says what the agent is doing and this is not that: {all}"
+            "a card holding a patch says so on its rule, because the row it \
+             came off says what the agent is doing and this is not that: \
+             {all}"
         );
         assert!(
             all.contains("+ line 0"),
@@ -2023,8 +1984,8 @@ mod tests {
             "half the screen, the card's cap: {screen:?}"
         );
         assert!(
-            card[0].contains("said 0"),
-            "opened at the answer's first words: {screen:?}"
+            card[1].contains("said 0"),
+            "opened under its rule at the answer's first words: {screen:?}"
         );
     }
 
@@ -2342,8 +2303,8 @@ mod tests {
             lines[row]
         );
         assert!(
-            lines[row].starts_with("  │"),
-            "on the card rather than on the row behind it: {lines:?}"
+            lines[row].starts_with("  #40"),
+            "on the card rather than on the row above it: {lines:?}"
         );
         assert_eq!(word_colour(&screen, size, row as u16, "#7"), theme().done);
     }
@@ -2374,7 +2335,7 @@ mod tests {
 
         // The one row left after the cut, not the six rows the capture has: a
         // card that measured before it cut would spend its height on the
-        // vendor's furniture.
-        assert_eq!(card_rows(&card.read(), None, &[], false, 60), 1);
+        // vendor's furniture. Two with the rule over it.
+        assert_eq!(card_rows(&card.read(), None, &[], false, 60), 2);
     }
 }

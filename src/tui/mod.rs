@@ -6485,9 +6485,13 @@ mod tests {
         assert_eq!(code, exit::OK);
         assert!(screen.contains("  ∙ second-b2c"), "{screen}");
         assert!(
-            screen.contains("╰ wrote the tests"),
+            screen.lines().any(|line| line.starts_with("second-b2c ┈")),
             "an agent with no pane left is read from its record, onto a card \
-             hung under its own row: {screen}"
+             at the foot under a rule of its own: {screen}"
+        );
+        assert!(
+            screen.contains("\n  wrote the tests"),
+            "with what it said standing in under that rule: {screen}"
         );
     }
 

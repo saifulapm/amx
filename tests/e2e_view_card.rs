@@ -113,43 +113,36 @@ const CHROME: [&str; 5] = [
     "  ⏵⏵ accept edits on (shift+tab to cycle)",
 ];
 
-/// Whether this line of the view is one of the card's: the spine, in the
-/// column the row it hangs from drew its own state glyph in.
-fn on_the_spine(line: &str) -> bool {
-    line.starts_with("  │") || line.starts_with("  ╰")
+/// Where the card's rule stands, which is where the card starts: the band at
+/// the foot of the list, opened by the one rule the view draws down there.
+/// Nothing where no card is up.
+fn card_rule(drawn: &str) -> Option<usize> {
+    drawn.lines().position(|line| line.contains('┈'))
 }
 
-/// The card as it stands on the screen, top to bottom.
+/// The card as it stands on the screen, top to bottom: its rule, and every row
+/// under it down to the one the keys have.
 fn card_lines(drawn: &str) -> Vec<&str> {
-    drawn.lines().filter(|line| on_the_spine(line)).collect()
-}
-
-/// Which line of the screen holds this text, the card's own lines aside: the
-/// line the list drew for it. The card says the name of the agent it is a look
-/// at, so the two are told apart by the spine.
-fn line_holding(drawn: &str, text: &str) -> usize {
-    drawn
-        .lines()
-        .position(|line| line.contains(text) && !on_the_spine(line))
-        .unwrap_or_else(|| panic!("no line holding {text} in:\n{drawn}"))
-}
-
-/// The lines the card stands on, first and last.
-fn card_stands_on(drawn: &str) -> (usize, usize) {
-    let on: Vec<usize> = drawn
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| on_the_spine(line))
-        .map(|(at, _)| at)
-        .collect();
-    match (on.first(), on.last()) {
-        (Some(top), Some(foot)) => (*top, *foot),
-        _ => panic!("no card in:\n{drawn}"),
+    let lines: Vec<&str> = drawn.lines().collect();
+    match card_rule(drawn) {
+        Some(top) => lines[top..lines.len() - 1].to_vec(),
+        None => Vec::new(),
     }
 }
 
+/// Which line of the screen holds this text, the card's own lines aside: the
+/// line the list drew for it. The card names the agent it is a look at on its
+/// rule, so the two are told apart by where the card starts.
+fn line_holding(drawn: &str, text: &str) -> usize {
+    drawn
+        .lines()
+        .take(card_rule(drawn).unwrap_or(usize::MAX))
+        .position(|line| line.contains(text))
+        .unwrap_or_else(|| panic!("no line holding {text} in:\n{drawn}"))
+}
+
 #[test]
-fn card_stands_under_its_own_row_and_moves_the_rows_below_it_down() {
+fn card_stands_at_the_foot_and_moves_no_row_of_the_list() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
     amx.until_state("ask-a1b", "waiting");
@@ -162,28 +155,32 @@ fn card_stands_under_its_own_row_and_moves_the_rows_below_it_down() {
     });
     // The waiting agent is the first row, so it is the one the view opens on,
     // with a heading and a finished row under it.
-    for below in ["Completed", "old-job-b2c"] {
-        assert!(
-            line_holding(&before, below) > line_holding(&before, "ask-a1b"),
-            "{below} is under the row the card will hang off:\n{before}"
-        );
-    }
+    let rows: Vec<usize> = ["ask-a1b", "Completed", "old-job-b2c"]
+        .iter()
+        .map(|text| line_holding(&before, text))
+        .collect();
+    assert!(rows[0] < rows[1] && rows[1] < rows[2], "{before}");
 
     let carded = card_on(&amx, &view, "ask-a1b");
-    let (top, foot) = card_stands_on(&carded);
-    assert_eq!(
-        top,
-        line_holding(&carded, "ask-a1b") + 1,
-        "the card starts on the line under the row it hangs off, with no wall \
-         between them:\n{carded}"
-    );
-    for below in ["Completed", "old-job-b2c"] {
-        assert!(
-            line_holding(&carded, below) > foot,
-            "{below} was under that row, so the card moved it down rather than \
-             standing over it:\n{carded}"
+    for (text, was) in ["ask-a1b", "Completed", "old-job-b2c"].iter().zip(&rows) {
+        assert_eq!(
+            line_holding(&carded, text),
+            *was,
+            "{text} is on the line it was on before the card opened:\n{carded}"
         );
     }
+    let top = card_rule(&carded).expect("the card's rule");
+    assert!(
+        top > rows[2],
+        "the card stands under the whole list rather than in among it:\n{carded}"
+    );
+    assert!(
+        carded
+            .lines()
+            .nth(top)
+            .is_some_and(|rule| rule.starts_with("ask-a1b ┈") && rule.ends_with('┈')),
+        "on a rule carrying the name of the agent it is a look at:\n{carded}"
+    );
 }
 
 /// A left click where a person clicks, as the raw SGR bytes a terminal sends
@@ -196,7 +193,7 @@ fn click(amx: &Harness, view: &str, column: u16, row: u16) {
 }
 
 #[test]
-fn a_click_under_the_card_lands_on_the_row_the_card_moved_down() {
+fn a_click_on_a_row_with_a_card_open_lands_on_the_row_it_was_aimed_at() {
     let amx = Harness::new();
     finished(&amx, "old-job-a1b", "done", 60);
     finished(&amx, "older-job-b2c", "done", 120);
@@ -207,33 +204,33 @@ fn a_click_under_the_card_lands_on_the_row_the_card_moved_down() {
         (drawn.contains("old-job-a1b") && drawn.contains("older-job-b2c")).then_some(())
     });
 
-    // The card opens on the first row and moves the second one down.
+    // The card opens on the first row and leaves the second one where it is.
+    let before = screen(&amx, &view);
+    let was = before
+        .lines()
+        .position(|line| line.contains("older-job-b2c"))
+        .expect("the second row");
     let carded = card_on(&amx, &view, "old-job-a1b");
-    let (_, foot) = card_stands_on(&carded);
-    let moved = line_holding(&carded, "older-job-b2c");
-    assert!(
-        moved > foot,
-        "the row the click is for is under the card:\n{carded}"
+    assert_eq!(
+        line_holding(&carded, "older-job-b2c"),
+        was,
+        "the row the click is for has not moved:\n{carded}"
     );
 
-    // A click where that row now stands lands on it rather than on the row
-    // that was drawn there before the card pushed it down, and the card
-    // follows the cursor onto it.
-    click(&amx, &view, 5, moved as u16 + 1);
+    // A click on it lands on it rather than a row off, and the card follows
+    // the cursor onto that agent, which its rule is what says.
+    click(&amx, &view, 5, was as u16 + 1);
     amx.until("the card to move to the row that was clicked", || {
-        // The card says nothing the row above it already says, so where it
-        // now hangs is what says it moved.
         let drawn = screen(&amx, &view);
-        let row = drawn
+        drawn
             .lines()
-            .position(|line| line.contains("older-job-b2c") && !on_the_spine(line))?;
-        let top = drawn.lines().position(on_the_spine)?;
-        (top == row + 1).then_some(())
+            .any(|line| line.starts_with("older-job-b2c ┈"))
+            .then_some(())
     });
 }
 
 #[test]
-fn card_hangs_a_spine_off_the_row_with_the_question_alone_on_it() {
+fn card_stands_a_rule_and_rows_with_the_question_alone_on_them() {
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
     amx.until_state("ask-a1b", "waiting");
@@ -255,23 +252,21 @@ fn card_hangs_a_spine_off_the_row_with_the_question_alone_on_it() {
         "the question block is the whole of the card:\n{carded}"
     );
 
-    // Not a box. A spine in column 2, under the glyph the row said its state
-    // with, and everything the card says from the name column beside it.
+    // Not a box. A rule with the agent's name on it, and what the card says
+    // standing two cells in under the chevron its line begins with.
     let card = card_lines(&carded);
-    let top = card
-        .first()
-        .unwrap_or_else(|| panic!("no card in:\n{carded}"));
+    let [ruled, asked, ..] = card.as_slice() else {
+        panic!("no card in:\n{carded}")
+    };
     assert!(
-        top.starts_with("  │ Claude needs your permission"),
-        "the card opens on what the agent is asking, in the name column, and \
-         does not spend a row repeating which agent it is and what it is \
-         doing off the row two cells above: {top}"
+        ruled.starts_with("ask-a1b ┈"),
+        "the card opens on a rule saying whose it is: {ruled}"
     );
     assert!(
-        card.last().is_some_and(|line| line.starts_with("  ╰ ")),
-        "closed on its last row:\n{carded}"
+        asked.starts_with("  Claude needs your permission"),
+        "and what the agent is asking stands under it: {asked}"
     );
-    for cell in ['╭', '╮', '╯', '┈'] {
+    for cell in ['╭', '╮', '╯', '│', '╰'] {
         assert!(
             !card.iter().any(|line| line.contains(cell)),
             "{cell} is a border cell and the card has none:\n{carded}"
@@ -293,7 +288,8 @@ fn card_hangs_a_spine_off_the_row_with_the_question_alone_on_it() {
     // Esc puts it away and leaves the wall as it was.
     press(&amx, &view, "Escape");
     amx.until("the card to go", || {
-        (!screen(&amx, &view).lines().any(on_the_spine)).then_some(())
+        let drawn = screen(&amx, &view);
+        (!drawn.contains('┈') && drawn.contains("ask-a1b")).then_some(())
     });
 }
 
@@ -626,7 +622,10 @@ fn card_on(amx: &Harness, view: &str, id: &str) -> String {
     press(amx, view, "Space");
     amx.until("the card", || {
         let drawn = screen(amx, view);
-        drawn.lines().any(on_the_spine).then_some(drawn)
+        drawn
+            .lines()
+            .any(|line| line.starts_with(id) && line.contains('┈'))
+            .then_some(drawn)
     })
 }
 
@@ -1165,8 +1164,9 @@ fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
         .find(|line| line.contains("more"))
         .expect("the indicator");
     assert!(
-        saying.contains('↑') && saying.starts_with("  │ what it has changed"),
-        "at the far end of the card's own heading, pointing at the top: {paged}"
+        saying.contains('↑') && saying.starts_with("fix-login-a1b · what it has changed"),
+        "at the far end of the card's own rule, past the agent's name and what \
+         the card is a reading of, pointing at the top: {paged}"
     );
 
     // A page back is the top again, with the indicator gone.
@@ -1222,7 +1222,7 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
     press(&amx, &view, "Escape");
     let unmoved = amx.until("the card, unmoved", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("╰ did what it was asked") && !drawn.contains("page the card"))
+        (drawn.contains("\n  did what it was asked") && !drawn.contains("page the card"))
             .then_some(drawn)
     });
     assert!(!unmoved.contains("more"), "nothing is hidden: {unmoved}");
@@ -1252,19 +1252,19 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
         .find(|line| line.contains("more"))
         .expect("the indicator");
     let marker = saying
-        .strip_prefix("  │")
-        .unwrap_or_else(|| panic!("the indicator is not on the card: {paged}"));
+        .strip_prefix("tall-b2c ")
+        .unwrap_or_else(|| panic!("the indicator is not on the card's rule: {paged}"));
     assert!(
-        marker.trim_start().starts_with('↑'),
-        "at the far end of a heading row that says nothing else, pointing at \
-         the top: {paged}"
+        marker.trim_start_matches('┈').starts_with(" ↑"),
+        "at the far end of a rule that says nothing else, pointing at the \
+         top: {paged}"
     );
 
     // And walking off the agent puts the next card on its own edge.
     press(&amx, &view, "Up");
     let followed = amx.until("the first card again", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("╰ did what it was asked").then_some(drawn)
+        drawn.contains("\n  did what it was asked").then_some(drawn)
     });
     assert!(!followed.contains("more"), "{followed}");
 }
@@ -1483,7 +1483,10 @@ fn card_over_a_transcript_with_nothing_on_it_yet_is_the_task_alone() {
 
     let view = amx.in_a_terminal(&[], &[]);
     let carded = card_on(&amx, &view, "port-cli-b2c");
-    let card: Vec<&str> = card_lines(&carded).into_iter().map(card_says).collect();
+    let card: Vec<&str> = card_lines(&carded)[1..]
+        .iter()
+        .map(|row| card_says(row))
+        .collect();
     assert_eq!(
         card,
         ["❯ fix the login bug"],
@@ -1491,9 +1494,9 @@ fn card_over_a_transcript_with_nothing_on_it_yet_is_the_task_alone() {
     );
 }
 
-/// What one row of the card says, its spine and the column it stands in aside.
+/// What one row of the card says, the column it stands in aside.
 fn card_says(line: &str) -> &str {
-    line.trim_start().trim_start_matches(['│', '╰']).trim()
+    line.trim()
 }
 
 #[test]

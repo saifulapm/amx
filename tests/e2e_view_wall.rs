@@ -1648,21 +1648,15 @@ fn the_vim_letters_walk_the_bar_and_go_in_and_out_of_the_card() {
 
     // l goes in to the card and h comes back out. The view still has the
     // terminal either way: an attach would have handed it to tmux, and the
-    // wall would be gone rather than under a spine.
-    let spined = |drawn: &str| drawn.lines().any(on_the_spine);
+    // wall would be gone rather than standing over a card.
+    let carded = |drawn: &str| drawn.lines().any(|line| line.starts_with("done-a1b ┈"));
     press(&amx, &view, "l");
-    amx.until("the card", || spined(&screen(&amx, &view)).then_some(()));
+    amx.until("the card", || carded(&screen(&amx, &view)).then_some(()));
     press(&amx, &view, "h");
     amx.until("the card put away", || {
         let drawn = screen(&amx, &view);
-        (!spined(&drawn) && drawn.contains("done-a1b")).then_some(())
+        (!carded(&drawn) && drawn.contains("done-a1b")).then_some(())
     });
-}
-
-/// Whether this line of the view is one of a card's: the spine, in the column
-/// the row it hangs from drew its own state glyph in.
-fn on_the_spine(line: &str) -> bool {
-    line.starts_with("  │") || line.starts_with("  ╰")
 }
 
 #[test]

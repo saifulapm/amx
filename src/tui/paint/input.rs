@@ -97,8 +97,9 @@ const COMPOSER_CAP: usize = 10;
 pub(super) const GUTTER: &str = "❯ ";
 
 /// How wide the text itself is drawn, which is the same on every row of the
-/// composer whether the chevron or the indent is in front of it.
-fn composer_room(width: u16) -> usize {
+/// composer whether the chevron or the indent is in front of it — and on the
+/// line at the foot of the card, which is the same line in another band.
+pub(super) fn composer_room(width: u16) -> usize {
     (width as usize)
         .saturating_sub(GUTTER.chars().count())
         .max(1)
@@ -1636,5 +1637,16 @@ mod tests {
             "{painted:?}"
         );
         assert!(painted[9].contains("enter starts it"), "{:?}", painted[9]);
+
+        // In that order down the screen: the list, the card under it, and the
+        // line under the card, which is the band a card gives way to.
+        let at = |front: &str| {
+            painted
+                .iter()
+                .position(|line| line.starts_with(front))
+                .unwrap_or_else(|| panic!("nothing begins {front:?} in: {painted:?}"))
+        };
+        assert!(at("  ✻ ask-a1b") < at("ask-a1b ┈"), "{painted:?}");
+        assert!(at("ask-a1b ┈") < at("TASK"), "{painted:?}");
     }
 }

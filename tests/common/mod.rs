@@ -506,11 +506,11 @@ impl Default for Harness {
 
 /// The card, opened on the agent the view is holding the cursor over.
 ///
-/// Waited for by the mark that closes it, which is the one mark the card draws
-/// whatever shape it is drawn in: a box has it in the corner and a spine has it
-/// at the foot of the rule. What a test that opens a card is about is what is
-/// on the card, and waiting on the frame around it would pin every one of them
-/// to a drawing that is not theirs.
+/// Waited for by its rule, which is the one row the card draws whatever it is
+/// a look at: the agent's own name at the front of it, in the band's own
+/// column, where no row of the list ever starts. What a test that opens a card
+/// is about is what is on the card, and waiting on anything inside it would
+/// pin every one of them to a drawing that is not theirs.
 pub fn card_on(amx: &Harness, view: &str, id: &str) -> String {
     amx.until("the row", || amx.capture(view).contains(id).then_some(()));
     amx.tmux(&["send-keys", "-t", view, "Space"]);
@@ -518,7 +518,7 @@ pub fn card_on(amx: &Harness, view: &str, id: &str) -> String {
         let drawn = amx.capture(view);
         drawn
             .lines()
-            .any(|line| line.trim_start().starts_with('╰'))
+            .any(|line| line.starts_with(id) && line.contains('┈'))
             .then_some(drawn)
     })
 }

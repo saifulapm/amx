@@ -1,14 +1,15 @@
 //! Drawing the view.
 //!
-//! Four bands, top to bottom: what there is, the agents themselves, the line
-//! somebody is typing when they are typing one, and the keys. Everything here
-//! is a function of what it is handed, so what the screen says can be read
-//! back in a test without a terminal anywhere near it.
+//! Five bands, top to bottom: what there is, the agents themselves, the closer
+//! look at one of them when one is open, the line somebody is typing when they
+//! are typing one, and the keys. Everything here is a function of what it is
+//! handed, so what the screen says can be read back in a test without a
+//! terminal anywhere near it.
 //!
 //! A surface to a file, and this one only stands them next to each other:
 //! [`mod@header`] draws the two bands above the list, [`wall`] the agents
 //! themselves, [`empty`] what stands there when there are none, [`card`] the
-//! closer look hung off one of them, [`input`] the line being typed and the
+//! closer look at one of them, [`input`] the line being typed and the
 //! keys under it, [`complete`] what the word under its cursor could be, and
 //! [`mod@help`] the screen of every key. Under all of those,
 //! [`text`] measures and cuts what a row says, [`prose`] draws an agent's
@@ -50,12 +51,12 @@ use std::cell::Cell;
 
 use super::rows;
 use super::{Mode, Screen};
-use card::{card_height, card_rows, float, under};
+use card::{card_height, card_rows, float};
 use complete::{band, rows_wanted};
 use header::{header, header_rows, space_rows};
 use help::help;
 use input::{composer_height, composing_line, footer, permission};
-use wall::{Moment, agents, first_drawn, hangs_off};
+use wall::{Moment, agents, first_drawn};
 
 #[cfg(test)]
 pub(super) use card::walks;
@@ -70,7 +71,8 @@ pub use input::Notice;
 /// Where the last frame put things, written back by a draw that is otherwise
 /// a pure reading of the view, because the mouse arrives in the screen's own
 /// coordinates: the band the rows were drawn in, which item its first row
-/// held, and where the card floats. Cells, for the reason [`Scroll`]'s are.
+/// held, and the band the card stands in. Cells, for the reason [`Scroll`]'s
+/// are.
 #[derive(Default)]
 pub struct Map {
     /// The band the list was drawn in, and nothing while the keys overlay
@@ -78,7 +80,7 @@ pub struct Map {
     list: Cell<Option<Rect>>,
     /// The item index of the band's first drawn row.
     offset: Cell<usize>,
-    /// The card's floating box, where one is up.
+    /// The band the card stands in, where one is up.
     card: Cell<Option<Rect>>,
 }
 
@@ -89,19 +91,19 @@ impl Map {
         self.card.set(card);
     }
 
-    /// How wide the band the list was drawn in is, which is the width a card
-    /// hung in it has to wrap its words to. Nothing before the first frame.
+    /// How wide the band the list was drawn in is, which is the width the card
+    /// under it has to wrap its words to. Nothing before the first frame.
     pub(super) fn width(&self) -> Option<u16> {
         self.list.get().map(|band| band.width)
     }
 
     /// The line of the list under this point, as an index into the items.
     ///
-    /// The card is a thing of its own rather than a row, so a point on it names
-    /// no line, and every line below it was moved down by the card's height to
-    /// let it stand. What comes back can run past the end of the items — the
-    /// band is taller than the list — and the caller holds the bound, because
-    /// only it has the items.
+    /// The card is a band of its own under the list rather than a row of it, so
+    /// a point on it names no line and no line of the list stands anywhere but
+    /// where it would stand with no card up. What comes back can run past the
+    /// end of the items — the band is taller than the list — and the caller
+    /// holds the bound, because only it has the items.
     pub(super) fn line_under(&self, column: u16, row: u16) -> Option<usize> {
         if self.over_the_card(column, row) {
             return None;
@@ -110,15 +112,10 @@ impl Map {
         if !band.contains(Position { x: column, y: row }) {
             return None;
         }
-        let pushed = self
-            .card
-            .get()
-            .filter(|card| row >= card.y + card.height)
-            .map_or(0, |card| card.height as usize);
-        Some(self.offset.get() + (row - band.y) as usize - pushed)
+        Some(self.offset.get() + (row - band.y) as usize)
     }
 
-    /// Whether this point is on the floating card.
+    /// Whether this point is on the card's band.
     pub(super) fn over_the_card(&self, column: u16, row: u16) -> bool {
         self.card
             .get()
@@ -142,34 +139,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     // The line being typed, where it is not the one the card is holding: an
     // answer is typed on the card itself, so it is not a band as well.
     let banded = screen.banded();
-    // Every band that is not the list: the header, the space under it, the
-    // keys, the rows under the composer, and the line itself counted at the
-    // one row it never goes below.
-    let chrome = head + space + 1 + allowing;
-    let composing = match banded {
-        Some(composer) => composer_height(composer, area, chrome),
-        None => 0,
-    };
-    // And what the word under the cursor could be, under the line it would be
-    // written on. It takes its rows off the list as the composer does and
-    // stops where the composer stops: whatever else is open, the list keeps a
-    // row, because the list is what the view is for.
-    let suggest = banded.and_then(|composer| composer.suggest.as_ref());
-    let offering = rows_wanted(suggest).min(area.height.saturating_sub(chrome + composing + 1));
-
-    let [top, _, middle, line, offered, allowed, keys] = Layout::vertical([
-        Constraint::Length(head),
-        Constraint::Length(space),
-        Constraint::Min(1),
-        Constraint::Length(composing),
-        Constraint::Length(offering),
-        Constraint::Length(allowing),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-
-    frame.render_widget(Paragraph::new(header(screen, top)), top);
-    // The reading behind the card, for the two things the card needs and does
+    // The reading behind the card, for the three things the card needs and does
     // not carry. A card is a picture of one agent, and the reading is what the
     // list is already holding.
     let on = screen
@@ -184,51 +154,62 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     // And what its branch has open, which no pane carries either: a pull
     // request is a fact about the agent rather than about the turn.
     let prs = on.map_or(&[][..], |view| screen.list.requests(view));
-    let floating = match (helping, &screen.card) {
+
+    // Every band that is not the list or the card: the header, the space under
+    // it, the keys, and the permission row. What the card may take is measured
+    // against what is left, so it can never be so tall that the list it was
+    // opened from is gone.
+    let chrome = head + space + 1 + allowing;
+    let carding = match (helping, &screen.card) {
         (false, Some(card)) => card_height(
             area.height,
-            middle.height,
-            card_rows(
-                card,
-                showing,
-                prs,
-                screen.answering().is_some(),
-                middle.width,
-            ),
+            area.height.saturating_sub(chrome),
+            card_rows(card, showing, prs, screen.answering().is_some(), area.width),
         ),
         _ => 0,
     };
-    // The room the card takes off the band, which is one row more than it
-    // draws: a blank row under its last, so the list below stands off it
-    // rather than against it. Where the band has no room for that row the card
-    // keeps its rows and the row is what goes, because the only row left to
-    // take it is the row of the list `card_height` leaves standing.
-    let room = match floating {
-        0 => 0,
-        drawn => (drawn + 1).min(middle.height - 1),
+    // And the composer under the card takes what is left of the same room:
+    // the rows under it, and the line itself counted at the one row it never
+    // goes below.
+    let chrome = chrome + carding;
+    let composing = match banded {
+        Some(composer) => composer_height(composer, area, chrome),
+        None => 0,
     };
-    let visible = middle.height - room;
-    // Where the card floats: under the line its own agent stands on, with the
-    // rows below that line moved down to make the room.
-    let card_over = screen
-        .card
-        .as_ref()
-        .filter(|_| floating > 0)
-        .map(|card| under(middle, hangs_off(&screen.list, &card.id, visible), room));
-    // How many rows the list has in front of the card, told back to it the
-    // way the map and the scroll are: the fold in the completed group is cut
-    // to this, by the next rebuild rather than under the frame being drawn.
-    screen.list.fit(visible as usize);
+    // And what the word under the cursor could be, under the line it would be
+    // written on. It takes its rows off the list as the composer does and
+    // stops where the composer stops: whatever else is open, the list keeps a
+    // row, because the list is what the view is for.
+    let suggest = banded.and_then(|composer| composer.suggest.as_ref());
+    let offering = rows_wanted(suggest).min(area.height.saturating_sub(chrome + composing + 1));
+
+    let [top, _, middle, carded, line, offered, allowed, keys] = Layout::vertical([
+        Constraint::Length(head),
+        Constraint::Length(space),
+        Constraint::Min(1),
+        Constraint::Length(carding),
+        Constraint::Length(composing),
+        Constraint::Length(offering),
+        Constraint::Length(allowing),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+
+    frame.render_widget(Paragraph::new(header(screen, top)), top);
+    // How many rows the list has, told back to it the way the map and the
+    // scroll are: the fold in the completed group is cut to this, by the next
+    // rebuild rather than under the frame being drawn.
+    screen.list.fit(middle.height as usize);
     // What this frame put where, for the mouse to read back.
     screen.map.keep(
         (!helping).then_some(middle),
-        first_drawn(&screen.list, visible),
-        card_over,
+        first_drawn(&screen.list, middle.height),
+        (carding > 0).then_some(carded),
     );
     match &screen.mode {
         Mode::Keys => help(frame, middle, &screen.page),
-        // The card stands among the rows rather than over them, so the list is
-        // drawn around it and the rows the cursor walks are the ones above.
+        // The card stands under the list rather than among the rows, so every
+        // row is drawn where it would stand with no card up at all.
         _ => agents(
             frame,
             &screen.list,
@@ -240,27 +221,24 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
                 hover: screen.hover,
                 lent: screen.lent.as_deref(),
             },
-            card_over,
             theme,
         ),
     }
-    if let Some(floated) = card_over
+    if carding > 0
         && let Some(card) = &screen.card
     {
         float(
             frame,
             card,
+            // What the list calls it, which is what its rule says. The id
+            // where the list has lost the agent the card was taken from, so
+            // the rule is never bare.
+            on.map_or(card.id.as_str(), rows::called),
             showing,
             prs,
             screen.answering(),
             &screen.scroll,
-            // The rows it draws rather than the room it took, so the spine
-            // stops on the card's last row and nothing is drawn on the row
-            // under it.
-            Rect {
-                height: floating,
-                ..floated
-            },
+            carded,
             theme,
         );
     }
