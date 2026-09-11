@@ -391,7 +391,10 @@ the name; on one you have paged, it says how far from its edge it stands at the
 far end. Nothing above it moves. A card hung under its own row moves every row
 below it down, so walking the cursor with one open shakes the wall you are
 reading it against — at the foot, the list stands still and the card changes
-under it. It takes fourteen rows at most, never more than half the screen, and
+under it. Everything above it goes dim for as long as it is up, exactly as it
+does under the task line, because the card is the same kind of thing: a modal
+whose letters are its line's until `esc`, and the dim is what says so. It takes
+fourteen rows at most, never more than half the screen, and
 always leaves a row of the list it was opened from. It opens straight onto what
 it has to show: what the agent is doing is on its own row up in the list, and a
 card that repeated it would spend a row on what you were already looking at.

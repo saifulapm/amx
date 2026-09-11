@@ -2212,26 +2212,50 @@ fn acts_space_writes_the_look_on_the_record_and_leaves_the_rows_alone() {
     });
 
     // The cursor opens on the newest ending, which is the row the card opens
-    // over. Nothing on the wall is painted for whether a row has been read, so
+    // on. Nothing on the wall is painted for whether a row has been read, so
     // what the look is worth is on the record rather than on the screen.
     press(&amx, &view, "Space");
     amx.until("the look to reach the record", || {
         (amx.state("fix-login-a1b")["seen"].as_u64().unwrap_or(0) > 0).then_some(())
     });
-    let opened = sgr_at(
-        &coloured_line(&amx, &view, "fix-login-a1b"),
-        "fix-login-a1b",
-    );
+    let carded = |drawn: &str| {
+        drawn
+            .lines()
+            .any(|line| line.starts_with("fix-login-a1b ┈"))
+    };
+    amx.until("the card", || carded(&screen(&amx, &view)).then_some(()));
+
+    // With the card up the wall behind it is a wall behind a modal, and the
+    // whole of it goes quiet the way it does under a task line — the cursor's
+    // row with the rest, and nothing up there in weight. Read off the whole
+    // screen, because the dim is set once at the top of it and left in force;
+    // the first place either id stands is its row, above the card's rule.
+    let whole = coloured(&amx, &view);
+    for id in ["fix-login-a1b", "port-import-b2c"] {
+        let on = sgr_at(&whole, id);
+        assert!(
+            on.contains(&2) && !on.contains(&1),
+            "{id} is dim under the card and carries no weight:\n{}",
+            screen(&amx, &view)
+        );
+    }
+
+    // And with the card away, the rows read as they did before the press: the
+    // cursor's row up out of the dim, the other as quiet as it always was.
+    // Which row has been looked at is on the record and nowhere on the wall.
+    press(&amx, &view, "Escape");
+    amx.until("the card put away", || {
+        (!carded(&screen(&amx, &view))).then_some(())
+    });
+    let whole = coloured(&amx, &view);
+    let opened = sgr_at(&whole, "fix-login-a1b");
     assert!(
         !opened.contains(&1) && !opened.contains(&2),
-        "the row the card is over is the row the cursor is on, and it reads as \
+        "the row the card was on is the row the cursor is on, and it reads as \
          it did before the press:\n{}",
         screen(&amx, &view)
     );
-    let untouched = sgr_at(
-        &coloured_line(&amx, &view, "port-import-b2c"),
-        "port-import-b2c",
-    );
+    let untouched = sgr_at(&whole, "port-import-b2c");
     assert!(
         untouched.contains(&2) && !untouched.contains(&1),
         "and the row nobody opened is as quiet as it always was:\n{}",

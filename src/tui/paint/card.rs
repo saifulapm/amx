@@ -30,7 +30,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 use std::cell::Cell;
 use std::ops::Range;
 
-use super::input::{GUTTER, composer_lines, composer_room, cursor_cell, under_the_block};
+use super::input::{GUTTER, behind, composer_lines, composer_room, cursor_cell, under_the_block};
 use super::prose;
 use super::style::{bold, colour, dim, request_colour};
 use super::text::{RULE, SEPARATOR, fit, inert, width_of};
@@ -556,6 +556,10 @@ pub(super) fn float(
     area: Rect,
     theme: Theme,
 ) {
+    // A card is a modal the way a line being typed is: for as long as it is
+    // up every letter is its line's, and the wall above says so the way it
+    // does under a task line, by going quiet to its last cell.
+    behind(frame, area.y);
     // The rule opens the band and the line closes it; what the card says
     // stands between them, in under the line's own chevron. A band with room
     // for nothing but the rule draws the rule.
@@ -1443,6 +1447,53 @@ mod tests {
             landing.says(),
             format!("{said}\n\nreading the importer"),
             "one blank row between the record and the tail, and nothing else"
+        );
+    }
+
+    #[test]
+    fn card_takes_the_strength_off_the_wall_it_is_drawn_over() {
+        // A card is a modal the way a line being typed is, and the wall says
+        // so the same way under both: everything above the rule goes dim to
+        // its last cell, the row under the cursor with the rest, and what is
+        // left undimmed is the card.
+        let size = (60, 20);
+        let modifier = |screen: &Screen, word: &str| {
+            let lines = painted(screen, size);
+            let row = lines
+                .iter()
+                .position(|line| line.contains(word))
+                .unwrap_or_else(|| panic!("{word} is not on {lines:?}"));
+            let column = column_of(&lines[row], word) as u16;
+            cells(screen, size)[(column, row as u16)].modifier
+        };
+
+        let quiet = showing(a_fleet(), None);
+        assert!(
+            !modifier(&quiet, "ask-a1b").contains(Modifier::DIM),
+            "the name under the cursor comes up out of the dim while the keys \
+             are the list's"
+        );
+
+        let carded = showing(
+            a_fleet(),
+            Some(asking(&["the sqlite one"], Some(Kind::Question))),
+        );
+        assert!(
+            modifier(&carded, "ask-a1b").contains(Modifier::DIM),
+            "and goes quiet with the rest the moment a card is up"
+        );
+        let buffer = cells(&carded, size);
+        assert!(
+            (0..size.0).all(|column| buffer[(column, 0)].modifier.contains(Modifier::DIM)),
+            "the header behind goes dim to its last cell"
+        );
+        let rule = painted(&carded, size)
+            .iter()
+            .position(|line| line.contains(RULE))
+            .expect("the card's rule");
+        assert!(
+            !buffer[(0, rule as u16)].modifier.contains(Modifier::DIM),
+            "and the name on the card's own rule is not"
         );
     }
 

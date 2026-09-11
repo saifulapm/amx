@@ -359,13 +359,17 @@ const PAST_THE_END: &str = " ";
 
 /// Everything above the rule, dimmed for as long as the mode is on.
 ///
+/// The card's band calls this too: a card is a modal the way a line being
+/// typed is — every letter is its line's until esc — and the wall says so the
+/// same way under both, by going quiet above the rule.
+///
 /// One pass over what has already been drawn rather than a flag every surface
 /// carries: the rows, the headings, the counts and the dials are each painted
 /// for what they mean, and a mode is not one of the things they mean. What
 /// this takes is the weight and the reverse video — the badge included, which
 /// is the loudest thing up there — and what it leaves is the colours, dimmed,
 /// so the wall is still readable as the wall it was a keystroke ago.
-fn behind(frame: &mut Frame, until: u16) {
+pub(super) fn behind(frame: &mut Frame, until: u16) {
     let wall = Rect {
         height: until,
         ..frame.area()
