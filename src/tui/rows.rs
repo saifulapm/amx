@@ -36,7 +36,7 @@
 //! rather than against the screen, which is what lets them outlive the view
 //! they were said in.
 
-use crate::derive::View;
+use crate::derive::{Evidence, View};
 use crate::pr::{self, Pr, Standing};
 use crate::store::{Ask, Meta, Phase};
 use serde::{Deserialize, Serialize};
@@ -870,13 +870,18 @@ impl List {
     /// still in the way of the next one.
     ///
     /// Counted off the reading rather than by asking tmux again, and it is the
-    /// same answer: the gate skips an agent whose pane has gone, and a reading
-    /// lists the panes once per server and has already settled such an agent
-    /// as stopped.
+    /// same answer: the gate counts the agents whose pane still answers for
+    /// them, and the reading has already asked. An agent whose pane went is
+    /// stopped by the time the list sees it, and one whose pane amx took —
+    /// idle and unwatched long enough to be parked — keeps its phase and says
+    /// so in its evidence, so it is the evidence and not the phase that keeps
+    /// it off the count. The gate would let a spawn through over it; a header
+    /// counting it against the cap would say the fleet is fuller than the
+    /// gate does.
     pub fn live(&self) -> usize {
         self.views
             .iter()
-            .filter(|view| !view.phase().is_terminal())
+            .filter(|view| !view.phase().is_terminal() && view.verdict.evidence != Evidence::LetGo)
             .count()
     }
 
@@ -2966,6 +2971,18 @@ mod tests {
         list.narrow(vec![Narrow::State(None)]);
         list.show(vec![view("busy-a1b", Phase::Working, 10), gone]);
         assert_eq!(list.live(), 1);
+
+        // An agent amx parked keeps its phase — nothing about it ended — and
+        // holds no pane, so the gate skips it too. Eight of them on a machine
+        // read as `9 running` beside one agent at work, on 2026-09-11.
+        let mut parked = view("parked-f6a", Phase::Idle, 60);
+        parked.verdict.evidence = Evidence::LetGo;
+        list.show(vec![view("busy-a1b", Phase::Working, 10), parked]);
+        assert_eq!(
+            list.live(),
+            1,
+            "an agent whose pane amx took holds no slot either"
+        );
     }
 
     #[test]
