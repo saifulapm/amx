@@ -1843,8 +1843,10 @@ fn header_vendor_dial_runs_the_next_agent_under_the_vendor_it_names() {
         let drawn = screen(&amx, &view);
         drawn.contains("worktree  none").then_some(drawn)
     });
+    // The label and the two spaces before its value, not the bare word: the
+    // agent command on this row is a path, and a path can hold "model".
     assert!(
-        !drawn.contains("model"),
+        !drawn.contains("model  "),
         "an unregistered command declares no model dial, so there is no dial \
          on the row to name:\n{drawn}"
     );
