@@ -209,16 +209,13 @@ AMX          1 pinned   1 review   1 working   27 done   3 running    1 WAITING
 
  Needs input
   ✻ port-import-b2c        Which fixture should the port keep?               29s
-  │ Which fixture should the port keep?
-  ╰ 1. the old one   2. the new one   3. both
-
 
  Working
   ✻ ship-docs-a7d          Running cargo test                                 3s
 
  Completed 27
 
-space closes it   enter attach   ctrl+x stop   ctrl+t pin   ctrl+s axis   ? keys
+space card   enter attach   ctrl+x stop   ctrl+t pin   ctrl+s axis   ? keys
 ```
 
 The first row is what there is: `AMX`, the directory the view was opened on
@@ -429,19 +426,48 @@ first report has named one — keeps the older card: its live screen, chrome cut
 while it works, and the recorded answer once its turn is over. A waiting
 agent's card is the question block alone.
 
-The card's own line is where that question is answered, and while nothing has
-been typed on it the line says what the question will take. At a question of
-the vendor's own whose choices are all it takes, the line reads `1-2 picks` and
-the number pressed is the answer: it reaches the agent as it is pressed, with
-no enter behind it, which is what the vendor's own screen does with a number
-there. Three prompts read `press` instead and wait for the enter. A question
-that takes more than one choice, where a digit names one box and the rest are
-still to come. One whose choices carry a preview, where the note is typed after
-the key it rides beside. And a permission box, whose numbers are amx's reading
-of a picture of a pane rather than anything the vendor wrote down — an allowed
-tool call cannot be taken back. What picking costs is the answer of your own
-that opens with a digit: the numbers are read on an empty line only, so a
-number meant as a character is typed after some other one.
+Every card ends with a line, whatever the agent is doing, and the line opens
+with the card, so one key puts both the look and the way to answer it in front
+of you. While nothing is typed on it the line says what it will take. At a
+question that is what the question will take. On an agent still at work it reads
+`reply`, because whatever you write there goes to it as it stands. On one whose
+command has ended it reads `nothing is listening`, which is the refusal a reply
+would come back with — a line that invited one there would be the card telling
+you to type into the dark. The `❯` carries the waiting colour at a question and
+is dim everywhere else: a prompt waiting on you should not look like one you may
+type at if you feel like it.
+
+At a question of the vendor's own whose choices are all it takes, the line reads
+`1-2 picks` and the number pressed is the answer: it reaches the agent as it is
+pressed, with no enter behind it, which is what the vendor's own screen does
+with a number there. Three prompts read `press` instead and wait for the enter.
+A question that takes more than one choice, where a digit names one box and the
+rest are still to come. One whose choices carry a preview, where the note is
+typed after the key it rides beside. And a permission box, whose numbers are
+amx's reading of a picture of a pane rather than anything the vendor wrote down
+— an allowed tool call cannot be taken back. What picking costs is the
+answer of your own that opens with a digit: the numbers are read on an empty
+line only, so a number meant as a character is typed after some other one.
+
+With a card up, one rule decides every key: a key the line has a use for is the
+line's, and every other key is the list's, as if the line were not there. So
+every letter is text — `j`, `k`, `h`, `l`, `q`, `n`, `d`, `/` and `?` included
+— and so are the keys that move along a line and end it. The arrows keep
+walking the wall with the card in tow, the page keys and the chords under them
+page the card, and `ctrl+x`, `ctrl+t`, `ctrl+s`, `alt+1..9` and the shifted
+arrows do to the list exactly what they do with no card open. So does the
+mouse, which has no use for a line either.
+
+Two keys are read on the empty line before that rule, because there they have
+nothing to do to the line: `space` closes the card, which is the key that
+opened it, and `enter` is the list's own — an attach on a row, a group shut or
+opened on a heading, the fold's rows given back on the fold. The first
+character typed takes both back, and after it `space` is a space and `enter`
+sends what you have written. `esc` closes the line and the card together
+whatever is on it. The row under the card says which of the two it is reading:
+`enter attach`, `space closes it` and `pgup pages it` where the body holds
+more, or `enter sends it` — `answers it` at a question — with `alt+enter
+newline` behind it, and `esc closes it` pinned to the end of both.
 
 `pgup` and `pgdn` page inside the card's body when it holds more than the card
 has room for: a patch or a finished conversation down from where it opened, a
@@ -520,31 +546,30 @@ goes on sorting under you. Both of those and whichever way `ctrl+s` last
 gathered the fleet are written to `~/.local/state/amx/view.json` as you go, so
 the next view opens on the wall you left.
 
-A line being typed hangs off a rule, and the rule is where the whole mode is
-said. Its near end names which of the four lines this is — a task, a message,
-an answer, a rename — with the agent it is aimed at beside it where
-it is aimed at one, and after that the one thing true of all four: while the
-line is open a letter is a letter and not the key it is bound to, and `esc` is
-the way out. Its far end carries what the next agent may do without asking, in
-reverse video, set into the edge: it is the one dial somebody is about to press
-enter past. The dashes are `┈`, the lightest there is, because a terminal inks
-a box-drawing glyph across the whole cell and a solid rule would read brighter
-than the dim words beside it — half the cells left blank is what puts the two
-level.
+A line being typed in a band of its own hangs off a rule, and the rule is where
+the whole mode is said. Its near end names which line this is — a task, or a
+rename — with the agent it is aimed at beside it where it is aimed at one, and
+after that the one thing true of both: while the line is open a letter is a
+letter and not the key it is bound to, and `esc` is the way out. Its far end
+carries what the next agent may do without asking, in reverse video, set into
+the edge: it is the one dial somebody is about to press enter past. The dashes
+are `┈`, the lightest there is, because a terminal inks a box-drawing glyph
+across the whole cell and a solid rule would read brighter than the dim words
+beside it — half the cells left blank is what puts the two level.
 
 The line itself begins with a `❯` in the column the rule's own label starts in,
-whichever of the four it is holding, so moving between them does not move the
+whichever of the two it is holding, so moving between them does not move the
 words you are reading. It is drawn at the weight you type anything at, because
 what says where you are is the block. That block is a cell turned over rather
 than a glyph put in one: the character you are standing on keeps its place and
 is read through the block, and past the end of the line the cell turned over is
 a space, which is a whole block. It is the only cursor there is. The
 terminal's own is hidden for as long as the view has the screen, so nothing of
-the terminal's blinks over the cell amx is painting, and the find line and a
-card's answer line draw the same block the same way. It comes back when the
-view hands the screen over: the editor `ctrl+g` opens and the session `enter`
-attaches to are each given a terminal with a cursor in it, and the first frame
-the view draws on taking the screen back puts it away again.
+the terminal's blinks over the cell amx is painting, and the find line and the
+line at the foot of a card draw the same block the same way. It comes back when
+the view hands the screen over: the editor `ctrl+g` opens and the session
+`enter` attaches to are each given a terminal with a cursor in it, and the
+first frame the view draws on taking the screen back puts it away again.
 Everything above the rule goes dim for as long as the mode is on — rows,
 headings, counts and dials in the one pass — so the band below the rule is the
 only thing on the screen left undimmed.
