@@ -69,9 +69,13 @@ pub fn painted(screen: &str) -> Vec<Vec<Painted>> {
         Event::Text(text) => run.push_str(text),
         Event::Newline => {
             close(&mut rows, &style, &mut run);
-            // Paint does not survive a row boundary: a colour opened on one
-            // row and never closed does not bleed into the next.
-            style = Painted::default();
+            // The paint stays in force across a row boundary, because that
+            // is what a terminal does with it and what tmux writes down:
+            // `capture-pane -e` puts an escape where an attribute changes and
+            // nowhere else, so a box drawn three rows tall opens its
+            // background once, on the first row, and the two under it carry
+            // no escape of their own. A walk that reset here painted the
+            // padding of such a box and not the text in it.
             rows.push(Vec::new());
         }
         Event::Sgr(params) => {
@@ -128,7 +132,8 @@ const ST_8: char = '\u{9c}';
 enum Event<'a> {
     /// A run of text with no escape and no newline in it.
     Text(&'a str),
-    /// A row boundary. Structure rather than text: paint does not cross it.
+    /// A row boundary. Structure rather than text, and the paint in force
+    /// crosses it the way it does on a terminal.
     Newline,
     /// A `CSI … m` sequence's parameters, without its introducer or its final
     /// byte. `ESC[m` arrives as the empty string.
@@ -523,10 +528,21 @@ mod tests {
     }
 
     #[test]
-    fn paint_does_not_bleed_from_one_row_into_the_next() {
-        let rows = painted("\u{1b}[1mbold\nplain");
-        assert!(rows[0][0].bold);
-        assert!(!rows[1][0].bold, "{rows:?}");
+    fn paint_left_open_on_one_row_is_still_in_force_on_the_next() {
+        // tmux writes an attribute where it changes and leaves it in force:
+        // pi's user-message box opens its background on the padding row
+        // above the text and closes it two rows later, and the text row
+        // between carries no escape at all. Measured off pi 0.85.1 with
+        // `capture-pane -e` on 2026-09-11.
+        let rows = painted("\u{1b}[48;2;33;34;47m    \n text\n    \u{1b}[49m\nplain");
+        let bg = Some(Colour::Rgb(33, 34, 47));
+        assert_eq!(rows[0][0].bg, bg);
+        assert_eq!(rows[1][0].bg, bg, "{rows:?}");
+        assert_eq!(rows[2][0].bg, bg, "{rows:?}");
+        assert_eq!(rows[3][0].bg, None, "{rows:?}");
+        // And an attribute, the same way.
+        let rows = painted("\u{1b}[1mbold\nstill");
+        assert!(rows[1][0].bold, "{rows:?}");
     }
 
     #[test]

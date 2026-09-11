@@ -1432,6 +1432,54 @@ mod tests {
     }
 
     #[test]
+    fn card_paints_a_box_the_pane_opened_on_one_row_and_closed_rows_later() {
+        // pi draws a prompt in a box three rows tall, and tmux writes that
+        // box down as one escape: `capture-pane -e` puts an attribute where
+        // it changes and leaves it in force, so the background opens on the
+        // padding row over the text and the text row carries no escape of
+        // its own. A walk that reset the paint at every row painted the two
+        // padding rows and not the words between them — half a box, which
+        // is what Saiful saw on 2026-09-11. Measured off pi 0.85.1.
+        let pane = "\x1b[38;2;110;114;135m  qshell\x1b[39m\n\n\x1b[48;2;33;34;47m    \n \x1b[38;2;205;214;244mCan you explain\x1b[39m  \n    \n\x1b[0m\nplain\n";
+        let pictured = Body::conversation(
+            &[Said::Prompt("Can you explain".to_string())],
+            Some(Live::Screen(
+                crate::rules::of("pi").furniture(),
+                pane.to_string(),
+            )),
+            30,
+            theme(),
+        );
+        let bg_of = |row: &Line<'static>| -> Vec<Option<Color>> {
+            row.spans.iter().map(|span| span.style.bg).collect()
+        };
+        let rows = &pictured.rows;
+        // The words are on the record's prompt first, so the box's own text
+        // row is the last row holding them.
+        let text = rows
+            .iter()
+            .rposition(|row| {
+                row.spans
+                    .iter()
+                    .any(|span| span.content.contains("Can you explain"))
+            })
+            .expect("the box's own text row");
+        let box_bg = Some(Color::Rgb(33, 34, 47));
+        for at in [text - 1, text, text + 1] {
+            let bgs = bg_of(&rows[at]);
+            assert!(
+                !bgs.is_empty() && bgs.iter().all(|bg| *bg == box_bg),
+                "row {at} of the box is painted whole: {bgs:?}"
+            );
+        }
+        assert!(
+            bg_of(&rows[text + 3]).iter().all(Option::is_none),
+            "and the row after the box is not: {:?}",
+            bg_of(&rows[text + 3])
+        );
+    }
+
+    #[test]
     fn card_keeps_the_last_rows_of_a_long_live_tail() {
         let told = a_talk("port it", "on it");
         // Everything under the record's last row and the blank row that stands
