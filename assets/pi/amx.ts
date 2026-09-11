@@ -4,7 +4,8 @@
 // it back the way it ships, so an edit here is an edit that goes. It does for
 // pi what claude's hooks do for claude: report what the agent is doing to the
 // amx that started this pane, one `amx _hook` per moment with the payload on
-// stdin, and stream what pi is saying to the pane's record while a turn runs.
+// stdin, stream what pi is saying to the pane's record while a turn runs, and
+// beat on that record for as long as the turn lasts.
 //
 // It stays out of the way. Every report is fire-and-forget, nothing here
 // throws, and a pi that no amx has anything to do with runs it as nothing.
@@ -24,6 +25,10 @@ function recordDir(): string | undefined {
 }
 // How often the stream is written, at most.
 const STREAM_EVERY_MS = 100;
+// How often a running turn says on the record that it is still running. Well
+// inside the few seconds amx believes a report for, so a reader asking between
+// two beats still finds a fresh one.
+const BEAT_EVERY_MS = 3000;
 // How much of a tool's arguments a report carries: the argument worth a row,
 // not a file's whole contents.
 const ARGUMENT_CHARS = 200;
@@ -187,6 +192,50 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  // The beat: while a turn runs this extension is alive and knows it, so it
+  // says so beside the record every few seconds and takes the file away when
+  // the turn ends. amx believes what a vendor reports for a few seconds and
+  // then reads the pane, and a mid-turn pi whose chrome an extension has
+  // redrawn is a screen no rule claims — so a tool call longer than that
+  // window read as nothing at all. A beat is the same thing a hook says, and
+  // is heard the same way.
+  //
+  // The file's mtime is the whole of what it says, so nothing is written in
+  // it, and the timer holds nothing open: a pi that goes away mid-turn takes
+  // its beating with it and leaves a record nothing has spoken for since.
+  let beating;
+  function beat(): void {
+    const dir = recordDir();
+    if (!dir) return;
+    try {
+      writeFileSync(join(dir, "heartbeat"), "");
+    } catch {
+      // A record that cannot be written to is a turn nothing hears about.
+    }
+  }
+  function startBeating(): void {
+    // A pane amx did not start has no record to beat on until the first report
+    // has been answered with one, so the beat asks where it is every time
+    // rather than once.
+    beat();
+    if (beating) return;
+    beating = setInterval(beat, BEAT_EVERY_MS);
+    beating.unref?.();
+  }
+  function stopBeating(): void {
+    if (beating) {
+      clearInterval(beating);
+      beating = undefined;
+    }
+    const dir = recordDir();
+    if (!dir) return;
+    try {
+      unlinkSync(join(dir, "heartbeat"));
+    } catch {
+      // Nothing beaten is nothing to take away.
+    }
+  }
+
   // Only a pi with a pane is a pi amx is watching: in rpc, json and print
   // modes there is no screen and no record behind it.
   let watched = false;
@@ -200,6 +249,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_start", (_event, ctx) => {
     if (!watched) return;
     report("agent_start", about(ctx));
+    startBeating();
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
@@ -237,6 +287,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_settled", (_event, ctx) => {
     if (!watched) return;
+    stopBeating();
     endStream();
     const fields = about(ctx);
     const answer = lastAnswer(ctx);

@@ -274,6 +274,10 @@ mod tests {
             assert_eq!(HOOKS.moment(wiring.event), Some(wiring.moment));
         }
         assert!(body.contains("pi.on(\"message_update\""), "and it streams");
+        assert!(
+            body.contains(&format!("\"{}\"", crate::store::HEARTBEAT)),
+            "and it beats on the record while a turn runs"
+        );
     }
 
     #[test]
