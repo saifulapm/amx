@@ -89,6 +89,22 @@ impl<B> Card<B> {
     }
 }
 
+impl Card<Body> {
+    /// Where the card opens, as rows from its natural edge: a card read
+    /// forward opens on its anchor — the end of a conversation — and
+    /// everything else at its edge.
+    ///
+    /// That anchor is past the body's last row, and the paint clamps both it
+    /// and the offset to the last page the card had room for; where it opened
+    /// is where it is held from.
+    pub fn opens_at(&self) -> usize {
+        match self.forward() {
+            true => self.body.anchor(),
+            false => 0,
+        }
+    }
+}
+
 impl Card<String> {
     /// The same card with its body read, which is the form the paint draws.
     ///

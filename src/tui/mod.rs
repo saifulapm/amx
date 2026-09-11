@@ -1418,17 +1418,8 @@ impl Screen {
                         (card, taken)
                     });
                     (self.card, self.taken) = taken.unzip();
-                    // A card read forward opens on its anchor — the end of a
-                    // conversation — and everything else at its edge. That
-                    // anchor is past the body's last row, and the paint
-                    // clamps both it and the offset to the last page the
-                    // card had room for; where it opened is where it is held
-                    // from.
-                    let anchor = match &self.card {
-                        Some(card) if card.forward() => card.body.anchor(),
-                        _ => 0,
-                    };
-                    self.scroll.open_at(anchor);
+                    self.scroll
+                        .open_at(self.card.as_ref().map_or(0, Card::opens_at));
                 }
             }
             // A diff was taken when somebody asked for it, and stays as it was
@@ -2569,9 +2560,14 @@ impl Screen {
     ///
     /// The page goes with the press wherever the cursor lands, the end of the
     /// list included: the arrows retake the card, exactly as they did before
-    /// there was a page to keep.
+    /// there was a page to keep. The card up is put back where it opens
+    /// rather than at nothing, because the press does not always take
+    /// another card — an arrow at the end of the list lands on the same agent,
+    /// and one onto a heading holds the card it found — and a card left at
+    /// nothing is a conversation thrown back to its first words.
     fn moved(&mut self) {
-        self.scroll.open_at(0);
+        self.scroll
+            .open_at(self.card.as_ref().map_or(0, Card::opens_at));
         if self.look == Look::Changes {
             self.look = Look::Screen;
         }
@@ -5224,6 +5220,51 @@ mod tests {
             "and the card is still the one it was"
         );
         assert!(screen.answering().is_some(), "with its line still up");
+    }
+
+    #[test]
+    fn card_kept_by_an_arrow_that_takes_no_other_card_stays_where_it_opened() {
+        // A finished conversation opens on its end, and an arrow that lands
+        // on no other agent — onto the heading over it, or at the end of the
+        // list where there is nowhere to go — keeps that card. It has to keep
+        // it where it opened: a press that threw the card back to its first
+        // words would be a press that changed what somebody was reading
+        // while taking them to no other agent.
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let held = TempDir::new().unwrap();
+        let path = held.path().join("session.jsonl");
+        let long: String = (0..40).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(&path, transcript(&long)).unwrap();
+        let mut screen = watching_a_transcript(&path);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+        let at_its_end = |screen: &mut Screen, when: &str| {
+            a_frame(screen);
+            let opened = screen.scroll.away.get();
+            assert!(opened > 0, "{when}: a body taller than the card");
+            assert!(!screen.scroll.paged(), "{when}: on its edge");
+            opened
+        };
+
+        let opened = at_its_end(&mut screen, "opened");
+
+        // Down, with no row under this one to land on.
+        press(&mut screen, KeyEvent::from(KeyCode::Down));
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.id.as_str()),
+            Some("port-a1b")
+        );
+        assert_eq!(
+            at_its_end(&mut screen, "after an arrow at the end of the list"),
+            opened
+        );
+
+        // Up, onto the heading over the group, where the card holds.
+        press(&mut screen, KeyEvent::from(KeyCode::Up));
+        assert!(screen.list.on_heading(), "the cursor is on the heading");
+        assert_eq!(at_its_end(&mut screen, "held on a heading"), opened);
     }
 
     #[test]
