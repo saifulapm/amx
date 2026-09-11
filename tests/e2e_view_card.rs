@@ -193,6 +193,51 @@ fn card_stands_at_the_foot_and_moves_no_row_of_the_list() {
     );
 }
 
+#[test]
+fn card_space_on_its_empty_line_closes_it_and_leaves_the_list_alone() {
+    let amx = Harness::new();
+    finished(&amx, "old-job-a1b", "done", 60);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let before = amx.until("the row", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("old-job-a1b").then_some(drawn)
+    });
+    let was = line_holding(&before, "old-job-a1b");
+
+    // The card opens with its line at the foot, and the row under it names the
+    // key that puts it away.
+    let carded = card_on(&amx, &view, "old-job-a1b");
+    assert!(
+        carded
+            .lines()
+            .next_back()
+            .is_some_and(|keys| keys.contains("space closes it")),
+        "the keys under the card say which key closes it:\n{carded}"
+    );
+
+    // The same key again. Nothing has been typed on the line, so there is
+    // nothing for a space to stand between and it is still what it was a
+    // press ago.
+    press(&amx, &view, "Space");
+    let closed = amx.until("the card to go", || {
+        let drawn = screen(&amx, &view);
+        card_rule(&drawn).is_none().then_some(drawn)
+    });
+    assert_eq!(
+        line_holding(&closed, "old-job-a1b"),
+        was,
+        "with the row it was opened from where it stood:\n{closed}"
+    );
+    assert!(
+        closed
+            .lines()
+            .next_back()
+            .is_some_and(|keys| keys.contains("space card")),
+        "and the list's own keys back under it:\n{closed}"
+    );
+}
+
 /// A left click where a person clicks, as the raw SGR bytes a terminal sends
 /// once a program has asked for the mouse: press and release on one spot, with
 /// the column and the row counted from one, which is the terminal's own way.
