@@ -44,6 +44,12 @@ const LOCK: &str = "lock";
 /// runs and taken away when the turn ends. Written by the vendor's side and
 /// only ever read here.
 pub const LIVE: &str = "live";
+/// That a turn is still running, beaten by a vendor's own report every few
+/// seconds from the start of a turn to its end and taken away at the end.
+/// Written by the vendor's side and only ever read here — see
+/// [`Agent::heartbeat`]. The record's own file rather than any one vendor's:
+/// whichever wire can write here may beat.
+pub const HEARTBEAT: &str = "heartbeat";
 /// Everything a command has printed, written by tmux piping the command's own
 /// pane here — see [`crate::spawn::boot`]. A command's alone: an agent's pane
 /// is a vendor's drawing and is piped nowhere.
@@ -933,6 +939,23 @@ impl Agent {
             .filter(|text| !text.trim().is_empty())
     }
 
+    /// When the vendor's own report last said the turn it is in is still
+    /// running, in epoch seconds — see [`HEARTBEAT`]. `None` between turns,
+    /// and from a vendor that beats nothing.
+    ///
+    /// The file's mtime rather than anything written in it. What a beat says
+    /// is that the report was alive at that moment, which is a time and
+    /// nothing else, and a file the wire only has to touch is one it can beat
+    /// on cheaply.
+    pub fn heartbeat(&self) -> Option<u64> {
+        std::fs::metadata(self.dir.join(HEARTBEAT))
+            .and_then(|beat| beat.modified())
+            .ok()?
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|since| since.as_secs())
+    }
+
     /// Everything the command has printed, where its boot piped the pane into
     /// the record — see [`OUTPUT`]. The whole file, for the reader that wants
     /// the whole of what the command said and reads it once: `amx logs` does,
@@ -1290,6 +1313,22 @@ mod tests {
         assert_eq!(reopened.meta().unwrap(), written);
         assert_eq!(reopened.state().unwrap().state, Phase::Starting);
         assert!(reopened.events().unwrap().is_empty());
+    }
+
+    #[test]
+    fn store_reads_a_beat_off_the_record() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        assert_eq!(agent.heartbeat(), None, "nothing has beaten yet");
+
+        // What the beat says is that it happened and when, so the file is
+        // written rather than read: its own mtime is the whole of it.
+        std::fs::write(agent.dir().join(HEARTBEAT), "").unwrap();
+        let beat = agent.heartbeat().expect("a beat");
+        assert!(
+            beat.abs_diff(now()) <= 1,
+            "a beat is when it was written: {beat}"
+        );
     }
 
     #[test]

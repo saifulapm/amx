@@ -235,6 +235,7 @@ mod tests {
             true,
             now,
             1,
+            None,
         )
         .verdict;
         View::new(meta(id, created), state, verdict)

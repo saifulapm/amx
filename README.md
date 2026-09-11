@@ -1050,6 +1050,13 @@ date. A reader works it out at the moment you ask, in this order:
    account there is.
 4. The screen is all there is. Older than that, the pane is captured and
    matched against a ruleset of what the agent's screens actually look like.
+   An extension may also say on disk that the turn goes on: it runs for as
+   long as the turn does, so it beats on the record every few seconds until
+   the turn ends, and a beat is heard from the same as a hook. While the beats
+   keep landing the record is fresh and step 3 still holds. That is what a
+   long tool call needs — the record goes quiet for as long as the call runs,
+   and a screen no rule claims is otherwise the whole of what is left to read
+   a turn that is plainly still going.
 5. Neither says anything. No rule claims the screen, so the answer is
    `unknown`, with how long it has been since anything was heard, because "I
    can't tell" is only useful with that beside it. One exception: on a vendor

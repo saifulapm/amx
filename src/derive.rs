@@ -22,12 +22,16 @@
 //!    is on the pane and nowhere else, so it is read from there at once rather
 //!    than waited for. They can say a turn is running without saying what it
 //!    is running — before its first tool call — and the line the vendor spins
-//!    is read the same way, see [`wants_the_doing`]. One thing outranks them,
-//!    because it is amx's own and the vendor has said nothing since: a turn
-//!    `amx interrupt` cut short. A record carrying that stamp is read off the
-//!    pane on the first look and needs no screen to settle, since amx ended
-//!    that turn itself; the stamp stands until the vendor's next event takes
-//!    it down — see [`cut_short`].
+//!    is read the same way, see [`wants_the_doing`]. A beat on the record is
+//!    heard here too: a vendor's report is alive for as long as the turn it is
+//!    in, so one that beats on disk while a turn runs has told a reader the
+//!    turn goes on, which is the thing a hook tells it — see [`heard`] and
+//!    [`Agent::heartbeat`]. One thing outranks them, because it is amx's own
+//!    and the vendor has said nothing since: a turn `amx interrupt` cut
+//!    short. A record carrying that stamp is read off the pane on the first
+//!    look and needs no screen to settle, since amx ended that turn itself;
+//!    the stamp stands until the vendor's next event takes it down — see
+//!    [`cut_short`].
 //! 5. **The screen, against the rules.** Older than that, the pane is captured
 //!    and matched against the screens of the vendor the record says was started
 //!    in it — see [`own_screens`]. A rule that claims it decides.
@@ -709,6 +713,7 @@ fn wants_the_screen(
     command: bool,
     alive: bool,
     now: u64,
+    heartbeat: Option<u64>,
 ) -> bool {
     if state.state.is_terminal() || !alive {
         return false;
@@ -716,7 +721,7 @@ fn wants_the_screen(
     if command {
         return true;
     }
-    if !cut_short(state) && now.saturating_sub(heard(state)) <= FRESH {
+    if !cut_short(state) && now.saturating_sub(heard(state, heartbeat)) <= FRESH {
         return wants_the_question(screens, state) || wants_the_doing(screens, state);
     }
     true
@@ -741,13 +746,22 @@ fn wants_the_doing(screens: &Ruleset, state: &State) -> bool {
     state.state == Phase::Working && state.summary.is_none() && screens.furniture().spins()
 }
 
-/// When anything was last heard from the agent, as the record has it.
+/// When anything was last heard from the agent: the record, and the beat on
+/// the record beside it.
 ///
-/// Whichever of the two stamps is later: a record written before its first
+/// Whichever of the three stamps is latest. A record written before its first
 /// event has a `since` and no `last_event`, and the agent is not therefore an
-/// hour out of touch.
-fn heard(state: &State) -> u64 {
-    state.last_event.max(state.since)
+/// hour out of touch. And a vendor's own report is alive for as long as the
+/// turn it is in, so it beats on the record to say the turn goes on — see
+/// [`Agent::heartbeat`]. That is the same thing a hook says, said by the same
+/// side, and it is heard the same way: a tool call that runs for a minute
+/// leaves the record quiet for a minute, and the beats under it are the vendor
+/// saying all through it that the turn has not ended.
+fn heard(state: &State, heartbeat: Option<u64>) -> u64 {
+    state
+        .last_event
+        .max(state.since)
+        .max(heartbeat.unwrap_or_default())
 }
 
 /// Whether amx ended this agent's turn itself and has heard nothing since.
@@ -812,14 +826,14 @@ fn cut_short(state: &State) -> bool {
 /// **Anything still going** is asked how long since it was last heard from,
 /// which is what says whether the rest of the row is worth believing, and it
 /// is what the column has always said.
-fn clock(phase: Phase, state: &State, created: u64, now: u64) -> u64 {
+fn clock(phase: Phase, state: &State, created: u64, now: u64, heartbeat: Option<u64>) -> u64 {
     if phase.is_terminal() {
-        return worked(phase, state, created, now);
+        return worked(phase, state, created, now, heartbeat);
     }
     if phase == Phase::Waiting && state.state == Phase::Waiting && state.since > 0 {
         return now.saturating_sub(state.since);
     }
-    now.saturating_sub(heard(state))
+    now.saturating_sub(heard(state, heartbeat))
 }
 
 /// The seconds of work a row puts beside an agent.
@@ -832,10 +846,10 @@ fn clock(phase: Phase, state: &State, created: u64, now: u64) -> u64 {
 /// At the end it is [`clock`]'s own frozen answer, fallback included: a run
 /// that worked four minutes worked four minutes, and a record with no spans on
 /// it says how long the run was alive instead.
-fn worked(phase: Phase, state: &State, created: u64, now: u64) -> u64 {
+fn worked(phase: Phase, state: &State, created: u64, now: u64, heartbeat: Option<u64>) -> u64 {
     if phase.is_terminal() {
         let ended = match state.ended {
-            0 => heard(state),
+            0 => heard(state, heartbeat),
             at => at,
         };
         return match state.worked_by(ended) {
@@ -881,6 +895,10 @@ pub fn in_words(seconds: u64) -> String {
 /// `reports` is whether the vendor announces its turns and questions itself —
 /// see [`reports`] — which is what lets a settled record outlast a screen no
 /// rule claims.
+///
+/// `heartbeat` is when that vendor's report last said the turn is still
+/// running, where it beats — see [`heard`], which is where it is weighed
+/// against the record's own stamps.
 #[allow(clippy::too_many_arguments)]
 pub fn read(
     state: &State,
@@ -891,18 +909,19 @@ pub fn read(
     reports: bool,
     now: u64,
     held: u64,
+    heartbeat: Option<u64>,
 ) -> Reading {
     // How stale the record is, which is what decides whether a reader believes
     // it over the pane. What a row shows beside the agent is a different
     // question of the same clock, and `clock` is where that one is answered.
-    let quiet = now.saturating_sub(heard(state));
+    let quiet = now.saturating_sub(heard(state, heartbeat));
     let told = |phase, evidence, rule: Option<&str>| Reading {
         verdict: Verdict {
             phase,
             evidence,
             rule: rule.map(str::to_string),
-            age: clock(phase, state, created, now),
-            worked: worked(phase, state, created, now),
+            age: clock(phase, state, created, now, heartbeat),
+            worked: worked(phase, state, created, now, heartbeat),
         },
         asking: None,
         doing: None,
@@ -960,8 +979,8 @@ pub fn read(
                 phase: rule.state,
                 evidence: Evidence::Screen,
                 rule: Some(rule.name.clone()),
-                age: clock(rule.state, state, created, now),
-                worked: worked(rule.state, state, created, now),
+                age: clock(rule.state, state, created, now, heartbeat),
+                worked: worked(rule.state, state, created, now, heartbeat),
             },
             asking: rule.question(&screen),
             // A screen a rule read as a turn running is a screen with the
@@ -1011,9 +1030,10 @@ fn conclude(
     rules: &Ruleset,
     now: u64,
     held: u64,
+    heartbeat: Option<u64>,
 ) -> Reading {
     if alive && runs_a_command(meta, state) {
-        return read_a_command(state, meta.created, capture().as_deref(), now);
+        return read_a_command(state, meta.created, capture().as_deref(), now, heartbeat);
     }
     read(
         state,
@@ -1024,6 +1044,7 @@ fn conclude(
         reports(vendor_of(meta)),
         now,
         held,
+        heartbeat,
     )
 }
 
@@ -1041,14 +1062,20 @@ fn conclude(
 /// line the other kind of row carries: the last row of a build is true for a
 /// second, and a record holding one would have every reader after this repeat
 /// it as news.
-fn read_a_command(state: &State, created: u64, screen: Option<&str>, now: u64) -> Reading {
+fn read_a_command(
+    state: &State,
+    created: u64,
+    screen: Option<&str>,
+    now: u64,
+    heartbeat: Option<u64>,
+) -> Reading {
     Reading {
         verdict: Verdict {
             phase: Phase::Working,
             evidence: Evidence::Screen,
             rule: None,
-            age: clock(Phase::Working, state, created, now),
-            worked: worked(Phase::Working, state, created, now),
+            age: clock(Phase::Working, state, created, now, heartbeat),
+            worked: worked(Phase::Working, state, created, now, heartbeat),
         },
         asking: None,
         doing: screen.and_then(last_printed).map(str::to_string),
@@ -2066,14 +2093,25 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
     let rules = own_screens(&meta);
 
     let alive = state.state.is_terminal() || server.pane_answers_for(&meta.pane, &meta.id);
+    // Read once and used twice, like the record itself: a beat landing between
+    // the question of whether to take a screen and the reading that weighs one
+    // would have the two disagree about the same second.
+    let beat = agent.heartbeat();
     // Taken here rather than left to the closure below, so there is a screen
     // in hand to weigh against the one the record says was there before `read`
     // is asked to trust that anything has held still.
-    let screen = wants_the_screen(rules, &state, runs_a_command(&meta, &state), alive, now)
-        .then(|| server.capture(&meta.pane).ok())
-        .flatten();
+    let screen = wants_the_screen(
+        rules,
+        &state,
+        runs_a_command(&meta, &state),
+        alive,
+        now,
+        beat,
+    )
+    .then(|| server.capture(&meta.pane).ok())
+    .flatten();
     let held = held_still(&agent, &mut state, screen.as_deref(), rules, now);
-    let reading = conclude(&meta, &state, alive, || screen, rules, now, held);
+    let reading = conclude(&meta, &state, alive, || screen, rules, now, held, beat);
     note(&agent, rules, &mut state, &reading);
     if is_the_record(&meta, &reading) {
         let said = worth_writing_down(&meta, &reading);
@@ -2113,11 +2151,15 @@ pub fn records(root: &Path) -> Result<Vec<Record>> {
     Ok(records)
 }
 
-/// One agent's record, and whether the pane it names still answers for it:
-/// everything a reading of a wall has in hand before it asks for a screen.
+/// One agent's record, whether the pane it names still answers for it, and the
+/// beat on the record beside it: everything a reading of a wall has in hand
+/// before it asks for a screen.
 struct Pending {
     record: Record,
     alive: bool,
+    /// Read here so that the question of whether to take a screen and the
+    /// reading that weighs one are asked of the same second — see [`view`].
+    beat: Option<u64>,
 }
 
 /// Read every agent, oldest first.
@@ -2158,7 +2200,12 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
             listed.pane_answers_for(&meta.pane, &meta.id)
         };
 
-        pending.push(Pending { record, alive });
+        let beat = record.agent.heartbeat();
+        pending.push(Pending {
+            record,
+            alive,
+            beat,
+        });
     }
 
     let mut screens = screens_of(&pending, now);
@@ -2172,6 +2219,7 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
                     mut state,
                 },
             alive,
+            beat,
         } = item;
         // Taken rather than borrowed: the reading is handed the screen, and
         // there is one reading it belongs to.
@@ -2179,7 +2227,7 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
         let rules = own_screens(&meta);
         let held = held_still(&agent, &mut state, screen.as_deref(), rules, now);
 
-        let reading = conclude(&meta, &state, alive, || screen, rules, now, held);
+        let reading = conclude(&meta, &state, alive, || screen, rules, now, held, beat);
         note(&agent, rules, &mut state, &reading);
         if is_the_record(&meta, &reading) {
             let said = worth_writing_down(&meta, &reading);
@@ -2215,6 +2263,7 @@ fn screens_of(pending: &[Pending], now: u64) -> Vec<Option<String>> {
             runs_a_command(meta, state),
             item.alive,
             now,
+            item.beat,
         ) {
             continue;
         }
@@ -2258,7 +2307,12 @@ pub fn recorded(root: &Path, now: u64) -> Result<Vec<View>> {
     let mut views: Vec<View> = records(root)?
         .into_iter()
         .map(|record| {
-            let verdict = from_the_record(&record.state, record.meta.created, now);
+            let verdict = from_the_record(
+                &record.state,
+                record.meta.created,
+                now,
+                record.agent.heartbeat(),
+            );
             View::new(record.meta, record.state, verdict)
         })
         .collect();
@@ -2271,10 +2325,12 @@ pub fn recorded(root: &Path, now: u64) -> Result<Vec<View>> {
 ///
 /// The phase it holds, which is where every phase comes from until a screen
 /// disagrees with it, and the same clock beside it that a reading would put
-/// there. The evidence is the record's for a run that has ended and the hooks'
+/// there — the beat on the record included, since that is one of the things
+/// the clock is read from and it is on the disk the rest of this was read
+/// from. The evidence is the record's for a run that has ended and the hooks'
 /// for one that has not, which is what [`read`] calls those two: this says no
 /// more about where it came from than a reading would.
-fn from_the_record(state: &State, created: u64, now: u64) -> Verdict {
+fn from_the_record(state: &State, created: u64, now: u64, heartbeat: Option<u64>) -> Verdict {
     let phase = state.state;
     Verdict {
         phase,
@@ -2283,8 +2339,8 @@ fn from_the_record(state: &State, created: u64, now: u64) -> Verdict {
             false => Evidence::Hooks,
         },
         rule: None,
-        age: clock(phase, state, created, now),
-        worked: worked(phase, state, created, now),
+        age: clock(phase, state, created, now, heartbeat),
+        worked: worked(phase, state, created, now, heartbeat),
     }
 }
 
@@ -2518,11 +2574,29 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             reports,
             now,
             1,
+            None,
         )
     }
 
     fn decided(state: &State, alive: bool, screen: Option<&str>, now: u64) -> Verdict {
         reading(state, alive, screen, now).verdict
+    }
+
+    /// The same reading with a beat on the record, as epoch seconds — see
+    /// [`Agent::heartbeat`]. Against pi's document, because pi is the vendor
+    /// whose report beats.
+    fn beating(state: &State, screen: Option<&str>, now: u64, heartbeat: Option<u64>) -> Reading {
+        read(
+            state,
+            0,
+            true,
+            || screen.map(str::to_string),
+            rules::of("pi"),
+            true,
+            now,
+            1,
+            heartbeat,
+        )
     }
 
     #[test]
@@ -2864,9 +2938,17 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             &told,
             false,
             true,
-            1_001
+            1_001,
+            None
         ));
-        assert!(wants_the_screen(rules::of("pi"), &told, false, true, 1_001));
+        assert!(wants_the_screen(
+            rules::of("pi"),
+            &told,
+            false,
+            true,
+            1_001,
+            None
+        ));
     }
 
     #[test]
@@ -3191,6 +3273,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             true,
             1_100,
             1,
+            None,
         );
         assert_eq!(ended.verdict.phase, Phase::Idle);
         assert_eq!(
@@ -3250,7 +3333,13 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     /// Whether a reading of this record went to the pane at all, which is the
     /// question [`wants_the_screen`] has to answer without going there.
-    fn looked_at_the_pane(meta: &Meta, state: &State, alive: bool, now: u64) -> bool {
+    fn looked_at_the_pane(
+        meta: &Meta,
+        state: &State,
+        alive: bool,
+        now: u64,
+        heartbeat: Option<u64>,
+    ) -> bool {
         let asked = std::cell::Cell::new(false);
         conclude(
             meta,
@@ -3263,6 +3352,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             rules::of("claude"),
             now,
             1,
+            heartbeat,
         );
         asked.get()
     }
@@ -3313,19 +3403,26 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
                 for alive in [true, false] {
                     // Fresh, on the last second of freshness, and stale.
                     for now in [1_000, 1_000 + FRESH, 1_100] {
-                        assert_eq!(
-                            wants_the_screen(
-                                own_screens(meta),
-                                record,
-                                runs_a_command(meta, record),
-                                alive,
-                                now
-                            ),
-                            looked_at_the_pane(meta, record, alive, now),
-                            "{} under {:?} alive={alive} at {now}",
-                            record.state,
-                            meta.agent
-                        );
+                        // And with nothing beating, a beat as fresh as the
+                        // window allows, and one past it: a beat moves what the
+                        // reading believes, so it has to move both of these or
+                        // neither.
+                        for beat in [None, Some(now - FRESH), Some(now - FRESH - 1)] {
+                            assert_eq!(
+                                wants_the_screen(
+                                    own_screens(meta),
+                                    record,
+                                    runs_a_command(meta, record),
+                                    alive,
+                                    now,
+                                    beat
+                                ),
+                                looked_at_the_pane(meta, record, alive, now, beat),
+                                "{} under {:?} alive={alive} at {now} beating {beat:?}",
+                                record.state,
+                                meta.agent
+                            );
+                        }
                     }
                 }
             }
@@ -3714,6 +3811,29 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     }
 
     #[test]
+    fn reader_believes_a_fresh_beat_the_way_it_believes_a_hook() {
+        // Half a minute into a tool call the record is as stale as the quiet,
+        // and the screen under it is one no rule claims — so the reading had
+        // nothing left to say about a turn that was plainly still going. The
+        // vendor's own report is alive for as long as the turn is, and beats on
+        // the record to say so: that is a report of the same thing a hook
+        // reports, and it is heard the same way.
+        let running = state(Phase::Working, 1_000);
+        let beaten = beating(&running, Some(A_SHELL), 1_030, Some(1_028));
+        assert_eq!(beaten.verdict.phase, Phase::Working);
+        assert_eq!(beaten.verdict.evidence, Evidence::Hooks);
+        assert_eq!(beaten.verdict.age, 2, "the beat is the last thing heard");
+
+        // Nothing beating, and a beat older than the window, are both a record
+        // nothing has spoken for since it went quiet.
+        for beat in [None, Some(1_030 - FRESH - 1)] {
+            let quiet = beating(&running, Some(A_SHELL), 1_030, beat);
+            assert_eq!(quiet.verdict.phase, Phase::Unknown, "{beat:?}");
+            assert_eq!(quiet.verdict.evidence, Evidence::Unknown, "{beat:?}");
+        }
+    }
+
+    #[test]
     fn reader_reads_the_screen_once_the_hooks_have_gone_quiet() {
         // Nothing outstanding on the record, so the idle rule may decide at
         // once — this is the parked agent that would otherwise sit at
@@ -3984,7 +4104,16 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         let ran = meta();
         let starting = state(Phase::Starting, 1_000);
         let printed = || Some(A_COMMAND.to_string());
-        let reading = conclude(&ran, &starting, true, printed, own_screens(&ran), 1_500, 1);
+        let reading = conclude(
+            &ran,
+            &starting,
+            true,
+            printed,
+            own_screens(&ran),
+            1_500,
+            1,
+            None,
+        );
         assert_eq!(reading.verdict.phase, Phase::Working);
         assert_eq!(reading.verdict.evidence, Evidence::Screen);
         assert_eq!(reading.verdict.age, 500, "and how long it has been running");
@@ -3997,12 +4126,30 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
         // A pane the command has left is not a command still running, and an
         // exit code is not something read off a screen.
-        let gone = conclude(&meta(), &starting, false, printed, rules::of(""), 1_500, 1);
+        let gone = conclude(
+            &meta(),
+            &starting,
+            false,
+            printed,
+            rules::of(""),
+            1_500,
+            1,
+            None,
+        );
         assert_eq!(gone.verdict.phase, Phase::Stopped);
 
         let mut failed = state(Phase::Failed, 1_000);
         failed.exit = Some(3);
-        let ended = conclude(&meta(), &failed, true, printed, rules::of(""), 1_500, 1);
+        let ended = conclude(
+            &meta(),
+            &failed,
+            true,
+            printed,
+            rules::of(""),
+            1_500,
+            1,
+            None,
+        );
         assert_eq!(ended.verdict.phase, Phase::Failed);
         assert_eq!(ended.verdict.evidence, Evidence::Record);
 
@@ -4020,6 +4167,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             rules::of("claude"),
             1_500,
             1,
+            None,
         );
         assert_eq!(claude.verdict.phase, Phase::Unknown);
     }
