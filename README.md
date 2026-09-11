@@ -386,20 +386,19 @@ wall, counting rows from the top and skipping the headings, without walking the
 cursor to them first. It is the fleet you already have in front of you, reached
 by the number you were about to count to.
 
-`space` opens the card, and the card is not a box. It is a spine: a column of
-`│` standing in the column the row drew its own state glyph in, closed with a
-`╰` on its last line, and everything it says written from the column the row's
-name starts in. It hangs directly under the row it is a look at and moves the
-rows below it down, so what it belongs to is said by where it stands rather
-than by four borders and the two rows and two columns of wall they would cost.
-A blank row stands under its last one, so the list picks up clear of the card
-rather than against it. That row is part of what the card costs, and where the
-screen has no room for it the card keeps its rows and the blank is what goes:
-the card takes half the screen at most, and always leaves a row of the list it
-was opened from. It opens straight onto what it has to show: which agent this
-is and what it is doing are on the row two cells above, and a card that
-repeated them would spend a row of the wall on what you were already looking
-at.
+`space` opens the card, and the card is not a box. It stands at the foot of the
+list, where the line you type stands, and is drawn the way that band is: a rule
+across the screen with the agent's own name at the front of it, in the colour
+its row says its state in, and everything the card says under that, two cells
+in beneath the chevron. On a card holding a patch the rule says that too, after
+the name; on one you have paged, it says how far from its edge it stands at the
+far end. Nothing above it moves. A card hung under its own row moves every row
+below it down, so walking the cursor with one open shakes the wall you are
+reading it against — at the foot, the list stands still and the card changes
+under it. It takes fourteen rows at most, never more than half the screen, and
+always leaves a row of the list it was opened from. It opens straight onto what
+it has to show: what the agent is doing is on its own row up in the list, and a
+card that repeated it would spend a row on what you were already looking at.
 
 What the card's body is follows the agent. Where its vendor keeps the
 conversation in a file — claude and pi both do — the card is that whole
@@ -446,10 +445,10 @@ number meant as a character is typed after some other one.
 
 `pgup` and `pgdn` page inside the card's body when it holds more than the card
 has room for: a patch or a finished conversation down from where it opened, a
-live one and a live screen up from their bottom. A paged card takes a row of
-its own to say how far from that edge it stands — `↓ 12 more`, at the far end
-of it — and holds still, new output and all, until you page back to where it
-opened, press an arrow, or open it again; an agent stopping at a question takes
+live one and a live screen up from their bottom. A paged card says how far from
+that edge it stands at the far end of its rule — `↓ 12 more` — and holds still,
+new output and all, until you page back to where it opened, press an arrow, or
+open it again; an agent stopping at a question takes
 the card back regardless, because a question is never left behind history. The
 arrows never page: they keep walking the list, card in tow. `ctrl+b` and
 `ctrl+f` are the same two pages for a keyboard with no page keys on it — pgup
