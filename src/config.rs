@@ -1080,7 +1080,7 @@ mod tests {
         // Every agent on one repository reads one file, wherever amx put the
         // tree it works in.
         let repo = a_project();
-        let tree = crate::worktree::create(repo.path(), "fix-login-a1b").unwrap();
+        let tree = crate::worktree::create(repo.path(), "fix-login-a1b", None).unwrap();
         same_file(config_of(&tree.path), &repo.path().join(".amx/config.toml"));
     }
 

@@ -307,6 +307,16 @@ pub struct NewArgs {
     #[arg(long)]
     pub no_worktree: bool,
 
+    /// Cut the worktree from this ref instead of from what is checked out.
+    ///
+    /// Any branch, tag or commit git will resolve. It is what the agent starts
+    /// on and what `diff` compares its work against, so `--base main` sends an
+    /// agent off the branch the work belongs on rather than off whatever the
+    /// last thing you were doing left behind. The `base` key says it for every
+    /// spawn; this flag says it for one.
+    #[arg(long, value_name = "REF")]
+    pub base: Option<String>,
+
     /// Run the task as a shell command rather than give it to an agent.
     ///
     /// The whole of it goes to `sh -c`, so a pipeline or an `&&` is one row,
@@ -631,6 +641,8 @@ mod tests {
             "--dir",
             "/srv/app",
             "--no-worktree",
+            "--base",
+            "main",
             "--agent",
             "claude",
             "--",
@@ -648,6 +660,7 @@ mod tests {
         assert_eq!(args.name.as_deref(), Some("importer"));
         assert_eq!(args.dir, Some(PathBuf::from("/srv/app")));
         assert!(args.no_worktree);
+        assert_eq!(args.base.as_deref(), Some("main"));
         assert_eq!(
             args.agent.and_then(|named| named.command).as_deref(),
             Some("claude")

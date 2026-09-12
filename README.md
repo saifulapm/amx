@@ -85,6 +85,7 @@ runs after it.
 ```sh
 amx new "fix the login bug"            # in a repository: its own worktree
 amx new --no-worktree "run the tests"  # in this directory, as it is
+amx new --base main "add the export"   # a tree cut from a ref of your choosing
 amx new --name importer "port it"      # an id you chose
 amx new --dir /srv/app "tail the log"  # somewhere other than here
 amx rename importer auth               # what the wall calls it, afterwards
@@ -1027,6 +1028,14 @@ rather than only what it has not.
 `.amx/` is kept out of the repository's status through `.git/info/exclude`, so
 nothing about this shows up in a diff of yours. `--no-worktree` runs the agent
 in the directory as it is, and `worktrees = false` makes that the default.
+
+`--base <ref>` cuts the tree from somewhere else instead: any branch, tag or
+commit git will resolve, so an agent starts on the branch its work belongs on
+rather than on whatever you last left checked out. `base = "main"` says the
+same for every spawn, and the flag beats the key for one. What is recorded is
+the commit the ref resolved to, which is what `diff` goes on comparing against
+after the branch itself has moved. A ref this repository does not know refuses
+the spawn before anything is made.
 
 ## Driving amx from a program
 

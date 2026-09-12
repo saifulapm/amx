@@ -537,6 +537,103 @@ fn new_gives_an_agent_its_own_worktree_in_a_repository() {
     assert_eq!(meta["dir"], worktree.to_string_lossy().as_ref());
 }
 
+/// git in a repository the harness made, with none of the developer's own
+/// configuration behind it.
+fn git(repo: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("running git");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim_end().to_string()
+}
+
+#[test]
+fn new_cuts_the_tree_from_the_ref_it_was_given() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let repo = amx.a_repo();
+    let first = git(&repo, &["rev-parse", "HEAD"]);
+    git(&repo, &["branch", "release"]);
+    std::fs::write(repo.join("README.md"), "after\n").expect("a second version");
+    git(&repo, &["commit", "-am", "second"]);
+
+    let typed = id_of(&new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--base",
+            "release",
+            "--agent",
+            &mock,
+            "fix the login bug",
+        ],
+    ));
+
+    let meta = amx.meta(&typed);
+    assert_eq!(meta["base"], first, "the commit the ref resolved to");
+    let worktree = Path::new(meta["worktree"].as_str().expect("a worktree"));
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("README.md")).unwrap(),
+        "before\n",
+        "the work of the ref, and not what HEAD has since become"
+    );
+
+    // And the key, which says it for every spawn instead of for one.
+    amx.config("base = \"release\"\n");
+    let held = id_of(&new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            &mock,
+            "port the importer",
+        ],
+    ));
+    assert_eq!(amx.meta(&held)["base"], first);
+}
+
+#[test]
+fn new_refuses_a_base_that_names_no_commit_before_anything_is_made() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let repo = amx.a_repo();
+
+    let refused = new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--base",
+            "release",
+            "--agent",
+            &mock,
+            "fix the login bug",
+        ],
+    );
+
+    assert_eq!(refused.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("release"), "the ref that was typed: {said}");
+    assert!(!repo.join(".amx").exists(), "and no tree was cut");
+    assert!(
+        !amx.state_root().exists() || amx.state_root().read_dir().unwrap().next().is_none(),
+        "nor an id minted for it"
+    );
+}
+
 #[test]
 fn new_runs_in_the_directory_as_it_is_when_asked() {
     let amx = Harness::new();

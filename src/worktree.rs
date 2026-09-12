@@ -2,17 +2,17 @@
 //!
 //! An agent gets its own worktree by default: `<repo>/.amx/worktrees/<id>` on
 //! branch `amx/<id>`, cut from the commit that was checked out when it
-//! started. Two consequences that shape the rest of amx: several agents can
-//! work in one repository without treading on each other, and `diff` has
-//! something exact to compare against — the recorded base commit, not whatever
-//! HEAD has since become.
+//! started, or from whatever ref `--base` names instead. Two consequences
+//! that shape the rest of amx: several agents can work in one repository
+//! without treading on each other, and `diff` has something exact to compare
+//! against — the recorded base commit, not whatever HEAD has since become.
 //!
 //! The worktrees live inside the repository so they are easy to find, and are
 //! kept out of its status through `.git/info/exclude` rather than
 //! `.gitignore`: the ignore is amx's business and does not belong in a file
 //! the repository's own commits carry.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -100,10 +100,17 @@ pub fn is_amx_tree(path: &Path) -> bool {
             .is_some_and(|holds| holds.ends_with(WORKTREES))
 }
 
-/// Cut a tree for `id` from the repository's current commit.
-pub fn create(repo: &Path, id: &str) -> Result<Worktree> {
-    let base = git(repo, &["rev-parse", "HEAD"])
-        .context("this repository has no commit to cut a worktree from yet")?;
+/// Cut a tree for `id` from the commit `from` names, or from the repository's
+/// current commit when it names nothing.
+///
+/// The ref is resolved before anything is made, so a name this repository does
+/// not know is a refusal rather than a tree on the wrong commit.
+pub fn create(repo: &Path, id: &str, from: Option<&str>) -> Result<Worktree> {
+    let base = match from {
+        Some(named) => commit_of(repo, named)?,
+        None => git(repo, &["rev-parse", "HEAD"])
+            .context("this repository has no commit to cut a worktree from yet")?,
+    };
     ensure_excluded(repo)?;
 
     let path = path_for(repo, id);
@@ -121,6 +128,22 @@ pub fn create(repo: &Path, id: &str) -> Result<Worktree> {
     )?;
 
     Ok(Worktree { path, branch, base })
+}
+
+/// The commit a ref names, whatever kind of ref it is: a branch, a tag, a
+/// remote-tracking name, or a commit written out.
+///
+/// `^{commit}` is what makes a tag answer with the commit it points at rather
+/// than with the tag object, and `--verify` is what makes a name git cannot
+/// resolve a failure rather than the word itself handed back. git's own
+/// sentence about it says nothing a person typing a branch name needs, so the
+/// refusal is amx's own and names what was typed.
+fn commit_of(repo: &Path, named: &str) -> Result<String> {
+    git(
+        repo,
+        &["rev-parse", "--verify", &format!("{named}^{{commit}}")],
+    )
+    .map_err(|_| anyhow!("{named} is no commit to cut a worktree from"))
 }
 
 /// Whether the tree holds work that no commit has: changes to tracked files,
@@ -429,7 +452,7 @@ mod tests {
         let repo = a_repo();
         let head = setup(repo.path(), &["rev-parse", "HEAD"]);
 
-        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
         assert_eq!(tree.base, head);
         assert_eq!(tree.branch, "amx/fix-login-a1b");
         assert_eq!(tree.path, repo.path().join(".amx/worktrees/fix-login-a1b"));
@@ -445,9 +468,59 @@ mod tests {
     }
 
     #[test]
+    fn worktree_is_cut_from_the_ref_it_was_given() {
+        // Whatever kind of ref it is: a branch, a tag and a commit written out
+        // are three spellings of one commit, and the tree holds that commit's
+        // work rather than whatever HEAD has become.
+        let repo = a_repo();
+        let first = setup(repo.path(), &["rev-parse", "HEAD"]);
+        setup(repo.path(), &["tag", "v1"]);
+        setup(repo.path(), &["branch", "release"]);
+        std::fs::write(repo.path().join("README.md"), "after\n").unwrap();
+        setup(repo.path(), &["commit", "-am", "second"]);
+
+        for (id, named) in [
+            ("fix-login-a1b", "release"),
+            ("fix-login-a2b", "v1"),
+            ("fix-login-a3b", &first[..8]),
+        ] {
+            let tree = create(repo.path(), id, Some(named)).unwrap();
+            assert_eq!(tree.base, first, "cut from {named}");
+            assert_eq!(
+                std::fs::read_to_string(tree.path.join("README.md")).unwrap(),
+                "before\n",
+                "the work of the commit {named} names, not of HEAD"
+            );
+        }
+    }
+
+    #[test]
+    fn worktree_refuses_a_ref_that_is_no_commit_before_anything_is_made() {
+        let repo = a_repo();
+
+        let refused = create(repo.path(), "fix-login-a1b", Some("release")).unwrap_err();
+        let said = format!("{refused:#}");
+        assert!(said.contains("release"), "the ref that was typed: {said}");
+        assert!(said.contains("no commit"), "{said}");
+        assert!(
+            !repo.path().join(".amx").exists(),
+            "and no tree was cut for it"
+        );
+        assert_eq!(
+            setup(repo.path(), &["branch", "--list", "amx/fix-login-a1b"]),
+            "",
+            "nor a branch"
+        );
+
+        // A ref git resolves to something that is not a commit is no base
+        // either: `^{commit}` is what asks that question of it.
+        assert!(create(repo.path(), "fix-login-a1b", Some("HEAD:README.md")).is_err());
+    }
+
+    #[test]
     fn worktree_knows_the_repository_it_belongs_to() {
         let repo = a_repo();
-        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
 
         assert_eq!(
             std::fs::canonicalize(main_repo(&tree.path).unwrap()).unwrap(),
@@ -464,7 +537,7 @@ mod tests {
     #[test]
     fn worktree_names_its_repository_after_the_directory_has_gone() {
         let repo = a_repo();
-        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
         std::fs::remove_dir_all(&tree.path).unwrap();
 
         assert!(
@@ -485,7 +558,7 @@ mod tests {
     #[test]
     fn worktree_records_the_base_even_after_the_repository_moves_on() {
         let repo = a_repo();
-        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
 
         std::fs::write(repo.path().join("README.md"), "after\n").unwrap();
         setup(repo.path(), &["commit", "-am", "second"]);
@@ -500,7 +573,7 @@ mod tests {
     #[test]
     fn worktree_keeps_itself_out_of_the_repositorys_status() {
         let repo = a_repo();
-        create(repo.path(), "fix-login-a1b").unwrap();
+        create(repo.path(), "fix-login-a1b", None).unwrap();
         assert_eq!(
             setup(repo.path(), &["status", "--porcelain"]),
             "",
@@ -515,7 +588,7 @@ mod tests {
         );
 
         // A second tree must not write the line again.
-        create(repo.path(), "port-importer-c3d").unwrap();
+        create(repo.path(), "port-importer-c3d", None).unwrap();
         let exclude = std::fs::read_to_string(repo.path().join(".git/info/exclude")).unwrap();
         assert_eq!(exclude.matches(EXCLUDE_LINE).count(), 1, "{exclude}");
     }
@@ -523,7 +596,7 @@ mod tests {
     #[test]
     fn worktree_diff_shows_a_file_git_has_never_heard_of() {
         let repo = a_repo();
-        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
 
         std::fs::write(tree.path.join("login.rs"), "fn login() {}\n").unwrap();
         std::fs::write(tree.path.join("README.md"), "after\n").unwrap();
@@ -540,7 +613,7 @@ mod tests {
     #[test]
     fn worktree_diff_is_against_the_base_and_not_the_agents_own_head() {
         let repo = a_repo();
-        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
 
         std::fs::write(tree.path.join("login.rs"), "fn login() {}\n").unwrap();
         setup(&tree.path, &["add", "login.rs"]);
@@ -556,7 +629,7 @@ mod tests {
     #[test]
     fn clibatch_diff_stat_answers_with_the_shape_of_the_work() {
         let repo = a_repo();
-        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
 
         std::fs::write(tree.path.join("login.rs"), "fn login() {}\n").unwrap();
         std::fs::write(tree.path.join("README.md"), "after\n").unwrap();
@@ -600,7 +673,7 @@ mod tests {
         // `.git/info/attributes`, which is the copy no attribute source can be
         // pointed away from.
         let repo = a_repo();
-        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
 
         let traps = TempDir::new().unwrap();
         let ran = traps.path().join("ran");
@@ -661,7 +734,7 @@ mod tests {
     #[test]
     fn worktree_refuses_to_remove_work_no_commit_holds() {
         let repo = a_repo();
-        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
         std::fs::write(tree.path.join("login.rs"), "fn login() {}\n").unwrap();
 
         assert!(is_dirty(&tree.path).unwrap());
@@ -676,7 +749,7 @@ mod tests {
     #[test]
     fn worktree_removes_a_tree_whose_work_is_committed_and_leaves_the_branch() {
         let repo = a_repo();
-        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
         std::fs::write(tree.path.join("login.rs"), "fn login() {}\n").unwrap();
         setup(&tree.path, &["add", "login.rs"]);
         setup(&tree.path, &["commit", "-m", "the agent's own commit"]);
@@ -696,7 +769,7 @@ mod tests {
     #[test]
     fn worktree_removing_one_that_is_already_gone_is_not_a_failure() {
         let repo = a_repo();
-        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
         std::fs::remove_dir_all(&tree.path).unwrap();
 
         remove(repo.path(), &tree.path).unwrap();
@@ -714,7 +787,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         setup(dir.path(), &["init", "-b", "main"]);
 
-        let refused = create(dir.path(), "fix-login-a1b").unwrap_err();
+        let refused = create(dir.path(), "fix-login-a1b", None).unwrap_err();
         let said = format!("{refused:#}");
         assert!(said.contains("commit"), "{said}");
     }
@@ -722,14 +795,14 @@ mod tests {
     #[test]
     fn worktree_refuses_a_second_tree_for_the_same_agent() {
         let repo = a_repo();
-        create(repo.path(), "fix-login-a1b").unwrap();
-        assert!(create(repo.path(), "fix-login-a1b").is_err());
+        create(repo.path(), "fix-login-a1b", None).unwrap();
+        assert!(create(repo.path(), "fix-login-a1b", None).is_err());
     }
 
     #[test]
     fn worktree_knows_a_tree_it_made_from_any_other_directory() {
         let repo = a_repo();
-        let tree = create(repo.path(), "fix-login-a1b").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
         assert!(is_amx_tree(&tree.path), "{}", tree.path.display());
         assert!(is_amx_tree(Path::new("/src/app/.amx/worktrees/port-c3d")));
 

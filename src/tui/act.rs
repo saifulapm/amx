@@ -1412,6 +1412,7 @@ pub fn start(root: &Path, config: &Config, line: &str, under: Option<&Path>) -> 
         name: None,
         dir: None,
         no_worktree: false,
+        base: None,
         exec: turned.exec,
         agent: named.then_some(dials),
         vendor_args,

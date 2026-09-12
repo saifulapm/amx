@@ -488,6 +488,17 @@ fn launched(args: &NewArgs, launch: &Launch, id: &str, trust: bool) -> Vec<Strin
     }
 }
 
+/// What the tree is cut from: the ref this spawn was given, else the one the
+/// config holds, else nothing, which is the commit checked out where `new` was
+/// typed.
+///
+/// The same order every other dial is read in, and for the same reason: the
+/// flag is somebody standing there saying it about this one agent, and the key
+/// is the answer they wrote down once for all of them.
+fn cut_from<'a>(config: &'a Config, args: &'a NewArgs) -> Option<&'a str> {
+    args.base.as_deref().or(config.base.as_deref())
+}
+
 /// A worktree of its own, when the agent is being sent into a repository and
 /// nobody has said not to.
 ///
@@ -510,7 +521,7 @@ fn cut_worktree(
     let Some(repo) = worktree::repo_root(dir)? else {
         return Ok(None);
     };
-    Ok(Some(worktree::create(&repo, id)?))
+    Ok(Some(worktree::create(&repo, id, cut_from(config, args))?))
 }
 
 /// Write the vendor's own trust store for the tree amx has just cut, so that
@@ -590,6 +601,7 @@ mod tests {
             name: None,
             dir: None,
             no_worktree: false,
+            base: None,
             exec: false,
             agent: Some(AgentArgs {
                 command: agent.map(str::to_string),
@@ -609,6 +621,7 @@ mod tests {
             name: None,
             dir: None,
             no_worktree: false,
+            base: None,
             exec: true,
             agent: None,
             vendor_args: Vec::new(),
@@ -1023,6 +1036,33 @@ mod tests {
         assert!(
             cut_worktree(nowhere, "port-it-b2c", &config, &spawn(None, [None; 3])).is_err(),
             "where an agent is asked for one and there is nowhere to cut it"
+        );
+    }
+
+    #[test]
+    fn the_tree_is_cut_from_the_flag_then_the_key_then_what_is_checked_out() {
+        let held = Config {
+            base: Some("main".to_string()),
+            ..Config::default()
+        };
+        let mut args = spawn(None, [None; 3]);
+
+        assert_eq!(
+            cut_from(&Config::default(), &args),
+            None,
+            "nothing said is the commit the command was typed on"
+        );
+        assert_eq!(
+            cut_from(&held, &args),
+            Some("main"),
+            "the key, for all of them"
+        );
+
+        args.base = Some("release-2".to_string());
+        assert_eq!(
+            cut_from(&held, &args),
+            Some("release-2"),
+            "and the flag, for this one"
         );
     }
 
