@@ -38,6 +38,24 @@ fn started(amx: &Harness, id: &str, scenario: &str, args: &[&str]) {
     );
 }
 
+/// git in a repository the harness made, with none of the developer's own
+/// configuration behind it.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("running git");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim_end().to_string()
+}
+
 /// The kinds one agent's lines carry, in the order the stream printed them.
 ///
 /// Reading them out of the columns is the point: a merged stream that does not
@@ -116,6 +134,51 @@ fn clibatch_diff_stat_summarises_the_work_instead_of_printing_it() {
     assert!(
         !summary.contains("+fn login() {}"),
         "and it is a summary, not the patch: {summary}"
+    );
+}
+
+#[test]
+fn diff_is_taken_from_the_last_commit_the_base_and_the_tree_share() {
+    // The agent rebased its commit onto the release line, which the commit its
+    // tree was cut from is not on. Measured from that commit the answer would
+    // carry its work backwards -- the file it added deleted, the line it
+    // changed changed back -- and read as the agent's.
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    git(&repo, &["branch", "release"]);
+    std::fs::write(repo.join("README.md"), "after\n").expect("a second version");
+    std::fs::write(repo.join("shipped.rs"), "fn shipped() {}\n").expect("a shipped file");
+    git(&repo, &["add", "shipped.rs"]);
+    git(&repo, &["commit", "-am", "second"]);
+    let cut_from = git(&repo, &["rev-parse", "HEAD"]);
+
+    let tree = with_a_worktree(&amx, "fix-login-a1b", &repo, "works-without-end");
+    std::fs::write(tree.join("login.rs"), "fn login() {}\n").expect("the agent's file");
+    git(&tree, &["add", "login.rs"]);
+    git(&tree, &["commit", "-m", "the agent's own commit"]);
+    git(&tree, &["rebase", "--onto", "release", "main"]);
+
+    let out = amx.amx(&["diff", "fix-login-a1b"]);
+    assert!(
+        out.status.success(),
+        "amx diff: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let patch = String::from_utf8_lossy(&out.stdout);
+    assert!(patch.contains("+fn login() {}"), "{patch}");
+    assert!(
+        !patch.contains("shipped.rs") && !patch.contains("-after"),
+        "and not the base's own work, undone: {patch}"
+    );
+
+    let out = amx.amx(&["diff", "fix-login-a1b", "--stat"]);
+    let summary = String::from_utf8_lossy(&out.stdout);
+    assert!(summary.contains("1 file changed"), "{summary}");
+
+    assert_eq!(
+        amx.meta("fix-login-a1b")["base"],
+        cut_from,
+        "and the record still holds the commit the tree was cut from"
     );
 }
 

@@ -2,10 +2,12 @@
 //! or with `--stat` the shape of it: a file per line and the totals under them,
 //! which is what somebody wants when the question is how far along it is.
 //!
-//! The comparison is against the commit the tree was cut from, recorded when it
-//! was cut. Not against the repository's HEAD, which has moved on since, and not
-//! against the agent's own HEAD, which would hide everything it has committed —
-//! what a person wants to see is the whole of this agent's work.
+//! The work is measured from the commit the tree was cut from, recorded when it
+//! was cut. Not from the repository's HEAD, which has moved on since, and not
+//! from the agent's own HEAD, which would hide everything it has committed —
+//! what a person wants to see is the whole of this agent's work. A tree whose
+//! history has moved off that commit is measured from the last commit the two
+//! still share, which is [`worktree::diff`]'s own business.
 //!
 //! An agent working directly in a directory has nothing to compare, and a tree
 //! somebody has removed is not there to read. Both are ordinary answers to an

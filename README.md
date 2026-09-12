@@ -820,7 +820,7 @@ amx answer <id> 1,3    # a question that takes several: check these two
 amx answer <id> --text "keep the old importer"   # the row it offers for words
 amx answer <id> 1 --note "and keep the subtitle" # a note beside the choice
 amx interrupt <id>     # stop the turn it is in the middle of
-amx diff <id>          # its worktree against the commit it was cut from
+amx diff <id>          # its worktree, measured from where its work began
 amx diff <id> --stat   # the shape of it: a file per line, and the totals
 amx events --follow    # every agent's log, merged
 amx events <id> --json # one object per event, payloads whole
@@ -1026,6 +1026,14 @@ checked out at the time. That commit is recorded, which is what lets `amx diff`
 show the whole of an agent's work, including what it has already committed,
 rather than only what it has not.
 
+What `diff` measures from is the last commit that one and the tree's own history
+still share. While the agent is working on top of its base that is the recorded
+commit itself. Once it has rebased onto a line the commit is not on — or onto a
+base somebody rewrote underneath it — it is the point the two parted, so `diff`
+and `diff --stat` show the agent's work rather than the base's own undone: a
+file it added deleted, a line it changed changed back. The record keeps the
+commit the tree was cut from either way.
+
 `.amx/` is kept out of the repository's status through `.git/info/exclude`, so
 nothing about this shows up in a diff of yours. `--no-worktree` runs the agent
 in the directory as it is, and `worktrees = false` makes that the default.
@@ -1034,9 +1042,9 @@ in the directory as it is, and `worktrees = false` makes that the default.
 commit git will resolve, so an agent starts on the branch its work belongs on
 rather than on whatever you last left checked out. `base = "main"` says the
 same for every spawn, and the flag beats the key for one. What is recorded is
-the commit the ref resolved to, which is what `diff` goes on comparing against
-after the branch itself has moved. A ref this repository does not know refuses
-the spawn before anything is made.
+the commit the ref resolved to, and it stays that commit after the branch itself
+has moved. A ref this repository does not know refuses the spawn before anything
+is made.
 
 `--with-changes` takes the half hour you had already spent with it. What git is
 tracking moves into the tree, staged or not, and this directory is left as its

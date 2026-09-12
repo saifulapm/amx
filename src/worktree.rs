@@ -4,8 +4,8 @@
 //! branch `amx/<id>`, cut from the commit that was checked out when it
 //! started, or from whatever ref `--base` names instead. Two consequences
 //! that shape the rest of amx: several agents can work in one repository
-//! without treading on each other, and `diff` has something exact to compare
-//! against — the recorded base commit, not whatever HEAD has since become.
+//! without treading on each other, and `diff` has something exact to measure
+//! from — the base the tree was cut from, not whatever HEAD has since become.
 //!
 //! The worktrees live inside the repository so they are easy to find, and are
 //! kept out of its status through `.git/info/exclude` rather than
@@ -28,8 +28,9 @@ const EXCLUDE_LINE: &str = "/.amx/";
 pub struct Worktree {
     pub path: PathBuf,
     pub branch: String,
-    /// The commit it was cut from. What `diff` compares against, so it is
-    /// recorded at creation and never re-read.
+    /// The commit it was cut from, recorded at creation and never re-read.
+    /// What `diff` measures from, through the last commit it and the tree's own
+    /// history still share.
     pub base: String,
 }
 
@@ -367,9 +368,13 @@ pub fn delete_branch(repo: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
-/// Write what the agent has done to its tree, against the commit it started
+/// Write what the agent has done to its tree, since the commit it started
 /// from, while it is still doing it. With `stat`, the shape of that work
 /// rather than the work: a file per line and the totals under them.
+///
+/// Measured from [`work_began_at`] rather than from `base` itself, so a tree
+/// whose history has moved off the recorded commit still reads as the agent's
+/// work.
 ///
 /// The `add -N` is the trick: an agent's first act is usually a *new* file,
 /// and `git diff` alone says nothing about a file git has never heard of.
@@ -383,6 +388,7 @@ pub fn delete_branch(repo: &Path, branch: &str) -> Result<()> {
 pub fn diff(worktree: &Path, base: &str, stat: bool, out: &mut impl Write) -> Result<()> {
     let safe = nothing_to_run(worktree);
     git_with(worktree, &safe, &["add", "-N", "."])?;
+    let from = work_began_at(worktree, base, &safe);
 
     // `--no-ext-diff` and `--no-textconv` are the same refusal as the
     // overrides, in the form git offers for the two of them it has a flag for.
@@ -390,7 +396,7 @@ pub fn diff(worktree: &Path, base: &str, stat: bool, out: &mut impl Write) -> Re
     if stat {
         args.push("--stat");
     }
-    args.push(base);
+    args.push(&from);
 
     // A day's work is a long patch, so it is copied out as git writes it
     // rather than held whole.
@@ -405,11 +411,36 @@ pub fn diff(worktree: &Path, base: &str, stat: bool, out: &mut impl Write) -> Re
     let finished = child.wait_with_output().context("waiting for `git diff`")?;
     if !finished.status.success() {
         bail!(
-            "git diff {base}: {}",
+            "git diff {from}: {}",
             String::from_utf8_lossy(&finished.stderr).trim()
         );
     }
     Ok(())
+}
+
+/// Where the agent's work began: the last commit its tree and the base it was
+/// cut from still share.
+///
+/// The base is written down when the tree is cut and never re-read, and a tree
+/// whose history has since moved off that commit — rebased onto another line,
+/// or onto a base somebody rewrote underneath it — is not a tree that commit
+/// describes any more. Measured from it, an answer then carries the base's own
+/// work backwards: a file it added deleted, a line it changed changed back,
+/// none of it the agent's. The commit the two histories still share is where
+/// the agent's work actually starts, and for the tree that has stayed on top of
+/// its base — which is most of them — that commit is the base itself.
+///
+/// Read every time rather than recorded, because it is the tree's own history
+/// that moves and the record is of the commit it was cut from.
+///
+/// A base this tree shares no history with is measured from as it was recorded,
+/// which leaves what git says about it to git: an answer taken from somewhere
+/// else instead would be a patch that looks right and is not.
+fn work_began_at(worktree: &Path, base: &str, safe: &[String]) -> String {
+    match git_with(worktree, safe, &["merge-base", base, "HEAD"]) {
+        Ok(shared) if !shared.is_empty() => shared,
+        _ => base.to_string(),
+    }
 }
 
 /// Keep amx's own directory out of the repository's status.
@@ -793,6 +824,55 @@ mod tests {
             diff.contains("+fn login() {}"),
             "committed work is still work done since the base: {diff}"
         );
+    }
+
+    #[test]
+    fn worktree_diff_is_taken_from_the_last_commit_the_base_and_the_tree_share() {
+        // The tree was cut from `second`, and the agent's commit then went on
+        // the release line, which `second` is not on. Measured from `second`
+        // itself the answer would carry that commit's own work backwards -- the
+        // file it added deleted, the line it changed changed back -- all of it
+        // reading as the agent's.
+        let repo = a_repo();
+        setup(repo.path(), &["branch", "release"]);
+        std::fs::write(repo.path().join("README.md"), "after\n").unwrap();
+        std::fs::write(repo.path().join("shipped.rs"), "fn shipped() {}\n").unwrap();
+        setup(repo.path(), &["add", "shipped.rs"]);
+        setup(repo.path(), &["commit", "-am", "second"]);
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+
+        std::fs::write(tree.path.join("login.rs"), "fn login() {}\n").unwrap();
+        setup(&tree.path, &["add", "login.rs"]);
+        setup(&tree.path, &["commit", "-m", "the agent's own commit"]);
+        setup(&tree.path, &["rebase", "--onto", "release", "main"]);
+
+        let diff = shown(&tree.path, &tree.base, false);
+        assert!(diff.contains("+fn login() {}"), "the agent's work: {diff}");
+        assert!(
+            !diff.contains("shipped.rs") && !diff.contains("-after"),
+            "and not the base's own, undone: {diff}"
+        );
+        assert_eq!(
+            tree.base,
+            setup(repo.path(), &["rev-parse", "HEAD"]),
+            "the record still holds the commit the tree was cut from"
+        );
+
+        let summary = shown(&tree.path, &tree.base, true);
+        assert!(summary.contains("1 file changed"), "{summary}");
+    }
+
+    #[test]
+    fn worktree_diff_says_what_git_says_about_a_base_that_is_not_in_the_tree() {
+        // Nothing shares a commit with a base this tree has never held, and an
+        // answer measured from somewhere else instead would be a patch that
+        // looks right and is not.
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+
+        let mut out = Vec::new();
+        let refused = diff(&tree.path, "0f1e2d3", false, &mut out).unwrap_err();
+        assert!(format!("{refused:#}").contains("0f1e2d3"), "{refused:#}");
     }
 
     #[test]
