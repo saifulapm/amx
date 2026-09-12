@@ -452,6 +452,10 @@ fn start(
         );
     }
 
+    // What the file says this harness runs with, and then amx's own id over
+    // the top of it: a table that set the id would have this agent reporting
+    // under somebody else's name.
+    spawn::harness_env(&mut env, config, &launch.agent);
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
     spawn::write_boot_env(agent_dir, &env)?;
     spawn::write_handoff(
@@ -942,6 +946,7 @@ mod tests {
                         HarnessConfig {
                             models: models.iter().map(|model| model.to_string()).collect(),
                             args: Vec::new(),
+                            env: BTreeMap::new(),
                         },
                     )
                 })
@@ -958,6 +963,7 @@ mod tests {
                 HarnessConfig {
                     models: Vec::new(),
                     args: args.iter().map(|arg| arg.to_string()).collect(),
+                    env: BTreeMap::new(),
                 },
             )]),
             ..Config::default()
@@ -1127,6 +1133,7 @@ mod tests {
                 HarnessConfig {
                     models: vec!["openai/gpt-5".to_string()],
                     args: vec!["--approve".to_string()],
+                    env: BTreeMap::new(),
                 },
             )]),
             ..Config::default()

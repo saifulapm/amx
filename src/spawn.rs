@@ -122,6 +122,31 @@ fn marks_a_session(name: &str) -> bool {
     session_markers().any(|marker| marker == name)
 }
 
+/// Lay what the file says this harness runs with over the environment the
+/// spawn snapshotted.
+///
+/// The harness the agent command names, read off the program the way the
+/// harness's own arguments are: two accounts of one vendor, or a proxy in
+/// front of it, are a table of the harness rather than a wrapper script in
+/// front of every spawn. A pair replaces whatever the snapshot carried under
+/// that name — it is the newer instruction, and a person who wrote it down
+/// meant the agents amx starts to run with it.
+///
+/// Called before amx's own variables go in, never after: an agent whose
+/// [`crate::hook::ID_ENV`] a table changed would file its events under
+/// somebody else.
+///
+/// A program with no table of its own changes nothing.
+pub fn harness_env(
+    env: &mut BTreeMap<String, String>,
+    config: &crate::config::Config,
+    agent: &str,
+) {
+    for (name, value) in config.harness(registry::program(agent)).env {
+        env.insert(name, value);
+    }
+}
+
 /// Where a spawn's three dials are pointed, each of them a value the vendor
 /// would take or [`registry::DEFAULT`] for one nobody turned.
 ///
@@ -1539,5 +1564,65 @@ mod tests {
         assert_eq!(env.get(crate::hook::ID_ENV).unwrap(), "port-it-b2c");
         assert_eq!(env.get("AMX_BIN").unwrap(), "/usr/local/bin/amx");
         assert_eq!(env.get("PATH").unwrap(), "/usr/bin", "and the rest stands");
+    }
+
+    /// A config whose only harness table is `name`'s, holding `env`.
+    fn told(name: &str, env: &[(&str, &str)]) -> crate::config::Config {
+        crate::config::Config {
+            harnesses: BTreeMap::from([(
+                name.to_string(),
+                crate::config::HarnessConfig {
+                    models: Vec::new(),
+                    args: Vec::new(),
+                    env: vars(env).into_iter().collect(),
+                },
+            )]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn harness_env_lays_the_tables_pairs_over_the_snapshot() {
+        let name = registry::entries()[0].name;
+        let config = told(
+            name,
+            &[("SOME_CONFIG_DIR", "/srv/work"), ("SOME_PROXY", "on")],
+        );
+
+        let mut env = env_snapshot(vars(&[("PATH", "/usr/bin"), ("SOME_PROXY", "off")]));
+        harness_env(&mut env, &config, &format!("{name} --add-dir /tmp"));
+
+        assert_eq!(env.get("SOME_CONFIG_DIR").unwrap(), "/srv/work");
+        assert_eq!(
+            env.get("SOME_PROXY").unwrap(),
+            "on",
+            "a pair replaces what the snapshot carried under that name"
+        );
+        assert_eq!(env.get("PATH").unwrap(), "/usr/bin", "and the rest stands");
+    }
+
+    #[test]
+    fn harness_env_is_laid_under_the_variables_amx_puts_in_itself() {
+        // An agent whose id a table changed would file its events under
+        // somebody else, so the table goes in first and amx's own over it.
+        let name = registry::entries()[0].name;
+        let config = told(name, &[(crate::hook::ID_ENV, "somebody-else")]);
+
+        let mut env = env_snapshot(vars(&[("PATH", "/usr/bin")]));
+        harness_env(&mut env, &config, name);
+        env.insert(crate::hook::ID_ENV.to_string(), "port-it-b2c".to_string());
+
+        assert_eq!(env.get(crate::hook::ID_ENV).unwrap(), "port-it-b2c");
+    }
+
+    #[test]
+    fn harness_env_for_a_program_with_no_table_changes_nothing() {
+        let config = told(registry::entries()[0].name, &[("SOME_PROXY", "on")]);
+
+        let snapshot = env_snapshot(vars(&[("PATH", "/usr/bin")]));
+        let mut env = snapshot.clone();
+        harness_env(&mut env, &config, "some-other-agent --flag");
+
+        assert_eq!(env, snapshot);
     }
 }
