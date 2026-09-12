@@ -206,7 +206,7 @@ fn carrying(config: &Config, agent: String) -> String {
 }
 
 /// Run the verb against the machine.
-pub fn from_env(config: &Config, args: &NewArgs) -> Result<i32> {
+pub fn from_env(_config: &Config, args: &NewArgs) -> Result<i32> {
     let root = paths::state_root()?;
     // Spelled out from the root before anything reads it: the record holds
     // it, the cap is counted by it, and `--dir ../scratch` is a spelling no
@@ -215,6 +215,15 @@ pub fn from_env(config: &Config, args: &NewArgs) -> Result<i32> {
         Some(dir) => paths::anchored(dir)?,
         None => std::env::current_dir().context("no working directory")?,
     };
+    // The project the agent will run in has the last word on every key, the
+    // way the view's own spawns read it: which agent a project is written
+    // for, what furnishes its trees and what they are cut from are its own
+    // file's to say, laid over the person's a key at a time. `--dir` sends an
+    // agent into another project, so it is that project's file and not the
+    // one beside wherever the command was typed. A project file amx cannot
+    // use leaves the person's standing under it, as everywhere else.
+    let (config, _) = crate::config::for_dir(&dir);
+    let config = &config;
     let env = spawn::env_snapshot(std::env::vars());
     let mut out = std::io::stdout().lock();
     let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());

@@ -991,6 +991,44 @@ setup = ["printf '%s\\n' \"$AMX_ID\" \"$AMX_WORKTREE\" \"$AMX_REPO\" \"$AMX_AGEN
 }
 
 #[test]
+fn new_reads_the_project_file_for_the_tree_it_furnishes() {
+    // The keys are laid over the person's file a key at a time, and a project
+    // says them in its own file: a spawn sent into that project furnishes the
+    // tree that file asks for, whatever the person's file says. Found on
+    // 2026-09-13 dogfooding, where `new` read the project's file for the cap
+    // alone and cut a bare tree beside a config asking for a furnished one.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let repo = amx.a_repo();
+    std::fs::write(repo.join(".env"), "TOKEN=hunter2\n").expect("what git is right not to carry");
+    std::fs::create_dir_all(repo.join(".amx")).expect("the project's own directory");
+    std::fs::write(
+        repo.join(".amx/config.toml"),
+        "copy = [\".env\"]\nsetup = [\"touch furnished\"]\n",
+    )
+    .expect("the project's config");
+
+    let id = id_of(&new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            &mock,
+            "fix the login bug",
+        ],
+    ));
+
+    let worktree = repo.join(".amx/worktrees").join(&id);
+    assert_eq!(
+        std::fs::read_to_string(worktree.join(".env")).expect("the project's file was read"),
+        "TOKEN=hunter2\n"
+    );
+    assert!(worktree.join("furnished").exists(), "and its setup ran");
+}
+
+#[test]
 fn new_says_what_the_config_names_and_the_repository_does_not_have() {
     let amx = Harness::new();
     let mock = amx.mock();
