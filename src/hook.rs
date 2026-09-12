@@ -169,16 +169,48 @@ pub fn exited(root: &Path, id: &str, code: i32, config: &Config) -> i32 {
     exit::OK
 }
 
+/// Whether this payload is some other conversation's.
+///
+/// A pane's `AMX_ID` is inherited by everything started in it, so a claude the
+/// agent launches from its own shell reports under the agent's id: its start
+/// would put its session on the record, and its stop would end the agent's
+/// turn. [`NESTED_ENV`] is the answer for a claude that knows it is nested;
+/// this is the answer for one that does not. Every payload carries the session
+/// it is about, and the record carries the agent's own, so the two disagreeing
+/// says whose it is.
+///
+/// Except when the agent's session is the thing that changed. A resume, a
+/// clear and a compact each start a session and the vendor says which it was
+/// — `source` on a `SessionStart`, per code.claude.com/docs/en/hooks — so only
+/// a startup under a session the record does not carry is another process's. A
+/// payload with no source at all is the agent's own, whatever else it says.
+///
+/// A record with no session has nothing to disagree with: an adopted agent
+/// learns its session from the reports it gets, and a record amx wrote before
+/// the vendor spoke has not heard one yet.
+fn anothers(meta: &Meta, payload: &Value) -> bool {
+    let Some(session) = payload["session_id"].as_str().filter(|it| !it.is_empty()) else {
+        return false;
+    };
+    let Some(ours) = meta.session.as_deref() else {
+        return false;
+    };
+    session != ours && (moment(payload) != Some(Moment::Started) || payload["source"] == "startup")
+}
+
 /// Fold one payload into an agent's record, under the writer's lock, and set
 /// the timer over the pane of a turn that has ended.
 pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> Result<()> {
     let writer = agent.writer()?;
+    let mut meta = agent.meta()?;
+    if anothers(&meta, payload) {
+        return Ok(());
+    }
     writer.append(&crate::store::Event::new(
         kind(payload).unwrap_or("unknown"),
         payload.clone(),
     ))?;
 
-    let mut meta = agent.meta()?;
     let mut state = writer.state()?;
     let before = meta.clone();
     let notice = apply(payload, &mut state, &mut meta);
@@ -2339,6 +2371,106 @@ mod tests {
             exit::OK
         );
         assert_eq!(adopted.state().unwrap().result, None);
+    }
+
+    #[test]
+    fn hook_a_payload_naming_another_session_is_another_processs() {
+        let mut ours = meta();
+        ours.session = Some("abc-123".to_string());
+
+        for payload in [
+            json!({ "session_id": "nested", "hook_event_name": "Stop", "last_assistant_message": "done" }),
+            json!({ "session_id": "nested", "hook_event_name": "SessionStart", "source": "startup" }),
+        ] {
+            assert!(anothers(&ours, &payload), "{payload}");
+        }
+
+        for payload in [
+            // The agent's own session changing, which is the vendor's word and
+            // not amx's to second-guess.
+            json!({ "session_id": "def-456", "hook_event_name": "SessionStart", "source": "resume" }),
+            json!({ "session_id": "def-456", "hook_event_name": "SessionStart", "source": "clear" }),
+            json!({ "session_id": "def-456", "hook_event_name": "SessionStart", "source": "compact" }),
+            // A start that says nothing about where it came from is the
+            // agent's own: a vendor amx has not measured is not a nested one.
+            json!({ "session_id": "def-456", "hook_event_name": "SessionStart" }),
+            // Nothing that says otherwise leaves the payload the agent's, the
+            // way it always was.
+            json!({ "hook_event_name": "Stop", "last_assistant_message": "done" }),
+            json!({ "session_id": "", "hook_event_name": "Stop" }),
+            // A subagent reports under the agent's own session, and `apply`
+            // has always been what leaves its work off the state.
+            json!({ "session_id": "abc-123", "hook_event_name": "Stop", "agent_id": "sub-1" }),
+        ] {
+            assert!(!anothers(&ours, &payload), "{payload}");
+        }
+
+        // A record with no session of its own has nothing to compare against.
+        assert!(!anothers(
+            &meta(),
+            &json!({ "session_id": "nested", "hook_event_name": "Stop" })
+        ));
+    }
+
+    #[test]
+    fn hook_a_nested_claude_reporting_under_the_agents_id_is_dropped_whole() {
+        // A claude the agent launches from its own shell inherits `AMX_ID`, so
+        // its reports arrive saying they are this agent's. They are not: its
+        // start would put its session on the record and its stop would end the
+        // agent's turn. The session it stamps on every payload is what says so.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(
+            root.path(),
+            &Meta {
+                session: Some("abc-123".to_string()),
+                ..meta()
+            },
+        )
+        .unwrap();
+        let before = agent.state().unwrap();
+
+        for payload in [
+            r#"{"session_id":"nested","hook_event_name":"Stop","last_assistant_message":"the nested one"}"#,
+            r#"{"session_id":"nested","hook_event_name":"SessionStart","source":"startup","transcript_path":"/t/nested.jsonl"}"#,
+        ] {
+            assert_eq!(
+                run(
+                    Some(agent.id()),
+                    root.path(),
+                    &mut payload.as_bytes(),
+                    &mut std::io::sink(),
+                    &quiet(),
+                ),
+                exit::OK,
+                "{payload}"
+            );
+        }
+        // The log as well as the state: a reader takes turn ends off the log,
+        // so a stop written down and then not folded in would still end the
+        // turn.
+        assert!(agent.events().unwrap().is_empty(), "nothing is written down");
+        assert_eq!(agent.state().unwrap(), before, "and nothing has moved");
+        let meta = agent.meta().unwrap();
+        assert_eq!(meta.session.as_deref(), Some("abc-123"));
+        assert_eq!(meta.transcript, None);
+
+        // The agent's own report under the same id is recorded as ever.
+        assert_eq!(
+            run(
+                Some(agent.id()),
+                root.path(),
+                &mut r#"{"session_id":"abc-123","hook_event_name":"Stop","last_assistant_message":"I fixed the login bug."}"#
+                    .as_bytes(),
+                &mut std::io::sink(),
+                &quiet(),
+            ),
+            exit::OK
+        );
+        assert_eq!(
+            agent.state().unwrap().result.as_deref(),
+            Some("I fixed the login bug.")
+        );
+        assert_eq!(agent.events().unwrap().len(), 1);
     }
 
     #[test]
