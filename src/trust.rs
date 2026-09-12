@@ -336,8 +336,7 @@ pub fn forget_tree(store: &Path, tree: &Path, now: u64) -> Result<bool> {
     // Looked at before the lock is asked for, the way seeding does: the usual
     // stop has nothing to remove, and standing in the vendor's way to find
     // that out would be a poor trade.
-    let looked = read(store)?;
-    if !names(looked.as_ref(), &key) {
+    if !read(store)?.is_some_and(|looked| names(&looked, &key)) {
         return Ok(false);
     }
 
@@ -350,11 +349,12 @@ pub fn forget_tree(store: &Path, tree: &Path, now: u64) -> Result<bool> {
 
     // Read again inside the lock: what was looked at a moment ago is what the
     // vendor may have been in the middle of replacing.
-    let existing = read(store)?;
-    if !names(existing.as_ref(), &key) {
+    let Some(mut document) = read(store)? else {
+        return Ok(false);
+    };
+    if !names(&document, &key) {
         return Ok(false);
     }
-    let mut document = existing.clone().unwrap_or_else(|| json!({}));
     document[PROJECTS]
         .as_object_mut()
         .expect("an object")
@@ -370,20 +370,17 @@ pub fn forget_tree(store: &Path, tree: &Path, now: u64) -> Result<bool> {
         );
     }
 
-    back_up(store, now, existing.is_some())?;
+    back_up(store, now, true)?;
     write(store, &document)?;
     Ok(true)
 }
 
-/// Whether a store amx has read carries a project entry under `key`. A store
-/// that is not there, or is not shaped the way the vendor writes one, names
-/// nothing.
-fn names(store: Option<&Value>, key: &str) -> bool {
-    store.is_some_and(|store| {
-        store[PROJECTS]
-            .as_object()
-            .is_some_and(|projects| projects.contains_key(key))
-    })
+/// Whether a store amx has read carries a project entry under `key`. One that
+/// is not shaped the way the vendor writes one names nothing.
+fn names(store: &Value, key: &str) -> bool {
+    store[PROJECTS]
+        .as_object()
+        .is_some_and(|projects| projects.contains_key(key))
 }
 
 /// Whether the vendor would let an agent into `tree` as things stand, either
