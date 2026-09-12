@@ -213,19 +213,23 @@ fn dispositions(
 /// in. Only the tree's own key, and only for the vendor whose store amx wrote
 /// in the first place.
 ///
-/// The store is looked for in the environment `stop` was typed in, which is
-/// where the vendor would have looked for it. Failing to write it is worth
-/// saying and not worth stopping for: the agent is already ended, and what is
-/// left is a key in a file nobody is about to read.
+/// The store is looked for in the environment `stop` was typed in with the
+/// harness table's pairs laid over it, which is where the vendor looked for it
+/// when the agent ran. Failing to write it is worth saying and not worth
+/// stopping for: the agent is already ended, and what is left is a key in a
+/// file nobody is about to read.
 ///
 /// Shared with the view's own forget, which takes a finished agent's tree
 /// without going through the ladder above: a tree that goes takes its key
 /// whichever door it went through.
 pub(crate) fn forget(meta: &Meta, tree: &Path, out: &mut impl Write) -> Result<()> {
-    if !trust::writes_a_store(meta.agent.as_deref().unwrap_or_default()) {
+    let agent = meta.agent.as_deref().unwrap_or_default();
+    if !trust::writes_a_store(agent) {
         return Ok(());
     }
-    let Some(store) = trust::store_in(&spawn::env_snapshot(std::env::vars())) else {
+    let mut env = spawn::env_snapshot(std::env::vars());
+    spawn::harness_env(&mut env, &crate::config::for_dir(&meta.dir).0, agent);
+    let Some(store) = trust::store_in(&env) else {
         return Ok(());
     };
     match trust::forget_tree(&store, tree, store::now()) {

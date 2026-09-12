@@ -649,6 +649,52 @@ fn every_pane_a_harness_starts_carries_what_its_table_sets() {
 }
 
 #[test]
+fn trust_is_seeded_in_the_store_the_harness_table_points_the_agent_at() {
+    // A table that moves claude's config directory moves the store the agent
+    // reads its trust from, so that is the store the seeding has to write:
+    // one written under the home would answer a screen the agent never reads.
+    let amx = Harness::new();
+    let work = amx.home().join("work");
+    std::fs::create_dir_all(&work).expect("the other config directory");
+    amx.config("trust = true\n[claude.env]\nCLAUDE_CONFIG_DIR = \"~/work\"\n");
+    let repo = amx.a_repo();
+
+    let id = id_of(&new_as_claude(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            "claude",
+            "fix the login bug",
+        ],
+    ));
+
+    let tree = amx.meta(&id)["worktree"]
+        .as_str()
+        .expect("a worktree")
+        .to_string();
+    let key = std::fs::canonicalize(&tree)
+        .expect("the tree")
+        .to_string_lossy()
+        .into_owned();
+    let store: Value = serde_json::from_str(
+        &std::fs::read_to_string(work.join(".claude.json")).expect("the store the agent reads"),
+    )
+    .expect("json");
+    assert_eq!(
+        store["projects"][&key]["hasTrustDialogAccepted"],
+        serde_json::json!(true),
+        "the tree is trusted where the agent will look: {store}"
+    );
+    assert!(
+        !amx.home().join(".claude.json").exists(),
+        "and nothing was written into a store the agent never reads"
+    );
+}
+
+#[test]
 fn boot_strips_a_marker_sitting_in_the_tmux_servers_own_environment() {
     // A snapshot taken when `new` runs only ever strips a vendor's markers
     // from what travels in the handoff. It says nothing about what the pane

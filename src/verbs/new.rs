@@ -421,6 +421,13 @@ fn start(
     problems: &mut impl Write,
     to_terminal: bool,
 ) -> Result<()> {
+    // What the file says this harness runs with, before anything reads the
+    // environment on the agent's behalf: the trust store is looked up in it,
+    // and a table pointing claude at another config directory has to point
+    // the seeding at the same one, or the agent meets the screen the seeding
+    // was meant to answer.
+    spawn::harness_env(&mut env, config, &launch.agent);
+
     let cut = cut_worktree(dir, id, config, args)?;
     let tree = cut.as_ref().map(|(_, tree)| tree);
     let cwd = tree
@@ -452,10 +459,9 @@ fn start(
         );
     }
 
-    // What the file says this harness runs with, and then amx's own id over
-    // the top of it: a table that set the id would have this agent reporting
-    // under somebody else's name.
-    spawn::harness_env(&mut env, config, &launch.agent);
+    // amx's own id over the top of the harness's pairs laid above: a table
+    // that set the id would have this agent reporting under somebody else's
+    // name.
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
     spawn::write_boot_env(agent_dir, &env)?;
     spawn::write_handoff(

@@ -622,7 +622,13 @@ pub fn gather(config: &Config) -> Result<Findings> {
     // names no tree it can be sure of either, and `new` is where that file is
     // refused by name.
     let store = trust::writes_a_store(&config.agent)
-        .then(|| trust::store_in(&spawn::env_snapshot(std::env::vars())))
+        .then(|| {
+            // With the harness table's pairs laid over this environment, since
+            // that is the environment its agents read the store in.
+            let mut env = spawn::env_snapshot(std::env::vars());
+            spawn::harness_env(&mut env, config, &config.agent);
+            trust::store_in(&env)
+        })
         .flatten();
     let stale = store
         .as_deref()
