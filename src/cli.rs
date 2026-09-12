@@ -681,6 +681,7 @@ mod tests {
             (&["amx", "diff", "fix-a1b", "--stat"], "diff"),
             (&["amx", "resume", "fix-a1b"], "resume"),
             (&["amx", "resume", "--all"], "resume"),
+            (&["amx", "resume", "fix-a1b", "carry on"], "resume"),
             (&["amx", "fork", "fix-a1b"], "fork"),
             (&["amx", "fork", "fix-a1b", "try it with sqlite"], "fork"),
             (&["amx", "adopt"], "adopt"),
@@ -987,6 +988,7 @@ mod tests {
             &["amx", "stop", "fix-a1b", "--worktree", "burn"],
             &["amx", "resume"],
             &["amx", "resume", "fix-a1b", "--all"],
+            &["amx", "resume", "--all", "carry on"],
             // There is no conversation to copy without one to copy it from,
             // and an empty turn is not a turn.
             &["amx", "fork"],
