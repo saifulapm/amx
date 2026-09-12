@@ -1744,6 +1744,9 @@ fn forgetting(root: &Path, view: &View) -> Result<Forgotten> {
         }
         let repo = worktree::main_repo(tree).unwrap_or_else(|_| tree.clone());
         worktree::remove(&repo, tree)?;
+        // And its key in the vendor's store with it, the way `stop` takes it:
+        // the line has one row to say what happened, and that row is below.
+        verbs::stop::forget(&view.meta, tree, &mut std::io::sink())?;
     }
 
     agent.remove()?;

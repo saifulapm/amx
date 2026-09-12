@@ -217,7 +217,11 @@ fn dispositions(
 /// where the vendor would have looked for it. Failing to write it is worth
 /// saying and not worth stopping for: the agent is already ended, and what is
 /// left is a key in a file nobody is about to read.
-fn forget(meta: &Meta, tree: &Path, out: &mut impl Write) -> Result<()> {
+///
+/// Shared with the view's own forget, which takes a finished agent's tree
+/// without going through the ladder above: a tree that goes takes its key
+/// whichever door it went through.
+pub(crate) fn forget(meta: &Meta, tree: &Path, out: &mut impl Write) -> Result<()> {
     if !trust::writes_a_store(meta.agent.as_deref().unwrap_or_default()) {
         return Ok(());
     }
