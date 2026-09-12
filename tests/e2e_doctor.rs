@@ -412,3 +412,64 @@ fn doctor_says_when_the_extension_on_disk_is_not_the_one_this_amx_ships() {
     let (ok, _) = check_line(&doctor(&amx), "hooks");
     assert!(ok);
 }
+
+#[test]
+fn doctor_forgets_the_trees_claudes_store_still_names_after_they_went() {
+    // claude writes a project key for every directory it is ever started in,
+    // and amx cuts a tree per agent: the store grew a key per agent that had
+    // ever run, and nothing took one back out when the tree went.
+    let amx = Harness::new();
+    amx.config("agent = \"claude\"\n");
+    let store = amx.home().join(".claude.json");
+    let gone = "/src/app/.amx/worktrees/fix-login-a1b";
+    let theirs = "/src/app";
+    std::fs::write(
+        &store,
+        serde_json::to_string_pretty(&json!({
+            "numStartups": 412,
+            "projects": {
+                theirs: { "hasTrustDialogAccepted": true },
+                gone: { "hasTrustDialogAccepted": true },
+            },
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let printed = doctor(&amx);
+    let (ok, line) = check_line(&printed, "store");
+    assert!(!ok, "a tree that is gone is still named: {printed}");
+    assert!(line.contains("one tree"), "how many: {line}");
+    assert!(
+        line.contains(&store.display().to_string()),
+        "and which file: {line}"
+    );
+
+    // The hooks question is the one repair that needs asking, and this is not
+    // it: the key goes whether or not anybody wants their settings written.
+    let out = amx.amx_with_input(&["doctor", "--fix"], "n\n");
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        printed.contains(&format!("forgot 1 tree from {}", store.display())),
+        "it says what it did: {printed}"
+    );
+
+    let after: Value = serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+    assert_eq!(after["projects"].get(gone), None, "{after}");
+    assert!(
+        after["projects"].get(theirs).is_some(),
+        "the repository's entry is the person's own consent: {after}"
+    );
+    assert_eq!(after["numStartups"], 412, "{after}");
+
+    let copies: Vec<String> = std::fs::read_dir(amx.home())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".claude.json.amx-backup-"))
+        .collect();
+    assert_eq!(copies.len(), 1, "the file as it was, once: {copies:?}");
+
+    let printed = doctor(&amx);
+    let (ok, line) = check_line(&printed, "store");
+    assert!(ok, "nothing of amx's is left in it: {line}");
+}
