@@ -92,7 +92,21 @@ pub enum Command {
     },
 
     /// Send a message to a working or idle agent.
-    Send { id: String, text: String },
+    Send {
+        id: String,
+
+        /// What to put in front of it.
+        #[arg(required_unless_present = "file", conflicts_with = "file")]
+        text: Option<String>,
+
+        /// Read the message from this file instead, or from stdin for `-`.
+        ///
+        /// The same door `amx new --file` opens, for the follow-up too long to
+        /// quote into a shell: the file is read whole, its last newline taken
+        /// off, and what is left is the message.
+        #[arg(long, value_name = "PATH")]
+        file: Option<PathBuf>,
+    },
 
     /// Answer a waiting agent's question: y, n, 1-9, 1,3, enter, esc, or words.
     ///
@@ -474,17 +488,22 @@ fn a_task(text: &str) -> Result<String, String> {
     }
 }
 
-/// A task read out of a file, or off stdin where the path is `-`.
+/// A task or a message read out of a file, or off stdin where the path is `-`.
 ///
 /// The whole file, with one trailing newline taken off: every editor writes
-/// that newline and nobody means it as part of the task, and a `$(cat brief)`
+/// that newline and nobody means it as part of the text, and a `$(cat brief)`
 /// in a shell would have dropped it too. Nothing else is trimmed — what is
 /// inside a task is the person's business here as much as it is when it is
 /// typed.
 ///
 /// Then through [`a_task`], because a file with nothing in it says exactly what
 /// an empty argument says: an agent with nothing to do, holding a pane while it
-/// does nothing.
+/// does nothing. `send` refuses an empty file for the same reason — a message
+/// of no words is a turn spent on nothing.
+///
+/// One reader for both verbs, so `--file` means the same thing wherever it is
+/// typed: `amx new --file brief.md` and `amx send <id> --file notes.md` read
+/// the file the same way and refuse the same files.
 pub fn text_of(path: &Path) -> Result<String, String> {
     let text = match path == Path::new("-") {
         true => std::io::read_to_string(std::io::stdin()).map_err(|e| format!("stdin: {e}")),
@@ -627,6 +646,8 @@ mod tests {
             (&["amx", "status", "fix-a1b"], "status"),
             (&["amx", "status", "fix-a1b", "--json"], "status"),
             (&["amx", "send", "fix-a1b", "carry on"], "send"),
+            (&["amx", "send", "fix-a1b", "--file", "notes.md"], "send"),
+            (&["amx", "send", "fix-a1b", "--file", "-"], "send"),
             (&["amx", "answer", "fix-a1b", "y"], "answer"),
             (&["amx", "answer", "fix-a1b", "1,3"], "answer"),
             (
@@ -1021,6 +1042,38 @@ mod tests {
         for argv in [
             &["amx", "new", "port the importer", "--file", "brief.md"][..],
             &["amx", "new", "--file"],
+        ] {
+            assert_eq!(code(argv), exit::USAGE, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn clibatch_a_message_is_typed_or_read_from_a_file_and_never_both() {
+        let cli = parse(&["amx", "send", "fix-login-a1b", "--file", "notes.md"]).unwrap();
+        let Some(Command::Send { id, text, file }) = cli.command else {
+            panic!("expected send");
+        };
+        assert_eq!(id, "fix-login-a1b");
+        assert_eq!(text, None, "the file is where the message is");
+        assert_eq!(file.as_deref(), Some(Path::new("notes.md")));
+
+        let cli = parse(&["amx", "send", "fix-login-a1b", "--file", "-"]).unwrap();
+        let Some(Command::Send { file, .. }) = cli.command else {
+            panic!("expected send");
+        };
+        assert_eq!(file.as_deref(), Some(Path::new("-")));
+
+        // A message typed beside a file is two messages, which is none.
+        for argv in [
+            &[
+                "amx",
+                "send",
+                "fix-login-a1b",
+                "carry on",
+                "--file",
+                "notes.md",
+            ][..],
+            &["amx", "send", "fix-login-a1b", "--file"],
         ] {
             assert_eq!(code(argv), exit::USAGE, "{argv:?}");
         }

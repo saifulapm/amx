@@ -92,7 +92,9 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
             dir.as_deref().or(cli.dir.as_deref()),
         )),
         Some(cli::Command::Status { id, json }) => finish(verbs::status::from_env(id, *json)),
-        Some(cli::Command::Send { id, text }) => finish(verbs::send::from_env(id, text)),
+        Some(cli::Command::Send { id, text, file }) => {
+            finish(verbs::send::from_env(id, text.as_deref(), file.as_deref()))
+        }
         Some(cli::Command::Answer { id, key }) => finish(verbs::answer::from_env(id, key)),
         Some(cli::Command::Interrupt { id }) => finish(verbs::interrupt::from_env(id)),
         Some(cli::Command::Rename { id, name }) => finish(verbs::rename::from_env(id, name)),

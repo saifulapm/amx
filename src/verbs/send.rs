@@ -69,11 +69,26 @@ const POLL: Duration = Duration::from_millis(50);
 const LOOK: Duration = Duration::from_millis(250);
 
 /// Run the verb against the machine.
-pub fn from_env(id: &str, text: &str) -> Result<i32> {
+///
+/// The message is read before anything else happens, because it is the whole
+/// point of the call: a file amx cannot read is a command line that never
+/// reached an agent, and saying so costs nothing and touches no record.
+pub fn from_env(id: &str, text: Option<&str>, file: Option<&Path>) -> Result<i32> {
+    let text = match file {
+        Some(path) => match crate::cli::text_of(path) {
+            Ok(text) => text,
+            Err(refusal) => {
+                warn!("amx send: {refusal}");
+                return Ok(exit::USAGE);
+            }
+        },
+        None => text.unwrap_or_default().to_string(),
+    };
+
     let root = paths::state_root()?;
     let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let mut out = std::io::stdout().lock();
-    run(&root, id, text, to_terminal, &mut out)
+    run(&root, id, &text, to_terminal, &mut out)
 }
 
 /// The verb, with the state directory named.

@@ -824,6 +824,7 @@ amx attach <id>        # hand this terminal to its pane
 amx logs <id>          # the last of what its pane has printed, without attaching
 amx logs <id> --lines 40
 amx send <id> "and now the linter"
+amx send <id> --file notes.md   # the message, read out of a file; `-` reads stdin
 amx answer <id> y      # the keys a prompt reads: y, n, 1-9, enter, esc
 amx answer <id> 1,3    # a question that takes several: check these two
 amx answer <id> --text "keep the old importer"   # the row it offers for words
@@ -843,6 +844,12 @@ link is the directory it leads to, so `amx ls --dir .` answers the same from
 either name. Nothing is written down and nothing is hidden anywhere else — it
 is one reading of one question, and an agent is in two of them when the
 directories nest.
+
+`send --file` is the same door `amx new --file` opens, for the follow-up too
+long to quote into a shell: the file is read whole, the newline your editor
+left at the end comes off, and what is left is the message. `--file -` reads
+stdin. There is no message on the command line beside it, and a file with
+nothing in it is no message at all and is refused as one.
 
 `send` refuses while an agent is waiting on a question. Text typed at a
 permission prompt answers the prompt, and that is not something you can take

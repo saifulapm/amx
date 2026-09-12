@@ -156,6 +156,11 @@ instead, and amx has already answered that for a worktree it cut. If an agent
 seems stuck at its very first turn, `amx doctor` names any that never got past
 the vendor's own setup.
 
+Where the follow-up is too long to be an argument, write it to a file and send
+that: `amx send <id> --file notes.md`, or `--file -` to pipe it in. The file is
+read whole and its last newline comes off, so what the agent is given is the
+text rather than an instruction to go and read it.
+
 Spawn, drive, end it:
 
 ```sh

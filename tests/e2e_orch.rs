@@ -186,6 +186,84 @@ fn send_confirms_that_the_agent_took_the_message_and_result_waits_for_its_answer
 }
 
 #[test]
+fn send_takes_the_text_from_a_file() {
+    // The follow-up too long to quote into a shell: the file is the message,
+    // and what reaches the pane is its text rather than an instruction to go
+    // and read it.
+    let amx = Harness::new();
+    amx.play("fix-login-a1b", "takes-a-message");
+    amx.until_state("fix-login-a1b", "idle");
+
+    let notes = amx.home().join("notes.md");
+    std::fs::write(&notes, "and now the linter\n").expect("notes to send");
+    let named = notes.to_string_lossy().into_owned();
+
+    let out = amx.amx(&["send", "fix-login-a1b", "--file", &named]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        amx.capture(&amx.pane_of("fix-login-a1b"))
+            .contains("and now the linter"),
+        "the file's text is what the agent was given"
+    );
+
+    let out = result(&amx, "fix-login-a1b");
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "the linter is clean");
+}
+
+#[test]
+fn send_takes_the_text_from_stdin_for_a_bare_dash() {
+    let amx = Harness::new();
+    amx.play("fix-login-a1b", "takes-a-message");
+    amx.until_state("fix-login-a1b", "idle");
+
+    let out = amx.amx_with_input(
+        &["send", "fix-login-a1b", "--file", "-"],
+        "and now the linter\n",
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(
+        amx.events("fix-login-a1b")
+            .iter()
+            .find(|event| event["kind"] == "send")
+            .map(|event| event["payload"]["text"].clone()),
+        Some(json!("and now the linter")),
+        "read whole, with the last newline off"
+    );
+}
+
+#[test]
+fn send_refuses_a_file_it_cannot_read_before_anything_reaches_the_pane() {
+    let amx = Harness::new();
+    amx.play("fix-login-a1b", "takes-a-message");
+    amx.until_state("fix-login-a1b", "idle");
+
+    let empty = amx.home().join("empty.md");
+    std::fs::write(&empty, "\n").expect("a file with nothing in it");
+    let named = empty.to_string_lossy().into_owned();
+    let missing = amx.home().join("nowhere.md").to_string_lossy().into_owned();
+
+    // A file with nothing in it is an empty message, and a file that is not
+    // there is named, because the name is what was mistyped.
+    let out = amx.amx(&["send", "fix-login-a1b", "--file", &named]);
+    assert_eq!(code(&out), 64, "{}", stderr(&out));
+
+    let out = amx.amx(&["send", "fix-login-a1b", "--file", &missing]);
+    assert_eq!(code(&out), 64, "{}", stderr(&out));
+    assert!(stderr(&out).contains("nowhere.md"), "{}", stderr(&out));
+
+    // And a message typed beside a file is two messages, which is none.
+    let out = amx.amx(&["send", "fix-login-a1b", "carry on", "--file", &named]);
+    assert_eq!(code(&out), 64, "{}", stderr(&out));
+
+    assert_eq!(
+        amx.state("fix-login-a1b")["seq"].as_u64().unwrap_or(0),
+        0,
+        "and a refused send is not a send"
+    );
+}
+
+#[test]
 fn send_says_so_when_the_text_goes_nowhere() {
     let amx = Harness::new();
     amx.play("fix-login-a1b", "happy-turn");
