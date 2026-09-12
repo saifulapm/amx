@@ -19,5 +19,6 @@ pub mod send;
 pub mod status;
 pub mod statusline;
 pub mod stop;
+pub mod sweep;
 pub mod uninstall;
 pub mod wait;

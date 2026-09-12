@@ -46,6 +46,7 @@ impl Cli {
             Attach { .. } => "attach",
             Logs { .. } => "logs",
             Stop(_) => "stop",
+            Sweep { .. } => "sweep",
             Diff { .. } => "diff",
             Resume { .. } => "resume",
             Fork { .. } => "fork",
@@ -211,6 +212,20 @@ pub enum Command {
 
     /// Stop an agent and decide what happens to its worktree and branch.
     Stop(StopArgs),
+
+    /// Clear away the finished agents whose work has landed.
+    ///
+    /// An agent whose pull request merged or closed, or whose branch somebody
+    /// merged themselves, is holding a record, a worktree and a branch that are
+    /// a copy of what the repository already has. This lists them with the
+    /// reason each is on the list, asks once, and then takes all three.
+    ///
+    /// A worktree holding work no commit has is kept, and its record with it.
+    Sweep {
+        /// Take them without asking.
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Show the agent's worktree against the commit it started from.
     Diff {
@@ -756,6 +771,8 @@ mod tests {
             (&["amx", "stop", "fix-a1b"], "stop"),
             (&["amx", "stop", "fix-a1b", "--force"], "stop"),
             (&["amx", "stop", "fix-a1b", "--delete"], "stop"),
+            (&["amx", "sweep"], "sweep"),
+            (&["amx", "sweep", "--force"], "sweep"),
             (&["amx", "diff", "fix-a1b"], "diff"),
             (&["amx", "diff", "fix-a1b", "--stat"], "diff"),
             (&["amx", "resume", "fix-a1b"], "resume"),

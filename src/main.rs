@@ -125,6 +125,7 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Boot { id }) => finish(spawn::boot_from_env(id)),
         Some(cli::Command::Park { id }) => finish(verbs::park::from_env(id)),
         Some(cli::Command::Stop(args)) => finish(verbs::stop::from_env(args)),
+        Some(cli::Command::Sweep { force }) => finish(verbs::sweep::from_env(*force)),
         Some(cli::Command::Doctor { fix }) => finish(verbs::doctor::from_env(config, *fix)),
         Some(cli::Command::Uninstall) => finish(verbs::uninstall::from_env()),
         Some(cli::Command::Completion { shell }) => finish(completion(*shell)),

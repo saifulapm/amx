@@ -181,7 +181,6 @@ pub fn checked_out(repo: &Path, branch: &str) -> Result<bool> {
 /// person pulling the branch and merging it themselves — and afterwards the
 /// branch and the tree are a copy of history nobody needs. A branch git does
 /// not have is in nothing, which is what `--list` answering with nothing says.
-#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 pub fn is_merged(repo: &Path, branch: &str) -> Result<bool> {
     let main = main_branch(repo);
     Ok(!git(repo, &["branch", "--merged", &main, "--list", branch])?.is_empty())
@@ -194,7 +193,11 @@ pub fn is_merged(repo: &Path, branch: &str) -> Result<bool> {
 /// Then `main` where there is one, then `master`. A repository with neither is
 /// one git has no main line to be asked about, and the question above hands
 /// that back as the failure git called it.
-fn main_branch(repo: &Path) -> String {
+///
+/// Public because a sweep says why it is about to take an agent, and the name
+/// is half of that sentence: `merged into main` is a reason somebody can check,
+/// and `merged` on its own is amx asking to be trusted.
+pub fn main_branch(repo: &Path) -> String {
     if let Ok(named) = git(
         repo,
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
