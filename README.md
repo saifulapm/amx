@@ -1401,6 +1401,9 @@ its own, named after the command it runs:
 models = ["opus", "sonnet"]
 args = ["--add-dir", "/srv/shared"]
 
+[claude.env]
+CLAUDE_CONFIG_DIR = "~/.claude-work"
+
 [pi]
 models = ["anthropic/claude-opus-4-1", "openai/gpt-5"]
 args = ["--approve"]
@@ -1413,9 +1416,19 @@ itself offers. `args` is what every agent that harness runs carries on its
 argv, however that agent was started, and a dial amx would have set stands down
 for a flag written here the way it does for one written into `agent`.
 
+`env` is a sub-table of the harness table, and it is what every agent that
+harness runs has in its environment: the environment you typed the command in
+with these pairs laid over it. A second account to run agents under, or a proxy
+in front of the vendor, is a variable rather than a flag, and this is where to
+write one down instead of keeping a wrapper script on the PATH. Values are
+literal, except that a `~` at the front of one is spelled out, since there is
+no shell between the file and the pane to do it. amx's own `AMX_ID`, `AMX_BIN`,
+`AMX_DIR` and `AMX_AGENT_DIR` go in over the top of whatever is written here:
+an agent whose id a file changed would report under somebody else's name.
+
 A table naming a harness amx has no entry for is warned about by name and the
-rest of the file still applies. A table that sets neither list says nothing,
-so naming a harness costs nothing until you write one of them.
+rest of the file still applies. A table that sets none of the three says
+nothing, so naming a harness costs nothing until you write one of them.
 
 The repository ships the same file with every key explained and the defaults
 written out, at `assets/config.toml`: copy it and change what you want changed,
@@ -1430,7 +1443,7 @@ A project can keep the same file at `<repo>/.amx/config.toml`, and it is laid
 over yours a key at a time. A project file holding one line has changed its
 mind about one key: everything else is still what you set. A harness table is
 one key like any other, so a project that names one has said what that harness
-is there, both lists, rather than edited the table you keep. Whatever amx cannot
+is there, all three of them, rather than edited the table you keep. Whatever amx cannot
 use in it — an unknown key, a key of the wrong type, a file that will not open
 — is a warning naming that file, and the file under it still stands.
 

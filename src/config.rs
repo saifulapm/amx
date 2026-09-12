@@ -37,8 +37,8 @@ pub const KNOWN_KEYS: [&str; 16] = [
 /// What one harness says about itself, in a table of its own named after the
 /// program it runs.
 ///
-/// Two lists, both empty until somebody writes one, and a harness that sets
-/// neither is a harness the file has said nothing about.
+/// Two lists and a table, all empty until somebody writes one, and a harness
+/// that sets none of them is a harness the file has said nothing about.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct HarnessConfig {
@@ -48,6 +48,19 @@ pub struct HarnessConfig {
     /// What every agent this harness runs carries on its argv, however it was
     /// picked.
     pub args: Vec<String>,
+    /// What every agent this harness runs has in its environment, laid over
+    /// the one the spawn was typed in.
+    ///
+    /// Two accounts of one vendor, or a proxy in front of it, are settled by a
+    /// variable rather than by a flag, and without this they are settled by a
+    /// wrapper script somebody has to keep on the PATH. Values are literal,
+    /// with `~` at the front of one spelled out: there is no shell between
+    /// this file and the pane to do it, and a path is what somebody writing
+    /// one means.
+    ///
+    /// A sub-table, `[claude.env]`, so it reads the way the harness table it
+    /// belongs to reads.
+    pub env: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -221,25 +234,48 @@ fn unknown_keys(table: &toml::Table) -> Vec<String> {
 /// What the file's harness tables say, keyed by the program each names.
 ///
 /// A table naming no harness is [`unknown_keys`]' business and is passed over
-/// here. A table setting neither list is not kept, so a file that names a
-/// harness without saying anything about it says nothing at all — which is
-/// what lets the shipped file show every table there is with the lists
-/// commented out.
+/// here. A table setting nothing is not kept, so a file that names a harness
+/// without saying anything about it says nothing at all — which is what lets
+/// the shipped file show every table there is with the lists commented out.
 fn harness_tables(table: &toml::Table) -> Result<BTreeMap<String, HarnessConfig>> {
     let mut harnesses = BTreeMap::new();
     for (name, value) in table.iter().filter(|(_, value)| value.is_table()) {
         if registry::entry(name).is_none() {
             continue;
         }
-        let harness: HarnessConfig = value
+        let mut harness: HarnessConfig = value
             .clone()
             .try_into()
             .with_context(|| format!("in [{name}]"))?;
+        for value in harness.env.values_mut() {
+            *value = spelled_out(value);
+        }
         if harness != HarnessConfig::default() {
             harnesses.insert(name.clone(), harness);
         }
     }
     Ok(harnesses)
+}
+
+/// An env value with `~` at the front of it replaced by the home directory,
+/// which is the one thing about a value that is not literal.
+///
+/// The front alone: a `~` anywhere else in a value is a character somebody
+/// wrote, and `~work` names no home amx can spell. A machine with no home
+/// directory leaves the value as it was typed, because the value somebody
+/// wrote is a better guess than half of it.
+fn spelled_out(value: &str) -> String {
+    let Some(home) = std::env::home_dir() else {
+        return value.to_string();
+    };
+    let path = match value {
+        "~" => home,
+        _ => match value.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => return value.to_string(),
+        },
+    };
+    path.to_string_lossy().into_owned()
 }
 
 /// Drop any dial the configured agent would not take, saying which and why.
@@ -712,6 +748,81 @@ mod tests {
         assert_eq!(harness, HarnessConfig::default());
         assert!(harness.models.is_empty());
         assert!(harness.args.is_empty());
+        assert!(harness.env.is_empty());
+    }
+
+    #[test]
+    fn a_harness_tables_env_is_a_sub_table_of_its_own() {
+        for entry in registry::entries() {
+            let (c, w) = parse(&format!(
+                "[{0}]\nargs = [\"--add-dir\", \"/tmp\"]\n\n[{0}.env]\nSOME_PROXY = \"http://localhost:8080\"\nSOME_TOKEN = \"abc\"\n",
+                entry.name
+            ))
+            .unwrap();
+            assert!(w.is_empty(), "{w:?}");
+            let harness = c.harness(entry.name);
+            assert_eq!(harness.args, ["--add-dir", "/tmp"]);
+            assert_eq!(harness.env.len(), 2, "{:?}", harness.env);
+            assert_eq!(
+                harness.env.get("SOME_PROXY").unwrap(),
+                "http://localhost:8080"
+            );
+            assert_eq!(harness.env.get("SOME_TOKEN").unwrap(), "abc");
+        }
+    }
+
+    #[test]
+    fn a_table_that_sets_only_env_is_kept() {
+        // A table says something the moment it says anything, and an env
+        // table on its own is a person putting one harness somewhere else.
+        let name = registry::entries()[0].name;
+        let (c, w) = parse(&format!("[{name}.env]\nSOME_CONFIG_DIR = \"/srv/work\"\n")).unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.harnesses.len(), 1, "{:?}", c.harnesses);
+        assert_eq!(
+            c.harness(name).env.get("SOME_CONFIG_DIR").unwrap(),
+            "/srv/work"
+        );
+    }
+
+    #[test]
+    fn a_tilde_at_the_front_of_an_env_value_is_spelled_out() {
+        // The one thing that is not literal about a value: a path somebody
+        // writes as `~/...` is the path they mean, and the vendor being
+        // launched reads it as a directory rather than as a shell would.
+        let name = registry::entries()[0].name;
+        let (c, w) = parse(&format!(
+            "[{name}.env]\nUNDER_HOME = \"~/.claude-work\"\nHOME_ITSELF = \"~\"\nNOT_A_PATH = \"~work/x\"\nMID = \"/srv/~/x\"\n",
+        ))
+        .unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        let env = c.harness(name).env;
+        match std::env::home_dir() {
+            Some(home) => {
+                assert_eq!(
+                    env.get("UNDER_HOME").unwrap(),
+                    &home.join(".claude-work").to_string_lossy().into_owned()
+                );
+                assert_eq!(
+                    env.get("HOME_ITSELF").unwrap(),
+                    &home.to_string_lossy().into_owned()
+                );
+            }
+            // No home to spell it with leaves the value as it was typed.
+            None => {
+                assert_eq!(env.get("UNDER_HOME").unwrap(), "~/.claude-work");
+                assert_eq!(env.get("HOME_ITSELF").unwrap(), "~");
+            }
+        }
+        assert_eq!(env.get("NOT_A_PATH").unwrap(), "~work/x", "the front of it");
+        assert_eq!(env.get("MID").unwrap(), "/srv/~/x", "and only the front");
+    }
+
+    #[test]
+    fn an_env_value_that_is_not_a_string_is_an_error_not_a_guess() {
+        let name = registry::entries()[0].name;
+        assert!(parse(&format!("[{name}.env]\nSOME_PORT = 8080\n")).is_err());
+        assert!(parse(&format!("[{name}]\nenv = \"SOME_PORT=8080\"\n")).is_err());
     }
 
     #[test]

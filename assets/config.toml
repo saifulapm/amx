@@ -107,11 +107,20 @@ park_after = 3600
 # agent was started. A dial amx would have set stands down for a flag written
 # here, the same way it stands down for one written into `agent` above.
 #
-# A table that sets neither list says nothing, which is what these two do.
+# env is a sub-table of the harness table, and it is what every agent this
+# harness runs has in its environment, laid over the environment you typed the
+# command in: a second account of one vendor, or a proxy in front of it,
+# without a wrapper script to keep on the PATH. Values are literal, with a `~`
+# at the front of one spelled out, and amx's own AMX_ID, AMX_BIN, AMX_DIR and
+# AMX_AGENT_DIR go in over the top of whatever you write here.
+#
+# A table that sets none of them says nothing, which is what these two do.
 
 [claude]
 # models = ["opus", "sonnet"]
 # args = ["--add-dir", "/srv/shared"]
+# [claude.env]
+# CLAUDE_CONFIG_DIR = "~/.claude-work"
 
 [pi]
 # models = ["anthropic/claude-opus-4-1", "openai/gpt-5"]

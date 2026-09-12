@@ -188,6 +188,7 @@ mod tests {
                 HarnessConfig {
                     models: models.iter().map(|model| model.to_string()).collect(),
                     args: Vec::new(),
+                    env: BTreeMap::new(),
                 },
             )]),
             ..Config::default()

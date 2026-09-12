@@ -3642,6 +3642,7 @@ mod tests {
         let told = |models: &[&str]| HarnessConfig {
             models: models.iter().map(|model| model.to_string()).collect(),
             args: Vec::new(),
+            env: BTreeMap::new(),
         };
         let config = Config {
             agent: "claude --add-dir ..".to_string(),
