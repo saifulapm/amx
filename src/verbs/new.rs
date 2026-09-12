@@ -282,6 +282,14 @@ fn run_aloud(
         }
     };
 
+    // Asked before anything is made, the same as a base git cannot resolve:
+    // `--with-changes` where the last commit already holds all of it is a
+    // command nobody meant, and answering it here leaves no id, no tree and no
+    // install standing behind it.
+    if args.with_changes && !worktree::has_changes_to_carry(dir)? {
+        bail!("--with-changes: nothing in {} to move", dir.display());
+    }
+
     std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
 
     // The cap is the project's own, and the project is the one the agent will
@@ -382,6 +390,13 @@ fn start(
         .unwrap_or_else(|| dir.to_path_buf());
     if let Some((repo, tree)) = &cut {
         furnish_the_tree(config, agent_dir, id, repo, tree, problems, to_terminal)?;
+        // After the furnishing, so that a setup command that fails takes back
+        // a tree with nothing of yours in it. Whether there was anything to
+        // move was settled before the id was minted, and a directory somebody
+        // has committed in since is no longer a spawn to refuse.
+        if args.with_changes {
+            worktree::carry_changes(dir, &tree.path)?;
+        }
         trust_the_tree(
             config,
             &env,
@@ -675,6 +690,7 @@ mod tests {
             dir: None,
             no_worktree: false,
             base: None,
+            with_changes: false,
             exec: false,
             agent: Some(AgentArgs {
                 command: agent.map(str::to_string),
@@ -695,6 +711,7 @@ mod tests {
             dir: None,
             no_worktree: false,
             base: None,
+            with_changes: false,
             exec: true,
             agent: None,
             vendor_args: Vec::new(),

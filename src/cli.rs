@@ -317,6 +317,17 @@ pub struct NewArgs {
     #[arg(long, value_name = "REF")]
     pub base: Option<String>,
 
+    /// Move the uncommitted work here into the agent's tree.
+    ///
+    /// The half hour you had already spent when you thought to start an agent
+    /// on it. What git is tracking goes, staged or not, and this directory is
+    /// left as its last commit had it; a file git has never heard of stays
+    /// where you made it. There has to be a tree to move it into and something
+    /// to move, so it is refused beside `--no-worktree` and `--exec`, and a
+    /// directory with nothing uncommitted in it starts no agent.
+    #[arg(long, conflicts_with_all = ["no_worktree", "exec"])]
+    pub with_changes: bool,
+
     /// Run the task as a shell command rather than give it to an agent.
     ///
     /// The whole of it goes to `sh -c`, so a pipeline or an `&&` is one row,
@@ -661,6 +672,7 @@ mod tests {
         assert_eq!(args.dir, Some(PathBuf::from("/srv/app")));
         assert!(args.no_worktree);
         assert_eq!(args.base.as_deref(), Some("main"));
+        assert!(!args.with_changes);
         assert_eq!(
             args.agent.and_then(|named| named.command).as_deref(),
             Some("claude")
@@ -669,6 +681,24 @@ mod tests {
             args.vendor_args,
             ["--session-id", "abc-123", "--model", "opus"]
         );
+    }
+
+    #[test]
+    fn new_takes_the_uncommitted_work_with_it_only_where_there_is_a_tree_for_it() {
+        let cli = parse(&["amx", "new", "port the importer", "--with-changes"]).unwrap();
+        let Some(Command::New(args)) = cli.command else {
+            panic!("expected new");
+        };
+        assert!(args.with_changes);
+
+        // Both of these say the agent works in the directory as it stands, and
+        // there is nowhere for the work to be moved to.
+        for argv in [
+            &["amx", "new", "port it", "--with-changes", "--no-worktree"][..],
+            &["amx", "new", "--exec", "npm test", "--with-changes"],
+        ] {
+            assert_eq!(code(argv), exit::USAGE, "{argv:?}");
+        }
     }
 
     #[test]

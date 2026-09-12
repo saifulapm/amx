@@ -770,6 +770,76 @@ fn new_refuses_a_spawn_whose_setup_failed_and_leaves_no_tree() {
 }
 
 #[test]
+fn new_moves_the_uncommitted_work_into_the_tree() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let repo = amx.a_repo();
+    std::fs::write(repo.join("README.md"), "after\n").expect("the work already in hand");
+    std::fs::write(repo.join("notes.txt"), "scratch\n").expect("and a file git never heard of");
+
+    let id = id_of(&new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--with-changes",
+            "--agent",
+            &mock,
+            "fix the login bug",
+        ],
+    ));
+
+    let worktree = repo.join(".amx/worktrees").join(&id);
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("README.md")).expect("the tree has the work"),
+        "after\n",
+        "the agent starts on what was in hand rather than on the last commit"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join("README.md")).unwrap(),
+        "before\n",
+        "and the directory it was typed in is left as that commit had it"
+    );
+    assert_eq!(
+        git(&repo, &["status", "--porcelain"]),
+        "?? notes.txt",
+        "with the untracked file still where it was made"
+    );
+}
+
+#[test]
+fn new_refuses_to_move_work_that_is_not_there() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let repo = amx.a_repo();
+
+    let refused = new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--with-changes",
+            "--agent",
+            &mock,
+            "fix the login bug",
+        ],
+    );
+
+    assert_eq!(refused.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("--with-changes"), "{said}");
+    assert!(!repo.join(".amx").exists(), "and no tree was cut");
+    let listed = amx.amx(&["ls", "--json"]);
+    assert_eq!(
+        String::from_utf8_lossy(&listed.stdout).trim(),
+        "[]",
+        "nor an agent started"
+    );
+}
+
+#[test]
 fn new_runs_in_the_directory_as_it_is_when_asked() {
     let amx = Harness::new();
     let mock = amx.mock();

@@ -1413,6 +1413,10 @@ pub fn start(root: &Path, config: &Config, line: &str, under: Option<&Path>) -> 
         dir: None,
         no_worktree: false,
         base: None,
+        // A task line is typed to start an agent, not to hand over what you
+        // were in the middle of: the view has no mark for it and the command
+        // line is where that decision is made.
+        with_changes: false,
         exec: turned.exec,
         agent: named.then_some(dials),
         vendor_args,

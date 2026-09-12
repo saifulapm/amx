@@ -86,6 +86,7 @@ runs after it.
 amx new "fix the login bug"            # in a repository: its own worktree
 amx new --no-worktree "run the tests"  # in this directory, as it is
 amx new --base main "add the export"   # a tree cut from a ref of your choosing
+amx new --with-changes "finish this"   # taking what you have not committed
 amx new --name importer "port it"      # an id you chose
 amx new --dir /srv/app "tail the log"  # somewhere other than here
 amx rename importer auth               # what the wall calls it, afterwards
@@ -1036,6 +1037,14 @@ same for every spawn, and the flag beats the key for one. What is recorded is
 the commit the ref resolved to, which is what `diff` goes on comparing against
 after the branch itself has moved. A ref this repository does not know refuses
 the spawn before anything is made.
+
+`--with-changes` takes the half hour you had already spent with it. What git is
+tracking moves into the tree, staged or not, and this directory is left as its
+last commit had it; a file git has never heard of stays where you made it,
+since a build's output and a scratch note look no different from work. There
+has to be a tree to move the work into and work to move, so it is refused
+beside `--no-worktree` and `--exec`, and a directory with nothing uncommitted
+in it starts no agent at all.
 
 ## Driving amx from a program
 
