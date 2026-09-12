@@ -1,6 +1,7 @@
 {
   "name": "amx",
   "owner": { "name": "Saiful Islam" },
+  "description": "amx's own hooks for Claude Code, so a session it starts reports back to it.",
   "plugins": [
     {
       "name": "amx",
