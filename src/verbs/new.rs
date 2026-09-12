@@ -577,7 +577,10 @@ fn cut_worktree(
     config: &Config,
     args: &NewArgs,
 ) -> Result<Option<(PathBuf, worktree::Worktree)>> {
-    if args.exec || args.no_worktree || !config.worktrees {
+    // The key says what happens when nobody asked for a tree. A request is
+    // somebody asking: there is no working on one without the branch it is
+    // on, so `--pr` is a tree whatever the key says.
+    if args.exec || args.no_worktree || (!config.worktrees && args.pr.is_none()) {
         return Ok(None);
     }
     if !dir.is_dir() {

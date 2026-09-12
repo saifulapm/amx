@@ -1125,7 +1125,10 @@ request the agent is on and `stop` leaves the branch where it is rather than
 deleting work that is under review. The request says what the tree is cut from
 and where it goes, so it is refused beside `--base`, `--with-changes`,
 `--no-worktree` and `--exec`, and a number gh cannot answer about starts no
-agent. GitHub for now: a GitLab checkout is still read, not started on.
+agent. A `worktrees = false` in the config does not stand in its way: the key
+answers for the spawns nobody said anything about, and a request is a branch
+there is no working on without a tree. GitHub for now: a GitLab checkout is
+still read, not started on.
 
 ## Driving amx from a program
 

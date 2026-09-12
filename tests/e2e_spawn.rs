@@ -1157,6 +1157,40 @@ fn new_cuts_the_tree_on_the_head_branch_of_the_request_it_was_given() {
 }
 
 #[test]
+fn new_cuts_the_tree_for_a_request_whatever_the_worktrees_key_says() {
+    // The key answers for the spawns nobody said anything about. A request is
+    // work that lives on a branch, and there is no starting on it without the
+    // tree that branch is checked out in.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let (repo, commit) = a_repo_with_a_request(&amx);
+    a_gh(&amx, &commit);
+    amx.config("worktrees = false\n");
+
+    let id = id_of(&new_with_gh(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--pr",
+            "7",
+            "--agent",
+            &mock,
+            "review the request",
+        ],
+    ));
+
+    let meta = amx.meta(&id);
+    assert_eq!(meta["branch"], "feature", "{meta}");
+    assert_eq!(meta["base"], commit, "{meta}");
+    assert!(
+        meta["worktree"].is_string(),
+        "a tree was cut for it, key or no key: {meta}"
+    );
+}
+
+#[test]
 fn new_refuses_a_request_gh_cannot_answer() {
     let amx = Harness::new();
     let mock = amx.mock();
