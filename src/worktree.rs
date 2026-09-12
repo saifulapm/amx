@@ -131,6 +131,51 @@ pub fn create(repo: &Path, id: &str, from: Option<&str>) -> Result<Worktree> {
     Ok(Worktree { path, branch, base })
 }
 
+/// Cut a tree for `id` on `branch`, which the ref `fetch` names in the origin
+/// and this checkout may not have at all.
+///
+/// What a pull request is: work that lives on the forge. There is no local
+/// branch to cut from until one is fetched, and the fetch is what makes the
+/// name a branch rather than a commit nobody can push from — so this is
+/// [`create`]'s shape with the branch arriving instead of being made. The
+/// caller picks the name, because the head ref's own name is sometimes taken.
+///
+/// `+` on the refspec so a branch fetched once and fetched again moves to the
+/// commit the request is at now rather than refusing; no `-b` on the add,
+/// since after the fetch the branch is already there. The base is read back
+/// off the branch rather than taken from the caller's answer about it: what
+/// the tree actually holds is what `diff` has to measure from.
+#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
+pub fn create_on(repo: &Path, id: &str, branch: &str, fetch: &str) -> Result<Worktree> {
+    ensure_excluded(repo)?;
+    git(
+        repo,
+        &["fetch", "origin", &format!("+{fetch}:refs/heads/{branch}")],
+    )?;
+
+    let path = path_for(repo, id);
+    git(repo, &["worktree", "add", &path.to_string_lossy(), branch])?;
+    let base = commit_of(repo, branch)?;
+
+    Ok(Worktree {
+        path,
+        branch: branch.to_string(),
+        base,
+    })
+}
+
+/// Whether some tree in this repository already has `branch` checked out.
+///
+/// git allows one tree per branch, so the question a name has to answer before
+/// it is used: an agent already working on a request's branch is a reason to
+/// cut the next tree under another name, not a reason to refuse the spawn.
+#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
+pub fn checked_out(repo: &Path, branch: &str) -> Result<bool> {
+    let listed = git(repo, &["worktree", "list", "--porcelain"])?;
+    let named = format!("branch refs/heads/{branch}");
+    Ok(listed.lines().any(|line| line.trim_end() == named))
+}
+
 /// The commit a ref names, whatever kind of ref it is: a branch, a tag, a
 /// remote-tracking name, or a commit written out.
 ///
@@ -625,6 +670,19 @@ mod tests {
         dir
     }
 
+    /// A bare repository beside this one, added as its `origin`, standing in
+    /// for the forge a request would be fetched from.
+    fn an_origin(repo: &Path) -> TempDir {
+        let bare = TempDir::new().unwrap();
+        setup(bare.path(), &["init", "--bare", "-b", "main"]);
+        setup(
+            repo,
+            &["remote", "add", "origin", &bare.path().to_string_lossy()],
+        );
+        setup(repo, &["push", "-q", "origin", "main"]);
+        bare
+    }
+
     fn shown(worktree: &Path, base: &str, stat: bool) -> String {
         let mut out = Vec::new();
         diff(worktree, base, stat, &mut out).unwrap();
@@ -692,6 +750,93 @@ mod tests {
                 "the work of the commit {named} names, not of HEAD"
             );
         }
+    }
+
+    #[test]
+    fn worktree_is_cut_on_a_branch_fetched_from_a_ref_nobody_has_locally() {
+        // A pull request's head is a ref in the origin and nothing in this
+        // checkout, so the branch has to be fetched into existence before
+        // there is anything to cut a tree on.
+        let repo = a_repo();
+        let _origin = an_origin(repo.path());
+        setup(repo.path(), &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(repo.path().join("login.rs"), "fn login() {}\n").unwrap();
+        setup(repo.path(), &["add", "login.rs"]);
+        setup(repo.path(), &["commit", "-m", "the request's own work"]);
+        let head = setup(repo.path(), &["rev-parse", "HEAD"]);
+        setup(
+            repo.path(),
+            &["push", "-q", "origin", "HEAD:refs/pull/7/head"],
+        );
+        setup(repo.path(), &["checkout", "-q", "main"]);
+        setup(repo.path(), &["branch", "-D", "feature"]);
+
+        let tree = create_on(repo.path(), "review-7-a1b", "feature", "refs/pull/7/head").unwrap();
+
+        assert_eq!(tree.branch, "feature", "the request's own head ref");
+        assert_eq!(tree.base, head, "recorded at the commit that head is");
+        assert_eq!(tree.path, repo.path().join(".amx/worktrees/review-7-a1b"));
+        assert_eq!(
+            setup(&tree.path, &["rev-parse", "--abbrev-ref", "HEAD"]),
+            "feature",
+            "and the tree is on the branch rather than on a detached head"
+        );
+        assert_eq!(setup(&tree.path, &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            std::fs::read_to_string(tree.path.join("login.rs")).unwrap(),
+            "fn login() {}\n",
+            "so the work under review is what the agent opens"
+        );
+        assert_eq!(
+            setup(repo.path(), &["status", "--porcelain"]),
+            "",
+            "and this tree is kept out of the status like any other"
+        );
+    }
+
+    #[test]
+    fn worktree_refuses_a_ref_the_origin_does_not_have_and_leaves_nothing() {
+        let repo = a_repo();
+        let _origin = an_origin(repo.path());
+
+        let refused =
+            create_on(repo.path(), "review-9-a1b", "pr-9", "refs/pull/9/head").unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("refs/pull/9/head"),
+            "the ref that was asked for: {refused:#}"
+        );
+        assert!(
+            !repo.path().join(".amx/worktrees/review-9-a1b").exists(),
+            "and no tree was cut for it"
+        );
+        assert_eq!(
+            setup(repo.path(), &["branch", "--list", "pr-9"]),
+            "",
+            "nor a branch"
+        );
+    }
+
+    #[test]
+    fn worktree_says_which_branches_some_tree_already_holds() {
+        // Two trees cannot hold one branch, so a name that is taken is a name
+        // a request has to be cut under some other one.
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+        setup(repo.path(), &["branch", "release"]);
+
+        assert!(checked_out(repo.path(), &tree.branch).unwrap());
+        assert!(
+            checked_out(repo.path(), "main").unwrap(),
+            "the repository's own checkout holds one too"
+        );
+        assert!(
+            !checked_out(repo.path(), "release").unwrap(),
+            "a branch no tree is on is a name that is free"
+        );
+        assert!(
+            !checked_out(repo.path(), "mai").unwrap(),
+            "and the name is the whole name, not the start of one"
+        );
     }
 
     #[test]
