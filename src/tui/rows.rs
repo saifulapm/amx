@@ -4,7 +4,8 @@
 //! for is one question — *is anything waiting on me?* — so the agents are
 //! gathered under the answer: the ones somebody pinned there first, then the
 //! work standing in front of a reviewer, then the ones that have stopped on a
-//! question, then the ones mid-turn, then the turns that are over.
+//! question, then the ones mid-turn, then the turns that are over, and under
+//! all of them the ones somebody has put to sleep.
 //!
 //! Inside a group the order is the order agents were started in, which is the
 //! one order that does not move under a cursor while somebody is reading. The
@@ -30,11 +31,11 @@
 //! against a line number, because the list is laid out again every second and
 //! line four is somebody else's by then.
 //!
-//! An order the list works out is an order somebody may disagree with, so two
-//! things are theirs to say: which agent is pinned over the wall, and what
-//! order a group goes in. Both are said against the agents and the group
-//! rather than against the screen, which is what lets them outlive the view
-//! they were said in.
+//! An order the list works out is an order somebody may disagree with, so
+//! three things are theirs to say: which agent is pinned over the wall, which
+//! is asleep under it, and what order a group goes in. All are said against
+//! the agents and the group rather than against the screen, which is what lets
+//! them outlive the view they were said in.
 
 use crate::derive::{Evidence, View};
 use crate::pr::{self, Pr, Standing};
@@ -66,28 +67,37 @@ pub enum Group {
     /// gone somewhere amx cannot account for. Whether there is still a process
     /// behind it is the row's to say, and the glyph says it.
     Completed,
+    /// Put under everything by somebody, whatever it is doing: the agent they
+    /// have decided not to look at for now. The other thing a person says
+    /// about a row, and the opposite of pinning it.
+    Asleep,
 }
 
 impl Group {
     /// Every group, in the order a person reads them.
-    pub const ALL: [Group; 5] = [
+    pub const ALL: [Group; 6] = [
         Group::Pinned,
         Group::Review,
         Group::NeedsInput,
         Group::Working,
         Group::Completed,
+        Group::Asleep,
     ];
 
     /// Which group an agent belongs to: what somebody said about it, then what
     /// it is doing, then what its work is waiting on.
     ///
-    /// Pinning wins over everything, because it is the one line of this table
-    /// a person wrote themselves. After it the states a person can do nothing
-    /// about, so a request standing open never takes an agent out of the group
-    /// that says it is asking or working.
-    pub fn of(phase: Phase, held: bool, reviewable: bool) -> Group {
+    /// What a person said wins over everything, because those are the two lines
+    /// of this table they wrote themselves: pinned over the wall, or under all
+    /// of it. After them the states a person can do nothing about, so a request
+    /// standing open never takes an agent out of the group that says it is
+    /// asking or working.
+    pub fn of(phase: Phase, held: bool, asleep: bool, reviewable: bool) -> Group {
         if held {
             return Group::Pinned;
+        }
+        if asleep {
+            return Group::Asleep;
         }
         match phase {
             Phase::Waiting => Group::NeedsInput,
@@ -105,6 +115,7 @@ impl Group {
             Group::NeedsInput => "Needs input",
             Group::Working => "Working",
             Group::Completed => "Completed",
+            Group::Asleep => "Asleep",
         }
     }
 
@@ -124,6 +135,7 @@ impl Group {
             Group::NeedsInput => "waiting",
             Group::Working => "working",
             Group::Completed => "done",
+            Group::Asleep => "asleep",
         }
     }
 }
@@ -140,8 +152,8 @@ pub enum Axis {
 }
 
 /// How somebody has arranged the list, in terms that outlive the view they
-/// arranged it in: which way it is gathered, the agents pinned over the wall,
-/// and the order a group was put in.
+/// arranged it in: which way it is gathered, the agents pinned over the wall
+/// and the ones asleep under it, and the order a group was put in.
 ///
 /// Agents by id and groups by name, because that is what a later view has to
 /// find them by. An id in here that no longer names an agent costs a lookup
@@ -152,6 +164,7 @@ pub enum Axis {
 pub struct Arrangement {
     axis: Axis,
     held: BTreeSet<String>,
+    asleep: BTreeSet<String>,
     order: BTreeMap<Group, Vec<String>>,
 }
 
@@ -182,6 +195,14 @@ impl Arrangement {
     /// view is drawing.
     pub fn has_pinned(&self, id: &str) -> bool {
         self.held.contains(id)
+    }
+
+    /// Whether this agent is one somebody has put under the wall.
+    ///
+    /// The other half of the same question, asked the same way: see
+    /// [`List::sleeping`].
+    pub fn has_asleep(&self, id: &str) -> bool {
+        self.asleep.contains(id)
     }
 }
 
@@ -357,6 +378,8 @@ pub struct List {
     shut: HashSet<Key>,
     /// The agents somebody has pinned over the wall.
     held: BTreeSet<String>,
+    /// And the ones somebody has put under it.
+    asleep: BTreeSet<String>,
     /// The order somebody put a group in, as the ids of the agents that were
     /// under it when they said so.
     order: BTreeMap<Group, Vec<String>>,
@@ -404,6 +427,7 @@ impl Default for List {
             built: usize::MAX,
             shut: HashSet::new(),
             held: BTreeSet::new(),
+            asleep: BTreeSet::new(),
             order: BTreeMap::new(),
             axis: Axis::default(),
             filters: Filters::default(),
@@ -491,6 +515,7 @@ impl List {
         Arrangement {
             axis: self.axis,
             held: self.held.clone(),
+            asleep: self.asleep.clone(),
             order: self.order.clone(),
         }
     }
@@ -501,6 +526,7 @@ impl List {
         let on = self.on();
         self.axis = arrangement.axis;
         self.held = arrangement.held;
+        self.asleep = arrangement.asleep;
         self.order = arrangement.order;
         self.rebuild(on.agent());
         self.follow(&on);
@@ -511,11 +537,20 @@ impl List {
         self.held.contains(view.id())
     }
 
+    /// Whether this agent is one somebody has put under it.
+    pub fn sleeping(&self, view: &View) -> bool {
+        self.asleep.contains(view.id())
+    }
+
     /// Pin the agent under the cursor to the top of the list, or let it go.
     ///
     /// About the agent and not about the state it is in: a pinned agent stays
     /// pinned as its turn runs and ends, because what somebody said is that
     /// this agent is the one they want in front of them.
+    ///
+    /// A sleeping agent wakes as it is pinned. The two marks are the same
+    /// sentence in opposite directions, and an agent cannot be both the one
+    /// somebody wants in front of them and one they have put away.
     ///
     /// Answers whether there was an agent to do it to, which is what tells a
     /// key pressed on a heading from a key that changed something.
@@ -524,7 +559,32 @@ impl List {
             return false;
         };
         if !self.held.remove(&id) {
+            self.asleep.remove(&id);
             self.held.insert(id);
+        }
+        let on = self.on();
+        self.rebuild(on.agent());
+        self.follow(&on);
+        true
+    }
+
+    /// Put the agent under the cursor under the whole wall, or wake it.
+    ///
+    /// About the agent for the same reason pinning is: a sleeping agent stays
+    /// under everything as its turn runs and ends, because what somebody said
+    /// is that this is the agent they are not looking at for now. It goes on
+    /// counting among the ones asking, though — where a row is drawn is not an
+    /// answer to its question.
+    ///
+    /// A pinned agent lets go as it goes to sleep, and answers the same way
+    /// [`List::hold_or_let_go`] does.
+    pub fn sleep_or_wake(&mut self) -> bool {
+        let Some(id) = self.selected().map(|view| view.id().to_string()) else {
+            return false;
+        };
+        if !self.asleep.remove(&id) {
+            self.held.remove(&id);
+            self.asleep.insert(id);
         }
         let on = self.on();
         self.rebuild(on.agent());
@@ -751,7 +811,12 @@ impl List {
     /// Which group an agent is drawn under: where somebody put it, what it is
     /// doing, and what its work is waiting on out in the world.
     fn group(&self, view: &View) -> Group {
-        Group::of(view.phase(), self.holding(view), self.reviewable(view))
+        Group::of(
+            view.phase(),
+            self.holding(view),
+            self.sleeping(view),
+            self.reviewable(view),
+        )
     }
 
     /// Whether this agent's work is standing in front of a reviewer: its turn
@@ -1576,6 +1641,19 @@ mod tests {
             assert_ne!(list.cursor(), at, "no row for {id} to put the cursor on");
         }
         assert!(list.hold_or_let_go());
+        list
+    }
+
+    /// The same list with one agent asleep, which is a cursor on its row and
+    /// the other key.
+    fn sleeping(mut list: List, id: &str) -> List {
+        list.top();
+        while list.selected().is_none_or(|view| view.id() != id) {
+            let at = list.cursor();
+            list.down();
+            assert_ne!(list.cursor(), at, "no row for {id} to put the cursor on");
+        }
+        assert!(list.sleep_or_wake());
         list
     }
 
@@ -2602,6 +2680,114 @@ mod tests {
     }
 
     #[test]
+    fn arranged_a_sleeping_agent_goes_under_every_group_whatever_it_is_doing() {
+        let mut list = listed(vec![
+            view("ask-a1b", Phase::Waiting, 10),
+            view("busy-b2c", Phase::Working, 20),
+            view("done-c3d", Phase::Done, 30),
+        ]);
+        assert_eq!(list.selected().unwrap().id(), "ask-a1b");
+
+        assert!(list.sleep_or_wake());
+        assert_eq!(
+            lines(&list),
+            [
+                "Working (1)",
+                "busy-b2c",
+                "",
+                "Completed (1)",
+                "done-c3d",
+                "",
+                "Asleep (1)",
+                "ask-a1b",
+            ],
+            "under everything, though it is the one agent asking"
+        );
+        assert!(list.sleeping(list.agent_by_id("ask-a1b").unwrap()));
+        assert_eq!(
+            list.waiting(),
+            1,
+            "and still counted among the ones waiting on somebody"
+        );
+
+        // Its turn goes on under there: what somebody said is that they are
+        // not looking at this agent for now, not that it has finished.
+        list.show(vec![
+            view("ask-a1b", Phase::Working, 10),
+            view("busy-b2c", Phase::Working, 20),
+            view("done-c3d", Phase::Done, 30),
+        ]);
+        assert_eq!(
+            lines(&list),
+            [
+                "Working (1)",
+                "busy-b2c",
+                "",
+                "Completed (1)",
+                "done-c3d",
+                "",
+                "Asleep (1)",
+                "ask-a1b",
+            ]
+        );
+
+        // And the same key wakes it, back under what it is doing.
+        assert!(list.sleep_or_wake());
+        assert_eq!(
+            lines(&list),
+            [
+                "Working (2)",
+                "ask-a1b",
+                "busy-b2c",
+                "",
+                "Completed (1)",
+                "done-c3d",
+            ]
+        );
+    }
+
+    #[test]
+    fn arranged_the_two_marks_a_person_puts_on_a_row_undo_each_other() {
+        let mut list = listed(vec![
+            view("busy-a1b", Phase::Working, 10),
+            view("busy-b2c", Phase::Working, 20),
+        ]);
+
+        assert!(list.sleep_or_wake());
+        assert_eq!(
+            lines(&list),
+            ["Working (1)", "busy-b2c", "", "Asleep (1)", "busy-a1b"]
+        );
+
+        // Pinning it wakes it: an agent cannot be both the one somebody wants
+        // in front of them and one they have put away.
+        assert!(list.hold_or_let_go());
+        assert_eq!(
+            lines(&list),
+            ["Pinned (1)", "busy-a1b", "", "Working (1)", "busy-b2c"]
+        );
+        assert!(!list.sleeping(list.agent_by_id("busy-a1b").unwrap()));
+
+        // And sleeping it lets it go the same way.
+        assert!(list.sleep_or_wake());
+        assert_eq!(
+            lines(&list),
+            ["Working (1)", "busy-b2c", "", "Asleep (1)", "busy-a1b"]
+        );
+        assert!(!list.holding(list.agent_by_id("busy-a1b").unwrap()));
+
+        // A heading is not an agent to put to sleep, any more than it is one
+        // to pin.
+        list.top();
+        assert!(list.on_heading());
+        assert!(!list.sleep_or_wake());
+        assert_eq!(
+            lines(&list),
+            ["Working (1)", "busy-b2c", "", "Asleep (1)", "busy-a1b"]
+        );
+    }
+
+    #[test]
     fn arranged_an_order_somebody_put_a_group_in_outlives_the_readings_after_it() {
         let mut list = listed(vec![
             view("busy-a1b", Phase::Working, 10),
@@ -2758,12 +2944,16 @@ mod tests {
             "a fleet nobody has opened the view over has nobody pinned"
         );
 
-        let list = pinning(
-            listed(vec![
-                view("fix-login-a1b", Phase::Idle, 10),
-                view("port-import-b2c", Phase::Idle, 20),
-            ]),
-            "fix-login-a1b",
+        let list = sleeping(
+            pinning(
+                listed(vec![
+                    view("fix-login-a1b", Phase::Idle, 10),
+                    view("port-import-b2c", Phase::Idle, 20),
+                    view("later-c3d", Phase::Idle, 30),
+                ]),
+                "fix-login-a1b",
+            ),
+            "later-c3d",
         );
         let kept = crate::paths::view_file(&root).expect("somewhere to keep it");
         crate::tui::Remembered {
@@ -2785,6 +2975,25 @@ mod tests {
             !read.has_pinned("port-import-b2c"),
             "and not the row that was under it"
         );
+        assert!(
+            read.has_asleep("later-c3d"),
+            "the one somebody put to sleep"
+        );
+        assert!(
+            !read.has_asleep("fix-login-a1b"),
+            "and not the one they pinned"
+        );
+
+        // A file written before the wall had a second mark reads as a wall
+        // with nobody asleep, rather than as no arrangement at all.
+        std::fs::write(
+            &kept,
+            br#"{"arrangement":{"axis":"state","held":["fix-login-a1b"],"order":{}}}"#,
+        )
+        .unwrap();
+        let older = Arrangement::from_disk(&root);
+        assert!(older.has_pinned("fix-login-a1b"));
+        assert!(!older.has_asleep("fix-login-a1b"));
 
         std::fs::write(&kept, b"{\"arrangement\":").unwrap();
         assert_eq!(
@@ -2830,7 +3039,8 @@ mod tests {
                 "Ready for review",
                 "Needs input",
                 "Working",
-                "Completed"
+                "Completed",
+                "Asleep"
             ]
         );
     }
@@ -2848,6 +3058,7 @@ mod tests {
                 view("ask-c3d", Phase::Waiting, 30),
                 view("busy-d4e", Phase::Working, 40),
                 view("done-e5f", Phase::Done, 50),
+                view("nap-f6g", Phase::Working, 60),
             ]
         };
         let one_of_each = [
@@ -2856,6 +3067,7 @@ mod tests {
             (Group::NeedsInput, "ask-c3d"),
             (Group::Working, "busy-d4e"),
             (Group::Completed, "done-e5f"),
+            (Group::Asleep, "nap-f6g"),
         ];
         assert_eq!(
             one_of_each.len(),
@@ -2864,7 +3076,7 @@ mod tests {
         );
 
         for (group, id) in one_of_each {
-            let mut list = pinning(over_the_forge(fleet()), "pinned-a1b");
+            let mut list = sleeping(pinning(over_the_forge(fleet()), "pinned-a1b"), "nap-f6g");
             list.narrow(vec![Narrow::State(Some(group.state().to_string()))]);
             assert_eq!(
                 lines(&list),

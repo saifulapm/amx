@@ -2957,7 +2957,7 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
     // and an idle one with nothing recorded falls back to it.
     // Where its row is drawn is nobody's business here — a card is about the
     // one agent, so the group is read off the state alone.
-    let answered = rows::Group::of(view.phase(), false, false) == rows::Group::Completed
+    let answered = rows::Group::of(view.phase(), false, false, false) == rows::Group::Completed
         && view.state.result.is_some();
     let screen = (!asks && !answered && !view.phase().is_terminal())
         .then(|| server.capture_painted(&view.meta.pane).ok())
