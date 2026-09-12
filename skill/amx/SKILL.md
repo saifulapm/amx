@@ -18,6 +18,7 @@ Nothing here needs a screen scraped or a state file polled.
 | `amx new --exec "<command>"` | Run a shell command as a row of its own, `done` or `failed` by its exit code. |
 | `amx rename <id> "<name>"` | Call it something else on the user's wall. The id is what you keep addressing. |
 | `amx result <id> [--timeout N]` | Block until the turn ends, then print what it said. |
+| `amx wait <id>... [--any] [--for STATE] [--timeout N]` | One clock over several agents: block until each has settled, printing `<id> <state>` as each does. `--any` comes back with the first. |
 | `amx answer <id> <key>` | Answer the question it stopped on. |
 | `amx send <id> "<text>"` | Give a working or idle agent its next turn. |
 | `amx interrupt <id>` | End the turn it is in the middle of. The agent stays, its conversation whole. |
@@ -169,17 +170,47 @@ loop.sh "$id"
 amx stop "$id" --force
 ```
 
-Several at once. Spawn them all, then collect, since each `result` blocks on
-its own agent and the rest keep working while it does:
+Several at once. Spawn them all, then put one clock over the fleet: `amx wait`
+blocks on every id you give it, and `--any` comes back with the first that is
+ready. Collect that one, drop it from the list, and wait again — so the answers
+arrive in the order the agents finish rather than the order you spawned them,
+and a slow agent at the front of the list holds nothing up.
 
 ```sh
+ids=""
 for track in docs/plan/tracks/*.md; do
-    ids="$ids $(amx new "review $track and list every risk")"
+    ids="${ids:+$ids }$(amx new "review $track and list every risk")" || exit 1
 done
-for id in $ids; do
-    amx result "$id" --timeout 900
+
+while [ -n "$ids" ]; do
+    # `<id> <state>` for the first one that is ready. The rest keep working.
+    ready=$(amx wait $ids --any --timeout 900) || {
+        printf 'nobody ready after 900s: %s\n' "$ids" >&2
+        exit 3
+    }
+    id=${ready%% *}
+    state=${ready#* }
+
+    printf '== %s (%s)\n' "$id" "$state"
+    case $state in
+        waiting) loop.sh "$id" ;;    # stopped on a question: answer it, then read
+        *)       amx result "$id" ;; # its turn is over, so this returns at once
+    esac
+
+    rest=""
+    for other in $ids; do
+        [ "$other" = "$id" ] || rest="${rest:+$rest }$other"
+    done
+    ids=$rest
 done
 ```
+
+Settled is a turn that is over *or* an agent stopped on a question, which is
+why the state is worth reading: `waiting` is one to answer, and `done`,
+`failed`, `stopped` and `idle` are ones to read. `--for <state>` holds out for
+one named state instead — `amx wait $ids --for working` is how you confirm a
+fleet got off the ground. What the agents said is not here: `wait` says whose
+answer is ready, and `result` is what hands it back.
 
 While they run: `amx ls` for a snapshot, `amx ls --json` when a program is
 reading it, `amx events --follow` for the merged log, and `amx status <id>`
@@ -225,8 +256,8 @@ when one is in a state you did not expect.
   release > build.log 2>&1'`. Each pane amx starts, this one included, is given
   a directory of its own to write in at `$AMX_AGENT_DIR`, and that directory
   goes when the agent's record goes.
-- **Never block for ever.** Every `result` in an unattended script takes
-  `--timeout`. A question ends the call on its own with exit `2`, so a deadline
+- **Never block for ever.** Every `result` and every `wait` in an unattended
+  script takes `--timeout`. A question ends the call on its own with exit `2`, so a deadline
   cannot bound the answering: bound that yourself, the way the loop above stops
   after `AMX_MAX_ANSWERS`.
 - **If answers keep coming back empty, run `amx doctor`.** Answers are taken
