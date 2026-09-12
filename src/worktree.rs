@@ -989,8 +989,19 @@ mod tests {
     #[test]
     fn worktree_discard_takes_a_tree_nobody_has_worked_in_with_its_branch() {
         let repo = a_repo();
+        std::fs::write(repo.path().join(".env"), "TOKEN=hunter2\n").unwrap();
+        std::fs::create_dir(repo.path().join("node_modules")).unwrap();
+        std::fs::write(repo.path().join("node_modules/left-pad"), "installed\n").unwrap();
         let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
-        std::fs::write(tree.path.join(".env"), "TOKEN=hunter2\n").unwrap();
+        furnish(
+            repo.path(),
+            &tree.path,
+            &[".env".to_string()],
+            &["node_modules".to_string()],
+            &[],
+            &[],
+        )
+        .unwrap();
 
         assert!(
             remove(repo.path(), &tree.path).is_err(),
@@ -999,6 +1010,11 @@ mod tests {
         discard(repo.path(), &tree.path, &tree.branch).unwrap();
 
         assert!(!tree.path.exists());
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("node_modules/left-pad")).unwrap(),
+            "installed\n",
+            "a link into the repository is unlinked, never followed"
+        );
         assert_eq!(
             setup(repo.path(), &["branch", "--list", &tree.branch]),
             "",
