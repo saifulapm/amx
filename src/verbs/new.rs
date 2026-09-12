@@ -583,12 +583,36 @@ fn cut_worktree(
     if !dir.is_dir() {
         bail!("{} is not a directory to run in", dir.display());
     }
-    // Somewhere that is not a repository is somewhere to work in as it is.
+    // Somewhere that is not a repository is somewhere to work in as it is —
+    // unless a request was named, which is a repository's own thing to have
+    // and nothing a directory outside one could be started on.
     let Some(repo) = worktree::repo_root(dir)? else {
-        return Ok(None);
+        match args.pr {
+            Some(number) => bail!("--pr {number}: {} is in no repository", dir.display()),
+            None => return Ok(None),
+        }
     };
-    let tree = worktree::create(&repo, id, cut_from(config, args))?;
+    let tree = match args.pr {
+        Some(number) => cut_on_request(&repo, id, number)?,
+        None => worktree::create(&repo, id, cut_from(config, args))?,
+    };
     Ok(Some((repo, tree)))
+}
+
+/// A tree on the head branch of request `number`, fetched from the origin.
+///
+/// The name is the head ref's own wherever it can be, because that is what the
+/// PR column reads a row's request back off. It cannot be when the work is in
+/// somebody's fork, where the same name means another branch, or when a tree
+/// in this repository already holds it — git keeps one tree to a branch, and a
+/// second agent on the same request is a thing to allow rather than refuse.
+fn cut_on_request(repo: &Path, id: &str, number: u64) -> Result<worktree::Worktree> {
+    let head = crate::pr::request_head(repo, number)?;
+    let name = match head.cross || worktree::checked_out(repo, &head.branch)? {
+        true => format!("pr-{number}"),
+        false => head.branch,
+    };
+    worktree::create_on(repo, id, &name, &format!("refs/pull/{number}/head"))
 }
 
 /// Furnish the tree amx has just cut: the files and directories the config
@@ -743,6 +767,7 @@ mod tests {
             dir: None,
             no_worktree: false,
             base: None,
+            pr: None,
             with_changes: false,
             exec: false,
             agent: Some(AgentArgs {
@@ -765,6 +790,7 @@ mod tests {
             dir: None,
             no_worktree: false,
             base: None,
+            pr: None,
             with_changes: false,
             exec: true,
             agent: None,

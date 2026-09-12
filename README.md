@@ -87,6 +87,7 @@ amx new "fix the login bug"            # in a repository: its own worktree
 amx new --no-worktree "run the tests"  # in this directory, as it is
 amx new --base main "add the export"   # a tree cut from a ref of your choosing
 amx new --with-changes "finish this"   # taking what you have not committed
+amx new --pr 128 "review this"         # a tree on a pull request's own branch
 amx new --name importer "port it"      # an id you chose
 amx new --dir /srv/app "tail the log"  # somewhere other than here
 amx new --file brief.md                # the task, read out of a file
@@ -1079,6 +1080,17 @@ since a build's output and a scratch note look no different from work. There
 has to be a tree to move the work into and work to move, so it is refused
 beside `--no-worktree` and `--exec`, and a directory with nothing uncommitted
 in it starts no agent at all.
+
+`--pr <n>` starts the agent on a pull request. `gh` is asked where the
+request's head is, that branch is fetched from the origin, and the tree is cut
+on it at the commit the request is at now: under the head ref's own name, or
+under `pr-<n>` where the work is in somebody's fork or another tree already
+holds that name. The branch is what the record keeps, so the row says which
+request the agent is on and `stop` leaves the branch where it is rather than
+deleting work that is under review. The request says what the tree is cut from
+and where it goes, so it is refused beside `--base`, `--with-changes`,
+`--no-worktree` and `--exec`, and a number gh cannot answer about starts no
+agent. GitHub for now: a GitLab checkout is still read, not started on.
 
 ## Driving amx from a program
 

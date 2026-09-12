@@ -145,7 +145,6 @@ pub fn create(repo: &Path, id: &str, from: Option<&str>) -> Result<Worktree> {
 /// since after the fetch the branch is already there. The base is read back
 /// off the branch rather than taken from the caller's answer about it: what
 /// the tree actually holds is what `diff` has to measure from.
-#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 pub fn create_on(repo: &Path, id: &str, branch: &str, fetch: &str) -> Result<Worktree> {
     ensure_excluded(repo)?;
     git(
@@ -169,7 +168,6 @@ pub fn create_on(repo: &Path, id: &str, branch: &str, fetch: &str) -> Result<Wor
 /// git allows one tree per branch, so the question a name has to answer before
 /// it is used: an agent already working on a request's branch is a reason to
 /// cut the next tree under another name, not a reason to refuse the spawn.
-#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 pub fn checked_out(repo: &Path, branch: &str) -> Result<bool> {
     let listed = git(repo, &["worktree", "list", "--porcelain"])?;
     let named = format!("branch refs/heads/{branch}");

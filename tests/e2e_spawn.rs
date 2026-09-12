@@ -4,7 +4,7 @@ mod common;
 
 use common::{AMX, Harness};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 
 /// `amx new`, with the vendor pointed at a scenario.
@@ -1022,6 +1022,207 @@ fn new_takes_back_the_tree_when_the_work_will_not_apply_in_it() {
         String::from_utf8_lossy(&listed.stdout).trim(),
         "[]",
         "and no agent started"
+    );
+}
+
+/// A repository with a bare origin beside it, one commit pushed there on a
+/// `feature` branch, and that commit set as request 7's head.
+///
+/// The branch is taken back out of the checkout afterwards, which is what a
+/// request somebody else opened looks like from here: work that is on the
+/// forge and in no local branch at all.
+fn a_repo_with_a_request(amx: &Harness) -> (PathBuf, String) {
+    let repo = amx.a_repo();
+    let origin = amx.home().join("origin.git");
+    std::fs::create_dir_all(&origin).expect("the forge's own copy");
+    git(&origin, &["init", "--bare", "-b", "main"]);
+
+    git(
+        &repo,
+        &["remote", "add", "origin", &origin.to_string_lossy()],
+    );
+    git(&repo, &["push", "origin", "main"]);
+    git(&repo, &["checkout", "-b", "feature"]);
+    std::fs::write(repo.join("README.md"), "the request's work\n").expect("something to review");
+    git(&repo, &["commit", "-am", "the request"]);
+    let commit = git(&repo, &["rev-parse", "HEAD"]);
+    git(&repo, &["push", "origin", "feature"]);
+    git(&repo, &["checkout", "main"]);
+    git(&repo, &["branch", "-D", "feature"]);
+    git(&origin, &["update-ref", "refs/pull/7/head", &commit]);
+
+    (repo, commit)
+}
+
+/// A `gh` of the suite's own under the harness's `bin`, answering about
+/// request 7 and refusing every other number the way gh refuses one that is
+/// not there.
+///
+/// Never the gh the machine running the suite has installed: it would ask a
+/// forge about a repository nobody here has heard of.
+fn a_gh(amx: &Harness, commit: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = amx.home().join("bin");
+    std::fs::create_dir_all(&bin).expect("a directory for it");
+    let gh = bin.join("gh");
+    std::fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+if [ "$3" = "7" ]; then
+  printf '%s' '{{"headRefName":"feature","headRefOid":"{commit}","isCrossRepository":false}}'
+  exit 0
+fi
+echo "no pull requests found" >&2
+exit 1
+"#
+        ),
+    )
+    .expect("writing the fake gh");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755))
+        .expect("a gh that can be run");
+}
+
+/// `amx new`, with the harness's own `bin` in front of PATH, which is where
+/// the fake gh is.
+fn new_with_gh(amx: &Harness, scenario: &str, args: &[&str]) -> Output {
+    let path = format!(
+        "{}:{}",
+        amx.home().join("bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    amx.amx_command(&[&["new"], args].concat())
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
+        .env("PATH", path)
+        .output()
+        .expect("running amx new")
+}
+
+#[test]
+fn new_cuts_the_tree_on_the_head_branch_of_the_request_it_was_given() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let (repo, commit) = a_repo_with_a_request(&amx);
+    a_gh(&amx, &commit);
+
+    let id = id_of(&new_with_gh(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--pr",
+            "7",
+            "--agent",
+            &mock,
+            "review the request",
+        ],
+    ));
+
+    let meta = amx.meta(&id);
+    assert_eq!(
+        meta["branch"], "feature",
+        "the head ref's own name, so the column finds the request by it"
+    );
+    assert_eq!(meta["base"], commit, "the commit the request is at");
+    let worktree = repo.join(".amx/worktrees").join(&id);
+    assert_eq!(
+        meta["worktree"],
+        worktree.to_string_lossy().as_ref(),
+        "a tree where every other one goes"
+    );
+    assert_eq!(
+        git(&worktree, &["rev-parse", "HEAD"]),
+        commit,
+        "with the request's work checked out in it"
+    );
+
+    // git holds one tree to a branch, and the first agent has this one.
+    let second = id_of(&new_with_gh(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--pr",
+            "7",
+            "--agent",
+            &mock,
+            "review it again",
+        ],
+    ));
+    assert_eq!(amx.meta(&second)["branch"], "pr-7");
+    assert_eq!(amx.meta(&second)["base"], commit);
+}
+
+#[test]
+fn new_refuses_a_request_gh_cannot_answer() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let (repo, commit) = a_repo_with_a_request(&amx);
+    a_gh(&amx, &commit);
+
+    let refused = new_with_gh(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--pr",
+            "9",
+            "--agent",
+            &mock,
+            "review the request",
+        ],
+    );
+
+    assert_eq!(refused.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("#9"), "the number that was typed: {said}");
+    let listed = amx.amx(&["ls", "--json"]);
+    assert_eq!(
+        String::from_utf8_lossy(&listed.stdout).trim(),
+        "[]",
+        "and no agent was started for it"
+    );
+    assert_eq!(
+        git(&repo, &["worktree", "list", "--porcelain"])
+            .lines()
+            .filter(|line| line.starts_with("worktree "))
+            .count(),
+        1,
+        "nor a tree cut"
+    );
+}
+
+#[test]
+fn new_refuses_a_request_beside_the_flags_that_say_where_a_tree_comes_from() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let (repo, commit) = a_repo_with_a_request(&amx);
+    a_gh(&amx, &commit);
+
+    let refused = new_with_gh(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--pr",
+            "7",
+            "--base",
+            "main",
+            "--agent",
+            &mock,
+            "review the request",
+        ],
+    );
+
+    assert_eq!(
+        refused.status.code(),
+        Some(64),
+        "the request says what the tree is cut from, and so does --base"
     );
 }
 

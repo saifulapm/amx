@@ -382,6 +382,18 @@ pub struct NewArgs {
     #[arg(long, value_name = "REF")]
     pub base: Option<String>,
 
+    /// Start the agent on this pull request instead.
+    ///
+    /// `gh` is asked where the request's head is, its branch is fetched from
+    /// the origin, and the tree is cut on that branch at the commit the
+    /// request is at now. The branch is recorded, so the row says which
+    /// request it is on and `stop` keeps the branch rather than deleting work
+    /// somebody else is reviewing. The request says what the tree is cut from
+    /// and where it goes, so it is refused beside `--base`, `--with-changes`,
+    /// `--no-worktree` and `--exec`.
+    #[arg(long, value_name = "N", conflicts_with_all = ["base", "with_changes", "no_worktree", "exec"])]
+    pub pr: Option<u64>,
+
     /// Move the uncommitted work here into the agent's tree.
     ///
     /// The half hour you had already spent when you thought to start an agent

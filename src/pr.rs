@@ -556,8 +556,7 @@ const HEAD_FIELDS: &str = "headRefName,headRefOid,isCrossRepository";
 /// meanwhile and nothing an old answer would be good for. Whoever typed the
 /// number is waiting on the id.
 // The tests ask `head_from` instead, since a gh they wrote themselves is the
-// only one a suite may run. `new --pr` is what takes this up.
-#[expect(dead_code, reason = "the spawn on a request takes it up next")]
+// only one a suite may run. `new --pr` is what runs this one.
 pub fn request_head(repo: &Path, number: u64) -> Result<PrHead> {
     head_from(repo, number, Path::new("gh"))
 }
