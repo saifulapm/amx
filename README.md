@@ -356,6 +356,7 @@ table.
 | `alt+n` | start the line and go to the agent it started |
 | `!` | leading the task line, run it as a command rather than give it to an agent |
 | `d` | what it has changed |
+| `o` | open its pull request in the browser, through `gh` or `glab` |
 | `pgup` `ctrl+b` | page the card, when it holds more |
 | `pgdn` `ctrl+f` | and the other way |
 | `ctrl+u` | half a page of it, toward the edge |
@@ -491,12 +492,12 @@ line only, so a number meant as a character is typed after some other one.
 
 With a card up, one rule decides every key: a key the line has a use for is the
 line's, and every other key is the list's, as if the line were not there. So
-every letter is text — `j`, `k`, `h`, `l`, `q`, `n`, `d`, `/` and `?` included
-— and so are the keys that move along a line and end it. The arrows keep
-walking the wall with the card in tow, the page keys and the chords under them
-page the card, and `ctrl+x`, `ctrl+t`, `ctrl+s`, `alt+1..9` and the shifted
-arrows do to the list exactly what they do with no card open. So does the
-mouse, which has no use for a line either.
+every letter is text — `j`, `k`, `h`, `l`, `q`, `n`, `d`, `o`, `/` and `?`
+included — and so are the keys that move along a line and end it. The arrows
+keep walking the wall with the card in tow, the page keys and the chords under
+them page the card, and `ctrl+x`, `ctrl+t`, `ctrl+s`, `alt+1..9` and the
+shifted arrows do to the list exactly what they do with no card open. So does
+the mouse, which has no use for a line either.
 
 Two keys are read on the empty line before that rule, because there they have
 nothing to do to the line: `space` closes the card, which is the key that
@@ -801,6 +802,9 @@ request the branch has rather than the one the row had room for.
 
 `/#12` narrows the list to it. That is the word you have in front of you when
 you arrive at the wall from the request rather than from the agent.
+
+`o` opens the number on the row in your browser, through the forge's own
+command. A row that carries no number says so rather than opening anything.
 
 Reading it is `gh`, and `glab` where gh has nothing to say. Neither is required
 and amx installs neither: without them the column is not drawn and nothing else

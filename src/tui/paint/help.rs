@@ -42,7 +42,7 @@ use crate::tui::grid;
 ///
 /// The table is not public to the rest of the crate, so the test that checks
 /// the README against it reads this file as text.
-pub(in crate::tui) const HELP: [(&str, &str); 39] = [
+pub(in crate::tui) const HELP: [(&str, &str); 40] = [
     // walk
     ("↑ ↓ j k", "walk the agents"),
     ("gg G", "the top of the list, and the foot"),
@@ -54,6 +54,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 39] = [
     ("space l", "the card, and an answer or a message on it"),
     ("enter →", "bring its window forward · shut a group"),
     ("d", "what it has changed"),
+    ("o", "open its pull request in the browser"),
     ("pgup ctrl+b", "page the card, when it holds more"),
     ("pgdn ctrl+f", "and the other way"),
     ("ctrl+u", "half a page of it, toward the edge"),
@@ -100,7 +101,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 39] = [
 /// or drop one between two headings.
 pub(super) const GROUPS: [(&str, usize); 5] = [
     ("walk", 6),
-    ("look", 7),
+    ("look", 8),
     ("start", 11),
     ("arrange", 8),
     ("dials", 7),
@@ -224,7 +225,7 @@ fn dealt(width: usize) -> Vec<Range<usize>> {
 }
 
 /// Where those two columns part, which for the table as it stands is after
-/// `start`: twenty-three keys against fifteen.
+/// `start`: twenty-five keys against fifteen.
 fn cut() -> usize {
     let total: usize = GROUPS.iter().map(|(_, under)| under).sum();
     (1..GROUPS.len())

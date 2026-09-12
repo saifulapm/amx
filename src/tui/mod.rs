@@ -1795,6 +1795,25 @@ impl Screen {
                     }
                 }
             }
+            // The request the row is already carrying, in the browser it is
+            // reviewed in. The number is the column's own: what the row shows
+            // is what opens, so nothing here asks a forge anything.
+            KeyCode::Char('o') if plain => {
+                if let Some(view) = self.list.selected() {
+                    self.notice = match self.list.requests(view).first() {
+                        Some(pr) => act::open(view, pr.number)
+                            .err()
+                            .map(|e| Notice::Failed(format!("{e:#}"))),
+                        // A row amx cut no branch for is a row with nothing to
+                        // open, and saying which row that was is the whole of
+                        // what a wall of them needs.
+                        None => Some(Notice::Advice(format!(
+                            "no pull request on {}",
+                            rows::called(view)
+                        ))),
+                    };
+                }
+            }
             // The same key, read where the cursor is: on a row it is that
             // agent's ending, and on a heading it is the finished agents under
             // it, which is the one place a person is looking at a group rather
@@ -6990,6 +7009,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn keys_o_says_which_row_has_no_pull_request_and_leaves_a_heading_alone() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+        let o = KeyEvent::from(KeyCode::Char('o'));
+
+        // A row amx cut no branch for has no request to open, and the answer
+        // says which row that was: a wall is a screen full of them, and a
+        // person who pressed this is looking at one.
+        let mut screen = watching(a_wall());
+        press(&mut screen, o);
+        let Some(Notice::Advice(said)) = &screen.notice else {
+            panic!("nothing said about a row with no request");
+        };
+        assert_eq!(said, "no pull request on ask-a1b");
+
+        // A heading is a group rather than an agent, and a group has no
+        // request. Nothing said, because nothing was asked for.
+        let mut screen = watching(a_wall());
+        screen.list.up();
+        assert!(screen.list.on_heading(), "the cursor is on the heading");
+        press(&mut screen, o);
+        assert!(screen.notice.is_none(), "a heading is left alone");
     }
 
     #[test]

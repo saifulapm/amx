@@ -16,7 +16,7 @@
 //! permission prompt answers the prompt, and a turn can end while somebody is
 //! still typing.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::cell::{Cell, Ref, RefCell};
 use std::io::Write;
@@ -1827,6 +1827,54 @@ pub fn changes(root: &Path, view: &View) -> Result<Card> {
     })
 }
 
+/// Open the request on the row in the browser.
+///
+/// Through the forge's own command, which is where the person's login already
+/// is and which knows the repository the tree is a checkout of. What the last
+/// look wrote down beside the record does not say which forge answered, so gh
+/// is asked first and glab where there is no gh, the order every reader in
+/// `pr.rs` takes them in.
+///
+/// Spawned and not waited on, with nothing of its left pointed at the terminal:
+/// what opens is a browser, and a view that waited on one would stop drawing
+/// until somebody closed a tab.
+pub fn open(view: &View, number: u64) -> Result<()> {
+    let at = match &view.meta.worktree {
+        Some(tree) if tree.is_dir() => tree.clone(),
+        _ => view.meta.dir.clone(),
+    };
+    opened(&at, Path::new("gh"), Path::new("glab"), number)
+}
+
+/// The same, from forges named rather than looked for, which is how it is
+/// tested: fakes written under a tempdir, never the gh the machine running the
+/// suite has installed.
+fn opened(at: &Path, gh: &Path, glab: &Path, number: u64) -> Result<()> {
+    match browse(at, gh, "pr", number) {
+        // A machine with no gh is a machine whose requests are somebody else's
+        // forge, which is the one error worth trying the other command on.
+        Err(trouble) if trouble.kind() == std::io::ErrorKind::NotFound => {
+            browse(at, glab, "mr", number).map_err(|trouble| match trouble.kind() {
+                std::io::ErrorKind::NotFound => anyhow!("neither gh nor glab is on the PATH"),
+                _ => anyhow!("running glab: {trouble}"),
+            })
+        }
+        went => went.map_err(|trouble| anyhow!("running gh: {trouble}")),
+    }
+}
+
+/// One forge, told to open a request in the browser.
+fn browse(at: &Path, forge: &Path, request: &str, number: u64) -> std::io::Result<()> {
+    std::process::Command::new(forge)
+        .current_dir(at)
+        .args([request, "view", &number.to_string(), "--web"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+}
+
 /// What a verb wrote, as the one line the view has room for.
 fn one_line(written: &[u8]) -> String {
     String::from_utf8_lossy(written)
@@ -1841,6 +1889,7 @@ fn one_line(written: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::store::Choice;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -3286,5 +3335,98 @@ mod tests {
         assert!(!empty.recall(&[], true));
         assert_eq!(empty.text, "typed");
         assert!(!empty.recall(&[], false));
+    }
+
+    /// A forge of amx's own: a script that writes down the directory it ran in
+    /// and every word it was given, so what the view spawned can be read back.
+    ///
+    /// Written under a tempdir and handed to [`opened`] by name rather than put
+    /// on the PATH: what a suite must never do is run the gh the machine
+    /// running it has installed, against whatever repository it would answer
+    /// about.
+    fn a_fake_forge(under: &Path, name: &str, wrote: &Path) -> PathBuf {
+        let script = under.join(name);
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\" > {0}.new\nmv {0}.new {0}\n",
+                wrote.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    /// What the forge the view spawned was told.
+    ///
+    /// The spawn is not waited on, so the answer is waited for here instead.
+    /// And it is asked for again where none arrived: a script written this
+    /// instant is refused with `Text file busy` while a sibling thread's fork
+    /// still holds amx's write of it open, which is a flake rather than a fact
+    /// about the key.
+    fn told(at: &Path, gh: &Path, glab: &Path, wrote: &Path) -> Vec<String> {
+        for _ in 0..20 {
+            opened(at, gh, glab, 12).unwrap();
+            for _ in 0..25 {
+                if let Ok(said) = std::fs::read_to_string(wrote) {
+                    return said.lines().map(str::to_string).collect();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        panic!("the forge never ran");
+    }
+
+    #[test]
+    fn open_hands_the_request_to_gh_in_the_agents_own_directory() {
+        let home = TempDir::new().unwrap();
+        let wrote = home.path().join("said");
+        let gh = a_fake_forge(home.path(), "gh", &wrote);
+        let tree = home.path().join("tree");
+        std::fs::create_dir(&tree).unwrap();
+
+        // The browser is what opens, so the request is asked for by number and
+        // nothing else: the forge already knows which repository the tree is.
+        let said = told(&tree, &gh, Path::new("/nowhere/glab"), &wrote);
+        assert_eq!(
+            said[1..],
+            ["pr", "view", "12", "--web"],
+            "gh is asked to open the request in the browser: {said:?}"
+        );
+        assert_eq!(
+            std::fs::canonicalize(&said[0]).unwrap(),
+            std::fs::canonicalize(&tree).unwrap(),
+            "in the directory the agent works in: {said:?}"
+        );
+    }
+
+    #[test]
+    fn open_asks_glab_where_there_is_no_gh_and_says_so_where_there_is_neither() {
+        let home = TempDir::new().unwrap();
+        let wrote = home.path().join("said");
+        let glab = a_fake_forge(home.path(), "glab", &wrote);
+        let missing = home.path().join("nothing-here");
+
+        // What is written down beside the record does not say which forge
+        // answered about the branch, so a machine without gh is a machine whose
+        // requests are GitLab's.
+        let said = told(home.path(), &missing, &glab, &wrote);
+        assert_eq!(
+            said[1..],
+            ["mr", "view", "12", "--web"],
+            "glab opens a merge request: {said:?}"
+        );
+
+        // Neither of them installed is worth saying: there is nothing to press
+        // twice, and the row will go on carrying the number.
+        let why = format!(
+            "{:#}",
+            opened(home.path(), &missing, &missing, 12).unwrap_err()
+        );
+        assert!(
+            why.contains("gh") && why.contains("glab"),
+            "it names what is missing: {why}"
+        );
     }
 }
