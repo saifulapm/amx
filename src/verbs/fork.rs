@@ -155,6 +155,13 @@ fn start(
 ) -> Result<()> {
     let dir = paths::agent_dir_in(root, id)?;
     let mut env = env.clone();
+    // What the file says this harness runs with, from the project the copy
+    // will run in, which is the one the agent it copies ran in — the door the
+    // cap is read through. Then amx's own id over the top, as in `new`: a
+    // table that set the id would have the copy reporting as somebody else.
+    if let Some(agent) = &origin.agent {
+        spawn::harness_env(&mut env, &crate::config::for_dir(&origin.dir).0, agent);
+    }
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
     spawn::write_boot_env(&dir, &env)?;
     spawn::write_handoff(

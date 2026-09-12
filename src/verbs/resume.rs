@@ -268,6 +268,14 @@ fn bring_back(
     // the one this command was run with — the same rule `new` follows, because
     // an hour-old environment is nobody's idea of the one to run in.
     let mut env = env.clone();
+    // What the file says this harness runs with, from the project the agent
+    // ran in rather than the one this command was typed in: an agent comes
+    // back where it was, on the vendor it was started with. Then amx's own id
+    // over the top, as in `new`: a table that set the id would have this agent
+    // reporting under somebody else's name.
+    if let Some(agent) = &meta.agent {
+        spawn::harness_env(&mut env, &crate::config::for_dir(&meta.dir).0, agent);
+    }
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
     spawn::write_boot_env(agent.dir(), &env)?;
     spawn::write_handoff(agent.dir(), &handed_on(&recorded, session, message))?;

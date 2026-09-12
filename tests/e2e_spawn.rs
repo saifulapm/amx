@@ -52,16 +52,22 @@ fn new_as_claude(amx: &Harness, scenario: &str, args: &[&str]) -> Output {
     std::fs::create_dir_all(&bin).expect("a directory for the stand-in");
     std::fs::copy(amx.mock(), bin.join("claude")).expect("the stand-in under claude's name");
 
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
     amx.amx_command(&[&["new"], args].concat())
         .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
-        .env("PATH", path)
+        .env("PATH", path_with_the_stand_in(amx))
         .output()
         .expect("running amx new")
+}
+
+/// The PATH the stand-in is found on, for a command that starts an agent
+/// `new_as_claude` started once already: a resume and a fork launch what the
+/// record names, and what it names is claude.
+fn path_with_the_stand_in(amx: &Harness) -> String {
+    format!(
+        "{}:{}",
+        amx.home().join("bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
 }
 
 /// The argv amx wrote for the vendor, as the pane will be handed it.
@@ -99,6 +105,24 @@ fn pane_environ(pid: &str) -> std::collections::BTreeMap<String, String> {
             (name.to_string(), value.to_string())
         })
         .collect()
+}
+
+/// The environment of the pane this agent is in, once the vendor is the
+/// process in it.
+///
+/// Waiting for the stand-in to say how it was called is waiting for `_boot` to
+/// have read the boot file and exec'd the vendor, which is the moment the
+/// pane's own environment is the one amx handed over.
+fn pane_env(amx: &Harness, id: &str) -> std::collections::BTreeMap<String, String> {
+    argv_of(amx, id);
+    let pid = amx.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &amx.pane_of(id),
+        "#{pane_pid}",
+    ]);
+    pane_environ(&pid)
 }
 
 /// The row `amx ls --json` prints for this agent, where it has one.
@@ -522,6 +546,105 @@ fn the_agent_gets_the_environment_new_was_run_with() {
         !amx.agent_dir(&id).join("boot-env.json").exists(),
         "no file under the agent's directory holds the spawner's environment \
          once the pane is up"
+    );
+}
+
+#[test]
+fn every_pane_a_harness_starts_carries_what_its_table_sets() {
+    // A second account of one vendor, or a proxy in front of it, is written
+    // down once in that harness's table instead of in a wrapper script in
+    // front of every spawn -- and it reaches every pane amx opens on that
+    // harness, whichever verb opened it. amx's own variables stand over it:
+    // an agent whose AMX_ID a file changed would file its events under
+    // somebody else.
+    let amx = Harness::new();
+    amx.config("[claude.env]\nAMX_HARNESS_PROOF = \"~/proof\"\nAMX_ID = \"somebody-else\"\n");
+    let home = amx.home().to_path_buf();
+    let proof = home.join("proof").to_string_lossy().into_owned();
+    let carries = |env: &std::collections::BTreeMap<String, String>, id: &str| {
+        assert_eq!(
+            env.get("AMX_HARNESS_PROOF").map(String::as_str),
+            Some(proof.as_str()),
+            "the table's pair reaches the pane, with the ~ spelled out: {env:?}"
+        );
+        assert_eq!(
+            env.get("AMX_ID").map(String::as_str),
+            Some(id),
+            "and the agent is still the one amx started: {env:?}"
+        );
+    };
+
+    let id = id_of(&new_as_claude(
+        &amx,
+        "a-dispatched-worker",
+        &[
+            "--no-worktree",
+            "--dir",
+            &home.to_string_lossy(),
+            "--agent",
+            "claude",
+            "fix the login bug",
+        ],
+    ));
+    carries(&pane_env(&amx, &id), &id);
+
+    // A resume and a fork read the config of the project the agent ran in,
+    // and neither is given the vendor's session until the hook reports one.
+    amx.until("the hook to report a session", || {
+        amx.meta(&id)["session"].as_str().map(str::to_string)
+    });
+    let stopped = amx.amx(&["stop", &id, "--force"]);
+    assert!(
+        stopped.status.success(),
+        "amx stop: {}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+
+    let again = amx
+        .amx_command(&["resume", &id])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
+        .env("PATH", path_with_the_stand_in(&amx))
+        .output()
+        .expect("running amx resume");
+    assert!(
+        again.status.success(),
+        "amx resume: {}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+    carries(&pane_env(&amx, &id), &id);
+
+    let forked = amx
+        .amx_command(&["fork", &id])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
+        .env("PATH", path_with_the_stand_in(&amx))
+        .output()
+        .expect("running amx fork");
+    assert!(
+        forked.status.success(),
+        "amx fork: {}",
+        String::from_utf8_lossy(&forked.stderr)
+    );
+    let copy = String::from_utf8_lossy(&forked.stdout).trim().to_string();
+    carries(&pane_env(&amx, &copy), &copy);
+
+    // The table is the harness's, and a command that is a path is no harness
+    // the table has heard of.
+    let other = id_of(&new(
+        &amx,
+        "a-dispatched-worker",
+        &[
+            "--no-worktree",
+            "--dir",
+            &home.to_string_lossy(),
+            "--agent",
+            &amx.mock(),
+            "fix the login bug",
+        ],
+    ));
+    let env = pane_env(&amx, &other);
+    assert!(
+        !env.contains_key("AMX_HARNESS_PROOF"),
+        "claude's table reached a pane running something else: {env:?}"
     );
 }
 
