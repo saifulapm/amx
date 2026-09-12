@@ -201,6 +201,9 @@ impl Arrangement {
     ///
     /// The other half of the same question, asked the same way: see
     /// [`List::sleeping`].
+    // The order a wall is stepped through outside the view reads it, and takes
+    // it up next. Until it does, the callers are this module's own tests.
+    #[allow(dead_code)]
     pub fn has_asleep(&self, id: &str) -> bool {
         self.asleep.contains(id)
     }
@@ -578,6 +581,9 @@ impl List {
     ///
     /// A pinned agent lets go as it goes to sleep, and answers the same way
     /// [`List::hold_or_let_go`] does.
+    // The key that presses it is the view's, which takes it up next. Until it
+    // does, the callers are this module's own tests.
+    #[allow(dead_code)]
     pub fn sleep_or_wake(&mut self) -> bool {
         let Some(id) = self.selected().map(|view| view.id().to_string()) else {
             return false;

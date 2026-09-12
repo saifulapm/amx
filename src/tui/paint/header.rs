@@ -729,6 +729,26 @@ mod tests {
     }
 
     #[test]
+    fn header_counts_a_sleeping_agent_in_its_own_word_and_among_the_ones_asking() {
+        let mut screen = launching(vec![
+            view("ask-a1b", Phase::Waiting, None, 30),
+            view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
+        ]);
+
+        // The view opens on the agent that is asking, so the key puts that one
+        // under the wall.
+        assert!(screen.list.sleep_or_wake());
+        assert!(
+            screen_line(&screen, WIDE, 0)
+                .ends_with("1 working   1 asleep   2/5 running    1 WAITING"),
+            "the group a person made is counted in the word that finds it \
+             again, and the badge is the one number a mark on a row does not \
+             move: an agent somebody put away is still asking them: {:?}",
+            screen_line(&screen, WIDE, 0)
+        );
+    }
+
+    #[test]
     fn header_says_the_cap_the_fleet_is_counted_against_before_it_refuses() {
         let mut screen = launching(vec![
             view("busy-a1b", Phase::Working, None, 3),
