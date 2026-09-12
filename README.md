@@ -999,6 +999,7 @@ amx stop <id> --force    # takes the defaults, asks nothing
 amx stop <id> --worktree keep --branch delete
 amx stop <id> --delete   # and forget the record too
 amx resume <id>          # start it again on the conversation it had
+amx resume <id> "and now the linter"   # and put this to it as its first turn
 amx resume --all         # everything that was stopped, as after a server death
 ```
 
@@ -1028,6 +1029,15 @@ lose nothing: the worktree goes, the branch stays, the record stays. A
 worktree with uncommitted work in it is always kept, whatever you answer.
 `--delete` says the record goes; `--force` says every question takes its
 default. They are separate on purpose.
+
+A message after the id is the first turn of the agent that comes back. It goes
+on the vendor's command line, where a task goes, so the agent is working the
+moment its pane exists instead of standing at its prompt waiting to hear what
+happens next — and amx writes the message down as a send before the pane is
+there, so an `amx result <id>` in another shell waits for the turn it asks for
+rather than handing back the one before it. There is no message for `--all`,
+and a command row has no vendor in it to take one: that is `1`, and the line
+names `amx new --exec` as the way to run the command again.
 
 `resume` is also what brings back an agent amx parked. One that sat idle past
 `park_after` lost its pane and nothing else, so there is a conversation to pick

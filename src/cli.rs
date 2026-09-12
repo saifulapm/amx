@@ -191,9 +191,18 @@ pub enum Command {
     },
 
     /// Restart a stopped agent, continuing its recorded session.
+    ///
+    /// A message is the first turn of the agent that comes back. It rides the
+    /// vendor's argv as its prompt, where `new` puts a task, so the agent is
+    /// working the moment its pane exists rather than standing at its prompt
+    /// waiting to be told what happens next.
     Resume {
         #[arg(required_unless_present = "all")]
         id: Option<String>,
+        /// What to put to the agent as it comes back. Without one it picks up
+        /// where it was and waits for a turn.
+        #[arg(value_parser = a_task, conflicts_with = "all")]
+        message: Option<String>,
         /// Every stopped agent, as after a tmux server death.
         #[arg(long, conflicts_with = "id")]
         all: bool,

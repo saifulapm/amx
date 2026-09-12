@@ -507,6 +507,130 @@ fn resume_two_racers_bring_back_one_agent_and_not_two() {
 }
 
 #[test]
+fn resume_puts_a_message_to_the_agent_it_brings_back() {
+    // A resume with a message is a resume and a first turn in one command. The
+    // message rides the vendor's argv, where `new` puts a task, so it is in
+    // front of the agent the moment the pane exists.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, amx.home(), "happy-turn");
+    amx.until_state(id, "idle");
+    let session = amx.meta(id)["session"]
+        .as_str()
+        .expect("a session was recorded")
+        .to_string();
+    amx.amx(&["stop", id, "--force"]);
+
+    said(&resume(&amx, &[id, "and now the linter"]));
+
+    let called = argv_of(&amx, id);
+    assert!(called.contains(&format!("--resume={session}")), "{called}");
+    assert!(called.contains("and now the linter"), "{called}");
+    assert!(
+        !called.contains("fix the login bug"),
+        "the work asked for once: {called}"
+    );
+
+    // And the handoff says the message is what this agent was asked for, so
+    // the next resume carries it no further.
+    assert_eq!(amx.handoff(id)["task"], "and now the linter");
+}
+
+#[test]
+fn resume_records_the_message_as_a_send_before_the_pane_exists() {
+    // `result` hands back the turn after the last message amx sent, so a send
+    // written once the vendor was up would leave a window in which `result`
+    // answered with the turn before. The record is written under the writer's
+    // lock, before tmux is asked for anything.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, amx.home(), "happy-turn");
+    amx.until_state(id, "idle");
+    amx.amx(&["stop", id, "--force"]);
+    let before = amx.event_kinds(id).len();
+
+    said(&resume(&amx, &[id, "and now the linter"]));
+
+    let written = amx.event_kinds(id);
+    let sent = written
+        .iter()
+        .position(|kind| kind == "send")
+        .unwrap_or_else(|| panic!("no send was recorded: {written:?}"));
+    assert_eq!(
+        &written[before..=sent],
+        ["resume", "send"],
+        "the send follows the resume and nothing came between: {written:?}"
+    );
+    assert_eq!(
+        amx.events(id)[sent]["payload"]["text"],
+        "and now the linter"
+    );
+
+    // And it is the vendor's first word that follows, which only arrives once
+    // the pane is there.
+    until_continued(&amx, id);
+    assert!(
+        amx.event_kinds(id)[sent + 1..].contains(&"SessionStart".to_string()),
+        "{written:?}"
+    );
+
+    // A resume with nothing to say records no send: an agent that comes back
+    // to its own prompt was told nothing.
+    amx.amx(&["stop", id, "--force"]);
+    let before = amx.event_kinds(id).len();
+    said(&resume(&amx, &[id]));
+    assert!(
+        !amx.event_kinds(id)[before..].contains(&"send".to_string()),
+        "{:?}",
+        amx.event_kinds(id)
+    );
+}
+
+#[test]
+fn resume_says_a_command_row_has_no_vendor_to_take_a_message() {
+    // A command is not a conversation. There is nothing in that pane to read a
+    // prompt, so the message is refused before anything is written, and what
+    // is named is the verb that runs the command again.
+    let amx = Harness::new();
+    let id = "run-tests-a1b";
+    something_else_on_the_server(&amx);
+    let out = amx
+        .amx_command(&["new", "--name", id, "--exec", "true"])
+        .output()
+        .expect("running amx new --exec");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    amx.until_state(id, "done");
+    let gone = amx.pane_of(id);
+    until_pane_gone(&amx, &gone);
+    let before = amx.event_kinds(id);
+
+    let out = resume(&amx, &[id, "and now the linter"]);
+    assert_eq!(out.status.code(), Some(1));
+    let why = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(why.contains("amx new --exec"), "{why}");
+    assert_eq!(amx.pane_of(id), gone, "and nothing was started");
+    assert_eq!(amx.event_kinds(id), before, "nor written");
+}
+
+#[test]
+fn resume_takes_no_message_for_every_agent_at_once() {
+    // `--all` is the morning after a server death, and a message is for the
+    // one agent somebody has in mind. The command line is wrong rather than
+    // the state being wrong, so it is 64 and nothing is brought back.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let gone = ran_and_stopped(&amx, id);
+
+    let out = resume(&amx, &["--all", "and now the linter"]);
+    assert_eq!(out.status.code(), Some(64));
+    assert_eq!(amx.pane_of(id), gone, "and nothing was brought back");
+}
+
+#[test]
 fn resume_picks_up_an_agent_whose_command_ran_to_the_end() {
     // How an agent ended is not whether there is a session behind it. One that
     // finished has an answer and a session, and picking that session up is how

@@ -16,6 +16,14 @@
 //! would turn those hooks away — including the one carrying the new session
 //! id. And the pane is placed **before** the record learns where it is, since
 //! there is no pane id to record until tmux has made one.
+//!
+//! A message rides the same command. It is the first turn of the agent that
+//! comes back, and it travels on the vendor's argv rather than as a `send`
+//! afterwards: a send confirms itself against the pane within five seconds and
+//! a vendor is still starting then, while the argv is the one road that cannot
+//! race the vendor's startup. What the log gets is the send anyway, written
+//! before the pane exists, so a `result` in another shell waits for the turn
+//! the message asks for rather than handing back the turn before it.
 
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -27,6 +35,7 @@ use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, Phase, State};
 use crate::tmux::Server;
 use crate::vendor::{self, Capability, ForkSpec, SessionSpec, Vendor};
+use crate::verbs::send;
 use crate::{complain, derive, exit, paths, store, warn, worktree};
 
 /// What amx records when it brings an agent back.
@@ -71,7 +80,7 @@ pub fn again(
     if let Some(full) = at_capacity(root, &meta.dir)? {
         return Ok(Comeback::No(full));
     }
-    bring_back(root, id, env)?;
+    bring_back(root, id, None, env)?;
     Ok(Comeback::Back)
 }
 
@@ -80,30 +89,53 @@ pub fn again(
 /// The config the caller holds is the person's file, and nothing here reads
 /// it: an agent comes back where it ran, and the cap it answers to is that
 /// project's.
-pub fn from_env(_config: &Config, id: Option<&str>, all: bool) -> Result<i32> {
+pub fn from_env(
+    _config: &Config,
+    id: Option<&str>,
+    message: Option<&str>,
+    all: bool,
+) -> Result<i32> {
     let root = paths::state_root()?;
     let env = spawn::env_snapshot(std::env::vars());
     let mut out = std::io::stdout().lock();
-    run(&root, id, all, &env, &mut out)
+    run(&root, id, message, all, &env, &mut out)
 }
 
 /// The verb, with everything it reads named.
 pub fn run(
     root: &Path,
     id: Option<&str>,
+    message: Option<&str>,
     all: bool,
     env: &BTreeMap<String, String>,
     out: &mut impl Write,
 ) -> Result<i32> {
     match id {
-        Some(id) if !all => one(root, id, env, out),
+        Some(id) if !all => one(root, id, message, env, out),
         _ => sweep(root, env, out),
     }
 }
 
 /// One agent, named.
-fn one(root: &Path, id: &str, env: &BTreeMap<String, String>, out: &mut impl Write) -> Result<i32> {
+fn one(
+    root: &Path,
+    id: &str,
+    message: Option<&str>,
+    env: &BTreeMap<String, String>,
+    out: &mut impl Write,
+) -> Result<i32> {
     let view = derive::view(root, id, store::now())?;
+    // Before the state is looked at, because the state is not what is wrong: a
+    // command row has nothing in its pane that reads a prompt, whatever it left
+    // off doing. Saying it is running instead would send somebody off to stop
+    // it and type the same thing again.
+    if message.is_some() && is_a_command(&view) {
+        complain!(
+            "amx resume: {id} is a command, and a command has no vendor to take a \
+             message. run it again with `amx new --exec`"
+        );
+        return Ok(exit::FAILURE);
+    }
     if !nothing_is_running(&view) {
         warn!(
             "amx resume: {id} is {}. stop it before starting it again",
@@ -116,9 +148,18 @@ fn one(root: &Path, id: &str, env: &BTreeMap<String, String>, out: &mut impl Wri
         return Ok(exit::BLOCKED);
     }
 
-    bring_back(root, id, env)?;
+    bring_back(root, id, message, env)?;
     writeln!(out, "{id} resumed")?;
     Ok(exit::OK)
+}
+
+/// Whether this row is a command amx ran rather than an agent it started.
+///
+/// The vendor is what a record names, and `--exec` names none: nothing amx
+/// launched for that row reads a prompt, so there is nothing there for a
+/// message to be put to.
+fn is_a_command(view: &derive::View) -> bool {
+    view.meta.agent.is_none()
 }
 
 /// Whether there is nothing in a pane for a resume to be started over the top
@@ -161,7 +202,7 @@ fn sweep(root: &Path, env: &BTreeMap<String, String>, out: &mut impl Write) -> R
         // One agent that cannot come back is not the sweep's ending. The
         // others still can, and this is the command somebody runs when the
         // whole wall went at once.
-        match bring_back(root, view.id(), env) {
+        match bring_back(root, view.id(), None, env) {
             Ok(()) => writeln!(out, "{} resumed", view.id())?,
             Err(e) => complain!("amx resume: {}: {e:#}", view.id()),
         }
@@ -194,7 +235,12 @@ fn at_capacity(root: &Path, dir: &Path) -> Result<Option<String>> {
 /// first wrote, so one session is never continued into two panes. The gates
 /// in [`one`] and [`sweep`] are for saying so politely; this one is for
 /// being right.
-fn bring_back(root: &Path, id: &str, env: &BTreeMap<String, String>) -> Result<()> {
+fn bring_back(
+    root: &Path,
+    id: &str,
+    message: Option<&str>,
+    env: &BTreeMap<String, String>,
+) -> Result<()> {
     let agent = Agent::open(root, id)?;
     let writer = agent.writer()?;
 
@@ -224,13 +270,7 @@ fn bring_back(root: &Path, id: &str, env: &BTreeMap<String, String>) -> Result<(
     let mut env = env.clone();
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
     spawn::write_boot_env(agent.dir(), &env)?;
-    spawn::write_handoff(
-        agent.dir(),
-        &Handoff {
-            task: recorded.task.clone(),
-            command: continuing(&recorded, session),
-        },
-    )?;
+    spawn::write_handoff(agent.dir(), &handed_on(&recorded, session, message))?;
 
     writer.append(&Event::new(
         RESUMED,
@@ -246,6 +286,19 @@ fn bring_back(root: &Path, id: &str, env: &BTreeMap<String, String>) -> Result<(
             ..State::default()
         }
     })?;
+    // A message is on the record before the pane is, which is
+    // [`send::deliver`]'s order and for its reason: a `result` in another shell
+    // reads the last send to know which turn it is waiting for, and one written
+    // after the vendor was up would leave a window in which the turn before the
+    // message read as this one's answer. There is no paste to go with it —
+    // the message is already in the argv the pane is about to run.
+    if let Some(message) = message {
+        writer.append(&Event::new(
+            send::SEND,
+            serde_json::json!({ "text": message }),
+        ))?;
+        writer.observe(|state| state.seq += 1)?;
+    }
 
     let server = spawn::server()?;
     let boot = vec![
@@ -266,6 +319,28 @@ fn bring_back(root: &Path, id: &str, env: &BTreeMap<String, String>) -> Result<(
         meta.pane = pane;
     })?;
     Ok(())
+}
+
+/// What the agent is being asked for this time, and the words that ask it.
+///
+/// Without a message the handoff is the one the agent already had: the task it
+/// was started on, and the vendor's own argv for the session it opened.
+///
+/// A message replaces both. It goes last, where `new` puts a task and `fork`
+/// puts its prompt, and it becomes the handoff's task — which is what makes the
+/// next resume drop it. [`continuing`] strips a last word equal to the task
+/// written beside it, so the message written down here is the message taken off
+/// there, and no later resume asks for it a second time.
+///
+/// [`Meta::task`] is untouched by any of it. That is the work the row is about,
+/// and a follow-up turn is not a new piece of work.
+fn handed_on(recorded: &Handoff, session: &str, message: Option<&str>) -> Handoff {
+    let mut command = continuing(recorded, session);
+    command.extend(message.map(str::to_string));
+    Handoff {
+        task: message.unwrap_or(&recorded.task).to_string(),
+        command,
+    }
 }
 
 /// The vendor's argv for a session it already has.
@@ -658,6 +733,46 @@ mod tests {
         // A command amx has no entry for is started again as it always was.
         spawn::write_handoff(dir.path(), &handoff(&["mock-claude", "go"], "go")).unwrap();
         assert_eq!(to_start(dir.path(), "fix-login-a1b"), Ok(()));
+    }
+
+    #[test]
+    fn resume_puts_a_message_where_a_first_turn_goes() {
+        let started = handoff(
+            &["claude", "--model", "opus", "fix the login bug"],
+            "fix the login bug",
+        );
+
+        // Without one, the handoff is what a resume has always written: the
+        // task the agent was started on, and the words that continue it.
+        let carried = handed_on(&started, "abc-123", None);
+        assert_eq!(carried.task, "fix the login bug");
+        assert_eq!(
+            carried.command,
+            ["claude", "--model", "opus", "--resume=abc-123"]
+        );
+
+        // With one it goes last, where `new` puts a task, and the handoff says
+        // the message is what this agent was asked for.
+        let carried = handed_on(&started, "abc-123", Some("and now the linter"));
+        assert_eq!(carried.task, "and now the linter");
+        assert_eq!(
+            carried.command,
+            [
+                "claude",
+                "--model",
+                "opus",
+                "--resume=abc-123",
+                "and now the linter"
+            ]
+        );
+
+        // Which is what the next resume reads, and why it drops the message
+        // rather than asking for it a second time.
+        let after = handed_on(&carried, "def-456", None);
+        assert_eq!(
+            after.command,
+            ["claude", "--model", "opus", "--resume=def-456"]
+        );
     }
 
     #[test]

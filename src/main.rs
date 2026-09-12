@@ -102,9 +102,12 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Attach { id }) => finish(verbs::attach::from_env(id)),
         Some(cli::Command::Logs { id, lines }) => finish(verbs::logs::from_env(id, *lines)),
         Some(cli::Command::Diff { id, stat }) => finish(verbs::diff::from_env(id, *stat)),
-        Some(cli::Command::Resume { id, all }) => {
-            finish(verbs::resume::from_env(config, id.as_deref(), *all))
-        }
+        Some(cli::Command::Resume { id, message, all }) => finish(verbs::resume::from_env(
+            config,
+            id.as_deref(),
+            message.as_deref(),
+            *all,
+        )),
         Some(cli::Command::Adopt(args)) => finish(verbs::adopt::from_env(args)),
         Some(cli::Command::Fork { id, task }) => {
             finish(verbs::fork::from_env(config, id, task.as_deref()))
