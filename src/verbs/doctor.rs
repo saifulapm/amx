@@ -2,7 +2,8 @@
 //!
 //! Nine things have to be true before an agent can run: a tmux new enough to
 //! address panes by id, a vendor command to run, a config amx can read, amx's
-//! hooks wired into the vendor's settings, one amx on the PATH and this the
+//! hooks wired into the vendor's settings or carried by the amx plugin
+//! instead, one amx on the PATH and this the
 //! one, a state root amx can keep an agent in, no handoff still carrying the
 //! spawner's environment from before that moved to a file of its own, no
 //! agent already stopped at a screen the vendor puts in front of the work, and
@@ -97,6 +98,9 @@ pub struct Findings {
     /// extension amx writes — and what is wired there now.
     pub wire: PathBuf,
     pub wired: install::Wired,
+    /// Whether the same wiring is on this machine as the amx plugin, which
+    /// writes into no settings file at all.
+    pub plugin: bool,
     /// The hook command this amx would install.
     pub command: String,
     /// This amx, and every amx the PATH finds in the order it looks — each
@@ -267,6 +271,14 @@ fn wiring_check(found: &Findings, vendor: Option<&'static Vendor>) -> Check {
             )
         }
         install::Wired::Settings { events, .. } => {
+            // The plugin is the same events by another door, and the door it
+            // did not come through has nothing missing from it.
+            if found.plugin {
+                return Check::ok(
+                    "hooks",
+                    format!("all {} wired through the amx plugin", hooks.events.len()),
+                );
+            }
             let missing: Vec<&str> = install::events(hooks)
                 .filter(|event| !events.iter().any(|wired| wired == *event))
                 .collect();
@@ -602,6 +614,7 @@ pub fn gather(config: &Config) -> Result<Findings> {
     let hooks = hooks_of(registry::entry(&config.agent));
     let wire = hooks.map_or_else(|| home.clone(), |hooks| install::wire_path(hooks, &home));
     let wired = install::wired(hooks, &home, &command);
+    let plugin = install::plugin_wired(&home);
     let (_, config_warnings) = crate::config::load();
     let state_root = crate::paths::state_root()?;
     // Only for the vendor whose screen amx answers by writing its store: any
@@ -625,6 +638,7 @@ pub fn gather(config: &Config) -> Result<Findings> {
         home,
         wire,
         wired,
+        plugin,
         command,
         on_path: every_on_path("amx", std::env::var_os("PATH").as_deref()),
         exe: exe.canonicalize().unwrap_or(exe),
@@ -954,6 +968,7 @@ mod tests {
             home: PathBuf::from("/home/dev"),
             wire: PathBuf::from("/home/dev/.claude/settings.json"),
             wired: all_wired(),
+            plugin: false,
             command: COMMAND.to_string(),
             exe: PathBuf::from("/home/dev/.cargo/bin/amx"),
             on_path: vec![PathBuf::from("/home/dev/.cargo/bin/amx")],
@@ -1288,6 +1303,39 @@ mod tests {
         );
         let asked = install::consent_line(&crate::vendor::pi::HOOKS, &extension, false);
         assert!(asked.contains("extension"), "{asked}");
+    }
+
+    #[test]
+    fn doctor_reads_the_plugin_as_the_wiring_the_settings_would_have_carried() {
+        // The plugin wires the same events out of the repository's own hooks
+        // file, and writes nothing into anybody's settings. A machine wired
+        // that way is wired: doctor saying otherwise would send somebody to
+        // repair what is already there.
+        let mut found = healthy();
+        found.wired = none_wired();
+        found.plugin = true;
+
+        let hooks = check(&found, "hooks");
+        assert!(hooks.is_ok(), "{hooks:?}");
+        assert!(
+            hooks
+                .found
+                .contains(&claude::HOOKS.events.len().to_string()),
+            "how many events: {}",
+            hooks.found
+        );
+        assert!(
+            hooks.found.contains("plugin"),
+            "and which door they came through: {}",
+            hooks.found
+        );
+        assert_eq!(said(&found, false).0, exit::OK);
+
+        // Half a settings file and no plugin is still half a settings file.
+        found.plugin = false;
+        let hooks = check(&found, "hooks");
+        assert!(!hooks.is_ok(), "{hooks:?}");
+        assert!(hooks.remedy.as_deref().unwrap().contains("--fix"));
     }
 
     #[test]

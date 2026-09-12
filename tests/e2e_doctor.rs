@@ -473,3 +473,49 @@ fn doctor_forgets_the_trees_claudes_store_still_names_after_they_went() {
     let (ok, line) = check_line(&printed, "store");
     assert!(ok, "nothing of amx's is left in it: {line}");
 }
+
+#[test]
+fn doctor_reads_the_plugin_as_the_wiring_and_offers_the_settings_without_it() {
+    // `claude plugin install amx@amx` wires the same seven events out of the
+    // repository's own hooks file and writes nothing into anybody's settings,
+    // so a machine installed that way has a settings file with nothing of
+    // amx's in it and is wired all the same.
+    let amx = Harness::new();
+    amx.config("agent = \"claude\"\n");
+
+    let printed = doctor(&amx);
+    let (ok, line) = check_line(&printed, "hooks");
+    assert!(!ok, "neither wiring is there yet: {line}");
+    assert!(
+        printed.contains("amx doctor --fix"),
+        "and the settings are what is offered: {printed}"
+    );
+
+    // What claude leaves behind once the plugin has been installed.
+    let installed = amx.home().join(".claude/plugins/installed_plugins.json");
+    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    std::fs::write(
+        &installed,
+        serde_json::to_string_pretty(&json!({
+            "version": 2,
+            "plugins": {
+                "amx@amx": [{
+                    "scope": "user",
+                    "installPath": amx.home().join(".claude/plugins/cache/amx/amx"),
+                    "version": "0.3.0",
+                }],
+            },
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let printed = doctor(&amx);
+    let (ok, line) = check_line(&printed, "hooks");
+    assert!(ok, "the plugin is the wiring: {printed}");
+    assert!(line.contains("plugin"), "and it says which door: {line}");
+    assert!(
+        !amx.home().join(".claude/settings.json").exists(),
+        "nothing was written into the settings to get there"
+    );
+}

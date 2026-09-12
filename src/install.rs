@@ -146,6 +146,34 @@ pub fn wired(hooks: Option<&Hooks>, home: &Path, command: &str) -> Wired {
     }
 }
 
+/// Where claude writes down the plugins it has been given, under a home, and
+/// the name amx's own is listed there under: the plugin as this repository's
+/// marketplace names it, at the marketplace it was added from.
+const INSTALLED_PLUGINS: &str = ".claude/plugins/installed_plugins.json";
+const PLUGIN: &str = "amx@amx";
+
+/// Whether this machine carries amx's hooks as a plugin instead.
+///
+/// `claude plugin install amx@amx` is the same seven events by another door:
+/// the plugin's own hooks file wires them, and nothing is written into the
+/// person's settings at all. A machine wired that way has to read green, or
+/// doctor would send somebody to repair wiring that is already there.
+///
+/// A file that is not there, or that does not parse, is answered no. It is
+/// claude's file to write and amx never touches it, so the only honest thing
+/// amx can say about one it cannot read is that it found no plugin in it.
+pub fn plugin_wired(home: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(home.join(INSTALLED_PLUGINS)) else {
+        return false;
+    };
+    let Ok(installed) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    installed["plugins"][PLUGIN]
+        .as_array()
+        .is_some_and(|installs| !installs.is_empty())
+}
+
 /// Wire `hooks` under `home`, whichever shape the wire is.
 pub fn install_hooks(hooks: &Hooks, home: &Path, command: &str, now: u64) -> Result<Report> {
     let path = wire_path(hooks, home);
@@ -875,6 +903,57 @@ mod tests {
                 assert!(group.get("matcher").is_none(), "{}", wiring.event);
             }
         }
+    }
+
+    /// What claude leaves under a home once the plugin has been installed,
+    /// in the shape measured off claude 2.1.263. `enabledPlugins` in the
+    /// settings stays `{}` there, so this file is the only witness.
+    fn installed_plugins(home: &Path, listed: Value) {
+        let path = home.join(INSTALLED_PLUGINS);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string_pretty(&listed).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn the_plugin_is_wired_when_claude_has_been_given_it() {
+        let home = TempDir::new().unwrap();
+        assert!(
+            !plugin_wired(home.path()),
+            "a home with no plugins file has no plugin in it"
+        );
+
+        installed_plugins(
+            home.path(),
+            json!({
+                "version": 2,
+                "plugins": {
+                    "amx@amx": [{
+                        "scope": "user",
+                        "installPath": "/home/dev/.claude/plugins/cache/amx/amx",
+                        "version": "0.3.0",
+                    }],
+                },
+            }),
+        );
+        assert!(plugin_wired(home.path()));
+
+        // Somebody else's plugins are not amx's, and neither is an entry
+        // claude wrote and then emptied.
+        installed_plugins(
+            home.path(),
+            json!({ "version": 2, "plugins": { "focus@focus": [{"scope": "user"}] } }),
+        );
+        assert!(!plugin_wired(home.path()));
+        installed_plugins(
+            home.path(),
+            json!({ "version": 2, "plugins": { "amx@amx": [] } }),
+        );
+        assert!(!plugin_wired(home.path()));
+
+        // A file claude's own, which amx never writes, and which amx cannot
+        // read: no plugin found, and nothing said about their file.
+        std::fs::write(home.path().join(INSTALLED_PLUGINS), "{ not json").unwrap();
+        assert!(!plugin_wired(home.path()));
     }
 
     #[test]
