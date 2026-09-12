@@ -1250,7 +1250,12 @@ from the repository root into the tree — the few git is right not to carry.
 an install rather than making one of its own. `setup` is what runs in the tree,
 in order, through `sh -c`, before the pane starts. Paths are exact and relative
 to the repository root, no globs, and one that is not in the repository is
-warned about by name and skipped. `base` is what a tree is cut from — any
+warned about by name and skipped. A setup command runs with `AMX_ID`,
+`AMX_WORKTREE`, `AMX_REPO` and `AMX_AGENT_DIR` set, so it knows which agent it
+is furnishing for and where the repository behind the tree is; the first one
+that exits non-zero refuses the spawn, with whatever it said on stderr as the
+reason, and the tree goes with it rather than standing half furnished for an
+agent to work the rest out. `base` is what a tree is cut from — any
 branch, tag or commit git will resolve — and left out it is HEAD where you
 typed the command.
 

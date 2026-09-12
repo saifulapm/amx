@@ -635,6 +635,141 @@ fn new_refuses_a_base_that_names_no_commit_before_anything_is_made() {
 }
 
 #[test]
+fn new_furnishes_the_tree_before_the_pane_starts() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let repo = amx.a_repo();
+    std::fs::write(repo.join(".env"), "TOKEN=hunter2\n").expect("what git is right not to carry");
+    std::fs::create_dir(repo.join("node_modules")).expect("an install to share");
+    std::fs::write(repo.join("node_modules/left-pad"), "installed\n").expect("something in it");
+    amx.config(
+        r#"copy = [".env"]
+link = ["node_modules"]
+setup = ["printf '%s\\n' \"$AMX_ID\" \"$AMX_WORKTREE\" \"$AMX_REPO\" \"$AMX_AGENT_DIR\" > furnished"]
+"#,
+    );
+
+    let id = id_of(&new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            &mock,
+            "fix the login bug",
+        ],
+    ));
+
+    let worktree = repo.join(".amx/worktrees").join(&id);
+    assert_eq!(
+        std::fs::read_to_string(worktree.join(".env")).expect("the file was copied in"),
+        "TOKEN=hunter2\n"
+    );
+    assert!(
+        std::fs::symlink_metadata(worktree.join("node_modules"))
+            .expect("the directory was linked in")
+            .file_type()
+            .is_symlink(),
+        "an install shared rather than made again"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("node_modules/left-pad")).unwrap(),
+        "installed\n"
+    );
+
+    let furnished =
+        std::fs::read_to_string(worktree.join("furnished")).expect("the setup command ran");
+    assert_eq!(
+        furnished.lines().collect::<Vec<&str>>(),
+        [
+            id.as_str(),
+            worktree.to_str().unwrap(),
+            repo.to_str().unwrap(),
+            amx.agent_dir(&id).join("scratch").to_str().unwrap(),
+        ],
+        "under the four variables, in the tree"
+    );
+}
+
+#[test]
+fn new_says_what_the_config_names_and_the_repository_does_not_have() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let repo = amx.a_repo();
+    amx.config("copy = [\".env\"]\nlink = [\"node_modules\"]\n");
+
+    let out = new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            &mock,
+            "fix the login bug",
+        ],
+    );
+
+    // A config file outlives the project it was written for, so a path this
+    // repository does not have is said and stepped over.
+    let id = id_of(&out);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains(".env"), "the path by name: {said}");
+    assert!(said.contains("node_modules"), "{said}");
+    let worktree = repo.join(".amx/worktrees").join(&id);
+    assert!(
+        !worktree.join(".env").exists() && !worktree.join("node_modules").exists(),
+        "and nothing was made for either of them"
+    );
+}
+
+#[test]
+fn new_refuses_a_spawn_whose_setup_failed_and_leaves_no_tree() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let repo = amx.a_repo();
+    amx.config("setup = [\"echo no such lockfile >&2; exit 3\", \"touch second\"]\n");
+
+    let refused = new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            &mock,
+            "fix the login bug",
+        ],
+    );
+
+    assert_eq!(refused.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        said.contains("no such lockfile"),
+        "what the command said: {said}"
+    );
+    assert_eq!(
+        std::fs::read_dir(repo.join(".amx/worktrees"))
+            .map(|trees| trees.count())
+            .unwrap_or(0),
+        0,
+        "a tree an agent cannot work in is worse than none"
+    );
+    assert_eq!(
+        git(&repo, &["branch", "--list", "amx/*"]),
+        "",
+        "nor is a branch left for it"
+    );
+    let listed = amx.amx(&["ls", "--json"]);
+    assert_eq!(
+        String::from_utf8_lossy(&listed.stdout).trim(),
+        "[]",
+        "and no agent was started"
+    );
+}
+
+#[test]
 fn new_runs_in_the_directory_as_it_is_when_asked() {
     let amx = Harness::new();
     let mock = amx.mock();

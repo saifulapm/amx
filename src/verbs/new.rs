@@ -375,12 +375,13 @@ fn start(
     problems: &mut impl Write,
     to_terminal: bool,
 ) -> Result<()> {
-    let tree = cut_worktree(dir, id, config, args)?;
+    let cut = cut_worktree(dir, id, config, args)?;
+    let tree = cut.as_ref().map(|(_, tree)| tree);
     let cwd = tree
-        .as_ref()
         .map(|tree| tree.path.clone())
         .unwrap_or_else(|| dir.to_path_buf());
-    if let Some(tree) = &tree {
+    if let Some((repo, tree)) = &cut {
+        furnish_the_tree(config, agent_dir, id, repo, tree, problems, to_terminal)?;
         trust_the_tree(
             config,
             &env,
@@ -422,9 +423,9 @@ fn start(
             task: args.task.clone(),
             agent: vendor_written(args.exec, &launch.agent),
             dir: cwd,
-            worktree: tree.as_ref().map(|tree| tree.path.clone()),
-            branch: tree.as_ref().map(|tree| tree.branch.clone()),
-            base: tree.as_ref().map(|tree| tree.base.clone()),
+            worktree: tree.map(|tree| tree.path.clone()),
+            branch: tree.map(|tree| tree.branch.clone()),
+            base: tree.map(|tree| tree.base.clone()),
             socket: server.socket().clone(),
             pane,
             // Nothing is out of sight any more: an agent is a session nobody
@@ -500,17 +501,22 @@ fn cut_from<'a>(config: &'a Config, args: &'a NewArgs) -> Option<&'a str> {
 }
 
 /// A worktree of its own, when the agent is being sent into a repository and
-/// nobody has said not to.
+/// nobody has said not to, with the repository it was cut from beside it.
 ///
 /// Never for a command. A worktree is there to keep one conversation's work
 /// apart from another's, and a command has no conversation: it was typed to
 /// run *here*, against this checkout and whatever is already built in it.
+///
+/// The repository is answered with rather than asked for again, because
+/// furnishing copies out of it and the question has two answers: `git` asked
+/// from inside a linked worktree names that worktree, and the tree was cut
+/// from whichever one `new` was typed in.
 fn cut_worktree(
     dir: &Path,
     id: &str,
     config: &Config,
     args: &NewArgs,
-) -> Result<Option<worktree::Worktree>> {
+) -> Result<Option<(PathBuf, worktree::Worktree)>> {
     if args.exec || args.no_worktree || !config.worktrees {
         return Ok(None);
     }
@@ -521,7 +527,74 @@ fn cut_worktree(
     let Some(repo) = worktree::repo_root(dir)? else {
         return Ok(None);
     };
-    Ok(Some(worktree::create(&repo, id, cut_from(config, args))?))
+    let tree = worktree::create(&repo, id, cut_from(config, args))?;
+    Ok(Some((repo, tree)))
+}
+
+/// Furnish the tree amx has just cut: the files and directories the config
+/// names, and then its setup commands, before the pane is placed.
+///
+/// The other half of a tree being worth working in, and the opposite kind of
+/// answer to [`trust_the_tree`]'s. A path the config names and the repository
+/// does not have is said and stepped over — a config file outlives the project
+/// it was written for. A setup command that fails takes the tree with it and
+/// refuses the spawn, because what is left of a tree whose install did not
+/// finish is worse than no tree at all: the agent would spend its first turn
+/// working that out.
+fn furnish_the_tree(
+    config: &Config,
+    agent_dir: &Path,
+    id: &str,
+    repo: &Path,
+    tree: &worktree::Worktree,
+    problems: &mut impl Write,
+    to_terminal: bool,
+) -> Result<()> {
+    // The two a setup command cannot work out for itself. The tree it runs in
+    // and the repository behind it are the furnishing's own to say.
+    let env = [
+        (crate::hook::ID_ENV.to_string(), id.to_string()),
+        (
+            spawn::AGENT_DIR_ENV.to_string(),
+            spawn::scratch(agent_dir)?.to_string_lossy().into_owned(),
+        ),
+    ];
+
+    match worktree::furnish(
+        repo,
+        &tree.path,
+        &config.copy,
+        &config.link,
+        &config.setup,
+        &env,
+    ) {
+        Ok(missing) => {
+            for path in missing {
+                writeln!(
+                    problems,
+                    "{}",
+                    said(Severity::Warned, &format!("amx new: {path}"), to_terminal)
+                )?;
+            }
+            Ok(())
+        }
+        Err(e) => {
+            // Nothing half furnished stands. What the undo cannot do is said
+            // and the refusal is still the answer: the spawn is off either way.
+            if let Err(undone) = worktree::discard(repo, &tree.path, &tree.branch) {
+                let _ = writeln!(
+                    problems,
+                    "{}",
+                    said(
+                        Severity::Warned,
+                        &format!("amx new: {undone:#}"),
+                        to_terminal
+                    )
+                );
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Write the vendor's own trust store for the tree amx has just cut, so that

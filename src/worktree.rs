@@ -146,6 +146,108 @@ fn commit_of(repo: &Path, named: &str) -> Result<String> {
     .map_err(|_| anyhow!("{named} is no commit to cut a worktree from"))
 }
 
+/// The tree a setup command is run in.
+pub const WORKTREE_ENV: &str = "AMX_WORKTREE";
+
+/// The repository that tree was cut from.
+pub const REPO_ENV: &str = "AMX_REPO";
+
+/// Furnish a tree that has just been cut: the files `copy` names taken from
+/// the repository, the directories `link` names pointed at the repository's
+/// own, and then `setup`, command by command, in the tree.
+///
+/// What a fresh checkout is missing is exactly what git is right not to carry —
+/// the `.env` nobody commits, the install that takes four minutes — so without
+/// this an agent's first turn goes on an install or on a failed test rather
+/// than on the task.
+///
+/// The answer is the paths that were not in the repository, said by name: a key
+/// naming a file this repository does not have is a config file outliving one
+/// of somebody's projects, not a reason to refuse them an agent. A setup
+/// command that fails is the other way round and is an error carrying what it
+/// said, because the tree is what the agent was going to work in and one that
+/// is half furnished is worse than none.
+///
+/// `env` is what the caller knows and this does not: which agent this is, and
+/// where it may scribble. The tree and the repository are set from the
+/// arguments themselves.
+pub fn furnish(
+    repo: &Path,
+    tree: &Path,
+    copy: &[String],
+    link: &[String],
+    setup: &[String],
+    env: &[(String, String)],
+) -> Result<Vec<String>> {
+    let mut missing = Vec::new();
+
+    for path in copy {
+        let from = repo.join(path);
+        if !from.exists() {
+            missing.push(format!("{path} is not in {}", repo.display()));
+            continue;
+        }
+        let to = tree.join(path);
+        make_way_for(&to)?;
+        std::fs::copy(&from, &to)
+            .with_context(|| format!("copying {path} into {}", tree.display()))?;
+    }
+
+    for path in link {
+        let from = repo.join(path);
+        if !from.exists() {
+            missing.push(format!("{path} is not in {}", repo.display()));
+            continue;
+        }
+        let at = tree.join(path);
+        make_way_for(&at)?;
+        std::os::unix::fs::symlink(&from, &at)
+            .with_context(|| format!("linking {path} into {}", tree.display()))?;
+    }
+
+    for command in setup {
+        run_setup(repo, tree, command, env)?;
+    }
+
+    Ok(missing)
+}
+
+/// The directory a copy or a link is about to go in, since a path is exact and
+/// `config/local.toml` names one the tree may not have.
+fn make_way_for(path: &Path) -> Result<()> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))
+}
+
+/// One setup command, run in the tree through `sh -c`.
+///
+/// What it prints goes nowhere: `new` prints the id and nothing else, and an
+/// install's progress is not the id. Its stderr is kept for the refusal, which
+/// is the only place any of it is ever said.
+fn run_setup(repo: &Path, tree: &Path, command: &str, env: &[(String, String)]) -> Result<()> {
+    let out = Command::new("sh")
+        .current_dir(tree)
+        .args(["-c", command])
+        .env(WORKTREE_ENV, tree)
+        .env(REPO_ENV, repo)
+        .envs(env.iter().map(|(name, value)| (name, value)))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("running setup {command:?}"))?;
+    if !out.status.success() {
+        let said = String::from_utf8_lossy(&out.stderr);
+        match said.trim() {
+            "" => bail!("setup {command:?} failed and said nothing"),
+            said => bail!("setup {command:?}: {said}"),
+        }
+    }
+    Ok(())
+}
+
 /// Whether the tree holds work that no commit has: changes to tracked files,
 /// and files git has never heard of alike. Untracked files count — an agent's
 /// first act is usually a new file, and deleting one because git did not know
@@ -173,6 +275,21 @@ pub fn remove(repo: &Path, worktree: &Path) -> Result<()> {
     }
     git(repo, &["worktree", "remove", &worktree.to_string_lossy()])?;
     Ok(())
+}
+
+/// Take a tree back out with the branch it was cut on, whatever is in it.
+///
+/// The undo for a tree nobody has worked in yet: [`furnish`] failed in it, so
+/// everything it holds amx put there and there is nothing to lose. [`remove`]'s
+/// refusal is for the other tree, the one with an agent's afternoon in it. The
+/// branch goes too, because it was cut a moment ago and holds no commit of its
+/// own, and leaving it behind would refuse the next spawn under the same name.
+pub fn discard(repo: &Path, worktree: &Path, branch: &str) -> Result<()> {
+    git(
+        repo,
+        &["worktree", "remove", "--force", &worktree.to_string_lossy()],
+    )?;
+    delete_branch(repo, branch)
 }
 
 /// Put a tree back where it was, on the branch it already had.
@@ -729,6 +846,164 @@ mod tests {
                       filter.lfs.clean\ncore.fsmonitor\nfilter.\n";
         assert_eq!(drivers_in(listed), ["git-lfs.2", "lfs"]);
         assert!(drivers_in("").is_empty(), "and most repositories say this");
+    }
+
+    #[test]
+    fn worktree_furnish_copies_files_links_directories_and_runs_setup() {
+        let repo = a_repo();
+        std::fs::write(repo.path().join(".env"), "TOKEN=hunter2\n").unwrap();
+        std::fs::create_dir(repo.path().join("node_modules")).unwrap();
+        std::fs::write(repo.path().join("node_modules/left-pad"), "installed\n").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+
+        let missing = furnish(
+            repo.path(),
+            &tree.path,
+            &[".env".to_string()],
+            &["node_modules".to_string()],
+            &["echo built > built".to_string()],
+            &[],
+        )
+        .unwrap();
+
+        assert!(missing.is_empty(), "{missing:?}");
+        assert_eq!(
+            std::fs::read_to_string(tree.path.join(".env")).unwrap(),
+            "TOKEN=hunter2\n",
+            "the file git is right not to carry"
+        );
+        assert!(
+            std::fs::symlink_metadata(tree.path.join("node_modules"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the directory is the repository's own rather than a second copy"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tree.path.join("node_modules/left-pad")).unwrap(),
+            "installed\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tree.path.join("built")).unwrap(),
+            "built\n",
+            "and the setup command ran in the tree"
+        );
+    }
+
+    #[test]
+    fn worktree_furnish_runs_a_setup_command_under_the_agents_own_variables() {
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+
+        furnish(
+            repo.path(),
+            &tree.path,
+            &[],
+            &[],
+            &[
+                r#"printf '%s\n' "$AMX_ID" "$AMX_WORKTREE" "$AMX_REPO" "$AMX_AGENT_DIR" > said"#
+                    .to_string(),
+            ],
+            &[
+                ("AMX_ID".to_string(), "fix-login-a1b".to_string()),
+                (
+                    "AMX_AGENT_DIR".to_string(),
+                    "/state/agents/fix-login-a1b/scratch".to_string(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let said = std::fs::read_to_string(tree.path.join("said")).unwrap();
+        assert_eq!(
+            said.lines().collect::<Vec<&str>>(),
+            [
+                "fix-login-a1b",
+                tree.path.to_str().unwrap(),
+                repo.path().to_str().unwrap(),
+                "/state/agents/fix-login-a1b/scratch",
+            ],
+            "the tree and the repository from the arguments, the rest from the caller"
+        );
+    }
+
+    #[test]
+    fn worktree_furnish_says_what_is_not_in_the_repository_and_goes_on() {
+        // A key naming a file this repository does not have is a config file
+        // outliving one of somebody's projects, not a reason to refuse them an
+        // agent.
+        let repo = a_repo();
+        std::fs::write(repo.path().join(".env"), "TOKEN=hunter2\n").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+
+        let missing = furnish(
+            repo.path(),
+            &tree.path,
+            &[".env".to_string(), "config/local.toml".to_string()],
+            &["node_modules".to_string()],
+            &[],
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(missing.len(), 2, "{missing:?}");
+        assert!(missing[0].contains("config/local.toml"), "{missing:?}");
+        assert!(missing[1].contains("node_modules"), "{missing:?}");
+        assert!(
+            !tree.path.join("config").exists() && !tree.path.join("node_modules").exists(),
+            "and nothing was made for either of them"
+        );
+        assert!(
+            tree.path.join(".env").exists(),
+            "the paths that are there are furnished anyway"
+        );
+    }
+
+    #[test]
+    fn worktree_furnish_stops_at_the_first_setup_that_fails_and_says_what_it_said() {
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+
+        let refused = furnish(
+            repo.path(),
+            &tree.path,
+            &[],
+            &[],
+            &[
+                "echo no such lockfile >&2; exit 3".to_string(),
+                "touch second".to_string(),
+            ],
+            &[],
+        )
+        .unwrap_err();
+
+        let said = format!("{refused:#}");
+        assert!(said.contains("no such lockfile"), "what it said: {said}");
+        assert!(said.contains("exit 3"), "and which command said it: {said}");
+        assert!(
+            !tree.path.join("second").exists(),
+            "the ones after it never ran"
+        );
+    }
+
+    #[test]
+    fn worktree_discard_takes_a_tree_nobody_has_worked_in_with_its_branch() {
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+        std::fs::write(tree.path.join(".env"), "TOKEN=hunter2\n").unwrap();
+
+        assert!(
+            remove(repo.path(), &tree.path).is_err(),
+            "what furnishing put there reads as work to `remove`"
+        );
+        discard(repo.path(), &tree.path, &tree.branch).unwrap();
+
+        assert!(!tree.path.exists());
+        assert_eq!(
+            setup(repo.path(), &["branch", "--list", &tree.branch]),
+            "",
+            "and the branch goes with it, so the same name can be spawned again"
+        );
     }
 
     #[test]
