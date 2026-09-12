@@ -1361,6 +1361,47 @@ impl List {
     }
 }
 
+/// The wall in the order the view draws it, for a reader that is not the view.
+///
+/// A verb stepping through the fleet has to land where somebody reading the
+/// wall would expect it to: the pinned row over everything, the sleeping ones
+/// under it, and in between the groups in the order somebody scanning them
+/// reads, each group the way they left it. All of that is the list's, so this
+/// is the list — built, arranged the way the last view left it, and read back
+/// as ids under their groups rather than as lines on a screen.
+///
+/// The state axis whatever axis the view was left on. The project axis is the
+/// same agents gathered a different way, and a verb asked for the next agent
+/// is asking about the wall rather than about the screen somebody happened to
+/// close. Nothing is narrowed and nothing folds either, for the same reason:
+/// a narrowing is a line somebody typed and a fold is a fact about a screen
+/// that is not here.
+///
+/// What a branch has open comes from what the last look wrote down and no
+/// forge is asked, because the reader here is gone before one could answer:
+/// see [`pr::written`] for what a look started from a verb costs.
+// The verb that steps the wall from a key outside the view takes it up next.
+// Until it does, the callers are this module's own tests.
+#[allow(dead_code)]
+pub fn wall_order(views: &[View], arrangement: &Arrangement) -> Vec<(Group, String)> {
+    let mut list = List {
+        asks: pr::written,
+        ..List::default()
+    };
+    list.arrange(Arrangement {
+        axis: Axis::State,
+        ..arrangement.clone()
+    });
+    list.show(views.to_vec());
+    list.ordered()
+        .into_iter()
+        .map(|n| {
+            let view = &list.views[n];
+            (list.group(view), view.id().to_string())
+        })
+        .collect()
+}
+
 /// Whether `said` holds `want`, whatever case either was written in.
 ///
 /// An id and a generated name are lowercase and always were, so folding costs
@@ -1700,6 +1741,15 @@ mod tests {
         let mut list = List::default();
         list.show(views);
         list
+    }
+
+    /// The wall as a reader outside the view reads it down: the group each
+    /// agent was gathered under, and the agent. What [`lines`] is to a screen.
+    fn walled(order: &[(Group, String)]) -> Vec<String> {
+        order
+            .iter()
+            .map(|(group, id)| format!("{} {id}", group.title()))
+            .collect()
     }
 
     /// The same list on a screen with this many rows for it, which is what
@@ -3006,6 +3056,128 @@ mod tests {
             Arrangement::from_disk(&root),
             Arrangement::default(),
             "a half-written file is nobody pinned rather than a refusal"
+        );
+    }
+
+    #[test]
+    fn wall_reads_from_the_pinned_row_down_to_the_sleeping_one() {
+        let fleet = || {
+            vec![
+                view("ask-a1b", Phase::Waiting, 10),
+                view("busy-b2c", Phase::Working, 20),
+                on_a_branch(view("done-c3d", Phase::Done, 30), "amx/done-c3d"),
+                view("busy-d4e", Phase::Working, 40),
+            ]
+        };
+        let list = sleeping(pinning(listed(fleet()), "busy-d4e"), "ask-a1b");
+        assert_eq!(
+            lines(&list),
+            [
+                "Pinned (1)",
+                "busy-d4e",
+                "",
+                "Working (1)",
+                "busy-b2c",
+                "",
+                "Completed (1)",
+                "done-c3d",
+                "",
+                "Asleep (1)",
+                "ask-a1b",
+            ],
+            "the wall the view draws under this arrangement"
+        );
+
+        assert_eq!(
+            walled(&wall_order(&fleet(), &list.arrangement())),
+            [
+                "Pinned busy-d4e",
+                "Working busy-b2c",
+                // On a branch and nothing written down about it, so it is a
+                // turn that is over rather than work in front of a reviewer:
+                // a reader that prints once asks no forge.
+                "Completed done-c3d",
+                "Asleep ask-a1b",
+            ],
+            "the same rows, as the group each was drawn under and its id"
+        );
+    }
+
+    #[test]
+    fn wall_puts_the_newest_ending_first_among_the_finished() {
+        let fleet = || {
+            let mut early = view("done-a1b", Phase::Done, 100);
+            early.state.ended = 100;
+            let mut late = view("done-b2c", Phase::Done, 300);
+            late.state.ended = 300;
+            vec![early, late]
+        };
+        assert_eq!(
+            lines(&listed(fleet())),
+            ["Completed (2)", "done-b2c", "done-a1b"]
+        );
+        assert_eq!(
+            walled(&wall_order(&fleet(), &Arrangement::default())),
+            ["Completed done-b2c", "Completed done-a1b"],
+            "history reads newest first outside the view as it does in it"
+        );
+    }
+
+    #[test]
+    fn wall_keeps_the_order_somebody_put_a_group_in() {
+        let fleet = || {
+            vec![
+                view("busy-a1b", Phase::Working, 10),
+                view("busy-b2c", Phase::Working, 20),
+                view("busy-c3d", Phase::Working, 30),
+            ]
+        };
+        let mut list = listed(fleet());
+        assert!(list.move_by(1));
+        assert_eq!(
+            lines(&list),
+            ["Working (3)", "busy-b2c", "busy-a1b", "busy-c3d"]
+        );
+
+        assert_eq!(
+            walled(&wall_order(&fleet(), &list.arrangement())),
+            ["Working busy-b2c", "Working busy-a1b", "Working busy-c3d"],
+            "the order a hand put the group in, not the order they started in"
+        );
+    }
+
+    #[test]
+    fn wall_answers_the_state_order_for_a_view_left_on_the_project_axis() {
+        let fleet = || {
+            vec![
+                at(view("busy-a1b", Phase::Working, 10), "/src/web/app"),
+                at(view("ask-b2c", Phase::Waiting, 20), "/src/api"),
+                at(view("done-c3d", Phase::Done, 30), "/src/api"),
+            ]
+        };
+        let list = over_the_disk(fleet());
+        assert_eq!(
+            lines(&list),
+            [
+                "/src/api (2)",
+                "ask-b2c",
+                "done-c3d",
+                "",
+                "/src/web (1)",
+                "busy-a1b",
+            ],
+            "the axis the view was left on"
+        );
+
+        assert_eq!(
+            walled(&wall_order(&fleet(), &list.arrangement())),
+            [
+                "Needs input ask-b2c",
+                "Working busy-a1b",
+                "Completed done-c3d",
+            ],
+            "a verb stepping the wall is asking about the fleet, not about the \
+             screen somebody closed"
         );
     }
 
