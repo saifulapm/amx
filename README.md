@@ -1089,7 +1089,7 @@ Four questions, four commands, and the exit code is the answer:
 | `0`  | done: the answer, if there is one, is on stdout |
 | `1`  | failed, stopped, or ended without an answer; nothing more is coming |
 | `2`  | blocked: `result` and `send` on an agent that is asking, `answer` with nothing pending, `new` or `fork` at the agent cap |
-| `3`  | `result --timeout` expired |
+| `3`  | `result --timeout` or `wait --timeout` expired |
 | `64` | the command line was wrong, including an answer the question would not take |
 
 ```sh
@@ -1106,6 +1106,10 @@ case $? in
   2) park "$id" "$said" ;;   # it is asking, and the question is what came back
   3) amx stop "$id" --force ;;
 esac
+
+amx wait a b c --timeout 900          # every one of them, a line each as each settles
+ready=$(amx wait a b c --any)         # the first to settle, and nothing about the rest
+amx wait a b c --for working          # they all started
 ```
 
 `result` blocks until the turn ends and prints what the agent said, verbatim.
@@ -1115,6 +1119,19 @@ that cannot see it cannot answer it, so the question goes to stdout with its
 choices numbered under it, and the numbers are the ones `amx answer` takes.
 After a `send` it waits for the turn after that message, never handing back the
 previous turn's answer.
+
+`wait` is that clock over several agents at once, for the caller holding a fleet
+rather than one agent: it blocks until every agent named has settled and prints
+`<id> <state>` for each as each settles, a line at a time in the order they
+settle. Settled is a turn that is over or an agent stopped on a question —
+`done`, `failed`, `stopped`, `idle` (a parked agent counts) or `waiting` — and
+`--any` comes back at the first of them instead of the last. `--for working`
+waits for one named state rather than for an ending, which is how you confirm a
+fleet started. It exits `0` when the condition is met, `3` when `--timeout` runs
+out with what settled already printed, `64` for a state amx has no reading for
+and `1`, before waiting at all, for an id that names no agent. What the agents
+said is not here: `wait` says whose answer is ready, and `amx result` on the id
+it named hands that answer back, returning at once for an agent that has ended.
 
 When the caller is itself an agent, hand it `skill/amx/SKILL.md`, which is
 this loop written for one.

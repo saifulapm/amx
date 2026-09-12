@@ -99,6 +99,12 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Interrupt { id }) => finish(verbs::interrupt::from_env(id)),
         Some(cli::Command::Rename { id, name }) => finish(verbs::rename::from_env(id, name)),
         Some(cli::Command::Result { id, timeout }) => finish(verbs::result::from_env(id, *timeout)),
+        Some(cli::Command::Wait {
+            ids,
+            any,
+            state,
+            timeout,
+        }) => finish(verbs::wait::from_env(ids, *any, *state, *timeout)),
         Some(cli::Command::Attach { id }) => finish(verbs::attach::from_env(id)),
         Some(cli::Command::Logs { id, lines }) => finish(verbs::logs::from_env(id, *lines)),
         Some(cli::Command::Diff { id, stat }) => finish(verbs::diff::from_env(id, *stat)),
@@ -333,7 +339,7 @@ mod tests {
     /// Every source that has anything to say on stderr. A verb printing there
     /// with `eprintln!` is one saying it in whatever colour was already in
     /// force, which is the split this pair of macros exists to keep.
-    const VERBS: [(&str, &str); 20] = [
+    const VERBS: [(&str, &str); 21] = [
         ("adopt", include_str!("verbs/adopt.rs")),
         ("answer", include_str!("verbs/answer.rs")),
         ("attach", include_str!("verbs/attach.rs")),
@@ -354,6 +360,7 @@ mod tests {
         ("statusline", include_str!("verbs/statusline.rs")),
         ("stop", include_str!("verbs/stop.rs")),
         ("uninstall", include_str!("verbs/uninstall.rs")),
+        ("wait", include_str!("verbs/wait.rs")),
     ];
 
     #[test]

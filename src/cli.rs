@@ -5,6 +5,7 @@
 //! inside a pane, a vendor hook, or a timer a tmux server is holding; they are
 //! hidden from help but are as much of the contract as the rest.
 
+use crate::store::Phase;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 
@@ -41,6 +42,7 @@ impl Cli {
             Interrupt { .. } => "interrupt",
             Rename { .. } => "rename",
             Result { .. } => "result",
+            Wait { .. } => "wait",
             Attach { .. } => "attach",
             Logs { .. } => "logs",
             Stop(_) => "stop",
@@ -152,6 +154,34 @@ pub enum Command {
     /// Wait for the agent's turn to end and print its answer.
     Result {
         id: String,
+        /// Give up after this many seconds.
+        #[arg(long, value_name = "SECONDS")]
+        timeout: Option<u64>,
+    },
+
+    /// Wait for several agents at once and say which are ready.
+    ///
+    /// One clock over a fleet: it blocks until every agent named has settled —
+    /// its turn over, or stopped on a question — and prints `<id> <state>` for
+    /// each as each settles. `--any` ends at the first. What the agent said is
+    /// not here: `amx result <id>` hands that back, and returns at once for an
+    /// agent this has already named.
+    ///
+    /// `--for <state>` waits for one named phase instead of for an ending, so
+    /// `--for working` is how a caller confirms a fleet started.
+    Wait {
+        /// The agents to wait on.
+        #[arg(num_args = 1.., required = true)]
+        ids: Vec<String>,
+
+        /// Come back as soon as one of them has settled.
+        #[arg(long)]
+        any: bool,
+
+        /// Wait for this state instead of for a turn that is over.
+        #[arg(long = "for", value_name = "STATE", value_parser = a_phase)]
+        state: Option<Phase>,
+
         /// Give up after this many seconds.
         #[arg(long, value_name = "SECONDS")]
         timeout: Option<u64>,
@@ -497,6 +527,37 @@ fn a_task(text: &str) -> Result<String, String> {
     }
 }
 
+/// One of the states amx reads an agent as being in.
+///
+/// The eight words `amx ls --json` prints and nothing else: `amx wait --for` is
+/// given a state to hold out for, and a word amx has no state for is a wait
+/// that would never end. Refused here, where clap answers it as the usage error
+/// it is, and the refusal names all eight so the one that was meant is in front
+/// of whoever mistyped it.
+fn a_phase(word: &str) -> Result<Phase, String> {
+    PHASES
+        .into_iter()
+        .find(|phase| phase.as_str() == word)
+        .ok_or_else(|| {
+            format!(
+                "no state `{word}`: {}",
+                PHASES.map(Phase::as_str).join(", ")
+            )
+        })
+}
+
+/// Every state, in the order a turn goes through them.
+const PHASES: [Phase; 8] = [
+    Phase::Starting,
+    Phase::Working,
+    Phase::Waiting,
+    Phase::Idle,
+    Phase::Done,
+    Phase::Failed,
+    Phase::Stopped,
+    Phase::Unknown,
+];
+
 /// A task or a message read out of a file, or off stdin where the path is `-`.
 ///
 /// The whole file, with one trailing newline taken off: every editor writes
@@ -671,6 +732,12 @@ mod tests {
             (&["amx", "rename", "fix-a1b", "auth"], "rename"),
             (&["amx", "result", "fix-a1b"], "result"),
             (&["amx", "result", "fix-a1b", "--timeout", "30"], "result"),
+            (&["amx", "wait", "fix-a1b"], "wait"),
+            (&["amx", "wait", "a", "b", "--any"], "wait"),
+            (
+                &["amx", "wait", "a", "--for", "working", "--timeout", "5"],
+                "wait",
+            ),
             (&["amx", "attach", "fix-a1b"], "attach"),
             (&["amx", "logs", "fix-a1b"], "logs"),
             (&["amx", "logs", "fix-a1b", "--lines", "40"], "logs"),
@@ -906,6 +973,41 @@ mod tests {
     }
 
     #[test]
+    fn wait_takes_the_agents_and_the_state_to_hold_out_for() {
+        let cli = parse(&["amx", "wait", "a", "b", "c"]).unwrap();
+        let Some(Command::Wait {
+            ids,
+            any,
+            state,
+            timeout,
+        }) = cli.command
+        else {
+            panic!("expected wait");
+        };
+        assert_eq!(ids, ["a", "b", "c"]);
+        assert!(!any, "every agent named, unless the caller says otherwise");
+        assert_eq!(state, None, "a turn that is over, whichever way it ended");
+        assert_eq!(timeout, None);
+
+        let cli = parse(&["amx", "wait", "a", "--any", "--for", "idle"]).unwrap();
+        let Some(Command::Wait { any, state, .. }) = cli.command else {
+            panic!("expected wait");
+        };
+        assert!(any);
+        assert_eq!(state, Some(Phase::Idle));
+
+        // Every word `ls --json` prints is a state to wait for, and the
+        // refusal for anything else names all eight of them.
+        for phase in PHASES {
+            assert_eq!(a_phase(phase.as_str()), Ok(phase));
+        }
+        let refusal = a_phase("sleeping").unwrap_err();
+        for phase in PHASES {
+            assert!(refusal.contains(phase.as_str()), "{refusal}");
+        }
+    }
+
+    #[test]
     fn adopt_takes_a_label_for_the_row_and_nothing_about_where_to_look() {
         // Which pane and which conversation come from the environment of the
         // claude that ran it, so there is nothing to type: what is left is
@@ -982,6 +1084,10 @@ mod tests {
             &["amx", "answer", "fix-a1b", "--note", "keep it short"],
             &["amx", "answer", "fix-a1b", "--text", "2", "--note", "short"],
             &["amx", "result", "fix-a1b", "--timeout", "soon"],
+            // A wait says which agents, and holds out for a state amx has a
+            // reading for: a word nobody knows is a wait that never ends.
+            &["amx", "wait"],
+            &["amx", "wait", "a", "--for", "sleeping"],
             // A reading of no lines is not a reading.
             &["amx", "logs", "fix-a1b", "--lines", "0"],
             &["amx", "logs", "fix-a1b", "--lines", "all"],

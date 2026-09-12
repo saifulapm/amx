@@ -20,3 +20,4 @@ pub mod status;
 pub mod statusline;
 pub mod stop;
 pub mod uninstall;
+pub mod wait;
