@@ -1634,6 +1634,12 @@ fn summary_command(meta: &Meta) -> Option<&'static str> {
 /// for it. The same variable a pane is handed, so a command written for one is
 /// written for the other.
 ///
+/// And with [`crate::hook::NESTED_ENV`] set, because the command the key holds
+/// is a model call and the one people write is `claude -p`: a claude started
+/// with an agent's id in its environment runs its hooks under that id, and the
+/// line this is asking for would arrive as the agent starting a session and
+/// ending its turn.
+///
 /// What comes back is the first line with anything on it. A command that fails,
 /// that is not there, or that says nothing leaves the row exactly as it was:
 /// this is a line about the turn, and the turn is on the record either way.
@@ -1648,6 +1654,7 @@ fn ask_for_a_line(command: &str, at: &Path, id: &str, answer: &str) -> Option<St
         .arg(command)
         .current_dir(at)
         .env(crate::hook::ID_ENV, id)
+        .env(crate::hook::NESTED_ENV, "1")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -4755,6 +4762,20 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             )
             .as_deref(),
             Some("fix-login-a1b")
+        );
+
+        // And told it is not the agent. The command people write here is
+        // `claude -p`, which reports through the same hooks under the same id
+        // as the agent it is summarising.
+        assert_eq!(
+            ask_for_a_line(
+                "printf '%s\\n' \"$AMX_NESTED\"",
+                at.path(),
+                "fix-login-a1b",
+                said
+            )
+            .as_deref(),
+            Some("1")
         );
 
         // A command that fails, and one that says nothing, say nothing. The

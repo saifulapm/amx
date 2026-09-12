@@ -40,9 +40,19 @@ use crate::vendor::{Moment, claude};
 /// pane's environment, so every process the vendor starts inherits it.
 pub const ID_ENV: &str = "AMX_ID";
 
+/// How something started inside an agent says it is not the agent. Everything
+/// the vendor starts inherits [`ID_ENV`], claude included, so a claude run from
+/// an agent's own shell reports under that id with hooks of its own; this is
+/// what a caller that knows it is nested sets, and amx sets it itself on the
+/// one nested claude it starts — see [`crate::derive::ask_for_a_line`].
+pub const NESTED_ENV: &str = "AMX_NESTED";
+
 /// Record one hook payload. Answers with the process's exit code, which is
 /// always `OK`.
 pub fn from_env(stdin: &mut impl Read, config: &Config) -> i32 {
+    if nested() {
+        return exit::OK;
+    }
     let id = std::env::var(ID_ENV).ok();
     let Ok(root) = crate::paths::state_root() else {
         return exit::OK;
@@ -54,6 +64,16 @@ pub fn from_env(stdin: &mut impl Read, config: &Config) -> i32 {
         &mut std::io::stdout().lock(),
         config,
     )
+}
+
+/// Whether this process is something an agent started rather than the agent.
+///
+/// Asked before stdin is read, because the answer is a hook that has nothing
+/// to say and the vendor is waiting on it either way. Any value at all is a
+/// yes: the variable is a flag, and a person exporting it in a shell should not
+/// have to learn what amx wants it set to.
+fn nested() -> bool {
+    std::env::var_os(NESTED_ENV).is_some()
 }
 
 /// The same, with everything it touches named.
@@ -2374,6 +2394,15 @@ mod tests {
     }
 
     #[test]
+    fn hook_the_nested_variable_is_read_off_the_process_environment() {
+        // The variable belongs to the process, so a test cannot set it for one
+        // call without setting it for every other thread in the suite. What is
+        // held here is that a process without it is nobody's nested claude,
+        // and `from_env` asks this before it reads a byte of stdin.
+        assert!(!nested());
+    }
+
+    #[test]
     fn hook_a_payload_naming_another_session_is_another_processs() {
         let mut ours = meta();
         ours.session = Some("abc-123".to_string());
@@ -2448,7 +2477,10 @@ mod tests {
         // The log as well as the state: a reader takes turn ends off the log,
         // so a stop written down and then not folded in would still end the
         // turn.
-        assert!(agent.events().unwrap().is_empty(), "nothing is written down");
+        assert!(
+            agent.events().unwrap().is_empty(),
+            "nothing is written down"
+        );
         assert_eq!(agent.state().unwrap(), before, "and nothing has moved");
         let meta = agent.meta().unwrap();
         assert_eq!(meta.session.as_deref(), Some("abc-123"));

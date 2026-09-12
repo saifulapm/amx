@@ -1247,6 +1247,16 @@ date. A reader works it out at the moment you ask, in this order:
    update notice — takes neither back. A record mid-turn still reads
    `unknown`: nothing has said that turn is over.
 
+The hooks find their agent through `AMX_ID`, which amx writes into the pane it
+opens, and every process started in that pane inherits it — a claude the agent
+launches from its own shell included. That claude's hooks would report as the
+agent: its session start replacing the agent's conversation on the record, its
+stop ending the agent's turn. Set `AMX_NESTED=1` for it and its hooks say
+nothing at all. amx sets the variable itself on the one nested claude it starts,
+the `summary_command` child, and it drops what it can tell apart without one:
+a report naming a session the record does not carry is some other conversation's
+and is not written down.
+
 `amx status` says which of these it used. `evidence` in the JSON is the same
 answer for a program.
 
@@ -1446,8 +1456,9 @@ until you stop it.
 an answer, and an answer does not open with a summary of itself, so without this
 a finished row shows its first line. With it, the first reader to see a turn end
 runs the command where the agent ran, hands it the whole answer on stdin with
-`$AMX_ID` naming the agent, and writes the first line it prints onto the record
-for every reader after. The command is the one the project that turn ran in
+`$AMX_ID` naming the agent and `$AMX_NESTED=1` saying the command is not that
+agent, and writes the first line it prints onto the record for every reader
+after. The command is the one the project that turn ran in
 names, so a view standing over several projects boils each row down by its own
 project's file. Nothing waits for it: the row keeps the answer until
 the line arrives, and a command that fails, that is not installed, or that says
