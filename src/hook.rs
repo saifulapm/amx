@@ -44,7 +44,8 @@ pub const ID_ENV: &str = "AMX_ID";
 /// the vendor starts inherits [`ID_ENV`], claude included, so a claude run from
 /// an agent's own shell reports under that id with hooks of its own; this is
 /// what a caller that knows it is nested sets, and amx sets it itself on the
-/// one nested claude it starts — see [`crate::derive::ask_for_a_line`].
+/// one nested claude it starts, the `summary_command` child in
+/// [`crate::derive`].
 pub const NESTED_ENV: &str = "AMX_NESTED";
 
 /// Record one hook payload. Answers with the process's exit code, which is
