@@ -1834,6 +1834,13 @@ impl Screen {
                 let held = self.list.hold_or_let_go();
                 self.keep(held);
             }
+            // And the other direction: the agent under the cursor put under
+            // the whole wall, so that the ones somebody is not looking at are
+            // out of the way of the ones they are.
+            KeyCode::Char('z') if plain => {
+                let slept = self.list.sleep_or_wake();
+                self.keep(slept);
+            }
             _ => {}
         }
         Ok(Doing::Carry)
@@ -7038,6 +7045,72 @@ mod tests {
         assert!(screen.list.on_heading(), "the cursor is on the heading");
         press(&mut screen, o);
         assert!(screen.notice.is_none(), "a heading is left alone");
+    }
+
+    /// The wall as it stands: the headings and the agents under them, in the
+    /// order the list draws them.
+    fn wall(screen: &Screen) -> Vec<String> {
+        screen
+            .list
+            .items()
+            .iter()
+            .filter_map(|item| match item {
+                rows::Item::Heading(under, _) => Some(screen.list.title(*under)),
+                rows::Item::Agent(_) => screen.list.agent(*item).map(|view| view.id().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn keys_z_puts_the_row_under_everything_and_again_wakes_it() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+        let z = KeyEvent::from(KeyCode::Char('z'));
+
+        let mut screen = watching(vec![
+            stopped_on_a_question("ask-a1b"),
+            finished_saying("done-b2c", "the answer"),
+        ]);
+        assert_eq!(
+            wall(&screen),
+            ["Needs input", "ask-a1b", "Completed", "done-b2c"]
+        );
+
+        // Under everything, though it is the one agent asking: where a row is
+        // drawn is not an answer to its question.
+        press(&mut screen, z);
+        assert_eq!(
+            wall(&screen),
+            ["Completed", "done-b2c", "Asleep", "ask-a1b"]
+        );
+        assert!(
+            screen
+                .list
+                .selected()
+                .is_some_and(|view| screen.list.sleeping(view)),
+            "and the cursor went with it"
+        );
+
+        // And the same key wakes it, back under what it is doing.
+        press(&mut screen, z);
+        assert_eq!(
+            wall(&screen),
+            ["Needs input", "ask-a1b", "Completed", "done-b2c"]
+        );
+
+        // A heading is a group rather than an agent, and a group is not a row
+        // to put away.
+        screen.list.up();
+        assert!(screen.list.on_heading(), "the cursor is on the heading");
+        press(&mut screen, z);
+        assert_eq!(
+            wall(&screen),
+            ["Needs input", "ask-a1b", "Completed", "done-b2c"]
+        );
     }
 
     #[test]

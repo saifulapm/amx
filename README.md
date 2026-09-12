@@ -261,9 +261,10 @@ to what the terminal holds, with `?` pinned to the end of it.
 The list answers one question, so it is gathered under the answer: whatever you
 pinned there yourself comes first, then the work standing in front of a
 reviewer, then the agents stopped on a question, then the ones mid-turn, then
-the turns that are over. Pinned is `ctrl+t` and nothing else. Ready for review
-is a turn that is over whose branch still has a pull request asking somebody
-for something, which is work that has left the machine and is waiting on a
+the turns that are over, and under all of those whatever you have put to sleep.
+Pinned is `ctrl+t` and nothing else, and Asleep is `z`. Ready for review is a
+turn that is over whose branch still has a pull request asking somebody for
+something, which is work that has left the machine and is waiting on a
 reader rather than on amx. Completed takes every ending alike — an agent
 sitting at its prompt, one whose command exited, one amx has lost track of —
 because a turn at a prompt has ended as surely as a turn that exited, and
@@ -386,6 +387,7 @@ table.
 | `/` | find by name, task or `#12`, as you type; `esc` clears it |
 | `ctrl+s` | gather them by state or by project |
 | `ctrl+t` | pin it over the wall, and again to let it go |
+| `z` | put it under everything, and again to wake it |
 | `shift+↑` `shift+↓` | move it up or down its group |
 | `shift+enter` | a newline in the line, without sending it |
 | `alt+enter` | the same newline, where `shift+enter` does not arrive |
@@ -607,12 +609,19 @@ pins the one under the cursor over the wall: it leaves whatever group amx had
 it in, stands under `PINNED` at the top of the list, and stays there whether it
 is asking, working or finished, so the agent you are watching is where you are
 looking. The same key lets it go, and it drops back into the group its state
-puts it in. `shift+↑` and `shift+↓` move an agent a row at a time past the
-others in its group; an agent that starts after you have put a group in order
-joins the bottom of it, because a group you arranged by hand is not one amx
-goes on sorting under you. Both of those and whichever way `ctrl+s` last
-gathered the fleet are written to `~/.local/state/amx/view.json` as you go, so
-the next view opens on the wall you left.
+puts it in. `z` is that sentence the other way round: it puts the row under the
+cursor below every group, under `Asleep` at the foot of the wall, and leaves it
+there whatever it goes on to do, so the agents you are not watching are out of
+the way of the ones you are. It is still counted among the ones waiting on you,
+because where a row is drawn is no answer to its question, and the same key
+wakes it. No agent wears both marks: `z` on a pinned row lets it go as it goes
+to sleep, and `ctrl+t` on a sleeping one wakes it as it pins. `shift+↑` and
+`shift+↓` move an agent a row at a time past the others in its group; an agent
+that starts after you have put a group in order joins the bottom of it, because
+a group you arranged by hand is not one amx goes on sorting under you. All of
+those and whichever way `ctrl+s` last gathered the fleet are written to
+`~/.local/state/amx/view.json` as you go, so the next view opens on the wall
+you left.
 
 A line being typed in a band of its own hangs off a rule, and the rule is where
 the whole mode is said. Its near end names which line this is — a task, or a
@@ -768,11 +777,11 @@ request the branch carries — whole and untokenised, so `port the` looks for an
 agent called that rather than for two things. A line of nothing but `s:` tokens
 narrows by state instead: `s:waiting`, or `s:waiting s:working` for either of
 them, and a token with nothing after it drops that narrowing. The word is one
-of the five the counters say, which keeps that group, or a state the record
-knows and no counter names: `s:failed` picks the one that died out of
-everything under completed, and `s:idle` the ones sitting at a prompt.
-`enter` closes the line and leaves the wall as it is; `esc` gives the fleet
-back, with or without a line open.
+of the six the counters say, which keeps that group — `s:asleep` is how you
+reach what you put under the wall — or a state the record knows and no counter
+names: `s:failed` picks the one that died out of everything under completed,
+and `s:idle` the ones sitting at a prompt. `enter` closes the line and leaves
+the wall as it is; `esc` gives the fleet back, with or without a line open.
 
 The keys that edit any of these lines are a shell prompt's. `←` and `→` walk a
 character and `ctrl+←` and `ctrl+→` a word; `home` and `end`, or `ctrl+a` and

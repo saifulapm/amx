@@ -560,6 +560,89 @@ fn ctrl_t_pins_the_row_under_the_cursor_over_every_group_and_lets_it_go() {
 }
 
 #[test]
+fn z_puts_the_row_under_the_cursor_below_every_group_and_wakes_it_again() {
+    let amx = Harness::new();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.play("port-import-b2c", "works-with-a-spinner");
+    amx.until_state("ask-a1b", "waiting");
+    amx.until_state("port-import-b2c", "working");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the two groups", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("Needs input") && drawn.contains("Working")).then_some(())
+    });
+
+    // The view opens on the agent that is asking, which is the one to put
+    // away: whatever it is doing is where a sleeping row is not drawn.
+    press(&amx, &view, "z");
+    let drawn = amx.until("the sleeping group", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("Asleep").then_some(drawn)
+    });
+
+    assert!(
+        line_of(&drawn, "Working") < line_of(&drawn, "Asleep"),
+        "what somebody put away stands under the work that is running:\n{drawn}"
+    );
+    assert_eq!(
+        line_of(&drawn, "ask-a1b"),
+        line_of(&drawn, "Asleep") + 1,
+        "and it is the row under the heading, though it is the one asking:\n{drawn}"
+    );
+    assert!(
+        !drawn.contains("Needs input"),
+        "the group it came out of was the last of it:\n{drawn}"
+    );
+    assert!(
+        drawn.contains("1 WAITING"),
+        "and the badge still counts it: where a row is drawn is no answer to \
+         its question:\n{drawn}"
+    );
+
+    // The mark outlives the view that made it, so a terminal opened after it
+    // draws the same wall.
+    let again = amx.in_a_terminal(&[], &[]);
+    let opened = amx.until("the second view", || {
+        let drawn = screen(&amx, &again);
+        (drawn.contains("Asleep") && drawn.contains("ask-a1b")).then_some(drawn)
+    });
+    assert!(
+        line_of(&opened, "Asleep") < line_of(&opened, "ask-a1b"),
+        "the next view opens on the wall the last one was left on:\n{opened}"
+    );
+
+    // And the word the header counts them by is the word that finds them
+    // again on the find line.
+    types(&amx, &view, "/");
+    types(&amx, &view, "s:asleep");
+    amx.until("the wall narrowed to the sleeping agent", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("ask-a1b") && !drawn.contains("port-import-b2c")).then_some(())
+    });
+    press(&amx, &view, "Escape");
+    amx.until("the whole fleet again", || {
+        screen(&amx, &view)
+            .contains("port-import-b2c")
+            .then_some(())
+    });
+
+    // The same key wakes it, back under what it is doing. The foot of the
+    // wall is where it was put, so that is where the cursor goes for it.
+    press(&amx, &view, "G");
+    press(&amx, &view, "z");
+    let back = amx.until("the asking group again", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("Needs input").then_some(drawn)
+    });
+    assert!(!back.contains("Asleep"), "{back}");
+    assert!(
+        line_of(&back, "Needs input") < line_of(&back, "ask-a1b"),
+        "{back}"
+    );
+}
+
+#[test]
 fn ready_for_review_takes_an_ended_agent_whose_request_is_still_open() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
