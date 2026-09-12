@@ -3370,7 +3370,12 @@ mod tests {
     /// about the key.
     fn told(at: &Path, gh: &Path, glab: &Path, wrote: &Path) -> Vec<String> {
         for _ in 0..20 {
-            opened(at, gh, glab, 12).unwrap();
+            // The refusal lands on the spawn itself, so a spawn that failed
+            // is the thing to try again, not a fact about the key.
+            if opened(at, gh, glab, 12).is_err() {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
             for _ in 0..25 {
                 if let Ok(said) = std::fs::read_to_string(wrote) {
                     return said.lines().map(str::to_string).collect();
