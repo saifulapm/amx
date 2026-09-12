@@ -1045,6 +1045,37 @@ names `amx new --exec` as the way to run the command again.
 up and no ending to undo: `amx resume <id>` puts it in a pane again on the
 session it was parked on.
 
+## Clearing away the work that landed
+
+```sh
+amx sweep          # the finished agents whose work is in, listed, then one question
+amx sweep --force  # take them without asking
+```
+
+An agent whose pull request merged or closed, or whose branch you merged
+yourself, is holding a record, a worktree and a branch that say what the
+repository already says. `sweep` finds them: agents that have finished or are
+sitting idle, on a branch, with a request that is over or a branch git reads as
+in the main line.
+
+```
+fix-login-a1b  #12 merged
+port-import-b2c  amx/port-import-b2c merged into main
+sweep 2? [y/N]
+```
+
+It says what it found and why before it asks, and one answer covers the list.
+Then each of them goes the way `amx stop --force --delete` takes one: the pane
+first if the agent is somehow still in one, then the worktree, then the branch,
+then the record, each said as it happens. A worktree holding work no commit has
+is kept, and its record with it, so the branch it names is still there to be
+found — that law does not move for `--force` any more than it moves for `stop`.
+
+The request is read from what the last look wrote down beside the record, so a
+sweep never waits on a network. The branch is read from git, which knows
+nothing about forges: work that went in through a merge you did by hand counts
+as much as work that went in through a request.
+
 ## Worktrees
 
 In a git repository, `new` gives each agent a worktree of its own at
