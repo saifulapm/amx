@@ -309,14 +309,15 @@ pub enum Command {
 
     /// Check what amx needs from this machine, and what is missing.
     ///
-    /// Eight things have to be true before an agent can run: tmux, the agent
+    /// Nine things have to be true before an agent can run: tmux, the agent
     /// command, the config, amx's hooks in the vendor's settings, one amx on
     /// the PATH and this the one, a state directory to keep records in, no
     /// handoff still carrying the spawner's environment from before that
-    /// moved to a file of its own, and no agent already stopped at a screen
-    /// the vendor puts in front of the work.
+    /// moved to a file of its own, no agent already stopped at a screen
+    /// the vendor puts in front of the work, and no tree amx cut still named
+    /// in the agent's own trust store after the tree itself has gone.
     ///
-    /// Where a tmux server is already running, a ninth: that the directory
+    /// Where a tmux server is already running, a tenth: that the directory
     /// the server itself is standing in still exists. One that outlived its
     /// own working directory kills every pane it starts.
     Doctor {
@@ -1540,9 +1541,11 @@ mod tests {
             // server check is asked only where there is a server to ask about,
             // so it is deliberately absent here.
             server: None,
+            store: None,
+            stale: Vec::new(),
         });
         let counted = [
-            "no", "one", "two", "three", "four", "five", "six", "seven", "eight",
+            "no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
         ]
         .get(checks.len())
         .expect("a count these have a word for");

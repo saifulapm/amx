@@ -375,6 +375,34 @@ pub fn forget_tree(store: &Path, tree: &Path, now: u64) -> Result<bool> {
     Ok(true)
 }
 
+/// The trees amx cut that the store still names and the disk no longer has.
+///
+/// What [`forget_tree`] is for, read off a store that has been growing since
+/// before anything pruned it: a key per tree, each one a directory that went
+/// when the agent was stopped. Only keys shaped like a tree amx made are ever
+/// counted, and only where the path is not there any more — a tree still on
+/// disk is an agent still running, and every other key in the file is
+/// somebody's own.
+///
+/// A store the vendor has not written yet names nothing. One amx cannot read
+/// is an error rather than an empty list, because the two mean different
+/// things to whoever is about to be told there is nothing to prune.
+pub fn stale_trees(store: &Path) -> Result<Vec<PathBuf>> {
+    let Some(document) = read(store)? else {
+        return Ok(Vec::new());
+    };
+    let Some(projects) = document[PROJECTS].as_object() else {
+        return Ok(Vec::new());
+    };
+    let mut gone: Vec<PathBuf> = projects
+        .keys()
+        .map(PathBuf::from)
+        .filter(|key| worktree::is_amx_tree(key) && !key.exists())
+        .collect();
+    gone.sort();
+    Ok(gone)
+}
+
 /// Whether a store amx has read carries a project entry under `key`. One that
 /// is not shaped the way the vendor writes one names nothing.
 fn names(store: &Value, key: &str) -> bool {
@@ -959,6 +987,54 @@ mod tests {
         let never_written = dir.path().join("fresh/home/.claude.json");
         assert!(!forget_tree(&never_written, &tree, 1).unwrap());
         assert!(!never_written.exists(), "nor made");
+    }
+
+    #[test]
+    fn trust_lists_the_trees_the_store_names_and_the_disk_has_not_got() {
+        let dir = TempDir::new().unwrap();
+        let (repo, tree) = a_tree(&dir);
+        let store = dir.path().join(".claude.json");
+        let gone = repo.join(".amx/worktrees/port-importer-c3d");
+        let older = repo.join(".amx/worktrees/fix-auth-b2c");
+        let mut before = a_persons_store();
+        before[PROJECTS][key_for(&repo)] = json!({ ACCEPTED: true });
+        // The tree is still on disk, so its agent may still be running.
+        before[PROJECTS][key_for(&tree)] = json!({ ACCEPTED: true });
+        for stopped in [&gone, &older] {
+            before[PROJECTS][stopped.to_string_lossy().into_owned()] = json!({ ACCEPTED: true });
+        }
+        std::fs::write(&store, serde_json::to_string_pretty(&before).unwrap()).unwrap();
+
+        assert_eq!(
+            stale_trees(&store).unwrap(),
+            vec![older, gone],
+            "the trees amx cut and nothing else, sorted"
+        );
+    }
+
+    #[test]
+    fn trust_finds_nothing_stale_in_a_store_that_is_not_there_and_refuses_one_it_cannot_read() {
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join(".claude.json");
+        assert_eq!(stale_trees(&store).unwrap(), Vec::<PathBuf>::new());
+
+        std::fs::write(
+            &store,
+            serde_json::to_string_pretty(&a_persons_store()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            stale_trees(&store).unwrap(),
+            Vec::<PathBuf>::new(),
+            "a store with none of amx's keys in it"
+        );
+
+        std::fs::write(&store, "{ \"projects\": {},,, }").unwrap();
+        let refused = stale_trees(&store).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("trust store amx can read"),
+            "a file amx cannot read is not a file with nothing to prune: {refused:#}"
+        );
     }
 
     #[test]

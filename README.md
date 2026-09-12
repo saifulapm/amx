@@ -37,21 +37,23 @@ cargo install --path .
 amx doctor --fix
 ```
 
-`doctor` checks the eight things that have to be true before an agent can run:
+`doctor` checks the nine things that have to be true before an agent can run:
 tmux, the agent command, the config file, the hooks, one amx on the PATH and
 the one running the check, a state directory amx can keep records in, no
 handoff still carrying the spawner's environment from before that moved to a
-file of its own, and no agent already stopped at a screen the vendor puts in
-front of the work. Every check that fails says what to do about it.
+file of its own, no agent already stopped at a screen the vendor puts in
+front of the work, and no tree amx cut still named in the agent's own trust
+store after the tree itself has gone. Every check that fails says what to do
+about it.
 
-Where a tmux server is already running, it checks a ninth: that the directory
+Where a tmux server is already running, it checks a tenth: that the directory
 that server is standing in still exists. A server keeps the directory it was
 started in for as long as it lives, and once that directory is deleted every
 pane it starts lands somewhere that is not there and dies immediately — which
 from the outside looks like agents failing in under a second having said
 nothing. Restarting the server is the fix, and the check prints the command.
 
-`--fix` makes two repairs. It wires the configured agent's hooks, after asking
+`--fix` makes three repairs. It wires the configured agent's hooks, after asking
 once: for claude, amx's seven hooks into `~/.claude/settings.json`, beside
 whatever is already there, with the file backed up first; for pi, amx's own
 extension into `~/.pi/agent/extensions/amx.ts`, where pi loads one from, and
@@ -61,7 +63,10 @@ refuses while any agent is still running: those records are the only place
 their answers are kept. It also rewrites any handoff still carrying the
 environment inline, which needs no asking — amx wrote every one of those files
 itself. Upgrading amx wants `doctor --fix` again: the extension it ships for pi
-changes with it, and `doctor` says so until the file is rewritten.
+changes with it, and `doctor` says so until the file is rewritten. And it takes
+each gone tree's key back out of the agent's trust store, with the file copied
+aside first and the count printed; only the trees amx cut ever go, never the
+repository's own entry.
 
 Without the hooks amx falls back to reading panes, which is enough to say what
 an agent is doing but not enough to hand you what it said. Answers come from

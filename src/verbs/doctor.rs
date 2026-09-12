@@ -1,13 +1,15 @@
 //! `amx doctor` — what amx needs from this machine, and what is missing.
 //!
-//! Eight things have to be true before an agent can run: a tmux new enough to
+//! Nine things have to be true before an agent can run: a tmux new enough to
 //! address panes by id, a vendor command to run, a config amx can read, amx's
 //! hooks wired into the vendor's settings, one amx on the PATH and this the
 //! one, a state root amx can keep an agent in, no handoff still carrying the
-//! spawner's environment from before that moved to a file of its own, and no
-//! agent already stopped at a screen the vendor puts in front of the work.
-//! Each check that fails says what to do about it, because a check that only
-//! says "no" leaves somebody guessing at a machine they thought was fine.
+//! spawner's environment from before that moved to a file of its own, no
+//! agent already stopped at a screen the vendor puts in front of the work, and
+//! no tree amx cut still named in the vendor's own trust store after the tree
+//! itself has gone. Each check that fails says what to do about it, because a
+//! check that only says "no" leaves somebody guessing at a machine they
+//! thought was fine.
 //!
 //! What two of them are worth depends on the vendor, and the vendor is what
 //! says. The table answers the first: one that reports nothing has no wiring to
@@ -18,7 +20,7 @@
 //! offered. A check that asked for a repair nobody can make would send somebody
 //! looking for a fault in their own machine.
 //!
-//! A ninth is asked only where there is something to ask it of. When a tmux
+//! A tenth is asked only where there is something to ask it of. When a tmux
 //! server is already running, and the machine can say where a process is
 //! standing, doctor checks that the directory that server is standing in still
 //! exists. A server holds the directory it was started in for as long as it
@@ -26,11 +28,13 @@
 //! there and dies at once. No server yet is not a fault, and neither is a
 //! platform amx cannot ask, so both go unsaid rather than answered green.
 //!
-//! `--fix` makes two repairs. Wiring the hooks needs asking, because the
+//! `--fix` makes three repairs. Wiring the hooks needs asking, because the
 //! settings file it writes to is the vendor's and may hold anything else
 //! beside amx's own entries. Rewriting a handoff that still carries the
 //! environment needs none: amx wrote every one of those files itself, and
 //! taking a stray key back out of one is not a change anybody could object to.
+//! Nor does forgetting a tree amx cut, which is amx's own key for a directory
+//! that is not there any more, and the file is copied aside before it goes.
 
 use anyhow::{Context, Result};
 use std::ffi::OsStr;
@@ -111,6 +115,10 @@ pub struct Findings {
     /// The tmux server amx would put an agent on, when one is already running
     /// and this machine can say where it is standing.
     pub server: Option<StandingServer>,
+    /// The vendor's own trust store, for a vendor whose screen amx answers by
+    /// writing one, and the trees it still names that the disk has not got.
+    pub store: Option<PathBuf>,
+    pub stale: Vec<PathBuf>,
 }
 
 /// The server amx would use, and where its own process is standing.
@@ -160,7 +168,7 @@ impl Setup {
 
 /// Judge what was found.
 ///
-/// Eight of these are asked on every machine. The ninth is asked only where
+/// Nine of these are asked on every machine. The tenth is asked only where
 /// there is something to ask it of: a tmux server already running, on a
 /// platform that can say where a process is standing.
 pub fn report(found: &Findings) -> Vec<Check> {
@@ -175,6 +183,7 @@ pub fn report(found: &Findings) -> Vec<Check> {
     ];
     checks.extend(server_check(found));
     checks.push(setup_check(found));
+    checks.push(store_check(found));
     checks
 }
 
@@ -450,6 +459,40 @@ fn setup_check(found: &Findings) -> Check {
     Check::wrong("setup", what, remedy)
 }
 
+/// Whether the vendor's own trust store still names trees amx cut and removed.
+///
+/// The vendor writes a project entry for every directory it is ever started
+/// in, and amx cuts a tree per agent, so the file grows a key for each one and
+/// keeps it long after the tree has gone. Nothing the person did put those
+/// keys there, and nothing but amx knows which of them were its own.
+///
+/// A vendor that answers its folder-trust screen some other way keeps no store
+/// amx has ever written in, and that is not a machine with something missing
+/// from it.
+fn store_check(found: &Findings) -> Check {
+    let Some(store) = &found.store else {
+        return Check::ok(
+            "store",
+            format!(
+                "{} keeps no store amx writes trees into",
+                program(&found.vendor)
+            ),
+        );
+    };
+    let store = store.display();
+
+    let stale = found.stale.len();
+    if stale == 0 {
+        return Check::ok("store", format!("no tree amx cut is left in {store}"));
+    }
+    let what = if stale == 1 {
+        format!("one tree amx cut is gone and still in {store}")
+    } else {
+        format!("{stale} trees amx cut are gone and still in {store}")
+    };
+    Check::wrong("store", what, "run `amx doctor --fix`")
+}
+
 /// Print the checks, offer the one repair amx can make, and answer with an
 /// exit code: zero when there is nothing left to do.
 pub fn run(
@@ -480,6 +523,21 @@ pub fn run(
             if cleaned == 1 { "file" } else { "files" }
         )?;
         current.dirty_handoffs = Vec::new();
+        checks = report(&current);
+    }
+
+    if fix
+        && !current.stale.is_empty()
+        && let Some(store) = current.store.clone()
+    {
+        let forgotten = forget_trees(&store, &current.stale, now)?;
+        writeln!(
+            out,
+            "\nforgot {forgotten} {} from {}",
+            if forgotten == 1 { "tree" } else { "trees" },
+            store.display()
+        )?;
+        current.stale = Vec::new();
         checks = report(&current);
     }
 
@@ -546,6 +604,17 @@ pub fn gather(config: &Config) -> Result<Findings> {
     let wired = install::wired(hooks, &home, &command);
     let (_, config_warnings) = crate::config::load();
     let state_root = crate::paths::state_root()?;
+    // Only for the vendor whose screen amx answers by writing its store: any
+    // other keeps no file amx has ever left a key in. A store amx cannot read
+    // names no tree it can be sure of either, and `new` is where that file is
+    // refused by name.
+    let store = trust::writes_a_store(&config.agent)
+        .then(|| trust::store_in(&spawn::env_snapshot(std::env::vars())))
+        .flatten();
+    let stale = store
+        .as_deref()
+        .and_then(|store| trust::stale_trees(store).ok())
+        .unwrap_or_default();
 
     Ok(Findings {
         tmux: tmux::version().ok(),
@@ -568,6 +637,8 @@ pub fn gather(config: &Config) -> Result<Findings> {
         ),
         state_root,
         server: standing_server(),
+        store,
+        stale,
     })
 }
 
@@ -617,6 +688,19 @@ fn clean_handoffs(dirty: &[PathBuf]) -> Result<usize> {
         cleaned += 1;
     }
     Ok(cleaned)
+}
+
+/// Take each stale tree's key back out of the store, and answer how many
+/// there was anything to take out for — one the vendor rewrote away between
+/// the reading and this is not a fault, just nothing to do.
+fn forget_trees(store: &Path, stale: &[PathBuf], now: u64) -> Result<usize> {
+    let mut forgotten = 0;
+    for tree in stale {
+        if trust::forget_tree(store, tree, now)? {
+            forgotten += 1;
+        }
+    }
+    Ok(forgotten)
 }
 
 /// The server amx would start an agent on, when one is already running.
@@ -878,6 +962,8 @@ mod tests {
             dirty_handoffs: Vec::new(),
             parked: Vec::new(),
             server: None,
+            store: Some(PathBuf::from("/home/dev/.claude.json")),
+            stale: Vec::new(),
         }
     }
 
@@ -950,8 +1036,8 @@ mod tests {
         assert!(checks.iter().all(Check::is_ok), "{checks:#?}");
         assert_eq!(
             checks.len(),
-            8,
-            "tmux, the vendor, the config, the hooks, amx, the state root, env, setup"
+            9,
+            "tmux, the vendor, the config, the hooks, amx, the state root, env, setup, the store"
         );
 
         let (code, printed) = said(&healthy(), false);
@@ -1566,6 +1652,109 @@ mod tests {
         let after: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&handoff).unwrap()).unwrap();
         assert!(after.get("env").is_none(), "{after}");
+    }
+
+    /// Somebody's store, with the repository they work in, a key of their own,
+    /// and one key per tree amx cut in there — the shape a store that nobody
+    /// has ever pruned arrives in.
+    fn a_store(dir: &TempDir, trees: &[&Path]) -> PathBuf {
+        let store = dir.path().join(".claude.json");
+        let mut projects = serde_json::Map::new();
+        projects.insert("/src/app".to_string(), serde_json::json!({}));
+        projects.insert("/src/other".to_string(), serde_json::json!({}));
+        for tree in trees {
+            projects.insert(
+                tree.display().to_string(),
+                serde_json::json!({ "hasTrustDialogAccepted": true }),
+            );
+        }
+        let document = serde_json::json!({ "numStartups": 412, "projects": projects });
+        std::fs::write(&store, serde_json::to_string_pretty(&document).unwrap()).unwrap();
+        store
+    }
+
+    /// A tree amx would have cut for `id`, under a repository that is not there.
+    fn a_gone_tree(id: &str) -> PathBuf {
+        PathBuf::from(format!("/src/app/.amx/worktrees/{id}"))
+    }
+
+    #[test]
+    fn doctor_counts_the_trees_the_vendors_store_still_names_after_they_went() {
+        // The store grows a key for every directory the vendor is started in,
+        // and amx cuts a tree per agent: a store nobody prunes carries one key
+        // per agent that ever ran, long after the tree it names has gone.
+        let mut found = healthy();
+        found.store = Some(PathBuf::from("/home/dev/.claude.json"));
+        let store = check(&found, "store");
+        assert!(store.is_ok(), "nothing of amx's is left in it: {store:?}");
+        assert!(
+            store.found.contains("/home/dev/.claude.json"),
+            "the file that was read: {}",
+            store.found
+        );
+
+        found.stale = vec![a_gone_tree("fix-login-a1b"), a_gone_tree("port-cli-b91")];
+        let store = check(&found, "store");
+        assert!(!store.is_ok(), "{store:?}");
+        assert!(store.found.contains('2'), "how many: {}", store.found);
+        assert!(
+            store
+                .remedy
+                .as_deref()
+                .unwrap()
+                .contains("amx doctor --fix"),
+            "{store:?}"
+        );
+        assert_eq!(said(&found, false).0, exit::FAILURE);
+    }
+
+    #[test]
+    fn doctor_asks_nothing_of_a_vendor_that_keeps_no_store_amx_writes() {
+        // pi's answer to the same screen is a flag on the argv, spent the
+        // moment the run ends: there is no file of the vendor's for amx to
+        // have left keys in, so there is nothing here to prune.
+        let mut found = healthy();
+        found.vendor = SECOND.name.to_string();
+        found.store = None;
+
+        let store = check(&found, "store");
+        assert!(store.is_ok(), "{store:?}");
+        assert!(store.found.contains(SECOND.name), "{}", store.found);
+        assert_eq!(said(&found, false).0, exit::OK);
+    }
+
+    #[test]
+    fn doctor_fix_forgets_the_stale_trees_and_leaves_the_rest_of_the_store_alone() {
+        let dir = TempDir::new().unwrap();
+        let gone = a_gone_tree("fix-login-a1b");
+        let store = a_store(&dir, &[&gone]);
+        let before = std::fs::read_to_string(&store).unwrap();
+
+        let mut found = healthy();
+        found.store = Some(store.clone());
+        found.stale = vec![gone.clone()];
+
+        let (code, printed) = said(&found, true);
+        assert_eq!(code, exit::OK, "nothing is left to prune: {printed}");
+        assert!(printed.contains("forgot 1 tree"), "how many: {printed}");
+        assert!(
+            printed.contains(&store.display().to_string()),
+            "and out of which file: {printed}"
+        );
+
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+        assert_eq!(after["projects"].get(gone.display().to_string()), None);
+        assert!(after["projects"].get("/src/app").is_some(), "{after}");
+        assert!(after["projects"].get("/src/other").is_some(), "{after}");
+        assert_eq!(after["numStartups"], 412);
+
+        let copy = install::latest_backup(&store).unwrap().expect("a copy");
+        assert_eq!(
+            std::fs::read_to_string(&copy).unwrap(),
+            before,
+            "the file as it was, keys and all"
+        );
     }
 
     #[test]
