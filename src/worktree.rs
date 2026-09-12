@@ -176,6 +176,42 @@ pub fn checked_out(repo: &Path, branch: &str) -> Result<bool> {
     Ok(listed.lines().any(|line| line.trim_end() == named))
 }
 
+/// Whether every commit on `branch` is already in the repository's main line.
+///
+/// The other way an agent's work can be finished with. A request that was
+/// merged says so on the forge, but plenty of work goes in without one — a
+/// person pulling the branch and merging it themselves — and afterwards the
+/// branch and the tree are a copy of history nobody needs. A branch git does
+/// not have is in nothing, which is what `--list` answering with nothing says.
+#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
+pub fn is_merged(repo: &Path, branch: &str) -> Result<bool> {
+    let main = main_branch(repo);
+    Ok(!git(repo, &["branch", "--merged", &main, "--list", branch])?.is_empty())
+}
+
+/// What this repository calls its main line.
+///
+/// The origin's own answer first, since that is the branch the forge merges
+/// into and the only one of the three that is a fact rather than a convention.
+/// Then `main` where there is one, then `master`. A repository with neither is
+/// one git has no main line to be asked about, and the question above hands
+/// that back as the failure git called it.
+fn main_branch(repo: &Path) -> String {
+    if let Ok(named) = git(
+        repo,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    ) {
+        let branch = named.strip_prefix("origin/").unwrap_or(&named);
+        if !branch.is_empty() {
+            return branch.to_string();
+        }
+    }
+    match git(repo, &["rev-parse", "--verify", "refs/heads/main"]) {
+        Ok(_) => "main".to_string(),
+        Err(_) => "master".to_string(),
+    }
+}
+
 /// The commit a ref names, whatever kind of ref it is: a branch, a tag, a
 /// remote-tracking name, or a commit written out.
 ///
@@ -837,6 +873,61 @@ mod tests {
             !checked_out(repo.path(), "mai").unwrap(),
             "and the name is the whole name, not the start of one"
         );
+    }
+
+    #[test]
+    fn worktree_says_whether_a_branchs_work_is_in_the_main_line() {
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+        std::fs::write(tree.path.join("login.rs"), "fn login() {}\n").unwrap();
+        setup(&tree.path, &["add", "login.rs"]);
+        setup(&tree.path, &["commit", "-m", "the agent's own commit"]);
+
+        assert!(
+            !is_merged(repo.path(), &tree.branch).unwrap(),
+            "work nothing has taken yet"
+        );
+
+        setup(repo.path(), &["merge", "-q", &tree.branch]);
+        assert!(
+            is_merged(repo.path(), &tree.branch).unwrap(),
+            "and the same branch once main holds every commit on it"
+        );
+
+        assert!(
+            !is_merged(repo.path(), "amx/never-cut-b2c").unwrap(),
+            "a branch git does not have is in nothing"
+        );
+    }
+
+    #[test]
+    fn worktree_asks_the_origin_what_the_main_line_is_before_it_guesses() {
+        // The name is the forge's to say: a repository whose default branch is
+        // `trunk` would otherwise have every branch read as unmerged, and a
+        // sweep that believes that never sweeps anything.
+        let repo = a_repo();
+        assert_eq!(main_branch(repo.path()), "main");
+
+        setup(repo.path(), &["branch", "trunk"]);
+        setup(
+            repo.path(),
+            &["update-ref", "refs/remotes/origin/trunk", "HEAD"],
+        );
+        setup(
+            repo.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/trunk",
+            ],
+        );
+        assert_eq!(main_branch(repo.path()), "trunk");
+
+        // And where the origin says nothing, whichever of the two names this
+        // repository actually has.
+        let old = a_repo();
+        setup(old.path(), &["branch", "-m", "master"]);
+        assert_eq!(main_branch(old.path()), "master");
     }
 
     #[test]
