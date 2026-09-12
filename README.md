@@ -89,6 +89,8 @@ amx new --base main "add the export"   # a tree cut from a ref of your choosing
 amx new --with-changes "finish this"   # taking what you have not committed
 amx new --name importer "port it"      # an id you chose
 amx new --dir /srv/app "tail the log"  # somewhere other than here
+amx new --file brief.md                # the task, read out of a file
+amx new --file -                       # the task, read off a pipe
 amx rename importer auth               # what the wall calls it, afterwards
 ```
 
@@ -100,6 +102,13 @@ looking at exactly where it was. The server is yours, so it reads the
 
 `new` prints the agent's id and nothing else. Everything after this takes that
 id.
+
+`--file` is for the task too long to quote into a shell: the file is read
+whole, the newline your editor left at the end of it comes off, and what is
+left is the task exactly as if you had typed it. `--file -` reads stdin, so a
+heredoc or the output of something else is a task as well. There is no task on
+the command line beside it — one or the other, never both — and a file with
+nothing in it is an empty task and refused as one.
 
 `--name` and `amx rename` name different things. `--name` is the id itself,
 chosen rather than cut out of the task, and it is what the pane, the branch and
@@ -1067,7 +1076,7 @@ Four questions, four commands, and the exit code is the answer:
 | `64` | the command line was wrong, including an answer the question would not take |
 
 ```sh
-id=$(amx new --no-worktree --dir "$dir" "Read $brief and execute it exactly." \
+id=$(amx new --no-worktree --dir "$dir" --file "$brief" \
      -- --session-id "$session")
 
 amx ls --json                 # every agent: state, since, last_event, summary, question

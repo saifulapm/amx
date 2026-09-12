@@ -220,16 +220,49 @@ pub fn from_env(config: &Config, args: &NewArgs) -> Result<i32> {
     let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());
     let mut problems = std::io::stderr().lock();
 
+    // The file is read here, in front of everything: it is the task, and a
+    // task nobody can read is a command line that never started an agent.
+    let task = match task_of(args) {
+        Ok(task) => task,
+        Err(refusal) => {
+            writeln!(
+                problems,
+                "{}",
+                said(
+                    Severity::Warned,
+                    &format!("amx new: {refusal}"),
+                    to_terminal
+                )
+            )?;
+            return Ok(exit::USAGE);
+        }
+    };
+
     run_aloud(
         &root,
         &dir,
         env,
         config,
         args,
+        &task,
         &mut out,
         &mut problems,
         to_terminal,
     )
+}
+
+/// What this spawn is on: the file's text where `--file` named one, else what
+/// was typed.
+///
+/// One or the other and never both — the command line refuses a task typed
+/// beside a file — so this is the whole of the question, and everything
+/// downstream is handed the answer rather than the two places it could have
+/// come from.
+fn task_of(args: &NewArgs) -> Result<String, String> {
+    match &args.file {
+        Some(path) => crate::cli::text_of(path),
+        None => Ok(args.task.clone().unwrap_or_default()),
+    }
 }
 
 /// The verb, with everything it reads named and its refusals in the words
@@ -248,7 +281,10 @@ pub fn run(
     out: &mut impl Write,
     problems: &mut impl Write,
 ) -> Result<i32> {
-    run_aloud(root, dir, env, config, args, out, problems, false)
+    // The view types its task on the line at the foot of the screen; there is
+    // no file behind that door.
+    let task = args.task.clone().unwrap_or_default();
+    run_aloud(root, dir, env, config, args, &task, out, problems, false)
 }
 
 /// The same, told to a stderr that is a terminal and wants the colour.
@@ -259,6 +295,7 @@ fn run_aloud(
     env: std::collections::BTreeMap<String, String>,
     config: &Config,
     args: &NewArgs,
+    task: &str,
     out: &mut impl Write,
     problems: &mut impl Write,
     to_terminal: bool,
@@ -309,7 +346,7 @@ fn run_aloud(
         return Ok(exit::BLOCKED);
     }
 
-    let (id, agent_dir) = claim(root, args)?;
+    let (id, agent_dir) = claim(root, args, task)?;
 
     // From here on a failure leaves nothing behind: an id that half exists is
     // worse than one that does not. The directory is this spawn's own — the
@@ -321,6 +358,7 @@ fn run_aloud(
         env,
         config,
         args,
+        task,
         &launch,
         &id,
         problems,
@@ -344,7 +382,7 @@ const MAX_CLAIMS: usize = 8;
 /// two spawns in flight can both believe a name is free, but the directory
 /// can only be made by one of them, and nothing the loser has to clean up
 /// exists yet.
-fn claim(root: &Path, args: &NewArgs) -> Result<(String, PathBuf)> {
+fn claim(root: &Path, args: &NewArgs, task: &str) -> Result<(String, PathBuf)> {
     if let Some(name) = &args.name {
         ids::validate_name(name, root)?;
         let dir = paths::agent_dir_in(root, name)?;
@@ -357,15 +395,14 @@ fn claim(root: &Path, args: &NewArgs) -> Result<(String, PathBuf)> {
     // generate already avoids every directory that exists, so losing a draw
     // to a spawn in flight is next to never — and answered with another draw.
     for _ in 0..MAX_CLAIMS {
-        let id = ids::generate(&args.task, root)?;
+        let id = ids::generate(task, root)?;
         let dir = paths::agent_dir_in(root, &id)?;
         if make_dir(&dir)? {
             return Ok((id, dir));
         }
     }
     bail!(
-        "no id for {:?} could be claimed under {} after {MAX_CLAIMS} draws",
-        args.task,
+        "no id for {task:?} could be claimed under {} after {MAX_CLAIMS} draws",
         root.display()
     )
 }
@@ -378,6 +415,7 @@ fn start(
     mut env: std::collections::BTreeMap<String, String>,
     config: &Config,
     args: &NewArgs,
+    task: &str,
     launch: &Launch,
     id: &str,
     problems: &mut impl Write,
@@ -419,8 +457,8 @@ fn start(
     spawn::write_handoff(
         agent_dir,
         &Handoff {
-            task: args.task.clone(),
-            command: launched(args, launch, id, config.trust),
+            task: task.to_string(),
+            command: launched(args, task, launch, id, config.trust),
         },
     )?;
 
@@ -442,7 +480,7 @@ fn start(
         root,
         &Meta {
             id: id.to_string(),
-            task: args.task.clone(),
+            task: task.to_string(),
             agent: vendor_written(args.exec, &launch.agent),
             dir: cwd,
             worktree: tree.map(|tree| tree.path.clone()),
@@ -497,14 +535,14 @@ fn vendor_written(exec: bool, agent: &str) -> Option<String> {
 /// here because a vendor whose folder-trust answer is a flag is answered on
 /// this argv rather than in a file. The key is read here, where the config is,
 /// because `spawn` is handed no config of its own.
-fn launched(args: &NewArgs, launch: &Launch, id: &str, trust: bool) -> Vec<String> {
+fn launched(args: &NewArgs, task: &str, launch: &Launch, id: &str, trust: bool) -> Vec<String> {
     match args.exec {
-        true => spawn::exec_command(&args.task),
+        true => spawn::exec_command(task),
         false => spawn::vendor_command(
             &launch.agent,
             &launch.dials,
             &args.vendor_args,
-            &args.task,
+            task,
             Some(id),
             trust,
         ),
@@ -699,7 +737,8 @@ mod tests {
     fn spawn(agent: Option<&str>, dials: [Option<&str>; 3]) -> NewArgs {
         let [model, permission, effort] = dials;
         NewArgs {
-            task: "port the importer".to_string(),
+            task: Some("port the importer".to_string()),
+            file: None,
             name: None,
             dir: None,
             no_worktree: false,
@@ -720,7 +759,8 @@ mod tests {
     /// none.
     fn a_command(command: &str) -> NewArgs {
         NewArgs {
-            task: command.to_string(),
+            task: Some(command.to_string()),
+            file: None,
             name: None,
             dir: None,
             no_worktree: false,
@@ -825,6 +865,7 @@ mod tests {
                 std::collections::BTreeMap::new(),
                 &Config::default(),
                 &spawn(None, [None, Some("acceptedits"), None]),
+                "port the importer",
                 &mut out,
                 &mut problems,
                 to_terminal,
@@ -1085,7 +1126,7 @@ mod tests {
         let launch = Launch::resolve(&config, &args).unwrap();
 
         assert_eq!(
-            launched(&args, &launch, "port-it-b2c", false),
+            launched(&args, "port the importer", &launch, "port-it-b2c", false),
             ["claude", "--model", "opus", "port the importer"]
         );
     }
@@ -1106,13 +1147,20 @@ mod tests {
         let launch = Launch::resolve(&Config::default(), &a_command("cargo test")).unwrap();
 
         assert_eq!(
-            launched(&a_command("cargo test"), &launch, "port-it-b2c", false),
+            launched(
+                &a_command("cargo test"),
+                "cargo test",
+                &launch,
+                "port-it-b2c",
+                false
+            ),
             ["sh", "-c", "cargo test"],
             "no vendor, no dials, and no task appended after it"
         );
         assert_eq!(
             launched(
                 &spawn(Some("claude"), [None; 3]),
+                "port the importer",
                 &launch,
                 "port-it-b2c",
                 false
@@ -1296,7 +1344,7 @@ mod tests {
         let launch = Launch::resolve(&agreed(), &args).unwrap();
 
         assert_eq!(
-            launched(&args, &launch, "port-it-b2c", true),
+            launched(&args, "port the importer", &launch, "port-it-b2c", true),
             [
                 "pi",
                 "--session-id",
@@ -1306,7 +1354,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            launched(&args, &launch, "port-it-b2c", false),
+            launched(&args, "port the importer", &launch, "port-it-b2c", false),
             ["pi", "--session-id", "port-it-b2c", "port the importer"],
             "and nothing at all without the key"
         );

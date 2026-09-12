@@ -6,7 +6,7 @@
 //! hidden from help but are as much of the contract as the rest.
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -292,8 +292,20 @@ pub enum Command {
 #[derive(Debug, Args)]
 pub struct NewArgs {
     /// What the agent should do.
-    #[arg(value_parser = a_task)]
-    pub task: String,
+    #[arg(
+        value_parser = a_task,
+        required_unless_present = "file",
+        conflicts_with = "file"
+    )]
+    pub task: Option<String>,
+
+    /// Read the task from this file instead, or from stdin for `-`.
+    ///
+    /// A brief long enough to be worth writing down is a brief nobody wants to
+    /// quote into a shell: the file is read whole, its last newline taken off,
+    /// and what is left is the task exactly as a typed one would have been.
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<PathBuf>,
 
     /// Name the agent instead of deriving a name from the task.
     #[arg(long)]
@@ -462,6 +474,25 @@ fn a_task(text: &str) -> Result<String, String> {
     }
 }
 
+/// A task read out of a file, or off stdin where the path is `-`.
+///
+/// The whole file, with one trailing newline taken off: every editor writes
+/// that newline and nobody means it as part of the task, and a `$(cat brief)`
+/// in a shell would have dropped it too. Nothing else is trimmed — what is
+/// inside a task is the person's business here as much as it is when it is
+/// typed.
+///
+/// Then through [`a_task`], because a file with nothing in it says exactly what
+/// an empty argument says: an agent with nothing to do, holding a pane while it
+/// does nothing.
+pub fn text_of(path: &Path) -> Result<String, String> {
+    let text = match path == Path::new("-") {
+        true => std::io::read_to_string(std::io::stdin()).map_err(|e| format!("stdin: {e}")),
+        false => std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display())),
+    }?;
+    a_task(text.strip_suffix('\n').unwrap_or(&text))
+}
+
 /// What becomes of a worktree or a branch when its agent stops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Disposition {
@@ -587,6 +618,8 @@ mod tests {
     fn every_verb_parses() {
         let lines: &[(&[&str], &str)] = &[
             (&["amx", "new", "fix the bug"], "new"),
+            (&["amx", "new", "--file", "brief.md"], "new"),
+            (&["amx", "new", "--file", "-"], "new"),
             (&["amx", "ls"], "ls"),
             (&["amx", "ls", "--json"], "ls"),
             (&["amx", "ls", "--dir", "/srv/app"], "ls"),
@@ -667,7 +700,7 @@ mod tests {
         let Some(Command::New(args)) = cli.command else {
             panic!("expected new");
         };
-        assert_eq!(args.task, "port the importer");
+        assert_eq!(args.task.as_deref(), Some("port the importer"));
         assert_eq!(args.name.as_deref(), Some("importer"));
         assert_eq!(args.dir, Some(PathBuf::from("/srv/app")));
         assert!(args.no_worktree);
@@ -738,7 +771,8 @@ mod tests {
         };
         assert!(args.exec);
         assert_eq!(
-            args.task, "npm test && npm run lint",
+            args.task.as_deref(),
+            Some("npm test && npm run lint"),
             "the command is what the row is for, so it is the task"
         );
     }
@@ -812,7 +846,7 @@ mod tests {
         let Some(Command::New(args)) = cli.command else {
             panic!("expected new");
         };
-        assert_eq!(args.task, "fix the log-in bug");
+        assert_eq!(args.task.as_deref(), Some("fix the log-in bug"));
         assert_eq!(args.vendor_args, ["--help"]);
     }
 
@@ -959,6 +993,68 @@ mod tests {
     }
 
     #[test]
+    fn clibatch_a_task_is_typed_or_read_from_a_file_and_never_both() {
+        let cli = parse(&["amx", "new", "--file", "brief.md"]).unwrap();
+        let Some(Command::New(args)) = cli.command else {
+            panic!("expected new");
+        };
+        assert_eq!(args.task, None, "the file is where the task is");
+        assert_eq!(args.file.as_deref(), Some(Path::new("brief.md")));
+
+        // A dash is stdin, which is a file the shell holds open rather than
+        // one with a name.
+        let cli = parse(&["amx", "new", "--file", "-"]).unwrap();
+        let Some(Command::New(args)) = cli.command else {
+            panic!("expected new");
+        };
+        assert_eq!(args.file.as_deref(), Some(Path::new("-")));
+
+        // A command is the row's task, so a command out of a file is one too.
+        let cli = parse(&["amx", "new", "--exec", "--file", "release.sh"]).unwrap();
+        let Some(Command::New(args)) = cli.command else {
+            panic!("expected new");
+        };
+        assert!(args.exec);
+        assert_eq!(args.file.as_deref(), Some(Path::new("release.sh")));
+
+        // Two tasks is not a task: which of them was meant has to be said.
+        for argv in [
+            &["amx", "new", "port the importer", "--file", "brief.md"][..],
+            &["amx", "new", "--file"],
+        ] {
+            assert_eq!(code(argv), exit::USAGE, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn clibatch_a_task_read_from_a_file_is_all_of_it_bar_the_last_newline() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let brief = dir.path().join("brief.md");
+
+        std::fs::write(&brief, "fix the login bug\n").unwrap();
+        assert_eq!(text_of(&brief).unwrap(), "fix the login bug");
+
+        // One newline, the one every editor writes at the end. Anything else
+        // inside the file is the task as it was written.
+        std::fs::write(&brief, "fix the login bug\n\n").unwrap();
+        assert_eq!(text_of(&brief).unwrap(), "fix the login bug\n");
+        std::fs::write(&brief, "  fix the login bug").unwrap();
+        assert_eq!(text_of(&brief).unwrap(), "  fix the login bug");
+
+        // A file with nothing in it is an empty task, and an empty task is
+        // refused wherever it was typed.
+        for written in ["", "\n", "  \n"] {
+            std::fs::write(&brief, written).unwrap();
+            assert!(text_of(&brief).is_err(), "{written:?}");
+        }
+
+        // And a file that is not there is named, because the name is what was
+        // mistyped.
+        let refusal = text_of(&dir.path().join("nothing.md")).unwrap_err();
+        assert!(refusal.contains("nothing.md"), "{refusal}");
+    }
+
+    #[test]
     fn clibatch_a_task_reaches_the_vendor_as_it_was_typed() {
         // Only wholly empty is refused. What is inside a task is the person's
         // business, and amx tidying up their prompt for them is not a service.
@@ -966,7 +1062,7 @@ mod tests {
         let Some(Command::New(args)) = cli.command else {
             panic!("expected new");
         };
-        assert_eq!(args.task, "  fix the login bug\n");
+        assert_eq!(args.task.as_deref(), Some("  fix the login bug\n"));
     }
 
     #[test]

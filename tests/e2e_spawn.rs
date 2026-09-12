@@ -15,6 +15,29 @@ fn new(amx: &Harness, scenario: &str, args: &[&str]) -> Output {
         .expect("running amx new")
 }
 
+/// `amx new`, with the task typed at its stdin rather than on its command
+/// line.
+fn new_typed_at(amx: &Harness, scenario: &str, args: &[&str], typed: &str) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = amx
+        .amx_command(&[&["new"], args].concat())
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("running amx new");
+    child
+        .stdin
+        .take()
+        .expect("stdin was asked for")
+        .write_all(typed.as_bytes())
+        .expect("typing the task at amx");
+    child.wait_with_output().expect("waiting for amx new")
+}
+
 /// `amx new`, with the vendor's stand-in installed under the name the dial
 /// table knows.
 ///
@@ -173,6 +196,112 @@ fn new_records_the_command_it_launched_the_agent_with() {
         amx.meta(&ran)["agent"].is_null(),
         "{}",
         amx.meta(&ran)["agent"]
+    );
+}
+
+#[test]
+fn new_takes_the_task_from_a_file() {
+    // A brief worth writing down is one nobody wants to quote into a shell,
+    // and what the row used to say was "Read /tmp/x and execute it exactly".
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let brief = amx.home().join("brief.md");
+    std::fs::write(&brief, "fix the login bug\n").expect("a brief to read");
+    let named = brief.to_string_lossy().into_owned();
+
+    let id = id_of(&new(
+        &amx,
+        "happy-turn",
+        &["--no-worktree", "--agent", &mock, "--file", &named],
+    ));
+
+    // The file's text is the task everywhere a typed one would have been: the
+    // id cut from it, the row, the handoff, and the argv the vendor is handed.
+    // The newline the editor wrote is not part of it.
+    assert!(id.starts_with("fix-the-login-bug-"), "{id}");
+    assert_eq!(amx.meta(&id)["task"], "fix the login bug");
+    assert_eq!(amx.handoff(&id)["task"], "fix the login bug");
+    assert_eq!(
+        command_of(&amx, &id).last().map(String::as_str),
+        Some("fix the login bug")
+    );
+    assert_eq!(amx.until_state(&id, "idle")["result"], "the tests pass now");
+}
+
+#[test]
+fn new_takes_the_task_from_stdin_for_a_bare_dash() {
+    // The brief a coordinator has in hand rather than on disk: a heredoc or a
+    // pipe is the whole of what it takes.
+    let amx = Harness::new();
+    let mock = amx.mock();
+
+    let id = id_of(&new_typed_at(
+        &amx,
+        "happy-turn",
+        &["--no-worktree", "--agent", &mock, "--file", "-"],
+        "fix the login bug\n\nthe test is in tests/login.rs\n",
+    ));
+
+    assert_eq!(
+        amx.meta(&id)["task"],
+        "fix the login bug\n\nthe test is in tests/login.rs",
+        "read whole, with the last newline off and everything inside it kept"
+    );
+}
+
+#[test]
+fn new_refuses_a_file_with_nothing_in_it_the_way_it_refuses_an_empty_task() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let empty = amx.home().join("empty.md");
+    std::fs::write(&empty, "\n").expect("a file with nothing in it");
+    let named = empty.to_string_lossy().into_owned();
+
+    let refused = new(
+        &amx,
+        "happy-turn",
+        &["--no-worktree", "--agent", &mock, "--file", &named],
+    );
+    assert_eq!(
+        refused.status.code(),
+        Some(64),
+        "a malformed command line, the same as an empty argument"
+    );
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("something to do"), "{said}");
+
+    // A file amx cannot read is named, because the name is what was mistyped.
+    let missing = amx.home().join("nowhere.md").to_string_lossy().into_owned();
+    let mistyped = new(
+        &amx,
+        "happy-turn",
+        &["--no-worktree", "--agent", &mock, "--file", &missing],
+    );
+    assert_eq!(mistyped.status.code(), Some(64));
+    assert!(
+        String::from_utf8_lossy(&mistyped.stderr).contains("nowhere.md"),
+        "{}",
+        String::from_utf8_lossy(&mistyped.stderr)
+    );
+
+    // And a task typed beside a file is two tasks, which is none.
+    let both = new(
+        &amx,
+        "happy-turn",
+        &[
+            "--no-worktree",
+            "--agent",
+            &mock,
+            "--file",
+            &named,
+            "fix the login bug",
+        ],
+    );
+    assert_eq!(both.status.code(), Some(64));
+
+    assert!(
+        !amx.state_root().exists() || amx.state_root().read_dir().unwrap().next().is_none(),
+        "and none of the three minted an id"
     );
 }
 

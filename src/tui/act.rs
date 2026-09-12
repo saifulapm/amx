@@ -1408,7 +1408,10 @@ pub fn start(root: &Path, config: &Config, line: &str, under: Option<&Path>) -> 
     };
     let named = dials.command.is_some() || dials.model.is_some() || dials.permission.is_some();
     let args = NewArgs {
-        task,
+        task: Some(task),
+        // The line the view types is the task itself; a file is the command
+        // line's own way of handing over one too long to type.
+        file: None,
         name: None,
         dir: None,
         no_worktree: false,
