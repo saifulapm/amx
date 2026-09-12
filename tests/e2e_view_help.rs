@@ -173,6 +173,8 @@ fn the_keys_are_on_the_screen_for_the_asking() {
         "call it something else",
         "pin it over the wall",
         "ctrl+x",
+        "a ref to cut from · a request to start on",
+        "take the uncommitted work",
     ] {
         assert!(keys.contains(does), "{does} is not among the keys:\n{keys}");
     }

@@ -42,7 +42,7 @@ use crate::tui::grid;
 ///
 /// The table is not public to the rest of the crate, so the test that checks
 /// the README against it reads this file as text.
-pub(in crate::tui) const HELP: [(&str, &str); 41] = [
+pub(in crate::tui) const HELP: [(&str, &str); 43] = [
     // walk
     ("↑ ↓ j k", "walk the agents"),
     ("gg G", "the top of the list, and the foot"),
@@ -87,6 +87,8 @@ pub(in crate::tui) const HELP: [(&str, &str); 41] = [
     ("alt+w", "whether it gets a worktree of its own"),
     ("shift+tab", "what it may do without asking"),
     ("m: p: w:", "model, permission and worktree, for one spawn"),
+    ("b: pr:", "a ref to cut from · a request to start on"),
+    ("w:changes", "take the uncommitted work"),
     ("d:", "where one spawn runs, on the task line"),
     ("agent:", "which vendor runs it, for one spawn"),
 ];
@@ -105,7 +107,7 @@ pub(super) const GROUPS: [(&str, usize); 5] = [
     ("look", 8),
     ("start", 11),
     ("arrange", 9),
-    ("dials", 7),
+    ("dials", 9),
 ];
 
 /// Every key stands under exactly one heading.

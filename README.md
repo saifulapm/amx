@@ -401,6 +401,7 @@ table.
 | `alt+m` | which model the next agent is given |
 | `alt+w` | whether it gets a worktree of its own |
 | `shift+tab` | what the next agent may do without asking |
+| `b:` `pr:` `w:changes` | on the task line: a ref to cut from, a request to start on, take the uncommitted work |
 | `?` | every key, where the list was |
 | `q` `ctrl+c` | close the view |
 
@@ -672,6 +673,16 @@ name read against the directory you opened the view in, the way a shell prompt
 standing there would read it. Nothing else on it is a word amx reads, so
 `s:waiting` typed here is the task and `enter` starts an agent on it.
 
+Three of those words are about the tree that one agent works in, and they are
+the flags `amx new` takes. `b:release port it` cuts the tree from that ref.
+`pr:412 review it` starts the agent on that pull request. `w:changes fix the
+login bug` gives it a tree and moves the work no commit holds here into it,
+leaving this directory as its last commit had it. The pairs the flags refuse
+are refused here too: `pr:` beside `b:`, because a request already says what it
+is cut from, and `pr:` beside `w:off` or `w:changes`, because a request is a
+tree of its own. Where there is nothing uncommitted to move, `w:changes` starts
+nothing and says so under the line you typed it on.
+
 Without a `d:` the agent starts where you opened the view, unless the wall says
 somewhere else: with the agents gathered by project, a line opened on a heading
 or on any row under it starts in that project, and the rule says which.
@@ -708,7 +719,7 @@ way, out of the vendors amx has an entry for. Six of them at most, and the
 rows come off the wall the way the line's own do.
 
 The dials are offered too: `m:` and `p:` the values that vendor's dial takes,
-`w:` its two, and `d:` the directories under the one the line will run in
+`w:` its three, and `d:` the directories under the one the line will run in
 along with every project you already have an agent in. An `@` word that names
 none of the vendor's agents is a path — the other thing the mark is for — and
 what it offers is what is in the directory it names, read against the line's
