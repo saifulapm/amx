@@ -458,7 +458,7 @@ fn placeholder(composer: &Composer) -> Option<&'static str> {
     if !matches!(composer.asking, Asking::Task) || !composer.text.is_empty() {
         return None;
     }
-    Some("!command · m:model · p:permission · w:on|off · d:directory · agent:command")
+    Some("!command · m:model · p:permission · w:on|off|changes · d:directory · agent:command")
 }
 
 /// The keys with nowhere else to be said, as the line under the cursor makes
@@ -1358,7 +1358,7 @@ mod tests {
             "!command",
             "m:model",
             "p:permission",
-            "w:on|off",
+            "w:on|off|changes",
             "d:directory",
             "agent:command",
         ] {

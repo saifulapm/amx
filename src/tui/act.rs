@@ -739,7 +739,7 @@ pub fn finding(line: &str) -> Vec<Narrow> {
 }
 
 /// The tokens a task line may be led with, and what each of them turns.
-const DIALS: [&str; 5] = [MODEL, PERMISSION, WORKTREE, DIR, AGENT];
+const DIALS: [&str; 7] = [MODEL, PERMISSION, WORKTREE, DIR, AGENT, BASE, REQUEST];
 
 /// The one of them that says which vendor the line is for, which is the vendor
 /// every other word on it is read against.
@@ -749,13 +749,18 @@ const AGENT: &str = "agent:";
 const MODEL: &str = "m:";
 const PERMISSION: &str = "p:";
 
-/// And the two that are amx's: whether this agent is given a tree of its own,
-/// and where it runs.
+/// And the four that are amx's: whether this agent is given a tree of its own,
+/// where it runs, what its tree is cut from and the request it is cut for.
 const WORKTREE: &str = "w:";
 const DIR: &str = "d:";
+const BASE: &str = "b:";
+const REQUEST: &str = "pr:";
 
 /// What `w:` takes, which is amx's own answer and in no vendor's table.
-const TREE: [&str; 2] = ["on", "off"];
+///
+/// `changes` is a tree and the work you had not committed yet moved into it,
+/// which is why it is a value of this word rather than one of its own.
+const TREE: [&str; 3] = ["on", "off", "changes"];
 
 /// The mark a file is named by, which is the vendor's own and the same one an
 /// agent is named by.
@@ -781,6 +786,14 @@ pub struct Turned {
     /// rather than a path: what `~` and a relative name mean is the running
     /// view's business, and this is only what somebody asked for.
     pub dir: Option<String>,
+    /// What its tree is cut from, as it was typed. Whether git can resolve the
+    /// ref is the spawn's own answer, the same as at a shell prompt.
+    pub base: Option<String>,
+    /// The request it is started on, which says both what the tree is cut from
+    /// and where the work goes.
+    pub pr: Option<u64>,
+    /// Whether the work no commit holds here moves into that tree.
+    pub with_changes: bool,
 }
 
 /// What starting an agent came to.
@@ -860,7 +873,13 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
                 turned.worktree = Some(match *value {
                     "on" => true,
                     "off" => false,
-                    _ => return Err(format!("w:{value}: on or off")),
+                    // The work moves into a tree, so the word asks for one as
+                    // well as for the work.
+                    "changes" => {
+                        turned.with_changes = true;
+                        true
+                    }
+                    _ => return Err(format!("w:{value}: on, off or changes")),
                 });
             }
             DIR => {
@@ -868,6 +887,18 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
                     return Err("d: takes a directory".to_string());
                 }
                 turned.dir = Some((*value).to_string());
+            }
+            BASE => {
+                if value.is_empty() {
+                    return Err("b: takes a ref".to_string());
+                }
+                turned.base = Some((*value).to_string());
+            }
+            REQUEST => {
+                let Ok(number) = value.parse::<u64>() else {
+                    return Err("pr: takes a number".to_string());
+                };
+                turned.pr = Some(number);
             }
             MODEL => {
                 turned.model = Some(pointed(&agent, dial, entry.and_then(|e| e.model), value)?);
@@ -882,19 +913,31 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
             }
         }
     }
+
+    // The pairs clap holds the flags to, read after every word rather than as
+    // each one lands: which of the two was typed first says nothing about
+    // which of them somebody meant.
+    if turned.pr.is_some() {
+        if turned.base.is_some() {
+            return Err("pr: and b: — a request says what it is cut from".to_string());
+        }
+        if turned.worktree == Some(false) || turned.with_changes {
+            return Err("pr: and w: — a request is a tree of its own".to_string());
+        }
+    }
     Ok((turned, task.to_string()))
 }
 
 /// The one dial a command row takes and the command that is left, or the word
 /// that is a dial it has nothing to turn.
 ///
-/// `d:` alone, because it is the only one of the five that is about the row
+/// `d:` alone, because it is the only one of the seven that is about the row
 /// rather than about an agent: where the command runs. A row that runs `sh -c`
 /// launches no vendor, so the vendor's own two and the word that names one have
 /// nothing here to be about — which is why `--exec` refuses those flags at a
-/// shell prompt too. `w:` goes with them: a command is not a conversation to
-/// keep apart from the next one, so it runs in the checkout it was typed in
-/// whatever any line says.
+/// shell prompt too. `w:`, `b:` and `pr:` go with them: a command is not a
+/// conversation to keep apart from the next one, so it runs in the checkout it
+/// was typed in whatever any line says.
 fn commanded(rest: &str) -> Result<(Turned, String), String> {
     let (tokens, command) = tokens(rest);
     let mut turned = Turned {
@@ -1380,6 +1423,15 @@ pub fn start(root: &Path, config: &Config, line: &str, under: Option<&Path>) -> 
         },
         None => under.map_or(here, Path::to_path_buf),
     };
+    // Asked here, before anything is made, and said in the word that was
+    // typed: `new` refuses the same thing under the name of its flag, which is
+    // a name nobody typed on this line.
+    if turned.with_changes && !worktree::has_changes_to_carry(&dir)? {
+        return Ok(Started::No(format!(
+            "w:changes: nothing in {} to move",
+            dir.display()
+        )));
+    }
     // Who the vendor is asked to be, read against the directory this one runs
     // in: an agent it loads out of the project is an agent of the project the
     // line names, not of the one the view was opened in. A command row asks for
@@ -1415,14 +1467,9 @@ pub fn start(root: &Path, config: &Config, line: &str, under: Option<&Path>) -> 
         name: None,
         dir: None,
         no_worktree: false,
-        base: None,
-        // A request is a repository's own thing to start on, and the view
-        // has no line for a number: the command line is where one is typed.
-        pr: None,
-        // A task line is typed to start an agent, not to hand over what you
-        // were in the middle of: the view has no mark for it and the command
-        // line is where that decision is made.
-        with_changes: false,
+        base: turned.base,
+        pr: turned.pr,
+        with_changes: turned.with_changes,
         exec: turned.exec,
         agent: named.then_some(dials),
         vendor_args,
@@ -2527,6 +2574,8 @@ mod tests {
             "!p:plan ls",
             "!agent:codex ls",
             "!w:on ls",
+            "!b:main ls",
+            "!pr:412 ls",
         ] {
             let said = refused(line);
             assert!(
@@ -2620,6 +2669,9 @@ mod tests {
                 permission: Some("plan".to_string()),
                 worktree: Some(false),
                 dir: None,
+                base: None,
+                pr: None,
+                with_changes: false,
             }
         );
         assert_eq!(task, "port the importer");
@@ -2679,6 +2731,108 @@ mod tests {
     }
 
     #[test]
+    fn composer_cuts_one_spawn_from_the_ref_or_the_request_its_line_names() {
+        let (dials, task) = turned(&as_claude(), "b:main port the importer").unwrap();
+        assert_eq!(dials.base.as_deref(), Some("main"));
+        assert_eq!(task, "port the importer");
+
+        // A ref git cannot resolve is the spawn's own refusal, as it is at a
+        // shell prompt: the word only has to be there.
+        let (dials, task) = turned(&as_claude(), "b:v0.2.0  m:opus  port it").unwrap();
+        assert_eq!(dials.base.as_deref(), Some("v0.2.0"));
+        assert_eq!(dials.model.as_deref(), Some("opus"));
+        assert_eq!(task, "port it");
+
+        let (dials, task) = turned(&as_claude(), "pr:412 review it").unwrap();
+        assert_eq!(dials.pr, Some(412));
+        assert_eq!(task, "review it");
+
+        assert_eq!(
+            turned(&as_claude(), "b: port it").expect_err("refused"),
+            "b: takes a ref"
+        );
+        for line in ["pr: review it", "pr:none review it", "pr:-1 review it"] {
+            assert_eq!(
+                turned(&as_claude(), line).expect_err("refused"),
+                "pr: takes a number",
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn composer_refuses_a_request_beside_the_words_that_answer_it() {
+        // The pairs clap holds the flags to, in whichever order they are typed.
+        let refused = |line: &str| turned(&as_claude(), line).expect_err(line);
+
+        for line in ["pr:412 b:main review it", "b:main pr:412 review it"] {
+            assert_eq!(
+                refused(line),
+                "pr: and b: — a request says what it is cut from",
+                "{line:?}"
+            );
+        }
+        for line in [
+            "pr:412 w:off review it",
+            "w:changes pr:412 review it",
+            "pr:412 w:changes review it",
+        ] {
+            assert_eq!(
+                refused(line),
+                "pr: and w: — a request is a tree of its own",
+                "{line:?}"
+            );
+        }
+
+        // Asking for the tree a request is cut in anyway says nothing it does
+        // not already, so it is allowed, and so is the pair the flags allow.
+        let (dials, _) = turned(&as_claude(), "pr:412 w:on review it").unwrap();
+        assert_eq!((dials.pr, dials.worktree), (Some(412), Some(true)));
+
+        let (dials, _) = turned(&as_claude(), "b:main w:changes port it").unwrap();
+        assert_eq!(dials.base.as_deref(), Some("main"));
+        assert!(dials.with_changes);
+    }
+
+    #[test]
+    fn composer_carries_the_work_no_commit_holds_where_the_line_says_changes() {
+        let (dials, task) = turned(&as_claude(), "w:changes fix the login bug").unwrap();
+        assert_eq!(
+            (dials.worktree, dials.with_changes),
+            (Some(true), true),
+            "the work moves into a tree, so the word asks for one"
+        );
+        assert_eq!(task, "fix the login bug");
+
+        let (dials, _) = turned(&as_claude(), "w:on port it").unwrap();
+        assert!(
+            !dials.with_changes,
+            "and a tree of its own is not the half hour you had already spent"
+        );
+    }
+
+    #[test]
+    fn composer_refuses_changes_where_there_is_nothing_to_move_before_anything_is_made() {
+        let root = TempDir::new().unwrap();
+        let here = TempDir::new().unwrap();
+
+        // Said in the word that was typed: `new` refuses this under the name of
+        // its flag, which is a name nobody on a task line has seen.
+        let line = format!("d:{} w:changes port the importer", here.path().display());
+        let Started::No(why) = start(root.path(), &Config::default(), &line, None).unwrap() else {
+            panic!("a spawn was sent to carry work that is not there");
+        };
+        assert_eq!(
+            why,
+            format!("w:changes: nothing in {} to move", here.path().display())
+        );
+        assert!(
+            crate::store::list(root.path()).unwrap().is_empty(),
+            "and nothing was made on the way to finding out"
+        );
+    }
+
+    #[test]
     fn composer_refuses_a_directory_nothing_is_at_before_anything_is_made() {
         let root = TempDir::new().unwrap();
         let here = TempDir::new().unwrap();
@@ -2719,7 +2873,7 @@ mod tests {
         let said = refused("p:nonsense port the importer");
         assert!(said.starts_with("p:nonsense: claude takes"), "{said}");
         assert!(said.contains("acceptEdits"), "every mode it has: {said}");
-        assert_eq!(refused("w:maybe port it"), "w:maybe: on or off");
+        assert_eq!(refused("w:maybe port it"), "w:maybe: on, off or changes");
         assert_eq!(refused("m: port it"), "m: takes a value");
         assert_eq!(refused("agent: port it"), "agent: takes a command");
 
@@ -3075,12 +3229,12 @@ mod tests {
         let found = suggest(&line, &as_claude(), a_project(), &[]).expect("claude's modes");
         assert_eq!(offered(&found), ["p:plan"]);
 
-        // The tree is amx's own dial, so its two words are amx's own answer
-        // and in no table.
+        // The tree is amx's own dial, so its words are amx's own answer and in
+        // no table.
         let mut line = Composer::new(Asking::Task);
         line.insert("w:");
-        let found = suggest(&line, &as_claude(), a_project(), &[]).expect("on or off");
-        assert_eq!(offered(&found), ["w:on", "w:off"]);
+        let found = suggest(&line, &as_claude(), a_project(), &[]).expect("on, off or changes");
+        assert_eq!(offered(&found), ["w:on", "w:off", "w:changes"]);
 
         // A dial the agent on this line does not declare has no values to
         // offer, which is the answer `turned` refuses the token with.
