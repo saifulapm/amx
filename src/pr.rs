@@ -20,8 +20,10 @@
 //! the network; the alternative is a list that stops for a second every time it
 //! is drawn, on the one surface whose whole promise is that it does not.
 
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -504,7 +506,7 @@ fn run(at: &Path, program: &str, args: &[&str]) -> Option<String> {
 /// the same refusal `worktree.rs` writes with `-c` goes here through the
 /// environment, which every git underneath inherits and which beats the
 /// config files it would otherwise read them from.
-fn command(at: &Path, program: &str, args: &[&str]) -> Command {
+fn command(at: &Path, program: impl AsRef<OsStr>, args: &[&str]) -> Command {
     let mut forge = Command::new(program);
     forge
         .current_dir(at)
@@ -525,10 +527,113 @@ fn command(at: &Path, program: &str, args: &[&str]) -> Command {
     forge
 }
 
+/// The head of one pull request: the branch the work is on, the commit that
+/// branch is at, and whether the branch lives in somebody else's fork.
+///
+/// The three answers a spawn on a request needs. The branch is what the local
+/// one is named after, so the column finds the request again by branch and
+/// nothing else has to be written down; the commit is the base the tree is
+/// recorded as cut from; and the fork is why that name is sometimes not free
+/// to take — a fork's `main` is not this repository's `main`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PrHead {
+    #[serde(rename = "headRefName")]
+    pub branch: String,
+    #[serde(rename = "headRefOid")]
+    pub commit: String,
+    #[serde(rename = "isCrossRepository")]
+    pub cross: bool,
+}
+
+/// The fields amx asks `gh` for about one request, which are the three above.
+const HEAD_FIELDS: &str = "headRefName,headRefOid,isCrossRepository";
+
+/// Where request `number` in this repository has got to, as gh has it.
+///
+/// The one reading in this file that does wait on a forge, and the one that
+/// has to: a spawn on a request has no branch to cut a tree on and no commit
+/// to record until gh has answered, so there is nothing to draw a row with
+/// meanwhile and nothing an old answer would be good for. Whoever typed the
+/// number is waiting on the id.
+// The tests ask `head_from` instead, since a gh they wrote themselves is the
+// only one a suite may run. `new --pr` is what takes this up.
+#[expect(dead_code, reason = "the spawn on a request takes it up next")]
+pub fn request_head(repo: &Path, number: u64) -> Result<PrHead> {
+    head_from(repo, number, Path::new("gh"))
+}
+
+/// The same, from a gh named rather than looked for.
+///
+/// Which is how it is tested: a fake written under a tempdir, never the gh the
+/// machine running the suite has installed and never the repository it would
+/// answer about.
+fn head_from(repo: &Path, number: u64, gh: &Path) -> Result<PrHead> {
+    let numbered = number.to_string();
+    let out = command(repo, gh, &["pr", "view", &numbered, "--json", HEAD_FIELDS])
+        .output()
+        .map_err(|trouble| match trouble.kind() {
+            // The only one worth its own sentence: it is a machine to install
+            // something on rather than a request to check the number of.
+            std::io::ErrorKind::NotFound => anyhow!("gh is not on the PATH"),
+            _ => anyhow!("running gh: {trouble}"),
+        })?;
+    if !out.status.success() {
+        // gh's own complaint goes nowhere, because every way it can fail here
+        // is the same answer: this repository has no such request. A person
+        // with several checkouts has typed a real number in the wrong one.
+        bail!("no pull request #{number} in {}", repo.display());
+    }
+    serde_json::from_slice(&out.stdout)
+        .with_context(|| format!("reading what gh said about #{number}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
+
+    /// A gh of amx's own, answering about request 7 with `said` and refusing
+    /// every other number the way gh refuses one that is not there.
+    ///
+    /// Written under a tempdir and handed to [`head_from`] by name rather than
+    /// put on the PATH: what a suite must never do is ask the machine's own
+    /// forge about a repository that is a temporary directory.
+    fn a_fake_gh(dir: &Path, said: &str) -> PathBuf {
+        let gh = dir.join("gh");
+        std::fs::write(
+            &gh,
+            format!("#!/bin/sh\n[ \"$3\" = 7 ] || exit 1\ncat <<'SAID'\n{said}\nSAID\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        wait_until_runnable(&gh);
+        gh
+    }
+
+    /// Wait for a file written a moment ago to be a file the kernel will run.
+    ///
+    /// A test that writes a program and runs it has one hazard nothing in amx
+    /// has: the suite is one process of many threads, a sibling's spawn forks
+    /// with this file's write handle still open, and an exec between the fork
+    /// and the exec that follows it is refused as a busy text file. It clears
+    /// in microseconds, and nothing opens this file for writing again, so one
+    /// spawn that gets through is the whole of the wait.
+    fn wait_until_runnable(program: &Path) {
+        for _ in 0..200 {
+            match Command::new(program)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+            {
+                Err(busy) if busy.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                _ => return,
+            }
+        }
+        panic!("{} was busy for a second", program.display());
+    }
 
     /// What gh 2.97.0 answered about this repository on 2026-08-24, cut to the
     /// fields amx asks for and with the check runs trimmed to one apiece.
@@ -905,5 +1010,73 @@ mod tests {
             [("core.fsmonitor", "false"), ("core.hooksPath", "/dev/null")],
             "every key here names a program the agent could have written"
         );
+    }
+
+    #[test]
+    fn a_requests_head_is_a_branch_a_commit_and_whether_it_came_from_a_fork() {
+        let dir = TempDir::new().unwrap();
+        let gh = a_fake_gh(
+            dir.path(),
+            r#"{"headRefName":"fix-login","headRefOid":"4f3f0b2c5b6d1e8a9c0d7e2f1a3b4c5d6e7f8091",
+                "isCrossRepository":false}"#,
+        );
+
+        let head = head_from(dir.path(), 7, &gh).unwrap();
+        assert_eq!(head.branch, "fix-login");
+        assert_eq!(head.commit, "4f3f0b2c5b6d1e8a9c0d7e2f1a3b4c5d6e7f8091");
+        assert!(!head.cross, "the request is on a branch of this repository");
+    }
+
+    #[test]
+    fn a_request_from_a_fork_says_so_because_its_branch_name_is_not_free() {
+        // A fork's `main` is not this repository's `main`, and its `patch-1`
+        // is a name anybody's fork mints. What the flag buys is the caller
+        // knowing to name the local branch after the number instead.
+        let dir = TempDir::new().unwrap();
+        let gh = a_fake_gh(
+            dir.path(),
+            r#"{"headRefName":"main","headRefOid":"4f3f0b2c5b6d1e8a9c0d7e2f1a3b4c5d6e7f8091",
+                "isCrossRepository":true}"#,
+        );
+
+        let head = head_from(dir.path(), 7, &gh).unwrap();
+        assert_eq!(head.branch, "main");
+        assert!(head.cross);
+    }
+
+    #[test]
+    fn a_number_that_is_no_request_is_refused_and_names_the_repository() {
+        let dir = TempDir::new().unwrap();
+        let gh = a_fake_gh(dir.path(), "{}");
+
+        let refused = head_from(dir.path(), 9, &gh).unwrap_err();
+        let said = format!("{refused:#}");
+        assert!(said.contains("#9"), "the number that was typed: {said}");
+        assert!(
+            said.contains(&dir.path().display().to_string()),
+            "and where it was looked for, since a person with several \
+             checkouts has typed it in the wrong one: {said}"
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_gh_on_it_says_gh_is_not_on_the_path() {
+        // The column answers with no requests where there is no forge. This
+        // reading cannot: there is no branch to cut a tree on until gh has
+        // answered, so the whole spawn is refused and says why.
+        let dir = TempDir::new().unwrap();
+
+        let refused = head_from(dir.path(), 7, &dir.path().join("gh")).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("gh is not on the PATH"),
+            "{refused:#}"
+        );
+    }
+
+    #[test]
+    fn a_gh_amx_cannot_read_is_refused_rather_than_read_as_a_head() {
+        let dir = TempDir::new().unwrap();
+        let gh = a_fake_gh(dir.path(), "not json at all");
+        assert!(head_from(dir.path(), 7, &gh).is_err());
     }
 }
