@@ -13,6 +13,14 @@
 //! it is brought back into a pane first, and the terminal is handed over to
 //! that one. Only an agent with nothing to continue is refused, and then in
 //! the words that say which is missing.
+//!
+//! The agent can also be left unsaid, which is what a tmux key presses: alt-j
+//! is one keystroke and has no room to type an id in, so `--next`, `--prev`
+//! and `--waiting` ask the wall which agent instead. The wall is the view's
+//! own order, read off the arrangement the last view left behind, so stepping
+//! through it from a key lands in the order somebody arranged the rows into.
+//! Where the stepping starts from is the agent whose session the key was
+//! pressed in, which tmux is the only thing that can say.
 
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -20,13 +28,34 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::config::{self, Config};
-use crate::store::Agent;
-use crate::tmux::{PaneId, Server, SessionId};
+use crate::store::{Agent, now};
+use crate::tmux::{self, PaneId, Server, SessionId};
+use crate::tui::rows::{self, Arrangement, Group};
 use crate::verbs::resume::{self, Comeback};
-use crate::{exit, paths, spawn};
+use crate::{derive, exit, paths, spawn};
+
+/// Where tmux says which pane a process is running in.
+const PANE_ENV: &str = "TMUX_PANE";
+
+/// What a wall with nobody on it has to say to a key asking for the next
+/// agent: there is no such agent, and no direction changes that.
+const EMPTY: &str = "nothing on the wall to attach to";
+
+/// Which agent the terminal was asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Aim {
+    /// The one somebody named.
+    Id(String),
+    /// The one after this on the wall.
+    Next,
+    /// The one before it.
+    Prev,
+    /// The first one with something for somebody to do.
+    Waiting,
+}
 
 /// Run the verb against the machine.
-pub fn from_env(id: &str) -> Result<i32> {
+pub fn from_env(aim: &Aim) -> Result<i32> {
     let root = paths::state_root()?;
     // The config is read here because attaching may become a resume, and a
     // resume answers to `max_agents`. The environment for the same reason: an
@@ -35,7 +64,91 @@ pub fn from_env(id: &str) -> Result<i32> {
     let config = config::current();
     let env = spawn::env_snapshot(std::env::vars());
     let inside = std::env::var("TMUX").ok().filter(|v| !v.is_empty());
-    run(&root, config, id, &env, inside.as_deref())
+
+    let id = match aim {
+        Aim::Id(id) => id.clone(),
+        _ => {
+            // Everything on the machine, in the order the view would draw it.
+            // A reading each time rather than anything remembered: the wall a
+            // key steps through is the wall as it is when the key is pressed.
+            let views = derive::views(&root, now())?;
+            let order = rows::wall_order(&views, &Arrangement::from_disk(&root));
+            if order.is_empty() {
+                bail!(EMPTY);
+            }
+            let pane = std::env::var(PANE_ENV).ok();
+            let current = current(&order, inside.as_deref(), pane.as_deref());
+            pick(&order, current.as_deref(), aim)?
+        }
+    };
+
+    run(&root, config, &id, &env, inside.as_deref())
+}
+
+/// The agent whose session this command was typed in, if it is one the wall
+/// is holding.
+///
+/// Outside tmux there is no answer, and no guess worth making: a key bound in
+/// tmux is pressed inside it, and a shell prompt somewhere else is standing in
+/// no agent at all. Inside it, the session is the one fact that says which
+/// agent this is, because every pane amx places sits in a session named after
+/// the agent it holds.
+fn current(order: &[(Group, String)], inside: Option<&str>, pane: Option<&str>) -> Option<String> {
+    let server = Server::from_tmux_env(inside?)?;
+    let pane = PaneId::new(pane.filter(|pane| !pane.is_empty())?).ok()?;
+    let name = server.pane_field(&pane, "#{session_name}").ok()?;
+    let id = agent_in(&name)?;
+    // A session amx named after an agent it has since forgotten is a name and
+    // nothing else, and stepping on from it would step from nowhere.
+    order.iter().any(|(_, on)| *on == id).then_some(id)
+}
+
+/// The agent a tmux session's name says it holds, if it says so.
+fn agent_in(session_name: &str) -> Option<String> {
+    let id = session_name.trim().strip_prefix(tmux::SESSION_PREFIX)?;
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// Which agent on the wall the aim lands on, from where the key was pressed.
+///
+/// Stepping wraps, because a wall is a list somebody is going round rather
+/// than a queue they are working off: alt-j at the foot of it comes back to
+/// the top. With nowhere to step from — the key pressed at a shell, or in an
+/// agent the wall has forgotten — the step starts at the end it is heading
+/// away from, so one press lands on the first row for `--next` and the last
+/// for `--prev`.
+fn pick(order: &[(Group, String)], current: Option<&str>, aim: &Aim) -> Result<String> {
+    let at = current.and_then(|id| order.iter().position(|(_, on)| on == id));
+    let first_of = |group: Group| {
+        order
+            .iter()
+            .find(|(on, _)| *on == group)
+            .map(|(_, id)| id.clone())
+    };
+    let wrapped = |row: Option<&(Group, String)>| match row {
+        Some((_, id)) => Ok(id.clone()),
+        None => bail!(EMPTY),
+    };
+    match aim {
+        Aim::Id(id) => Ok(id.clone()),
+        Aim::Next => wrapped(at.and_then(|at| order.get(at + 1)).or(order.first())),
+        Aim::Prev => wrapped(
+            at.and_then(|at| at.checked_sub(1))
+                .and_then(|before| order.get(before))
+                .or(order.last()),
+        ),
+        // What a person is being kept from is a question nobody has answered,
+        // then work waiting on a reviewer, then the last turn to have ended:
+        // an agent that stopped while they were away is what they came back
+        // for, and the newest of them is at the head of its group already.
+        Aim::Waiting => match first_of(Group::NeedsInput)
+            .or_else(|| first_of(Group::Review))
+            .or_else(|| first_of(Group::Completed))
+        {
+            Some(id) => Ok(id),
+            None => bail!("nothing on the wall is waiting on you"),
+        },
+    }
 }
 
 /// Attach to `id`, from inside tmux or from outside it.
@@ -180,6 +293,120 @@ mod tests {
         fn drop(&mut self) {
             let _ = self.server.kill();
         }
+    }
+
+    /// A wall, as `rows::wall_order` answers with one.
+    fn wall(rows: &[(Group, &str)]) -> Vec<(Group, String)> {
+        rows.iter()
+            .map(|(group, id)| (*group, (*id).to_string()))
+            .collect()
+    }
+
+    /// The wall a person opens in the morning: something pinned, a question,
+    /// work in flight, a turn that ended, and one they put under everything.
+    fn a_wall() -> Vec<(Group, String)> {
+        wall(&[
+            (Group::Pinned, "pin-a1b"),
+            (Group::NeedsInput, "ask-b2c"),
+            (Group::Working, "busy-c3d"),
+            (Group::Completed, "done-d4e"),
+            (Group::Asleep, "gone-e5f"),
+        ])
+    }
+
+    #[test]
+    fn attach_next_and_prev_step_through_the_wall_and_wrap() {
+        let wall = a_wall();
+        let step = |current: Option<&str>, aim| pick(&wall, current, &aim).unwrap();
+
+        assert_eq!(step(Some("ask-b2c"), Aim::Next), "busy-c3d");
+        assert_eq!(step(Some("ask-b2c"), Aim::Prev), "pin-a1b");
+
+        // Round the ends: the foot of the wall leads back to the head of it.
+        assert_eq!(step(Some("gone-e5f"), Aim::Next), "pin-a1b");
+        assert_eq!(step(Some("pin-a1b"), Aim::Prev), "gone-e5f");
+
+        // Typed where no agent is: one press lands on the end it is coming
+        // from, so a person who pressed the key at a shell is on the wall.
+        assert_eq!(step(None, Aim::Next), "pin-a1b");
+        assert_eq!(step(None, Aim::Prev), "gone-e5f");
+    }
+
+    #[test]
+    fn attach_waiting_takes_the_question_first_and_the_last_ending_last() {
+        let waiting = |wall: &[(Group, String)]| pick(wall, None, &Aim::Waiting);
+
+        // A question nobody has answered is what is holding somebody up.
+        assert_eq!(waiting(&a_wall()).unwrap(), "ask-b2c");
+
+        // With nothing asking, work standing in front of a reviewer.
+        let reviewing = wall(&[
+            (Group::Working, "busy-c3d"),
+            (Group::Review, "ship-f6g"),
+            (Group::Completed, "done-d4e"),
+        ]);
+        assert_eq!(waiting(&reviewing).unwrap(), "ship-f6g");
+
+        // And with neither, the turn that ended most recently — which the
+        // wall has already put at the head of its group.
+        let ended = wall(&[
+            (Group::Working, "busy-c3d"),
+            (Group::Completed, "late-g7h"),
+            (Group::Completed, "early-h8i"),
+        ]);
+        assert_eq!(waiting(&ended).unwrap(), "late-g7h");
+
+        // A wall of work in flight and rows somebody put away is a wall with
+        // nothing on it for them, and saying so beats attaching to anything.
+        let nothing = wall(&[(Group::Working, "busy-c3d"), (Group::Asleep, "gone-e5f")]);
+        let why = waiting(&nothing).unwrap_err().to_string();
+        assert!(why.contains("waiting on you"), "{why}");
+    }
+
+    #[test]
+    fn attach_steps_from_the_agent_whose_session_the_key_was_pressed_in() {
+        // Every pane amx places sits in a session named after the agent it
+        // holds, and that name is the only thing that says which agent a key
+        // was pressed inside.
+        assert_eq!(
+            agent_in("amx-fix-login-a1b").as_deref(),
+            Some("fix-login-a1b")
+        );
+
+        // Somebody's own session, and amx's own prefix with nothing after it.
+        assert_eq!(agent_in("work"), None);
+        assert_eq!(agent_in(""), None);
+        assert_eq!(agent_in("amx-"), None);
+    }
+
+    #[test]
+    fn attach_steps_from_the_session_this_pane_is_in() {
+        let (here, path) = TestServer::new();
+        let (_, pane) = Server::named(&here.name)
+            .new_session(&Spawn {
+                name: Some(&format!("{}fix-login-a1b", tmux::SESSION_PREFIX)),
+                command: &["sh", "-c", "while :; do sleep 0.05; done"],
+                ..Spawn::default()
+            })
+            .expect("a session named after the agent in it");
+        let inside = format!("{path},4242,0");
+
+        let rows = wall(&[(Group::Working, "fix-login-a1b")]);
+        assert_eq!(
+            current(&rows, Some(&inside), Some(pane.as_str())).as_deref(),
+            Some("fix-login-a1b")
+        );
+
+        // A session amx named after an agent that has since been forgotten is
+        // a name and nothing else: stepping on from it would step from
+        // nowhere, and the end of the wall is the better answer.
+        assert_eq!(current(&a_wall(), Some(&inside), Some(pane.as_str())), None);
+
+        // Outside tmux, and inside a tmux that named no pane: no session to
+        // read, so no agent to step from.
+        assert_eq!(current(&rows, None, Some(pane.as_str())), None);
+        assert_eq!(current(&rows, Some(&inside), None), None);
+        assert_eq!(current(&rows, Some(&inside), Some("")), None);
     }
 
     #[test]

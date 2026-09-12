@@ -852,6 +852,9 @@ amx status <id>        # one agent, and which signal that state came from
 amx status <id> --json
 amx rename <id> auth   # call it something else on the wall; the id stays
 amx attach <id>        # hand this terminal to its pane
+amx attach --next      # the agent after this one on the wall
+amx attach --prev      # the one before it
+amx attach --waiting   # the first agent with something for you to do
 amx logs <id>          # the last of what its pane has printed, without attaching
 amx logs <id> --lines 40
 amx send <id> "and now the linter"
@@ -866,6 +869,23 @@ amx diff <id> --stat   # the shape of it: a file per line, and the totals
 amx events --follow    # every agent's log, merged
 amx events <id> --json # one object per event, payloads whole
 ```
+
+`attach` without an id is made for a tmux key, where there is no room to type
+one:
+
+```sh
+bind -n M-j run-shell "amx attach --next"
+```
+
+The wall answers which agent: the order the view draws under the arrangement
+you left it in, pinned rows first and sleeping ones last. `--next` and `--prev`
+step through it from the agent whose session you pressed the key in, wrapping
+at either end; pressed anywhere else, `--next` lands on the first row and
+`--prev` on the last. `--waiting` skips the stepping and goes to the first
+agent stopped on a question, else the first waiting on a reviewer, else the
+turn that ended most recently. A sleeping agent is never what `--waiting`
+lands on. An empty wall is an exit of 1 saying so, and any of the three beside
+an id is a usage error.
 
 `--dir` is one machine read one project at a time. An agent belongs to a
 directory when it runs under it, and an agent in a worktree belongs to the

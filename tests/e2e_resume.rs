@@ -1196,6 +1196,50 @@ fn attach_says_so_when_the_row_is_a_command_and_not_an_agent() {
 }
 
 #[test]
+fn attach_with_no_id_takes_the_agent_the_wall_names() {
+    // What a tmux key presses: one keystroke, no room for an id, and the wall
+    // saying which agent instead. The order is the view's own, so a question
+    // comes before a turn that has ended and the foot of the wall is where
+    // `--prev` lands when the key was pressed nowhere in particular.
+    let amx = Harness::new();
+    let stopped = "fix-login-a1b";
+    ran_and_stopped(&amx, stopped);
+    amx.play("ask-b2c", "asks-a-question");
+    amx.until_state("ask-b2c", "waiting");
+
+    let terminal = a_terminal(&amx, &["attach", "--waiting"]);
+    amx.until("the question this was asked for", || {
+        amx.capture(&terminal)
+            .contains("Do you want to proceed?")
+            .then_some(())
+    });
+
+    // Stepping backwards from a terminal standing in no agent starts at the
+    // end it is heading away from, which is the agent that ended. Its pane is
+    // gone, so attaching brings it back exactly as `attach <id>` would.
+    let terminal = a_terminal(&amx, &["attach", "--prev"]);
+    until_continued(&amx, stopped);
+    until_looking_at_it(&amx, &terminal);
+}
+
+#[test]
+fn attach_by_the_wall_says_so_when_there_is_no_wall_and_when_there_is_an_id() {
+    let amx = Harness::new();
+
+    // Which agent is either said or asked for, and saying it twice says
+    // neither: the command line refuses it before anything is read.
+    let out = amx.amx(&["attach", "fix-login-a1b", "--next"]);
+    assert_eq!(out.status.code(), Some(64));
+
+    // A wall with nobody on it has no next agent, and the refusal says that
+    // rather than complaining about a record that was never named.
+    let out = amx.amx(&["attach", "--next"]);
+    assert_eq!(out.status.code(), Some(1));
+    let why = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(why.contains("nothing on the wall"), "{why}");
+}
+
+#[test]
 fn enter_on_a_dead_agent_brings_it_back() {
     // The wall's own door to the same thing. Outside tmux the view is the
     // terminal, so what it has to give the agent is the terminal itself.

@@ -189,7 +189,29 @@ pub enum Command {
     },
 
     /// Attach to the agent's pane.
-    Attach { id: String },
+    ///
+    /// Without an id, the wall says which agent: the order the view draws
+    /// under the arrangement it was left in, stepped through from whichever
+    /// agent's session this was typed in. Made for a tmux key.
+    Attach {
+        #[arg(
+            required_unless_present_any = ["next", "prev", "waiting"],
+            conflicts_with_all = ["next", "prev", "waiting"],
+        )]
+        id: Option<String>,
+
+        /// The agent after this one on the wall, wrapping at the foot.
+        #[arg(long, conflicts_with_all = ["prev", "waiting"])]
+        next: bool,
+
+        /// The agent before this one on the wall, wrapping at the top.
+        #[arg(long, conflicts_with_all = ["next", "waiting"])]
+        prev: bool,
+
+        /// The first agent that is waiting on you.
+        #[arg(long, conflicts_with_all = ["next", "prev"])]
+        waiting: bool,
+    },
 
     /// Print an agent's recent output without attaching to it.
     ///
@@ -767,6 +789,9 @@ mod tests {
                 "wait",
             ),
             (&["amx", "attach", "fix-a1b"], "attach"),
+            (&["amx", "attach", "--next"], "attach"),
+            (&["amx", "attach", "--prev"], "attach"),
+            (&["amx", "attach", "--waiting"], "attach"),
             (&["amx", "logs", "fix-a1b"], "logs"),
             (&["amx", "logs", "fix-a1b", "--lines", "40"], "logs"),
             (&["amx", "stop", "fix-a1b"], "stop"),
@@ -1118,6 +1143,12 @@ mod tests {
             // reading for: a word nobody knows is a wait that never ends.
             &["amx", "wait"],
             &["amx", "wait", "a", "--for", "sleeping"],
+            // An attach says which agent, and the wall answering that is the
+            // one case where naming it too says it twice. Two directions is
+            // no direction, and neither is none of them beside no id.
+            &["amx", "attach", "fix-a1b", "--next"],
+            &["amx", "attach", "--next", "--prev"],
+            &["amx", "attach"],
             // A reading of no lines is not a reading.
             &["amx", "logs", "fix-a1b", "--lines", "0"],
             &["amx", "logs", "fix-a1b", "--lines", "all"],
