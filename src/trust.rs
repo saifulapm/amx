@@ -314,6 +314,78 @@ fn seed_within(
     Ok(true)
 }
 
+/// Take `tree`'s entry back out of the store, and say whether there was one.
+///
+/// [`seed`] run backwards, and under the same lock, for the same reason: the
+/// vendor writes a project entry for every directory it is ever started in,
+/// and amx cuts a tree per agent, so a store nobody prunes grows a key for
+/// each one and keeps it long after the tree it names has gone.
+///
+/// Only ever the tree's own key. The repository's entry is the person's own
+/// consent to their own checkout, given whether or not amx ever wrote it, and
+/// it covers every tree amx has yet to cut in there.
+pub fn forget_tree(store: &Path, tree: &Path, now: u64) -> Result<bool> {
+    if !worktree::is_amx_tree(tree) {
+        bail!(
+            "{} is not a tree amx made, so its entry is not amx's to remove",
+            tree.display()
+        );
+    }
+    let key = key_for(tree);
+
+    // Looked at before the lock is asked for, the way seeding does: the usual
+    // stop has nothing to remove, and standing in the vendor's way to find
+    // that out would be a poor trade.
+    let looked = read(store)?;
+    if !names(looked.as_ref(), &key) {
+        return Ok(false);
+    }
+
+    let Some(held) = Held::take(store, PATIENCE, STALE)? else {
+        bail!(
+            "{} is being written by {CLAUDE}, so amx left it alone",
+            store.display()
+        );
+    };
+
+    // Read again inside the lock: what was looked at a moment ago is what the
+    // vendor may have been in the middle of replacing.
+    let existing = read(store)?;
+    if !names(existing.as_ref(), &key) {
+        return Ok(false);
+    }
+    let mut document = existing.clone().unwrap_or_else(|| json!({}));
+    document[PROJECTS]
+        .as_object_mut()
+        .expect("an object")
+        .remove(&key);
+
+    // A taker preempted between judging some earlier lock abandoned and
+    // sweeping it can have caught this one and conceded it to a third; a
+    // store rewritten on a lock no longer held loses that holder's changes.
+    if !held.holds() {
+        bail!(
+            "{} is being written by {CLAUDE}, so amx left it alone",
+            store.display()
+        );
+    }
+
+    back_up(store, now, existing.is_some())?;
+    write(store, &document)?;
+    Ok(true)
+}
+
+/// Whether a store amx has read carries a project entry under `key`. A store
+/// that is not there, or is not shaped the way the vendor writes one, names
+/// nothing.
+fn names(store: Option<&Value>, key: &str) -> bool {
+    store.is_some_and(|store| {
+        store[PROJECTS]
+            .as_object()
+            .is_some_and(|projects| projects.contains_key(key))
+    })
+}
+
 /// Whether the vendor would let an agent into `tree` as things stand, either
 /// because the tree is trusted or because the repository it belongs to is.
 fn covered(store: &Value, tree: &Path, inherits: Option<&Path>) -> bool {
@@ -804,6 +876,117 @@ mod tests {
             bytes,
             "so the file is not opened for writing at all"
         );
+    }
+
+    #[test]
+    fn trust_forgets_the_tree_and_leaves_every_other_key_alone() {
+        let dir = TempDir::new().unwrap();
+        let (repo, tree) = a_tree(&dir);
+        let store = dir.path().join(".claude.json");
+        let mut before = a_persons_store();
+        before[PROJECTS][key_for(&repo)] = json!({ ACCEPTED: true });
+        before[PROJECTS][key_for(&tree)] = json!({ ACCEPTED: true, "lastSessionId": "2f7d" });
+        std::fs::write(&store, serde_json::to_string_pretty(&before).unwrap()).unwrap();
+
+        assert!(forget_tree(&store, &tree, 1).unwrap());
+
+        let after = read_back(&store);
+        assert_eq!(after[PROJECTS].get(key_for(&tree)), None, "{after}");
+        assert!(
+            trusted(&after, &repo),
+            "the repository's entry is the person's consent, not amx's: {after}"
+        );
+        assert_eq!(after[PROJECTS]["/src/other"]["lastCost"], 12.5);
+        assert_eq!(after["numStartups"], 412);
+        assert_eq!(after["oauthAccount"]["accountUuid"], "9a1e");
+    }
+
+    #[test]
+    fn trust_copies_the_file_aside_before_it_forgets_anything() {
+        let dir = TempDir::new().unwrap();
+        let (_, tree) = a_tree(&dir);
+        let store = dir.path().join(".claude.json");
+        let mut before = a_persons_store();
+        before[PROJECTS][key_for(&tree)] = json!({ ACCEPTED: true });
+        let bytes = serde_json::to_string_pretty(&before).unwrap();
+        std::fs::write(&store, &bytes).unwrap();
+
+        assert!(forget_tree(&store, &tree, 1_700_000_000).unwrap());
+
+        let copy = install::latest_backup(&store).unwrap().expect("a copy");
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), bytes);
+        assert!(
+            trusted(&read_back(&copy), &tree),
+            "the file as it was, key and all"
+        );
+    }
+
+    #[test]
+    fn trust_is_only_ever_forgotten_for_a_tree_amx_made() {
+        let dir = TempDir::new().unwrap();
+        let (repo, _) = a_tree(&dir);
+        let store = dir.path().join(".claude.json");
+        let mut before = a_persons_store();
+        before[PROJECTS][key_for(&repo)] = json!({ ACCEPTED: true });
+        let bytes = serde_json::to_string_pretty(&before).unwrap();
+        std::fs::write(&store, &bytes).unwrap();
+
+        let refused = forget_tree(&store, &repo, 1).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("not a tree amx made"),
+            "{refused:#}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&store).unwrap(),
+            bytes,
+            "and nothing was written on the way to refusing"
+        );
+    }
+
+    #[test]
+    fn trust_forgets_nothing_where_the_store_never_named_the_tree() {
+        let dir = TempDir::new().unwrap();
+        let (_, tree) = a_tree(&dir);
+        let store = dir.path().join(".claude.json");
+        let bytes = serde_json::to_string_pretty(&a_persons_store()).unwrap();
+        std::fs::write(&store, &bytes).unwrap();
+
+        assert!(!forget_tree(&store, &tree, 1).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&store).unwrap(),
+            bytes,
+            "a file with nothing of amx's in it is not opened for writing"
+        );
+        assert_eq!(install::latest_backup(&store).unwrap(), None);
+
+        let never_written = dir.path().join("fresh/home/.claude.json");
+        assert!(!forget_tree(&never_written, &tree, 1).unwrap());
+        assert!(!never_written.exists(), "nor made");
+    }
+
+    #[test]
+    fn trust_leaves_a_store_the_vendor_is_writing_alone_when_it_forgets() {
+        let dir = TempDir::new().unwrap();
+        let (_, tree) = a_tree(&dir);
+        let store = dir.path().join(".claude.json");
+        let mut before = a_persons_store();
+        before[PROJECTS][key_for(&tree)] = json!({ ACCEPTED: true });
+        std::fs::write(&store, serde_json::to_string_pretty(&before).unwrap()).unwrap();
+
+        // Held by a claude that is saving its own session.
+        let lock = lock_beside(&store);
+        std::fs::create_dir_all(&lock).unwrap();
+
+        let refused = forget_tree(&store, &tree, 1).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("being written"),
+            "{refused:#}"
+        );
+        assert!(
+            trusted(&read_back(&store), &tree),
+            "a write behind the vendor's back would lose one of the two"
+        );
+        assert!(lock.exists(), "and somebody else's lock is still theirs");
     }
 
     #[test]

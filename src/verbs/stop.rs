@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use crate::cli::{Disposition, StopArgs};
 use crate::store::{Agent, Meta, Phase};
 use crate::tmux::{PaneId, Server};
-use crate::{exit, paths, worktree};
+use crate::{exit, paths, spawn, store, trust, warn, worktree};
 
 /// How long the agent is given to stop of its own accord.
 const GRACE: Duration = Duration::from_secs(5);
@@ -165,7 +165,10 @@ fn dispositions(
         // so: the agent is already stopped, and the lines still to be printed
         // are the record's — including, under `--delete`, its removal.
         match worktree::remove(&repo, tree) {
-            Ok(()) => writeln!(out, "removed {}", tree.display())?,
+            Ok(()) => {
+                writeln!(out, "removed {}", tree.display())?;
+                forget(meta, tree, out)?;
+            }
             Err(why) => writeln!(out, "kept {}: {why:#}", tree.display())?,
         }
     } else {
@@ -198,6 +201,33 @@ fn dispositions(
         writeln!(out, "deleted {branch}")?;
     } else {
         writeln!(out, "kept {branch}")?;
+    }
+    Ok(())
+}
+
+/// Take the tree amx has just removed back out of the vendor's own store.
+///
+/// A vendor that keeps a project entry per directory it runs in gathers one
+/// per agent, and nothing of the vendor's ever clears them: the directory the
+/// entry names has gone, and the entry is still there saying it may be worked
+/// in. Only the tree's own key, and only for the vendor whose store amx wrote
+/// in the first place.
+///
+/// The store is looked for in the environment `stop` was typed in, which is
+/// where the vendor would have looked for it. Failing to write it is worth
+/// saying and not worth stopping for: the agent is already ended, and what is
+/// left is a key in a file nobody is about to read.
+fn forget(meta: &Meta, tree: &Path, out: &mut impl Write) -> Result<()> {
+    if !trust::writes_a_store(meta.agent.as_deref().unwrap_or_default()) {
+        return Ok(());
+    }
+    let Some(store) = trust::store_in(&spawn::env_snapshot(std::env::vars())) else {
+        return Ok(());
+    };
+    match trust::forget_tree(&store, tree, store::now()) {
+        Ok(true) => writeln!(out, "forgot {} in {}", tree.display(), store.display())?,
+        Ok(false) => {}
+        Err(why) => warn!("amx stop: {why:#}"),
     }
     Ok(())
 }

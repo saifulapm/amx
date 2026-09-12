@@ -1035,6 +1035,15 @@ worktree with uncommitted work in it is always kept, whatever you answer.
 `--delete` says the record goes; `--force` says every question takes its
 default. They are separate on purpose.
 
+A worktree that goes takes its key in the vendor's own store with it. claude
+writes a `projects` entry for every directory it is started in, and amx cuts a
+directory per agent, so `~/.claude.json` otherwise grows an entry for each one
+and keeps it long after the tree it names has gone. Only that tree's own key,
+and only for a tree amx made: the entry for the repository around it is your
+consent to your own checkout, and it stays. The file is written the way `trust`
+writes it — under claude's own lock, with a copy of it as it was kept beside it
+— and a store amx cannot write is a warning on stderr, not a failed stop.
+
 A message after the id is the first turn of the agent that comes back. It goes
 on the vendor's command line, where a task goes, so the agent is working the
 moment its pane exists instead of standing at its prompt waiting to hear what

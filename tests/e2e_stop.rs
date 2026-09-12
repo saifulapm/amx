@@ -3,7 +3,8 @@
 mod common;
 
 use common::Harness;
-use std::path::Path;
+use serde_json::Value;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 
 fn stop(amx: &Harness, args: &[&str]) -> Output {
@@ -44,6 +45,90 @@ fn with_a_worktree(amx: &Harness, id: &str, repo: &Path, scenario: &str) -> Stri
         .as_str()
         .expect("a worktree")
         .to_string()
+}
+
+/// The same, with the vendor's stand-in installed under the name the trust
+/// table knows.
+///
+/// That table is keyed by the program an agent command runs, and claude is the
+/// one vendor whose store amx writes. A stop that is to prune that store has to
+/// have started something by that name, so the stand-in is copied under it and
+/// put in front of PATH, the way `new_as_claude` does in tests/e2e_spawn.rs.
+fn as_claude(amx: &Harness, id: &str, repo: &Path, scenario: &str) -> String {
+    let bin = amx.home().join("bin");
+    std::fs::create_dir_all(&bin).expect("a directory for the stand-in");
+    std::fs::copy(amx.mock(), bin.join("claude")).expect("the stand-in under claude's name");
+
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = amx
+        .amx_command(&[
+            "new",
+            "--name",
+            id,
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            "claude",
+            "fix the login bug",
+        ])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
+        .env("PATH", path)
+        .output()
+        .expect("running amx new");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    amx.meta(id)["worktree"]
+        .as_str()
+        .expect("a worktree")
+        .to_string()
+}
+
+/// The key the vendor files a directory under: the path with every symlink
+/// resolved, which is what it asks the operating system for.
+fn key_for(dir: &str) -> String {
+    std::fs::canonicalize(dir)
+        .expect("a directory that is there")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// claude's own config file, as the vendor leaves it: an entry per directory it
+/// has ever been started in, and the person's own keys around them.
+fn a_store(amx: &Harness, tree: &str, repo: &Path) -> PathBuf {
+    let mut before = serde_json::json!({
+        "numStartups": 412,
+        "projects": { "/src/other": { "hasTrustDialogAccepted": true } }
+    });
+    before["projects"][key_for(tree)] = serde_json::json!({
+        "hasTrustDialogAccepted": true,
+        "lastCost": 0.2
+    });
+    before["projects"][key_for(&repo.to_string_lossy())] =
+        serde_json::json!({ "hasTrustDialogAccepted": true });
+
+    let store = amx.home().join(".claude.json");
+    std::fs::write(&store, serde_json::to_string_pretty(&before).unwrap()).expect("the store");
+    store
+}
+
+fn read_store(store: &Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(store).expect("the store")).expect("json")
+}
+
+/// The copies amx left beside the store.
+fn copies_beside(store: &Path) -> Vec<String> {
+    std::fs::read_dir(store.parent().unwrap())
+        .expect("the home")
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".claude.json.amx-backup-"))
+        .collect()
 }
 
 fn branches(repo: &Path) -> String {
@@ -154,6 +239,70 @@ fn a_worktree_with_work_in_it_is_always_kept_and_always_said() {
         "work no commit has is not amx's to delete: {out}"
     );
     assert!(out.contains("no commit has"), "and it says so: {out}");
+}
+
+#[test]
+fn stopping_an_agent_takes_its_tree_back_out_of_claudes_store() {
+    // claude writes a project entry for every directory it is started in, and
+    // amx cuts a directory per agent: a store nobody prunes grows a key for
+    // each of them and keeps it long after the tree it names has gone.
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let worktree = as_claude(&amx, "fix-login-a1b", &repo, "happy-turn");
+    amx.until_state("fix-login-a1b", "idle");
+    let store = a_store(&amx, &worktree, &repo);
+    let tree_key = key_for(&worktree);
+
+    let out = said(&stop(&amx, &["fix-login-a1b", "--force"]));
+    assert!(!Path::new(&worktree).exists(), "the tree is gone: {out}");
+    assert!(out.contains("forgot"), "and it says so: {out}");
+
+    let after = read_store(&store);
+    assert_eq!(after["projects"].get(&tree_key), None, "{after}");
+    assert_eq!(
+        after["projects"][key_for(&repo.to_string_lossy())]["hasTrustDialogAccepted"],
+        serde_json::json!(true),
+        "the repository's entry is the person's consent: {after}"
+    );
+    assert_eq!(
+        after["projects"]["/src/other"]["hasTrustDialogAccepted"],
+        serde_json::json!(true)
+    );
+    assert_eq!(after["numStartups"], 412, "{after}");
+
+    let copies = copies_beside(&store);
+    assert_eq!(copies.len(), 1, "the file as it was, once: {copies:?}");
+}
+
+#[test]
+fn a_worktree_that_is_kept_keeps_its_key_in_claudes_store() {
+    // The key says the vendor may work in that directory without asking. A
+    // directory that is still there is one somebody may still work in.
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let worktree = as_claude(&amx, "fix-login-a1b", &repo, "happy-turn");
+    amx.until_state("fix-login-a1b", "idle");
+    let store = a_store(&amx, &worktree, &repo);
+    let tree_key = key_for(&worktree);
+
+    std::fs::write(Path::new(&worktree).join("login.rs"), "fn login() {}\n").unwrap();
+    let out = said(&stop(
+        &amx,
+        &["fix-login-a1b", "--force", "--worktree", "delete"],
+    ));
+
+    assert!(Path::new(&worktree).exists(), "{out}");
+    assert!(!out.contains("forgot"), "{out}");
+    let after = read_store(&store);
+    assert_eq!(
+        after["projects"][&tree_key]["hasTrustDialogAccepted"],
+        serde_json::json!(true),
+        "{after}"
+    );
+    assert!(
+        copies_beside(&store).is_empty(),
+        "and the file was never opened for writing"
+    );
 }
 
 #[test]
