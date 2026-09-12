@@ -836,6 +836,60 @@ mod tests {
     }
 
     #[test]
+    fn the_plugin_wires_exactly_the_events_the_vendors_entry_names() {
+        // The plugin is the same wiring by another door, so it is held to the
+        // same table `install` writes from rather than to a list spelled here:
+        // an event claude's entry stops naming, or starts, is an event the
+        // plugin would go on being loaded with while amx heard nothing of it.
+        let table = claude::VENDOR.hooks.expect("claude reports through hooks");
+        let plugin: Value =
+            serde_json::from_str(include_str!("../.claude-plugin/plugin.json")).unwrap();
+        assert_eq!(plugin["name"], "amx");
+        assert_eq!(plugin["hooks"], "./hooks/hooks.json");
+
+        let wiring_file: Value = serde_json::from_str(include_str!("../hooks/hooks.json")).unwrap();
+        let by_event = wiring_file["hooks"]
+            .as_object()
+            .expect("one entry per event");
+        assert_eq!(
+            by_event.len(),
+            table.events.len(),
+            "the plugin wires every event the entry names and nothing else"
+        );
+
+        // On the PATH, which is the one amx doctor already insists on.
+        let command = hook_command(Path::new("amx"));
+        assert_eq!(command, "amx _hook");
+        for wiring in table.events {
+            assert_eq!(
+                hooks(&wiring_file, wiring.event),
+                [command.as_str()],
+                "{}",
+                wiring.event
+            );
+            let group = wiring_file["hooks"][wiring.event][0].clone();
+            assert_eq!(group["hooks"][0]["type"], "command", "{}", wiring.event);
+            if wiring.matched {
+                assert_eq!(group["matcher"], table.matcher, "{}", wiring.event);
+            } else {
+                assert!(group.get("matcher").is_none(), "{}", wiring.event);
+            }
+        }
+    }
+
+    #[test]
+    fn the_marketplace_lists_the_plugin_from_the_repository_root() {
+        let market: Value =
+            serde_json::from_str(include_str!("../.claude-plugin/marketplace.json")).unwrap();
+        assert_eq!(market["name"], "amx");
+        assert_eq!(market["plugins"][0]["name"], "amx");
+        assert_eq!(
+            market["plugins"][0]["source"], "./",
+            "the plugin is this repository, not a directory inside it"
+        );
+    }
+
+    #[test]
     fn install_twice_is_install_once() {
         let mut settings = a_persons_settings();
         assert!(merge(CLAUDE, &mut settings, AMX));

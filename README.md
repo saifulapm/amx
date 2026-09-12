@@ -68,6 +68,18 @@ each gone tree's key back out of the agent's trust store, with the file copied
 aside first and the count printed; only the trees amx cut ever go, never the
 repository's own entry.
 
+The same seven hooks also ship as a claude plugin, which is the other way to
+wire them and touches no settings file of yours:
+
+```sh
+claude plugin marketplace add saifulapm/amx
+claude plugin install amx@amx
+```
+
+The plugin's entries run `amx _hook` off your PATH rather than a path written
+into a file, so it wants one amx there — which is a thing `doctor` checks — and
+keeps working after amx moves on disk.
+
 Without the hooks amx falls back to reading panes, which is enough to say what
 an agent is doing but not enough to hand you what it said. Answers come from
 the events. `amx doctor` says when they are missing.
