@@ -201,8 +201,10 @@ impl Arrangement {
     ///
     /// The other half of the same question, asked the same way: see
     /// [`List::sleeping`].
-    // The order a wall is stepped through outside the view reads it, and takes
-    // it up next. Until it does, the callers are this module's own tests.
+    // Nothing outside this module's tests asks it: the reader that steps the
+    // wall from a key arranges a whole list from the arrangement rather than
+    // asking after one id. Kept beside `has_pinned`, which park reads, for
+    // the verb that asks the same question of the other mark.
     #[allow(dead_code)]
     pub fn has_asleep(&self, id: &str) -> bool {
         self.asleep.contains(id)
@@ -581,9 +583,6 @@ impl List {
     ///
     /// A pinned agent lets go as it goes to sleep, and answers the same way
     /// [`List::hold_or_let_go`] does.
-    // The key that presses it is the view's, which takes it up next. Until it
-    // does, the callers are this module's own tests.
-    #[allow(dead_code)]
     pub fn sleep_or_wake(&mut self) -> bool {
         let Some(id) = self.selected().map(|view| view.id().to_string()) else {
             return false;
@@ -1166,7 +1165,11 @@ impl List {
             // full screen, and absent when everything fits.
             let shown = match group == Group::Completed && !self.unfolded {
                 true => {
-                    let space = self.room.get().saturating_sub(items.len());
+                    let space = self
+                        .room
+                        .get()
+                        .saturating_sub(items.len())
+                        .saturating_sub(self.rows_under_history(order));
                     match members.len() > space {
                         true => self.worth_the_room(&members, space.saturating_sub(1), keeping),
                         false => members.clone(),
@@ -1181,6 +1184,33 @@ impl List {
             }
         }
         items
+    }
+
+    /// The rows the groups drawn under history still need: a blank and a
+    /// heading for each that has anybody in it, and its rows where it is open.
+    ///
+    /// History fills what the screen has left, but it is laid out before the
+    /// sleeping agents are, and a fold cut for the whole of the remaining
+    /// screen would leave the group somebody deliberately put rows under with
+    /// no rows on it: a row that vanished from the wall the moment it was put
+    /// to sleep is a mark that reads as a delete.
+    fn rows_under_history(&self, order: &[usize]) -> usize {
+        Group::ALL
+            .iter()
+            .skip_while(|group| **group != Group::Completed)
+            .skip(1)
+            .map(|&later| {
+                let members = order
+                    .iter()
+                    .filter(|&&n| self.group(&self.views[n]) == later)
+                    .count();
+                match members {
+                    0 => 0,
+                    _ if self.shut.contains(&Key::Group(later)) => 2,
+                    _ => 2 + members,
+                }
+            })
+            .sum()
     }
 
     /// Which finished rows a cut this tight keeps: the ones a person came to
@@ -1380,9 +1410,6 @@ impl List {
 /// What a branch has open comes from what the last look wrote down and no
 /// forge is asked, because the reader here is gone before one could answer:
 /// see [`pr::written`] for what a look started from a verb costs.
-// The verb that steps the wall from a key outside the view takes it up next.
-// Until it does, the callers are this module's own tests.
-#[allow(dead_code)]
 pub fn wall_order(views: &[View], arrangement: &Arrangement) -> Vec<(Group, String)> {
     let mut list = List {
         asks: pr::written,
@@ -1971,6 +1998,34 @@ mod tests {
                 .collect(),
         );
         assert!(lines(&list).contains(&"done-0".to_string()));
+    }
+
+    #[test]
+    fn view_folds_history_short_of_the_rows_the_sleeping_group_needs() {
+        // Five finished and one put to sleep, on a screen with eight rows for
+        // the list. History is laid out first and would otherwise take the
+        // whole of the room, and the group somebody made would draw with no
+        // row under it: a mark that reads as a delete.
+        let mut views: Vec<View> = (0..5)
+            .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
+            .collect();
+        views.push(view("nap-f6g", Phase::Working, 60));
+        let list = sleeping(sized(views, 8), "nap-f6g");
+
+        assert_eq!(
+            lines(&list),
+            [
+                "Completed (5)",
+                "done-4",
+                "done-3",
+                "done-2",
+                "… 2 more",
+                "",
+                "Asleep (1)",
+                "nap-f6g",
+            ],
+            "the fold gives the sleeping row its place"
+        );
     }
 
     #[test]
