@@ -394,8 +394,15 @@ fn start(
         // a tree with nothing of yours in it. Whether there was anything to
         // move was settled before the id was minted, and a directory somebody
         // has committed in since is no longer a spawn to refuse.
-        if args.with_changes {
-            worktree::carry_changes(dir, &tree.path)?;
+        if args.with_changes
+            && let Err(e) = worktree::carry_changes(dir, &tree.path)
+        {
+            // The same undo a failed setup gets. The work that would not
+            // apply is still where it was typed, so the tree holds nothing of
+            // yours, and a tree standing under an id nothing records would
+            // refuse the next spawn under that name.
+            take_back(repo, tree, problems, to_terminal);
+            return Err(e);
         }
         trust_the_tree(
             config,
@@ -594,21 +601,28 @@ fn furnish_the_tree(
             Ok(())
         }
         Err(e) => {
-            // Nothing half furnished stands. What the undo cannot do is said
-            // and the refusal is still the answer: the spawn is off either way.
-            if let Err(undone) = worktree::discard(repo, &tree.path, &tree.branch) {
-                let _ = writeln!(
-                    problems,
-                    "{}",
-                    said(
-                        Severity::Warned,
-                        &format!("amx new: {undone:#}"),
-                        to_terminal
-                    )
-                );
-            }
+            // Nothing half furnished stands.
+            take_back(repo, tree, problems, to_terminal);
             Err(e)
         }
+    }
+}
+
+/// Take back a tree the spawn is not going to use: it was cut a moment ago
+/// and holds nothing of the person's, so it goes with its branch. What the
+/// undo cannot do is said, and the refusal that brought it here is still the
+/// answer: the spawn is off either way.
+fn take_back(repo: &Path, tree: &worktree::Worktree, problems: &mut impl Write, to_terminal: bool) {
+    if let Err(undone) = worktree::discard(repo, &tree.path, &tree.branch) {
+        let _ = writeln!(
+            problems,
+            "{}",
+            said(
+                Severity::Warned,
+                &format!("amx new: {undone:#}"),
+                to_terminal
+            )
+        );
     }
 }
 

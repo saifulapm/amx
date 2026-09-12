@@ -840,6 +840,63 @@ fn new_refuses_to_move_work_that_is_not_there() {
 }
 
 #[test]
+fn new_takes_back_the_tree_when_the_work_will_not_apply_in_it() {
+    // The work in hand was written against the second commit, and the tree is
+    // cut from the first: the stash will not apply, and what is left must be
+    // what there was before the command -- the work where it was typed, and no
+    // tree standing under an id nothing records.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let repo = amx.a_repo();
+    std::fs::write(repo.join("README.md"), "second\n").unwrap();
+    git(&repo, &["commit", "-am", "second"]);
+    std::fs::write(repo.join("README.md"), "third\n").expect("the work in hand");
+
+    let refused = new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--with-changes",
+            "--base",
+            "HEAD~1",
+            "--agent",
+            &mock,
+            "fix the login bug",
+        ],
+    );
+
+    assert_eq!(refused.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("moving the work"), "{said}");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("README.md")).unwrap(),
+        "third\n",
+        "the work is still where it was typed"
+    );
+    assert!(
+        !repo.join(".amx/worktrees").exists()
+            || std::fs::read_dir(repo.join(".amx/worktrees"))
+                .unwrap()
+                .next()
+                .is_none(),
+        "and the tree was taken back"
+    );
+    assert_eq!(
+        git(&repo, &["branch", "--list", "amx/*"]),
+        "",
+        "with its branch"
+    );
+    let listed = amx.amx(&["ls", "--json"]);
+    assert_eq!(
+        String::from_utf8_lossy(&listed.stdout).trim(),
+        "[]",
+        "and no agent started"
+    );
+}
+
+#[test]
 fn new_runs_in_the_directory_as_it_is_when_asked() {
     let amx = Harness::new();
     let mock = amx.mock();
