@@ -276,30 +276,34 @@ fn a_view_that_can_start_claude(amx: &Harness, config: &str) -> String {
 /// Make a directory a git repository with one commit in it, so an agent
 /// started there can be given a tree of its own.
 fn a_repo_at(dir: &std::path::Path) {
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .env("GIT_AUTHOR_NAME", "amx tests")
-            .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
-            .env("GIT_COMMITTER_NAME", "amx tests")
-            .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
-            .output()
-            .expect("running git");
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    };
-    git(&["init", "-b", "main"]);
-    git(&["config", "user.name", "amx tests"]);
-    git(&["config", "user.email", "tests@example.invalid"]);
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "amx tests"]);
+    git(dir, &["config", "user.email", "tests@example.invalid"]);
     std::fs::write(dir.join("README.md"), "before\n").expect("a file to commit");
-    git(&["add", "README.md"]);
-    git(&["commit", "-m", "first"]);
+    git(dir, &["add", "README.md"]);
+    git(dir, &["commit", "-m", "first"]);
+}
+
+/// What git says in that directory, for the tests that have to name a commit
+/// the way the record names it.
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "amx tests")
+        .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
+        .env("GIT_COMMITTER_NAME", "amx tests")
+        .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
+        .output()
+        .expect("running git");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim_end().to_string()
 }
 
 /// The one agent the view started, once its record is whole.
@@ -1537,6 +1541,59 @@ fn the_composer_turns_the_dials_for_the_one_spawn_its_tokens_lead() {
         "a token turns a dial for the line it was typed on: {command:?}"
     );
     assert!(amx.meta(&next)["worktree"].is_null(), "and no other");
+}
+
+#[test]
+fn the_composer_moves_the_work_no_commit_holds_into_the_tree_it_asks_for() {
+    let amx = Harness::new();
+    a_repo_at(amx.home());
+    std::fs::write(amx.home().join("README.md"), "after\n").expect("the work already in hand");
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "w:changes fix the login bug");
+    press(&amx, &view, "Enter");
+
+    let id = composed(&amx);
+    let meta = amx.meta(&id);
+    let worktree = std::path::Path::new(meta["worktree"].as_str().expect("a tree of its own"));
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("README.md")).expect("the tree has the work"),
+        "after\n",
+        "the agent starts on what was in hand rather than on the last commit"
+    );
+    assert_eq!(
+        std::fs::read_to_string(amx.home().join("README.md")).unwrap(),
+        "before\n",
+        "and the directory the line was typed in is left as that commit had it"
+    );
+}
+
+#[test]
+fn the_composer_cuts_the_tree_from_the_ref_its_line_names() {
+    let amx = Harness::new();
+    a_repo_at(amx.home());
+    let release = git(amx.home(), &["rev-parse", "HEAD"]);
+    git(amx.home(), &["branch", "release"]);
+    std::fs::write(amx.home().join("README.md"), "after\n").expect("a second version");
+    git(amx.home(), &["commit", "-am", "second"]);
+
+    // A base is a fact about a tree, and this config gives none, so the line
+    // asks for the tree as well as for where it is cut from.
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+    types(&amx, &view, "n");
+    types(&amx, &view, "b:release w:on port the importer");
+    press(&amx, &view, "Enter");
+
+    let id = composed(&amx);
+    let meta = amx.meta(&id);
+    assert_eq!(meta["base"], release, "the commit the ref resolved to");
+    let worktree = std::path::Path::new(meta["worktree"].as_str().expect("a tree of its own"));
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("README.md")).unwrap(),
+        "before\n",
+        "cut from the ref the line named rather than from what HEAD has become"
+    );
 }
 
 #[test]
