@@ -74,20 +74,30 @@ fn let_go(root: &Path, agent: &Agent, meta: &Meta, park_after: u64, now: u64) ->
         return Ok(exit::OK);
     }
 
-    // stop's own ladder: the vendor is asked to finish what it is writing
-    // before it is insisted on. What it was writing is the transcript, and the
-    // transcript is what an agent that comes back comes back to.
-    stop::end(&server, &meta.pane, &meta.id)?;
-
-    let writer = agent.writer()?;
-    writer.append(&Event::new(
-        PARKED,
-        serde_json::json!({ "idle": now.saturating_sub(state.since) }),
-    ))?;
+    // The stamp goes on before the pane goes, not after: a reader landing
+    // between the two would find a pane gone and no word that amx took it,
+    // which is what a killed agent looks like, and would call this one
+    // stopped. While the pane is still there the stamp says nothing — a
+    // reader with a pane to look at looks at it — so nothing reads wrong on
+    // the way in, and a kill that fails takes the stamp back out.
+    //
     // `observe` rather than `update_state`: this is something amx did, not
     // something the agent said, and a `last_event` that moved would put an
     // unread mark on a row with nothing new on it.
-    writer.observe(|state| state.parked_at = now)?;
+    agent.writer()?.observe(|state| state.parked_at = now)?;
+
+    // stop's own ladder: the vendor is asked to finish what it is writing
+    // before it is insisted on. What it was writing is the transcript, and the
+    // transcript is what an agent that comes back comes back to.
+    if let Err(e) = stop::end(&server, &meta.pane, &meta.id) {
+        agent.writer()?.observe(|state| state.parked_at = 0)?;
+        return Err(e);
+    }
+
+    agent.writer()?.append(&Event::new(
+        PARKED,
+        serde_json::json!({ "idle": now.saturating_sub(state.since) }),
+    ))?;
     Ok(exit::OK)
 }
 
