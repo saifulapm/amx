@@ -50,9 +50,15 @@ fn every_agent_is_named_as_it_settles_and_the_wait_ends_with_the_last() {
     let amx = Harness::new();
     // `b` has finished its turn before anybody waits on anything; `a` is only
     // just starting, and ends while the wait is already running.
+    //
+    // `a` plays the scenario that ends with no Stop hook, so the phase a sweep
+    // catches it in is `working` or `done` and never anything in between. A
+    // scenario that announces the end of its turn and then exits is `idle` for
+    // as long as it takes the pane to go, and a sweep landing in there reads a
+    // settled agent whose phase is not the one it is about to keep.
     amx.play("b", "happy-turn");
     amx.until_state("b", "idle");
-    amx.play("a", "finishes");
+    amx.play("a", "ends-without-an-answer");
     started("a", &amx);
 
     let out = amx.amx(&["wait", "a", "b", "--timeout", "20"]);
