@@ -10,7 +10,7 @@ mod common;
 
 use common::{Harness, card_on};
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Epoch seconds, for the records a test writes as though they had just
@@ -2340,6 +2340,194 @@ fn acts_ctrl_x_on_a_heading_arms_rows_in_every_state_before_it_stops_any() {
     amx.until("the empty wall", || {
         screen(&amx, &view).contains("no agents").then_some(())
     });
+}
+
+/// git as these tests run it: none of the developer's own configuration, and
+/// an identity of its own for the commits and merges they make.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "amx tests")
+        .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
+        .env("GIT_COMMITTER_NAME", "amx tests")
+        .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// An agent with a tree of its own in `repo`, played to the end the ordinary
+/// way: it answered and stopped. The tree it left is where its work is.
+fn an_ended_agent(amx: &Harness, id: &str, repo: &Path) -> String {
+    let out = amx
+        .amx_command(&[
+            "new",
+            "--name",
+            id,
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            &amx.mock(),
+            "fix the login bug",
+        ])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("finishes"))
+        .output()
+        .expect("running amx new");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    amx.until_state(id, "done");
+    amx.meta(id)["worktree"]
+        .as_str()
+        .expect("a worktree")
+        .to_string()
+}
+
+/// A commit of the agent's own, which is what puts its branch somewhere main
+/// is not.
+fn work_on_the_branch(tree: &str, name: &str) {
+    let tree = Path::new(tree);
+    std::fs::write(tree.join(name), "fn login() {}\n").expect("a file to commit");
+    git(tree, &["add", name]);
+    git(tree, &["commit", "-m", "fix the login bug"]);
+}
+
+/// What a look at the forge would have written down beside the record: the
+/// request on this agent's branch, and that it went in.
+fn a_merged_request(amx: &Harness, id: &str, number: u64) {
+    std::fs::write(
+        amx.agent_dir(id).join("pr.json"),
+        json!({
+            "asked": now(),
+            "branch": format!("amx/{id}"),
+            "prs": [{ "number": number, "standing": "merged" }],
+        })
+        .to_string(),
+    )
+    .expect("writing pr.json");
+}
+
+/// The other way work lands: somebody merged the branch themselves.
+fn merged_by_hand(repo: &Path, id: &str) {
+    git(
+        repo,
+        &["merge", "--no-ff", "-m", "merge", &format!("amx/{id}")],
+    );
+}
+
+/// The wall the sweep has something to say about: two ended agents with work
+/// on branches of their own, one whose request the forge says went in and one
+/// whose branch somebody merged themselves. Their trees, in that order.
+fn two_agents_whose_work_landed(amx: &Harness, repo: &Path) -> (String, String) {
+    let landed = an_ended_agent(amx, "fix-login-a1b", repo);
+    work_on_the_branch(&landed, "login.rs");
+    a_merged_request(amx, "fix-login-a1b", 12);
+
+    let merged = an_ended_agent(amx, "tidy-b2c", repo);
+    work_on_the_branch(&merged, "search.rs");
+    merged_by_hand(repo, "tidy-b2c");
+
+    (landed, merged)
+}
+
+/// Wait for the rows the first `c` marked, each saying its own reason.
+fn until_armed(amx: &Harness, view: &str) -> String {
+    amx.until("both rows to say why their work has landed", || {
+        let drawn = screen(amx, view);
+        (drawn.contains("#12 merged · c again clears")
+            && drawn.contains("amx/tidy-b2c merged into main · c again clears"))
+        .then_some(drawn)
+    })
+}
+
+#[test]
+fn c_clears_the_agents_whose_work_has_landed_and_says_why_on_each_row() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let (landed, merged) = two_agents_whose_work_landed(&amx, &repo);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("fix-login-a1b") && drawn.contains("tidy-b2c")).then_some(())
+    });
+
+    // One press marks every row the sweep found, wherever the cursor is
+    // standing, and each row says the reason it was found by where its summary
+    // was. Nothing is taken for it.
+    press(&amx, &view, "c");
+    let armed = until_armed(&amx, &view);
+    assert!(
+        !armed.contains("ctrl+x again"),
+        "the rows name the key that armed them and not the other one:\n{armed}"
+    );
+    assert_eq!(
+        agents(&amx),
+        ["fix-login-a1b", "tidy-b2c"],
+        "and one press clears nothing:\n{armed}"
+    );
+
+    // The press inside the window takes both: the record, the tree and the
+    // branch, and the line at the foot says how many went.
+    press(&amx, &view, "c");
+    amx.until("the records to go", || {
+        agents(&amx).is_empty().then_some(())
+    });
+    amx.until("the count", || {
+        screen(&amx, &view).contains("cleared 2").then_some(())
+    });
+    for tree in [&landed, &merged] {
+        assert!(!Path::new(tree).exists(), "{tree} went with its record");
+    }
+    let left = git(&repo, &["branch", "--list"]);
+    assert!(!left.contains("amx/"), "and so did their branches: {left}");
+}
+
+#[test]
+fn c_whose_window_lapses_keeps_every_agent_it_marked() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let (landed, merged) = two_agents_whose_work_landed(&amx, &repo);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("fix-login-a1b") && drawn.contains("tidy-b2c")).then_some(())
+    });
+    press(&amx, &view, "c");
+    until_armed(&amx, &view);
+
+    // Nobody answers, so the window closes on its own and the rows go back to
+    // saying what their agents did.
+    let back = amx.until("the summaries to come back", || {
+        let drawn = screen(&amx, &view);
+        (!drawn.contains("c again clears")).then_some(drawn)
+    });
+    assert!(
+        back.contains("fix-login-a1b") && back.contains("tidy-b2c"),
+        "both agents are still on the wall:\n{back}"
+    );
+    assert_eq!(agents(&amx), ["fix-login-a1b", "tidy-b2c"]);
+    for tree in [&landed, &merged] {
+        assert!(Path::new(tree).exists(), "{tree} stands");
+    }
+    let left = git(&repo, &["branch", "--list"]);
+    for id in ["fix-login-a1b", "tidy-b2c"] {
+        assert!(
+            left.contains(&format!("amx/{id}")),
+            "and its branch: {left}"
+        );
+    }
 }
 
 #[test]
