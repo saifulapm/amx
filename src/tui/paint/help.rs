@@ -42,7 +42,7 @@ use crate::tui::grid;
 ///
 /// The table is not public to the rest of the crate, so the test that checks
 /// the README against it reads this file as text.
-pub(in crate::tui) const HELP: [(&str, &str); 43] = [
+pub(in crate::tui) const HELP: [(&str, &str); 44] = [
     // walk
     ("↑ ↓ j k", "walk the agents"),
     ("gg G", "the top of the list, and the foot"),
@@ -79,6 +79,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 43] = [
     ("shift+↓", "move it down its group"),
     ("ctrl+r", "call it something else"),
     ("ctrl+x", "stop it · again forgets · a heading, the group"),
+    ("c", "clear what has landed · again takes them"),
     ("/", "find by name, task or #12, as you type"),
     ("s:", "narrow by state, on the find line"),
     // dials
@@ -106,7 +107,7 @@ pub(super) const GROUPS: [(&str, usize); 5] = [
     ("walk", 6),
     ("look", 8),
     ("start", 11),
-    ("arrange", 9),
+    ("arrange", 10),
     ("dials", 9),
 ];
 

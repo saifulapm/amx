@@ -380,6 +380,7 @@ table.
 | `ctrl+u` | half a page of it, toward the edge |
 | `ctrl+d` | and half a page away |
 | `ctrl+x` | stop it, twice to forget it, and twice on a heading to stop and clear the group |
+| `c` | mark the agents whose work has landed, and twice to take them |
 | `ctrl+r` | call it something else, as `amx rename` does from a shell |
 | `ctrl+g` | write the line in `$EDITOR` |
 | `alt+↑` `alt+↓` | the lines sent before, newest first; a task line takes `↑` `↓` for the same |
@@ -1145,6 +1146,13 @@ The request is read from what the last look wrote down beside the record, so a
 sweep never waits on a network. The branch is read from git, which knows
 nothing about forges: work that went in through a merge you did by hand counts
 as much as work that went in through a request.
+
+The view has the same thing under `c`, asked wherever the cursor is standing.
+The first press asks it of every agent on the wall and marks the ones it found,
+each row saying why it is on the list where its summary was; the press inside
+the window takes them and says `cleared 2`, with `kept 1` after it where a tree
+was holding work no commit has. Nothing landed is `nothing has landed`, and a
+window left to lapse takes nothing.
 
 ## Worktrees
 

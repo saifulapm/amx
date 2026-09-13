@@ -1009,6 +1009,8 @@ mod tests {
         screen.arm = Some(Arm {
             ids: vec!["fix-login-a1b".to_string()],
             swept: false,
+            cleared: false,
+            why: Vec::new(),
             at: Instant::now(),
         });
         let drawn = painted(&screen, size);
@@ -1062,6 +1064,8 @@ mod tests {
         screen.arm = Some(Arm {
             ids: vec!["fix-login-a1b".to_string(), "port-importer-b2c".to_string()],
             swept: true,
+            cleared: false,
+            why: Vec::new(),
             at: Instant::now(),
         });
         let drawn = painted(&screen, size);

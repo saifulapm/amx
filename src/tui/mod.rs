@@ -548,6 +548,15 @@ struct Arm {
     /// Whether the first press was on a heading, which is where the press
     /// that forgets them all has to land again.
     swept: bool,
+    /// Whether it was `c` that armed them, which is a press about work that
+    /// has landed rather than about the row the cursor is on. The two kinds do
+    /// not answer each other's second press: a `ctrl+x` into this window is
+    /// somebody reaching for the other key, not agreeing to this one.
+    cleared: bool,
+    /// Why each of those rows is on the list, in the order `ids` are in, where
+    /// the press that armed them had a reason to give. Empty for the arm
+    /// `ctrl+x` leaves: a row somebody put the cursor on needs no reason.
+    why: Vec<String>,
     at: Instant,
 }
 
@@ -1822,6 +1831,9 @@ impl Screen {
                 Some(under) => self.sweep_or_arm(root, under),
                 None => self.end_or_arm(root),
             },
+            // And the whole wall's worth of work that has landed, which is the
+            // one press here that is about no row in particular.
+            KeyCode::Char('c') if plain => self.clear_or_arm(root),
             // The same agents, gathered the other way.
             KeyCode::Char('s') if ctrl => {
                 self.list.turn();
@@ -2420,6 +2432,19 @@ impl Screen {
             .map_or(&[], |arm| arm.ids.as_slice())
     }
 
+    /// The rows a `ctrl+x` armed, which is the only arm that key finishes.
+    ///
+    /// The arm `c` leaves is about work that has landed, and the rows it marks
+    /// were never chosen by anybody's cursor. A `ctrl+x` pressed into that
+    /// window is somebody reaching for the other key a beat late, so it starts
+    /// its own arm rather than forgetting a wall of agents nobody pointed at.
+    fn forgetting(&self) -> &[String] {
+        self.arm
+            .as_ref()
+            .filter(|arm| !arm.cleared && arm.at.elapsed() < ARMED)
+            .map_or(&[], |arm| arm.ids.as_slice())
+    }
+
     /// Whether the press that armed them was on a heading, which is what
     /// decides how much the rows say the press after it would do: a group's
     /// second press stops the live ones under it before it forgets them all,
@@ -2450,7 +2475,7 @@ impl Screen {
         let Some(view) = self.list.selected() else {
             return;
         };
-        if self.armed().iter().any(|id| id == view.id()) {
+        if self.forgetting().iter().any(|id| id == view.id()) {
             self.arm = None;
             self.notice = said(act::forget(root, view));
             self.acted();
@@ -2477,6 +2502,8 @@ impl Screen {
         self.arm = Some(Arm {
             ids: vec![id],
             swept: false,
+            cleared: false,
+            why: Vec::new(),
             at: Instant::now(),
         });
     }
@@ -2513,7 +2540,7 @@ impl Screen {
         let again = self
             .arm
             .as_ref()
-            .filter(|arm| arm.swept && arm.at.elapsed() < ARMED)
+            .filter(|arm| arm.swept && !arm.cleared && arm.at.elapsed() < ARMED)
             .is_some_and(|arm| {
                 self.list
                     .members(under)
@@ -2572,8 +2599,103 @@ impl Screen {
         self.arm = Some(Arm {
             ids,
             swept: true,
+            cleared: false,
+            why: Vec::new(),
             at: Instant::now(),
         });
+    }
+
+    /// `c` on the list: two presses over everything whose work has landed,
+    /// wherever the cursor is standing, and the first of them costs nothing.
+    ///
+    /// What `amx sweep` does at a shell, under the view's own law for a press
+    /// that cannot be taken back. The first press asks of every agent on the
+    /// wall why it would be on the sweep's list — a request the forge said is
+    /// merged or closed, a branch somebody put in the main line themselves —
+    /// and marks the rows it found, each saying its own reason where its
+    /// summary was. The press inside the window takes them: the tree, the
+    /// branch and the record, under the one law `stop` keeps about a tree
+    /// holding work no commit has.
+    ///
+    /// Asked on the press and never on a reading. The question is a git call
+    /// per finished row on a branch, and the wall is read again every second.
+    fn clear_or_arm(&mut self, root: &Path) {
+        let again = self
+            .arm
+            .as_ref()
+            .is_some_and(|arm| arm.cleared && arm.at.elapsed() < ARMED);
+        if again {
+            let arm = self.arm.take().expect("the arm that was just read");
+            self.clear(root, &arm.ids);
+            return;
+        }
+
+        let landed: Vec<(String, String)> = self
+            .list
+            .items()
+            .iter()
+            .filter_map(|item| self.list.agent(*item))
+            .filter_map(|view| {
+                verbs::sweep::why_landed(view).map(|why| (view.id().to_string(), why))
+            })
+            .collect();
+        if landed.is_empty() {
+            self.notice = Some(Notice::Advice("nothing has landed".to_string()));
+            return;
+        }
+
+        // The rows are the whole of what the view has to say about this, so
+        // whatever it was saying before makes way for them.
+        self.notice = None;
+        let (ids, why) = landed.into_iter().unzip();
+        self.arm = Some(Arm {
+            ids,
+            swept: false,
+            cleared: true,
+            why,
+            at: Instant::now(),
+        });
+        self.acted();
+    }
+
+    /// Take what the first press marked, as the list has it now: an agent
+    /// whose record has gone in the meantime is not one this can take.
+    ///
+    /// A tree still holding work nobody committed is kept, with the record
+    /// that names it, because that is the one thing the verb will not do for
+    /// an answer — so the line says how many went and how many stayed, and a
+    /// person who sees `kept 1` knows where to look.
+    fn clear(&mut self, root: &Path, ids: &[String]) {
+        let (mut cleared, mut kept) = (0, 0);
+        let mut trouble = None;
+        for id in ids {
+            let Some(view) = self.list.agent_by_id(id) else {
+                continue;
+            };
+            let mut out = Vec::new();
+            match verbs::sweep::take_landed(root, &view.meta, &mut out) {
+                Ok(()) => match String::from_utf8_lossy(&out)
+                    .lines()
+                    .any(|line| line.starts_with("kept "))
+                {
+                    true => kept += 1,
+                    false => cleared += 1,
+                },
+                Err(e) => {
+                    trouble = Some(format!("{e:#}"));
+                    break;
+                }
+            }
+        }
+
+        self.notice = Some(match trouble {
+            Some(e) => Notice::Failed(e),
+            None => Notice::Advice(match kept {
+                0 => format!("cleared {cleared}"),
+                kept => format!("cleared {cleared} · kept {kept}"),
+            }),
+        });
+        self.acted();
     }
 
     /// The key a question of the view's own is waiting for.
@@ -6684,6 +6806,229 @@ mod tests {
         assert!(
             crate::store::list(root.path()).unwrap().is_empty(),
             "the second press forgets what the first one armed"
+        );
+    }
+
+    /// git as these tests run it: none of the developer's own configuration
+    /// and an identity of its own.
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "amx tests")
+            .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
+            .env("GIT_COMMITTER_NAME", "amx tests")
+            .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim_end().to_string()
+    }
+
+    /// A repository with one commit in it, which is what the key that clears
+    /// what has landed asks its questions of.
+    fn a_repo() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        git(dir.path(), &["init", "-b", "main"]);
+        std::fs::write(dir.path().join("README.md"), "before\n").unwrap();
+        git(dir.path(), &["add", "README.md"]);
+        git(dir.path(), &["commit", "-m", "first"]);
+        dir
+    }
+
+    /// An agent that has ended, with a tree cut from `repo` and left where it
+    /// was: its branch holds exactly what main holds, so git reads the work as
+    /// in the main line without anybody having to merge anything.
+    fn has_landed(root: &Path, repo: &Path, id: &str) -> View {
+        let tree = crate::worktree::create(repo, id, None).unwrap();
+        let meta = Meta {
+            id: id.to_string(),
+            task: "fix the login bug".to_string(),
+            agent: None,
+            dir: repo.to_path_buf(),
+            worktree: Some(tree.path.clone()),
+            branch: Some(tree.branch.clone()),
+            base: Some(tree.base.clone()),
+            socket: Socket::Name("amx-not-a-server".to_string()),
+            pane: PaneId::new("%404").unwrap(),
+            bg: false,
+            session: None,
+            transcript: None,
+            created: 1,
+        };
+        let state = State {
+            state: Phase::Done,
+            exit: Some(0),
+            since: 1,
+            last_event: 1,
+            ..State::default()
+        };
+        let agent = Agent::create(root, &meta).unwrap();
+        std::fs::write(
+            agent.dir().join("state.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+        View::new(
+            meta,
+            state,
+            Verdict {
+                phase: Phase::Done,
+                evidence: Evidence::Hooks,
+                rule: None,
+                age: 29,
+                worked: 29,
+            },
+        )
+    }
+
+    /// The key that clears what has landed, which is read anywhere on the
+    /// list.
+    fn c() -> KeyEvent {
+        KeyEvent::from(KeyCode::Char('c'))
+    }
+
+    #[test]
+    fn keys_c_says_nothing_has_landed_when_no_branch_of_anybody_s_work_is_in() {
+        let root = TempDir::new().unwrap();
+        let mut screen = watching(a_wall());
+        screen
+            .act(c(), root.path(), &Config::default(), None)
+            .unwrap();
+        let Some(Notice::Advice(said)) = &screen.notice else {
+            panic!("nothing said about a wall with nothing on it to clear")
+        };
+        assert_eq!(said, "nothing has landed");
+        assert!(
+            screen.arm.is_none(),
+            "and nothing is left armed for a second press to take"
+        );
+    }
+
+    #[test]
+    fn keys_c_arms_what_has_landed_and_the_press_after_it_clears_them() {
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let config = Config::default();
+        let first = has_landed(root.path(), repo.path(), "fix-login-a1b");
+        let second = has_landed(root.path(), repo.path(), "port-importer-b2c");
+        // And one still at work, which no press here is about.
+        idle(root.path(), "quiet-c3d");
+        let mut screen = watching(vec![
+            first,
+            second,
+            reading(
+                "quiet-c3d",
+                Phase::Idle,
+                State {
+                    state: Phase::Idle,
+                    since: 1,
+                    last_event: 1,
+                    ..State::default()
+                },
+            ),
+        ]);
+
+        screen.act(c(), root.path(), &config, None).unwrap();
+        let arm = screen.arm.as_ref().expect("the arm the press left");
+        assert!(arm.cleared, "the arm c leaves is c's own");
+        let mut marked: Vec<(&str, &str)> = arm
+            .ids
+            .iter()
+            .map(String::as_str)
+            .zip(arm.why.iter().map(String::as_str))
+            .collect();
+        marked.sort_unstable();
+        assert_eq!(
+            marked,
+            [
+                ("fix-login-a1b", "amx/fix-login-a1b merged into main"),
+                ("port-importer-b2c", "amx/port-importer-b2c merged into main"),
+            ],
+            "every row that has landed, with the reason it is on the list, \
+             and the one still at work on neither"
+        );
+        assert_eq!(
+            crate::store::list(root.path()).unwrap().len(),
+            3,
+            "and the first press takes nothing"
+        );
+
+        screen.act(c(), root.path(), &config, None).unwrap();
+        assert_eq!(
+            crate::store::list(root.path()).unwrap(),
+            ["quiet-c3d".to_string()],
+            "the trees, the branches and the records of both"
+        );
+        let Some(Notice::Advice(said)) = &screen.notice else {
+            panic!("nothing said about what went")
+        };
+        assert_eq!(said, "cleared 2");
+        assert!(screen.arm.is_none(), "and the arm is taken with them");
+    }
+
+    #[test]
+    fn keys_c_keeps_a_tree_that_holds_work_no_commit_has_and_says_how_many() {
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let config = Config::default();
+        let held = has_landed(root.path(), repo.path(), "fix-login-a1b");
+        std::fs::write(
+            held.meta.worktree.as_deref().unwrap().join("login.rs"),
+            "fn login() {}\n",
+        )
+        .unwrap();
+        let gone = has_landed(root.path(), repo.path(), "port-importer-b2c");
+        let mut screen = watching(vec![held, gone]);
+
+        screen.act(c(), root.path(), &config, None).unwrap();
+        screen.act(c(), root.path(), &config, None).unwrap();
+        let Some(Notice::Advice(said)) = &screen.notice else {
+            panic!("nothing said about what went and what stayed")
+        };
+        assert_eq!(said, "cleared 1 · kept 1");
+        assert_eq!(
+            crate::store::list(root.path()).unwrap(),
+            ["fix-login-a1b".to_string()],
+            "the record that names the tree stays with it"
+        );
+    }
+
+    #[test]
+    fn keys_c_and_ctrl_x_do_not_finish_each_other_s_press() {
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let config = Config::default();
+        let mut screen = watching(vec![has_landed(
+            root.path(),
+            repo.path(),
+            "fix-login-a1b",
+        )]);
+        let still_there = || crate::store::list(root.path()).unwrap().len();
+
+        // A ctrl+x inside c's window is somebody reaching for the other key,
+        // so it forgets nothing c had marked and arms the row it is on.
+        screen.act(c(), root.path(), &config, None).unwrap();
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert_eq!(still_there(), 1, "the press that asked for nothing took nothing");
+        assert!(
+            screen.arm.as_ref().is_some_and(|arm| !arm.cleared),
+            "and the row under the cursor is armed for its own second press"
+        );
+
+        // And the other way about: c does not finish what ctrl+x started, it
+        // asks the wall its own question again.
+        screen.act(c(), root.path(), &config, None).unwrap();
+        assert_eq!(still_there(), 1, "which takes nothing either");
+        assert!(
+            screen.arm.as_ref().is_some_and(|arm| arm.cleared),
+            "the arm is c's again, and it is a first press"
         );
     }
 
