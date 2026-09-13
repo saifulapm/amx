@@ -103,6 +103,7 @@ runs after it.
 amx new "fix the login bug"            # in a repository: its own worktree
 amx new --no-worktree "run the tests"  # in this directory, as it is
 amx new --base main "add the export"   # a tree cut from a ref of your choosing
+amx new --branch spike "carry on"      # a tree on a branch that already exists
 amx new --with-changes "finish this"   # taking what you have not committed
 amx new --pr 128 "review this"         # a tree on a pull request's own branch
 amx new --name importer "port it"      # an id you chose
@@ -1200,6 +1201,18 @@ same for every spawn, and the flag beats the key for one. What is recorded is
 the commit the ref resolved to, and it stays that commit after the branch itself
 has moved. A ref this repository does not know refuses the spawn before anything
 is made.
+
+`--branch <name>` puts the agent on a branch that already exists instead of
+cutting one, so the commits land where the work belongs rather than on an
+`amx/<id>` nobody was expecting. A branch this checkout has is cut on as it
+stands, with the commits nobody has pushed still on it; a name only the origin
+has is fetched first, and a leading `origin/` comes off either way. The branch
+is what the record keeps, so `diff` measures from where the agent started and
+`stop` leaves the branch where it is. git keeps one tree to a branch, so a
+branch another tree already has starts no agent, and neither does a name that
+is in neither place. It says what the tree is on, so it is refused beside
+`--base`, `--pr`, `--no-worktree` and `--exec` — but not beside
+`--with-changes`, and `worktrees = false` does not stand in its way.
 
 `--with-changes` takes the half hour you had already spent with it. What git is
 tracking moves into the tree, staged or not, and so does the file no commit has

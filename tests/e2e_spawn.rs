@@ -1484,6 +1484,133 @@ fn new_refuses_a_request_beside_the_flags_that_say_where_a_tree_comes_from() {
 }
 
 #[test]
+fn new_cuts_the_tree_on_a_branch_this_checkout_already_has() {
+    // No origin in this repository at all, which is the whole of the point: a
+    // branch that is here is a branch there is nothing to fetch, and the
+    // commits somebody made on it locally stay where they are.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let repo = amx.a_repo();
+    let spike = git(&repo, &["rev-parse", "HEAD"]);
+    git(&repo, &["branch", "spike"]);
+    std::fs::write(repo.join("README.md"), "main went on\n").expect("a second version");
+    git(&repo, &["commit", "-am", "second"]);
+
+    let id = id_of(&new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--branch",
+            "spike",
+            "--agent",
+            &mock,
+            "carry on with it",
+        ],
+    ));
+
+    let meta = amx.meta(&id);
+    assert_eq!(
+        meta["branch"], "spike",
+        "the branch the commits are to land on"
+    );
+    assert_eq!(
+        meta["base"], spike,
+        "the branch's own commit, not whatever main is standing on"
+    );
+    let worktree = repo.join(".amx/worktrees").join(&id);
+    assert_eq!(meta["worktree"], worktree.to_string_lossy().as_ref());
+    assert_eq!(
+        git(&worktree, &["rev-parse", "HEAD"]),
+        spike,
+        "with the branch's work checked out in it"
+    );
+    assert_eq!(
+        git(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "spike",
+        "and standing on the branch rather than beside it"
+    );
+}
+
+#[test]
+fn new_cuts_the_tree_on_a_branch_only_the_origin_has() {
+    // The same shape a request arrives in: `feature` is on the origin and in
+    // no local branch here, so the branch has to be fetched before there is
+    // anything to check out. `origin/feature` is how somebody reads that name
+    // out, and the tree goes on `feature` either way.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let (repo, commit) = a_repo_with_a_request(&amx);
+
+    let id = id_of(&new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--branch",
+            "origin/feature",
+            "--agent",
+            &mock,
+            "carry on with it",
+        ],
+    ));
+
+    let meta = amx.meta(&id);
+    assert_eq!(meta["branch"], "feature", "the prefix comes off: {meta}");
+    assert_eq!(meta["base"], commit, "the commit the origin has it at");
+    let worktree = repo.join(".amx/worktrees").join(&id);
+    assert_eq!(
+        git(&worktree, &["rev-parse", "HEAD"]),
+        commit,
+        "with the branch's work checked out in it"
+    );
+}
+
+#[test]
+fn new_refuses_a_branch_another_tree_already_holds() {
+    // git keeps one tree to a branch, and the checkout itself is a tree. A
+    // request can be started twice under a name of amx's own; a branch
+    // somebody typed has no second name.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let repo = amx.a_repo();
+
+    let refused = new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--branch",
+            "main",
+            "--agent",
+            &mock,
+            "carry on with it",
+        ],
+    );
+
+    assert_eq!(refused.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("main is checked out"), "{said}");
+    let listed = amx.amx(&["ls", "--json"]);
+    assert_eq!(
+        String::from_utf8_lossy(&listed.stdout).trim(),
+        "[]",
+        "and no agent was started for it"
+    );
+    assert_eq!(
+        git(&repo, &["worktree", "list", "--porcelain"])
+            .lines()
+            .filter(|line| line.starts_with("worktree "))
+            .count(),
+        1,
+        "nor a tree cut"
+    );
+}
+
+#[test]
 fn new_runs_in_the_directory_as_it_is_when_asked() {
     let amx = Harness::new();
     let mock = amx.mock();

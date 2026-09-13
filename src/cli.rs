@@ -420,6 +420,19 @@ pub struct NewArgs {
     #[arg(long, value_name = "REF")]
     pub base: Option<String>,
 
+    /// Start the agent on this branch, which already exists.
+    ///
+    /// The work carries on where somebody left it: a branch this checkout has
+    /// is cut on as it stands, and one only the origin has is fetched first. A
+    /// leading `origin/` comes off, since that is how a branch on the forge is
+    /// usually read out. The branch is what the record keeps, so the commits
+    /// land on it and `stop` leaves it where it is. It says what the tree is
+    /// on and where the work goes, so it is refused beside `--base`, `--pr`,
+    /// `--no-worktree` and `--exec`; `--with-changes` stands beside it, since
+    /// what you have not committed belongs on that branch as much as anywhere.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["base", "pr", "no_worktree", "exec"])]
+    pub branch: Option<String>,
+
     /// Start the agent on this pull request instead.
     ///
     /// `gh` is asked where the request's head is, its branch is fetched from

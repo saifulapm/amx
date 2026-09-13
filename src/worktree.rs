@@ -174,8 +174,6 @@ pub fn create_on(repo: &Path, id: &str, branch: &str, fetch: &str) -> Result<Wor
 /// The base is read off the branch, which is where `diff` measures the agent's
 /// work from: everything that was already on the branch is history, and what
 /// the agent does to it is the answer.
-// Called by t2, which starts an agent on a branch that already exists.
-#[allow(dead_code)]
 pub fn create_on_local(repo: &Path, id: &str, branch: &str) -> Result<Worktree> {
     ensure_excluded(repo)?;
 

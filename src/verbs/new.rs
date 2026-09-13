@@ -596,27 +596,31 @@ fn cut_worktree(
     config: &Config,
     args: &NewArgs,
 ) -> Result<Option<(PathBuf, worktree::Worktree)>> {
-    // The key says what happens when nobody asked for a tree. A request is
-    // somebody asking: there is no working on one without the branch it is
-    // on, so `--pr` is a tree whatever the key says.
-    if args.exec || args.no_worktree || (!config.worktrees && args.pr.is_none()) {
+    // The key says what happens when nobody asked for a tree. A request and a
+    // branch are somebody asking: there is no working on either without the
+    // branch it is on checked out somewhere, so both are a tree whatever the
+    // key says.
+    let asked_for_a_branch = args.pr.is_some() || args.branch.is_some();
+    if args.exec || args.no_worktree || (!config.worktrees && !asked_for_a_branch) {
         return Ok(None);
     }
     if !dir.is_dir() {
         bail!("{} is not a directory to run in", dir.display());
     }
     // Somewhere that is not a repository is somewhere to work in as it is —
-    // unless a request was named, which is a repository's own thing to have
-    // and nothing a directory outside one could be started on.
+    // unless a request or a branch was named, which are a repository's own
+    // things to have and nothing a directory outside one could be started on.
     let Some(repo) = worktree::repo_root(dir)? else {
-        match args.pr {
-            Some(number) => bail!("--pr {number}: {} is in no repository", dir.display()),
-            None => return Ok(None),
+        match (args.pr, args.branch.as_deref()) {
+            (Some(number), _) => bail!("--pr {number}: {} is in no repository", dir.display()),
+            (_, Some(name)) => bail!("--branch {name}: {} is in no repository", dir.display()),
+            _ => return Ok(None),
         }
     };
-    let tree = match args.pr {
-        Some(number) => cut_on_request(&repo, id, number)?,
-        None => worktree::create(&repo, id, cut_from(config, args))?,
+    let tree = match (args.pr, args.branch.as_deref()) {
+        (Some(number), _) => cut_on_request(&repo, id, number)?,
+        (_, Some(name)) => cut_on_branch(&repo, id, name)?,
+        _ => worktree::create(&repo, id, cut_from(config, args))?,
     };
     Ok(Some((repo, tree)))
 }
@@ -635,6 +639,58 @@ fn cut_on_request(repo: &Path, id: &str, number: u64) -> Result<worktree::Worktr
         false => head.branch,
     };
     worktree::create_on(repo, id, &name, &format!("refs/pull/{number}/head"))
+}
+
+/// A tree on `name`, a branch this checkout already has or the origin does.
+///
+/// [`cut_on_request`]'s other half: the same tree on a branch somebody already
+/// made, without a forge to ask where it is. Which of the two ways it is cut
+/// turns on whether the ref is here — a branch with commits nobody has pushed
+/// would be moved to whatever the origin holds if it were fetched, and a name
+/// only the origin has is no branch at all until it is.
+///
+/// `origin/x` is how a branch on the forge is usually read out, and the tree
+/// goes on `x` either way, so the prefix comes off rather than being hunted for
+/// under a name nothing has.
+///
+/// The refusals are both about the name: git keeps one tree to a branch, so one
+/// another tree holds cannot be checked out again — and unlike a request, which
+/// can be started twice under a name of amx's own, there is no second name for
+/// the branch somebody typed.
+fn cut_on_branch(repo: &Path, id: &str, name: &str) -> Result<worktree::Worktree> {
+    let name = name.strip_prefix("origin/").unwrap_or(name);
+    if worktree::checked_out(repo, name)? {
+        bail!("{name} is checked out in another tree already");
+    }
+    if here_already(repo, name) {
+        return worktree::create_on_local(repo, id, name);
+    }
+    match worktree::create_on(repo, id, name, name) {
+        Ok(tree) => Ok(tree),
+        // Whatever git said about the fetch, what happened is that the name
+        // was in neither place, which is the sentence to answer with.
+        Err(_) => bail!("{name} is no branch here or on origin"),
+    }
+}
+
+/// Whether this checkout already has a branch called `name`.
+///
+/// Asked of the refs alone, because the answer decides which way the tree is
+/// cut rather than anything about the tree itself.
+fn here_already(repo: &Path, name: &str) -> bool {
+    std::process::Command::new("git")
+        .current_dir(repo)
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{name}"),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Furnish the tree amx has just cut: the files and directories the config
@@ -789,6 +845,7 @@ mod tests {
             dir: None,
             no_worktree: false,
             base: None,
+            branch: None,
             pr: None,
             with_changes: false,
             exec: false,
@@ -812,6 +869,7 @@ mod tests {
             dir: None,
             no_worktree: false,
             base: None,
+            branch: None,
             pr: None,
             with_changes: false,
             exec: true,
@@ -1266,6 +1324,104 @@ mod tests {
             cut_from(&held, &args),
             Some("release-2"),
             "and the flag, for this one"
+        );
+    }
+
+    /// git as these tests run it: none of the developer's own configuration
+    /// and an identity of its own.
+    fn setup(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "amx tests")
+            .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
+            .env("GIT_COMMITTER_NAME", "amx tests")
+            .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim_end().to_string()
+    }
+
+    /// A repository with one commit on `main` and no origin at all.
+    fn a_repo(dir: &tempfile::TempDir) -> PathBuf {
+        let repo = dir.path().join("app");
+        std::fs::create_dir_all(&repo).unwrap();
+        setup(&repo, &["init", "-b", "main"]);
+        std::fs::write(repo.join("README.md"), "the work\n").unwrap();
+        setup(&repo, &["add", "README.md"]);
+        setup(&repo, &["commit", "-m", "the first commit"]);
+        repo
+    }
+
+    /// How many trees this repository has, the checkout itself included.
+    fn trees_in(repo: &Path) -> usize {
+        setup(repo, &["worktree", "list", "--porcelain"])
+            .lines()
+            .filter(|line| line.starts_with("worktree "))
+            .count()
+    }
+
+    #[test]
+    fn a_branch_another_tree_already_holds_starts_no_agent() {
+        // git keeps one tree to a branch, and the checkout itself is a tree:
+        // `--branch main` in a repository standing on main is the everyday
+        // version of it. Asked before anything is made, so there is nothing
+        // to take back.
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = a_repo(&dir);
+
+        let refusal = cut_on_branch(&repo, "fix-login-a1b", "main").unwrap_err();
+
+        assert!(
+            refusal.to_string().contains("main is checked out"),
+            "{refusal:#}"
+        );
+        assert_eq!(trees_in(&repo), 1, "and no tree was cut for it");
+    }
+
+    #[test]
+    fn a_branch_that_is_neither_here_nor_on_the_origin_starts_no_agent() {
+        // Both halves have been tried by the time this is said: there is no
+        // such ref in this checkout, and the fetch that would have brought one
+        // came back with nothing.
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = a_repo(&dir);
+
+        let refusal = cut_on_branch(&repo, "fix-login-a1b", "spike").unwrap_err();
+
+        assert_eq!(
+            refusal.to_string(),
+            "spike is no branch here or on origin",
+            "{refusal:#}"
+        );
+        assert_eq!(trees_in(&repo), 1, "and no tree was cut for it");
+    }
+
+    #[test]
+    fn a_branch_is_a_tree_whatever_the_key_says_and_nowhere_to_cut_one_is_refused() {
+        // The key answers for the spawns nobody said anything about. Naming a
+        // branch is somebody saying it, and outside a repository there is no
+        // branch of that name to say it about.
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut args = spawn(None, [None; 3]);
+        args.branch = Some("spike".to_string());
+        let no_trees = Config {
+            worktrees: false,
+            ..Config::default()
+        };
+
+        let refusal = cut_worktree(dir.path(), "fix-login-a1b", &no_trees, &args).unwrap_err();
+
+        assert!(
+            refusal.to_string().contains("--branch spike"),
+            "{refusal:#}"
         );
     }
 

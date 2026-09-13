@@ -1468,6 +1468,9 @@ pub fn start(root: &Path, config: &Config, line: &str, under: Option<&Path>) -> 
         dir: None,
         no_worktree: false,
         base: turned.base,
+        // The view has no word for it: `b:` is --base, and a tree on somebody
+        // else's branch is a command line's own thing to ask for.
+        branch: None,
         pr: turned.pr,
         with_changes: turned.with_changes,
         exec: turned.exec,
