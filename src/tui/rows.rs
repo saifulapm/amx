@@ -1018,9 +1018,6 @@ impl List {
     /// where this says. In their state order whichever axis is drawn, because
     /// what an agent is waiting for is a fact about the agent and not about
     /// the way the fleet was gathered.
-    // The key that lands the cursor on what this names takes it up next. Until
-    // it does, the callers are this module's own tests.
-    #[allow(dead_code)]
     pub fn first_needing(&self) -> Option<String> {
         let showing: Vec<(Group, String)> = self
             .ordered()
