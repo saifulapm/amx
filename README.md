@@ -1505,10 +1505,11 @@ the notice is handed over and never waited for.
 Where the notice goes is the `notifications` key. `"desktop"` is the notifier
 above. `"terminal"` writes it to the terminals you are sitting at — every
 client of every tmux server under your socket directory — so a notice reaches
-you in a tmux of your own at the far end of an SSH session, where a desktop has
-nothing to post to. `"both"` does the two and `"off"` does neither. The key was
-a bool before it was these words, and `true` and `false` still read as desktop
-and off.
+you at the far end of an SSH session, where a desktop has nothing to post to.
+The terminal amx writes to is a tmux client, so over SSH run the view inside a
+tmux of your own; a bare SSH session has nothing for a notice to arrive on.
+`"both"` does the two and `"off"` does neither. The key was a bool before it
+was these words, and `true` and `false` still read as desktop and off.
 
 ## Configuration
 
