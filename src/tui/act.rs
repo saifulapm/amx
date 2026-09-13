@@ -755,8 +755,8 @@ pub fn finding(line: &str) -> Vec<Narrow> {
 }
 
 /// The tokens a task line may be led with, and what each of them turns.
-const DIALS: [&str; 8] = [
-    MODEL, PERMISSION, EFFORT, WORKTREE, DIR, AGENT, BASE, REQUEST,
+const DIALS: [&str; 9] = [
+    MODEL, PERMISSION, EFFORT, WORKTREE, DIR, AGENT, BASE, REQUEST, BRANCH,
 ];
 
 /// The one of them that says which vendor the line is for, which is the vendor
@@ -768,12 +768,14 @@ const MODEL: &str = "m:";
 const PERMISSION: &str = "p:";
 const EFFORT: &str = "e:";
 
-/// And the four that are amx's: whether this agent is given a tree of its own,
-/// where it runs, what its tree is cut from and the request it is cut for.
+/// And the five that are amx's: whether this agent is given a tree of its own,
+/// where it runs, what its tree is cut from, the request it is cut for and the
+/// branch it carries on with.
 const WORKTREE: &str = "w:";
 const DIR: &str = "d:";
 const BASE: &str = "b:";
 const REQUEST: &str = "pr:";
+const BRANCH: &str = "on:";
 
 /// What `w:` takes, which is amx's own answer and in no vendor's table.
 ///
@@ -809,6 +811,9 @@ pub struct Turned {
     /// What its tree is cut from, as it was typed. Whether git can resolve the
     /// ref is the spawn's own answer, the same as at a shell prompt.
     pub base: Option<String>,
+    /// The branch it carries on with, as it was typed. Whether git has one of
+    /// that name here or on the origin is the spawn's own answer.
+    pub branch: Option<String>,
     /// The request it is started on, which says both what the tree is cut from
     /// and where the work goes.
     pub pr: Option<u64>,
@@ -920,6 +925,12 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
                 };
                 turned.pr = Some(number);
             }
+            BRANCH => {
+                if value.is_empty() {
+                    return Err("on: takes a branch".to_string());
+                }
+                turned.branch = Some((*value).to_string());
+            }
             MODEL => {
                 turned.model = Some(pointed(&agent, dial, entry.and_then(|e| e.model), value)?);
             }
@@ -948,19 +959,33 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
             return Err("pr: and w: — a request is a tree of its own".to_string());
         }
     }
+    if turned.branch.is_some() {
+        if turned.base.is_some() {
+            return Err("on: and b: — a branch says what it is cut from".to_string());
+        }
+        if turned.pr.is_some() {
+            return Err("on: and pr: — a request is a branch of its own".to_string());
+        }
+        // `w:changes` stands beside it, so only the word that asks for no tree
+        // at all: the work no commit holds belongs on that branch as much as
+        // anywhere.
+        if turned.worktree == Some(false) {
+            return Err("on: and w:off — a branch is a tree of its own".to_string());
+        }
+    }
     Ok((turned, task.to_string()))
 }
 
 /// The one dial a command row takes and the command that is left, or the word
 /// that is a dial it has nothing to turn.
 ///
-/// `d:` alone, because it is the only one of the seven that is about the row
+/// `d:` alone, because it is the only one of the nine that is about the row
 /// rather than about an agent: where the command runs. A row that runs `sh -c`
 /// launches no vendor, so the vendor's own two and the word that names one have
 /// nothing here to be about — which is why `--exec` refuses those flags at a
-/// shell prompt too. `w:`, `b:` and `pr:` go with them: a command is not a
-/// conversation to keep apart from the next one, so it runs in the checkout it
-/// was typed in whatever any line says.
+/// shell prompt too. `w:`, `b:`, `pr:` and `on:` go with them: a command is not
+/// a conversation to keep apart from the next one, so it runs in the checkout
+/// it was typed in whatever any line says.
 fn commanded(rest: &str) -> Result<(Turned, String), String> {
     let (tokens, command) = tokens(rest);
     let mut turned = Turned {
@@ -1094,7 +1119,8 @@ fn asked_of(config: &Config, line: &str) -> String {
 /// Three kinds of word, in the order a mark is read. The dials are amx's own
 /// and are answered out of the table and off the disk: `agent:` by the vendors
 /// there are entries for, `m:` and `p:` by the cycle the vendor declares, `w:`
-/// by amx's two words, and `d:` by the directories a path names. The marks past
+/// by amx's two words, `on:` by the branches the checkout has, and `d:` by the
+/// directories a path names. The marks past
 /// them are the vendor's own: `/` runs a skill, a command or something the
 /// vendor answers out of itself, and `@` names one of its agents. And a word
 /// naming none of those is the third kind — a path, which is the other thing
@@ -1128,6 +1154,11 @@ fn answering(
         }
         if let Some(values) = dialled(&agent, typed) {
             return values;
+        }
+        // A branch is read where the agent will run, the same as a path is:
+        // the checkout the `d:` names is the one the spawn cuts its tree in.
+        if typed.starts_with(BRANCH) {
+            return branches_here(&running(line, project), typed);
         }
         // A `d:` being typed is the one path on the line that is not read
         // against the `d:`: it is what the rest of them will be read against.
@@ -1215,6 +1246,36 @@ fn dialled(agent: &str, typed: &str) -> Option<Vec<Entry>> {
             .filter(|entry| entry.spelled.starts_with(typed))
             .collect(),
     )
+}
+
+/// The branches the checkout at `here` already has, as the words that would
+/// finish the one being typed.
+///
+/// git's own answer rather than the record's: what `on:` takes is a branch
+/// somebody left work on, and plenty of those were never an agent's. The local
+/// refs and not the origin's, because a name only the origin has is fetched by
+/// the spawn and is nothing this checkout can offer a list of without going to
+/// the network, which a view drawing a frame does not do.
+///
+/// A directory that is no repository, and a git that will not answer, offer
+/// nothing and say nothing: somebody typing a task is owed suggestions or none.
+pub fn branches_here(here: &Path, typed: &str) -> Vec<Entry> {
+    let read = std::process::Command::new("git")
+        .current_dir(here)
+        .args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+        .stdin(std::process::Stdio::null())
+        .output();
+    let Ok(read) = read else {
+        return Vec::new();
+    };
+    if !read.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&read.stdout)
+        .lines()
+        .map(|branch| worded(format!("{BRANCH}{branch}")))
+        .filter(|entry| entry.spelled.starts_with(typed))
+        .collect()
 }
 
 /// What is in the directory a path names, as the words that would finish the
@@ -1502,9 +1563,7 @@ pub fn start(root: &Path, config: &Config, line: &str, under: Option<&Path>) -> 
         dir: None,
         no_worktree: false,
         base: turned.base,
-        // The view has no word for it: `b:` is --base, and a tree on somebody
-        // else's branch is a command line's own thing to ask for.
-        branch: None,
+        branch: turned.branch,
         pr: turned.pr,
         with_changes: turned.with_changes,
         exec: turned.exec,
@@ -2893,6 +2952,7 @@ mod tests {
                 worktree: Some(false),
                 dir: None,
                 base: None,
+                branch: None,
                 pr: None,
                 with_changes: false,
             }
@@ -3015,6 +3075,63 @@ mod tests {
         let (dials, _) = turned(&as_claude(), "b:main w:changes port it").unwrap();
         assert_eq!(dials.base.as_deref(), Some("main"));
         assert!(dials.with_changes);
+    }
+
+    #[test]
+    fn composer_is_turned_onto_the_branch_its_line_names() {
+        let (dials, task) = turned(&as_claude(), "on:spike carry on with it").unwrap();
+        assert_eq!(dials.branch.as_deref(), Some("spike"));
+        assert_eq!(task, "carry on with it");
+
+        // Whether the branch is one git has is the spawn's own answer, as it
+        // is at a shell prompt: the word only has to be there.
+        let (dials, task) = turned(&as_claude(), "on:origin/spike  m:opus  carry on").unwrap();
+        assert_eq!(dials.branch.as_deref(), Some("origin/spike"));
+        assert_eq!(dials.model.as_deref(), Some("opus"));
+        assert_eq!(task, "carry on");
+
+        // The one word that stands beside it: what you have not committed
+        // belongs on that branch as much as anywhere.
+        let (dials, _) = turned(&as_claude(), "on:spike w:changes carry on").unwrap();
+        assert_eq!(dials.branch.as_deref(), Some("spike"));
+        assert!(dials.with_changes);
+    }
+
+    #[test]
+    fn composer_refuses_a_branch_beside_the_words_turned_against_it() {
+        let refused = |line: &str| turned(&as_claude(), line).expect_err(line);
+
+        assert_eq!(refused("on: carry on with it"), "on: takes a branch");
+
+        // The pairs clap holds the flag to, in whichever order they are typed.
+        for line in ["on:spike b:main port it", "b:main on:spike port it"] {
+            assert_eq!(
+                refused(line),
+                "on: and b: — a branch says what it is cut from",
+                "{line:?}"
+            );
+        }
+        for line in ["on:spike pr:412 review it", "pr:412 on:spike review it"] {
+            assert_eq!(
+                refused(line),
+                "on: and pr: — a request is a branch of its own",
+                "{line:?}"
+            );
+        }
+        for line in ["on:spike w:off port it", "w:off on:spike port it"] {
+            assert_eq!(
+                refused(line),
+                "on: and w:off — a branch is a tree of its own",
+                "{line:?}"
+            );
+        }
+
+        // A command row launches no vendor and keeps no branch, so the word is
+        // refused there with every other dial but `d:`.
+        assert_eq!(
+            refused("!on:spike ls"),
+            "on:spike: a command row takes d: and no other dial"
+        );
     }
 
     #[test]
@@ -3479,6 +3596,76 @@ mod tests {
         let mut line = Composer::new(Asking::Task);
         line.insert("m:");
         assert!(suggest(&line, &config, a_project(), &[]).is_none());
+    }
+
+    /// git as these tests run it, in a repository of its own.
+    fn a_repo_on(dir: &Path, branches: &[&str]) {
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .env("GIT_AUTHOR_NAME", "amx tests")
+                .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
+                .env("GIT_COMMITTER_NAME", "amx tests")
+                .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
+                .output()
+                .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        std::fs::write(dir.join("README.md"), "before\n").unwrap();
+        git(&["add", "README.md"]);
+        git(&["commit", "-m", "first"]);
+        for branch in branches {
+            git(&["branch", branch]);
+        }
+    }
+
+    #[test]
+    fn composer_is_answering_an_on_with_the_branches_the_checkout_has() {
+        let project = TempDir::new().unwrap();
+        a_repo_on(project.path(), &["release", "spike", "spike-two"]);
+
+        let mut line = Composer::new(Asking::Task);
+        line.insert("on:");
+        let found = suggest(&line, &as_claude(), project.path(), &[]).expect("what git has");
+        assert_eq!(
+            offered(&found),
+            ["on:main", "on:release", "on:spike", "on:spike-two"],
+            "the branches this checkout already has, spelled as the word would \
+             be"
+        );
+
+        // Narrowed by what has been typed of it, the same as every other word
+        // the line offers.
+        line.insert("spike-");
+        let found = suggest(&line, &as_claude(), project.path(), &[]).expect("the one left");
+        assert_eq!(offered(&found), ["on:spike-two"]);
+
+        line.insert("x");
+        assert!(
+            suggest(&line, &as_claude(), project.path(), &[]).is_none(),
+            "and a name no branch answers to is the name somebody typed"
+        );
+
+        // Read where the agent will run rather than where the view is: a
+        // branch offered out of anywhere else is one that spawn would not find.
+        let here = TempDir::new().unwrap();
+        let mut line = Composer::new(Asking::Task);
+        line.insert(&format!("d:{} on:rel", project.path().display()));
+        let found = suggest(&line, &as_claude(), here.path(), &[]).expect("what is over there");
+        assert_eq!(offered(&found), ["on:release"]);
+
+        // A directory git knows nothing about offers nothing and says nothing.
+        let mut line = Composer::new(Asking::Task);
+        line.insert("on:");
+        assert!(suggest(&line, &as_claude(), here.path(), &[]).is_none());
     }
 
     #[test]

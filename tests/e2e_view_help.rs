@@ -176,6 +176,7 @@ fn the_keys_are_on_the_screen_for_the_asking() {
         "pin it over the wall",
         "ctrl+x",
         "a ref to cut from · a request to start on",
+        "a branch that already exists, to start on",
         "take the uncommitted work",
         "how hard the next agent thinks",
         "effort, for one spawn",

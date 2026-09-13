@@ -1711,6 +1711,48 @@ fn the_composer_cuts_the_tree_from_the_ref_its_line_names() {
 }
 
 #[test]
+fn the_composer_starts_the_agent_on_the_branch_its_line_names() {
+    let amx = Harness::new();
+    a_repo_at(amx.home());
+    // A branch somebody already left work on, which is what `on:` carries on
+    // with: the tree stands where they left it and the commits land on it.
+    git(amx.home(), &["checkout", "-q", "-b", "spike"]);
+    std::fs::write(amx.home().join("README.md"), "after\n").expect("work on the branch");
+    git(amx.home(), &["commit", "-qam", "a spike"]);
+    let left = git(amx.home(), &["rev-parse", "HEAD"]);
+    git(amx.home(), &["checkout", "-q", "main"]);
+
+    // A branch is a tree whatever the key says, so this config asking for none
+    // is the word out-voting it rather than a second word on the line.
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+    types(&amx, &view, "n");
+    types(&amx, &view, "on:spike carry on with it");
+    press(&amx, &view, "Enter");
+
+    let id = composed(&amx);
+    let meta = amx.meta(&id);
+    assert_eq!(meta["branch"], "spike", "the branch the record keeps");
+    let worktree = std::path::Path::new(meta["worktree"].as_str().expect("a tree of its own"));
+    assert_eq!(
+        git(worktree, &["rev-parse", "HEAD"]),
+        left,
+        "cut on the branch as it stands rather than on what HEAD is"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("README.md")).unwrap(),
+        "after\n",
+        "so the agent starts on the work that is already there"
+    );
+
+    let command = command_of(&amx, &id);
+    assert_eq!(
+        command.last().map(String::as_str),
+        Some("carry on with it"),
+        "and the word is off the task the vendor is handed: {command:?}"
+    );
+}
+
+#[test]
 fn the_composer_runs_the_session_as_the_agent_the_line_is_led_with() {
     let amx = Harness::new();
     // The one agent in the places claude reads on this machine, which is what

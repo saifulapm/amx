@@ -420,7 +420,7 @@ table.
 | `alt+e` | how hard the next agent thinks, where its vendor has a dial for it |
 | `alt+w` | whether it gets a worktree of its own |
 | `shift+tab` | what the next agent may do without asking |
-| `b:` `pr:` `w:changes` | on the task line: a ref to cut from, a request to start on, take the uncommitted work |
+| `b:` `pr:` `on:` `w:changes` | on the task line: a ref to cut from, a request to start on, a branch to carry on with, take the uncommitted work |
 | `?` | every key, where the list was |
 | `q` `ctrl+c` | close the view |
 
@@ -706,15 +706,20 @@ name read against the directory you opened the view in, the way a shell prompt
 standing there would read it. Nothing else on it is a word amx reads, so
 `s:waiting` typed here is the task and `enter` starts an agent on it.
 
-Three of those words are about the tree that one agent works in, and they are
+Four of those words are about the tree that one agent works in, and they are
 the flags `amx new` takes. `b:release port it` cuts the tree from that ref.
-`pr:412 review it` starts the agent on that pull request. `w:changes fix the
-login bug` gives it a tree and moves the work no commit holds here into it,
-leaving this directory as its last commit had it. The pairs the flags refuse
-are refused here too: `pr:` beside `b:`, because a request already says what it
-is cut from, and `pr:` beside `w:off` or `w:changes`, because a request is a
-tree of its own. Where there is nothing uncommitted to move, `w:changes` starts
-nothing and says so under the line you typed it on.
+`pr:412 review it` starts the agent on that pull request. `on:spike carry on
+with it` cuts the tree on a branch that already exists, so the commits land
+where the rest of the work on it is; `tab` under the word offers the branches
+this checkout has. `w:changes fix the login bug` gives it a tree and moves the
+work no commit holds here into it, leaving this directory as its last commit
+had it. The pairs the flags refuse are refused here too: `pr:` beside `b:`,
+because a request already says what it is cut from, and `pr:` beside `w:off` or
+`w:changes`, because a request is a tree of its own; `on:` the same way beside
+`b:`, `pr:` and `w:off`, though `w:changes` stands beside it, since work you
+have not committed belongs on that branch as much as anywhere. Where there is
+nothing uncommitted to move, `w:changes` starts nothing and says so under the
+line you typed it on.
 
 Without a `d:` the agent starts where you opened the view, unless the wall says
 somewhere else: with the agents gathered by project, a line opened on a heading
