@@ -1900,6 +1900,10 @@ pub fn invitation(kind: Option<Kind>, options: &[String], asked: Option<&Ask>) -
     let Some(choices) = choices else {
         return match kind {
             Some(Kind::Question) => "type an answer".to_string(),
+            // A trust screen amx read no numbers off is a list the vendor
+            // puts none on, and the verb refuses every key but a walk and
+            // `esc` there: the card invites what the verb will take.
+            Some(Kind::Trust) => "type down enter, up enter or esc".to_string(),
             _ => "press y, n or 1-9".to_string(),
         };
     };
@@ -2582,12 +2586,22 @@ mod tests {
                 "{kind:?}"
             );
             assert_eq!(invitation(kind, &one, None), "press 1, y or n", "{kind:?}");
+        }
+        for kind in [Some(Kind::Permission), None] {
             assert_eq!(
                 invitation(kind, &[], None),
                 "press y, n or 1-9",
                 "with nothing read off the screen, the grammar itself: {kind:?}"
             );
         }
+
+        // A trust screen with no numbers read off it is one the vendor draws
+        // none on — claude 2.1.259's gate, pi's own — and the verb takes only
+        // a walk or `esc` there, so that is what the card invites.
+        assert_eq!(
+            invitation(Some(Kind::Trust), &[], None),
+            "type down enter, up enter or esc"
+        );
 
         // And a question of a call under a record that calls the screen
         // something else — an older amx wrote `permission` over every menu it

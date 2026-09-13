@@ -391,12 +391,18 @@ fn answer(args: &AnswerArgs, kind: Option<Kind>, state: &State) -> Result<Answer
         return walk(walked);
     }
     if let Some(key) = named(typed) {
-        if key == TAKE_IT && unnumbered(kind, state) {
-            return Err(format!(
-                "`{typed}` takes the row the cursor is on, and this screen numbers none \
-                 of its rows for amx to see which that is: walk to the one you mean, \
-                 as `down enter`"
-            ));
+        if unnumbered(kind, state) && key != "Escape" {
+            return Err(match key == TAKE_IT {
+                true => format!(
+                    "`{typed}` takes the row the cursor is on, and this screen numbers none \
+                     of its rows for amx to see which that is: walk to the one you mean, \
+                     as `down enter`"
+                ),
+                false => format!(
+                    "`{typed}` does nothing to this screen, which numbers none of its rows \
+                     and reads no letter: walk to the one you mean, as `down enter`"
+                ),
+            });
         }
         return match (multi, one_choice(&key)) {
             (true, Some(_)) => boxes(&key, multi, pending),
@@ -1479,6 +1485,20 @@ mod tests {
         let gate = a_trust_gate();
         let refused = answer(&given("enter"), Some(Kind::Trust), &gate).expect_err("the default");
         assert!(refused.contains("down enter"), "{refused}");
+
+        // Nor is a letter or a digit: the same measurement found `1`, `2` and
+        // `y` doing nothing to the gate, and pi's own trust question (measured
+        // 2026-09-14 at 0.85.1) is a selector of the same kind. A key the
+        // screen would swallow is not an answer, and the walk is what is
+        // offered instead. `esc` still cancels, as it does everywhere.
+        for swallowed in ["y", "n", "1", "2"] {
+            let refused = answer(&given(swallowed), Some(Kind::Trust), &gate).expect_err(swallowed);
+            assert!(refused.contains("down enter"), "{swallowed}: {refused}");
+        }
+        assert_eq!(
+            answer(&given("esc"), Some(Kind::Trust), &gate),
+            Ok(Answer::Key("Escape".to_string()))
+        );
 
         // Where the rows are numbered they have been read, and `enter` is the
         // key a prompt with a highlighted default takes.
