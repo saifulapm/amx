@@ -60,7 +60,7 @@ use crate::verbs::ls::Scope;
 use crate::verbs::resume::Comeback;
 use crate::{exit, models, registry, spawn, verbs};
 use act::{Asking, Composer, Edited, Renamed, Replied, Started};
-use paint::{Body, Card, Notice};
+use paint::{Body, Card, HOLDS, Notice};
 use rows::{Arrangement, List, Narrow};
 
 /// How often the agents are read again.
@@ -557,6 +557,12 @@ struct Arm {
     /// the press that armed them had a reason to give. Empty for the arm
     /// `ctrl+x` leaves: a row somebody put the cursor on needs no reason.
     why: Vec<String>,
+    /// Which of `ids` have a tree holding work no commit has, asked once on the
+    /// press that armed them. The second press passes those rows by, so the
+    /// first press says so where a person is already reading: a row promised
+    /// `c again clears` and then kept back is the view saying something that
+    /// was not true.
+    held: Vec<String>,
     at: Instant,
 }
 
@@ -2484,6 +2490,18 @@ impl Screen {
             .map_or(&[], |arm| arm.why.as_slice())
     }
 
+    /// Which armed rows the second press will leave where they are, because
+    /// the tree behind them holds work no commit has.
+    ///
+    /// A handful of ids rather than a parallel array: most of the time it is
+    /// empty, and a row asks whether it is in it.
+    fn held(&self) -> &[String] {
+        self.arm
+            .as_ref()
+            .filter(|arm| arm.cleared && arm.at.elapsed() < ARMED)
+            .map_or(&[], |arm| arm.held.as_slice())
+    }
+
     /// Whether the press that armed them was on a heading, which is what
     /// decides how much the rows say the press after it would do: a group's
     /// second press stops the live ones under it before it forgets them all,
@@ -2543,6 +2561,7 @@ impl Screen {
             swept: false,
             cleared: false,
             why: Vec::new(),
+            held: Vec::new(),
             at: Instant::now(),
         });
     }
@@ -2640,6 +2659,7 @@ impl Screen {
             swept: true,
             cleared: false,
             why: Vec::new(),
+            held: Vec::new(),
             at: Instant::now(),
         });
     }
@@ -2665,17 +2685,18 @@ impl Screen {
             .is_some_and(|arm| arm.cleared && arm.at.elapsed() < ARMED);
         if again {
             let arm = self.arm.take().expect("the arm that was just read");
-            self.clear(root, &arm.ids);
+            self.clear(root, &arm.ids, &arm.held);
             return;
         }
 
-        let landed: Vec<(String, String)> = self
+        let landed: Vec<(String, String, bool)> = self
             .list
             .items()
             .iter()
             .filter_map(|item| self.list.agent(*item))
             .filter_map(|view| {
-                verbs::sweep::why_landed(view).map(|why| (view.id().to_string(), why))
+                verbs::sweep::why_landed(view)
+                    .map(|why| (view.id().to_string(), why, holding(view)))
             })
             .collect();
         if landed.is_empty() {
@@ -2686,12 +2707,20 @@ impl Screen {
         // The rows are the whole of what the view has to say about this, so
         // whatever it was saying before makes way for them.
         self.notice = None;
-        let (ids, why) = landed.into_iter().unzip();
+        let (mut ids, mut why, mut held) = (Vec::new(), Vec::new(), Vec::new());
+        for (id, reason, holds) in landed {
+            if holds {
+                held.push(id.clone());
+            }
+            ids.push(id);
+            why.push(reason);
+        }
         self.arm = Some(Arm {
             ids,
             swept: false,
             cleared: true,
             why,
+            held,
             at: Instant::now(),
         });
         self.acted();
@@ -2700,24 +2729,35 @@ impl Screen {
     /// Take what the first press marked, as the list has it now: an agent
     /// whose record has gone in the meantime is not one this can take.
     ///
-    /// A tree still holding work nobody committed is kept, with the record
-    /// that names it, because that is the one thing the verb will not do for
-    /// an answer — so the line says how many went and how many stayed, and a
-    /// person who sees `kept 1` knows where to look.
-    fn clear(&mut self, root: &Path, ids: &[String]) {
-        let (mut cleared, mut kept) = (0, 0);
+    /// A row the first press found holding work no commit has is not handed to
+    /// the taker at all. The taker would keep it for the same reason, but the
+    /// row has been saying so for two seconds by now, and asking git to say it
+    /// again is a second answer to a question already answered.
+    ///
+    /// What was kept is named rather than counted, and named in the channel
+    /// for a thing that did not happen: `kept 1` left a person hunting the
+    /// wall for which one, which is the whole of what they wanted to know.
+    fn clear(&mut self, root: &Path, ids: &[String], held: &[String]) {
+        let mut cleared = 0;
+        let mut kept: Vec<&str> = Vec::new();
         let mut trouble = None;
         for id in ids {
             let Some(view) = self.list.agent_by_id(id) else {
                 continue;
             };
+            if held.iter().any(|marked| marked == id) {
+                kept.push(id.as_str());
+                continue;
+            }
             let mut out = Vec::new();
             match verbs::sweep::take_landed(root, &view.meta, &mut out) {
                 Ok(()) => match String::from_utf8_lossy(&out)
                     .lines()
                     .any(|line| line.starts_with("kept "))
                 {
-                    true => kept += 1,
+                    // A tree that took work on between the two presses, which
+                    // the taker caught and this did not.
+                    true => kept.push(id.as_str()),
                     false => cleared += 1,
                 },
                 Err(e) => {
@@ -2729,10 +2769,15 @@ impl Screen {
 
         self.notice = Some(match trouble {
             Some(e) => Notice::Failed(e),
-            None => Notice::Advice(match kept {
-                0 => format!("cleared {cleared}"),
-                kept => format!("cleared {cleared} · kept {kept}"),
-            }),
+            None => match kept.as_slice() {
+                [] => Notice::Advice(format!("cleared {cleared}")),
+                [one] => Notice::Refused(format!("cleared {cleared} · kept {one}: {HOLDS}")),
+                many => Notice::Refused(format!(
+                    "cleared {cleared} · kept {}: {}",
+                    many.len(),
+                    many.join(", ")
+                )),
+            },
         });
         self.acted();
     }
@@ -3020,6 +3065,21 @@ fn kept_a_tree(outcome: Result<(String, bool)>) -> Option<Notice> {
         Ok((said, false)) => Notice::Advice(said),
         Err(e) => Notice::Failed(format!("{e:#}")),
     })
+}
+
+/// Whether the tree behind a row `c` found still holds work no commit has.
+///
+/// Asked on the press, of the rows the sweep found and no others: it is a git
+/// call per tree, and the wall is read again every second. A tree amx cannot
+/// get an answer about counts as holding work, which is the reading
+/// [`sweep::take_landed`](verbs::sweep::take_landed) takes of the same
+/// question — the two have to agree, or the row says one thing and the press
+/// after it does another.
+fn holding(view: &View) -> bool {
+    view.meta
+        .worktree
+        .as_deref()
+        .is_some_and(|tree| tree.exists() && crate::worktree::is_dirty(tree).unwrap_or(true))
 }
 
 /// The card for one agent: what it is asking and the answers it is offering;
@@ -7096,7 +7156,7 @@ mod tests {
     }
 
     #[test]
-    fn keys_c_keeps_a_tree_that_holds_work_no_commit_has_and_says_how_many() {
+    fn keys_c_marks_a_tree_that_holds_work_no_commit_has_and_names_it_when_it_keeps_it() {
         let root = TempDir::new().unwrap();
         let repo = a_repo();
         let config = Config::default();
@@ -7110,15 +7170,93 @@ mod tests {
         let mut screen = watching(vec![held, gone]);
 
         screen.act(c(), root.path(), &config, None).unwrap();
+        let arm = screen.arm.as_ref().expect("the arm the press left");
+        assert_eq!(
+            arm.held,
+            ["fix-login-a1b".to_string()],
+            "the press asked each tree it found whether it holds work, and only \
+             the one that does is marked as the press after it will leave it"
+        );
+
         screen.act(c(), root.path(), &config, None).unwrap();
-        let Some(Notice::Advice(said)) = &screen.notice else {
-            panic!("nothing said about what went and what stayed")
+        let Some(Notice::Refused(said)) = &screen.notice else {
+            panic!("a row the press passed by was said as though it had gone")
         };
-        assert_eq!(said, "cleared 1 · kept 1");
+        assert_eq!(
+            said,
+            "cleared 1 · kept fix-login-a1b: holds work no commit has"
+        );
         assert_eq!(
             crate::store::list(root.path()).unwrap(),
             ["fix-login-a1b".to_string()],
             "the record that names the tree stays with it"
+        );
+    }
+
+    /// The row said what the second press would do, so the second press does
+    /// it: a tree tidied inside the two-second window is still passed by,
+    /// because the sweep is not asked about it twice.
+    #[test]
+    fn keys_c_passes_by_a_row_it_marked_whatever_the_tree_holds_by_the_second_press() {
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let config = Config::default();
+        let held = has_landed(root.path(), repo.path(), "fix-login-a1b");
+        let loose = held.meta.worktree.as_deref().unwrap().join("login.rs");
+        std::fs::write(&loose, "fn login() {}\n").unwrap();
+        let mut screen = watching(vec![held]);
+
+        screen.act(c(), root.path(), &config, None).unwrap();
+        std::fs::remove_file(&loose).unwrap();
+        screen.act(c(), root.path(), &config, None).unwrap();
+        assert_eq!(
+            crate::store::list(root.path()).unwrap(),
+            ["fix-login-a1b".to_string()],
+            "the row the press was told to leave alone was never handed to the taker"
+        );
+        let Some(Notice::Refused(said)) = &screen.notice else {
+            panic!("nothing said about the row the press passed by")
+        };
+        assert_eq!(
+            said,
+            "cleared 0 · kept fix-login-a1b: holds work no commit has"
+        );
+    }
+
+    #[test]
+    fn keys_c_counts_the_trees_it_keeps_when_more_than_one_holds_work() {
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let config = Config::default();
+        let holding: Vec<View> = ["fix-login-a1b", "port-importer-b2c"]
+            .into_iter()
+            .map(|id| {
+                let view = has_landed(root.path(), repo.path(), id);
+                std::fs::write(
+                    view.meta.worktree.as_deref().unwrap().join("login.rs"),
+                    "fn login() {}\n",
+                )
+                .unwrap();
+                view
+            })
+            .collect();
+        let mut screen = watching(holding);
+
+        screen.act(c(), root.path(), &config, None).unwrap();
+        screen.act(c(), root.path(), &config, None).unwrap();
+        let Some(Notice::Refused(said)) = &screen.notice else {
+            panic!("nothing said about the rows the press passed by")
+        };
+        let Some(names) = said.strip_prefix("cleared 0 · kept 2: ") else {
+            panic!("more than one kept is a count and then the names: {said}")
+        };
+        let mut named: Vec<&str> = names.split(", ").collect();
+        named.sort_unstable();
+        assert_eq!(named, ["fix-login-a1b", "port-importer-b2c"]);
+        assert_eq!(
+            crate::store::list(root.path()).unwrap().len(),
+            2,
+            "and neither record went"
         );
     }
 

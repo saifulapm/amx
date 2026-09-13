@@ -105,6 +105,10 @@ pub(super) struct Moment<'a> {
     /// Why each of those rows was armed, in the order `armed` is in, where the
     /// press had a reason to give. Empty where it had none.
     pub(super) why: &'a [String],
+    /// Which of those rows the second press will leave where they are, because
+    /// the tree behind them holds work no commit has. A row asks whether it is
+    /// among them, since most presses find none.
+    pub(super) held: &'a [String],
     /// Whether a heading armed them, which is what the armed rows say the
     /// press after this one would do. One arm at a time, so it is a fact about
     /// the frame rather than about each row.
@@ -310,6 +314,9 @@ fn row(
     let armed = moment.armed.iter().position(|id| id == view.id());
     let said = match armed {
         Some(at) => match moment.why.get(at) {
+            Some(why) if moment.held.iter().any(|id| id == view.id()) => {
+                format!("{HOLDS} · {why}")
+            }
             Some(why) => format!("{CLEARS} · {why}"),
             None if moment.swept => AGAIN_ALL.to_string(),
             None => AGAIN.to_string(),
@@ -407,6 +414,18 @@ const AGAIN_ALL: &str = "ctrl+x again stops and forgets";
 /// end of the sentence, and the end can be the reason, which the card still
 /// holds; it cannot be the half that says what the next press does.
 const CLEARS: &str = "c again clears";
+
+/// And what a row `c` found holding work no commit has says instead, which is
+/// why rather than what next: the press after this one goes past it.
+///
+/// The sweep keeps such a tree and the record that names it, so the row would
+/// still be on the wall after the second press. Saying `c again clears` over
+/// it promises something that will not happen — and the reason it will not is
+/// the one thing worth reading, since it is work somebody has not committed.
+///
+/// The notice the second press leaves says the same sentence about the same
+/// rows, which is why it is one constant and not two.
+pub(in crate::tui) const HOLDS: &str = "holds work no commit has";
 
 /// How wide the pull request column has to be, which is the one column of a
 /// row the design does not fix: the widest label anybody on the screen is
@@ -1027,6 +1046,7 @@ mod tests {
             swept: false,
             cleared: false,
             why: Vec::new(),
+            held: Vec::new(),
             at: Instant::now(),
         });
         let drawn = painted(&screen, size);
@@ -1082,6 +1102,7 @@ mod tests {
             swept: false,
             cleared: true,
             why: vec!["#12 merged".to_string()],
+            held: Vec::new(),
             at: Instant::now(),
         });
         let drawn = painted(&screen, size);
@@ -1113,6 +1134,52 @@ mod tests {
     }
 
     #[test]
+    fn view_says_on_a_row_c_found_holding_work_that_the_press_after_keeps_it() {
+        let size = (72, 8);
+        let mut screen = showing(
+            vec![
+                view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
+                view(
+                    "port-importer-b2c",
+                    Phase::Done,
+                    Some("wrote the tests"),
+                    90,
+                ),
+            ],
+            None,
+        );
+        screen.arm = Some(Arm {
+            ids: vec!["fix-login-a1b".to_string(), "port-importer-b2c".to_string()],
+            swept: false,
+            cleared: true,
+            why: vec!["#12 merged".to_string(), "#13 merged".to_string()],
+            held: vec!["fix-login-a1b".to_string()],
+            at: Instant::now(),
+        });
+        let drawn = painted(&screen, size);
+        assert!(
+            drawn[2].contains("holds work no commit has · #12 merged"),
+            "the row says what the press after this one will not do to it: {:?}",
+            drawn[2]
+        );
+        assert!(
+            !drawn[2].contains("c again clears"),
+            "and does not promise the press that clears, which will pass it by: {:?}",
+            drawn[2]
+        );
+        assert_eq!(
+            word_colour(&screen, size, 2, "holds work no commit has"),
+            theme().waiting,
+            "in the colour every armed row wears"
+        );
+        assert!(
+            drawn[3].contains("c again clears · #13 merged"),
+            "and the rows with nothing uncommitted in them say what they said: {:?}",
+            drawn[3]
+        );
+    }
+
+    #[test]
     fn view_says_on_a_row_a_heading_armed_that_the_press_after_stops_it_too() {
         let size = (60, 8);
         let mut screen = showing(
@@ -1132,6 +1199,7 @@ mod tests {
             swept: true,
             cleared: false,
             why: Vec::new(),
+            held: Vec::new(),
             at: Instant::now(),
         });
         let drawn = painted(&screen, size);

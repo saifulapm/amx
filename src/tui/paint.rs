@@ -67,6 +67,9 @@ pub use header::title;
 #[cfg(test)]
 pub(super) use help::HELP;
 pub use input::Notice;
+/// The sentence an armed row wears when the press after it will pass it by,
+/// which the notice that press leaves says about the same rows.
+pub(super) use wall::HOLDS;
 
 /// Where the last frame put things, written back by a draw that is otherwise
 /// a pure reading of the view, because the mouse arrives in the screen's own
@@ -226,6 +229,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
                 beat: screen.beat,
                 armed: screen.armed(),
                 why: screen.why(),
+                held: screen.held(),
                 swept: screen.swept(),
                 hover: screen.hover,
                 lent: screen.lent.as_deref(),
