@@ -4,6 +4,11 @@
 //! on a question, and one that has finished. Everything else is on the wall
 //! and in `ls`.
 //!
+//! A notice goes by the roads the `notifications` key names: the desktop's own
+//! notifier, the terminals the person is sitting at, both of them or neither.
+//! The second road is for a person over SSH, who has a terminal there and a
+//! desktop somewhere else entirely.
+//!
 //! Posting is best effort by design. The hook path is measured in fractions of
 //! a millisecond and runs while an agent waits on it, so a desktop with no
 //! notifier — or one that is slow to answer — costs nothing: the notifier is
@@ -20,7 +25,7 @@
 //! looking, and to be left alone once started.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::config::Delivery;
@@ -122,10 +127,13 @@ pub fn post(notice: Option<&Notice>, delivery: Delivery, errand: Option<&Errand>
 /// Both roads, in the one process that has time for them.
 fn deliver(notice: Option<&Notice>, delivery: Delivery, errand: Option<&Errand>) {
     let watched = watched(var(SERVER_ENV).as_deref(), var(PANE_ENV).as_deref());
-    if let Some(notice) = notice.filter(|_| !watched)
-        && delivery.desktop()
-    {
-        raise(notice);
+    if let Some(notice) = notice.filter(|_| !watched) {
+        if delivery.desktop() {
+            raise(notice);
+        }
+        if delivery.terminal() {
+            tell_terminals(notice);
+        }
     }
     if let Some(errand) = errand {
         start(errand, Some(watched));
@@ -278,6 +286,81 @@ fn notifier(notice: &Notice) -> Option<Command> {
 /// A string as AppleScript will read it.
 fn applescript(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Write the notice to every terminal the person is sitting at.
+///
+/// A desktop is not always there to post to: somebody working over SSH has a
+/// terminal and nothing behind it, and the notifier on the machine amx is
+/// running on would be raising notices on a screen nobody is at. What that
+/// person does have is a tmux around the view, and a tmux client is a terminal
+/// amx can write to.
+///
+/// Every client of every server of theirs, because the view is on one server
+/// and the agents may be on another, and each terminal once: two servers
+/// listing the same one is one person, who does not want the sentence twice.
+fn tell_terminals(notice: &Notice) {
+    let bytes = osc_notice(notice);
+    for tty in terminals(crate::tmux::servers_here()) {
+        tell(&tty, &bytes);
+    }
+}
+
+/// The terminals of everybody sitting at one of these servers, each named once.
+fn terminals(servers: Vec<Server>) -> Vec<PathBuf> {
+    let mut ttys: Vec<PathBuf> = Vec::new();
+    for server in servers {
+        for tty in server.client_ttys() {
+            if !ttys.contains(&tty) {
+                ttys.push(tty);
+            }
+        }
+    }
+    ttys
+}
+
+/// The notice as the escape sequence a terminal reads as a notification: OSC
+/// 777, which is what tmux, foot, wezterm and the rest took from urxvt.
+///
+/// Both fields are made inert first. The title and the body are an agent's own
+/// text — a question it printed, a command line somebody wrote — and they are
+/// travelling inside an escape sequence, where a stray escape would start
+/// another and a stray bell would end this one early. Every C0 control and the
+/// delete go; the semicolon of the title becomes a comma, because it is what
+/// tells the title from the body.
+pub fn osc_notice(notice: &Notice) -> Vec<u8> {
+    let mut bytes = b"\x1b]777;notify;".to_vec();
+    bytes.extend(inert(&notice.title.replace(';', ",")));
+    bytes.push(b';');
+    bytes.extend(inert(&notice.body));
+    bytes.push(0x07);
+    bytes
+}
+
+/// One field of that sequence: the bytes a terminal would read as instruction
+/// taken out, and whatever the text is spelled in left alone.
+fn inert(text: &str) -> Vec<u8> {
+    text.bytes()
+        .filter(|byte| *byte >= 0x20 && *byte != 0x7f)
+        .collect()
+}
+
+/// Write the sequence to one terminal, and say nothing about it either way.
+///
+/// Write only, because nothing here reads what the person is typing. No
+/// controlling terminal, because the notifier is a session leader by then and
+/// opening a tty would otherwise hand it one. Non-blocking, because a terminal
+/// whose reader has stopped must not hold the notifier open on it.
+pub fn tell(tty: &Path, bytes: &[u8]) {
+    use std::os::unix::fs::OpenOptionsExt;
+    let Ok(mut terminal) = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(nix::libc::O_NOCTTY | nix::libc::O_NONBLOCK)
+        .open(tty)
+    else {
+        return;
+    };
+    let _ = terminal.write_all(bytes);
 }
 
 #[cfg(test)]
@@ -458,6 +541,88 @@ mod tests {
             std::fs::read_to_string(&said).is_ok_and(|said| said.contains(']'))
         });
         assert_eq!(std::fs::read_to_string(&said).unwrap(), "[unset]\n");
+    }
+
+    #[test]
+    fn notify_an_osc_notice_is_one_escape_and_nothing_the_text_can_add_to() {
+        let notice = Notice::waiting("fix-login-a1b", Some("Run the migration?"));
+        assert_eq!(
+            osc_notice(&notice),
+            b"\x1b]777;notify;fix-login-a1b needs an answer;Run the migration?\x07".to_vec()
+        );
+
+        // A question is the agent's own text, and it travels inside an escape
+        // sequence: nothing in it may end that sequence or start another.
+        let notice = Notice {
+            title: "a;b\u{1b}]0;stolen\u{7}".to_string(),
+            body: "line\nand\u{7}more\u{7f}".to_string(),
+        };
+        assert_eq!(
+            osc_notice(&notice),
+            b"\x1b]777;notify;a,b]0,stolen;lineandmore\x07".to_vec(),
+            "the semicolons of the title are the fields, and the controls go"
+        );
+
+        // What is not a control character is left as it was written.
+        let notice = Notice {
+            title: "héllo".to_string(),
+            body: "naïve".to_string(),
+        };
+        assert_eq!(
+            osc_notice(&notice),
+            format!("\u{1b}]777;notify;héllo;naïve\u{7}").into_bytes()
+        );
+    }
+
+    #[test]
+    fn notify_a_terminal_is_written_to_once_and_an_error_is_silence() {
+        let dir = TempDir::new().unwrap();
+        let tty = dir.path().join("tty");
+        std::fs::write(&tty, "").unwrap();
+
+        tell(&tty, b"\x1b]777;notify;one;two\x07");
+        assert_eq!(std::fs::read(&tty).unwrap(), b"\x1b]777;notify;one;two\x07");
+
+        // A terminal that has gone since it was listed is nothing to report
+        // and nothing to create in its place.
+        let gone = dir.path().join("gone");
+        tell(&gone, b"x");
+        assert!(!gone.exists());
+    }
+
+    #[test]
+    fn notify_a_terminal_two_servers_list_is_named_once() {
+        let agent = TestServer::new();
+        let (session, _) = agent.server.new_session(&idle()).unwrap();
+
+        let watcher = TestServer::new();
+        let attach = [
+            "tmux",
+            "-f",
+            "/dev/null",
+            "-L",
+            agent.socket.as_str(),
+            "attach-session",
+            "-t",
+            session.as_str(),
+        ];
+        watcher
+            .server
+            .new_session(&Spawn {
+                command: &attach,
+                ..Spawn::default()
+            })
+            .unwrap();
+        until("somebody to attach to the agent", || {
+            !agent.server.client_ttys().is_empty()
+        });
+
+        let told = terminals(vec![agent.server.clone(), agent.server.clone()]);
+        assert_eq!(
+            told,
+            agent.server.client_ttys(),
+            "one terminal, however many servers are listing it"
+        );
     }
 
     #[test]
