@@ -13,9 +13,17 @@
 //! already looking at. Who is looking is a question for tmux, and the hook
 //! makes no tmux calls, so the notifier forks away from the hook first and
 //! asks on its own time.
+//!
+//! That fork is also what starts an [`Errand`] — the command somebody asked to
+//! have run when an agent reaches a moment. The two go together because they
+//! want the same things: to be off the hook path, to know whether anybody was
+//! looking, and to be left alone once started.
 
+use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use crate::config::Delivery;
 use crate::store::Phase;
 use crate::tmux::{PaneId, Server};
 
@@ -59,28 +67,108 @@ impl Notice {
     }
 }
 
-/// Post a notice, if this machine has anywhere to post it and anybody still
-/// needs telling.
+/// A command a moment is worth running, ready to start — see
+/// [`crate::errand`], which is what decides there is one and fills this in.
+///
+/// It travels this far rather than being read here because the fork that
+/// starts it is the fork the notice already pays for: the hook gets one child
+/// for both, and everything it needs was worked out on the near side of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Errand {
+    /// The command line, as the config file holds it, for `sh -c`.
+    pub command: String,
+    /// Where it runs: the agent's tree, or the directory it was started in.
+    pub dir: PathBuf,
+    /// What it is told, beyond whatever this process inherited.
+    pub env: Vec<(String, String)>,
+    /// The event that moved the agent, as one JSON line.
+    pub stdin: Vec<u8>,
+}
+
+/// Tell the person what happened, and run what they asked to have run.
 ///
 /// The deciding is a child's work. Whether somebody is already looking at the
 /// agent's pane is a question for tmux, and this runs on the hook path, where
 /// the pane being asked about is the one waiting for the hook to return. So
 /// the notifier forks away first and the hook comes straight back.
 ///
-/// A machine that cannot fork posts without asking: one notification too many
-/// is the cheap way to be wrong.
-pub fn post(notice: &Notice) {
+/// Asked once on the far side of the fork and spent on both: a notice is not
+/// posted about a screen its person is looking at, and an errand is told what
+/// the answer was rather than asking again.
+///
+/// A machine that cannot fork does the same inline. Whoever called this is
+/// then waiting on somebody's desktop, which is the cost of the fork not being
+/// there; one notification too many is the cheap way to be wrong.
+pub fn post(notice: Option<&Notice>, delivery: Delivery, errand: Option<&Errand>) {
+    // A notice nothing will deliver is not a reason to fork, and neither is a
+    // moment nobody wrote a command for.
+    let notice = notice.filter(|_| delivery.tells());
+    if notice.is_none() && errand.is_none() {
+        return;
+    }
+
     match detach() {
         Fork::Hook => (),
         Fork::Notifier => {
-            if !watched(var(SERVER_ENV).as_deref(), var(PANE_ENV).as_deref()) {
-                raise(notice);
-            }
+            deliver(notice, delivery, errand);
             // This process is a copy of the hook, and the hook's work is
             // already done. Leaving by any other door would do it twice.
             unsafe { nix::libc::_exit(crate::exit::OK) };
         }
-        Fork::Neither => raise(notice),
+        Fork::Neither => deliver(notice, delivery, errand),
+    }
+}
+
+/// Both roads, in the one process that has time for them.
+fn deliver(notice: Option<&Notice>, delivery: Delivery, errand: Option<&Errand>) {
+    let watched = watched(var(SERVER_ENV).as_deref(), var(PANE_ENV).as_deref());
+    if let Some(notice) = notice.filter(|_| !watched)
+        && delivery.desktop()
+    {
+        raise(notice);
+    }
+    if let Some(errand) = errand {
+        start(errand, Some(watched));
+    }
+}
+
+/// Run an errand and leave it to it.
+///
+/// Through `sh`, because the key holds a command line. The event goes in on
+/// stdin whole: it is the vendor's own JSON and an argv is the one place it
+/// could be read as syntax. What it says goes nowhere — somebody who wants a
+/// log of it redirects in the command they wrote.
+///
+/// Nothing waits on it. The line is a few hundred bytes against a pipe that
+/// holds pages of them, so writing it cannot block, and the handle goes at the
+/// end of this, which is what tells the command the line is all of it.
+///
+/// `watched` is what the pane was doing when the moment arrived, where
+/// anybody asked. `None` from a caller with no pane to ask about leaves the
+/// variable off rather than guessing at it.
+pub fn start(errand: &Errand, watched: Option<bool>) {
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(&errand.command)
+        .current_dir(&errand.dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    for (name, value) in &errand.env {
+        command.env(name, value);
+    }
+    if let Some(watched) = watched {
+        command.env(crate::errand::WATCHED_ENV, if watched { "1" } else { "0" });
+    }
+
+    // A command that is not there, or a fork this machine cannot spare, is
+    // silence: this is somebody's errand, not the agent's work.
+    let Ok(mut child) = command.spawn() else {
+        return;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&errand.stdin);
     }
 }
 
@@ -199,6 +287,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
+    use tempfile::TempDir;
 
     /// A private tmux server that goes when the test does.
     struct TestServer {
@@ -315,6 +404,60 @@ mod tests {
         until("somebody to attach to the agent", || {
             watched(Some(&inside), Some(pane.as_str()))
         });
+    }
+
+    #[test]
+    fn notify_an_errand_is_handed_the_event_and_left_to_run() {
+        // The starter does not wait for what it starts, and this command
+        // cannot finish until the test makes the file it is watching for —
+        // which the test only reaches once `start` has returned to it.
+        let dir = TempDir::new().unwrap();
+        let errand = Errand {
+            command: "{ cat; until [ -e go ]; do sleep 0.02; done; \
+                      echo \"$AMX_ID $AMX_STATE $AMX_WATCHED\"; } > said"
+                .to_string(),
+            dir: dir.path().to_path_buf(),
+            env: vec![
+                ("AMX_ID".to_string(), "fix-login-a1b".to_string()),
+                ("AMX_STATE".to_string(), "waiting".to_string()),
+            ],
+            stdin: b"{\"kind\":\"Notification\"}\n".to_vec(),
+        };
+
+        start(&errand, Some(true));
+        std::fs::write(dir.path().join("go"), "").unwrap();
+
+        let said = dir.path().join("said");
+        until("the errand to say what it was handed", || {
+            std::fs::read_to_string(&said).is_ok_and(|said| said.contains("fix-login-a1b"))
+        });
+        assert_eq!(
+            std::fs::read_to_string(&said).unwrap(),
+            "{\"kind\":\"Notification\"}\nfix-login-a1b waiting 1\n",
+            "the event arrives whole, and the stdin handle is let go after it"
+        );
+    }
+
+    #[test]
+    fn notify_an_errand_off_the_hook_path_is_told_nothing_about_the_pane() {
+        // `stop` runs in a terminal of its own and asks tmux nothing about the
+        // agent's pane, so the variable is absent rather than answered `0`.
+        let dir = TempDir::new().unwrap();
+        let errand = Errand {
+            command: "cat > /dev/null; echo \"[${AMX_WATCHED-unset}]\" > said".to_string(),
+            dir: dir.path().to_path_buf(),
+            env: Vec::new(),
+            stdin: b"{}\n".to_vec(),
+        };
+
+        start(&errand, None);
+
+        let said = dir.path().join("said");
+        until("the errand to say what it was told", || said.exists());
+        until("the errand to finish its line", || {
+            std::fs::read_to_string(&said).is_ok_and(|said| said.contains(']'))
+        });
+        assert_eq!(std::fs::read_to_string(&said).unwrap(), "[unset]\n");
     }
 
     #[test]

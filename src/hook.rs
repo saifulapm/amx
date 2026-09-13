@@ -274,11 +274,7 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
     }
     drop(writer);
 
-    if let Some(notice) = notice
-        && config.notifications.tells()
-    {
-        notify::post(&notice);
-    }
+    notify::post(notice.as_ref(), config.notifications, None);
 
     // The turn is over and the vendor is sitting at its prompt, holding the
     // couple of hundred megabytes it worked in. Nothing is watching for the
@@ -384,11 +380,8 @@ fn record_exit(agent: &Agent, code: i32, config: &Config) -> Result<()> {
     })?;
     drop(writer);
 
-    if config.notifications.tells()
-        && let Some(notice) = Notice::finished(agent.id(), state.state, state.exit)
-    {
-        notify::post(&notice);
-    }
+    let notice = Notice::finished(agent.id(), state.state, state.exit);
+    notify::post(notice.as_ref(), config.notifications, None);
     Ok(())
 }
 

@@ -5,6 +5,7 @@ mod cockpit;
 mod config;
 mod conversation;
 mod derive;
+mod errand;
 mod gc;
 
 // Parts of these are reached only by the tests that pin them: a store field
