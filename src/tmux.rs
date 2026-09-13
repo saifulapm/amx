@@ -465,6 +465,19 @@ impl Server {
             .is_ok_and(|printed| watched_flags(&printed))
     }
 
+    /// The terminals of everybody attached to this server, one per client.
+    ///
+    /// `list-clients` starts no server of its own, so a socket with nothing
+    /// behind it answers with a failure rather than with a fresh and empty
+    /// server. That failure is no clients, the same as a server sitting there
+    /// with nobody attached: whoever asks this is looking for somebody to talk
+    /// to, and both answers are that there is nobody here.
+    pub fn client_ttys(&self) -> Vec<PathBuf> {
+        self.run(&["list-clients", "-F", "#{client_tty}"])
+            .map(|listed| listed.lines().map(PathBuf::from).collect())
+            .unwrap_or_default()
+    }
+
     /// What is on the pane's screen now, sanitized.
     pub fn capture(&self, pane: &PaneId) -> Result<String> {
         let raw = self.run(&["capture-pane", "-p", "-J", "-t", pane.as_str()])?;
@@ -684,6 +697,47 @@ impl Server {
         ])?;
         Ok(())
     }
+}
+
+/// Every tmux server of this person's, addressed by the socket it listens on.
+///
+/// tmux keeps one socket directory per person — `$TMUX_TMPDIR`, else `/tmp`,
+/// and `tmux-<uid>` under it — and a person may have several servers in there
+/// at once: the one their terminal is in, one an SSH session started, the ones
+/// amx names. Whoever calls this has something to say to whoever is sitting at
+/// any of them.
+///
+/// A socket file is not a server. It outlives the server that made it where
+/// one was killed outright, and only the next call on it can say whether
+/// anybody is still behind it.
+pub fn servers_here() -> Vec<Server> {
+    sockets_in(&socket_dir())
+        .into_iter()
+        .map(Server::at)
+        .collect()
+}
+
+/// The directory tmux keeps this person's sockets in. An empty `$TMUX_TMPDIR`
+/// is no directory named, which is what tmux itself reads it as.
+fn socket_dir() -> PathBuf {
+    let tmp = std::env::var_os("TMUX_TMPDIR")
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+    tmp.join(format!("tmux-{}", nix::unistd::Uid::current()))
+}
+
+/// The socket files in a directory, and nothing else that is sitting in it: a
+/// person's own files land there too, and tmux is addressed at sockets.
+fn sockets_in(dir: &Path) -> Vec<PathBuf> {
+    use std::os::unix::fs::FileTypeExt;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_socket()))
+        .map(|entry| entry.path())
+        .collect()
 }
 
 /// The directory and command shared by every creating verb.
@@ -1784,6 +1838,66 @@ mod tests {
                 "#{client_tty}",
             ])
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn tmux_a_server_says_which_terminals_are_looking_at_it() {
+        let server = TestServer::new();
+        let (session, _) = server.new_session(&idle()).unwrap();
+        assert!(
+            server.client_ttys().is_empty(),
+            "a session nobody is attached to has no terminal at the far end of it"
+        );
+
+        a_client_on(&server, &session);
+        until("a client on the session", || {
+            !client_on(&server, &session).is_empty()
+        });
+        assert_eq!(
+            server.client_ttys(),
+            vec![PathBuf::from(client_on(&server, &session))]
+        );
+    }
+
+    #[test]
+    fn tmux_a_server_that_will_not_answer_lists_no_terminals() {
+        // Nothing is listening on the socket, and asking must neither fail
+        // loudly nor start a server to be told there is nobody on it.
+        let server = TestServer::new();
+        assert!(server.client_ttys().is_empty());
+        assert!(!server.is_alive(), "the question started nothing");
+    }
+
+    #[test]
+    fn tmux_the_servers_here_are_the_sockets_under_the_socket_directory() {
+        let server = TestServer::new();
+        server.new_session(&idle()).unwrap();
+        let socket = PathBuf::from(
+            server
+                .run(&["display-message", "-p", "#{socket_path}"])
+                .unwrap(),
+        );
+
+        let listed = servers_here();
+        let listed: Vec<&Socket> = listed.iter().map(Server::socket).collect();
+        assert!(
+            listed.contains(&&Socket::Path(socket)),
+            "this server is one of the person's: {listed:?}"
+        );
+    }
+
+    #[test]
+    fn tmux_only_a_socket_in_the_socket_directory_is_a_server() {
+        // Whatever else is sitting in the directory — a log somebody left, a
+        // directory of their own — is not something to address tmux at.
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("notes"), "").unwrap();
+        std::fs::create_dir(dir.path().join("inner")).unwrap();
+        let socket = dir.path().join("default");
+        let _listening = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+
+        assert_eq!(sockets_in(dir.path()), vec![socket]);
+        assert!(sockets_in(&dir.path().join("nowhere")).is_empty());
     }
 
     #[test]
