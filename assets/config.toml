@@ -2,7 +2,7 @@
 #
 # Copy this to ~/.config/amx/config.toml and change what you want changed. A
 # copy nobody edits runs exactly as no file at all would: every value here is
-# the one amx uses when the key is left out. Seventeen keys and a table per
+# the one amx uses when the key is left out. Twenty-two keys and a table per
 # harness; a key amx has never heard of is warned about and ignored, and a file
 # it cannot parse falls back to these defaults with a warning, because losing
 # an agent to a stray comma is the worse outcome.
@@ -30,9 +30,12 @@ max_agents = 5
 # one spawn.
 worktrees = true
 
-# Desktop notifications on the transitions worth interrupting for: an agent
-# that finished, or one stuck waiting on an answer.
-notifications = true
+# Where a notice about the transitions worth interrupting for goes: an agent
+# that finished, or one stuck waiting on an answer. "desktop" is the desktop's
+# own notifier, "terminal" writes the notice to every terminal you are sitting
+# at, "both" does the two and "off" does neither. true and false are still
+# written and still mean desktop and off.
+notifications = "desktop"
 
 # Answer the vendor's folder-trust screen for the worktrees amx cuts. For
 # claude that writes an entry in claude's own trust store, which outlives the
@@ -99,6 +102,23 @@ park_after = 3600
 # patch is git's own, and so it is down a pipe or under --stat whatever you
 # write here.
 # diff = "delta --paging=always"
+
+# What runs when an agent reaches a moment: waiting on a question, back at its
+# prompt, finished, failed, or stopped by you. Each is a command run through
+# sh -c in the agent's worktree, or where the agent runs when it has none,
+# detached and never waited for, with AMX_ID, AMX_STATE, AMX_DIR,
+# AMX_AGENT_DIR, AMX_NESTED and AMX_WORKTREE where there is a tree, and the
+# event that moved the agent on stdin as one JSON line. The four a hook writes
+# also carry AMX_WATCHED, 1 when somebody is attached to the agent's pane.
+#
+# Five flat keys rather than one table, so a project file can lay its own over
+# yours a moment at a time. Nothing is captured: what a command prints goes
+# nowhere, and a log is a redirect you write into the command yourself.
+# on_waiting = "curl -sX POST https://hooks.example.com/amx -d @-"
+# on_idle = "echo $AMX_ID idle >> ~/amx.log"
+# on_done = "notify-send 'amx' \"$AMX_ID $AMX_STATE\""
+# on_failed = "gh issue comment 41 -b \"$AMX_ID failed\""
+# on_stopped = "echo $AMX_ID stopped >> ~/amx.log"
 
 # One table per harness, named after the command that harness runs. There is a
 # table to be had for each harness amx has an entry for, claude and pi today,

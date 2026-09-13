@@ -1502,19 +1502,27 @@ through `notify-send`, or `osascript` on macOS. Nothing is posted about a pane
 its person is already looking at, and a machine with no notifier costs nothing:
 the notice is handed over and never waited for.
 
+Where the notice goes is the `notifications` key. `"desktop"` is the notifier
+above. `"terminal"` writes it to the terminals you are sitting at — every
+client of every tmux server under your socket directory — so a notice reaches
+you in a tmux of your own at the far end of an SSH session, where a desktop has
+nothing to post to. `"both"` does the two and `"off"` does neither. The key was
+a bool before it was these words, and `true` and `false` still read as desktop
+and off.
+
 ## Configuration
 
-`~/.config/amx/config.toml`, seventeen keys and a table per harness:
+`~/.config/amx/config.toml`, twenty-two keys and a table per harness:
 
 ```toml
-agent = "claude"        # the command a new agent runs: claude, pi or your own
-max_agents = 5          # how many live agents in a project before `new` refuses
-max_total = 10          # a ceiling over every project on the machine
-worktrees = true        # give each agent its own worktree in a repository
-notifications = true    # desktop notification when one needs you or finishes
-trust = false           # answer claude's folder-trust screen for trees amx cuts
-park_after = 3600       # seconds an idle agent nobody is watching keeps its pane
-theme = "default"       # which palette the view paints in
+agent = "claude"          # the command a new agent runs: claude, pi or your own
+max_agents = 5            # how many live agents in a project before `new` refuses
+max_total = 10            # a ceiling over every project on the machine
+worktrees = true          # give each agent its own worktree in a repository
+notifications = "desktop" # to the desktop; also "terminal", "both", "off"
+trust = false             # answer claude's folder-trust screen for trees amx cuts
+park_after = 3600         # seconds an idle agent nobody is watching keeps its pane
+theme = "default"         # which palette the view paints in
 
 # The dials. A key left out is a flag amx does not pass, which leaves the
 # choice to the vendor.
@@ -1535,6 +1543,13 @@ base = "main"
 # What reads the patch when `amx diff` has a terminal to draw on. Left out, the
 # patch is git's own.
 diff = "delta --paging=always"
+
+# What runs when an agent reaches a moment. Left out, nothing runs.
+on_waiting = "curl -sX POST https://hooks.example.com/amx -d @-"
+on_idle = "echo $AMX_ID idle >> ~/amx.log"
+on_done = "notify-send 'amx' \"$AMX_ID $AMX_STATE\""
+on_failed = "gh issue comment 41 -b \"$AMX_ID failed\""
+on_stopped = "echo $AMX_ID stopped >> ~/amx.log"
 ```
 
 A tree git has just cut is a clean checkout, so the first turn in it goes on an
@@ -1560,6 +1575,20 @@ in whatever else you read patches in, and amx is done when it is. A viewer
 that exits non-zero is a failure saying which command it was. Down a pipe
 or under `--stat` the patch is git's own whatever this says, so `amx diff
 fix-login-a1b | head` is unchanged.
+
+The five `on_` keys are what runs when an agent reaches a moment: `on_waiting`
+when it stops on a question, `on_idle` when a turn ends and it goes back to its
+prompt, `on_done` and `on_failed` on how its command exited, `on_stopped` when
+you stop it. Each is a command run through `sh -c` in the agent's worktree, or
+where the agent runs when it has none, detached and never waited for, so one
+that hangs holds nothing up. It runs with `AMX_ID`, `AMX_STATE` — the phase
+word `amx ls --json` prints — `AMX_DIR`, `AMX_AGENT_DIR`, `AMX_NESTED=1` and
+`AMX_WORKTREE` where there is a tree, and the event that moved the agent
+arrives on its stdin as one JSON line, the same line `events.jsonl` got. The
+four a hook writes also carry `AMX_WATCHED`: 1 when somebody is attached to the
+agent's pane, 0 when nobody is. What the command prints goes nowhere, so a log
+is a redirect you write into the command yourself. Five flat keys rather than
+one table, so a project's own file lays its over yours a moment at a time.
 
 Each harness amx has an entry for — claude and pi today — can have a table of
 its own, named after the command it runs:

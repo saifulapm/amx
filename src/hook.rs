@@ -275,7 +275,7 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
     drop(writer);
 
     if let Some(notice) = notice
-        && config.notifications
+        && config.notifications.tells()
     {
         notify::post(&notice);
     }
@@ -384,7 +384,7 @@ fn record_exit(agent: &Agent, code: i32, config: &Config) -> Result<()> {
     })?;
     drop(writer);
 
-    if config.notifications
+    if config.notifications.tells()
         && let Some(notice) = Notice::finished(agent.id(), state.state, state.exit)
     {
         notify::post(&notice);
@@ -790,7 +790,7 @@ mod tests {
     /// against whichever server the record it was written for happens to name.
     fn quiet() -> Config {
         Config {
-            notifications: false,
+            notifications: crate::config::Delivery::Off,
             park_after: 0,
             ..Config::default()
         }

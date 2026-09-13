@@ -1,4 +1,4 @@
-//! `~/.config/amx/config.toml` — seventeen keys and a table per harness — with a
+//! `~/.config/amx/config.toml` — twenty-two keys and a table per harness — with a
 //! project's own `<project>/.amx/config.toml` laid over it.
 //!
 //! Config is a convenience, never a gate: a file that cannot be read or
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 /// Every key the file may carry, beside the harness tables. Anything else is
 /// warned about and ignored.
-pub const KNOWN_KEYS: [&str; 17] = [
+pub const KNOWN_KEYS: [&str; 22] = [
     "agent",
     "max_agents",
     "max_total",
@@ -33,7 +33,80 @@ pub const KNOWN_KEYS: [&str; 17] = [
     "setup",
     "base",
     "diff",
+    "on_waiting",
+    "on_idle",
+    "on_done",
+    "on_failed",
+    "on_stopped",
 ];
+
+/// How far a notice about a transition goes.
+///
+/// The key was a bool before it was these four words, and both are still
+/// written: `true` is the desktop and `false` is nothing, so no file anybody
+/// has already written has changed its meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    Off,
+    Desktop,
+    Terminal,
+    Both,
+}
+
+impl Delivery {
+    /// Post through the desktop's own notifier.
+    pub fn desktop(&self) -> bool {
+        matches!(self, Self::Desktop | Self::Both)
+    }
+
+    /// Write the notice to the terminals the person is sitting at.
+    pub fn terminal(&self) -> bool {
+        matches!(self, Self::Terminal | Self::Both)
+    }
+
+    /// Whether a notice is delivered at all, by either road. What the callers
+    /// that have a notice to post ask before they go to the cost of one.
+    pub fn tells(&self) -> bool {
+        self.desktop() || self.terminal()
+    }
+}
+
+impl<'de> Deserialize<'de> for Delivery {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Wanted;
+
+        impl serde::de::Visitor<'_> for Wanted {
+            type Value = Delivery;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(r#"a bool, or "off", "desktop", "terminal" or "both""#)
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, yes: bool) -> Result<Delivery, E> {
+                Ok(if yes {
+                    Delivery::Desktop
+                } else {
+                    Delivery::Off
+                })
+            }
+
+            fn visit_str<E: serde::de::Error>(self, word: &str) -> Result<Delivery, E> {
+                match word {
+                    "off" => Ok(Delivery::Off),
+                    "desktop" => Ok(Delivery::Desktop),
+                    "terminal" => Ok(Delivery::Terminal),
+                    "both" => Ok(Delivery::Both),
+                    // A word amx has no delivery for is an error, the way a
+                    // key of the wrong type is: which of the four somebody
+                    // meant is not worth a guess.
+                    _ => Err(E::invalid_value(serde::de::Unexpected::Str(word), &self)),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(Wanted)
+    }
+}
 
 /// What one harness says about itself, in a table of its own named after the
 /// program it runs.
@@ -77,8 +150,10 @@ pub struct Config {
     pub max_total: Option<usize>,
     /// Give new agents their own git worktree.
     pub worktrees: bool,
-    /// Post desktop notifications on the transitions worth interrupting for.
-    pub notifications: bool,
+    /// Where a notice about the transitions worth interrupting for goes: the
+    /// desktop's notifier, the terminals the person is sitting at, both or
+    /// neither.
+    pub notifications: Delivery,
     /// Answer the vendor's folder-trust screen for the agents amx starts, so
     /// that one begins on its task instead of on a question nobody has to
     /// think about. Off until the person says so, the way the hooks stand
@@ -154,6 +229,22 @@ pub struct Config {
     /// Absent is git's own patch, which is also what a pipe gets whatever this
     /// says, so `amx diff fix-login-a1b | head` reads the same either way.
     pub diff: Option<String>,
+    /// What runs when an agent stops on a question somebody has to answer.
+    ///
+    /// One of five moments, each its own flat key rather than a table under
+    /// one name, so a project file lays its own over the person's a moment at
+    /// a time. Each is a shell command, run detached and never waited for in
+    /// the agent's tree, or where the agent runs when it has none, with what
+    /// moved the agent on its stdin.
+    pub on_waiting: Option<String>,
+    /// What runs when an agent's turn ends and it goes back to its prompt.
+    pub on_idle: Option<String>,
+    /// What runs when an agent's command finishes.
+    pub on_done: Option<String>,
+    /// What runs when an agent's command exits non-zero.
+    pub on_failed: Option<String>,
+    /// What runs when somebody stops an agent.
+    pub on_stopped: Option<String>,
     /// What each harness the file names says about itself, keyed by the
     /// program that harness runs.
     ///
@@ -182,7 +273,7 @@ impl Default for Config {
             max_agents: 5,
             max_total: None,
             worktrees: true,
-            notifications: true,
+            notifications: Delivery::Desktop,
             trust: false,
             model: None,
             permission: None,
@@ -195,6 +286,11 @@ impl Default for Config {
             setup: Vec::new(),
             base: None,
             diff: None,
+            on_waiting: None,
+            on_idle: None,
+            on_done: None,
+            on_failed: None,
+            on_stopped: None,
             harnesses: BTreeMap::new(),
         }
     }
@@ -525,7 +621,9 @@ mod tests {
         // No ceiling over the projects until somebody puts one there.
         assert_eq!(c.max_total, None);
         assert!(c.worktrees);
-        assert!(c.notifications);
+        // A notice goes to the desktop until somebody asks for the terminal
+        // too, which is what the key meant when it was a bool alone.
+        assert_eq!(c.notifications, Delivery::Desktop);
         assert!(!c.trust, "the vendor's own file wants a yes before a write");
         // Absent, not the word default: a dial nobody has turned is one amx
         // passes no flag for, and there is no value that says that.
@@ -547,6 +645,12 @@ mod tests {
         assert_eq!(c.base, None);
         // A patch is git's own until somebody names something to read it with.
         assert_eq!(c.diff, None);
+        // Nothing is run at a moment until somebody says what to run there.
+        assert_eq!(c.on_waiting, None);
+        assert_eq!(c.on_idle, None);
+        assert_eq!(c.on_done, None);
+        assert_eq!(c.on_failed, None);
+        assert_eq!(c.on_stopped, None);
         // No harness says anything about itself until a table of its own does.
         assert!(c.harnesses.is_empty());
     }
@@ -612,10 +716,10 @@ mod tests {
 
         let (c, _) = parse("worktrees = false").unwrap();
         assert!(!c.worktrees);
-        assert!(c.notifications);
+        assert_eq!(c.notifications, Delivery::Desktop);
 
         let (c, _) = parse("notifications = false").unwrap();
-        assert!(!c.notifications);
+        assert_eq!(c.notifications, Delivery::Off);
         assert!(c.worktrees);
 
         let (c, _) = parse("trust = true").unwrap();
@@ -683,6 +787,60 @@ mod tests {
         assert_eq!(c.diff.as_deref(), Some("delta --paging=always"));
         assert_eq!(c.base, None);
         assert!(w.is_empty(), "{w:?}");
+
+        let (c, w) = parse("on_waiting = \"say-so\"").unwrap();
+        assert_eq!(c.on_waiting.as_deref(), Some("say-so"));
+        assert_eq!(c.on_idle, None);
+        assert!(w.is_empty(), "{w:?}");
+
+        let (c, w) = parse("on_stopped = \"log-it\"").unwrap();
+        assert_eq!(c.on_stopped.as_deref(), Some("log-it"));
+        assert_eq!(c.on_waiting, None);
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn notifications_takes_a_bool_or_one_of_the_four_words() {
+        // The key was a bool before the words were there, so a file somebody
+        // wrote then still means what it meant when they wrote it.
+        assert_eq!(
+            parse("notifications = true").unwrap().0.notifications,
+            Delivery::Desktop
+        );
+        assert_eq!(
+            parse("notifications = false").unwrap().0.notifications,
+            Delivery::Off
+        );
+
+        for (word, delivery) in [
+            ("off", Delivery::Off),
+            ("desktop", Delivery::Desktop),
+            ("terminal", Delivery::Terminal),
+            ("both", Delivery::Both),
+        ] {
+            let (c, w) = parse(&format!("notifications = {word:?}")).unwrap();
+            assert_eq!(c.notifications, delivery, "{word}");
+            assert!(w.is_empty(), "{w:?}");
+        }
+
+        // A word amx has no delivery for is an error, the way a key of the
+        // wrong type is: which of the four was meant is not worth a guess.
+        assert!(parse("notifications = \"loud\"").is_err());
+        assert!(parse("notifications = 3").is_err());
+    }
+
+    #[test]
+    fn a_delivery_says_which_of_the_two_it_reaches() {
+        for (delivery, desktop, terminal) in [
+            (Delivery::Off, false, false),
+            (Delivery::Desktop, true, false),
+            (Delivery::Terminal, false, true),
+            (Delivery::Both, true, true),
+        ] {
+            assert_eq!(delivery.desktop(), desktop, "{delivery:?}");
+            assert_eq!(delivery.terminal(), terminal, "{delivery:?}");
+            assert_eq!(delivery.tells(), desktop || terminal, "{delivery:?}");
+        }
     }
 
     #[test]
@@ -693,7 +851,7 @@ mod tests {
                 max_agents = 3
                 max_total = 8
                 worktrees = false
-                notifications = false
+                notifications = "both"
                 trust = true
                 model = "opus"
                 permission = "plan"
@@ -706,6 +864,11 @@ mod tests {
                 setup = ["pnpm install"]
                 base = "main"
                 diff = "delta --paging=always"
+                on_waiting = "say waiting"
+                on_idle = "say idle"
+                on_done = "say done"
+                on_failed = "say failed"
+                on_stopped = "say stopped"
             "#,
         )
         .unwrap();
@@ -713,7 +876,7 @@ mod tests {
         assert_eq!(c.max_agents, 3);
         assert_eq!(c.max_total, Some(8));
         assert!(!c.worktrees);
-        assert!(!c.notifications);
+        assert_eq!(c.notifications, Delivery::Both);
         assert!(c.trust);
         assert_eq!(c.model.as_deref(), Some("opus"));
         assert_eq!(c.permission.as_deref(), Some("plan"));
@@ -726,10 +889,15 @@ mod tests {
         assert_eq!(c.setup, ["pnpm install"]);
         assert_eq!(c.base.as_deref(), Some("main"));
         assert_eq!(c.diff.as_deref(), Some("delta --paging=always"));
+        assert_eq!(c.on_waiting.as_deref(), Some("say waiting"));
+        assert_eq!(c.on_idle.as_deref(), Some("say idle"));
+        assert_eq!(c.on_done.as_deref(), Some("say done"));
+        assert_eq!(c.on_failed.as_deref(), Some("say failed"));
+        assert_eq!(c.on_stopped.as_deref(), Some("say stopped"));
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(
             KNOWN_KEYS.len(),
-            17,
+            22,
             "a key this file does not name is a key nothing here proves"
         );
     }
@@ -1066,6 +1234,28 @@ mod tests {
         assert_eq!(c.copy, [".env"]);
         assert_eq!(c.link, ["node_modules"]);
         assert_eq!(c.base.as_deref(), Some("main"));
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn a_project_file_lays_each_moment_key_over_the_persons_one_at_a_time() {
+        // Five flat keys rather than one table under `on`: a project that says
+        // what to run when an agent stops has not thrown away what the person
+        // set for the four moments beside it.
+        let dir = TempDir::new().unwrap();
+        let person = wrote(
+            dir.path(),
+            "person.toml",
+            "on_waiting = \"a\"\non_idle = \"b\"\non_done = \"c\"\non_failed = \"d\"\non_stopped = \"e\"\n",
+        );
+        let project = wrote(dir.path(), "project.toml", "on_stopped = \"mine\"\n");
+
+        let (c, w) = layered(&[person, project]);
+        assert_eq!(c.on_stopped.as_deref(), Some("mine"));
+        assert_eq!(c.on_waiting.as_deref(), Some("a"));
+        assert_eq!(c.on_idle.as_deref(), Some("b"));
+        assert_eq!(c.on_done.as_deref(), Some("c"));
+        assert_eq!(c.on_failed.as_deref(), Some("d"));
         assert!(w.is_empty(), "{w:?}");
     }
 
