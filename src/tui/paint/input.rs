@@ -63,14 +63,19 @@ const WAITING_ON_A_G: [Hint; 2] = [
 
 /// What the view has to say for itself, and how loudly.
 ///
-/// Two channels in the one slot at the foot of the screen, a severity apart:
-/// an action that was attempted and failed is louder than a refusal or a piece
-/// of advice. A view that paints "nothing was deleted" the same red as a git
-/// error is teaching people to read neither.
+/// Three channels in the one slot at the foot of the screen, a severity apart:
+/// an action that was attempted and failed is louder than something somebody
+/// asked for that did not happen, which is louder than a piece of advice. A
+/// view that paints "nothing was deleted" the same red as a git error is
+/// teaching people to read neither — and one that paints it the same dim as
+/// "started fix-login-a1b" is teaching them that what they just asked for went
+/// through.
 pub enum Notice {
     /// It was attempted and it failed.
     Failed(String),
-    /// Advice, or a refusal that is not a failure.
+    /// It was asked for and it did not happen, on purpose.
+    Refused(String),
+    /// Advice, or a thing that went the way it was asked to.
     Advice(String),
 }
 
@@ -676,6 +681,12 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
         return match notice {
             Notice::Failed(said) => {
                 Line::styled(said.clone(), Style::new().fg(screen.theme.failed))
+            }
+            // The amber an armed row wears, because both of them are the
+            // view standing where somebody meant to go: what they asked for
+            // is on the other side of this line.
+            Notice::Refused(said) => {
+                Line::styled(said.clone(), Style::new().fg(screen.theme.waiting))
             }
             Notice::Advice(said) => Line::styled(said.clone(), dim()),
         };
@@ -1337,6 +1348,14 @@ mod tests {
             )),
             (Color::Reset, Modifier::DIM),
             "a thing that did not happen is not a thing that went wrong"
+        );
+        assert_eq!(
+            said(Notice::Refused(
+                "keeping fix-login-a1b: it holds work no commit has".to_string()
+            )),
+            (theme().waiting, Modifier::empty()),
+            "and a thing somebody asked for that did not happen is neither: \
+             it is the colour of something standing between them and it"
         );
     }
 

@@ -3720,7 +3720,9 @@ mod tests {
         // theme's to take down.
         screen.say_of_the_theme(&[]);
         let said = match &screen.notice {
-            Some(Notice::Failed(said) | Notice::Advice(said)) => said.as_str(),
+            Some(Notice::Failed(said) | Notice::Refused(said) | Notice::Advice(said)) => {
+                said.as_str()
+            }
             None => "nothing at all",
         };
         assert_eq!(said, "could not stop fix-login-a1b");
@@ -7383,7 +7385,9 @@ mod tests {
             Look::Changes => "changes",
         };
         let notice = match &screen.notice {
-            Some(Notice::Advice(said) | Notice::Failed(said)) => said.as_str(),
+            Some(Notice::Advice(said) | Notice::Refused(said) | Notice::Failed(said)) => {
+                said.as_str()
+            }
             None => "",
         };
         let dials = &screen.profile;
