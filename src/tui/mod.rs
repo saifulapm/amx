@@ -2445,6 +2445,19 @@ impl Screen {
             .map_or(&[], |arm| arm.ids.as_slice())
     }
 
+    /// Why each armed row is on the list, where the press that armed them had
+    /// a reason to give — which is `c`'s press and no other.
+    ///
+    /// Parallel to [`armed`](Self::armed), so a row finds its own reason by
+    /// where its id stands. Empty where `ctrl+x` left the arm: those rows are
+    /// the ones somebody pointed at, and the key itself is the whole reason.
+    fn why(&self) -> &[String] {
+        self.arm
+            .as_ref()
+            .filter(|arm| arm.cleared && arm.at.elapsed() < ARMED)
+            .map_or(&[], |arm| arm.why.as_slice())
+    }
+
     /// Whether the press that armed them was on a heading, which is what
     /// decides how much the rows say the press after it would do: a group's
     /// second press stops the live ones under it before it forgets them all,
@@ -6949,7 +6962,10 @@ mod tests {
             marked,
             [
                 ("fix-login-a1b", "amx/fix-login-a1b merged into main"),
-                ("port-importer-b2c", "amx/port-importer-b2c merged into main"),
+                (
+                    "port-importer-b2c",
+                    "amx/port-importer-b2c merged into main"
+                ),
             ],
             "every row that has landed, with the reason it is on the list, \
              and the one still at work on neither"
@@ -7005,18 +7021,18 @@ mod tests {
         let root = TempDir::new().unwrap();
         let repo = a_repo();
         let config = Config::default();
-        let mut screen = watching(vec![has_landed(
-            root.path(),
-            repo.path(),
-            "fix-login-a1b",
-        )]);
+        let mut screen = watching(vec![has_landed(root.path(), repo.path(), "fix-login-a1b")]);
         let still_there = || crate::store::list(root.path()).unwrap().len();
 
         // A ctrl+x inside c's window is somebody reaching for the other key,
         // so it forgets nothing c had marked and arms the row it is on.
         screen.act(c(), root.path(), &config, None).unwrap();
         screen.act(ctrl('x'), root.path(), &config, None).unwrap();
-        assert_eq!(still_there(), 1, "the press that asked for nothing took nothing");
+        assert_eq!(
+            still_there(),
+            1,
+            "the press that asked for nothing took nothing"
+        );
         assert!(
             screen.arm.as_ref().is_some_and(|arm| !arm.cleared),
             "and the row under the cursor is armed for its own second press"

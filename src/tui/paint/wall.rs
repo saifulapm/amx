@@ -102,6 +102,9 @@ pub(super) fn first_drawn(list: &List, visible: u16) -> usize {
 pub(super) struct Moment<'a> {
     pub(super) beat: usize,
     pub(super) armed: &'a [String],
+    /// Why each of those rows was armed, in the order `armed` is in, where the
+    /// press had a reason to give. Empty where it had none.
+    pub(super) why: &'a [String],
     /// Whether a heading armed them, which is what the armed rows say the
     /// press after this one would do. One arm at a time, so it is a fact about
     /// the frame rather than about each row.
@@ -304,11 +307,14 @@ fn row(
         0 => 0,
         column => column + GAP,
     });
-    let armed = moment.armed.iter().any(|id| id == view.id());
-    let said = match (armed, moment.swept) {
-        (true, true) => AGAIN_ALL.to_string(),
-        (true, false) => AGAIN.to_string(),
-        (false, _) => inert(first_line(view.line().unwrap_or(""))),
+    let armed = moment.armed.iter().position(|id| id == view.id());
+    let said = match armed {
+        Some(at) => match moment.why.get(at) {
+            Some(why) => format!("{why} · {CLEARS}"),
+            None if moment.swept => AGAIN_ALL.to_string(),
+            None => AGAIN.to_string(),
+        },
+        None => inert(first_line(view.line().unwrap_or(""))),
     };
 
     let asking = phase == Phase::Waiting;
@@ -350,7 +356,7 @@ fn row(
             paint,
         ));
     }
-    let summary = match (armed, asking) {
+    let summary = match (armed.is_some(), asking) {
         (true, _) => Style::new().fg(theme.waiting),
         (false, true) => Style::new(),
         (false, false) => dim(),
@@ -391,6 +397,14 @@ const AGAIN: &str = "ctrl+x again forgets";
 /// about the group and a row cannot say what the press will cost by speaking
 /// only for itself.
 const AGAIN_ALL: &str = "ctrl+x again stops and forgets";
+
+/// And what a row `c` armed says after the reason it was found by: the same
+/// two-press sentence in the key that is actually armed.
+///
+/// The reason comes first because it is the part that differs row by row, and
+/// somebody reading down a marked wall is reading the reasons rather than the
+/// same instruction over and over.
+const CLEARS: &str = "c again clears";
 
 /// How wide the pull request column has to be, which is the one column of a
 /// row the design does not fix: the widest label anybody on the screen is
@@ -1043,6 +1057,56 @@ mod tests {
             !drawn[2].contains("stops and forgets"),
             "a row that armed itself says what its own second press does, and no more: {:?}",
             drawn[2]
+        );
+    }
+
+    #[test]
+    fn view_says_on_a_row_c_armed_why_its_work_has_landed() {
+        let size = (72, 8);
+        let mut screen = showing(
+            vec![
+                view("fix-login-a1b", Phase::Done, Some("wrote the parser"), 60),
+                view(
+                    "port-importer-b2c",
+                    Phase::Done,
+                    Some("wrote the tests"),
+                    90,
+                ),
+            ],
+            None,
+        );
+        screen.arm = Some(Arm {
+            ids: vec!["fix-login-a1b".to_string()],
+            swept: false,
+            cleared: true,
+            why: vec!["#12 merged".to_string()],
+            at: Instant::now(),
+        });
+        let drawn = painted(&screen, size);
+        assert!(
+            drawn[2].contains("#12 merged · c again clears"),
+            "the row says why it is on the list and what the next press does: {:?}",
+            drawn[2]
+        );
+        assert!(
+            !drawn[2].contains("wrote the parser"),
+            "in place of the summary, like every other armed row: {:?}",
+            drawn[2]
+        );
+        assert!(
+            !drawn[2].contains("ctrl+x"),
+            "and it names the key that armed it, not the other one: {:?}",
+            drawn[2]
+        );
+        assert_eq!(
+            word_colour(&screen, size, 2, "#12 merged"),
+            theme().waiting,
+            "in the colour an armed row already takes"
+        );
+        assert!(
+            drawn[3].contains("wrote the tests"),
+            "the rows the sweep did not find say what they always said: {:?}",
+            drawn[3]
         );
     }
 

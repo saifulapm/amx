@@ -225,6 +225,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
             Moment {
                 beat: screen.beat,
                 armed: screen.armed(),
+                why: screen.why(),
                 swept: screen.swept(),
                 hover: screen.hover,
                 lent: screen.lent.as_deref(),
