@@ -1260,8 +1260,14 @@ impl Screen {
     }
 
     /// Read the agents again, the ones the view was opened about.
+    ///
+    /// The whole reading, before the narrowing, is what the background fetch is
+    /// asked about: what somebody is looking at this minute is no reason to let
+    /// another repository's upstream go stale under `c`.
     fn reread(&mut self, root: &Path, scope: &Scope) -> Result<()> {
-        self.showing(scope.narrow(derive::views(root, now())?));
+        let views = derive::views(root, now())?;
+        verbs::sweep::fetch_origins_again(&views);
+        self.showing(scope.narrow(views));
         self.read = Some(Instant::now());
         self.keep_the_sweep();
         self.land_on_what_was_started();

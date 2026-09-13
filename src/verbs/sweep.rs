@@ -28,9 +28,11 @@
 //! names it.
 
 use anyhow::Result;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::cli::{Disposition, StopArgs};
 use crate::derive::{self, View};
@@ -133,15 +135,7 @@ fn landed(view: &View, requests: fn(&Meta) -> Vec<Pr>) -> Option<String> {
 /// is said once and the walk goes on. A repository with no origin is not that:
 /// [`prune_origin`](worktree::prune_origin) runs nothing there and says nothing.
 fn fetch_origins(views: &[View]) {
-    let mut fetched = BTreeSet::new();
-    for view in views {
-        if !finished(view.phase()) || view.meta.branch.is_none() {
-            continue;
-        }
-        let repo = repository(&view.meta);
-        if !fetched.insert(repo.clone()) {
-            continue;
-        }
+    for repo in repositories(views) {
         if let Err(e) = worktree::prune_origin(&repo) {
             warn!(
                 "amx sweep: could not fetch origin in {}: {e:#}",
@@ -149,6 +143,71 @@ fn fetch_origins(views: &[View]) {
             );
         }
     }
+}
+
+/// The repositories a walk over these views would ask git about, once apiece.
+fn repositories(views: &[View]) -> Vec<PathBuf> {
+    let mut fetched = BTreeSet::new();
+    views
+        .iter()
+        .filter(|view| finished(view.phase()) && view.meta.branch.is_some())
+        .map(|view| repository(&view.meta))
+        .filter(|repo| fetched.insert(repo.clone()))
+        .collect()
+}
+
+/// How long a repository is left alone after a fetch the view asked for.
+///
+/// Long enough that a wall open all day costs a handful of fetches per
+/// repository an hour, short enough that a branch deleted on the forge while
+/// you are reading the wall is on the list before you have finished reading it.
+const PRUNE_EVERY: Duration = Duration::from_secs(300);
+
+/// When each repository was last fetched for a view, so the next reading a
+/// second later does not fetch it again.
+static PRUNED: Mutex<BTreeMap<PathBuf, Instant>> = Mutex::new(BTreeMap::new());
+
+/// The same fetch, for a reader that cannot wait: the view.
+///
+/// `c` reads the upstream as git last recorded it and never waits on a network,
+/// which leaves `gone from origin` as stale as the last fetch somebody happened
+/// to run. This is what runs those fetches: while the view is open, every
+/// repository it has a candidate in is brought up to date in the background,
+/// once every [`PRUNE_EVERY`], so the press has something current to read.
+///
+/// Nothing waits for the answer and nothing is said about it. A fetch that
+/// fails costs the third fact until the next one, exactly as it does in the
+/// verb, and the view has no stderr to say so on.
+pub fn fetch_origins_again(views: &[View]) {
+    for repo in prune_due(views, Instant::now()) {
+        let _ = std::thread::Builder::new()
+            .name("amx-prune".to_string())
+            .spawn(move || {
+                let _ = worktree::prune_origin(&repo);
+            });
+    }
+}
+
+/// The repositories due a fetch at `now`, marked as fetched as they are handed
+/// out.
+///
+/// Marked here rather than when the thread comes back, so a reading a second
+/// later starts nothing second: the cost of a fetch that failed is one
+/// repository left alone for five minutes.
+fn prune_due(views: &[View], now: Instant) -> Vec<PathBuf> {
+    let Ok(mut pruned) = PRUNED.lock() else {
+        return Vec::new();
+    };
+    repositories(views)
+        .into_iter()
+        .filter(|repo| match pruned.get(repo) {
+            Some(last) if now.saturating_duration_since(*last) < PRUNE_EVERY => false,
+            _ => {
+                pruned.insert(repo.clone(), now);
+                true
+            }
+        })
+        .collect()
 }
 
 /// Whether the agent is done being an agent: its turn ended, or it is sitting
@@ -455,6 +514,38 @@ mod tests {
             why().as_deref(),
             Some("amx/fix-login-a1b gone from origin"),
             "which is the sweep's own doing, once per repository"
+        );
+    }
+
+    #[test]
+    fn sweep_fetches_a_repository_for_the_view_once_in_five_minutes() {
+        // What keeps `gone from origin` worth reading in a view that never
+        // waits on a network. The clock is the argument, so the five minutes
+        // are read here rather than waited out.
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        a_swept_agent(root.path(), repo.path(), "fix-login-a1b");
+        a_swept_agent(root.path(), repo.path(), "tidy-b2c");
+        let views = derive::views(root.path(), store::now()).unwrap();
+
+        let walk = repositories(&views);
+        assert_eq!(walk.len(), 1, "two agents in one repository are one fetch");
+
+        let at = Instant::now();
+        assert_eq!(prune_due(&views, at), walk, "the first reading fetches");
+        assert!(
+            prune_due(&views, at).is_empty(),
+            "and a reading a moment later does not, or a wall of agents would \
+             put a fetch behind every reading"
+        );
+        assert!(
+            prune_due(&views, at + PRUNE_EVERY - Duration::from_secs(1)).is_empty(),
+            "nor does one just inside the five minutes"
+        );
+        assert_eq!(
+            prune_due(&views, at + PRUNE_EVERY),
+            walk,
+            "and the one after them fetches again"
         );
     }
 

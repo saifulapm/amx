@@ -1201,6 +1201,9 @@ forge wanting a password — is said once on stderr and read the same way.
 The view has the same thing under `c`, asked wherever the cursor is standing.
 It waits on nothing: the request is what the last look wrote down, the upstream
 is what git last recorded, and the view is what keeps both of those current.
+While it is open it fetches with `--prune` in the background, once every five
+minutes per repository, so a branch the forge deleted while you were reading is
+on the list by the next press rather than the next sweep.
 The first press asks it of every agent on the wall and marks the ones it found,
 each row saying why it is on the list where its summary was. It asks their
 trees the same question the sweep would, so a row whose tree is holding work no

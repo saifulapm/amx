@@ -2759,6 +2759,78 @@ fn c_keeps_back_the_landed_agent_whose_tree_holds_work_and_names_it() {
     );
 }
 
+/// An origin for `repo` to push to and be pruned against, bare and in a
+/// directory of its own, with `main` already on it.
+fn an_origin(amx: &Harness, repo: &Path) -> PathBuf {
+    let bare = amx.home().join("origin.git");
+    std::fs::create_dir_all(&bare).expect("the origin");
+    git(&bare, &["init", "--bare", "-b", "main"]);
+    git(repo, &["remote", "add", "origin", &bare.to_string_lossy()]);
+    git(repo, &["push", "-q", "origin", "main"]);
+    bare
+}
+
+/// What git in `repo` records about where this agent's branch stands on the
+/// origin: nothing at all until somebody fetches, and `[gone]` afterwards.
+fn upstream_track(repo: &Path, id: &str) -> String {
+    git(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(upstream:track)",
+            &format!("refs/heads/amx/{id}"),
+        ],
+    )
+    .trim()
+    .to_string()
+}
+
+#[test]
+fn c_reads_a_branch_the_forge_deleted_because_the_view_fetched_for_it() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let origin = an_origin(&amx, &repo);
+    let tree = an_ended_agent(&amx, "tidy-b2c", &repo);
+    work_on_the_branch(&tree, "search.rs");
+    git(
+        Path::new(&tree),
+        &["push", "-q", "-u", "origin", "amx/tidy-b2c"],
+    );
+
+    // What a squash merge leaves behind: the forge took the commits under a sha
+    // this branch does not hold, so nothing reads as merged, and then it
+    // deleted the branch. Nobody has run a sweep here, so the view's own fetch
+    // is the only thing that can make the delete a fact git will say out loud.
+    git(&origin, &["branch", "-D", "amx/tidy-b2c"]);
+    assert_eq!(
+        upstream_track(&repo, "tidy-b2c"),
+        "",
+        "until something fetches, git has the origin holding the branch"
+    );
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("tidy-b2c").then_some(())
+    });
+    amx.until("the view's own fetch to record the delete", || {
+        (upstream_track(&repo, "tidy-b2c") == "[gone]").then_some(())
+    });
+
+    // And the press that waits on nothing has something current to read.
+    press(&amx, &view, "c");
+    let armed = amx.until("the row to say why its work has landed", || {
+        let drawn = screen(&amx, &view);
+        drawn
+            .contains("c again clears · amx/tidy-b2c gone from origin")
+            .then_some(drawn)
+    });
+    assert_eq!(
+        agents(&amx),
+        ["tidy-b2c"],
+        "and one press clears nothing:\n{armed}"
+    );
+}
+
 #[test]
 fn acts_space_writes_the_look_on_the_record_and_leaves_the_rows_alone() {
     let amx = Harness::new();
