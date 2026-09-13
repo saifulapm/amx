@@ -859,3 +859,53 @@ pi and one about amx.
    `derive::write_the_reading` writes a reading on a phase edge only, and
    waiting to waiting is not an edge. This is amx's and not pi's, 0.84.4
    behaved the same, and it is open as finding #SX6QK58A.
+
+## What the 2026-09-14 pass found
+
+Driven against real pi 0.85.1 at 100 columns, in a checkout of pi's own source,
+which carries a `.pi/` and so raises the startup trust gate. What was measured
+is which keys do anything to a marked list, because that is what decides
+whether a person can answer one at all.
+
+| key | what the selector does |
+| --- | --- |
+| `1`, `2` | nothing |
+| `y`, `n` | nothing |
+| `Up` on the top row | nothing: the list clamps |
+| `Down` | moves one row down, and clamps at the last |
+| `j`, `k` | move, the same one row |
+| `Enter` | takes the row the arrow is on |
+
+The cursor opens on the first row. The component is pi's own
+`packages/coding-agent/src/modes/interactive/components/extension-selector.ts`,
+and every blocking list this document measures is drawn by it: the dialog a
+tool call raises, `ctx.ui.confirm`, the startup trust gate, the `/trust`
+selector, and both steps of the first-run gate.
+
+So a digit is not an answer on any of them, and until this pass the record
+carried no choices for one either — `Screen::options_below` reads a list off
+its numbers, and there are none here. A row waiting on a pi dialog showed the
+question with an empty list under it, and the only grammar left was a walk
+typed blind: `amx answer <id> "down enter"`, on a list nobody could see.
+Saiful ruled that this is not an answer a person can give.
+
+**The reading.** A rule in `assets/screen-rules-pi.toml` may now say
+`marks = "→"`, and four of them do. The reader then takes:
+
+- **the list**: the maximal run of rows with something on them containing the
+  lowest row that carries the mark. A blank row ends the run, and so does the
+  rule pi draws its box with.
+- **a choice**: a row of that run whose own words start at the mark's column
+  plus two or further right — which is where the marked row's words start, past
+  the mark and the space after it. Any other row of the run is the rest of the
+  choice above it, joined onto it with one space, which is how a label too long
+  for the pane comes back whole.
+- **the label**: the row trimmed, with a leading mark and the space after it
+  taken off.
+- **the question**: the sentence above the run rather than above the mark. The
+  arrow moves when somebody presses a key and the run does not, so a cursor one
+  row down no longer turns the choice above it into the sentence a row quotes.
+
+The numbers under that reading are amx's own rather than the vendor's, so the
+record says which it has: `walked` beside `options`, on the wire only where it
+is true, and a record written before this pass reads with it off.
