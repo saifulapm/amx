@@ -236,7 +236,7 @@ fn dealt(width: usize) -> Vec<Range<usize>> {
 }
 
 /// Where those two columns part, which for the table as it stands is after
-/// `start`: twenty-five keys against sixteen.
+/// `start`: twenty-eight keys against twenty-three.
 fn cut() -> usize {
     let total: usize = GROUPS.iter().map(|(_, under)| under).sum();
     (1..GROUPS.len())
