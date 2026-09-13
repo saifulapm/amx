@@ -42,12 +42,13 @@ use crate::tui::grid;
 ///
 /// The table is not public to the rest of the crate, so the test that checks
 /// the README against it reads this file as text.
-pub(in crate::tui) const HELP: [(&str, &str); 47] = [
+pub(in crate::tui) const HELP: [(&str, &str); 48] = [
     // walk
     ("↑ ↓ j k", "walk the agents"),
     ("gg G", "the top of the list, and the foot"),
     ("alt+1..9", "reach one by where it is on the wall"),
     ("w", "the first agent that needs you"),
+    ("backspace", "the agent you were last in"),
     ("esc", "put the card away · leave a line alone"),
     ("?", "these keys"),
     ("q ctrl+c", "close the view"),
@@ -107,7 +108,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 47] = [
 /// Runs rather than tables of their own, so nothing here can hold a key twice
 /// or drop one between two headings.
 pub(super) const GROUPS: [(&str, usize); 5] = [
-    ("walk", 7),
+    ("walk", 8),
     ("look", 8),
     ("start", 12),
     ("arrange", 11),

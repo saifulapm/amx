@@ -1760,6 +1760,9 @@ impl Screen {
             // And the one agent nobody has to count to: whichever of them is
             // waiting on the person at the keyboard.
             KeyCode::Char('w') if plain => self.land_on_what_needs_you(),
+            // Back the way somebody came, which is the one thing the wall
+            // cannot say and the trail can.
+            KeyCode::Backspace if plain => self.land_on_where_you_were(root),
             // Opened at the top, wherever the last person to ask left it: the
             // question is what the keys are, not where somebody stopped
             // reading them.
@@ -2482,6 +2485,29 @@ impl Screen {
                     "nothing on the wall is waiting on you".to_string(),
                 ));
             }
+        }
+    }
+
+    /// `backspace` on the list: the cursor onto the agent this terminal was
+    /// last handed to, which is what `amx attach --last` goes back to at a
+    /// shell, in the same words where there is nobody.
+    ///
+    /// The trail rather than the wall, because where somebody was before they
+    /// came here is the one thing the wall cannot say. It is read past the row
+    /// the cursor is already on, so two presses go between two agents rather
+    /// than standing still on one, and past a name the list is not drawing:
+    /// an agent that has been forgotten, or that a narrowing left off the
+    /// screen, is nowhere the cursor can go.
+    ///
+    /// The cursor and nothing else, as `w` is: what to do about the row it
+    /// lands on is the press after this one.
+    fn land_on_where_you_were(&mut self, root: &Path) {
+        let standing = self.list.selected().map(|view| view.id().to_string());
+        let back = verbs::attach::visited(root)
+            .into_iter()
+            .find(|id| Some(id) != standing.as_ref() && self.list.land_on(id));
+        if back.is_none() {
+            self.notice = Some(Notice::Advice("no agent to go back to".to_string()));
         }
     }
 
@@ -7488,6 +7514,78 @@ mod tests {
         assert_eq!(
             screen.list.selected().unwrap().id(),
             standing,
+            "and the cursor is left where somebody put it"
+        );
+    }
+
+    /// The key that goes back along the trail every terminal amx hands over
+    /// is written on.
+    fn backspace() -> KeyEvent {
+        KeyEvent::from(KeyCode::Backspace)
+    }
+
+    /// A state root with a trail of its own: the file is kept beside the
+    /// agents, so a root that is a temporary directory itself would leave the
+    /// trail wherever temporary directories are made.
+    fn a_root(state: &TempDir) -> PathBuf {
+        state.path().join("agents")
+    }
+
+    #[test]
+    fn keys_backspace_lands_the_cursor_on_the_agent_you_were_last_in() {
+        let state = TempDir::new().unwrap();
+        let root = a_root(&state);
+        let mut screen = watching(vec![at_work("port-import-b2c"), at_work("fix-login-c3d")]);
+
+        // Where this terminal has been, oldest press first: the two rows on
+        // the wall, and then an agent it has since forgotten.
+        for id in ["fix-login-c3d", "port-import-b2c", "forgotten-z9z"] {
+            verbs::attach::note_visited(&root, id);
+        }
+
+        // Standing in the agent somebody came to last: going back is the one
+        // they came from, which is the trail read past the row under the
+        // cursor and past the name the wall no longer holds.
+        screen.list.land_on("port-import-b2c");
+        screen
+            .act(backspace(), &root, &Config::default(), None)
+            .unwrap();
+        assert_eq!(
+            screen.list.selected().unwrap().id(),
+            "fix-login-c3d",
+            "the agent this terminal was in before the one it is on"
+        );
+        assert!(screen.notice.is_none(), "and the key had nothing to say");
+        assert!(
+            screen.card.is_none(),
+            "the cursor is the whole of what the press moves"
+        );
+    }
+
+    #[test]
+    fn keys_backspace_says_there_is_nowhere_to_go_back_to() {
+        let state = TempDir::new().unwrap();
+        let root = a_root(&state);
+        let mut screen = watching(vec![at_work("port-import-b2c"), at_work("fix-login-c3d")]);
+
+        // A trail with nobody on it to go back to: the agent under the cursor,
+        // and one the wall has forgotten. The words are `amx attach --last`'s
+        // own, because the key and the verb answer the same question.
+        for id in ["forgotten-z9z", "port-import-b2c"] {
+            verbs::attach::note_visited(&root, id);
+        }
+        screen.list.land_on("port-import-b2c");
+
+        screen
+            .act(backspace(), &root, &Config::default(), None)
+            .unwrap();
+        let Some(Notice::Advice(said)) = &screen.notice else {
+            panic!("nothing said about a terminal that has been nowhere else")
+        };
+        assert_eq!(said, "no agent to go back to");
+        assert_eq!(
+            screen.list.selected().unwrap().id(),
+            "port-import-b2c",
             "and the cursor is left where somebody put it"
         );
     }

@@ -401,6 +401,7 @@ table.
 | `alt+↑` `alt+↓` | the lines sent before, newest first; a task line takes `↑` `↓` for the same |
 | `alt+1..9` | reach the agent at that place on the wall |
 | `w` | put the cursor on the first agent that needs you |
+| `backspace` | put the cursor on the agent you were last in, as `amx attach --last` goes back from a shell |
 | `/` | find by name, task or `#12`, as you type; `esc` clears it |
 | `ctrl+s` | gather them by state or by project |
 | `ctrl+t` | pin it over the wall, and again to let it go |

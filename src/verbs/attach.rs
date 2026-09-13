@@ -119,7 +119,7 @@ fn current(order: &[(Group, String)], inside: Option<&str>, pane: Option<&str>) 
 /// A convenience and not a record: a trail that will not read is a trail
 /// nobody has left yet, because refusing to attach over a file somebody's
 /// editor half wrote would be the worse answer.
-fn visited(root: &Path) -> Vec<String> {
+pub fn visited(root: &Path) -> Vec<String> {
     paths::visited_file(root)
         .and_then(|path| std::fs::read(&path).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())

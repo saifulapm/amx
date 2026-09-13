@@ -1955,6 +1955,73 @@ fn enter_puts_the_agent_in_front_of_the_terminal() {
 }
 
 #[test]
+fn backspace_puts_the_cursor_on_the_agent_the_terminal_was_last_in() {
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    let holding = pane_field(&amx, &view, "#{session_name}");
+    until_empty(&amx, &view);
+
+    // A client on the view, because the trail is written where somebody went
+    // and a press that moved nobody is nowhere anybody has been.
+    let terminal = watching(&amx, &holding);
+    let tty = amx.until("a client on the view", || {
+        let clients = clients_on(&amx, &holding);
+        (!clients.is_empty()).then_some(clients)
+    });
+
+    an_agent_session(&amx, "fix-login-a1b");
+    an_agent_session(&amx, "port-import-b2c");
+    let drawn = amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("fix-login-a1b") && drawn.contains("port-import-b2c")).then_some(drawn)
+    });
+    // Whichever of them the wall drew first, which is where the view opens the
+    // cursor: the order of the two rows is the list's business, and the walk
+    // down is the other one.
+    let (first, second) =
+        match line_of(&drawn, "fix-login-a1b") < line_of(&drawn, "port-import-b2c") {
+            true => ("fix-login-a1b", "port-import-b2c"),
+            false => ("port-import-b2c", "fix-login-a1b"),
+        };
+
+    // Into the agent under the cursor and back out the way somebody comes
+    // back: the client moves to it, and the view goes on drawing behind.
+    let go_in_and_out = |id: &str| {
+        press(&amx, &view, "Enter");
+        amx.until("the client on the agent", || {
+            (clients_on(&amx, &format!("amx-{id}")) == tty).then_some(())
+        });
+        amx.tmux(&["switch-client", "-c", &tty, "-t", &holding]);
+        amx.until("the list again", || {
+            screen(&amx, &terminal).contains("? keys").then_some(())
+        });
+    };
+
+    go_in_and_out(first);
+    press(&amx, &view, "Down");
+    amx.until("the cursor on the other row", || {
+        coloured_line(&amx, &view, second)
+            .contains(&bar())
+            .then_some(())
+    });
+    go_in_and_out(second);
+
+    // One press back along the trail: the row the cursor is standing on is
+    // the agent somebody is in, so going back is the one before it.
+    press(&amx, &view, "BSpace");
+    amx.until("the cursor on the agent before it", || {
+        coloured_line(&amx, &view, first)
+            .contains(&bar())
+            .then_some(())
+    });
+    assert!(
+        !coloured_line(&amx, &view, second).contains(&bar()),
+        "and off the row it was pressed on:\n{}",
+        screen(&amx, &view)
+    );
+}
+
+#[test]
 fn enter_lends_the_terminal_to_a_view_that_has_it_to_itself() {
     let amx = Harness::new();
     let view = outside_tmux(&amx);
