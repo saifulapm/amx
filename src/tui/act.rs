@@ -1779,6 +1779,30 @@ pub fn on_hunk(hunk: &Hunk, words: &str) -> String {
     )
 }
 
+/// A whole review as one message: what was said at the top of the patch, then
+/// every hunk somebody left words on, in patch order.
+///
+/// A review is one turn because that is how it is read. Sent a hunk at a time
+/// the agent starts on the first before the second has arrived, and answers
+/// half a review; sent together the parts are one thing to weigh. Each part is
+/// what [`on_hunk`] already writes, so a review of one hunk and nothing said at
+/// the top is byte for byte the message the card has always sent.
+///
+/// A blank opening is no opening rather than an empty part, so nobody's message
+/// begins with a blank row they did not type.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the card's enter reaches it next")
+)]
+pub fn on_hunks(opening: &str, notes: &[(&Hunk, &str)]) -> String {
+    let opening = (!opening.trim().is_empty()).then(|| opening.to_string());
+    opening
+        .into_iter()
+        .chain(notes.iter().map(|(hunk, words)| on_hunk(hunk, words)))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 /// Whether a line typed at this agent would reach it, for the card that has to
 /// say so before anybody types.
 ///
@@ -2784,6 +2808,56 @@ mod tests {
             fenced,
             "src/foo.rs:12\n\n````diff\n@@ -1,1 +1,2 @@\n+```sh\n````\n\nand this?"
         );
+    }
+
+    #[test]
+    fn card_writes_a_whole_review_as_one_message() {
+        let hunk = |line: usize, text: &str| Hunk {
+            path: "src/foo.rs".to_string(),
+            line,
+            row: 4,
+            text: text.to_string(),
+        };
+        let first = hunk(12, "@@ -12,2 +12,3 @@\n context\n+added");
+        let second = hunk(40, "@@ -40,1 +40,1 @@\n-gone\n+here");
+
+        // One note and nothing said at the top is the one-hunk comment byte for
+        // byte, so a review of a single hunk reads as it always has.
+        assert_eq!(
+            on_hunks("", &[(&first, "why this row?")]),
+            on_hunk(&first, "why this row?")
+        );
+
+        // An opening rides in front, and each noted hunk follows in the order
+        // it was given, a blank row between the parts.
+        assert_eq!(
+            on_hunks(
+                "two things",
+                &[(&first, "why this row?"), (&second, "and this?")]
+            ),
+            format!(
+                "two things\n\n{}\n\n{}",
+                on_hunk(&first, "why this row?"),
+                on_hunk(&second, "and this?")
+            )
+        );
+
+        // An opening of nothing but whitespace is no opening: it leaves no
+        // blank row at the head of the message.
+        assert_eq!(
+            on_hunks(
+                "  \n ",
+                &[(&first, "why this row?"), (&second, "and this?")]
+            ),
+            format!(
+                "{}\n\n{}",
+                on_hunk(&first, "why this row?"),
+                on_hunk(&second, "and this?")
+            )
+        );
+
+        // Words at the top with no hunk noted are the whole message.
+        assert_eq!(on_hunks("just this", &[]), "just this");
     }
 
     #[test]
