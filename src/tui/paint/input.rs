@@ -845,6 +845,7 @@ mod tests {
             phase: Phase::Waiting,
             question: Some("Which fixture should the port keep?".to_string()),
             options: options.iter().map(|label| (*label).to_string()).collect(),
+            walked: false,
             kind,
             body: "$ cargo test\nDo you want to proceed?".to_string(),
             changes: false,
