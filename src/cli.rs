@@ -435,11 +435,12 @@ pub struct NewArgs {
     /// Move the uncommitted work here into the agent's tree.
     ///
     /// The half hour you had already spent when you thought to start an agent
-    /// on it. What git is tracking goes, staged or not, and this directory is
-    /// left as its last commit had it; a file git has never heard of stays
-    /// where you made it. There has to be a tree to move it into and something
-    /// to move, so it is refused beside `--no-worktree` and `--exec`, and a
-    /// directory with nothing uncommitted in it starts no agent.
+    /// on it. What git is tracking goes, staged or not, and the new file with
+    /// it, and this directory is left as its last commit had it; what
+    /// `.gitignore` names stays where it was made. There has to be a tree to
+    /// move it into and something to move, so it is refused beside
+    /// `--no-worktree` and `--exec`, and a directory with nothing uncommitted
+    /// in it starts no agent.
     #[arg(long, conflicts_with_all = ["no_worktree", "exec"])]
     pub with_changes: bool,
 

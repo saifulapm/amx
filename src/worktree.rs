@@ -331,21 +331,21 @@ fn run_setup(repo: &Path, tree: &Path, command: &str, env: &[(String, String)]) 
     Ok(())
 }
 
-/// Whether `dir` holds tracked work to move into a tree: what is staged and
-/// what is not, against the commit it has checked out.
+/// Whether `dir` holds work to move into a tree: what is staged, what is not,
+/// and the files git has never heard of, against the commit it has checked out.
 ///
-/// Not [`is_dirty`]'s question. That one counts a file git has never heard of,
-/// because removing a tree over one would lose it; this one is about the work
-/// `--with-changes` moves, and a file git is not tracking is left where it was
-/// made.
+/// [`is_dirty`]'s question, asked of the directory the command was typed in
+/// rather than of a tree. What `.gitignore` names is not work, so it is not
+/// counted: a directory holding nothing but a build's output is a directory
+/// with nothing to move.
 ///
-/// Somewhere that is not a repository has nothing tracked to move, which is
-/// the answer a directory whose work is all committed gives too.
+/// Somewhere that is not a repository has nothing to move, which is the answer
+/// a directory whose work is all committed gives too.
 pub fn has_changes_to_carry(dir: &Path) -> Result<bool> {
     if repo_root(dir)?.is_none() {
         return Ok(false);
     }
-    Ok(!git(dir, &["status", "--porcelain", "--untracked-files=no"])?.is_empty())
+    Ok(!git(dir, &["status", "--porcelain"])?.is_empty())
 }
 
 /// Move the work no commit holds out of `from` and into `tree`, answering
@@ -358,27 +358,46 @@ pub fn has_changes_to_carry(dir: &Path) -> Result<bool> {
 /// The work is put in the tree before it is taken out of `from`, so the moment
 /// where it is in neither never happens. A stash that will not apply — onto a
 /// base the work was not written against, over a file furnishing copied in —
-/// leaves the directory exactly as it was.
+/// leaves every file where it was, unstaged.
 ///
-/// Files git is not tracking stay: an untracked file is as likely to be a
-/// build's output or a scratch note as work, and the two are told apart by the
-/// person who made them rather than by amx.
+/// The new file goes too, and what `.gitignore` names does not: the source
+/// file you had just started is most of that half hour, and git already draws
+/// the line amx would otherwise be guessing at, since telling a build's output
+/// from work is what the ignore file is for.
 pub fn carry_changes(from: &Path, tree: &Path) -> Result<bool> {
+    // `add -A` is how the new file gets into the commit at all: `stash create`
+    // records the index and the tracked files, so a file git has never heard
+    // of is in neither until the index holds it. It is also where the ignore
+    // is honoured, so nothing amx has to decide about is ever carried.
+    git(from, &["add", "-A"])?;
+
     // `stash create` writes the commit and nothing else: no entry on the stack
     // for another spawn to pop by mistake, and an empty answer where there is
-    // nothing tracked to move. The tree reads the commit out of the object
-    // store the two of them share.
+    // nothing to move. The tree reads the commit out of the object store the
+    // two of them share.
     let stashed = git(from, &["stash", "create"])?;
     if stashed.is_empty() {
+        // The index is put back whatever happens next: staging was this
+        // function's doing, and `from` is somebody's working directory.
+        git(from, &["reset", "-q"])?;
         return Ok(false);
     }
-    git(tree, &["stash", "apply", &stashed]).with_context(|| {
-        format!(
-            "moving the work in {} into {}",
-            from.display(),
-            tree.display()
-        )
-    })?;
+    if let Err(e) = git(tree, &["stash", "apply", &stashed]) {
+        git(from, &["reset", "-q"])?;
+        return Err(e).with_context(|| {
+            format!(
+                "moving the work in {} into {}",
+                from.display(),
+                tree.display()
+            )
+        });
+    }
+    // Unstaged in the tree, which is how the work was held: the apply stages a
+    // file that is new, and the agent opening the tree should find the work as
+    // you left it rather than half committed.
+    git(tree, &["reset", "-q"])?;
+    // `--hard` rather than the plain reset, since the new files are in this
+    // index and in no commit, and it is what takes them off the disk.
     git(from, &["reset", "--hard", "HEAD"])?;
     Ok(true)
 }
@@ -718,6 +737,14 @@ mod tests {
         );
         setup(repo, &["push", "-q", "origin", "main"]);
         bare
+    }
+
+    /// A committed `.gitignore` naming the build's output, which is the line
+    /// `--with-changes` tells work apart from.
+    fn an_ignore(repo: &Path) {
+        std::fs::write(repo.join(".gitignore"), "/build/\n").unwrap();
+        setup(repo, &["add", ".gitignore"]);
+        setup(repo, &["commit", "-m", "ignore the build"]);
     }
 
     fn shown(worktree: &Path, base: &str, stat: bool) -> String {
@@ -1392,12 +1419,15 @@ mod tests {
     }
 
     #[test]
-    fn worktree_carries_the_tracked_work_into_the_tree_and_leaves_the_rest() {
+    fn worktree_carries_the_work_into_the_tree_and_leaves_what_git_ignores() {
         let repo = a_repo();
+        an_ignore(repo.path());
         std::fs::write(repo.path().join("login.rs"), "fn login() {}\n").unwrap();
         setup(repo.path(), &["add", "login.rs"]);
         std::fs::write(repo.path().join("README.md"), "after\n").unwrap();
         std::fs::write(repo.path().join("notes.txt"), "scratch\n").unwrap();
+        std::fs::create_dir(repo.path().join("build")).unwrap();
+        std::fs::write(repo.path().join("build/out"), "compiled\n").unwrap();
         let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
 
         assert!(has_changes_to_carry(repo.path()).unwrap());
@@ -1414,20 +1444,25 @@ mod tests {
             "and the one that was staged"
         );
         assert_eq!(
+            std::fs::read_to_string(tree.path.join("notes.txt")).unwrap(),
+            "scratch\n",
+            "and the new file no commit has ever held"
+        );
+        assert_eq!(
             std::fs::read_to_string(repo.path().join("README.md")).unwrap(),
             "before\n",
             "the directory it was typed in is left as the last commit had it"
         );
         assert!(
-            !repo.path().join("login.rs").exists(),
+            !repo.path().join("login.rs").exists() && !repo.path().join("notes.txt").exists(),
             "the work moved rather than being copied"
         );
         assert_eq!(
-            std::fs::read_to_string(repo.path().join("notes.txt")).unwrap(),
-            "scratch\n",
-            "a file git has never heard of stays where it was made"
+            std::fs::read_to_string(repo.path().join("build/out")).unwrap(),
+            "compiled\n",
+            "a file .gitignore names stays where it was made"
         );
-        assert!(!tree.path.join("notes.txt").exists());
+        assert!(!tree.path.join("build").exists());
         assert!(
             !has_changes_to_carry(repo.path()).unwrap(),
             "and nothing more to move"
@@ -1437,23 +1472,30 @@ mod tests {
     #[test]
     fn worktree_carries_nothing_where_no_commit_is_missing_any_of_it() {
         let repo = a_repo();
+        an_ignore(repo.path());
         let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
-        std::fs::write(repo.path().join("notes.txt"), "scratch\n").unwrap();
+        std::fs::create_dir(repo.path().join("build")).unwrap();
+        std::fs::write(repo.path().join("build/out"), "compiled\n").unwrap();
 
-        // Untracked and nothing else is nothing to move, which is the answer a
+        // Ignored and nothing else is nothing to move, which is the answer a
         // directory with no changes at all gives.
         assert!(!has_changes_to_carry(repo.path()).unwrap());
         assert!(!carry_changes(repo.path(), &tree.path).unwrap());
         assert_eq!(
-            std::fs::read_to_string(repo.path().join("notes.txt")).unwrap(),
-            "scratch\n",
+            std::fs::read_to_string(repo.path().join("build/out")).unwrap(),
+            "compiled\n",
             "and it was left alone"
+        );
+        assert_eq!(
+            setup(repo.path(), &["status", "--porcelain"]),
+            "",
+            "with nothing staged behind it either"
         );
 
         let elsewhere = TempDir::new().unwrap();
         assert!(
             !has_changes_to_carry(elsewhere.path()).unwrap(),
-            "somewhere that is not a repository has nothing tracked either"
+            "somewhere that is not a repository has nothing to move either"
         );
     }
 

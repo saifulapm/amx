@@ -1110,8 +1110,13 @@ fn new_moves_the_uncommitted_work_into_the_tree() {
     let amx = Harness::new();
     let mock = amx.mock();
     let repo = amx.a_repo();
+    std::fs::write(repo.join(".gitignore"), "/build/\n").expect("the line git draws");
+    git(&repo, &["add", ".gitignore"]);
+    git(&repo, &["commit", "-m", "ignore the build"]);
     std::fs::write(repo.join("README.md"), "after\n").expect("the work already in hand");
     std::fs::write(repo.join("notes.txt"), "scratch\n").expect("and a file git never heard of");
+    std::fs::create_dir(repo.join("build")).expect("where the build writes");
+    std::fs::write(repo.join("build/out"), "compiled\n").expect("and what it wrote");
 
     let id = id_of(&new(
         &amx,
@@ -1133,15 +1138,26 @@ fn new_moves_the_uncommitted_work_into_the_tree() {
         "the agent starts on what was in hand rather than on the last commit"
     );
     assert_eq!(
+        std::fs::read_to_string(worktree.join("notes.txt")).expect("and the new file with it"),
+        "scratch\n",
+        "the file no commit has ever held is most of that half hour"
+    );
+    assert_eq!(
         std::fs::read_to_string(repo.join("README.md")).unwrap(),
         "before\n",
         "and the directory it was typed in is left as that commit had it"
     );
     assert_eq!(
         git(&repo, &["status", "--porcelain"]),
-        "?? notes.txt",
-        "with the untracked file still where it was made"
+        "",
+        "with nothing of the work left behind it"
     );
+    assert_eq!(
+        std::fs::read_to_string(repo.join("build/out")).expect("the build's output stays"),
+        "compiled\n",
+        "since .gitignore is where that is told apart from work"
+    );
+    assert!(!worktree.join("build").exists());
 }
 
 #[test]
