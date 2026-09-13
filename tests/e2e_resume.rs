@@ -151,6 +151,31 @@ fn clients_on(amx: &Harness, session: &str) -> String {
     amx.tmux(&["list-clients", "-t", session, "-F", "#{client_tty}"])
 }
 
+/// Wait until a terminal has been handed to this agent's session.
+///
+/// A client on it is the one thing that says the attach got as far as tmux,
+/// which is where it writes down that somebody was here.
+fn until_attached(amx: &Harness, id: &str) {
+    amx.until(&format!("a terminal on {id}"), || {
+        (!clients_on(amx, &format!("amx-{id}")).is_empty()).then_some(())
+    });
+}
+
+/// Wait until this terminal's own client is the one looking at `id`.
+///
+/// By the terminal's tty rather than by there being a client at all: the
+/// session may have somebody else on it already, and which terminal landed
+/// where is the whole question.
+fn until_the_terminal_is_on(amx: &Harness, terminal: &str, id: &str) {
+    let tty = amx.tmux(&["display-message", "-p", "-t", terminal, "#{pane_tty}"]);
+    amx.until(&format!("this terminal on {id}"), || {
+        clients_on(amx, &format!("amx-{id}"))
+            .lines()
+            .any(|on| on == tty)
+            .then_some(())
+    });
+}
+
 /// Wait for the continued session to be drawing on this terminal.
 fn until_looking_at_it(amx: &Harness, terminal: &str) {
     amx.until("the agent on the screen", || {
@@ -1240,6 +1265,65 @@ fn attach_by_the_wall_says_so_when_there_is_no_wall_and_when_there_is_an_id() {
 }
 
 #[test]
+fn attach_last_goes_back_to_the_agent_this_terminal_came_from() {
+    // Where somebody has been is the one thing the wall cannot say, so it is
+    // written down as each terminal is handed over, and going back reads that.
+    let amx = Harness::new();
+    let first = "fix-login-a1b";
+    let second = "port-import-b2c";
+    something_else_on_the_server(&amx);
+    start(&amx, first, amx.home(), "happy-turn");
+    amx.until_state(first, "idle");
+    start(&amx, second, amx.home(), "happy-turn");
+    amx.until_state(second, "idle");
+
+    // A wall with agents on it and nobody yet been anywhere: going back has
+    // nowhere to go, and says so rather than landing on whatever is nearest.
+    let out = amx.amx(&["attach", "--last"]);
+    assert_eq!(out.status.code(), Some(1));
+    let why = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(why.contains("no agent to go back to"), "{why}");
+
+    // One agent and then the other: this terminal has been in both, and was
+    // in the second of them last.
+    a_terminal(&amx, &["attach", first]);
+    until_attached(&amx, first);
+    a_terminal(&amx, &["attach", second]);
+    until_attached(&amx, second);
+
+    // Typed at a shell, standing in no agent at all: that last one is where
+    // going back goes, and this terminal is the client that proves it.
+    let terminal = a_terminal(&amx, &["attach", "--last"]);
+    until_the_terminal_is_on(&amx, &terminal, second);
+
+    // Pressed inside the second agent's own session, which is where a tmux key
+    // is pressed: going back is the agent before it rather than the one it was
+    // pressed in. That agent's pane has gone since, so it is picked up on the
+    // way, exactly as `attach <id>` would pick it up.
+    kill_pane(&amx, &amx.pane_of(first));
+    let pane = amx.pane_of(second);
+    let scenario = amx.scenario("continues-a-session");
+    amx.in_a_terminal(
+        &[
+            ("TMUX_PANE", &pane),
+            ("MOCK_CLAUDE_SCENARIO", &scenario.to_string_lossy()),
+            ("MOCK_CLAUDE_SESSION_2", CONTINUED),
+        ],
+        &["attach", "--last"],
+    );
+
+    until_continued(&amx, first);
+    assert!(
+        amx.pane_alive(&amx.pane_of(first)),
+        "a pane of its own again"
+    );
+    assert!(
+        amx.pane_alive(&pane),
+        "and the agent the key was pressed in is left where it was"
+    );
+}
+
+#[test]
 fn enter_on_a_dead_agent_brings_it_back() {
     // The wall's own door to the same thing. Outside tmux the view is the
     // terminal, so what it has to give the agent is the terminal itself.
@@ -1256,6 +1340,11 @@ fn enter_on_a_dead_agent_brings_it_back() {
     assert_ne!(pane, gone, "a pane of its own again");
     assert!(amx.pane_alive(&pane));
     until_looking_at_it(&amx, &view);
+
+    // The trail is the view's as much as the verb's: somebody who pressed
+    // enter on a row is in that agent, and going back at a shell goes there.
+    let terminal = a_terminal(&amx, &["attach", "--last"]);
+    until_the_terminal_is_on(&amx, &terminal, id);
 }
 
 #[test]

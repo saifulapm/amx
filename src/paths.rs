@@ -62,16 +62,34 @@ pub fn agent_dir(id: &str) -> Result<PathBuf> {
 /// — it is the reader's own — and a file inside the agents directory would be
 /// an entry every walk of that directory has to know is not an agent.
 pub fn view_file(state_root: &Path) -> Option<PathBuf> {
+    beside_the_agents(state_root, VIEW)
+}
+
+/// What that file is called.
+const VIEW: &str = "view.json";
+
+/// The agents a terminal has been handed to, newest first.
+///
+/// Beside the agents for the same reason the view's file is: where somebody
+/// has been is theirs rather than any agent's. What reads it is `amx attach
+/// --last`, which asks a question about the trail and not about the wall.
+pub fn visited_file(state_root: &Path) -> Option<PathBuf> {
+    beside_the_agents(state_root, VISITED)
+}
+
+/// What that file is called.
+const VISITED: &str = "visited.json";
+
+/// A file amx keeps for itself, at the state root rather than among the
+/// agents.
+fn beside_the_agents(state_root: &Path, name: &str) -> Option<PathBuf> {
     state_root
         .parent()
         // A relative root has an empty parent, which names wherever the
         // process happens to be running rather than anywhere amx keeps things.
         .filter(|root| !root.as_os_str().is_empty())
-        .map(|root| root.join(VIEW))
+        .map(|root| root.join(name))
 }
-
-/// What that file is called.
-const VIEW: &str = "view.json";
 
 /// Where a listing amx read out of a vendor is kept between runs.
 ///
@@ -224,6 +242,27 @@ mod tests {
         );
         assert_eq!(
             view_file(Path::new("agents")),
+            None,
+            "a root with nowhere above it is not a place to write"
+        );
+    }
+
+    #[test]
+    fn the_trail_of_visited_agents_is_kept_beside_the_agents() {
+        assert_eq!(
+            visited_file(&state_root_from(None, Path::new("/home/dev"))),
+            Some(PathBuf::from("/home/dev/.local/state/amx/visited.json"))
+        );
+        assert_eq!(
+            visited_file(&state_root_from(
+                Some(Path::new("/tmp/t1")),
+                Path::new("/home/dev")
+            )),
+            Some(PathBuf::from("/tmp/t1/visited.json")),
+            "beside the view's own file, wherever the state root was pointed"
+        );
+        assert_eq!(
+            visited_file(Path::new("agents")),
             None,
             "a root with nowhere above it is not a place to write"
         );

@@ -105,15 +105,22 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
             state,
             timeout,
         }) => finish(verbs::wait::from_env(ids, *any, *state, *timeout)),
-        Some(cli::Command::Attach { id, next, prev, .. }) => {
+        Some(cli::Command::Attach {
+            id,
+            next,
+            prev,
+            last,
+            ..
+        }) => {
             use verbs::attach::Aim;
             // The command line has already refused every other combination:
-            // an id or one of the three flags, never two of them and never
+            // an id or one of the four flags, never two of them and never
             // neither, so what is left when the first three miss is --waiting.
             let aim = match id {
                 Some(id) => Aim::Id(id.clone()),
                 None if *next => Aim::Next,
                 None if *prev => Aim::Prev,
+                None if *last => Aim::Last,
                 None => Aim::Waiting,
             };
             finish(verbs::attach::from_env(&aim))

@@ -3348,7 +3348,7 @@ enum Reach {
 fn reach(root: &Path, config: &Config, here: Option<&Here>, view: &View) -> Result<Reach> {
     let server = Server::from_socket(view.meta.socket.clone());
     if server.pane_answers_for(&view.meta.pane, view.id()) {
-        return reaching(server, here, view);
+        return Ok(noted(root, view.id(), reaching(server, here, view)?));
     }
 
     let env = spawn::env_snapshot(std::env::vars());
@@ -3360,9 +3360,22 @@ fn reach(root: &Path, config: &Config, here: Option<&Here>, view: &View) -> Resu
         Comeback::Back => {
             let back = derive::view(root, view.id(), now())?;
             let server = Server::from_socket(back.meta.socket.clone());
-            reaching(server, here, &back)
+            Ok(noted(root, back.id(), reaching(server, here, &back)?))
         }
     }
+}
+
+/// Write the agent down as where whoever is reading went, where they went.
+///
+/// The trail `amx attach --last` goes back along, and the view is the other
+/// door onto the same thing: somebody who pressed enter on a row is in that
+/// agent as surely as if they had typed the verb. A refusal is nowhere they
+/// went, so it leaves no mark.
+fn noted(root: &Path, id: &str, reached: Reach) -> Reach {
+    if matches!(reached, Reach::There | Reach::Lend(..)) {
+        verbs::attach::note_visited(root, id);
+    }
+    reached
 }
 
 /// The half of it that is tmux: an agent in a pane, and a terminal to put it

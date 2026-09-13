@@ -890,6 +890,7 @@ amx attach <id>        # hand this terminal to its pane
 amx attach --next      # the agent after this one on the wall
 amx attach --prev      # the one before it
 amx attach --waiting   # the first agent with something for you to do
+amx attach --last      # the agent you were in before this one
 amx logs <id>          # the last of what its pane has printed, without attaching
 amx logs <id> --lines 40
 amx send <id> "and now the linter"
@@ -910,6 +911,7 @@ one:
 
 ```sh
 bind -n M-j run-shell "amx attach --next"
+bind -n M-o run-shell "amx attach --last"
 ```
 
 The wall answers which agent: the order the view draws under the arrangement
@@ -919,8 +921,16 @@ at either end; pressed anywhere else, `--next` lands on the first row and
 `--prev` on the last. `--waiting` skips the stepping and goes to the first
 agent stopped on a question, else the first waiting on a reviewer, else the
 turn that ended most recently. A sleeping agent is never what `--waiting`
-lands on. An empty wall is an exit of 1 saying so, and any of the three beside
+lands on. An empty wall is an exit of 1 saying so, and any of the four beside
 an id is a usage error.
+
+`--last` goes back rather than along: to the agent this terminal was in before
+this one, which is a thing the wall cannot say and so is written down as it
+happens. Every terminal amx hands over goes on the trail, `enter` in the view
+as much as the verb, so two presses of the key toggle between the two agents
+you are working across. An agent amx has since forgotten is read past, and a
+trail with nobody left on it is an exit of 1 saying there is no agent to go
+back to.
 
 `--dir` is one machine read one project at a time. An agent belongs to a
 directory when it runs under it, and an agent in a worktree belongs to the
@@ -1681,8 +1691,10 @@ One directory per agent under `~/.local/state/amx/agents/<id>/`:
 
 Beside that directory rather than in it, `~/.local/state/amx/view.json` is the
 view's own: how you last arranged the list, and whether the status line has
-been offered. Nothing in it belongs to an agent, and deleting it costs you the
-arrangement and nothing else.
+been offered. `visited.json` beside it is the last twenty agents a terminal was
+handed to, newest first, which is what `amx attach --last` goes back along.
+Nothing in either belongs to an agent, and deleting them costs you the
+arrangement and the trail and nothing else.
 
 Writes go through a lock, one at a time; readers never lock and never see half
 a document. `ls` sweeps records whose agent finished more than a week ago. A

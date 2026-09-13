@@ -21,6 +21,11 @@
 //! through it from a key lands in the order somebody arranged the rows into.
 //! Where the stepping starts from is the agent whose session the key was
 //! pressed in, which tmux is the only thing that can say.
+//!
+//! `--last` asks a different question: not where this agent is on the wall,
+//! but where whoever pressed the key was before they came here. That is the
+//! one thing the wall cannot answer, so it is written down as it happens —
+//! every terminal amx hands over, here and in the view, goes on the trail.
 
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -41,6 +46,10 @@ const PANE_ENV: &str = "TMUX_PANE";
 /// agent: there is no such agent, and no direction changes that.
 const EMPTY: &str = "nothing on the wall to attach to";
 
+/// How far back the trail goes. Long enough that a morning's work is on it,
+/// short enough that the file stays a file somebody could read.
+const TRAIL: usize = 20;
+
 /// Which agent the terminal was asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Aim {
@@ -52,6 +61,8 @@ pub enum Aim {
     Prev,
     /// The first one with something for somebody to do.
     Waiting,
+    /// The one this terminal was in before this one.
+    Last,
 }
 
 /// Run the verb against the machine.
@@ -78,7 +89,7 @@ pub fn from_env(aim: &Aim) -> Result<i32> {
             }
             let pane = std::env::var(PANE_ENV).ok();
             let current = current(&order, inside.as_deref(), pane.as_deref());
-            pick(&order, current.as_deref(), aim)?
+            pick(&order, current.as_deref(), &visited(&root), aim)?
         }
     };
 
@@ -103,6 +114,41 @@ fn current(order: &[(Group, String)], inside: Option<&str>, pane: Option<&str>) 
     order.iter().any(|(_, on)| *on == id).then_some(id)
 }
 
+/// The agents this machine's terminals have been handed to, newest first.
+///
+/// A convenience and not a record: a trail that will not read is a trail
+/// nobody has left yet, because refusing to attach over a file somebody's
+/// editor half wrote would be the worse answer.
+fn visited(root: &Path) -> Vec<String> {
+    paths::visited_file(root)
+        .and_then(|path| std::fs::read(&path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Write `id` down as where this terminal has just been.
+///
+/// Nothing it can fail at is worth failing an attach over: the terminal is
+/// about to become tmux, and a trail that could not be written costs one
+/// `--last` rather than the thing somebody actually asked for.
+pub fn note_visited(root: &Path, id: &str) {
+    let Some(path) = paths::visited_file(root) else {
+        return;
+    };
+    // The front, and only once: the trail says where somebody has been in the
+    // order they were there, and an agent they keep coming back to is one
+    // place on it rather than twenty.
+    let mut trail = visited(root);
+    trail.retain(|on| on != id);
+    trail.insert(0, id.to_string());
+    trail.truncate(TRAIL);
+
+    if let Ok(mut bytes) = serde_json::to_vec_pretty(&trail) {
+        bytes.push(b'\n');
+        let _ = crate::store::write_atomic(&path, &bytes);
+    }
+}
+
 /// The agent a tmux session's name says it holds, if it says so.
 fn agent_in(session_name: &str) -> Option<String> {
     let id = session_name.trim().strip_prefix(tmux::SESSION_PREFIX)?;
@@ -117,7 +163,16 @@ fn agent_in(session_name: &str) -> Option<String> {
 /// agent the wall has forgotten — the step starts at the end it is heading
 /// away from, so one press lands on the first row for `--next` and the last
 /// for `--prev`.
-fn pick(order: &[(Group, String)], current: Option<&str>, aim: &Aim) -> Result<String> {
+///
+/// `visited` is the trail, newest first, which is what `--last` goes back
+/// along. The agent it is already in is skipped, so two presses toggle between
+/// two agents rather than standing still on one.
+fn pick(
+    order: &[(Group, String)],
+    current: Option<&str>,
+    visited: &[String],
+    aim: &Aim,
+) -> Result<String> {
     let at = current.and_then(|id| order.iter().position(|(_, on)| on == id));
     let wrapped = |row: Option<&(Group, String)>| match row {
         Some((_, id)) => Ok(id.clone()),
@@ -138,6 +193,17 @@ fn pick(order: &[(Group, String)], current: Option<&str>, aim: &Aim) -> Result<S
             Some(id) => Ok(id),
             None => bail!("nothing on the wall is waiting on you"),
         },
+        // An agent the wall no longer holds is a name on the trail and
+        // nothing to go back to, so the trail is read past it.
+        Aim::Last => {
+            let back = visited
+                .iter()
+                .find(|id| Some(id.as_str()) != current && order.iter().any(|(_, on)| on == *id));
+            match back {
+                Some(id) => Ok(id.clone()),
+                None => bail!("no agent to go back to"),
+            }
+        }
     }
 }
 
@@ -166,6 +232,10 @@ pub fn run(
         .with_context(|| format!("finding the session {id} is in"))?;
 
     let mut command = client(&server, &session, &meta.pane, inside)?;
+    // Written down once the terminal is going to be handed over and before it
+    // is: after this line there is no process here to write anything, and
+    // before the tmux above answered there was nothing to say somebody got in.
+    note_visited(root, id);
     exec(&mut command)
 }
 
@@ -307,7 +377,7 @@ mod tests {
     #[test]
     fn attach_next_and_prev_step_through_the_wall_and_wrap() {
         let wall = a_wall();
-        let step = |current: Option<&str>, aim| pick(&wall, current, &aim).unwrap();
+        let step = |current: Option<&str>, aim| pick(&wall, current, &[], &aim).unwrap();
 
         assert_eq!(step(Some("ask-b2c"), Aim::Next), "busy-c3d");
         assert_eq!(step(Some("ask-b2c"), Aim::Prev), "pin-a1b");
@@ -324,7 +394,7 @@ mod tests {
 
     #[test]
     fn attach_waiting_takes_the_question_first_and_the_last_ending_last() {
-        let waiting = |wall: &[(Group, String)]| pick(wall, None, &Aim::Waiting);
+        let waiting = |wall: &[(Group, String)]| pick(wall, None, &[], &Aim::Waiting);
 
         // A question nobody has answered is what is holding somebody up.
         assert_eq!(waiting(&a_wall()).unwrap(), "ask-b2c");
@@ -351,6 +421,70 @@ mod tests {
         let nothing = wall(&[(Group::Working, "busy-c3d"), (Group::Asleep, "gone-e5f")]);
         let why = waiting(&nothing).unwrap_err().to_string();
         assert!(why.contains("waiting on you"), "{why}");
+    }
+
+    #[test]
+    fn attach_last_goes_back_to_the_agent_you_came_from() {
+        let wall = a_wall();
+        let trail = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        let back =
+            |current: Option<&str>, visited: &[String]| pick(&wall, current, visited, &Aim::Last);
+
+        // Two agents and one key between them: from the one somebody came to,
+        // going back is the one they came from, and from there it is the one
+        // they just left. Two presses toggle.
+        let there = trail(&["busy-c3d", "ask-b2c"]);
+        assert_eq!(back(Some("busy-c3d"), &there).unwrap(), "ask-b2c");
+        let and_back = trail(&["ask-b2c", "busy-c3d"]);
+        assert_eq!(back(Some("ask-b2c"), &and_back).unwrap(), "busy-c3d");
+
+        // Pressed at a shell, standing in no agent at all: the head of the
+        // trail is the agent this terminal was last handed to, and going back
+        // goes there.
+        assert_eq!(back(None, &there).unwrap(), "busy-c3d");
+
+        // An agent the wall no longer holds is a name and nothing to go back
+        // to, so the trail is read past it.
+        let gone_since = trail(&["forgotten-z9z", "done-d4e"]);
+        assert_eq!(back(None, &gone_since).unwrap(), "done-d4e");
+
+        // And a trail with nobody on it to go back to says that rather than
+        // standing still on the agent somebody is already in.
+        let only_here = trail(&["busy-c3d", "forgotten-z9z"]);
+        let why = back(Some("busy-c3d"), &only_here).unwrap_err().to_string();
+        assert!(why.contains("no agent to go back to"), "{why}");
+        assert!(back(None, &[]).is_err(), "and nowhere is nowhere");
+    }
+
+    #[test]
+    fn attach_keeps_the_trail_newest_first_and_one_place_per_agent() {
+        let state = tempfile::TempDir::new().unwrap();
+        let root = state.path().join("agents");
+        assert!(visited(&root).is_empty(), "a trail nobody has left yet");
+
+        note_visited(&root, "ask-b2c");
+        note_visited(&root, "busy-c3d");
+        assert_eq!(visited(&root), ["busy-c3d", "ask-b2c"]);
+
+        // Back to the one before: an agent somebody keeps returning to is one
+        // place on the trail, at the front of it.
+        note_visited(&root, "ask-b2c");
+        assert_eq!(visited(&root), ["ask-b2c", "busy-c3d"]);
+
+        // A trail and not a log: what falls off the end is the oldest.
+        for nth in 0..TRAIL {
+            note_visited(&root, &format!("agent-{nth:02}"));
+        }
+        let trail = visited(&root);
+        assert_eq!(trail.len(), TRAIL);
+        assert_eq!(trail.first().unwrap(), &format!("agent-{:02}", TRAIL - 1));
+        assert!(!trail.iter().any(|id| id == "ask-b2c"));
+
+        // Half a file is a trail nobody has left, because a file amx keeps
+        // for its own convenience must not be what refuses an attach.
+        let path = paths::visited_file(&root).expect("somewhere to keep it");
+        std::fs::write(&path, "[\"ask-b2c").unwrap();
+        assert!(visited(&root).is_empty());
     }
 
     #[test]
