@@ -536,6 +536,26 @@ pub fn for_dir(dir: &Path) -> (Config, Vec<String>) {
     (config, warnings)
 }
 
+/// What the project in `dir` says about one string key, or nothing where it
+/// says nothing.
+///
+/// The whole config laid up for one key, where the caller has neither and
+/// wants neither: a hook holding the person's config already asks that, and
+/// what is left to ask is whether the project has changed its mind. So no
+/// file but the project's own is read, and what is read of it is one key.
+///
+/// Proved a config first, the way [`keys_of`] proves it: one key is never
+/// taken out of a file every other key of which was thrown away.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the errand is assembled in a later task")
+)]
+pub fn project_key(dir: &Path, key: &str) -> Option<String> {
+    let path = crate::paths::project_config(dir)?;
+    let keys = usable(&path).ok()??;
+    Some(keys.get(key)?.as_str()?.to_string())
+}
+
 /// Read the files in order, every key one sets replacing that key from the
 /// files before it.
 ///
@@ -1430,6 +1450,47 @@ mod tests {
         // The whole way through, from a directory to the key that file sets.
         let repo = a_project();
         assert_eq!(for_dir(repo.path()).0.max_agents, 42);
+    }
+
+    #[test]
+    fn the_projects_own_file_answers_one_key_without_reading_the_persons() {
+        // A moment key is asked for where no config has been read and none is
+        // wanted, so it is this file and no other: a directory with nothing
+        // else in it answers the same on any machine.
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".amx")).unwrap();
+        wrote(
+            &dir.path().join(".amx"),
+            "config.toml",
+            "on_stopped = \"log-it\"\nmax_agents = 42\n",
+        );
+
+        assert_eq!(
+            project_key(dir.path(), "on_stopped").as_deref(),
+            Some("log-it")
+        );
+        // A key the file leaves out, and one it sets to something that is not
+        // a string, are both nothing to say.
+        assert_eq!(project_key(dir.path(), "on_waiting"), None);
+        assert_eq!(project_key(dir.path(), "max_agents"), None);
+    }
+
+    #[test]
+    fn a_project_file_amx_cannot_use_answers_no_key_at_all() {
+        // The same proving the layering does, so one key is never read out of
+        // a file every other key of which was thrown away.
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".amx")).unwrap();
+        wrote(
+            &dir.path().join(".amx"),
+            "config.toml",
+            "max_agents = \"two\"\non_done = \"run-it\"\n",
+        );
+        assert_eq!(project_key(dir.path(), "on_done"), None);
+
+        // And a project keeping no file of its own says nothing.
+        let bare = TempDir::new().unwrap();
+        assert_eq!(project_key(bare.path(), "on_done"), None);
     }
 
     #[test]
