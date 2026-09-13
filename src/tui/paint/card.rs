@@ -27,7 +27,8 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use super::input::{COMPOSER_CAP, behind, rows_of, typed_rows};
@@ -669,6 +670,17 @@ pub struct Scroll {
     /// stepped to one. A patch is read a hunk at a time, and this is the one
     /// the rule counts, the paint marks, and a message off the card is about.
     hunk: Cell<Option<usize>>,
+    /// What has been written about the patch so far, a hunk at a time: the
+    /// words the line was holding when the cursor stepped off each one, under
+    /// that hunk's own index, and the words typed at the top of the patch
+    /// under no hunk at all.
+    ///
+    /// Here rather than on the line because the line holds one hunk's words at
+    /// a time and a review is about several: the line is what is being written
+    /// now, and this is what has been written already. In patch order, because
+    /// that is the order the message is built in — a review reads the way the
+    /// diff does.
+    remarks: RefCell<BTreeMap<Option<usize>, String>>,
 }
 
 impl Scroll {
@@ -679,36 +691,84 @@ impl Scroll {
     /// put back to none here: taking the diff again and walking the list onto
     /// another agent both open a card, and a card that was closed comes back
     /// this way too. A hunk of the patch before it is no place to open on.
+    ///
+    /// The remarks go with it, for the same reason and one more: they are a
+    /// review of the patch this card was showing, and the next card through
+    /// this door is showing something else.
     pub fn open_at(&self, away: usize) {
         self.away.set(away);
         self.opened.set(away);
         self.anchor.set(away);
         self.hunk.set(None);
+        self.remarks.borrow_mut().clear();
+    }
+
+    /// Keep `words` as the remark on `at` — a hunk, or the top of the patch —
+    /// or drop what was there when they are blank.
+    ///
+    /// Blank is dropped rather than kept as an empty string so that everything
+    /// counting remarks can count entries: a line stepped off with nothing on
+    /// it is not a note on that hunk, and neither is one cleared by hand.
+    // Written and read by the card's line as the hunk cursor steps, which takes
+    // these up next; until it does, the tests here are their only callers.
+    #[allow(dead_code)]
+    pub fn remark(&self, at: Option<usize>, words: &str) {
+        match words.trim().is_empty() {
+            true => self.remarks.borrow_mut().remove(&at),
+            false => self.remarks.borrow_mut().insert(at, words.to_string()),
+        };
+    }
+
+    /// What was written about `at`, which is empty where nothing was.
+    #[allow(dead_code)]
+    pub fn remarked(&self, at: Option<usize>) -> String {
+        self.remarks.borrow().get(&at).cloned().unwrap_or_default()
+    }
+
+    /// Everything written so far, the opening first and the hunks after it in
+    /// the order the patch writes them, which is the order a review reads in.
+    pub fn remarks(&self) -> Vec<(Option<usize>, String)> {
+        self.remarks
+            .borrow()
+            .iter()
+            .map(|(at, words)| (*at, words.clone()))
+            .collect()
     }
 
     /// Step to the next hunk of the patch the card is holding, or the one
-    /// before it, and open the card on that hunk's header row.
+    /// before it, or the top of the patch above them all, and stand the card
+    /// on that row.
     ///
-    /// From no hunk at all, either way is the first of them: there is nothing
-    /// before the first and nothing after none. Both ends hold rather than
-    /// wrapping, because a key that came back round to the top would read as a
-    /// key that had lost its place.
+    /// Before the first hunk is the top of the patch itself, where no hunk is
+    /// under the cursor: a review opens there, and that is where its opening
+    /// words are written. Forward from there is the first hunk; back from
+    /// there stays, because there is nothing above the top. The last hunk
+    /// holds the same way, because a key that came back round to the other end
+    /// would read as a key that had lost its place.
     ///
     /// Opened rather than paged, so the frame that draws it puts the header
     /// row at the top of the window and every frame after it holds the card
     /// there — clamped, on a hunk near the end of a patch, to the last page
-    /// the card has rows for.
+    /// the card has rows for. The offsets are moved here rather than through
+    /// [`Scroll::open_at`]: stepping through a patch is reading the card that
+    /// is open, not opening another one, and the remarks written so far are
+    /// what the step is carrying.
     pub fn to_hunk(&self, hunks: &[Hunk], forward: bool) {
         let Some(last) = hunks.len().checked_sub(1) else {
             return;
         };
         let at = match (self.hunk.get(), forward) {
-            (None, _) => 0,
-            (Some(at), true) => at.saturating_add(1).min(last),
-            (Some(at), false) => at.saturating_sub(1),
+            (None, true) => Some(0),
+            (None, false) => return,
+            (Some(at), true) => Some(at.saturating_add(1).min(last)),
+            (Some(0), false) => None,
+            (Some(at), false) => Some(at - 1),
         };
-        self.open_at(hunks[at].row);
-        self.hunk.set(Some(at));
+        let row = at.map_or(0, |at| hunks[at].row);
+        self.away.set(row);
+        self.opened.set(row);
+        self.anchor.set(row);
+        self.hunk.set(at);
     }
 
     /// Which hunk the card is standing on, where somebody has stepped to one.
@@ -958,9 +1018,24 @@ pub(super) fn float(
     // body marks. A patch shorter than the one the cursor was stepped through
     // has no such hunk, and nothing is marked.
     let at = scroll.at_hunk().filter(|at| *at < card.body.hunks().len());
+    // And which hunks a note has been written on, which the rule counts and
+    // the body marks. The opening words are on no hunk, and are no note.
+    let notes: Vec<usize> = scroll
+        .remarks()
+        .into_iter()
+        .filter_map(|(at, _)| at)
+        .collect();
 
     frame.render_widget(
-        Paragraph::new(rule(card, called, held, at, area.width as usize, theme)),
+        Paragraph::new(rule(
+            card,
+            called,
+            held,
+            at,
+            notes.len(),
+            area.width as usize,
+            theme,
+        )),
         ruled,
     );
 
@@ -1004,7 +1079,7 @@ pub(super) fn float(
     }
 
     frame.render_widget(
-        Paragraph::new(body(card, screen.height as usize, held, at, theme)),
+        Paragraph::new(body(card, screen.height as usize, held, at, &notes, theme)),
         screen,
     );
 }
@@ -1028,6 +1103,7 @@ fn rule(
     called: &str,
     held: usize,
     at: Option<usize>,
+    notes: usize,
     width: usize,
     theme: Theme,
 ) -> Line<'static> {
@@ -1036,9 +1112,16 @@ fn rule(
         Some(at) => format!("{SEPARATOR}hunk {} of {}", at + 1, card.body.hunks().len()),
         None => String::new(),
     };
+    // After the hunk, because the hunk is where the next note is about to be
+    // written: what is on the line, and then what is behind it.
+    let noted = match notes {
+        0 => String::new(),
+        1 => format!("{SEPARATOR}1 note"),
+        notes => format!("{SEPARATOR}{notes} notes"),
+    };
     let changed = match card.changes {
         true => fit(
-            &format!("{SEPARATOR}{CHANGED}{hunk}"),
+            &format!("{SEPARATOR}{CHANGED}{hunk}{noted}"),
             width.saturating_sub(width_of(&named)),
         ),
         false => String::new(),
@@ -1133,11 +1216,17 @@ fn requests(prs: &[Pr], theme: Theme) -> Vec<Span<'static>> {
 /// `at` is the hunk the cursor is standing on, whose header row is drawn on
 /// the cursor's own background — the same mark the list puts under the row a
 /// person is on, because it is the same fact: this is where they are.
+///
+/// `notes` are the hunks something has been written about, whose header rows
+/// are drawn in the colour a waiting agent's row wears: the review is held off
+/// the card until enter sends it, and this is the only place paging the patch
+/// shows where it has been.
 pub(super) fn body(
     card: &Card<Body>,
     rows: usize,
     away: usize,
     at: Option<usize>,
+    notes: &[usize],
     theme: Theme,
 ) -> Vec<Line<'static>> {
     if card.asks() && card.question.is_some() {
@@ -1152,6 +1241,22 @@ pub(super) fn body(
     };
     let start = window.start;
     let mut shown = card.body.rows[window].to_vec();
+
+    // The header row of every hunk a note is on, where the window has it.
+    // Before the cursor's own mark, so a hunk that is both wears both: the
+    // colour says a note is kept there, the background says this is where the
+    // reader is.
+    for at in notes {
+        if let Some(row) = card
+            .body
+            .hunks
+            .get(*at)
+            .and_then(|hunk| hunk.row.checked_sub(start))
+            && let Some(line) = shown.get_mut(row)
+        {
+            line.style = line.style.fg(theme.waiting);
+        }
+    }
 
     // The header row of that hunk, where the window has it: a hunk stepped to
     // is at the top of the window, and one the clamp pulled up from the end of
@@ -1938,11 +2043,20 @@ index e69de29..0000000
         scroll.to_hunk(body.hunks(), false);
         assert_eq!(scroll.at_hunk(), Some(0), "and back the way it came");
         assert_eq!(scroll.away.get(), body.hunks()[0].row);
+
+        // Before the first hunk is the top of the patch, which is a place of
+        // its own: no hunk under the cursor, and the window on the first row.
         scroll.to_hunk(body.hunks(), false);
-        assert_eq!(scroll.at_hunk(), Some(0), "the first stays too");
+        assert_eq!(scroll.at_hunk(), None, "the top of the patch itself");
+        assert_eq!(scroll.away.get(), 0);
+        assert!(!scroll.paged(), "which is where the card now opens");
+        scroll.to_hunk(body.hunks(), false);
+        assert_eq!(scroll.at_hunk(), None, "and the top stays");
+        assert_eq!(scroll.away.get(), 0);
 
         // Whatever puts a card where it opens puts the cursor back to none:
         // taking the diff again, and the cursor landing on another agent.
+        scroll.to_hunk(body.hunks(), true);
         scroll.open_at(0);
         assert_eq!(scroll.at_hunk(), None);
 
@@ -1950,6 +2064,47 @@ index e69de29..0000000
         scroll.to_hunk(Body::said("nothing to review here").hunks(), true);
         assert_eq!(scroll.at_hunk(), None);
         assert_eq!(scroll.away.get(), 0, "and the card was left where it was");
+    }
+
+    #[test]
+    fn card_keeps_a_remark_for_every_hunk_and_one_for_the_top() {
+        let body = Body::patch(A_PATCH);
+        let scroll = Scroll::default();
+        assert_eq!(scroll.remarked(None), "", "nothing kept, nothing to read");
+        assert!(scroll.remarks().is_empty());
+
+        scroll.remark(Some(1), "this file can go");
+        scroll.remark(None, "the whole of it reads well");
+        scroll.remark(Some(0), "the name reads backwards");
+        assert_eq!(scroll.remarked(Some(1)), "this file can go");
+        assert_eq!(
+            scroll.remarks(),
+            vec![
+                (None, "the whole of it reads well".to_string()),
+                (Some(0), "the name reads backwards".to_string()),
+                (Some(1), "this file can go".to_string()),
+            ],
+            "the opening first and the hunks in the order the patch writes them"
+        );
+
+        // A line with nothing on it keeps nothing: stepping off a hunk nobody
+        // wrote on is the common way through here, and clearing what was
+        // written on one is how a remark is taken back.
+        scroll.remark(Some(0), " \n ");
+        assert_eq!(scroll.remarked(Some(0)), "");
+        assert_eq!(scroll.remarks().len(), 2);
+
+        // Stepping through the patch leaves every one of them where it is:
+        // that is the whole of what they are for.
+        scroll.to_hunk(body.hunks(), true);
+        scroll.to_hunk(body.hunks(), false);
+        assert_eq!(scroll.remarks().len(), 2, "the step kept them");
+
+        // And whatever opens a card drops them along with the cursor, because
+        // a review is about the patch the card was showing.
+        scroll.open_at(0);
+        assert!(scroll.remarks().is_empty());
+        assert_eq!(scroll.at_hunk(), None);
     }
 
     #[test]
@@ -2011,6 +2166,77 @@ index e69de29..0000000
             "the hunk stands at the top of the window: {:?}",
             &rows[at..]
         );
+    }
+
+    #[test]
+    fn card_counts_the_notes_on_its_rule_and_marks_the_hunks_they_are_on() {
+        let patch = || Card {
+            id: "fix-login-a1b".to_string(),
+            phase: Phase::Working,
+            question: None,
+            options: Vec::new(),
+            walked: false,
+            kind: None,
+            body: A_PATCH.to_string(),
+            changes: true,
+            answer: false,
+            listening: true,
+        };
+        let screen = showing(
+            vec![view("fix-login-a1b", Phase::Working, None, 3)],
+            Some(patch()),
+        );
+        let size = (60, 24);
+
+        // The words a review opens with are not a note on anything, so the
+        // rule has nothing to count yet.
+        screen.scroll.remark(None, "the whole of it reads well");
+        let all = painted(&screen, size).join("\n");
+        assert!(!all.contains("note"), "the opening is no note: {all}");
+
+        screen.scroll.remark(Some(1), "this file can go");
+        let all = painted(&screen, size).join("\n");
+        assert!(
+            all.contains("what it has changed · 1 note"),
+            "one note kept: {all}"
+        );
+
+        // And the count stands after the hunk the cursor is on, because the
+        // hunk is where the next one is about to be written.
+        screen.scroll.remark(Some(0), "the name reads backwards");
+        let hunks = screen.card.as_ref().expect("the card").body.hunks();
+        screen.scroll.to_hunk(hunks, true);
+        let all = painted(&screen, size).join("\n");
+        assert!(
+            all.contains("· hunk 1 of 2 · 2 notes"),
+            "both of them, after the hunk: {all}"
+        );
+
+        // Every hunk a note is on says so on its header row, so paging the
+        // patch shows where the review has been. The hunk under the cursor
+        // wears the cursor's own background as well.
+        let rows = body(&patch().read(), 12, 0, Some(0), &[0, 1], theme());
+        assert_eq!(
+            rows[1].style.fg,
+            Some(theme().waiting),
+            "the header of the hunk under the cursor, noted"
+        );
+        assert_eq!(
+            rows[1].style.bg,
+            Some(theme().cursor),
+            "and still the cursor"
+        );
+        assert_eq!(
+            rows[8].style.fg,
+            Some(theme().waiting),
+            "and the other noted hunk, further down the patch"
+        );
+        assert_ne!(rows[8].style.bg, Some(theme().cursor));
+
+        // A hunk nobody has written on keeps git's own colour.
+        let rows = body(&patch().read(), 12, 0, None, &[1], theme());
+        assert_eq!(rows[1].style.fg, Some(Color::Cyan));
+        assert_eq!(rows[8].style.fg, Some(theme().waiting));
     }
 
     #[test]
@@ -3154,7 +3380,7 @@ index e69de29..0000000
 
     /// What a card's body says, with the paint it says it in set aside.
     fn said(card: Card, rows: usize) -> Vec<String> {
-        body(&card.read(), rows, 0, None, theme())
+        body(&card.read(), rows, 0, None, &[], theme())
             .iter()
             .map(|line| {
                 line.spans
