@@ -1142,8 +1142,8 @@ amx sweep --force  # take them without asking
 An agent whose pull request merged or closed, or whose branch you merged
 yourself, is holding a record, a worktree and a branch that say what the
 repository already says. `sweep` finds them: agents that have finished or are
-sitting idle, on a branch, with a request that is over or a branch git reads as
-in the main line.
+sitting idle, on a branch, with a request that is over, a branch git reads as in
+the main line, or a branch the origin no longer has.
 
 ```
 fix-login-a1b  #12 merged
@@ -1158,12 +1158,24 @@ then the record, each said as it happens. A worktree holding work no commit has
 is kept, and its record with it, so the branch it names is still there to be
 found — that law does not move for `--force` any more than it moves for `stop`.
 
-The request is read from what the last look wrote down beside the record, so a
-sweep never waits on a network. The branch is read from git, which knows
-nothing about forges: work that went in through a merge you did by hand counts
-as much as work that went in through a request.
+The request is read from what the last look wrote down beside the record, and
+where that has aged the verb asks the forge itself and waits for the answer: an
+agent whose request merged is found whether or not anybody has opened the view
+since. The branch is read from git, which knows nothing about forges: work that
+went in through a merge you did by hand counts as much as work that went in
+through a request.
+
+The third reason is the one a squash merge leaves. The forge takes the commits
+under a sha your branch does not hold, so git reads nothing as merged, and then
+it deletes the branch. `sweep` fetches with `--prune` once per repository before
+it walks, and a branch whose upstream has gone is listed as `amx/fix-login-a1b
+gone from origin`. A repository the fetch fails in — no origin, no network, a
+forge wanting a password — is said once on stderr and swept on the other two
+reasons.
 
 The view has the same thing under `c`, asked wherever the cursor is standing.
+It waits on nothing: the request is what the last look wrote down, the upstream
+is what git last recorded, and the view is what keeps both of those current.
 The first press asks it of every agent on the wall and marks the ones it found,
 each row saying why it is on the list where its summary was. It asks their
 trees the same question the sweep would, so a row whose tree is holding work no

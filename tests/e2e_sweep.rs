@@ -10,11 +10,24 @@ mod common;
 
 use common::Harness;
 use serde_json::json;
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn sweep(amx: &Harness, args: &[&str]) -> Output {
     amx.amx(&[&["sweep"], args].concat())
+}
+
+/// The same, with a forge of the test's own first on the path.
+fn sweep_with(amx: &Harness, bin: &Path, args: &[&str]) -> Output {
+    let path = match std::env::var("PATH") {
+        Ok(rest) => format!("{}:{rest}", bin.display()),
+        Err(_) => bin.display().to_string(),
+    };
+    amx.amx_command(&[&["sweep"], args].concat())
+        .env("PATH", path)
+        .output()
+        .expect("running amx sweep")
 }
 
 fn said(out: &Output) -> String {
@@ -105,6 +118,32 @@ fn a_merged_request(amx: &Harness, id: &str, number: u64) {
     .expect("writing pr.json");
 }
 
+/// A `gh` of the test's own, answering every question with `said`, in a
+/// directory to put first on the path.
+///
+/// Never the gh the machine running the suite has installed: what a suite must
+/// not do is ask somebody's forge about a repository in a temporary directory.
+fn a_forge_saying(amx: &Harness, said: &str) -> PathBuf {
+    let bin = amx.home().join("bin");
+    std::fs::create_dir_all(&bin).expect("a directory for the forge");
+    let gh = bin.join("gh");
+    std::fs::write(&gh, format!("#!/bin/sh\ncat <<'SAID'\n{said}\nSAID\n")).expect("writing gh");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("a runnable gh");
+    bin
+}
+
+/// An origin for the repository to push to, bare and beside it.
+fn an_origin(repo: &Path) -> PathBuf {
+    let bare = repo.with_file_name("origin.git");
+    git(
+        repo.parent().expect("somewhere to put it"),
+        &["init", "--bare", "-b", "main", &bare.to_string_lossy()],
+    );
+    git(repo, &["remote", "add", "origin", &bare.to_string_lossy()]);
+    git(repo, &["push", "-q", "origin", "main"]);
+    bare
+}
+
 /// A commit of the agent's own, which is what puts its branch somewhere main
 /// is not.
 fn work_on_the_branch(tree: &str, name: &str) {
@@ -156,6 +195,70 @@ fn sweep_takes_the_agent_the_forge_finished_with_and_the_one_git_did() {
             "and the record that named them: {out}"
         );
     }
+}
+
+#[test]
+fn sweep_asks_the_forge_itself_where_no_look_has_written_a_request_down() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let bin = a_forge_saying(
+        &amx,
+        r#"[{"number":12,"state":"MERGED","isDraft":false,
+             "reviewDecision":"","statusCheckRollup":[]}]"#,
+    );
+    let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
+    // The agent's own commit is not in main, so git has nothing to say about
+    // this branch and the forge is the only thing that knows.
+    work_on_the_branch(&tree, "login.rs");
+    assert!(
+        !amx.agent_dir("fix-login-a1b").join("pr.json").exists(),
+        "nobody has opened the view, so nothing is written down beside the record"
+    );
+
+    let out = said(&sweep_with(&amx, &bin, &["--force"]));
+    assert!(out.contains("fix-login-a1b  #12 merged"), "{out}");
+    assert!(!Path::new(&tree).exists(), "the tree is gone: {out}");
+    assert!(
+        !branches(&repo).contains("amx/fix-login-a1b"),
+        "and its branch: {out}"
+    );
+    assert!(
+        !amx.agent_dir("fix-login-a1b").exists(),
+        "and the record that named them: {out}"
+    );
+}
+
+#[test]
+fn sweep_takes_the_agent_whose_branch_the_origin_no_longer_has() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let origin = an_origin(&repo);
+    let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
+    work_on_the_branch(&tree, "login.rs");
+    git(
+        Path::new(&tree),
+        &["push", "-q", "-u", "origin", "amx/fix-login-a1b"],
+    );
+    // A squash merge, as it looks from here: the work went in under a commit
+    // this branch does not hold, and then the forge deleted the branch. This
+    // checkout has not heard of it, so the sweep's own fetch is what makes it
+    // a fact.
+    git(&origin, &["branch", "-D", "amx/fix-login-a1b"]);
+
+    let out = said(&sweep(&amx, &["--force"]));
+    assert!(
+        out.contains("fix-login-a1b  amx/fix-login-a1b gone from origin"),
+        "{out}"
+    );
+    assert!(!Path::new(&tree).exists(), "the tree is gone: {out}");
+    assert!(
+        !branches(&repo).contains("amx/fix-login-a1b"),
+        "and its branch: {out}"
+    );
+    assert!(
+        !amx.agent_dir("fix-login-a1b").exists(),
+        "and the record that named them: {out}"
+    );
 }
 
 #[test]

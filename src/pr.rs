@@ -14,11 +14,17 @@
 //! rather than with a failure, and a row without a number is the row amx has
 //! always drawn.
 //!
-//! **No reader waits on a forge.** A look reads what the last look wrote down
-//! beside the record, and where that is old it sets a fresh look going in a
-//! thread nobody joins. The worst a reading costs is a number one look behind
-//! the network; the alternative is a list that stops for a second every time it
-//! is drawn, on the one surface whose whole promise is that it does not.
+//! **No reader somebody is watching waits on a forge.** A look reads what the
+//! last look wrote down beside the record, and where that is old it sets a
+//! fresh look going in a thread nobody joins. The worst a reading costs is a
+//! number one look behind the network; the alternative is a list that stops for
+//! a second every time it is drawn, on the one surface whose whole promise is
+//! that it does not.
+//!
+//! A verb that decides something on the answer is the other case: `sweep` takes
+//! a record, a tree and a branch on it, and what was never written down is not
+//! a reason to keep them. Those readings say so in their own doc comments —
+//! [`asked_now`] and [`request_head`] — and they are the whole of the list.
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -351,6 +357,36 @@ pub fn read(dir: &Path, at: &Path, branch: &str, now: u64) -> Vec<Pr> {
         ask_again(dir.to_path_buf(), at.to_path_buf(), branch.to_string());
     }
     theirs(held, branch)
+}
+
+/// The pull requests on this agent's branch, asked of the forge here and now
+/// where what is written down has aged.
+///
+/// For the one reader that can wait and has to: `sweep` decides whether an
+/// agent's record, tree and branch are taken on this answer, and a look that
+/// never happened is not a reason to keep three copies of history somebody
+/// already has. An operator who never opens the view has nothing written down
+/// at all, which is the blind spot this closes.
+///
+/// A request that is over is still not asked about again, so the cost is one
+/// forge call per branch that is still going, once, in a verb that prints and
+/// exits.
+pub fn asked_now(meta: &Meta) -> Vec<Pr> {
+    let Some((dir, at, branch)) = about(meta) else {
+        return Vec::new();
+    };
+    ask_now(&dir, &at, branch, crate::store::now())
+}
+
+/// The same, with the record's directory and the repository named.
+fn ask_now(dir: &Path, at: &Path, branch: &str, now: u64) -> Vec<Pr> {
+    let held = held(dir);
+    if still_good(held.as_ref(), branch, now) {
+        return theirs(held, branch);
+    }
+    let prs = ask(at, branch);
+    let _ = write(dir, branch, prs.clone(), now);
+    prs
 }
 
 /// What the last look wrote about this branch, however long ago it was written.
@@ -857,6 +893,39 @@ mod tests {
             kept(dir.path(), "amx/port-importer-b2c"),
             Vec::new(),
             "and an answer about another branch is not this branch's answer"
+        );
+    }
+
+    #[test]
+    fn a_reader_that_can_wait_asks_the_forge_where_what_is_written_down_is_stale() {
+        let dir = TempDir::new().unwrap();
+        let over = vec![Pr {
+            number: 12,
+            standing: Standing::Merged,
+        }];
+        write(dir.path(), "amx/fix-login-a1b", over.clone(), 1_000).unwrap();
+        assert_eq!(
+            ask_now(dir.path(), dir.path(), "amx/fix-login-a1b", 90_000),
+            over,
+            "a request that is over stays over, so no forge is asked about it"
+        );
+
+        let going = vec![Pr {
+            number: 12,
+            standing: Standing::Open,
+        }];
+        write(dir.path(), "amx/fix-login-a1b", going, 1_000).unwrap();
+        assert_eq!(
+            ask_now(dir.path(), dir.path(), "amx/fix-login-a1b", 90_000),
+            Vec::new(),
+            "and a stale one is asked about here and now, rather than in a \
+             thread this reader will not be around for: there is no forge in a \
+             temporary directory, and its answer is the answer"
+        );
+        assert_eq!(
+            held(dir.path()).unwrap().asked,
+            90_000,
+            "and what it said is written down for whoever reads next"
         );
     }
 

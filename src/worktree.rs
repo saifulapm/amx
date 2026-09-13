@@ -198,8 +198,6 @@ pub fn create_on_local(repo: &Path, id: &str, branch: &str) -> Result<Worktree> 
 /// read off the remote-tracking ref, and that moves only when somebody
 /// fetches. A branch with no upstream at all, and one git does not have, both
 /// answer no: neither is an upstream that has gone.
-// Called by t3, where a sweep reads it after fetching.
-#[allow(dead_code)]
 pub fn upstream_gone(repo: &Path, branch: &str) -> Result<bool> {
     let track = git(
         repo,
@@ -217,8 +215,6 @@ pub fn upstream_gone(repo: &Path, branch: &str) -> Result<bool> {
 ///
 /// The fetch [`upstream_gone`] reads after: without it a branch deleted on the
 /// forge a week ago still reads as one somebody may be reviewing.
-// Called by t3, which fetches once per repository before a sweep walks it.
-#[allow(dead_code)]
 pub fn prune_origin(repo: &Path) -> Result<()> {
     git(repo, &["fetch", "--prune", "--quiet", "origin"])?;
     Ok(())
