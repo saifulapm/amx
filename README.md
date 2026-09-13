@@ -394,8 +394,8 @@ table.
 | `pgdn` `ctrl+f` | and the other way |
 | `ctrl+u` | half a page of it, toward the edge |
 | `ctrl+d` | and half a page away |
-| `ctrl+n` | the next hunk of the patch, at the top of the card |
-| `ctrl+p` | and the one before it |
+| `ctrl+n` | the next hunk of the patch, at the top of the card, keeping the line's words with the hunk you leave |
+| `ctrl+p` | and the one before it, back to the top of the patch, where the review opens |
 | `i` | cut short the turn it is on, as `amx interrupt` does from a shell |
 | `ctrl+x` | stop it, twice to forget it, and twice on a heading to stop and clear the group |
 | `c` | mark the agents whose work has landed, and twice to take them |
@@ -587,6 +587,19 @@ arrows never page: they keep walking the list, card in tow. `ctrl+b` and
 `ctrl+f` are the same two pages for a keyboard with no page keys on it — pgup
 and pgdn exactly. A lone `ctrl+b` under tmux's default prefix is tmux's own
 business: `ctrl+b ctrl+b` is what reaches the view there.
+
+`ctrl+n` and `ctrl+p` step a patch a hunk at a time instead, each one's `@@` row
+standing at the top of the card, and the line follows: what you have written
+goes with the hunk you step off, and the hunk you reach puts back whatever you
+left on it, to edit or to delete. Before the first hunk is the top of the patch,
+where the words you write open the review. `enter` sends the whole of it as one
+message — the opening, then every hunk you wrote on in patch order, each under
+the file and line it is about — because a review is read as one thing, and sent
+a hunk at a time the agent answers your first note before your second has
+arrived. The rule over the card counts what is kept and every noted hunk wears
+the waiting colour on its `@@` row, so paging the patch shows where you have
+been; the row under the line says how many notes `enter` would send and how many
+`esc` would drop, because `esc` puts the card away and the review with it.
 
 `?` puts every key where the list was, in the five groups they are learned in —
 walk, look, start, arrange, dials — each under a heading of its own: the label,
