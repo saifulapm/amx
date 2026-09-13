@@ -2679,8 +2679,9 @@ impl Screen {
     /// branch and the record, under the one law `stop` keeps about a tree
     /// holding work no commit has.
     ///
-    /// Asked on the press and never on a reading. The question is a git call
-    /// per finished row on a branch, and the wall is read again every second.
+    /// Asked on the press and never on a reading. The question is two git
+    /// calls per finished row on a branch — is it merged, has its upstream
+    /// gone — and the wall is read again every second.
     fn clear_or_arm(&mut self, root: &Path) {
         let again = self
             .arm
